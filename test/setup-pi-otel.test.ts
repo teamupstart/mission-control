@@ -132,6 +132,16 @@ test("a genuinely unversioned package declaration remains supported", async () =
   }
 });
 
+test("a non-exact package version stays unknown before installed files are read", async () => {
+  for (const suffix of ["@latest", "@^0.1.0"]) {
+    const f = fixture();
+    f.files.set(f.settings, JSON.stringify({ packages: [`npm:${PI_OTEL_PACKAGE.name}${suffix}`] }));
+    f.files.delete(f.manifest);
+    assert.equal((await piOtelPackageStatus(f.deps)).state, "unknown");
+    assert.deepEqual(f.reads, [f.settings]);
+  }
+});
+
 test("missing and unsupported package manifests are not healthy installations", async () => {
   for (const [contents, state] of [
     [undefined, "needs-setup"], ["{}", "unknown"],

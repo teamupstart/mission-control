@@ -75,6 +75,10 @@ export async function piOtelPackageStatus(deps: EnvironmentDeps, configuredDir?:
   if (registered[0]!.source.endsWith("@")) {
     return { state: "unknown", why: "The registered npm package declaration has an empty version suffix. Use an exact npm version pin or an unversioned package declaration.", evidence: settingsPath };
   }
+  const requestedVersion = registered[0]!.source.slice(`npm:${PI_OTEL_PACKAGE.name}`.length + 1);
+  if (requestedVersion !== "" && !VERSION.test(requestedVersion)) {
+    return { state: "unknown", why: "This installation check supports exact npm version pins or an unversioned package declaration. Use Pi to verify a tag or version range.", evidence: settingsPath };
+  }
   const packageDir = join(agentDir, "npm", "node_modules", PI_OTEL_PACKAGE.name);
   const manifestPath = join(packageDir, "package.json");
   const manifest = await readJson(deps, manifestPath, ManifestSchema);
@@ -83,10 +87,6 @@ export async function piOtelPackageStatus(deps: EnvironmentDeps, configuredDir?:
   }
   if (manifest.kind !== "ok") {
     return { state: "unknown", why: "The installed Pi telemetry package manifest is unreadable or not a supported package layout.", evidence: manifestPath };
-  }
-  const requestedVersion = registered[0]!.source.slice(`npm:${PI_OTEL_PACKAGE.name}`.length + 1);
-  if (requestedVersion !== "" && !VERSION.test(requestedVersion)) {
-    return { state: "unknown", why: "This installation check supports exact npm version pins or an unversioned package declaration. Use Pi to verify a tag or version range.", evidence: settingsPath };
   }
   if (requestedVersion !== "" && requestedVersion !== manifest.data.version) {
     return { state: "needs-setup", why: "The installed Pi telemetry version does not match its registered pin. Reinstall the pinned package using the CodeArtifact guide, then Re-check.", evidence: manifestPath };

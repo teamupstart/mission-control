@@ -174,7 +174,10 @@ let db: DatabaseSync | undefined;
 // 4: explicit final-completion worktree-return obligations, with no historical backfill.
 // 5: immutable managed plan bundles and recoverable checkout publication.
 // 6: pinned task plan inputs, local policy, final approval and artifact receipts.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 6;
+// 7: claim-version retirement identities and immutable retirement sequence boundaries.
+// 8: repository-specific retirement of shared coverage claim versions.
+// 9: retain staged claim versions still applicable to sibling repositories.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1212,12 +1215,21 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       reserved_group_key    TEXT,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
-      UNIQUE(note_key, client_criterion_id)
+      is_current            INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
       ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
       ON workflow_evidence_coverage_staging(reserved_group_key, state);
+
+    -- Conversation-owned retirement markers suppress ancestry without rewriting frozen history.
+    CREATE TABLE IF NOT EXISTS workflow_evidence_coverage_retirements (
+      note_key              TEXT NOT NULL,
+      client_criterion_id   TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      source_roots_json     TEXT,
+      PRIMARY KEY(note_key, client_criterion_id, generation)
+    );
 
     CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
       staging_id            TEXT NOT NULL,
@@ -3293,6 +3305,7 @@ function migrate(d: DatabaseSync): void {
   // inventing a completion boundary, and generation zero means no staged set was observed.
   addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
+  migrateCoverageRetirements(d);
   // The same capture hashed without its transcript anchor, so "has the work changed since the
   // round that asked for a fix?" stops being answered by the submission's identity. Nullable
   // with no default and no backfill on purpose: a row written before this column existed has
@@ -3336,6 +3349,44 @@ function migrate(d: DatabaseSync): void {
   // submission freezes and the mapping has to survive that copy.
   addColumn(d, "workflow_evidence_coverage_staging", "criterion_id", "TEXT");
   addColumn(d, "workflow_submission_evidence_coverage", "criterion_id", "TEXT");
+  // The caller id still identifies one mutable registration. Earlier versions can remain
+  // applicable to siblings when that registration narrows its scope before their capture.
+  // Replace the table's inline uniqueness constraint with a current-registration index.
+  if (!(d.prepare("PRAGMA table_info(workflow_evidence_coverage_staging)").all() as Array<{ name: string }>)
+    .some(column => column.name === "is_current")) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE workflow_evidence_coverage_staging_versioned (
+          id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_criterion_id TEXT NOT NULL,
+          criterion TEXT NOT NULL, criterion_id TEXT, proof_class TEXT NOT NULL,
+          repository_scope TEXT NOT NULL, source_root TEXT NOT NULL, links_json TEXT NOT NULL,
+          episode_key TEXT, generation INTEGER NOT NULL, state TEXT NOT NULL,
+          reserved_group_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          is_current INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO workflow_evidence_coverage_staging_versioned
+          SELECT id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+            repository_scope, source_root, links_json, episode_key, generation, state,
+            reserved_group_key, created_at, updated_at, 1
+          FROM workflow_evidence_coverage_staging;
+        DROP TABLE workflow_evidence_coverage_staging;
+        ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME TO workflow_evidence_coverage_staging;
+      `);
+      d.exec("COMMIT;");
+    } catch (error) {
+      d.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_coverage_current
+      ON workflow_evidence_coverage_staging(note_key, client_criterion_id) WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
+      ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
+      ON workflow_evidence_coverage_staging(reserved_group_key, state);
+  `);
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -4234,6 +4285,46 @@ function backfillBacklogRank(d: DatabaseSync): void {
     UPDATE tasks SET backlog_rank = (SELECT n FROM ranked WHERE ranked.id = tasks.id) * ${RANK_STEP}
     WHERE id IN (SELECT id FROM ranked);
   `);
+}
+
+/** Keep retirement identities and their snapshot cutoffs atomic across interrupted upgrades. */
+function migrateCoverageRetirements(d: DatabaseSync): void {
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    const retirementBoundaryAdded = addColumn(d, "workflow_submissions", "coverage_retirement_sequence", "INTEGER NOT NULL DEFAULT 0");
+    const retirementSequenceAdded = addColumn(d, "workflow_evidence_coverage_retirements", "sequence", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(d, "workflow_evidence_coverage_retirements", "staging_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    // NULL keeps historical withdrawals global; scoped replacement preserves sibling proof.
+    addColumn(d, "workflow_evidence_coverage_retirements", "source_roots_json", "TEXT");
+    if (retirementSequenceAdded) {
+      d.exec(`UPDATE workflow_evidence_coverage_retirements AS retirement
+        SET sequence = rowid, staging_ids_json = (
+          SELECT json_group_array(DISTINCT c.staging_id)
+          FROM workflow_submission_evidence_coverage c
+          JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id
+          JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE c.client_criterion_id = retirement.client_criterion_id AND c.generation <= retirement.generation
+            AND (b.note_key = retirement.note_key OR EXISTS (
+              SELECT 1 FROM workflow_events e WHERE e.run_id = r.id AND e.event_kind = 'binding_reattached'
+                AND json_extract(e.payload_json, '$.priorNoteKey') = retirement.note_key AND c.created_at <= e.ts
+            ))
+        )`);
+    }
+    if (retirementBoundaryAdded) {
+      d.exec(`UPDATE workflow_submissions AS s SET coverage_retirement_sequence = COALESCE((
+        SELECT MAX(retirement.sequence) FROM workflow_evidence_coverage_retirements retirement
+        JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+        WHERE retirement.note_key = b.note_key AND retirement.generation <= s.staged_image_generation
+      ), 0)`);
+    }
+    d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_coverage_retirement_sequence ON workflow_evidence_coverage_retirements(sequence)");
+    d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_submission_retirement_sequence ON workflow_submissions(coverage_retirement_sequence)");
+    d.exec("COMMIT;");
+  } catch (error) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw error;
+  }
 }
 
 function migrateTaskHomeName(d: DatabaseSync): void {

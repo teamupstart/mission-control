@@ -34,8 +34,10 @@ import {
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   workflowCommandEvidenceContent,
 } from "@shared/workflow.ts";
+import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import { sniffRasterImageMimeType } from "@shared/images.ts";
 import { STATE_DIR } from "../config.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { resolveCheckoutFile, resolveRoots, isIgnored } from "../archives/checkout.ts";
 import { isInside } from "../archives/paths.ts";
 import {
@@ -323,10 +325,58 @@ export async function stageAgentWorkflowEvidence(input: {
   artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
   commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
   coverage?: readonly WorkflowEvidenceCoverageClaim[];
+  withdrawClientCriterionIds?: readonly string[];
   now?: number;
   episodeKey?: string | null;
 }): Promise<WorkflowStagedEvidenceList> {
   const roots = await resolveRoots(scoutRepoSlots(input.task, input.fallbackRoot));
+  const citedClaims = (input.coverage ?? []).filter((claim) => claim.criterionId);
+  if (citedClaims.length > 0) {
+    const criteriaByRun = input.store.activeBindingsForNote(input.noteKey).flatMap((binding) => {
+      const run = input.store.activeRunForBinding(binding.id);
+      if (!run) return [];
+      let criteria = run.criteria?.canonicalCriteria;
+      if (!criteria) {
+        let source = input.store.latestSubmission(run.id);
+        const visited = new Set<string>();
+        // Legacy runs keep criteria in capture packets. Failed image capture leaves no
+        // context, so follow the same bounded ancestry as evidence carry-forward.
+        while (source && !visited.has(source.id)) {
+          visited.add(source.id);
+          const context = WorkflowContextSnapshotSchema.safeParse(source.context);
+          if (context.success && context.data.canonicalCriteria.length > 0) {
+            criteria = context.data.canonicalCriteria;
+            break;
+          }
+          if (source.status !== "failed" || source.repositoryFingerprint) break;
+          source = input.store.evidenceInheritanceSource(source)?.source ?? null;
+        }
+      }
+      const checkoutRoot = binding.repoRoot || binding.sessionCwd || "";
+      return [{
+        checkoutRoot: checkoutRoot ? canonicalWorktreePath(checkoutRoot) : "",
+        criteriaCaptured: criteria !== undefined,
+        ids: new Set((criteria ?? []).map((criterion) => criterion.id)),
+      }];
+    });
+    for (const claim of citedClaims) {
+      const selected = rootForScope(roots, claim.repositoryScope);
+      // Match the checkout routing used when the store reserves scoped or all-scope claims.
+      const recipients = criteriaByRun.filter((run) => claim.repositoryScope === "all" || run.checkoutRoot === selected.realRoot);
+      if (recipients.length === 0) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `No active workflow run receives repository scope ${claim.repositoryScope}, so criterionId ${claim.criterionId} cannot be validated for coverage claim ${claim.clientCriterionId}; omit criterionId until a repair message names the criteria.`);
+      }
+      if (recipients.some(run => !run.criteriaCaptured)) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `Canonical criteria have not been captured for every run receiving repository scope ${claim.repositoryScope}, so criterionId ${claim.criterionId} cannot yet be validated; omit criterionId until a repair message names the criteria.`);
+      }
+      if (recipients.some((run) => !run.ids.has(claim.criterionId!))) {
+        throw new WorkflowImageEvidenceError("unknown_criterion_id",
+          `Coverage claim ${claim.clientCriterionId} cites unknown criterionId ${claim.criterionId} for repository scope ${claim.repositoryScope}. Use an exact id from every receiving run, or select the repository scope that owns it. To retire a claim use withdrawClientCriterionIds.`);
+      }
+    }
+  }
   const writes: WorkflowStagedEvidenceWrite[] = [];
   const coverageWrites: WorkflowStagedEvidenceCoverageWrite[] = [];
   let aggregate = 0;
@@ -459,6 +509,7 @@ export async function stageAgentWorkflowEvidence(input: {
     input.now,
     input.episodeKey ?? null,
     coverageWrites,
+    input.withdrawClientCriterionIds,
   );
 }
 
@@ -933,20 +984,28 @@ export async function inheritSubmissionEvidence(
   submission: WorkflowSubmission,
   now = Date.now(),
 ): Promise<number> {
-  const resolved = store.evidenceInheritanceSource(submission);
-  if (!resolved) return 0;
-  const candidates = store.listInheritableSubmissionEvidence(resolved.source.id);
-  const carried: string[] = [];
-  for (const item of candidates) {
-    if (resolved.mode === "round" && !(await carriedEvidenceStillMatches(item))) continue;
-    carried.push(item.stagingId);
+  let resolved = store.evidenceInheritanceSource(submission);
+  const visited = new Set<string>([submission.id]);
+  let verifySources = false;
+  let total = 0;
+  // A failed image capture never reached inheritance. Walk through that incomplete packet
+  // to the last completed capture, giving the child's and nearest parent's evidence priority.
+  while (resolved && !visited.has(resolved.source.id)) {
+    visited.add(resolved.source.id);
+    verifySources ||= resolved.mode === "round";
+    const candidates = store.listInheritableSubmissionEvidence(resolved.source.id);
+    const carried: string[] = [];
+    for (const item of candidates) {
+      if (verifySources && !(await carriedEvidenceStillMatches(item))) continue;
+      carried.push(item.stagingId);
+    }
+    total += store.inheritSubmissionEvidence({
+      submissionId: submission.id, sourceSubmissionId: resolved.source.id, stagingIds: carried, now,
+    });
+    if (resolved.source.repositoryFingerprint || resolved.source.status !== "failed") break;
+    resolved = store.evidenceInheritanceSource(resolved.source);
   }
-  return store.inheritSubmissionEvidence({
-    submissionId: submission.id,
-    sourceSubmissionId: resolved.source.id,
-    stagingIds: carried,
-    now,
-  });
+  return total;
 }
 
 export function resolveSubmissionImageInputs(

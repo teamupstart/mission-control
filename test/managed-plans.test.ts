@@ -17,7 +17,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-managed-plans-")));
 process.env.MISSION_HOME = join(home, "state");
 const { savePlan, readPlanRevision, readPlanFile, planContext, pendingPlanWriteWarnings, listPlans, authorizePlan, managedPlanCaptureScopes } = await import("../src/server/plans/store.ts");
-const { openDb, closeDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+const { openDb, closeDb, upgradeDatabaseToCurrentSchema, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
 const { applySkillsConfig, getSkillsConfig } = await import("../src/server/skills/config.ts");
 const { planPlanCapture } = await import("../src/server/plans/capture-plan.ts");
 const { ArchiveCaptureStore } = await import("../src/server/archives/capture-store.ts");
@@ -53,7 +53,7 @@ test("a pre-feature database upgrades additively and retains existing settings",
     assert.equal(old.prepare("SELECT * FROM managed_plans").all().length, 0);
     assert.equal(old.prepare("SELECT * FROM managed_plan_revisions").all().length, 0);
     upgradeDatabaseToCurrentSchema(old);
-    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
+    assert.equal((old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, CURRENT_DATABASE_SCHEMA_VERSION);
   } finally { old.close(); }
 });
 

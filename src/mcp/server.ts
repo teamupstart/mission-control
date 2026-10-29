@@ -1193,6 +1193,10 @@ server.registerTool(
         )
         .optional()
         .describe("Optional exact output from completed focused commands, without creating a temporary file."),
+      withdrawClientCriterionIds: z.array(z.string().min(1)
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+        .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional()
+        .describe("Withdraw these caller claim ids from future submissions, including inherited claims. Idempotent; frozen history is unchanged."),
       coverage: z.array(z.object({
         clientCriterionId: z.string().min(1)
           .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars)
@@ -1205,13 +1209,16 @@ server.registerTool(
             `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
           )
           .describe("The material acceptance criterion the linked evidence is intended to prove."),
+        supersedes: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+          .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional()
+          .describe("Caller claim ids this registration replaces atomically. Use for differently worded replacements."),
         criterionId: z.string().min(1).max(200).optional()
           .describe(
             "The workflow's own criterion id, copied exactly from an evidence preflight repair"
             + " message. Supplying it binds this claim to that criterion with no text matching."
-            + " An id that matches no criterion of the run is refused by name in the next repair"
-            + " message and the claim is matched by nothing, including its own text, so omit the"
-            + " field entirely when no repair message has named the criteria.",
+            + " Unknown ids are rejected during registration. A new claim bound to the same id"
+            + " replaces the session's prior claims for that criterion. Omit this field when no"
+            + " repair message has named the criteria. Use withdrawClientCriterionIds to retire claims.",
           ),
         proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES)
           .describe("The author's proof class, which selects deterministic required evidence roles."),
@@ -1251,9 +1258,9 @@ server.registerTool(
         .describe("Optional acceptance criteria mapped to registered evidence and proof roles."),
     },
   },
-  async ({ images, artifacts, commandOutputs, coverage }) => {
+  async ({ images, artifacts, commandOutputs, coverage, withdrawClientCriterionIds }) => {
     const result = await submitWorkflowEvidenceToDaemon(
-      { images, artifacts, commandOutputs, coverage },
+      { images, artifacts, commandOutputs, coverage, withdrawClientCriterionIds },
       { env: ENV, sessionId: SESSION_ID, cwd: process.cwd() },
       http,
     );

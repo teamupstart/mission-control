@@ -267,7 +267,9 @@ Personas each own one reviewing concern. Session actions can send authored instr
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
-round, with applicable evidence carried forward between submissions.
+round, with applicable evidence carried forward between submissions. Canonical criterion IDs bind
+claims directly; authors can replace or withdraw claims without losing prior proof. Duplicate
+valid coverage produces a warning while missing or invalid proof still blocks readiness.
 You can retry failed criterion mapping from the dashboard. See
 [workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 
@@ -395,6 +397,8 @@ repository:
   To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
+  You can still check for updates manually at any time.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:

@@ -288,7 +288,7 @@ function finalizePacket(
  */
 const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_coverage: "Declare and link an author-controlled coverage claim for this criterion.",
-  ambiguous_mapping: "Leave exactly one of the claims listed above on this criterion and move or withdraw the rest.",
+  ambiguous_mapping: "Register the intended claim with this criterionId and supersedes naming the old clientCriterionIds, or call submit_workflow_evidence with withdrawClientCriterionIds to withdraw them.",
   evidence_not_frozen: "Register the linked evidence item again so it freezes with the repair segment.",
   scope_conflict: "Link evidence issued for this repository scope or for all repositories.",
   missing_execution: "Register and link exact completed focused command output with role execution.",
@@ -307,7 +307,7 @@ const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
    * forces the NEXT gap code to arrive with real text rather than printing its own name;
    * editing this string changes nothing a reader sees.
    */
-  unknown_criterion_id: "Correct or remove the criterionId reported above; it matches no criterion of this run.",
+  unknown_criterion_id: "Correct the criterionId reported above, or withdraw the claim with submit_workflow_evidence withdrawClientCriterionIds; it matches no criterion of this run.",
 };
 
 /** Render deterministic structural gaps without exposing internal evidence ids or local paths. */
@@ -375,7 +375,7 @@ export function renderEvidenceReadinessPacket(
   lines.push(
     "",
     "## How a criterion is matched",
-    "- Each criterion below needs exactly one coverage claim of its own. Two claims on one criterion is the only ambiguity left; one claim may answer several criteria.",
+    "- Each criterion below needs a coverage claim with valid proof. Duplicate matches are warnings; one claim may answer several criteria.",
     "- Bind a claim by copying the criterion id into its `criterionId`. Copying the criterion text verbatim into `criterion` also binds it. Either one avoids a guess.",
     "- One evidence item may be linked from as many claims as apply. Proof you already registered does not need capturing again to cover a second criterion.",
     "- Evidence and coverage you already registered are carried into this repair segment. Register only what is genuinely missing.",

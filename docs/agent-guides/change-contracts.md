@@ -393,8 +393,11 @@ One receipt may cross submissions, and only one: the attempt a child segment nam
 cross-submission source would let a node activated on one evidence snapshot advance a graph
 running on another.
 
-Criterion coverage follows the same evidence identity. Mutable claims are keyed by
-`(note_key, client_criterion_id)` and carry the staged generation. A claim's optional
+Criterion coverage follows the same evidence identity. One current mutable registration is keyed
+by `(note_key, client_criterion_id)` and carries the staged generation. Earlier versions may remain
+in the same staging table for sibling repositories after a scope change. Freezing selects one
+unretired version per caller id for its receiving repository; retained versions never overwrite
+the current registration or change historical submissions. A claim's optional
 `criterion_id` is the canonical criterion it cites, not part of its key: both coverage tables
 carry the column and every freeze path copies it. A value THIS submission's author wrote that
 names no criterion of the run is refused by name through `rejectedCitations` and

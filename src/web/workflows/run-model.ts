@@ -2082,9 +2082,9 @@ export function runEvidenceCriterionRows(input: {
 }): RunEvidenceCriterionRow[] {
   const claimOf = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
   const rows = (input.readiness?.criteria ?? []).map((criterion): RunEvidenceCriterionRow => {
-    const ids = criterion.matchedClientCriterionId === null
-      ? (criterion.contestedClientCriterionIds ?? [])
-      : [criterion.matchedClientCriterionId];
+    const ids = criterion.contestedClientCriterionIds?.length
+      ? criterion.contestedClientCriterionIds
+      : criterion.matchedClientCriterionId ? [criterion.matchedClientCriterionId] : [];
     const claims = ids.flatMap((id) => {
       const claim = claimOf.get(id);
       return claim ? [claim] : [];

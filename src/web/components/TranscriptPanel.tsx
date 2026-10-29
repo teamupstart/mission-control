@@ -53,6 +53,7 @@ import { toolChip, toolLineTarget, transcriptRows } from "../lib/tools.ts";
 import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
 import { mergeConversation } from "../lib/episodes.ts";
 import { projectLaunchPresentation } from "../lib/launch-presentation.ts";
+import { collapseSteerEchoes } from "@shared/message-delivery.ts";
 import { parseForemanTerminalReview } from "../lib/foreman-terminal.ts";
 import {
   collectHits,
@@ -530,9 +531,10 @@ export function TranscriptPanel({
    *
    * Today this substitutes the human task request for a Mission Control launch contract.
    * See `projectLaunchPresentation` for why that has to happen exactly once, here, rather
-   * than inside the turn component.
+   * than inside the turn component. It also draws once a steer the agent recorded twice
+   * (`collapseSteerEchoes`).
    */
-  const visible = useMemo(() => projectLaunchPresentation(messages), [messages]);
+  const visible = useMemo(() => collapseSteerEchoes(projectLaunchPresentation(messages)), [messages]);
   /**
    * The conversation as rows, computed once and shared by the renderer and the
    * search. Both MUST walk the same list: hits are addressed by row id and offset,

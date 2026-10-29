@@ -112,6 +112,9 @@ const REVIEW_HELD_TURN_MS = 15_000;
 // rather than after a timer a slow run could outlast.
 const DEFERRED_STEER = "read this steer at your next step";
 const READ_STEERS_SIGNAL = join(process.env.MC_E2E_RECORD_DIR ?? homedir(), "e2e-read-steers");
+// A deferred steer that, once read, is ALSO written as a plain `user` record before the
+// agent says anything: one message recorded both ways, which the log must draw once.
+const STEER_RECORDED_TWICE = "and record it twice";
 // A turn that stays open until the spec writes this file into the record dir. Matched by
 // INCLUSION, unlike `HELD_TURN`, because the prompt that carries it is a workflow session
 // action's packet: the daemon wraps the authored Markdown in its own envelope, so no exact
@@ -844,6 +847,28 @@ function appendTurn(role, content) {
   );
 }
 
+/**
+ * Record a message the running turn took in the form Claude Code usually uses: a
+ * `queued_command` attachment on that turn, with no `user` record. A fake that wrote only a
+ * `user` record here hid the daemon's failure to read the attachment behind a green spec.
+ * `STEER_RECORDED_TWICE` adds the matching `user` record that can also follow it.
+ */
+function appendQueuedCommand(prompt) {
+  turn += 1;
+  const timestamp = new Date().toISOString();
+  appendFileSync(
+    transcriptPath,
+    `${JSON.stringify({
+      type: "attachment",
+      uuid: `queued-${turn}`,
+      isSidechain: false,
+      userType: "external",
+      timestamp,
+      attachment: { type: "queued_command", commandMode: "prompt", origin: null, prompt, timestamp },
+    })}\n`,
+  );
+}
+
 // --- the control protocol -------------------------------------------------------------
 
 function emit(frame) {
@@ -1332,7 +1357,8 @@ rl.on("line", (line) => {
       const waiting = setInterval(() => {
         if (!existsSync(READ_STEERS_SIGNAL)) return;
         clearInterval(waiting);
-        appendTurn("user", prompt);
+        appendQueuedCommand(prompt);
+        if (prompt.includes(STEER_RECORDED_TWICE)) appendTurn("user", prompt);
       }, 100);
       waiting.unref();
       return;

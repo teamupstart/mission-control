@@ -15,8 +15,8 @@ test('publisher requirements pin the Apple anchor, app identifier and Developer 
   assert.equal(requirements.image, '=anchor apple generic and certificate leaf[subject.OU] = "S2FPCQK39Z"');
 });
 
-// Every other distribution test simulates codesign, so only the real tool can say whether
-// a requirement argument compiles. /bin/ls is Apple-signed, so a compiled publisher
+// Exercise the shared formatter output directly; production verifiers and bootstrap
+// argv are covered separately. /bin/ls is Apple-signed, so a compiled publisher
 // requirement fails to match it (status 3) instead of failing to parse (status 1).
 const verify = (requirement: string) =>
   spawnSync('/usr/bin/codesign', ['--verify', '-R', requirement, '/bin/ls'], {encoding: 'utf8', env: {...process.env, LC_ALL: 'C'}});

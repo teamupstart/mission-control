@@ -5391,10 +5391,9 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
       `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
     ),
-  // Optional on the wire and absent on every historical row. An older daemon strips it and
-  // matches the claim by text exactly as it always did, so a mismatched build degrades to the
-  // previous behaviour rather than refusing the packet.
   criterionId: z.string().min(1).max(200).nullable().optional(),
+  supersedes: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
   proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
   links: z.array(WorkflowEvidenceCoverageLinkSchema)
@@ -5676,12 +5675,15 @@ export const SubmitWorkflowEvidenceSchema = z.object({
       message: "Workflow evidence client item ids must be unique",
     }).optional().default([]),
   coverage: WorkflowEvidenceCoverageClaimsSchema.optional().default([]),
+  withdrawClientCriterionIds: z.array(z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars))
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional().default([]),
 }).superRefine((value, ctx) => {
   if (
     value.images.length === 0
     && value.artifacts.length === 0
     && value.commandOutputs.length === 0
     && value.coverage.length === 0
+    && value.withdrawClientCriterionIds.length === 0
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

@@ -5108,6 +5108,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         artifacts: parsed.data.artifacts,
         commandOutputs: parsed.data.commandOutputs,
         coverage: parsed.data.coverage,
+        withdrawClientCriterionIds: parsed.data.withdrawClientCriterionIds,
       }));
     } catch (error) {
       const known = error instanceof WorkflowImageEvidenceError ? error : null;

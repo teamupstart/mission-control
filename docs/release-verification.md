@@ -136,6 +136,56 @@ Invalid submission, use the reported submission ID and issue list to identify th
 binary/signature failure. None of these secret/account facts was inspected or established
 by this repair; do not rotate credentials merely because the old log masked an error.
 
+## Requirement text repair (2026-10-28 UTC)
+
+The operator supplied the retained diagnostic from
+[run 40718182516](https://github.com/teamupstart/mission-control/actions/runs/40718182516)
+at `4a2739023f61a30f5bd70bd973cc26f4843473f7`: build and signing passed, app notarization
+was Accepted (`ba422e3e-7da8-4233-928c-1315ddff8d68`), then `verifyDistributionApp`
+failed with `No such file or directory / invalid requirement specification`.
+`codesign -R` treats an argument as a filename unless the requirement begins with `=`.
+All app and DMG requirement arguments now carry that prefix, including the standalone
+bootstrap and its generated `install.sh`. Apple anchor, bundle identifier where present,
+and team OU remain identical. The shared app/image requirement helpers supply both the
+JavaScript verifiers and rendered bootstrap arguments. The binary updater, preparation worker
+and detached installer reach the same repaired `verifyBinaryPublisher` boundary.
+
+`test/codesign-requirements.test.ts` statically discovers requirement calls throughout
+shipped source, checks their prefix and publisher semantics, and verifies installer generation.
+On macOS it also calls **real `/usr/bin/codesign`**, without mocks: `/bin/ls` satisfies
+`=anchor apple` (exit 0); wrong identifier and team requirements return exit 3 with
+`failed to satisfy`, never a file or parse error. Both production verifiers and the rendered
+bootstrap requirements are exercised against that real system binary. The unpatched code
+failed these tests with exit 1 and the observed file error. These native cases skip on other
+platforms; macOS must execute them, not merely report a skipped Linux run. Under the Codex
+Seatbelt sandbox, use scoped outside-sandbox execution so macOS trust services are reachable.
+
+`test/distribution-native-tools.test.ts` checks the downstream argument forms with real
+macOS tools and disposable fixtures: `cp -R` and quarantine retention; `ditto` ZIP creation,
+extraction and installation copy; read-only `hdiutil` attach/detach and exact bundle digests;
+the shipped Bash `plutil`/`openssl` helpers; `spctl` assessment forms; and `stapler validate`
+refusal for a system binary without a ticket. Installed `notarytool` help confirms the
+submit/wait/log authentication flags, JSON output and `20m` timeout syntax without submitting
+anything. Review of the locked builder confirms prepackaged DMG creation skips app packaging
+and uses the selected signing identity/keychain for DMG signing. No further real-tool argument
+defect was confirmed. These checks do not establish Developer ID signing, accepted notarization,
+stapling success or the signed Electron runtime journey.
+
+The review check also exposed an intermittent detached rename rollback. Concurrent real
+Electron fixtures reproduced a launch-conflict refusal for a runningboard application job;
+the helper checked launch state before waiting for its own parent to exit. Detached migration
+now waits for the identified parent first, retaining both source/target conflict scans and
+bundle-exit waits before staging. A regression with a real disposable parent checks that
+ordering, and receipt assertions retain fixture diagnostics in the failure itself. These
+fixtures still simulate publisher trust and do not qualify signed updates.
+
+**PR and release handoff:** real signed qualification requires the next approved **Signed
+distribution** run on a commit containing this repair. It has not passed in this task.
+`qualifySignedRuntime`, signed DMG build/notarization, accepted Gatekeeper assessments and
+final signed archive verification remain that run's obligations. No protected deployment was
+approved, rejected or rerun, no release was published, and no credential, publisher policy,
+environment protection or immutable-asset rule was changed.
+
 ## App-name transition observation (2026-10-27 UTC)
 
 The rename task rechecked PR #1214: it remains OPEN, draft, and DO NOT MERGE at

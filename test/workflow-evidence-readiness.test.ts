@@ -20,6 +20,7 @@ const {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
   classifyWorkflowCoverageCitation,
   evaluateWorkflowEvidenceReadiness,
+  selectWorkflowCoverageClaims,
   workflowCoverageCitationAllowsText,
   workflowEvidenceReadinessPolicyEnforces,
   workflowEvidenceMissingRoleGaps,
@@ -50,6 +51,10 @@ const focusedClaim = {
 test("coverage schemas preserve legacy calls and bound criterion mappings", () => {
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({ commandOutputs: [command] }).success, true);
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({ coverage: [focusedClaim] }).success, true);
+  const withdrawal = SubmitWorkflowEvidenceSchema.parse({ withdrawClientCriterionIds: ["retired"] });
+  assert.deepEqual(withdrawal.withdrawClientCriterionIds, ["retired"]);
+  const replacement = SubmitWorkflowEvidenceSchema.parse({ coverage: [{ ...focusedClaim, supersedes: ["older"] }] });
+  assert.deepEqual(replacement.coverage[0]!.supersedes, ["older"]);
   assert.equal(SubmitWorkflowEvidenceSchema.safeParse({
     commandOutputs: [command],
     coverage: [focusedClaim],
@@ -629,7 +634,8 @@ test("one claim proposed for several criteria covers each of them", async () => 
     coverage: [claim, second],
     evidence,
   });
-  assert.deepEqual(contested.gapCodes, ["ambiguous_mapping", "missing_coverage"]);
+  assert.deepEqual(contested.gapCodes, ["missing_coverage"]);
+  assert.deepEqual(contested.warningCodes, ["ambiguous_mapping"]);
   assert.deepEqual(
     contested.criteria[0]?.contestedClientCriterionIds,
     [claim.clientCriterionId, second.clientCriterionId].sort(),
@@ -736,13 +742,11 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     command.exitCode,
   );
   assert.deepEqual(store.listWorkflowEvidence("readiness-note").coverage, []);
-  assert.throws(
-    () => store.stageWorkflowEvidence("readiness-note", [], 5, null, [{
-      ...claim,
-      criterion: "A changed claim cannot rewrite the frozen submission",
-    }]),
-    /already reserved/,
-  );
+  const updated = store.stageWorkflowEvidence("readiness-note", [], 5, null, [{
+    ...claim, criterion: "A changed claim cannot rewrite the frozen submission",
+  }]);
+  assert.equal(updated.coverage?.[0]?.criterion, "A changed claim cannot rewrite the frozen submission");
+  assert.equal(store.listSubmissionCoverage(created.submission.id)[0]?.criterion, focusedClaim.criterion);
   store.resetForNoteKey("readiness-note");
   assert.equal(
     (db.prepare(`SELECT COUNT(*) AS count FROM workflow_submission_evidence_coverage`)
@@ -806,7 +810,7 @@ test("a criterion id that names nothing is refused rather than matched by prose"
   assert.equal(resolved.rejectedCitations, undefined);
 });
 
-test("a carried claim's stale citation is not a refusal its author cannot withdraw", () => {
+test("a carried claim's stale citation is refused and can be withdrawn", () => {
   const canonical = [{
     id: "criterion-1-aaaa",
     text: "The dashboard result is visually correct",
@@ -827,8 +831,8 @@ test("a carried claim's stale citation is not a refusal its author cannot withdr
   const mappings = reconcileWorkflowCriterionMappings(canonical, [carried]);
   assert.deepEqual(
     mappings.map((mapping) => mapping.matchedClientCriterionIds),
-    [["ancestor-claim"]],
-    "a carried claim still answers for its criterion through its text",
+    [[]],
+    "inheritance never turns an unknown citation into a text match",
   );
   const readiness = evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: canonical,
@@ -836,8 +840,8 @@ test("a carried claim's stale citation is not a refusal its author cannot withdr
     coverage: [carried],
     evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
   });
-  assert.equal(readiness.status, "ready");
-  assert.equal(readiness.rejectedCitations, undefined);
+  assert.equal(readiness.status, "gaps");
+  assert.deepEqual(readiness.rejectedCitations, [{ clientCriterionId: carried.clientCriterionId, criterionId: carried.criterionId }]);
 });
 
 test("one classifier owns what a citation means, and every path reads it", () => {
@@ -855,7 +859,7 @@ test("one classifier owns what a citation means, and every path reads it", () =>
   assert.equal(classifyWorkflowCoverageCitation(claim("criterion-9-zzzz"), ids), "rejected");
   assert.equal(
     classifyWorkflowCoverageCitation(claim("criterion-9-zzzz", "submission-parent"), ids),
-    "inherited_unresolved",
+    "rejected",
   );
   // A resolved citation is authoritative wherever it was carried from.
   assert.equal(
@@ -869,19 +873,12 @@ test("one classifier owns what a citation means, and every path reads it", () =>
    * semantic inference, and a claim the mapping binds is never asked about twice.
    */
   assert.deepEqual(
-    (["absent", "resolved", "rejected", "inherited_unresolved"] as const)
+    (["absent", "resolved", "rejected"] as const)
       .filter(workflowCoverageCitationAllowsText),
-    ["absent", "inherited_unresolved"],
+    ["absent"],
   );
 });
-/**
- * The repair `coverage_reserved` instructs, evaluated.
- *
- * A reserved claim cannot be amended, so an author who must add a missing proof role has exactly
- * one move: re-register under a new criterion id. Both claims then bridge to the same canonical
- * criterion on identical text, and before this rule that produced `ambiguous_mapping` - a gap no
- * further registration could close. The instruction wedged the run it was trying to unwedge.
- */
+/** Legacy duplicate declarations retain valid proof and report incompleteness deterministically. */
 const trustCriterion = "Error message includes a direct link to Trust panel settings";
 const trustCanonical = [{
   id: "ac-trust",
@@ -942,13 +939,13 @@ test("a complete replacement supersedes the incomplete claim it was told to repl
   );
 });
 
-test("supersession never picks between two claims a person has to settle", () => {
+test("duplicate claims warn while missing required proof still blocks", () => {
   const complete = (id: string) => trustClaim(id, [
     { clientItemId: "png-r2", role: "rendered_output" },
     { clientItemId: "suite-run", role: "execution" },
   ]);
   assert.deepEqual(
-    trustReadiness([complete("ac-one"), complete("ac-two")]).gapCodes,
+    trustReadiness([complete("ac-one"), complete("ac-two")]).warningCodes,
     ["ambiguous_mapping"],
     "two claims that both satisfy their class are a real choice between author statements",
   );
@@ -956,7 +953,7 @@ test("supersession never picks between two claims a person has to settle", () =>
     trustReadiness([
       trustClaim("ac-one", [{ clientItemId: "png-r1", role: "rendered_output" }]),
       trustClaim("ac-two", [{ clientItemId: "png-r2", role: "rendered_output" }]),
-    ]).gapCodes.includes("ambiguous_mapping"),
+    ]).gapCodes.includes("missing_execution"),
     true,
     "and two incomplete ones resolve nothing, so the mapping stays ambiguous",
   );
@@ -1042,4 +1039,70 @@ test("a refused citation is a run-level gap, never one a criterion carries", () 
   }
   assert.deepEqual(readiness.criteria[0]?.gaps, []);
   assert.equal(readiness.status, "gaps");
+});
+
+// Reproduce stale mappings persisted before authoritative citation and warning handling.
+for (const pinned of [false, true]) test(`duplicate valid coverage ${pinned ? "prefers the pinned id" : "warns without hiding evidence"}`, () => {
+  const claims = [focusedClaim, { ...focusedClaim, clientCriterionId: "focused-v2",
+    criterion: "Different wording for the same behavior", ...(pinned ? { criterionId: "canonical-1" } : {}) }];
+  const result = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: [{ id: "canonical-1", text: focusedClaim.criterion, material: true, suggestedProofClass: null }],
+    criterionMappings: [{ criterionId: "canonical-1", matchedClientCriterionIds: claims.map(c => c.clientCriterionId) }],
+    coverage: claims,
+    evidence: [{ clientItemId: command.clientItemId, evidenceId: "proof", repositoryScope: "repo-01" }],
+  });
+  assert.equal(result.status, "ready");
+  assert.equal(result.criteria[0]!.links.length, 1);
+  assert.deepEqual(result.warningCodes, pinned ? [] : ["ambiguous_mapping"]);
+  if (pinned) assert.equal(result.criteria[0]!.matchedClientCriterionId, "focused-v2");
+});
+
+test("inherited fake retirement ids never fall back to semantic text", () => {
+  const canonical = [{ id: "canonical-1", text: focusedClaim.criterion, material: true, suggestedProofClass: null }];
+  const claim = { ...focusedClaim, criterionId: "withdrawn-superseded-by-v2", inheritedFromSubmissionId: "old-round" };
+  assert.deepEqual(reconcileWorkflowCriterionMappings(canonical, [claim])[0]?.matchedClientCriterionIds ?? [], []);
+  const result = evaluateWorkflowEvidenceReadiness({ canonicalCriteria: canonical,
+    criterionMappings: [{ criterionId: "canonical-1", matchedClientCriterionIds: [claim.clientCriterionId] }],
+    coverage: [claim], evidence: [] });
+  assert.ok(result.gapCodes.includes("unknown_criterion_id"));
+  assert.ok(result.gapCodes.includes("missing_coverage"));
+});
+
+test("changing only a staged claim's canonical id is a real update", () => {
+  const store = new WorkflowStore();
+  const claim = { ...focusedClaim, id: "rebind-row", sourceRoot: home, links: [], criterionId: "canonical-1" };
+  const first = store.stageWorkflowEvidence("rebind-note", [], 1, null, [claim]);
+  const second = store.stageWorkflowEvidence("rebind-note", [], 2, null, [{ ...claim, criterionId: "canonical-2" }]);
+  assert.equal(second.coverage?.[0]?.criterionId, "canonical-2");
+  assert.equal(second.generation, first.generation + 1);
+});
+
+// Legacy selections can still name semantic competitors after the pinned claim is carried.
+for (const absent of [false, true]) test(`an inherited explicit binding displaces ${absent ? "an absent claim" : "semantic competitors"} in a saved selection`, () => {
+  const canonicalCriteria = [{ id: "canonical-1", text: focusedClaim.criterion, material: true, suggestedProofClass: null }];
+  const coverage = [...(absent ? [] : [focusedClaim]), { ...focusedClaim, clientCriterionId: "pinned", criterionId: "canonical-1" }]
+    .map(claim => ({ ...claim, inheritedFromSubmissionId: "old-round" }));
+  const criterionMappings = [{ criterionId: "canonical-1", matchedClientCriterionIds: [focusedClaim.clientCriterionId, "pinned"] }];
+  const previous = { version: 1 as const, sourceSubmissionId: null, criteria: absent
+    ? [{ criterionId: "canonical-1", matchedClientCriterionIds: [focusedClaim.clientCriterionId] }] : criterionMappings };
+  const selection = selectWorkflowCoverageClaims({ canonicalCriteria, criterionMappings, coverage, previous });
+  assert.deepEqual(selection.criteria[0]!.matchedClientCriterionIds, ["pinned"]);
+  // Also evaluate a frozen legacy selection without first rewriting it.
+  const result = evaluateWorkflowEvidenceReadiness({ canonicalCriteria, criterionMappings, coverage, selection: previous,
+    evidence: [{ clientItemId: command.clientItemId, evidenceId: "proof", repositoryScope: "repo-01" }] });
+  assert.equal(result.status, "ready");
+  assert.deepEqual(result.warningCodes, []);
+  assert.equal(result.criteria[0]!.matchedClientCriterionId, "pinned");
+});
+
+test("id-bound replacement preserves a sibling repository's claim", () => {
+  const store = new WorkflowStore();
+  const noteKey = "scoped-replacement";
+  const first = { ...focusedClaim, id: "scope-first", clientCriterionId: "first", sourceRoot: home,
+    criterionId: "shared-canonical", repositoryScope: "repo-01" as const, links: [] };
+  const sibling = { ...first, id: "scope-sibling", clientCriterionId: "sibling", repositoryScope: "repo-02" as const, sourceRoot: join(home, "sibling") };
+  store.stageWorkflowEvidence(noteKey, [], 1, null, [first, sibling]);
+  const updated = store.stageWorkflowEvidence(noteKey, [], 2, null,
+    [{ ...first, id: "scope-replacement", clientCriterionId: "first-v2" }]);
+  assert.deepEqual(updated.coverage!.map(claim => claim.clientCriterionId).sort(), ["first-v2", "sibling"]);
 });

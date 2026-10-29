@@ -13,7 +13,7 @@ export function previousEvidenceSubmission(store: WorkflowStore, submission: Wor
 }
 
 /** Replay legacy declaration provenance, never timestamps or an inferred semantic winner. */
-export function submissionCoverageSelection(store: WorkflowStore, submission: WorkflowSubmission): WorkflowCoverageSelection | undefined {
+export function submissionCoverageSelection(store: WorkflowStore, submission: WorkflowSubmission, target?: WorkflowSubmission): WorkflowCoverageSelection | undefined {
   const chain: WorkflowSubmission[] = [];
   const visited = new Set<string>();
   let cursor: WorkflowSubmission | null = submission;
@@ -44,5 +44,9 @@ export function submissionCoverageSelection(store: WorkflowStore, submission: Wo
       sourceSubmissionId: previousEvidenceSubmission(store, row)?.id ?? null,
     });
   }
-  return previous;
+  if (!previous || !target) return previous;
+  const retired = store.retiredSubmissionCoverageIds(submission.id, target.id);
+  return { ...previous, criteria: previous.criteria.map(row => ({
+    ...row, matchedClientCriterionIds: row.matchedClientCriterionIds.filter(id => !retired.has(id)),
+  })) };
 }

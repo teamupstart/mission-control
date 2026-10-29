@@ -1003,7 +1003,7 @@ export class Registry extends EventEmitter {
    * Kept apart from the session because the field on the session is not the same claim.
    * There it is the last binding we LEARNED, from a hook or from `lastAgentBinding` after
    * a restart, and a `/clear` is supposed to replace it. Here it is evidence from the
-   * process table, which a hook cannot contradict - so this, and only this, is what
+   * process table, which a hook cannot contradict - so for terminal sessions this is what
    * `applyHook` refuses a mismatching event against. Reading the session's own field
    * instead makes the guard reject the rebinding it exists to protect.
    */
@@ -3141,6 +3141,13 @@ export class Registry extends EventEmitter {
     }
     const target = this.findSessionForHook(evt, key);
     if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
+
+    // SDK identity belongs to the owned driver, including initial binding and clears.
+    // An auxiliary CLI can inherit this cwd or pane without MISSION_HEADLESS, so those
+    // coordinates alone cannot authorize its hooks. Refuse before retaining an overlay
+    // or rotating the work episode and its task/workflow ownership. Matching native
+    // hooks may still supply instrumentation; only driver events can replace the owner.
+    if (target?.runtime === "sdk" && (!evt.sessionId || evt.sessionId !== target.agentSessionId)) return;
 
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.

@@ -389,7 +389,7 @@ test("intent fingerprints include only goals and genuine decision content", () =
   );
 });
 
-test("replacement claim ids reconcile by stable criterion text and fail closed on ambiguity", () => {
+test("replacement claim ids reconcile by stable text and still require proof", () => {
   const canonical = [{
     id: "criterion-stable",
     text: "Tests remain green",
@@ -437,7 +437,7 @@ test("replacement claim ids reconcile by stable criterion text and fail closed o
       coverage: ambiguousCoverage,
       evidence: [],
     }).gapCodes,
-    ["ambiguous_mapping"],
+    ["missing_execution"],
   );
   assert.deepEqual(
     reconcileWorkflowCriterionMappings(

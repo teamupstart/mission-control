@@ -29,7 +29,7 @@ import {
 import { locateExecutable } from "../server/executables/locator.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
-import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
+import { readUpdatePreferences, writeUpdatePreferences, type UpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { latestStableBinary, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type BinaryOffer } from "./update-binary-release.ts";
@@ -48,6 +48,7 @@ const FIRST_CHECK_MIN_MS = 30_000;
 const FIRST_CHECK_JITTER_MS = 60_000;
 const RECHECK_MS = 6 * 60 * 60 * 1000;
 const RECHECK_JITTER_MS = 15 * 60 * 1000;
+const UPDATE_SNOOZE_MS = 48 * 60 * 60 * 1000;
 export const ALPHA_RECHECK_MS = 5 * 60 * 1000;
 const MAX_RELEASE_NOTES = 4_000;
 
@@ -136,6 +137,8 @@ export interface UpdaterPort {
   currentCommit(): string | null;
   readAlpha(): boolean;
   writeAlpha(alpha: boolean): void;
+  readSnoozes(): UpdatePreferences["snoozedUntil"];
+  writeSnoozes(snoozedUntil: UpdatePreferences["snoozedUntil"]): void;
   /**
    * The receipt and this bundle's right to act on it, read together.
    *
@@ -476,6 +479,7 @@ export class UpdateController {
   private policyPending = false;
   private repairPromise: Promise<void> | null = null;
   private alpha: boolean;
+  private snoozedUntil: UpdatePreferences["snoozedUntil"];
   private snapshot: UpdateSnapshot;
   private receipt: InstallReceipt | null = null;
   private checkPromise: Promise<UpdateSnapshot> | null = null;
@@ -508,6 +512,7 @@ export class UpdateController {
 
   constructor(private readonly port: UpdaterPort) {
     this.alpha = port.readAlpha();
+    this.snoozedUntil = port.readSnoozes();
     this.snapshot = { phase: "disabled", reason: "Update manager has not started.", lastOutcome: null };
   }
 
@@ -701,6 +706,11 @@ export class UpdateController {
         const reusableStaged = this.staged?.releaseTag === targetRef && this.descriptor && this.stagedBundleIsIntact(this.staged);
         const binary = reusableStaged ? this.staged!.binary : commit ? await this.port.binaryForCommit(commit.sha) : release?.binary;
         this.offeredBinary = binary ? structuredClone(binary) : null;
+        // Check after discovery's final await so a manual request joining a background
+        // check can still show the offer. Explicit checks do not erase its saved snooze.
+        if (!this.manualCheckRequested && (this.snoozedUntil[targetRef] ?? 0) > this.port.now()) {
+          return this.publish(idleSnapshot(currentVersion, lastOutcome, checkedAt));
+        }
         return this.publish({
           phase: "available",
           currentVersion,
@@ -1214,9 +1224,22 @@ export class UpdateController {
    * "Later", from either the offer or a prepared update.
    *
    * A deferred build is kept rather than thrown away, so accepting it later is immediate.
+   * Automatic reminders for this exact target stay quiet for 48 hours across app restarts.
    */
   defer(): void {
     if (this.policyPending) return;
+    if (this.snapshot.phase === "available" || this.snapshot.phase === "ready") {
+      const now = this.port.now();
+      this.snoozedUntil = {
+        ...Object.fromEntries(Object.entries(this.snoozedUntil).filter(([, until]) => until > now)),
+        [this.snapshot.releaseTag]: now + UPDATE_SNOOZE_MS,
+      };
+      try { this.port.writeSnoozes(this.snoozedUntil); }
+      catch (error) {
+        // A disk error must not undo the dismissal for the running app.
+        this.port.log(`could not save update snooze: ${String(error)}`);
+      }
+    }
     if (this.snapshot.phase === "available") {
       this.publish(
         idleSnapshot(this.snapshot.currentVersion, this.snapshot.lastOutcome, this.snapshot.checkedAt),
@@ -1245,6 +1268,7 @@ export function createDefaultUpdaterPort(options: {
   migrationInventory?: (plan: MigrationPlan) => unknown;
   repairMigration?: (confirmLogin?: boolean) => Promise<void>;
 }): UpdaterPort {
+  const preferencesPath = join(options.stateDirectory, "update-preferences.json");
   const logPath = join(options.stateDirectory, "update.log");
   const log = createRotatingUpdateLogger(logPath);
   return {
@@ -1264,8 +1288,10 @@ export function createDefaultUpdaterPort(options: {
     currentVersion: options.currentVersion,
     currentCommit: options.currentCommit,
     installSnapshot: options.installSnapshot,
-    readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
-    writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
+    readAlpha: () => readUpdatePreferences(preferencesPath).alpha,
+    writeAlpha: (alpha) => { writeUpdatePreferences(preferencesPath, { ...readUpdatePreferences(preferencesPath), alpha }); },
+    readSnoozes: () => readUpdatePreferences(preferencesPath).snoozedUntil,
+    writeSnoozes: (snoozedUntil) => { writeUpdatePreferences(preferencesPath, { ...readUpdatePreferences(preferencesPath), snoozedUntil }); },
     latestRelease: () => latestStableBinary(runGh, options.currentVersion()),
     binaryForCommit: (commit) => binaryForCommit(runGh, commit),
     discard: (descriptor) => discardBinaryUpdate(descriptor, options.stateDirectory),

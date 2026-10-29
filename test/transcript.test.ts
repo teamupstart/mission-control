@@ -176,6 +176,56 @@ test("toMessage drops noise: sidechains, pure tool-results, empty turns, non-mes
   assert.equal(toMessage({ type: "assistant", message: { role: "assistant", content: [] } }), null);
 });
 
+// ---- a message sent mid-turn ----
+
+/** Shaped like the record Claude Code writes when it folds a mid-turn message into the turn. */
+const queuedCommand = (attachment: Record<string, unknown>): Record<string, unknown> => ({
+  type: "attachment",
+  uuid: "q1",
+  isSidechain: false,
+  userType: "external",
+  renderedRole: "system",
+  timestamp: "2026-07-11T02:00:05.000Z",
+  attachment: {
+    type: "queued_command",
+    commandMode: "prompt",
+    origin: null,
+    source_uuid: "src-1",
+    timestamp: "2026-07-11T02:00:05.000Z",
+    ...attachment,
+  },
+});
+
+test("a steered message is the operator's turn, though Claude records it as an attachment", () => {
+  // Claude Code usually records a message that arrives while a turn is running only as a
+  // `queued_command` attachment on that turn, with no `user` record. Dropped, the
+  // operator's own words vanished from the log and the daemon never saw the steer read.
+  assert.deepEqual(toMessage(queuedCommand({ prompt: "skip e2e for now" })), {
+    id: "q1",
+    role: "user",
+    text: "skip e2e for now",
+    tools: [],
+    ts: Date.parse("2026-07-11T02:00:05.000Z"),
+    takenMidTurn: true,
+  });
+  // The block form a turn with an image takes keeps only its prose.
+  assert.equal(
+    toMessage(queuedCommand({
+      prompt: [{ type: "text", text: "look at this" }, { type: "image", source: { type: "base64" } }],
+    }))?.text,
+    "look at this",
+  );
+});
+
+test("a queued command nobody typed stays out of the log", () => {
+  // Background task completions, and messages from a peer agent, ride the same attachment.
+  assert.equal(toMessage(queuedCommand({ commandMode: "task-notification", prompt: "<task-notification/>" })), null);
+  assert.equal(toMessage(queuedCommand({ origin: { kind: "peer", from: "a1" }, prompt: "hi" })), null);
+  assert.equal(toMessage({ ...queuedCommand({ prompt: "subagent" }), isSidechain: true }), null);
+  assert.equal(toMessage(queuedCommand({ prompt: "   " })), null);
+  assert.equal(toMessage({ type: "attachment", uuid: "a2", attachment: { type: "skill_listing" } }), null);
+});
+
 // ---- the log reads as conversation, not as Claude Code's plumbing ----
 
 const userTurn = (uuid: string, content: string): Record<string, unknown> => ({

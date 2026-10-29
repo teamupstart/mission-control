@@ -1593,6 +1593,7 @@ export class WorkflowManager {
       artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
       commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
       coverage?: readonly WorkflowEvidenceCoverageClaim[];
+      withdrawClientCriterionIds?: readonly string[];
     },
     now = Date.now(),
   ): Promise<WorkflowStagedEvidenceList> {
@@ -1624,6 +1625,7 @@ export class WorkflowManager {
       artifacts: evidence.artifacts,
       commandOutputs: evidence.commandOutputs,
       coverage: evidence.coverage,
+      withdrawClientCriterionIds: evidence.withdrawClientCriterionIds,
       now,
       episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
@@ -6519,13 +6521,18 @@ export class WorkflowManager {
     runId: string,
     submission: WorkflowSubmission,
   ): { coverage: WorkflowEvidenceCoverageClaim[]; mappings: WorkflowCriterionMapping[] } {
-    const previous = previousEvidenceSubmission(this.store, submission);
-    if (!previous) return { coverage: [], mappings: [] };
-    const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
-    return {
-      coverage: this.store.listSubmissionCoverage(previous.id),
-      mappings: parsed.success ? parsed.data.criterionMappings ?? [] : [],
-    };
+    let previous = previousEvidenceSubmission(this.store, submission);
+    const visited = new Set<string>();
+    while (previous && !visited.has(previous.id)) {
+      visited.add(previous.id);
+      const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
+      if (parsed.success && parsed.data.criterionMappings.length > 0) {
+        return { coverage: this.store.listSubmissionCoverage(previous.id), mappings: parsed.data.criterionMappings };
+      }
+      if (previous.status !== "failed" || previous.repositoryFingerprint) break;
+      previous = previousEvidenceSubmission(this.store, previous);
+    }
+    return { coverage: [], mappings: [] };
   }
 
   /**
@@ -7053,7 +7060,7 @@ export class WorkflowManager {
           canonicalCriteria: context.canonicalCriteria ?? [],
           criterionMappings: context.criterionMappings ?? [],
           coverage: frozenCoverage,
-          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource) : undefined,
+          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource, currentSubmission) : undefined,
           sourceSubmissionId: selectionSource?.id ?? null,
         }),
       });

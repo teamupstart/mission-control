@@ -1,7 +1,7 @@
 import { unexpectedActiveSdkDelivery } from "./helpers/pending-turn-sender.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -24,6 +24,8 @@ const {
 } = await import("../src/server/db.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+const { collapseSteerEchoes } = await import("../src/shared/message-delivery.ts");
 const { resetSession } = await import("../src/server/reset.ts");
 const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
@@ -1806,6 +1808,84 @@ test("a steer leaves the moment the transcript shows it, while its turn is still
   await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the receipt");
   assert.equal(f.registry.getSession(f.id)?.state, "working");
   f.manager.stop();
+});
+
+test("a Claude steer leaves when Claude records it as a queued command, mid-turn", async () => {
+  // The real transcript reader over a real file, because the bug lived in the parse: Claude
+  // Code usually records a mid-turn message only as a `queued_command` attachment, so a
+  // steer it had read stayed pinned under the log until the turn ended.
+  const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-"));
+  const path = join(dir, "transcript.jsonl");
+  const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
+  writeFileSync(path, line({
+    type: "assistant", uuid: "a1", timestamp: new Date().toISOString(),
+    message: { role: "assistant", content: [{ type: "text", text: "working on it" }] },
+  }));
+  const f = steeringFixture("receipt-claude-queued-command", {
+    messagesFor: () => ({ read: claudeTranscript.messages!, path }),
+  });
+  const row = f.manager.submit(f.id, "use the staging database").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  appendFileSync(path, line({
+    type: "attachment", uuid: "q1", isSidechain: false, timestamp: new Date().toISOString(),
+    attachment: {
+      type: "queued_command", commandMode: "prompt", origin: null,
+      prompt: "use the staging database", timestamp: new Date().toISOString(),
+    },
+  }));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the queued-command receipt");
+  const session = f.registry.getSession(f.id)!;
+  assert.equal(session.state, "working", "retired while the turn that read it is still running");
+  assert.deepEqual(session.steerReceipts?.map((r) => [r.steerId, r.messageId]), [[row.id, "q1"]]);
+  f.manager.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a Claude steer recorded both as a queued command and as a user record is read once", async () => {
+  // The attachment and a `user` record with the same words, nothing from the agent between
+  // them: one message recorded twice. The attachment is the receipt, the user record must
+  // never answer the steer a second time, and the conversation shows the message once.
+  const dir = mkdtempSync(join(tmpdir(), "mission-claude-steer-both-"));
+  const path = join(dir, "transcript.jsonl");
+  const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
+  writeFileSync(path, line({
+    type: "assistant", uuid: "a1", timestamp: new Date().toISOString(),
+    message: { role: "assistant", content: [{ type: "text", text: "working on it" }] },
+  }));
+  const f = steeringFixture("receipt-claude-both-forms", {
+    messagesFor: () => ({ read: claudeTranscript.messages!, path }),
+  });
+  const row = f.manager.submit(f.id, "use the staging database").pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns?.length === 1, "the steer");
+  appendFileSync(path, line({
+    type: "attachment", uuid: "q1", isSidechain: false, timestamp: new Date().toISOString(),
+    attachment: {
+      type: "queued_command", commandMode: "prompt", origin: null,
+      prompt: "use the staging database", timestamp: new Date().toISOString(),
+    },
+  }) + line({
+    type: "user", uuid: "u1", timestamp: new Date().toISOString(),
+    message: { role: "user", content: "use the staging database" },
+  }));
+  await until(() => f.registry.getSession(f.id)?.steeredTurns === undefined, "the receipt");
+  await tick(30);
+  const session = f.registry.getSession(f.id)!;
+  assert.equal(session.state, "working", "retired while the turn that read it is still running");
+  assert.deepEqual(session.pendingTurns, [], "nothing left waiting to send");
+  assert.deepEqual(
+    session.steerReceipts?.map((r) => [r.steerId, r.messageId]),
+    [[row.id, "q1"]],
+    "one receipt, on the attachment - the user record answers no second steer",
+  );
+  // The conversation draws one delivered operator turn: the mid-turn record the receipt names.
+  const visible = collapseSteerEchoes(claudeTranscript.messages!.appended(path, 0).messages);
+  assert.deepEqual(visible.filter((m) => m.role === "user").map((m) => [m.id, m.text]), [
+    ["q1", "use the staging database"],
+  ]);
+  f.manager.stop();
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("a retired steer publishes the exact turn that is its receipt, and a reset forgets it", async () => {

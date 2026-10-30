@@ -122,9 +122,10 @@ export async function fetchOnOrigin(
     }
     const headers = new Headers(request.headers);
     for (const [name, value] of Object.entries(secretHeaders)) headers.set(name, value);
-    // The configured query rides every request too: an SSE server names its own message
-    // endpoint, and a redirect may drop the query, but the credential is the server's.
-    for (const [name, value] of secretQuery) if (!target.searchParams.has(name)) target.searchParams.append(name, value);
+    // The configured query rides every request too, as exactly one value per name: an SSE
+    // server names its own message endpoint, possibly with its own value for the parameter, and
+    // a redirect may drop or change it, but the credential is the one configured for the server.
+    for (const [name, value] of secretQuery) target.searchParams.set(name, value);
     const response = await fetch(target, { ...request, headers, redirect: "manual" });
     const location = response.headers.get("location");
     if (response.status < 300 || response.status >= 400 || !location) return response;

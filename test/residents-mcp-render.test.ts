@@ -610,13 +610,15 @@ test("the configured query rides every bridged request once, on the server's own
   try {
     await fetchOnOrigin(base, {}, `${base}/messages?session=1`, { method: "POST", body: "{}" }, query);
     await fetchOnOrigin(base, {}, `${base}/sse?key=${SECRET}`, {}, query);
-    await fetchOnOrigin(base, {}, `${base}/moved`, { method: "POST", body: "{}" }, query);
+    await fetchOnOrigin(base, {}, `${base}/messages?key=old&session=2&key=older`, { method: "POST", body: "{}" }, query);
+    await fetchOnOrigin(base, {}, `${base}/moved?key=stale`, { method: "POST", body: "{}" }, query);
     assert.deepEqual(seen, [
       `/messages?session=1&key=${SECRET}`,
       `/sse?key=${SECRET}`,
+      `/messages?key=${SECRET}&session=2`,
       `/moved?key=${SECRET}`,
       `/messages?key=${SECRET}`,
-    ]);
+    ], "the configured value replaces an endpoint's own, once, on every request including a redirect");
   } finally {
     server.close();
   }

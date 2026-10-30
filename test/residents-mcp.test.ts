@@ -705,7 +705,8 @@ test("a Claude global SSE server starts through the scoped launcher with its own
     seen.push({ method: req.method ?? "", url: req.url ?? "", header: req.headers["x-api-key"] });
     if (req.method === "GET") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      res.write("event: endpoint\ndata: /messages?session=1\n\n");
+      // The endpoint names the secret parameter itself, with a value of its own.
+      res.write("event: endpoint\ndata: /messages?session=1&key=endpoint-value\n\n");
       open.stream = res;
       return;
     }
@@ -775,7 +776,7 @@ test("a Claude global SSE server starts through the scoped launcher with its own
     assert.equal(get.url, `/sse?key=${query}`, "and its secret query value");
     const posts = seen.filter((row) => row.method === "POST");
     assert.ok(posts.length > 0 && posts.every((row) => row.header === header), "every message carried the header");
-    assert.ok(posts.every((row) => new URL(row.url, "http://x").searchParams.getAll("key").join() === query && row.url.includes("session=1")), "and the secret query value, once, beside the server's own endpoint parameters");
+    assert.ok(posts.every((row) => new URL(row.url, "http://x").searchParams.getAll("key").join() === query && row.url.includes("session=1")), "and the configured secret query value, once, in place of the endpoint's own, beside its other parameters");
   } finally {
     open.stream?.end();
     sse.closeAllConnections();

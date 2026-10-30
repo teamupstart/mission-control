@@ -7,6 +7,8 @@ import {
 } from "@shared/resident-mcp.ts";
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
+import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
@@ -1149,6 +1151,7 @@ export interface RouteDeps {
    * it is absent rather than constructing a second manager here.
    */
   residents?: ResidentManager;
+  residentLoop?: ResidentLoop;
   ensembles?: EnsembleManager;
   /**
    * The owner of embedded (SDK-runtime) sessions.
@@ -1257,6 +1260,7 @@ export const ROUTE_DEP_NAMES = [
   "sessionTransfers",
   "schedules",
   "residents",
+  "residentLoop",
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
@@ -1549,6 +1553,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     workflows,
     schedules,
     residents,
+    residentLoop,
     ensembles,
     sdkSessions,
     authorizeSessionControl,
@@ -8140,6 +8145,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(task);
   });
 
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -8230,8 +8236,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- resident profiles and their one launch path ---
   //
-  // `ResidentManager` is the only writer of the resident tables; the Registry is its live cache
-  // and notifier, so a GET and a reconnect return the same catalog.
+  // `ResidentManager` owns profiles, launch reservations and task-driven run ends;
+  // `residents/loop-store.ts` owns durable loop transitions, wake claims and pacing.
+  // The Registry is their live cache and notifier, so a GET and a reconnect return
+  // the same catalog.
   app.get("/api/residents/profiles", (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     return c.json(registry.listResidentProfiles());

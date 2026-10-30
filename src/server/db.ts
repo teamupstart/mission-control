@@ -181,7 +181,10 @@ let db: DatabaseSync | undefined;
 // 8: repository-specific retirement of shared coverage claim versions.
 // 9: retain staged claim versions still applicable to sibling repositories.
 // 10: repository-free resident task markers and durable workspace cleanup obligations.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 10;
+// 11: resident loop state, generation delivery claims and durable pacing receipts.
+// 12: bind resident wake attribution to its recorded conversation and native turn.
+// 13: retain a resident SDK session's measured native compaction limit across resumes.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 13;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3277,6 +3280,32 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "workspace_kind", "TEXT");
   addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
+  addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");
+  for (const column of ["next_wake_at", "consumed_generation", "wake_request_delay_s", "wake_request_generation"]) {
+    addColumn(d, "resident_runs", column, "INTEGER");
+  }
+  for (const column of ["pause_reason", "wake_reason", "wake_request_reason"]) {
+    addColumn(d, "resident_runs", column, "TEXT");
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_iterations (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+      trigger TEXT NOT NULL, delivery TEXT NOT NULL, transcript_offset INTEGER,
+      claimed_at INTEGER NOT NULL, sent_at INTEGER, PRIMARY KEY (run_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_iterations_window ON resident_iterations(run_id, claimed_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_iterations_claim ON resident_iterations(run_id) WHERE delivery = 'claimed';
+    CREATE TABLE IF NOT EXISTS resident_pacing_calls (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, call_id TEXT NOT NULL,
+      receipt TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY (run_id, call_id)
+    );
+  `);
+  addColumn(d, "resident_iterations", "conversation_key", "TEXT");
+  addColumn(d, "resident_iterations", "message_id", "TEXT");
+  addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+
   // Nullable with no default: a run launched before these existed reads as never granted.
   addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
   addColumn(d, "resident_runs", "control_conversation_id", "TEXT");
@@ -3333,6 +3362,7 @@ function migrate(d: DatabaseSync): void {
 
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+  addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -11738,6 +11768,18 @@ export interface AutomationRoleSpend {
   costUsd: number | null;
   tokens: number;
   runs: number;
+}
+
+/** Session-ledger spend strictly inside a rolling window; any unpriced row makes the total unknown. */
+export function sessionSpendSince(noteKeys: readonly string[], tsMs: number): {
+  costUsd: number | null; entries: Array<{ at: number; costUsd: number | null }>;
+} {
+  if (noteKeys.length === 0) return { costUsd: 0, entries: [] };
+  const rows = openDb().prepare(`SELECT ts, cost_usd, cost_known FROM usage_ledger
+    WHERE spend_kind = 'session' AND note_key IN (${noteKeys.map(() => "?").join(",")}) AND ts > ?
+    ORDER BY ts`).all(...noteKeys, tsMs) as Array<{ ts: number; cost_usd: number; cost_known: number }>;
+  const entries = rows.map((r) => ({ at: r.ts, costUsd: r.cost_known === 1 ? r.cost_usd : null }));
+  return { costUsd: entries.some((r) => r.costUsd === null) ? null : entries.reduce((sum, r) => sum + r.costUsd!, 0), entries };
 }
 
 /**

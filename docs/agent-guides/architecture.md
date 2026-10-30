@@ -14,6 +14,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
+| Resident loop | `src/server/residents/loop.ts` | Sole coordinator of resident loop turns, timers and driver calls |
+| Resident loop store | `src/server/residents/loop-store.ts` | Durable loop transitions, wake claims and pacing transactions |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
@@ -28,6 +30,36 @@ while daemons using independent homes may run concurrently. The kernel releases 
 process exit, including crashes; orderly shutdown closes SQLite before releasing it. The lock
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
+
+## Resident loop ownership
+
+`ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`
+reads pinned run revisions and observes Registry work-cycle completions and delivered human
+turns. Its durable state and claim transactions live in `residents/loop-store.ts`; timers are
+only a projection of `next_wake_at`. No browser, MCP process or Foreman worker sends loop turns.
+
+The loop uses the supervisor's serialized idle-send boundary, rechecking human priority before
+crossing it. Maintenance compaction uses that same boundary and completes only from native
+harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
+conservatively. Recovery confirms a claim only from the complete pinned wake text after its
+recorded transcript offset. Startup restores native sessions before reconciling claims and prunes only after
+reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
+before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
+completion of the old task cannot strand a replacement that has not yet reserved its request.
+
+Resident transcript attribution requires a sent iteration in the same native conversation.
+The store binds its first matching turn after the recorded transcript offset to a native message
+id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
+without conversation evidence are not attributed from their marker syntax.
+
+The SDK driver reports the resident native token limit it actually configured. The supervisor
+persists it with the SDK session and passes it back on resume. Codex therefore keeps its measured
+backstop across catalog refreshes, rather than recomputing from missing metadata or silently
+dropping the layer. Fresh launches and legacy rows without a saved limit still require the catalog.
+
+`schedule_next_iteration` uses the existing signed session/episode credential, without granting
+session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
+its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
 
 ## Executable environment and subprocesses
 
@@ -74,7 +106,8 @@ Startup order matters:
 5. Restore the prepared SDK rows serially in the background.
 6. Register or evict every restored session through the existing Registry lifecycle, replacing
    each projection by the same stable id.
-7. Start terminal discovery only after the owned SDK restore promise settles.
+7. Start `ResidentLoop` claim reconciliation, then terminal discovery, only after the owned SDK
+   restore promise settles. `ResidentManager.start()` has already settled pending launches.
 8. Reconcile task, workflow, and review bindings after the first completed observation.
 
 Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,

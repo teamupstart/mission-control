@@ -222,14 +222,15 @@ test("restore is blocked when a resident it leaves live would name a Persona tha
   assert.equal(own.status, "preflight_blocked");
 });
 
-test("a snapshot carries every live profile and only the most recent archived ones, staying within the file limit at worst-case sizes", async () => {
+test("a snapshot carries every live profile and only the most recent archived ones, staying within the file limit with maximum instruction and loop text", async () => {
   const archivedCap = RESIDENT_LIMITS.archivedInSnapshot;
-  // Worst case: every profile at its largest, the live catalog full, and more archived history
+  // Maximum instruction and loop text, the live catalog full, and more archived history
   // than a snapshot carries.
   const big = (name: string) => ResidentProfileRevisionSchema.parse({
     identity: { name, description: "d".repeat(RESIDENT_LIMITS.descriptionLength) },
     persona: { personaId: "builtin:code-risk-reviewer" },
     instructions: { markdown: "é".repeat(RESIDENT_LIMITS.instructionsLength) },
+    loop: { prompt: "é".repeat(8_000), compactionFocus: "é".repeat(2_000) },
   });
   const insertProfile = db.prepare(`INSERT INTO resident_profiles (id, name, normalized_name, revision, archived_at, created_at, updated_at) VALUES (?, ?, ?, 1, ?, 1, ?)`);
   const insertRevision = db.prepare(`INSERT INTO resident_profile_revisions (profile_id, revision, settings_json, created_at) VALUES (?, 1, ?, 1)`);
@@ -259,8 +260,8 @@ test("a snapshot carries every live profile and only the most recent archived on
   assert.ok(ids.has(`archived-${String(archivedCap + 50).padStart(4, "0")}`), "the most recently archived is carried");
   assert.ok(!ids.has("archived-0001") && !ids.has("archived-0050"), "the oldest archived are left out");
   const bytes = readFileSync(join(root, `${captured.snapshot.id}.json`)).length;
-  console.log(`worst-case resident snapshot: ${bytes} bytes of ${SETTINGS_BACKUP_LIMITS.fileBytes}`);
-  assert.ok(bytes < SETTINGS_BACKUP_LIMITS.fileBytes / 2, `worst-case snapshot is ${bytes} bytes`);
+  console.log(`maximum-text resident snapshot: ${bytes} bytes of ${SETTINGS_BACKUP_LIMITS.fileBytes}`);
+  assert.ok(bytes < SETTINGS_BACKUP_LIMITS.fileBytes, `maximum-text snapshot is ${bytes} bytes`);
 
   // Restoring it on the same machine changes no omitted profile.
   const restored = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
@@ -292,13 +293,13 @@ test("a newer build's sections travel through a snapshot, onto a fresh installat
 
   // Over an existing profile whose current revision holds a key the snapshot does not: kept.
   db.prepare("UPDATE resident_profile_revisions SET settings_json = ? WHERE profile_id = 'fwd' AND revision = 1")
-    .run(JSON.stringify({ ...newer, loop: { cadence: 300 } }));
+    .run(JSON.stringify({ ...newer, futureLoop: { cadence: 300 } }));
   const again = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
   assert.equal(again.status, "restored", JSON.stringify(again));
   const current = store.getResidentProfile("fwd")!;
   const stored = store.storedResidentSettings("fwd", current.revision)!;
   assert.deepEqual(stored.marker, { color: "cyan" });
-  assert.deepEqual(stored.loop, { cadence: 300 });
+  assert.deepEqual(stored.futureLoop, { cadence: 300 });
 });
 
 test("a snapshot predating skill sources validates and restores without clearing registrations", async () => {

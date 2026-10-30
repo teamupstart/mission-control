@@ -1,4 +1,4 @@
-import { standingInstructionsChannel } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, standingInstructionsChannel } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
@@ -30,6 +30,7 @@ export interface ResidentLaunchContribution {
   standingInstructions?: string;
   /** The run's pinned MCP set, for `SdkLaunchOptions.residentMcp`. */
   residentMcp?: ResidentMcpLaunch | null;
+  residentCompaction?: { threshold: number };
 }
 
 export interface ResidentLaunchContributor {
@@ -74,6 +75,8 @@ export const mcpContributor: ResidentLaunchContributor = {
 /** Ordered. Append; never reorder an existing entry, because order is delivery order. */
 export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] = [
   personaInstructionsContributor,
+  { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
+    ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
   mcpContributor,
 ];
 
@@ -83,6 +86,7 @@ export interface ResidentLaunchPlan {
   standing: StandingInstructionsDelivery;
   /** The run's pinned MCP set, or null to keep the harness's native MCP behaviour. */
   residentMcp: ResidentMcpLaunch | null;
+  residentCompaction?: { threshold: number };
 }
 
 /**
@@ -101,13 +105,15 @@ export function composeResidentLaunch(
 ): ResidentLaunchPlan {
   const contributions = contributors.map((contributor) => contributor.contribute(context));
   const residentMcp = contributions.find((contribution) => contribution.residentMcp)?.residentMcp ?? null;
+  const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
   const sections = contributions
-    .map((contribution) => contribution.standingInstructions?.trim() ?? "")
+    .map((part) => part.standingInstructions?.trim() ?? "")
     .filter((text) => text.length > 0);
-  if (sections.length === 0) return { standing: repository, residentMcp };
+  if (sections.length === 0) return { standing: repository, residentMcp, residentCompaction };
   const text = [repository.text, ...sections].filter((part) => part.length > 0).join("\n\n");
   return {
     residentMcp,
+    residentCompaction,
     standing: {
       text,
       mechanism: repository.mechanism === "none"
@@ -116,4 +122,15 @@ export function composeResidentLaunch(
       sources: repository.sources,
     },
   };
+}
+
+/** Both fresh launch and SDK restore use the same pinned contributor list. */
+export async function residentNativeCompactionForTask(taskId: string | null, tokenLimit?: number) {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  if (!run) return undefined;
+  const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
+    .find((part) => part.residentCompaction)?.residentCompaction;
+  return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
 }

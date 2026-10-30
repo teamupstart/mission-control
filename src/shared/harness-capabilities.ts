@@ -516,6 +516,8 @@ export type ModelDiscoverySpec =
  * vocabulary to learn.
  */
 interface HarnessCapabilitiesBase {
+  /** Measured resident maintenance layers. Claude native threshold failed the 2.1.310 probe. */
+  residentCompaction: { betweenIterations: boolean; nativeBackstop: boolean } | null;
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
   id: AgentType;
   /**
@@ -655,6 +657,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
     },
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: false },
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control", migration: { kind: "jsonc", homeFile: ".claude.json", key: "mcpServers" } },
     missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
@@ -810,6 +813,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Measured against 0.144.x, where `/clear` is Codex's own slash command and not, as
     // this said while the value was null, a line that would land in the prompt as text.
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: true },
     // `codex mcp add <name> --env K=V -- <cmd>`: a different CLI and a different config
     // file from Claude's, which is what `cli` and `envFlag` carry. `scope: null` is the
     // real difference - Codex writes one registration and has no `-s user|project` to
@@ -953,6 +957,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
     // summarises rather than clears). Hookless sessions have no attributable transcript path.
     clearContext: { command: "/new" },
+    residentCompaction: null,
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.
     mcp: null,

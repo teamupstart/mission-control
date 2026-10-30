@@ -7,7 +7,7 @@ import { settled } from "../fixtures/settle.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
 // The fake otherwise mints its conversation id from its pid, which changes on restart.
-test.use({ daemonEnv: { MC_E2E_CODEX_THREAD_ID: "01999999-7777-7000-8000-000000000001" } });
+test.use({ daemonEnv: { MC_E2E_CODEX_THREAD_ID: "01999999-7777-7000-8000-000000000001", CODEX_HOME: "" } });
 
 for (const agent of ["claude", "codex"] as const) {
   test(`a ${agent} resident without a repository survives restart and removes its workspace on Complete & close`, async ({ dashboard: page, daemon }) => {
@@ -27,6 +27,16 @@ for (const agent of ["claude", "codex"] as const) {
     await editor.getByLabel("Name").fill(name);
     await editor.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
     await editor.getByRole("combobox", { name: "Harness" }).selectOption(agent);
+    if (agent === "codex") {
+      // Phase 3 requires a priced explicit model and native context metadata. Keep both
+      // fixtures inside this daemon's home; every actual agent invocation stays faked.
+      await editor.getByRole("combobox", { name: "Model", exact: true }).selectOption("gpt-5.4");
+      const codexHome = join(daemon.home, ".codex");
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({ models: [
+        { slug: "gpt-5.4", context_window: 272_000, effective_context_window_percent: 95 },
+      ] }));
+    }
     // Exercise clearing an existing default in both the editor and Dispatch.
     await editor.getByLabel("Default repository").fill(daemon.repo);
     await page.keyboard.press("Escape");

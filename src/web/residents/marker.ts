@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import {
   residentMarker,
   type ResidentMarker,
+  type ResidentLoopStatus,
   type ResidentMarkerColorId,
   type ResidentProfile,
   type ResidentRunSummary,
@@ -29,6 +30,7 @@ export interface ResidentChipMark extends ResidentMarker {
  * same answer.
  */
 export interface ResidentSessionMark extends ResidentChipMark {
+  loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction">;
   runId: string;
   profileId: string;
   personaName: string;
@@ -70,6 +72,7 @@ export function residentSessionMark(
   const marker = residentMarker(run.settings);
   return {
     runId: run.id,
+    loop: run,
     profileId: run.profileId,
     name: run.settings.identity.name,
     personaName: run.personaName,

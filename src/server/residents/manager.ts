@@ -1,3 +1,4 @@
+import { residentSpendProblem } from "./spend.ts";
 import { residentSkillIndex } from "./skill-index.ts";
 import { randomUUID } from "node:crypto";
 import { capabilitiesFor, harnessOffersRuntime } from "@shared/harness-capabilities.ts";
@@ -293,7 +294,7 @@ export class ResidentManager {
   // ---- profiles ----
 
   /** Why these settings cannot be saved or launched, or null. */
-  private settingsProblem(settings: ResidentProfileRevision): string | null {
+  settingsProblem(settings: ResidentProfileRevision): string | null {
     const persona = this.deps.persona(settings.persona.personaId);
     if (!persona) return "the selected Persona no longer exists";
     if (persona.archivedAt !== null) return `the Persona ${persona.name} is archived`;
@@ -303,7 +304,7 @@ export class ResidentManager {
     if (!harnessOffersRuntime(settings.execution.agent, "sdk")) {
       return `${settings.execution.agent} has no Agent SDK driver, so it cannot run a resident`;
     }
-    return this.mcpProblem(settings);
+    return residentSpendProblem(settings) ?? this.mcpProblem(settings);
   }
 
   /**
@@ -649,7 +650,7 @@ export class ResidentManager {
   private settleFromEvidence(run: ResidentRun, task: Task | undefined): void {
     const at = this.now();
     if (this.startedSession(run.taskId, task)) {
-      markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null);
+      markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null, at);
     } else {
       markResidentRunFailed(run.id, task?.error ?? RESIDENT_SESSION_DID_NOT_START, at);
     }
@@ -813,7 +814,7 @@ export class ResidentManager {
     if (this.startedSession(run.taskId, task)) {
       // The driver accepted turn one before the crash. TaskManager's reconciliation binds the
       // task to that row; whether the session survives restore is the run-end path's question.
-      markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null);
+      markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null, at);
     } else {
       markResidentRunFailed(
         run.id,

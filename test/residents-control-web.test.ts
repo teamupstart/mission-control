@@ -32,7 +32,9 @@ function run(controlOtherSessions: boolean): ResidentRunSummary {
     taskId: "task-1",
     launchState: "launched",
     personaName: "Fleet Triage",
-    settings: { identity: settings.identity, board: settings.board, authority: settings.authority },
+    compaction: { betweenIterations: true, nativeBackstop: false },
+    loopState: "waiting", iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    settings: { identity: settings.identity, board: settings.board, authority: settings.authority, loop: settings.loop },
     createdAt: 1,
   };
 }
@@ -62,6 +64,7 @@ test("Control other sessions is off by default, and a revision from before it re
 
 test("a launched run says whether its grant applied, only when its pinned revision asks", () => {
   const base = {
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
     id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
     launchState: "launched" as const,
     launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" }, runInstructions: "",
@@ -81,6 +84,7 @@ test("a launched run says whether its grant applied, only when its pinned revisi
 
 test("a launch surface reports a pending grant always, and an ungranted run unless it said so before launch", () => {
   const base = {
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
     id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
     launchState: "launched" as const, launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" },
     runInstructions: "", createdAt: 1, endedAt: null,

@@ -1,3 +1,6 @@
+import { codexResidentCompactionLimit } from "./compaction.ts";
+import { CompactionCompletion } from "../compaction.ts";
+import type { ThreadCompactStartParams, ThreadCompactStartResponse } from "./app-server/protocol.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PaneOption,
@@ -334,6 +337,7 @@ interface Pending {
 
 /** What a launch was configured with, kept so `clearContext` can start an identical thread. */
 interface LaunchConfig {
+  residentCompactionTokenLimit?: number;
   cwd: string;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -421,6 +425,10 @@ class CodexSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  get residentCompactionTokenLimit(): number | undefined {
+    return this.config.residentCompactionTokenLimit;
+  }
+
   get recoveryProcessId(): number | null {
     return this.client.pid;
   }
@@ -448,6 +456,21 @@ class CodexSdkSession implements SdkSessionHandle {
     await this.startTurn(threadId, input);
     return "started";
   }
+
+  private readonly compaction = new CompactionCompletion();
+  private compactContext: { tokens: number; window: number | null } | null = null;
+  compact = async (_focus: string) => {
+    this.requireLive();
+    if (this.activeTurnId !== null) throw new Error("Cannot compact a busy session.");
+    const completed = this.compaction.begin();
+    this.compactContext = null;
+    try {
+      await this.client.request<ThreadCompactStartResponse>("thread/compact/start", {
+        threadId: this.requireThread(),
+      } satisfies ThreadCompactStartParams);
+    } catch (error) { this.compaction.fail(String(error)); }
+    return completed;
+  };
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     const threadId = this.requireThread();
@@ -612,6 +635,7 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   async stop(): Promise<void> {
+    this.compaction.fail("Session stopped during compaction.");
     if (this.stopped) return;
     this.stopped = true;
     try {
@@ -927,6 +951,9 @@ class CodexSdkSession implements SdkSessionHandle {
       case "item/started":
       case "item/completed": {
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
+        if (method === "item/completed" && item.type === "contextCompaction" && this.isCurrentThread(params)) {
+          this.compaction.observe(this.compactContext?.tokens ?? null, this.compactContext?.window ?? null);
+        }
         if (item.type === "fileChange") {
           if (method === "item/started") {
             this.fileChanges.set(item.id, { threadId, changes: item.changes });
@@ -959,7 +986,9 @@ class CodexSdkSession implements SdkSessionHandle {
       }
       case "thread/tokenUsage/updated": {
         if (!this.isCurrentThread(params)) return;
-        const usage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage.last;
+        const tokenUsage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage;
+        const usage = tokenUsage.last;
+        this.compactContext = { tokens: usage.totalTokens, window: tokenUsage.modelContextWindow };
         this.lastUsage = {
           input: usage.inputTokens,
           output: usage.outputTokens,
@@ -1132,6 +1161,7 @@ class CodexSdkSession implements SdkSessionHandle {
     if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    this.compaction.finish();
     return true;
   }
 
@@ -1187,6 +1217,7 @@ class CodexSdkSession implements SdkSessionHandle {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
+      this.compaction.fail(reason);
       this.stopped = true;
       for (const [key, held] of this.pending) {
         this.forgetPending(key, held);
@@ -1443,6 +1474,11 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
           ? multiRepo.launchArgs(opts.extraDirs)
           : [];
+      const compactLimit = opts.residentCompaction
+        ? opts.residentCompaction.tokenLimit ?? codexResidentCompactionLimit(opts.model, opts.residentCompaction.threshold)
+        : undefined;
+      if (compactLimit !== undefined && (!Number.isSafeInteger(compactLimit) || compactLimit <= 0)) throw new Error("Invalid native resident compaction limit.");
+      const compactArgs = compactLimit === undefined ? [] : ["-c", `model_auto_compact_token_limit=${compactLimit}`];
       // A resident run starts exactly its MCP snapshot plus Mission's server: a private
       // `CODEX_HOME` whose generated `config.toml` holds only the snapshot, verified against
       // every other configuration layer below before any thread loads a server.
@@ -1452,12 +1488,13 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       let overlayConfig: string | null = null;
       if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: residentEntries });
       const transport = await deps.connect(
-        [...args, ...extraDirArgs],
+        [...args, ...extraDirArgs, ...compactArgs],
         opts.cwd,
         opts.stateHome,
         overlay ? { codexHome: overlay } : undefined,
       );
       const config: LaunchConfig = {
+        residentCompactionTokenLimit: compactLimit,
         cwd: opts.cwd,
         model: opts.model,
         effort: opts.effort,

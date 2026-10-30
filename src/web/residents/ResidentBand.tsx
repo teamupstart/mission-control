@@ -1,3 +1,4 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import type { Session } from "@shared/types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
@@ -47,7 +48,9 @@ export function ResidentBand({
           </span>
         </Tooltip>
       )}
+      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} />}
       <span className="resident-band-spacer" />
+      <ResidentLoopControls mark={mark} />
       {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
         <ResidentControlStatus session={session} name={mark.name} />
       )}

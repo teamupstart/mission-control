@@ -1,8 +1,10 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
+import { residentSessionMark } from "./marker.ts";
 import { ResidentSkillSourcesPanel } from "./ResidentSkillSources.tsx";
 import { ResidentMcpServersPanel } from "./ResidentMcpServers.tsx";
 import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import type { ResidentProfile } from "@shared/residents.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
@@ -34,6 +36,7 @@ export function residentProfileFact(profile: ResidentProfile, personas: readonly
  */
 export function ResidentsPage({
   profiles,
+  runs = [],
   personas,
   selectedId,
   creating,
@@ -48,6 +51,7 @@ export function ResidentsPage({
   onLaunch,
 }: {
   profiles: readonly ResidentProfile[];
+  runs?: readonly ResidentRunSummary[];
   personas: readonly PersonaView[];
   /** From the route. Null shows the rail with nothing open. */
   selectedId: string | null;
@@ -140,6 +144,13 @@ export function ResidentsPage({
           </div>
         </aside>
         <div className="residents-workspace">
+          {selected && !skillSources && !mcpServers && runs.filter((run) => run.profileId === selected.id).map((run) =>
+            <section className="resident-live-run" aria-label={`Live run of ${selected.name}`} key={run.id}>
+              <strong>Revision {run.profileRevision}</strong>
+              <ResidentLoopStatusLine loop={run} />
+              <ResidentLoopControls mark={residentSessionMark(run, selected)} />
+            </section>
+          )}
           {skillSources ? <ResidentSkillSourcesPanel /> : mcpServers ? <ResidentMcpServersPanel /> : creating ? (
             <ResidentProfileEditor
               key="new"

@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 8, repaired after plan validation and review). Implementation is split into seven phases in
+Status: decisions recorded (revision 10, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -45,7 +45,10 @@ the revision it launched from, following `mission_schedules` and `mission_schedu
 **A live run reads every setting from its pinned revision**: marker, label and pin, loop prompt,
 cadence and bounds, guardrails, compaction, skills, MCP servers and authority, including when the
 run is restored after a daemon restart. The profile's current revision is used only for new
-launches and to show that a run's profile has changed since launch.
+launches and to show that a run's profile has changed since launch. Skills and MCP servers are
+also snapshotted per run at launch, including resolved server definitions and their secrets, so
+a later edit or deletion of a skill folder, a global or custom server, or a secret never changes
+or breaks a live run.
 
 | Field | Meaning | Default |
 |---|---|---|
@@ -105,8 +108,8 @@ a write-only table. They never reach the browser or backups, and never appear on
 |---|---|---|
 | Extra skills | Per-run bundle loaded as a local plugin (`--plugin-dir`) | `skills.config` path entries; fallback: a launch-scoped `CODEX_HOME` overlay whose `skills/` holds the bundle |
 | Use only selected skills | Every setting source kept; a launch-scoped `--settings` turns unselected skills off through `skillOverrides`, plus `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `skills.config` disable entries for every unselected default; fallback: the same overlay |
-| Extra MCP servers | `options.mcpServers` | `-c mcp_servers.<name>.*`, secrets by env name |
-| Use only selected MCPs | `--strict-mcp-config`, kept globals copied in | Unselected globals disabled per server; fallback: the overlay's generated `config.toml` |
+| Extra MCP servers | The run's MCP snapshot, inherited globals included, in `options.mcpServers` with `--strict-mcp-config` | `-c mcp_servers.<name>.*` from the run's snapshot, secrets by env name |
+| Use only selected MCPs | The same, with only the selected servers in the snapshot | Globals outside the snapshot disabled per server; fallback: the overlay's `config.toml` generated from the snapshot |
 | Compaction backstop | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `model_auto_compact_token_limit` |
 
 The installed Claude Code 2.1.310 carries every Claude flag named above, and the installed Codex

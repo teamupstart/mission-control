@@ -73,10 +73,11 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
    sources: residents are created only by the resident launch route.
 3. **Persistence** in `src/server/db.ts`: create the three tables in the fresh schema and in
    `migrate()`; `resident_runs` base columns are `id`, `profile_id`, `profile_revision`,
-   `task_id`, `launch_request_id`, `launch_state` (`pending`, `launched` or `failed`, an
-   append-only vocabulary), `launch_error`, `persona_snapshot` (JSON: persona id, name,
-   guidance at launch), `run_instructions`, `created_at`, `ended_at`. A unique index on
-   `launch_request_id`. No `REFERENCES`; indexes after columns exist.
+   `task_id`, `launch_request_id` (`TEXT NOT NULL`), `launch_state` (`pending`, `launched` or
+   `failed`, an append-only vocabulary), `launch_error`, `persona_snapshot` (JSON: persona id,
+   name, guidance at launch), `run_instructions`, `created_at`, `ended_at`. A unique index on
+   `launch_request_id`; because the column is `NOT NULL`, the index cannot admit two keyless
+   runs. No `REFERENCES`; indexes after columns exist.
 4. **Store and manager** in `src/server/residents/`:
    - `store.ts`: CAS create, update, archive, read by id, list live, and
      `revision(profileId, revision)` for any pinned revision; revisions immutable.
@@ -191,4 +192,5 @@ run row as the durable identity, and the standing-instructions placement.
   every later runtime reader inherits one source of live settings.
 - Pull request review (CodeRabbit): launch is idempotent on a required `requestId`, crash-safe
   through a `pending` run with a reserved task id and startup reconciliation, and passes the
-  profile's agent explicitly.
+  profile's agent explicitly. `launch_request_id` is `NOT NULL`, so its unique index enforces
+  the key.

@@ -71,8 +71,9 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
      `TEXT NOT NULL DEFAULT 'waiting'`; `iteration` and `last_seq` are
      `INTEGER NOT NULL DEFAULT 0`; `consumed_generation`, `next_wake_at`, `pause_reason`,
      `wake_reason` and the request columns are nullable with no default. `iteration` 0 marks a
-     run the loop has not adopted yet. The migration itself backfills nothing; adoption in step 3
-     does, once per live run. Ended runs keep the defaults and are never adopted.
+     run with no recorded launch turn: a `pending` or `failed` run, or a `launched` run the loop
+     has not adopted yet. The migration itself backfills nothing; adoption in step 3 does, once
+     per launched live run. Ended runs keep the defaults and are never adopted.
    - A new `resident_iterations` table with one row per wake claim: `run_id`, `seq`, `trigger`
      (`launch`, `loop` or `run_now`), `delivery` (`claimed`, `sent`, `released` or
      `unconfirmed`), `transcript_offset`, `claimed_at` and `sent_at`. It is indexed by
@@ -91,17 +92,30 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    - Rows are pruned once their `claimed_at` is more than seven days old. They exist only to count
      the rolling 24-hour window and to bind crash recovery, so pruning never changes either
      counter or the 24-hour count.
+   - A `resident_pacing_calls` table records every accepted `schedule_next_iteration` call:
+     `run_id`, `call_id`, the receipt it returned, and `recorded_at`, unique on
+     (`run_id`, `call_id`).
+     - The row is written in the same transaction that accepts the call, whether the call
+       becomes a pending request or applies directly to the waiting wake. Replaying an earlier
+       call therefore finds its receipt and can never overwrite a newer pending intent.
+     - Receipts are kept for the whole life of the run and are never pruned by age, so a replay
+       stays safe for as long as the run exists. They are removed when the run ends, together
+       with its other per-run state. The iteration rows keep their seven-day retention.
    - Upgrade test from a Phase 1 database.
 3. **ResidentLoop** in `src/server/residents/loop.ts`, constructed in `src/server/index.ts` after
    SDK restore settles. It reads the loop prompt, cadence, bounds, guardrails and compaction
    settings only from the run's pinned revision (`ResidentStore.revision`):
-   - **The launch turn is iteration 1.** When `ResidentManager.launch` records a run, the loop
-     initializes its state with `iteration` 1 and `last_seq` 1, and appends a
-     `resident_iterations` row with `seq` 1, trigger `launch`, delivery `sent`, and `claimed_at`
-     and `sent_at` equal to the launch time, in the same write. A live run still at `iteration`
-     0 when this phase deploys is adopted the same way on first start, in one write per run.
-     Its `consumed_generation` stays null, so its latest completed generation schedules its
-     first wake.
+   - **The launch turn is iteration 1, recorded only once the launch succeeds.** Phase 3 extends
+     the write in which Phase 1 sets `launch_state` to `launched`. That same write sets
+     `iteration` 1 and `last_seq` 1, and appends a `resident_iterations` row with `seq` 1,
+     trigger `launch`, delivery `sent`, and `claimed_at` and `sent_at` equal to that moment.
+     - This covers a normal launch and a `pending` run that startup reconciliation adopts as
+       `launched`.
+     - A `pending` or `failed` run has no iteration row and stays at `iteration` 0. A launch that
+       never created its task therefore never counts as a turn, or toward the caps.
+     - A `launched` run still at `iteration` 0 when this phase deploys is adopted the same way
+       on first start, in one write per run. Its `consumed_generation` stays null, so its latest
+       completed generation schedules its first wake.
    - Subscribes to Registry session upserts. When a resident session's work-cycle generation
      advances past `consumed_generation` and the driver is idle, it consumes that generation and
      schedules `next_wake_at` in one write. That write chooses the delay:
@@ -166,9 +180,24 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 5. **MCP tool** `schedule_next_iteration({ delaySeconds, reason })`: validated twice, added to
    both tool lists for kind `resident`, and routed to the loop over HTTP with the signed session
    credential and a finite request timeout, following the `AbortSignal.timeout` calls already in
-   `src/mcp/server.ts`. A timeout, a refused connection or an error status returns a typed tool
-   error naming the failure. Nothing is recorded then, so the default cadence applies. It clamps
-   the delay to the pinned revision's bounds and returns the clamped value.
+   `src/mcp/server.ts`. It clamps the delay to the pinned revision's bounds and returns a
+   receipt: the clamped delay, whether the request is pending until its turn completes or
+   already applied, and `next_wake_at` once applied.
+   - **Call identity.** Every call carries a `callId`. The tool accepts an optional `callId`; the
+     Mission MCP server generates one when it is absent and returns it in every result and error.
+   - **Replay is idempotent.** A call whose `callId` the loop has already recorded for the run, in
+     `resident_pacing_calls`, returns that call's stored receipt and changes nothing: not the
+     pending request, not `next_wake_at`, whether the turn has completed since or not. Retrying
+     with the same `callId` is therefore always safe.
+   - **A new `callId` is a new intent.** A call with a new or absent `callId` is a new pacing
+     request and follows the rules below. After the completion it moves the waiting wake to its
+     own now plus the delay.
+   - **Failures.** Only a typed pre-commit refusal from the loop (an invalid request, a paused or
+     ended run), or a connection refused before the request was sent, proves nothing was
+     recorded; the tool error says so. Every other failure, including a timeout, a reset
+     connection or an untyped error status, is an unknown outcome: the loop may have committed
+     the call. The typed error says the request may still apply and carries the `callId`, so the
+     agent can replay it safely.
    - **During a turn**, which is how an agent normally calls it, it records the pending request
      with the work-cycle generation in flight, and leaves `next_wake_at` alone. A later call in
      the same turn replaces the request, so the last call wins. The completion write in step 3
@@ -241,16 +270,36 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
   generation, duplicate turn ends, human precedence, `needs-you` pause, compaction ordering,
   clamp of `schedule_next_iteration`, restart re-arm firing a missed wake once, and shutdown.
 - Lifecycle and transport tests:
-  - upgrade from a Phase 1 database applies the defaults, adopts each live run at `iteration` 1
-    and `last_seq` 1 exactly once, and leaves ended runs alone;
+  - upgrade from a Phase 1 database applies the defaults, adopts each launched live run at
+    `iteration` 1 and `last_seq` 1 exactly once, and leaves pending, failed and ended runs alone;
   - a `sendWhenIdle` gate throw releases the claim, and a driver throw makes the row
     `unconfirmed` and pauses the run without a resend;
   - ending a run cancels its timer, refuses a later claim and control, survives a restart
     without re-arming, and reconciles a still-claimed row without pausing;
-  - `schedule_next_iteration` against a loop that does not answer returns the typed timeout
-    error within the timeout, and the turn's completion uses the default cadence.
+  - `schedule_next_iteration` against a loop that never answers and never commits returns the
+    typed "may still apply" timeout error within the timeout, and the turn's completion uses the
+    default cadence;
+  - commit after timeout, with an advancing clock: the loop commits the request after the call has
+    already timed out, and the tool has returned the "may still apply" error carrying the
+    `callId`. The completion applies the request. A replay with that `callId`, after the clock
+    has advanced past the completion, returns the committed receipt and leaves `next_wake_at`
+    unchanged;
+  - with the same advancing clock, a new call with a new `callId` and the same values is a new
+    intent, and moves `next_wake_at` to the new now plus the delay;
+  - an untyped error status returned after the loop committed is treated like a timeout: the
+    "may still apply" error, then an idempotent replay;
+  - a typed pre-commit refusal, and a connection refused before sending, record nothing, and
+    their errors say so;
+  - a replay of an earlier `callId`, after a newer call in the same turn replaced the pending
+    request, returns the earlier receipt and leaves the newer request in effect;
+  - with the clock advanced more than seven days past a call, a replay of its `callId` still
+    returns the stored receipt and changes nothing; ending the run removes its receipts.
 - Iteration tests:
-  - a launch records `iteration` 1 and `last_seq` 1 with a `launch` row of `seq` 1;
+  - a launch records `iteration` 1 and `last_seq` 1 with a `launch` row of `seq` 1 only in the
+    write that sets `launch_state` to `launched`, including when startup reconciliation adopts a
+    pending run's task;
+  - a `pending` run, and a `failed` one whose task creation failed or crashed before the task
+    existed, has no iteration row, stays at `iteration` 0 and counts toward no cap;
   - each wake and **Run now** claims exactly one row with `seq` `last_seq + 1`, and adds one to
     `iteration` when the row reaches `sent`;
   - a positive refusal marks the row `released` and leaves `iteration` unchanged; the next claim
@@ -362,3 +411,11 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   - `sendWhenIdle` throws are classified, so no outcome leaves a claim open;
   - ended runs stop the loop and are never re-armed;
   - the MCP call has a finite timeout and a typed error.
+- Pull request review (Inspector, round 3): the launch iteration is written in the same write as
+  the `launched` transition, so a pending or failed launch never records a turn.
+- Pull request review (CodeRabbit, second batch): each pacing call has a `callId`, and a replay of
+  a recorded `callId` returns its stored receipt without changing anything, while a new `callId`
+  is a new intent. Receipts are written when a call is accepted and kept for the run's lifetime.
+  Only a typed pre-commit refusal, or a connection refused before sending, proves nothing was
+  recorded; every other failure may still apply. An advancing-clock commit-after-timeout test
+  pins it.

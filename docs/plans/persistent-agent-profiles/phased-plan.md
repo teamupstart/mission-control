@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 8). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 10). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 
@@ -131,10 +131,12 @@ flowchart LR
 6. **Append-only identifiers:** task kind `resident`, turn origin `resident`, the MCP tool
    `schedule_next_iteration`, marker color ids, skill source ids, and backup domain ids.
 7. **A live run reads only its pinned revision.** Marker and pin, loop settings, guardrails,
-   compaction, skill and MCP rendering at launch and on resume, and authority all come from the
-   run's pinned revision. The daemon reads it through `ResidentStore.revision(profileId,
-   revision)`; the browser reads it from the run's `settings` in the `residentRuns` collection.
-   Only a new launch or **Restart on new profile** adopts a newer revision.
+   compaction, skill and MCP selection, and authority all come from the run's pinned revision.
+   The daemon reads that revision through `ResidentStore.revision(profileId, revision)`; the
+   browser reads it from the run's `settings` in the `residentRuns` collection. Skills and MCP
+   servers go one step further: each run renders them from immutable snapshots taken at launch
+   (Phases 4 and 5), so their sources are never reread on resume. Only a new launch or
+   **Restart on new profile** adopts a newer revision.
 
 ## Final verification
 

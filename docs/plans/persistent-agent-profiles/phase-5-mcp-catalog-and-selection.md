@@ -20,6 +20,7 @@ line.
   backup domain without secrets.
 - Profile section `mcp`: `inheritDefaults` (default on) and `selected` server refs.
 - Per-harness MCP rendering and measured isolation capability.
+- A daemon-private, immutable MCP snapshot per run, taken at launch and used on every resume.
 - Custom MCP servers UI on the resident page rail and the MCP picker in the editor.
 
 ### Non-goals
@@ -71,16 +72,41 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
 4. **Profile section** `mcp` and `ResidentMcpSection`: picker grouped by global and custom,
    inherit switch offered exactly where step 1 recorded a working mechanism, harness mismatch
    refused at save.
-5. **Rendering**: an `mcp` contributor and an optional `mcp` field on `SdkLaunchOptions`:
-   Claude adds entries to `options.mcpServers` whose secret values are `${VAR}` references, with
-   the values in the child environment, and with inherit off sets
-   `strictMcpConfig` and copies kept global servers in; Codex renders `-c mcp_servers.<name>.*`
-   with secrets supplied as child environment variables referenced by name, and with inherit
-   off disables unselected global servers (or uses the overlay). Mission's own server is always
-   attached. Rendering reads the run's pinned revision at launch and again on resume.
-6. **Rail**: a **Custom MCP servers** entry on `#/residents` with an editor whose secret fields are
+5. **Run snapshot**: at launch the `mcp` contributor resolves the run's effective MCP set once:
+   every inherited global server when inherit is on, each selected global server, and each
+   selected custom server. Mission's own server is excluded, because it is attached fresh at
+   every start. The resolved set is snapshotted for the run.
+   - Definitions go to `resident_run_mcp_servers` (`run_id`, server name, source, transport and
+     the non-secret definition). Every secret value goes to `resident_run_mcp_secrets`
+     (`run_id`, server, field, value), a daemon-private table with the same rules as
+     `resident_mcp_secrets`: never returned by a route, published over SSE, captured by a
+     settings backup, written to a log, or placed in a process argument.
+   - Global values come from the harness's own configuration at launch, custom values from
+     `resident_mcp_secrets`. Both are copied, so the run no longer depends on either source.
+   - Every launch and every resume renders from the snapshot alone, through the selected-only
+     mechanism step 1 recorded, so the harness never rereads its native MCP configuration for
+     the run. Inherit on means the snapshot holds every global server present at launch. Where
+     step 1 recorded no selected-only mechanism for a harness, that harness's inheritance
+     cannot be pinned, and the step 1 operator gate decides before it ships.
+   - Editing or deleting a profile, a global server or a custom server, or changing a secret,
+     never touches an existing snapshot. The next launch, or **Restart on new profile**,
+     resolves a new one.
+   - The snapshot rows are removed when the run ends, through the same path that removes the
+     Phase 4 skill snapshot.
+6. **Rendering**: the `mcp` contributor fills an optional `mcp` field on `SdkLaunchOptions` from
+   the run's snapshot alone, at launch and on resume, whether inherit is on or off.
+   - Claude adds every snapshot server to `options.mcpServers`, with secret values as `${VAR}`
+     references and the values in the child environment, and sets `strictMcpConfig`, so the
+     native configuration is never read for the run.
+   - Codex renders `-c mcp_servers.<name>.*` for every snapshot server, with secrets supplied as
+     child environment variables referenced by name, and disables every native global server
+     that is not in the snapshot; the overlay fallback generates its `config.toml` from the
+     snapshot instead.
+   - Mission's own server is always attached.
+7. **Rail**: a **Custom MCP servers** entry on `#/residents` with an editor whose secret fields are
    write-only.
-7. **Documentation**: `docs/residents.md` and `docs/security.md` (secret storage and argv rule).
+8. **Documentation**: `docs/residents.md` and `docs/security.md` (secret storage, run snapshots
+   and the argv rule).
 
 ## Tests and verification
 
@@ -90,6 +116,15 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
   reference for Claude, a secret field without an environment-backed mapping refused at save,
   backup excludes secrets, rendering per harness, and a test that inspects the composed argv and
   fails if any secret value appears in it.
+- Run snapshot tests, each followed by a daemon restart and resume:
+  - editing, and separately deleting, a selected custom server;
+  - editing, and separately removing, an inherited or selected global server in the harness's
+    native configuration;
+  - changing a custom server's secret, and a global server's environment or header value;
+  - editing the profile's MCP selection.
+  Each leaves the run's rendered MCP set and secret values identical to launch, and never makes
+  restore fail. The next launch adopts every change. Snapshot definitions and secret values
+  never appear in a browser payload, SSE event, settings backup, log line or process argument.
 - Harness tests against real installations for every capability recorded as supported.
 - Playwright `e2e/specs/residents-mcp.spec.ts`: define a custom server with a secret, confirm the
   secret is never shown again, select it on a profile, and see it in the launch summary;
@@ -113,3 +148,6 @@ The catalog, custom-server store and secret rules are stable for any later consu
   and rendering on resume reads the pinned revision.
 - Pull request review (CodeRabbit): the global catalog is redacted to allowlisted metadata, and
   secret headers use `env_http_headers` for Codex and `${VAR}` references for Claude.
+- Pull request review (Inspector, round 2): each run renders from a daemon-private MCP snapshot
+  of its resolved servers and secrets, taken at launch, so later edits, deletions and secret
+  changes never alter or break a live run.

@@ -50,28 +50,35 @@ Any other way to create a grant; changing the closed session-control action set.
    authorization bound to the launch `requestId`, profile id and revision. Expose it through the
    preload and `mission-desktop.d.ts`. `launchResident()` arms it inside the click handler when
    the profile has control on and `window.missionDesktop` exists, then sends the `requestId`.
-3. **Daemon**: the launch route asks the private channel to consume the authorization for that
-   request, profile and revision. On success it records `control_authorized_at` on the run
-   (`addColumn`), and once the session registers applies `setSessionControlEnabled` after the
-   existing identity recheck. It records the grant's identity as it stood at grant time:
+3. **Persistence**: four nullable columns on `resident_runs`, in the fresh schema and through
+   `addColumn` in `migrate()`: `control_authorized_at INTEGER`, `control_conversation_id TEXT`,
+   `control_cwd TEXT` and `control_episode_id TEXT`. Existing rows read them as null, so every run
+   from before this phase stays ungranted. An upgrade test from a Phase 2 database covers it.
+4. **Daemon**: the launch route asks the private channel to consume the authorization for that
+   request, profile and revision. On success it records `control_authorized_at` on the run, and
+   once the session registers applies `setSessionControlEnabled` after the existing identity
+   recheck. It records the grant's identity as it stood at grant time in
    `control_conversation_id`, `control_cwd` and `control_episode_id`. Without a valid
    authorization the run launches ungranted.
-4. **Restore**: after SDK restore, a run with `control_authorized_at` is regranted only when the
-   restored session's native conversation, cwd, work episode and task all match the recorded
-   values. The process id is the one part of the grant identity that a restart necessarily
-   changes, so it is the only part not compared. A clear, a new conversation, a changed cwd, a
-   replacement work episode, or a restart on a new profile does not carry the grant. Turning
-   control off with the existing toggle clears the columns.
-5. **Surface**: the band and dock row show "control granted" or "control not granted" with the
+5. **Restore**: after SDK restore, a run is regranted only when all four stored grant fields are
+   non-null and the restored session's native conversation, cwd, work episode and task all
+   match the recorded values. A run missing any of them stays ungranted. The process id is the
+   one part of the grant identity that a restart necessarily changes, so it is the only part not
+   compared. A clear, a new conversation, a changed cwd, a replacement work episode, or a restart
+   on a new profile does not carry the grant. Turning control off with the existing toggle clears
+   the columns.
+6. **Surface**: the band and dock row show "control granted" or "control not granted" with the
    existing grant menu for the latter.
-6. **Documentation**: amend `docs/security.md` and `docs/agent-guides/architecture.md`
+7. **Documentation**: amend `docs/security.md` and `docs/agent-guides/architecture.md`
    (Delegated session control) to state the exact rule, and describe it in `docs/residents.md`.
 
 ## Tests and verification
 
 - Unit: authorization bound to request, profile and revision; expiry and replay refusal;
   launch without authorization is ungranted; restore regrants only when conversation, cwd, work
-  episode and task all match, and refuses when the cwd or the work episode alone differs;
+  episode and task all match, and refuses when the cwd or the work episode alone differs, or
+  when any of the four stored grant fields is null; an upgrade from a Phase 2 database leaves
+  existing runs ungranted;
   revoke clears the record; agent and token callers cannot arm or consume.
 - Desktop e2e using the shared `serveDashboardClick` fixtures: a Launch click grants control,
   a daemon restart keeps it, a standalone-browser launch shows "control not granted".
@@ -93,4 +100,5 @@ No later phase may create a resident grant through any other path.
 - Repair round 1: ordered after Phase 2 so the grant-status surfaces exist before this phase
   renders into them; authority is read from the run's pinned revision.
 - Pull request review (CodeRabbit): restore compares the full grant identity except the process
-  id, including cwd and work episode.
+  id, including cwd and work episode. The grant columns are added in the fresh schema and through
+  `addColumn`, and restore requires all four to be non-null.

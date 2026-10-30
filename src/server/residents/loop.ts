@@ -43,7 +43,7 @@ export class ResidentLoop {
     for (const claim of residentClaims()) {
       const run = getResidentRun(claim.run_id)?.run;
       const session = run && this.session(run);
-      const landedAt = session ? this.findMarker(session, claim) : null;
+      const landedAt = session && run ? this.findMarker(session, claim, run) : null;
       settleResidentClaim(claim, landedAt === null ? "unconfirmed" : "sent", landedAt ?? this.now());
       this.publish(claim.run_id);
     }
@@ -257,15 +257,16 @@ export class ResidentLoop {
     }
     this.publish(id);
   }
-  private findMarker(session: Session, claim: ResidentIteration): number | null {
+  private findMarker(session: Session, claim: ResidentIteration, run: ResidentRun): number | null {
     if (claim.transcript_offset === null) return null;
     try {
       const transcript = this.messages(session);
       if (!transcript) return null;
+      const expected = `${residentWakeMarker(claim.run_id, claim.seq)}\n${run.settings.loop.prompt}`;
       let offset = claim.transcript_offset;
       for (;;) {
         const page = transcript.read.after(transcript.path, offset, 50);
-        const turn = page.messages.find((m) => m.role === "user" && m.text?.startsWith(`${residentWakeMarker(claim.run_id, claim.seq)}\n`));
+        const turn = page.messages.find((m) => m.role === "user" && m.text === expected);
         if (turn) return turn.ts || claim.claimed_at;
         if (page.atEnd || page.end <= offset) return null;
         offset = page.end;

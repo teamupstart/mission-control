@@ -41,7 +41,8 @@ only a projection of `next_wake_at`. No browser, MCP process or Foreman worker s
 The loop uses the supervisor's serialized idle-send boundary, rechecking human priority before
 crossing it. Maintenance compaction uses that same boundary and completes only from native
 harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
-conservatively. Startup restores native sessions before reconciling claims and prunes only after
+conservatively. Recovery confirms a claim only from the complete pinned wake text after its
+recorded transcript offset. Startup restores native sessions before reconciling claims and prunes only after
 reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
 before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
 completion of the old task cannot strand a replacement that has not yet reserved its request.

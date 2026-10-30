@@ -240,20 +240,21 @@ for (const outcome of ["null", "gate_throw", "driver_throw"] as const) test(`${o
   f.setSend("accept"); await loop.runNow("run"); assert.equal(f.rows()[2]!.seq, 3); assert.equal(f.rows()[2]!.delivery, "sent");
 });
 
-for (const evidence of ["marker", "before_offset", "human", "continuation", "unreadable", "null"] as const) test(`restart reconciles ${evidence} evidence before retention, without resending`, async () => {
-  const f = fixture(); const marker = residentWakeMarker("run", 2) + "\nContinue";
+for (const evidence of ["marker", "marker_prefix", "before_offset", "human", "continuation", "unreadable", "null"] as const) test(`restart reconciles ${evidence} evidence before retention, without resending`, async () => {
+  const f = fixture({ prompt: "Recorded loop prompt" }); const marker = residentWakeMarker("run", 2) + "\n" + f.settings.loop.prompt;
   const offset = evidence === "before_offset" ? marker.length : evidence === "null" ? null : 0;
   state.completeResidentGeneration("run", 1, f.now);
   state.claimResidentWake("run", "loop", offset, f.now);
   assert.throws(() => openDb().prepare("INSERT INTO resident_iterations (run_id,seq,trigger,delivery,claimed_at) VALUES ('run',3,'loop','claimed',?)").run(f.now), /UNIQUE/);
-  f.transcript(evidence === "marker" || evidence === "before_offset" ? marker : "unrelated user turn");
+  f.transcript(evidence === "marker" || evidence === "before_offset" ? marker
+    : evidence === "marker_prefix" ? residentWakeMarker("run", 2) + "\nPlease review this saved wake marker." : "unrelated user turn");
   if (evidence === "unreadable") f.unreadable();
   f.advance(8 * state.RESIDENT_DAY_MS);
   const loop = f.loop(); await flush(); await loop.stop();
   // An overdue confirmed completion may legitimately arm the next generation. Hold it for this reconciliation assertion.
   assert.equal(f.run().iteration, 2); assert.equal(f.run().lastSeq, 2);
   if (evidence === "marker") assert.equal(f.rows().length, 0);
-  else { assert.equal(f.rows()[0]!.delivery, "unconfirmed"); assert.equal(f.run().pauseReason, "wake delivery unconfirmed"); }
+  else { assert.equal(f.run().pauseReason, "wake delivery unconfirmed"); assert.equal(f.rows()[0]!.delivery, "unconfirmed"); }
   assert.equal(f.calls.length, 0);
 });
 

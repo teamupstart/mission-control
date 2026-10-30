@@ -173,8 +173,9 @@ iterations. An interrupted or unconfirmed compaction pauses instead of sending a
 The editor and every live-run surface name the active compaction layers:
 
 - **Claude Code:** compaction before wakes is active. The configured native backstop did not
-  fire in the installation probe and remains unavailable, as approved by the operator. A long
-  turn therefore has no profile-threshold native backstop.
+  fire in the Claude Code 2.1.310 probe on 2026-10-30.[^claude-native-backstop-probe] The operator
+  approved shipping with manual compaction only, so the native backstop remains unavailable.
+  A long turn therefore has no profile-threshold native backstop.
 - **Codex:** compaction before wakes and the native backstop are active. The latter is computed
   from the explicit model's context window in Codex's native model catalog. Launch refuses if
   that window is unavailable. Codex's compact operation does not accept a focus instruction;
@@ -231,3 +232,9 @@ profiles with maximum instruction and loop text fit in about 15 MB. The snapshot
 The registries later phases extend, the single launch path, the pinned-revision rule and the
 launch and recovery guarantees are maintained in
 [change contracts](agent-guides/change-contracts.md#resident-profiles).
+
+[^claude-native-backstop-probe]: Mission Control workflow run
+    `bfb6fe70-1862-4a6c-bfbd-ac54cb644b26`, round 6, segment 2,
+    `probe-claude-20.log`, artifact `txt_4606a312dc45c5b01382778be74b210d`.
+    The retained probe did not auto-compact at the requested 20% setting; explicit manual
+    compaction emitted a boundary with 54,678 tokens before and 494 after.

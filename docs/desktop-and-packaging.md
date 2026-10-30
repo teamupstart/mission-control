@@ -57,11 +57,18 @@ engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, 
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
-Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection: a
-merged commit has no alpha until its Signed distribution run publishes, so the installer names
-the unpublished commit, says to retry or pin a published one with `--ref FULL_SHA`, and never
-substitutes an older alpha. Only transport failures point at `gh` authentication. Fresh
+Without `--ref`, the installer selects a release by readiness, never by GitHub's newest record.
+A release exists before its Signed distribution run uploads the ready manifest, and that run can
+fail, so stable selection inventories every release and installs the highest `vX.Y.Z` that
+carries an uploaded manifest, as the desktop updater does. When no stable release is ready, the
+plain command installs the newest alpha and says so; `--channel stable` refuses instead. The app
+keeps alpha updates off unless they are enabled, so it offers the first ready stable release.
+`--channel alpha` installs `main`'s head when its alpha is ready. A merged commit has no alpha
+until its run publishes, so otherwise the installer walks the head's own history and installs
+the newest ancestor with a ready alpha, naming the unpublished head and how far behind it is.
+An alpha outside that history is never substituted. `--ref vX.Y.Z` and `--ref FULL_SHA` pin
+exact bytes and never substitute another release; an unpublished pin is named with its
+recovery. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows

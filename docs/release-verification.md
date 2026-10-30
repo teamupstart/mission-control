@@ -198,7 +198,12 @@ signing identity or a rejected notarization. Apple documents that meaning in
 [QA1941](https://developer.apple.com/library/archive/qa/qa1941/_index.html).
 
 The shared app/DMG ticket validator now repeats this specific transport failure at most
-three times, after 1, 2 and 4 seconds. Each native invocation retains its 60-second timeout.
+eight times, after 1, 2, 4, 8 and 16 seconds and then three times after 30 seconds, about
+two minutes of backoff in all. The first bound of three retries after 1, 2 and 4 seconds
+exhausted in [run 41049955795](https://github.com/teamupstart/mission-control/actions/runs/41049955795)
+at `d96187d1a`: four `-1005` failures spanning 30 seconds on the copied `Runtime.app`, after
+app notarization was Accepted. Each run validates four bundles, so one brief CloudKit outage
+cost the whole alpha. Each native invocation retains its 60-second timeout.
 Validation must actually succeed before qualification continues. Missing, invalid or revoked
 tickets, unknown failures, TLS errors and process failures remain immediate refusals; a
 persistent connection loss also fails closed. Retry diagnostics contain only the operation,

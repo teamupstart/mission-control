@@ -890,7 +890,10 @@ available:
   scheduled task and a multi-repo task each keep it. The panel says so where you choose.
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
-  places, or have it in neither.
+  places, or have it in neither. The group has a preview of its own beside it, a console
+  header for the same sample session, which redraws as you pick a **Task type** style or
+  toggle either cell. Where Settings is too narrow to hold a preview beside its checklist,
+  each group's preview moves under the group's heading instead, above its controls.
 - **And the working indicator.** Under **Working indicator**, with a preview of its own beside
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,

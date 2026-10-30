@@ -23,6 +23,17 @@ for (const stream of ['stdout', 'stderr']) test(`ticket validation retries conne
   assert.doesNotMatch(logs.join('\n'), /PRIVATE|\/fixture|NSURLError/);
 });
 
+test('a persistent connection loss retries for about two minutes with capped backoff, then fails', async () => {
+  let calls = 0;
+  const delays: number[] = [];
+  await assert.rejects(validateDistributionTicket('/fixture/Runtime.app', {
+    run: () => { calls++; return {status: 68, stdout: connectionLost}; },
+    wait: async ms => { delays.push(ms); }, log: () => {},
+  }), /Distribution verification failed: \/usr\/bin\/xcrun/);
+  assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  assert.equal(calls, 9);
+});
+
 test('a valid ticket succeeds immediately without retries', async () => {
   let calls = 0;
   await validateDistributionTicket('/fixture/Application.dmg', {

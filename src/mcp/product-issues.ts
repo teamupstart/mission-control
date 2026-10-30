@@ -92,12 +92,17 @@ function submitResult(result: ProductIssueSubmitResult): ProductIssueMcpResult {
 }
 
 /**
- * Prepare the daemon-derived preview and publish, optionally after a structured review.
+ * Prepare the daemon-derived preview, show it to the human, and publish only once they
+ * select Submit public issue.
+ *
+ * The review is unconditional. A public issue is published outside this machine, and the
+ * agent's reading of "the user asked me to report this" is not a substitute for the human
+ * seeing the exact public content first.
  */
-async function reportProductIssue(
+export async function reportProductIssueWithConfirmation(
   draft: ProductIssueDraft,
   client: ProductIssueRequest["client"],
-  deps: ProductIssueMcpDependencies | Omit<ProductIssueMcpDependencies, "createReview" | "waitForResolution">,
+  deps: ProductIssueMcpDependencies,
 ): Promise<ProductIssueMcpResult> {
   const request: ProductIssueRequest = {
     ...draft,
@@ -117,38 +122,36 @@ async function reportProductIssue(
     return { text: `Could not prepare the public product issue: ${detail}`, isError: true };
   }
   const preview = parsedPreview.data;
-  if ("createReview" in deps) {
-    const reviewId = await deps.createReview({
-      title: `Report product issue: ${preview.draft.title}`,
-      body: formatProductIssueReview(preview),
-      decisions: [{
-        id: PRODUCT_ISSUE_REVIEW_DECISION_ID,
-        question: `Publish this public issue to ${preview.target}?`,
-        options: [{
-          id: PRODUCT_ISSUE_REVIEW_OPTION_ID,
-          label: "Submit public issue",
-        }],
+  const reviewId = await deps.createReview({
+    title: `Report product issue: ${preview.draft.title}`,
+    body: formatProductIssueReview(preview),
+    decisions: [{
+      id: PRODUCT_ISSUE_REVIEW_DECISION_ID,
+      question: `Publish this public issue to ${preview.target}?`,
+      options: [{
+        id: PRODUCT_ISSUE_REVIEW_OPTION_ID,
+        label: "Submit public issue",
       }],
-    });
-    const review = await deps.waitForResolution(reviewId);
-    if (review.status === "dismissed") {
-      return {
-        text: "outcome=cancelled reason=dismissed published=false",
-        isError: false,
-      };
-    }
-    if (review.status === "orphaned") {
-      return {
-        text: "outcome=cancelled reason=orphaned published=false",
-        isError: true,
-      };
-    }
-    if (!selectedSubmit(review)) {
-      return {
-        text: "outcome=cancelled reason=unconfirmed published=false",
-        isError: true,
-      };
-    }
+    }],
+  });
+  const review = await deps.waitForResolution(reviewId);
+  if (review.status === "dismissed") {
+    return {
+      text: "outcome=cancelled reason=dismissed published=false",
+      isError: false,
+    };
+  }
+  if (review.status === "orphaned") {
+    return {
+      text: "outcome=cancelled reason=orphaned published=false",
+      isError: true,
+    };
+  }
+  if (!selectedSubmit(review)) {
+    return {
+      text: "outcome=cancelled reason=unconfirmed published=false",
+      isError: true,
+    };
   }
 
   const submission = await deps.submit(request);
@@ -160,22 +163,4 @@ async function reportProductIssue(
     };
   }
   return submitResult(parsedSubmission.data);
-}
-
-/** Publish user-requested feedback without a second dashboard approval. */
-export function reportProductFeedback(
-  draft: ProductIssueDraft,
-  client: ProductIssueRequest["client"],
-  deps: Omit<ProductIssueMcpDependencies, "createReview" | "waitForResolution">,
-): Promise<ProductIssueMcpResult> {
-  return reportProductIssue(draft, client, deps);
-}
-
-/** Compatibility path for callers that request a separate public-content review. */
-export function reportProductIssueWithConfirmation(
-  draft: ProductIssueDraft,
-  client: ProductIssueRequest["client"],
-  deps: ProductIssueMcpDependencies,
-): Promise<ProductIssueMcpResult> {
-  return reportProductIssue(draft, client, deps);
 }

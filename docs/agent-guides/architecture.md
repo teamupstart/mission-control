@@ -177,6 +177,11 @@ row at all - a first observation is what starts a window, never a pre-existing t
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
+A repo-less resident is the exception to task repository ownership. Its task carries a nullable
+workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
+grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
+and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
@@ -220,9 +225,25 @@ consumes it over the private utility-process channel; HTTP supplies only the req
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check before enabling control. Standalone
 daemons fail closed.
-Main registers every dashboard click arm, this one and the Feedback report's, through
-`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
-desktop e2e fixtures use the same registrar.
+Main registers every dashboard click arm, this one, the resident Launch and the Feedback
+report's, through `serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the
+reply rule. The desktop e2e fixtures use the same registrar.
+A resident's desktop Launch click is the only other way a grant is created, and it reuses every
+part of the above. `launchResident()` arms `mission:resident-launch-click` for the launch's
+request id, profile id and revision through the same preload capability. Main keeps both arms in
+`src/main/session-control-authorization.ts` and answers both asks over the same utility-process
+port. `ResidentManager.launch` consumes the click after reserving the run and before creating its
+task, and only for a caller `sessionControlCallerRefusal` accepts and a pinned revision with
+`authority.controlOtherSessions` on. It records `control_authorized_at`, then calls
+`Registry.setSessionControlEnabled` once the run's session has a `sessionControlIdentity` bound
+to the run's task, and records the conversation, cwd and work episode it applied to before it
+logs the grant. A grant it cannot apply or record is taken back and the record cleared. After SDK
+restore, on the first completed sweep, it re-applies the grant only when those three and the task
+match exactly, and otherwise clears the record. A revoke through the toggle route clears it
+through `ResidentManager.sessionControlRevoked` before the live grant is turned off. Resident
+launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
+session-control route's trusted menu click above is the other grant source, as
+[security](../security.md#delegated-session-control) states.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control

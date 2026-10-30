@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import type { Session } from "@shared/types.ts";
 import {
   pipelineRunKey,
@@ -332,7 +333,7 @@ function repoPartition(partition: readonly Session[], byRepo: boolean): RepoBuck
   const buckets = new Map<string, Session[]>();
   const unowned: Session[] = [];
   for (const session of partition) {
-    if (session.repoRoot === null) {
+    if (session.repoRoot === null || !taskHasRepository(session.task ?? {})) {
       unowned.push(session);
       continue;
     }
@@ -415,7 +416,7 @@ function clusterPartition(
 export function repoSessionTotals(order: FleetOrder): ReadonlyMap<string, number> {
   const totals = new Map<string, number>();
   for (const session of order.sessions) {
-    if (session.repoRoot === null) continue;
+    if (session.repoRoot === null || !taskHasRepository(session.task ?? {})) continue;
     totals.set(session.repoRoot, (totals.get(session.repoRoot) ?? 0) + 1);
   }
   return totals;

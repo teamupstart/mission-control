@@ -70,8 +70,8 @@ test("a profile-sourced repository follows the profile's current default; an ope
   const typed = chooseResidentRepo(first, "/elsewhere");
   assert.equal(residentDispatchRepo(selectResidentProfile(typed, b), b), "/elsewhere");
   assert.equal(residentDispatchRepo(typed, moved), "/elsewhere");
-  // Clearing it hands the repository back to the profile on the next selection.
-  assert.equal(residentDispatchRepo(selectResidentProfile(chooseResidentRepo(first, ""), b), b), "/repos/b");
+  // Explicitly choosing no repository survives the next profile selection.
+  assert.equal(residentDispatchRepo(selectResidentProfile(chooseResidentRepo(first, ""), b), b), "");
   assert.equal(selectResidentProfile(first, b).requestId, first.requestId);
 });
 

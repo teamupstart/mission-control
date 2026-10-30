@@ -200,7 +200,10 @@ test("critical feedback follows one Persona through every later round of this ru
   const openFeedback = async (name: string): Promise<void> => {
     const reviewer = row(name);
     await reviewer.getByRole("button", { name: `Actions for ${name}` }).click();
-    await reviewer.getByRole("menuitem", { name: /critical feedback/ }).click();
+    // Live session posture can reflow the header above this menu during a pointer click.
+    // Keyboard activation follows the focused menu item through that movement and still
+    // exercises the real accessible action, editor and durable directive round trip.
+    await reviewer.getByRole("menuitem", { name: /critical feedback/ }).press("Enter");
   };
 
   // Round 1's truth, before any directive.

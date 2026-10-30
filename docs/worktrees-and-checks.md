@@ -445,3 +445,14 @@ not been shown to have run against the commit it claims - so it is recorded as a
 failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
 command's own exit code is kept in the reason, so you can still tell "the build failed and then
 cleanup broke" from "the build passed and then cleanup broke".
+
+## Residents without a repository
+
+A resident launched with **No repository** uses a Mission-owned run directory instead of a
+checkout. The [resident profiles change contract](agent-guides/change-contracts.md#resident-profiles)
+defines the persisted workspace marker and shared repository predicate.
+
+Worktree allocation, diffs, pull-request observation, repository grouping, and worktree retention
+skip these runs. The run directory is removed after durable run completion and confirmed session
+shutdown. The same cleanup scans ended runs at startup and retries failures. Daemon shutdown
+alone does not end a run or remove its workspace.

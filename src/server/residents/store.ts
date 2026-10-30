@@ -38,6 +38,7 @@ interface ProfileRow {
 }
 
 interface RunRow {
+  workspace_dir: string | null;
   id: string;
   profile_id: string;
   profile_revision: number;
@@ -50,6 +51,10 @@ interface RunRow {
   run_instructions: string;
   created_at: number;
   ended_at: number | null;
+  control_authorized_at: number | null;
+  control_conversation_id: string | null;
+  control_cwd: string | null;
+  control_episode_id: string | null;
   settings_json: string | null;
 }
 
@@ -391,7 +396,8 @@ export function inResidentTransaction<T>(fn: () => T): T {
 const RUN_SELECT = `
   SELECT u.id, u.profile_id, u.profile_revision, u.task_id, u.launch_request_id, u.launch_input,
          u.launch_state, u.launch_error, u.persona_snapshot, u.run_instructions, u.created_at,
-         u.ended_at, r.settings_json
+         u.ended_at, u.workspace_dir, u.control_authorized_at, u.control_conversation_id,
+         u.control_cwd, u.control_episode_id, r.settings_json
     FROM resident_runs u
     LEFT JOIN resident_profile_revisions r
       ON r.profile_id = u.profile_id AND r.revision = u.profile_revision`;
@@ -436,11 +442,18 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
       profileRevision: row.profile_revision,
       taskId: row.task_id,
       launchRequestId: row.launch_request_id,
+      workspaceDir: row.workspace_dir,
       launchState,
       launchError: row.launch_error,
       persona,
       runInstructions: row.run_instructions,
       settings,
+      control: {
+        authorizedAt: row.control_authorized_at,
+        conversationId: row.control_conversation_id,
+        cwd: row.control_cwd,
+        episodeId: row.control_episode_id,
+      },
       createdAt: row.created_at,
       endedAt: row.ended_at,
     },
@@ -527,6 +540,7 @@ export function listOpenResidentRuns(): StoredResidentRun[] {
 }
 
 export interface ReserveResidentRunInput {
+  workspaceDir?: string | null;
   id: string;
   profileId: string;
   profileRevision: number;
@@ -553,8 +567,8 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       `INSERT INTO resident_runs (
          id, profile_id, profile_revision, task_id, launch_request_id, launch_input,
          launch_repo_spelling, launch_state, launch_error, persona_snapshot, run_instructions,
-         created_at, ended_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL)
+         created_at, ended_at, workspace_dir
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?)
        ON CONFLICT(launch_request_id) DO NOTHING`,
     )
     .run(
@@ -568,6 +582,7 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       canonicalResidentJson(input.persona),
       input.runInstructions,
       input.at,
+      input.workspaceDir ?? null,
     );
   return { reserved: info.changes > 0 };
 }
@@ -604,6 +619,58 @@ export function endResidentRun(id: string, at: number): boolean {
   return info.changes > 0;
 }
 
+// ---- the session-control grant a Launch click gave a run ----
+
+/**
+ * Record that the daemon consumed this run's desktop Launch click. Once per run, and only while it
+ * is still pending: the click is consumed between the reservation and the task.
+ */
+export function recordResidentRunControlAuthorized(id: string, at: number): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs SET control_authorized_at = ?
+        WHERE id = ? AND launch_state = 'pending' AND control_authorized_at IS NULL`,
+    )
+    .run(at, id);
+  return info.changes > 0;
+}
+
+/** The grant's identity as the Registry applied it, minus the process id a restart changes. */
+export interface ResidentRunControlIdentity {
+  conversationId: string;
+  cwd: string;
+  episodeId: string;
+}
+
+/**
+ * Record the identity the grant was applied to. Only on a run whose click was consumed: nothing
+ * else can turn a run into one that is regranted after a restart.
+ */
+export function recordResidentRunControlGrant(id: string, identity: ResidentRunControlIdentity): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs
+          SET control_conversation_id = ?, control_cwd = ?, control_episode_id = ?
+        WHERE id = ? AND control_authorized_at IS NOT NULL`,
+    )
+    .run(identity.conversationId, identity.cwd, identity.episodeId, id);
+  return info.changes > 0;
+}
+
+/** Forget a run's grant: it is never applied again, by this process or after a restart. */
+export function clearResidentRunControl(id: string): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs
+          SET control_authorized_at = NULL, control_conversation_id = NULL, control_cwd = NULL,
+              control_episode_id = NULL
+        WHERE id = ? AND (control_authorized_at IS NOT NULL OR control_conversation_id IS NOT NULL
+          OR control_cwd IS NOT NULL OR control_episode_id IS NOT NULL)`,
+    )
+    .run(id);
+  return info.changes > 0;
+}
+
 /**
  * The store's read surface later phases rely on. `ResidentStore.revision` is THE read of a
  * live run's settings: a run reads only the revision it pinned, never the profile's current
@@ -615,3 +682,13 @@ export const ResidentStore = {
   run: getResidentRun,
   runForTask: residentRunForTask,
 } as const;
+
+/** Durable cleanup obligations, independent of whether the task is still on the board. */
+export function endedResidentWorkspaces(): Array<{ id: string; taskId: string; workspaceDir: string }> {
+  return openDb().prepare(`SELECT id, task_id AS taskId, workspace_dir AS workspaceDir
+    FROM resident_runs WHERE ended_at IS NOT NULL AND workspace_dir IS NOT NULL`).all() as unknown as Array<{ id: string; taskId: string; workspaceDir: string }>;
+}
+
+export function clearResidentWorkspace(id: string): void {
+  openDb().prepare("UPDATE resident_runs SET workspace_dir = NULL WHERE id = ? AND ended_at IS NOT NULL").run(id);
+}

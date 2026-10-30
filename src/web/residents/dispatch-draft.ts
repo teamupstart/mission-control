@@ -118,7 +118,7 @@ export function residentDispatchRepo(
 
 /**
  * Select a profile. A repository the operator chose is kept; otherwise the draft follows the
- * new profile's default. An operator choice left empty hands the repository back to the profile.
+ * new profile's default. An explicit no-repository choice remains the operator's choice.
  */
 export function selectResidentProfile(
   draft: ResidentDispatchDraft,
@@ -127,7 +127,7 @@ export function selectResidentProfile(
   return {
     ...draft,
     profileId: profile?.id ?? null,
-    repoFromProfile: draft.repoFromProfile || draft.repoRoot.trim() === "",
+    repoFromProfile: draft.repoFromProfile,
   };
 }
 

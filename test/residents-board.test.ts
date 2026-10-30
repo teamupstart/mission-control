@@ -19,6 +19,7 @@ process.env.HARNESS_HOME = home;
 
 const {
   RESIDENT_MARKER_COLORS,
+  RESIDENT_RUN_NO_CONTROL,
   ResidentProfileRevisionSchema,
   ResidentProfileRevisionRequestSchema,
   defaultResidentMarkerLabel,
@@ -131,9 +132,11 @@ test("only a live run has a wire summary", () => {
     launchRequestId: "req",
     launchState: "launched" as const,
     launchError: null,
+    workspaceDir: null,
     persona: { personaId: "x", name: "Fleet Triage", guidanceMarkdown: "long text" },
     runInstructions: "today",
     settings: revision(),
+    control: RESIDENT_RUN_NO_CONTROL,
     createdAt: 5,
     endedAt: null,
   };
@@ -144,7 +147,7 @@ test("only a live run has a wire summary", () => {
     taskId: "t1",
     launchState: "launched",
     personaName: "Fleet Triage",
-    settings: { identity: run.settings.identity, board: run.settings.board },
+    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority },
     createdAt: 5,
   });
   // Projected to the sections the browser draws: the instruction text, Persona id, execution

@@ -5,9 +5,10 @@ once - a Persona, instructions, a harness, model and effort, and a default repos
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, lifecycle, and how you find a resident on the board and
-from the top bar. The wake loop, skill and MCP selection, session control and repository-free
-residents are later phases of [the residents plan](plans/persistent-agent-profiles/plan.md).
+This page describes profiles, launch, lifecycle, repository-free residents, how you find a
+resident on the board and from the top bar, and how a resident gets session control. The wake
+loop and skill and MCP selection are later phases of
+[the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
 
@@ -22,6 +23,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
+| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
 opened, so two windows cannot overwrite each other silently. **Archive** removes a profile from
@@ -43,7 +45,9 @@ form on that profile.
 
 A launch is a task of kind `resident`:
 
-- It runs in a task worktree of the chosen repository, always in the **Agent SDK**, whatever the
+- With a repository it runs in a task worktree. **No repository** creates a private working
+  directory for this run under `$MISSION_HOME/residents/runs/<runId>/workspace/`. Both run
+  in the **Agent SDK**, whatever the
   harness's configured runtime is. **Continue in terminal** is unavailable for it.
 - It uses the profile's harness, model and effort. Per-kind defaults in **Settings > Models** do
   not apply, because the profile already answers them.
@@ -84,7 +88,9 @@ never a resident that is already running.
 - **Console band.** Opening a resident shows a band under the Console header: the label chip,
   the profile name, the Persona, the revision it launched from and whether it is pinned. When the
   profile has been edited since the launch, the band says **Profile changed since launch** and
-  the new revision. **Profile** opens the profile on the Residents page.
+  the new revision. When the resident's revision turns **Control other sessions** on, the band
+  says **control granted** or **control not granted**, the latter beside the session control
+  menu. **Profile** opens the profile on the Residents page.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
@@ -96,7 +102,8 @@ many; with none running it shows no number. Click it, press **Shift+H**, or choo
 Residents dock** in the ⌘K palette.
 
 - **Live** lists each running resident with its chip, its session's state and **Open**, which
-  opens that session.
+  opens that session. A resident whose revision asks for session control also shows **control
+  granted** or **control not granted**, the latter with the session control menu.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
   launches straight away, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,
@@ -111,6 +118,39 @@ Escape or a click outside closes the dock. On a narrow window the button drops i
 the ⌂, plus the live count when there is one, and **Settings → Display → Top bar** can keep it
 that way at every width.
 
+## Session control
+
+**Control other sessions**, under **Authority**, is off by default. Turned on, it lets a
+resident's run receive the same grant as the
+[session control menu](sessions.md#let-a-session-steer-other-sessions), so it can read and steer
+your other live sessions. Your **Launch** click in the Mission Control desktop app, on
+**Launch resident** in Dispatch or **Launch** in the Residents dock, is the only thing that gives
+it a grant that lasts for the run and through a restart. The session control menu can still grant
+control for one conversation, as it can for any session, and that grant ends at the next restart.
+
+- **For that run only.** The click authorizes exactly that launch of that profile revision. It
+  is consumed when the launch starts, cannot be replayed, and expires after 15 seconds. Editing
+  the profile afterwards changes the next launch, not this run.
+- **Through a restart, for the same conversation.** After Mission Control restarts, the grant
+  comes back only if the resident resumes the same conversation in the same working directory,
+  on the same work episode and task. A clear or a new conversation ends it, and a new launch of the profile
+  needs its own Launch click.
+- **Once the session is ready.** The grant is given when the resident's session has its
+  conversation. If the launch answers before that, Dispatch and the dock say session control is
+  not granted yet, and the Console band reads **control granted** once it is. If Mission Control
+  restarts first, that launch is not granted and needs a new Launch click.
+- **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
+  does not bring it back.
+- **Launched anywhere else, it starts without control.** Before you launch from the browser
+  dashboard, Dispatch says the launch will not carry control. A desktop app attached to a daemon
+  it did not start cannot pass the click on either: Dispatch stays open after that launch to say
+  the resident launched without session control. A Launch from the dock reports *Started without
+  session control*, and the Console band reads **control not granted**. The
+  session control menu in the desktop app can still grant it for that conversation, the way it
+  can for any session; that grant ends at the next restart.
+
+The exact rule, and what cannot create a grant, is in [security](security.md#resident-launch-grants).
+
 ## Lifecycle
 
 After its first turn a resident idles like a chat: Foreman never completes it automatically,
@@ -118,6 +158,18 @@ because it has no explicit Workflow. It ends when you choose **Complete & close*
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
 failed launch, or one interrupted by a restart before its session started, is recorded with its
 reason and is never relaunched; launch the profile again.
+
+A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
+The Files panel browses its working directory directly, without Git or managed repository plans.
+Listing is capped at 10,000 files and refuses trees exceeding 10,000 directories or 64 nested
+levels. Traversal checks a 15-second budget between filesystem operations.
+Directory scans run asynchronously against open directory handles and refuse symlinked
+boundaries, including directories replaced while a listing is in progress.
+
+The workspace survives daemon restarts while the run is active. When the run ends, Mission removes
+that workspace after its session is gone and its SDK runtime has stopped. Failed launches also
+remove their directories. Cleanup failures remain recorded and retry, including after restart;
+the repository retention clock never applies to these directories. Files saved there are temporary.
 
 ## Backups
 

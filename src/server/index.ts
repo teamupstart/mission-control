@@ -393,6 +393,7 @@ const residents = new ResidentManager({
   createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
   persona: (id) => personas.store.getPersona(id),
   launchResponseWaitMs: residentLaunchWaitMs(),
+  hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
 });
 tasks.registerResidentLaunch((task, repository, runtime) =>
   residents.composeLaunch(task, repository, runtime));
@@ -943,7 +944,7 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
-  residents.stop();
+  await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.

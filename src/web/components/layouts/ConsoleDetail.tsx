@@ -6,7 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
-import { taskPillParts } from "@shared/task.ts";
+import { taskHasRepository, taskPillParts } from "@shared/task.ts";
 import { shortenCwd, uptime, relativeTime } from "../../lib/format.ts";
 import {
   newestSessionRun,
@@ -457,8 +457,8 @@ export function ConsoleDetail({
     [session.id, view.fileCommentThreads],
   );
   const tabs = useMemo(
-    () => detailTabs({ queueCount, fileReplyCount }),
-    [fileReplyCount, queueCount],
+    () => detailTabs({ queueCount, fileReplyCount }).filter((item) => item.id !== "diff" || taskHasRepository(session.task ?? {})),
+    [fileReplyCount, queueCount, session.task],
   );
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
@@ -647,7 +647,7 @@ export function ConsoleDetail({
           loop's state and controls join later. Not gated on the marker item - it is where a
           resident is named, not decoration on top of it. */}
       {resident && (
-        <ResidentBand mark={resident} onOpenProfile={view.onOpenResidentProfile} />
+        <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
       )}
 
       {pipelineCommission && (
@@ -671,7 +671,7 @@ export function ConsoleDetail({
             {/* The tooltip carries the UNTRUNCATED path, and is the only place it is
                 readable. It goes wherever this cell goes. */}
             <Tooltip label={workspaceRoot ?? "This session has no working directory"}>
-              <dd className="mono">{shortenCwd(workspaceRoot)}</dd>
+              <dd className="mono">{taskHasRepository(session.task ?? {}) ? shortenCwd(workspaceRoot) : "no repository"}</dd>
             </Tooltip>
           </div>
         )}
@@ -921,7 +921,7 @@ export function ConsoleDetail({
           </div>
         )}
 
-        {tab === "diff" && (
+        {tab === "diff" && taskHasRepository(session.task ?? {}) && (
           session.cwd ? (
             <InlineDiffViewer
               session={session}

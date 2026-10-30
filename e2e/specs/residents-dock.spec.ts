@@ -296,7 +296,8 @@ test("the dock opens from its chord and from the palette, lists profiles, and a 
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog.getByRole("radio", { name: "Resident" })).toHaveAttribute("aria-checked", "true");
   await expect(dialog.getByRole("radio", { name: /Docs Gardener/ })).toHaveAttribute("aria-checked", "true");
-  await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeDisabled();
+  await expect(dialog.getByRole("combobox", { name: "Repository" })).toHaveValue("");
+  await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeEnabled();
 });
 
 /** Every launch request the page sends, polling replays included, and every answer it reads. */

@@ -94,7 +94,7 @@ export const ResidentExecutionSectionSchema = z
     }
   });
 
-/** The repository Dispatch pre-fills. Phase 1 still requires one at launch. */
+/** The repository Dispatch pre-fills; null launches in a Mission-owned workspace. */
 export const ResidentWorkspaceSectionSchema = z.object({
   defaultRepoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
 });
@@ -154,6 +154,19 @@ export const ResidentBoardSectionSchema = z.object({
 });
 export type ResidentBoardSection = z.infer<typeof ResidentBoardSectionSchema>;
 
+/**
+ * What the resident may do beyond its own session. Off by default.
+ *
+ * `controlOtherSessions` does not grant anything by itself: it says the run MAY receive the
+ * existing session-control grant, and the only thing that gives it is the operator's Launch click
+ * in the desktop app (`docs/security.md`, Delegated session control). A launch from anywhere else
+ * starts without control. A live run reads this from its pinned revision.
+ */
+export const ResidentAuthoritySectionSchema = z.object({
+  controlOtherSessions: z.boolean().default(false),
+});
+export type ResidentAuthoritySection = z.infer<typeof ResidentAuthoritySectionSchema>;
+
 /** A string's user-perceived characters, so an accented letter or an emoji counts once. */
 function graphemes(text: string): string[] {
   return [...new Intl.Segmenter("en-US", { granularity: "grapheme" }).segment(text)]
@@ -207,6 +220,7 @@ export const RESIDENT_PROFILE_SECTIONS = {
   execution: ResidentExecutionSectionSchema.default({}),
   workspace: ResidentWorkspaceSectionSchema.default({}),
   board: ResidentBoardSectionSchema.default({}),
+  authority: ResidentAuthoritySectionSchema.default({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -287,8 +301,28 @@ export const ResidentPersonaSnapshotSchema = z.object({
 });
 export type ResidentPersonaSnapshot = z.infer<typeof ResidentPersonaSnapshotSchema>;
 
+/**
+ * The session-control grant a run received from its desktop Launch click, as recorded in
+ * `resident_runs`. Every field is null on a run that was never granted, including every run from
+ * before this record existed.
+ *
+ * `authorizedAt` is written when the daemon consumed the click; the other three are the grant's
+ * identity as it stood when the Registry applied it. After a daemon restart the grant is applied
+ * again only when all four are set and the restored session's conversation, working directory,
+ * work episode and task all still match. The process id, the one part of the Registry's identity a
+ * restart necessarily changes, is the only part not recorded.
+ */
+export interface ResidentRunControl {
+  authorizedAt: number | null;
+  conversationId: string | null;
+  cwd: string | null;
+  episodeId: string | null;
+}
+
 /** A resident run: the durable identity of one launch. */
 export interface ResidentRun {
+  /** Mission-owned cwd awaiting cleanup; null for repository runs or after removal. */
+  workspaceDir: string | null;
   id: string;
   profileId: string;
   /** The revision this run pinned. A live run reads its settings only from here. */
@@ -302,6 +336,8 @@ export interface ResidentRun {
   runInstructions: string;
   /** The pinned revision's body. */
   settings: ResidentProfileRevision;
+  /** The session-control grant its Launch click gave it, if any. */
+  control: ResidentRunControl;
   createdAt: number;
   endedAt: number | null;
 }
@@ -310,14 +346,15 @@ export interface ResidentRun {
  * The pinned-revision sections a live run's summary carries to the browser: the ones a board,
  * Console or dock surface draws from. A registry like `RESIDENT_PROFILE_SECTIONS`, extended the
  * same way - a later phase that shows its pinned settings in the browser (the loop's state in
- * the Console band, the session-control grant) appends its section id here in one line.
+ * the Console band) appends its section id here in one line. `authority` is here so the band
+ * and the dock know whether a run asks for session control; the grant itself is the session's.
  *
  * Everything not listed stays on the daemon, which reads a run's whole pinned revision through
  * `ResidentStore.revision`. That keeps the profile instructions, the Persona id, the execution
  * and workspace choices, and every section a later phase adds for the daemon alone (skills, MCP
  * servers) off this event, which is re-sent on every launch-state change of every live run.
  */
-export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board"] as const satisfies readonly ResidentProfileSectionId[];
+export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "authority"] as const satisfies readonly ResidentProfileSectionId[];
 export type ResidentRunSummarySectionId = (typeof RESIDENT_RUN_SUMMARY_SECTIONS)[number];
 
 /** The pinned revision as a run summary carries it: only `RESIDENT_RUN_SUMMARY_SECTIONS`. */
@@ -372,7 +409,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
  */
 export const LaunchResidentSchema = z
   .object({
-    repoRoot: z.string().trim().min(1, "choose a repository").max(RESIDENT_LIMITS.pathLength),
+    repoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
     instructions: z.string().max(RESIDENT_LIMITS.runInstructionsLength).optional(),
     requestId: z
       .string()
@@ -388,7 +425,7 @@ export type LaunchResident = z.infer<typeof LaunchResidentSchema>;
  * launch field bumps this and gives the field a default in `ResidentLaunchInputSchema`, so a
  * run recorded at an older version still compares correctly.
  */
-export const RESIDENT_LAUNCH_INPUT_VERSION = 1;
+export const RESIDENT_LAUNCH_INPUT_VERSION = 2;
 
 /**
  * The normalized launch input, as stored in `resident_runs.launch_input`: the parsed request
@@ -397,7 +434,7 @@ export const RESIDENT_LAUNCH_INPUT_VERSION = 1;
  */
 export const ResidentLaunchInputSchema = z.object({
   version: z.number().int().positive(),
-  repoRoot: z.string(),
+  repoRoot: z.string().nullable(),
   instructions: z.string().default(""),
 });
 export type ResidentLaunchInput = z.infer<typeof ResidentLaunchInputSchema>;
@@ -408,7 +445,7 @@ export function normalizeRunInstructions(instructions: string | undefined): stri
 }
 
 /** Build the current-version normalized input from a request whose repository is resolved. */
-export function residentLaunchInput(resolvedRepoRoot: string, instructions: string | undefined): ResidentLaunchInput {
+export function residentLaunchInput(resolvedRepoRoot: string | null, instructions: string | undefined): ResidentLaunchInput {
   return {
     version: RESIDENT_LAUNCH_INPUT_VERSION,
     repoRoot: resolvedRepoRoot,
@@ -477,6 +514,21 @@ export function residentLaunchSummary(
     agentLabel,
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
+    settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");
 }
+
+/** A run whose recorded grant is complete enough to be applied again after a restart. */
+export function residentRunControlRecorded(control: ResidentRunControl): boolean {
+  return control.authorizedAt !== null && control.conversationId !== null
+    && control.cwd !== null && control.episodeId !== null;
+}
+
+/** No grant recorded: what every run starts with, and what turning control off returns it to. */
+export const RESIDENT_RUN_NO_CONTROL: ResidentRunControl = Object.freeze({
+  authorizedAt: null,
+  conversationId: null,
+  cwd: null,
+  episodeId: null,
+});

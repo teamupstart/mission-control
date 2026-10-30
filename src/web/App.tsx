@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1020,7 +1021,7 @@ export function App(): React.JSX.Element {
     setSeeWorkTourBriefReady(false);
     const preferredRepo = run.sessionId
       ? sessions.find((session) => session.id === run.sessionId)?.repoRoot ?? null
-      : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+      : tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setSeeWorkTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1083,7 +1084,7 @@ export function App(): React.JSX.Element {
       setWorkflowsTourRepoRoot(null);
       return;
     }
-    const preferredRepo = tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    const preferredRepo = tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setWorkflowsTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {

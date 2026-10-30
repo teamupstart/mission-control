@@ -3187,7 +3187,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ files: await listSessionFiles(resolved.root, session.task ?? undefined) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
-      return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
+      return c.json({ error: known?.message ?? "could not list session files" }, (known?.status ?? 500) as ContentfulStatusCode);
     }
   });
   app.get("/api/sessions/:id/file", async (c) => {

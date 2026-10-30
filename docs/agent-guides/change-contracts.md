@@ -1250,6 +1250,12 @@ Files opens the ordinary directory currently at that path for each request and h
 descriptor throughout traversal. Replacing the root after it opens cannot redirect that listing;
 an ordinary directory moved into the reserved path before the request becomes its current
 contents. This does not grant the resident permission to move or read directories elsewhere.
+Cleanup also owns paths, not lifetime inode identities: traversal keeps its opened directory,
+but the final directory unlink acts on the current entry in its held parent. An empty ordinary
+replacement can be removed; a populated replacement makes that attempt fail and keeps cleanup
+owed. Cleanup does not search for a directory another process moved out of the owned tree.
+These operations prevent traversal through symlinks; they do not isolate Mission's state from
+another process running as the same OS user.
 Repository consumers use the shared predicate or `taskRepoRefs`, never infer
 a repository from cwd.
 

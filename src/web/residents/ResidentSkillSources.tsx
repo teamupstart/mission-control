@@ -4,6 +4,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { useEffect, useState } from "react";
 import type { ResidentSkillIndex, ResidentSkillSources } from "@shared/resident-skills.ts";
 import { fetchResidentSkills, rescanResidentSkills, saveResidentSkillSources } from "./api.ts";
+import { Tooltip } from "../components/Tooltip.tsx";
 
 /** A fetched catalog: rescanning is an explicit action, never a browser polling loop. */
 export function ResidentSkillSourcesPanel(): React.JSX.Element {
@@ -43,7 +44,7 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
           <h3>Skill sources</h3>
           <p className="resident-editor-meta">{index ? `${index.skills.length} indexed skills across ${index.sources.length} sources` : "Loading skill sources…"}</p>
         </div>
-        <button className="btn" disabled={busy || !index} onClick={() => { void apply(rescanResidentSkills); }}>Rescan</button>
+        <Tooltip label="Refresh the catalog from every skill source"><button className="btn" disabled={busy || !index} onClick={() => { void apply(rescanResidentSkills); }}>Rescan</button></Tooltip>
       </header>
       <p className="resident-section-blurb">Browse the skills on this machine. Register a folder containing skill folders, each with a SKILL.md file.</p>
       {unavailable && <p className="resident-skill-notice">Resident skill selection is unavailable for {unavailable} until a launch control can keep the exact skill set frozen across resumes.</p>}
@@ -56,7 +57,7 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
           <span className="field-label">Skill folder</span>
           <input className="field-input" value={path} disabled={busy || !index} onChange={(event) => setPath(event.target.value)} placeholder="~/my-skills" />
         </label>
-        <button type="submit" className="btn" disabled={busy || !index || !path.trim()}>Add source</button>
+        <Tooltip label="Register this folder and index its skills"><button type="submit" className="btn" disabled={busy || !index || !path.trim()}>Add source</button></Tooltip>
       </form>
       <ul className="resident-source-list" aria-label="Registered skill sources">
         {index?.sources.map((source) => (
@@ -64,14 +65,14 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
             <div className="resident-source-heading">
               <strong>{source.label}</strong>
               <span className="resident-editor-meta">{index.skills.filter((skill) => skill.sourceId === source.id).length} skills</span>
-              {source.custom && <button className="btn btn-quiet" disabled={busy} aria-label={`Remove source ${source.label}`} onClick={() => {
+              {source.custom && <Tooltip label="Remove this source from the catalog without deleting its files"><button className="btn btn-quiet" disabled={busy} aria-label={`Remove source ${source.label}`} onClick={() => {
                 save({ directories: index.config.directories.filter((row) => row.id !== source.id) });
                 if (sourceId === source.id) setSourceId("");
-              }}>Remove</button>}
+              }}>Remove</button></Tooltip>}
             </div>
             {source.path && <code>{source.path}</code>}
             {source.problems.length > 0 && <details>
-              <summary>{source.problems.length} {source.problems.length === 1 ? "problem" : "problems"}</summary>
+              <Tooltip label="Show or hide problems found while scanning this source"><summary>{source.problems.length} {source.problems.length === 1 ? "problem" : "problems"}</summary></Tooltip>
               <ul>{source.problems.map((problem, i) => <li key={i}>{problem}</li>)}</ul>
             </details>}
           </li>
@@ -79,10 +80,10 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
       </ul>
       <div className="resident-skill-filters">
         <label className="field"><span className="field-label">Search skills</span><input className="field-input" value={query} onChange={(event) => setQuery(event.target.value)} type="search" /></label>
-        <label className="field"><span className="field-label">Source</span><select className="field-input" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+        <Tooltip label="Show skills from one source or all sources"><label className="field"><span className="field-label">Source</span><select className="field-input" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
           <option value="">All sources</option>
           {index?.sources.map((source) => <option key={source.id} value={source.id}>{source.label}</option>)}
-        </select></label>
+        </select></label></Tooltip>
       </div>
       <p className="resident-editor-meta" role="status">{skills.length} matching skills</p>
       <ul className="resident-skill-list" aria-label="Indexed skills">

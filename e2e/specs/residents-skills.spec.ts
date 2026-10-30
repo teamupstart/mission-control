@@ -16,10 +16,15 @@ test("skill sources add, rescan, filter, survive restart, and remove without del
   await expect(page).toHaveURL(/#\/residents\/skill-sources$/);
   const panel = page.getByRole("region", { name: "Skill sources" });
   await expect(panel.getByRole("button", { name: "Rescan" })).toBeEnabled();
+  await expect(panel.getByRole("button", { name: "Rescan" })).toHaveAccessibleDescription("Refresh the catalog from every skill source");
+  await panel.getByRole("button", { name: "Rescan" }).hover();
+  await expect(page.locator(".tooltip")).toHaveText("Refresh the catalog from every skill source");
   await panel.getByLabel("Skill folder").fill(root);
+  await expect(panel.getByRole("button", { name: "Add source" })).toHaveAccessibleDescription("Register this folder and index its skills");
   await panel.getByRole("button", { name: "Add source" }).click();
   await expect(panel.getByLabel("Skill folder")).toHaveValue("");
   const list = panel.getByRole("list", { name: "Indexed skills" });
+  await expect(panel.getByRole("combobox", { name: "Source", exact: true })).toHaveAccessibleDescription("Show skills from one source or all sources");
   await panel.getByRole("combobox", { name: "Source", exact: true }).selectOption({ label: root });
   await expect(list).toContainText("Resident fixture alpha");
   await expect(list).toContainText("Resident fixture with a folded description.");
@@ -50,6 +55,7 @@ test("skill sources add, rescan, filter, survive restart, and remove without del
   await daemon.restart();
   await page.reload();
   await expect(list).toContainText("Resident fixture beta");
+  await expect(panel.getByRole("button", { name: `Remove source ${root}` })).toHaveAccessibleDescription("Remove this source from the catalog without deleting its files");
   await panel.getByRole("button", { name: `Remove source ${root}` }).click();
   await expect(list).not.toContainText("Resident fixture alpha");
   expect(readFileSync(join(root, "first/SKILL.md"), "utf8")).toContain("Frozen content");
@@ -58,6 +64,7 @@ test("skill sources add, rescan, filter, survive restart, and remove without del
   await panel.getByLabel("Skill folder").fill(missing);
   await panel.getByRole("button", { name: "Add source" }).click();
   const sourceRow = panel.getByRole("list", { name: "Registered skill sources" }).getByRole("listitem").filter({ has: page.getByRole("button", { name: `Remove source ${missing}` }) });
+  await expect(sourceRow.locator("summary")).toHaveAccessibleDescription("Show or hide problems found while scanning this source");
   await sourceRow.locator("summary").click();
   await expect(sourceRow).toContainText("directory is missing");
 });

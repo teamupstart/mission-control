@@ -173,7 +173,7 @@
   "POST /api/repos/resolve": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"path\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/residents/profiles": "503 {\"error\":\"Resident service unavailable\"}",
   "POST /api/residents/profiles/:id/launch": "503 {\"error\":\"Resident service unavailable\"}",
-  "POST /api/residents/skills/rescan": "200 fields{config,configRevision,configurationProblem,scannedAt,skills,sources,truncated}",
+  "POST /api/residents/skills/rescan": "403 fields{error}",
   "POST /api/reviews/:id/resolve": "400 {\"error\":\"[\\n  {\\n    \\\"expected\\\": \\\"'approve' | 'reject' | 'answer' | 'dismiss'\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"path\\\": [\\n      \\\"action\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/schedules": "503 {\"error\":\"Schedule service unavailable\"}",
   "POST /api/schedules/:id/archive": "503 {\"error\":\"Schedule service unavailable\"}",

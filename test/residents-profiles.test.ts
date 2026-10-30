@@ -335,6 +335,43 @@ test("skill source writes reject stale adds and removals without losing another 
   assert.equal((await request("PUT", endpoint, { config: original, expectedRevision: saved.json.configRevision })).status, 200);
 });
 
+test("skill rescans refuse browser simple requests and untrusted origins before reading the catalog", async (t) => {
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  let configReads = 0;
+  t.mock.method(db, "prepare", (sql: string) => {
+    const statement = prepare(sql);
+    if (sql === "SELECT value FROM app_config WHERE key = ?") {
+      const get = statement.get.bind(statement);
+      t.mock.method(statement, "get", (key: string) => {
+        if (key === "residents.skillSources") configReads++;
+        return get(key);
+      });
+    }
+    return statement;
+  });
+  for (const overrides of [
+    { "content-type": "text/plain", origin: "http://127.0.0.1:9999" },
+    { "content-type": "application/x-www-form-urlencoded", origin: "https://example.com" },
+    { "content-type": "application/json", origin: "https://example.com" },
+    { "content-type": "application/json", origin: "null" },
+  ]) {
+    const response = await app.request("/api/residents/skills/rescan", { method: "POST", headers: { ...headers, ...overrides }, body: "{}" });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "forbidden" });
+  }
+  assert.equal(configReads, 0, "refused requests never reach the catalog");
+  const preflight = await app.request("/api/residents/skills/rescan", { method: "OPTIONS", headers: {
+    host: headers.host, origin: "http://127.0.0.1:9999", "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+  } });
+  assert.equal(preflight.headers.get("access-control-allow-origin"), null, "another loopback website cannot preflight a JSON scan");
+  const validOrigins: Array<Record<string, string>> = [{}, { origin: "http://127.0.0.1:7317" }, { origin: "http://localhost:5173" }];
+  for (const extra of validOrigins) {
+    const response = await app.request("/api/residents/skills/rescan", { method: "POST", headers: { ...headers, ...extra }, body: "{}" });
+    assert.equal(response.status, 200, "dashboard, dev proxy and local API JSON requests remain supported");
+  }
+});
+
 test("skill-source validation returns 400 while storage failures stay server errors", async (t) => {
   const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
   const { homedir } = await import("node:os");

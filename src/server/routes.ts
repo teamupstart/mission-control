@@ -8137,6 +8137,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
   app.post("/api/residents/skills/rescan", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
     const parsed = await parseBody(c, RescanResidentSkillsSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(residentSkillIndex(true));

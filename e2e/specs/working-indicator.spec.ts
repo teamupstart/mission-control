@@ -278,12 +278,15 @@ test("Display offers both marks checked, spaced like the groups above, and the p
   // The heading clears the Git branch row above it by the same distance the Conversation
   // header heading clears the last Board card row. It used to sit almost on the row's border:
   // the group is a customizer of its own, so its heading was a first child with no margin.
+  // Each group is its own customizer, so the rows are named rather than found as siblings.
   const conversation = panel.getByRole("heading", { name: "Conversation header" });
-  const lastCardRow = conversation.locator("xpath=preceding-sibling::label[1]");
   // `has` is queried inside each label, so it is rooted at the page rather than the panel.
-  const gitBranchRow = panel.locator("label.settings-toggle").filter({
-    has: dashboard.getByRole("checkbox", { name: "Git branch", exact: true }),
-  });
+  const row = (name: string) =>
+    panel.locator("label.settings-toggle").filter({
+      has: dashboard.getByRole("checkbox", { name, exact: true }),
+    });
+  const lastCardRow = row("Last seen");
+  const gitBranchRow = row("Git branch");
   const reference = await gapBetween(lastCardRow, conversation);
   expect(reference, "the reference gap should be a real separation").toBeGreaterThanOrEqual(20);
   expect(await gapBetween(gitBranchRow, heading), "the Working indicator heading is crowded").toBe(

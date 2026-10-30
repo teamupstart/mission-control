@@ -1,5 +1,12 @@
-import type { LaunchResident, ResidentLaunchResult } from "@shared/residents.ts";
+import {
+  residentRunControlRecorded,
+  type LaunchResident,
+  type ResidentLaunchResult,
+  type ResidentProfile,
+  type ResidentRun,
+} from "@shared/residents.ts";
 import { actionFetch } from "../lib/experience.ts";
+import { authorizeResidentLaunch, canAuthorizeSessionControl } from "../lib/session-control-authorization.ts";
 
 /**
  * What a launch answered, as the browser reads it: the daemon's launch result, or a refusal
@@ -10,17 +17,68 @@ export type ResidentLaunchAnswer =
   | { state: "refused"; error: string; code: "invalid" | "not_found" | "conflict" | "unavailable" };
 
 /**
+ * Whether a Launch click on this page can give a resident session control: only in the desktop
+ * app, whose preload holds the private session-control capability. The standalone browser never
+ * can, so every resident it launches starts without control.
+ */
+export function residentLaunchCanGrantControl(): boolean {
+  return canAuthorizeSessionControl();
+}
+
+/**
+ * What a launched run says about session control, or null when its pinned revision does not ask
+ * for it. Read from the grant, not the click: `granted` once the Registry applied it and the run
+ * recorded the identity it applied to; `pending` while a consumed click still waits for the
+ * session's identity; `not-granted` when no click was consumed, or the grant could not be applied
+ * or recorded - the daemon clears the run's record in both cases.
+ */
+export function residentRunControlOutcome(run: ResidentRun): "granted" | "pending" | "not-granted" | null {
+  if (!run.settings.authority.controlOtherSessions) return null;
+  if (residentRunControlRecorded(run.control)) return "granted";
+  return run.control.authorizedAt !== null ? "pending" : "not-granted";
+}
+
+/**
+ * What a launch surface reports about a launched run's session control, or null for nothing.
+ *
+ * A pending grant is always reported: the click was consumed but the session had no full identity
+ * when the launch answered, so control is not granted yet and the operator would otherwise not
+ * know. An ungranted run is reported unless the surface already said, before launch, that its
+ * click could not grant control - the standalone browser's Dispatch does.
+ */
+export function residentLaunchControlReport(
+  run: ResidentRun,
+  saidBeforeLaunch: boolean,
+): "pending" | "not-granted" | null {
+  const outcome = residentRunControlOutcome(run);
+  if (outcome === "pending") return "pending";
+  if (outcome === "not-granted" && !saidBeforeLaunch) return "not-granted";
+  return null;
+}
+
+/**
  * Launch a resident from a profile. THE ONE browser launch call: every Launch affordance -
- * Dispatch > Resident today, the Residents dock in a later phase - goes through here, so the
- * request id, the route and the reading of its answer exist once.
+ * Dispatch > Resident and the Residents dock - goes through here, so the request id, the route,
+ * the reading of its answer and the session-control click exist once.
  *
  * `input.requestId` makes the call idempotent. A caller keeps the same id while it retries an
  * answer it did not receive, and mints a new one only after a definitive outcome.
+ *
+ * `options.profile` is the profile the operator clicked Launch on, passed only by the call made
+ * inside that click. When its revision turns Control other sessions on, the click is armed here -
+ * synchronously, before anything is awaited, so it is still the operator's trusted click - for
+ * exactly this request id, profile and revision. A replay passes no profile: it arms nothing, and
+ * the daemon answers it from the run the first request reserved.
  */
 export async function launchResident(
   profileId: string,
   input: LaunchResident,
+  options: { profile?: ResidentProfile | null } = {},
 ): Promise<ResidentLaunchAnswer> {
+  const profile = options.profile;
+  if (profile?.id === profileId && profile.settings.authority.controlOtherSessions) {
+    authorizeResidentLaunch({ requestId: input.requestId, profileId, revision: profile.revision });
+  }
   let response: Response;
   try {
     response = await actionFetch(`/api/residents/profiles/${encodeURIComponent(profileId)}/launch`, {

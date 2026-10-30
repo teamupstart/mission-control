@@ -244,4 +244,5 @@ export const PREVIEW_RESIDENT: ResidentSessionMark = {
   pin: true,
   revision: 1,
   changedTo: null,
+  controlOtherSessions: false,
 };

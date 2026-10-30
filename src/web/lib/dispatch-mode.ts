@@ -129,8 +129,11 @@ export const DispatchModeSchema = z.discriminatedUnion("kind", [
     onLaunchModeChange: LaunchModeChangeField,
     resident: record<ResidentDispatchDraft>(),
     onResidentChange: callback<(draft: ResidentDispatchDraft) => void>(),
-    /** A launch was accepted; the draft is consumed and the form closes. */
-    onResidentLaunched: callback<(submitted: ResidentDispatchDraft) => void>(),
+    /**
+     * A launch was accepted; the draft is consumed and the form closes, unless `keepOpen` asks
+     * it to stay so the form can say something about the launch first.
+     */
+    onResidentLaunched: callback<(submitted: ResidentDispatchDraft, options?: { keepOpen?: boolean }) => void>(),
     /** Live resident profiles, from the SSE collection. */
     profiles: z.custom<ResidentProfile[]>(Array.isArray),
     /** Live Personas, to name each profile's role. */

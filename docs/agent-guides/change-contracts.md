@@ -1233,6 +1233,12 @@ Four rules hold across phases:
 4. **Persona and instructions are standing instructions**, appended after repository standing
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
+5. **Session control comes only from the desktop Launch click.** `launchResident()` arms it, the
+   launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
+   applied and recorded in the four `control_*` columns of `resident_runs`. No later phase may
+   create a resident grant through any other path, including Restart on new profile, which is a
+   new launch and needs its own click. The rule is stated in
+   [security](../security.md#resident-launch-grants).
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
@@ -1266,7 +1272,7 @@ profile is authoring state, and a launched resident reaches the Line as its task
 The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
 with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
 session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
-revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity` and `board`), not the whole
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity`, `board` and `authority`), not the whole
 revision: the profile instructions, Persona id, execution and workspace choices stay on the
 daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
 shows its own pinned section in the browser appends that section id to the list, in one line,

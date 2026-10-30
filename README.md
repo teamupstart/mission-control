@@ -166,7 +166,9 @@ Mission Control supports five kinds of work:
 Persona, instructions, a harness, model and effort - on the Residents page, then launch it from
 **Dispatch > Resident**. It runs in the Agent SDK with its persona as standing instructions and ends
 only when you choose **Complete & close**. Choose a repository for a task worktree, or **No repository**
-for a private working directory removed when the run ends. Read more in [Residents](docs/residents.md).
+for a private working directory removed when the run ends. A profile can also let its resident
+control your other sessions; only a Launch click in the desktop app grants that, to that run. Read
+more in [Residents](docs/residents.md).
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 

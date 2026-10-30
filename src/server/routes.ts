@@ -2,7 +2,7 @@ import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
-import { registerSessionControlRoutes, sessionControlActor } from "./session-control.ts";
+import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
@@ -1890,7 +1890,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
-  registerSessionControlRoutes(app, registry, authorizeSessionControl);
+  // A resident run's durable grant follows the operator's toggle: turning control off forgets
+  // it before the live grant goes, so a restart never gives back what the operator took away.
+  registerSessionControlRoutes(app, registry, authorizeSessionControl, (sessionId) => {
+    residents?.sessionControlRevoked(sessionId);
+  });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
 
@@ -8171,11 +8175,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // The ONE resident launch route. Idempotent on the body's `requestId`: 200 launched,
   // 202 still starting (replay the same request to read the outcome), 409 for a failed launch
   // (with its recorded reason) or a request id reused for a different launch.
+  //
+  // It is also the one place a desktop Launch click can be consumed for session control. A
+  // tool, an agent or a foreign origin still launches, but never consumes a click: its run
+  // starts without control, exactly as a launch from the standalone browser does.
   app.post("/api/residents/profiles/:id/launch", async (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     const parsed = await parseBody(c, LaunchResidentRequestSchema);
     if (!parsed.ok) return parsed.res;
-    const outcome = await residents.launch(c.req.param("id"), parsed.data);
+    const outcome = await residents.launch(c.req.param("id"), parsed.data, {
+      mayConsumeControlClick: sessionControlCallerRefusal(c) === null,
+    });
     if ("result" in outcome) return c.json(outcome.result, outcome.status);
     return c.json({ error: outcome.error, code: outcome.code }, outcome.status);
   });

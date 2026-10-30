@@ -4,7 +4,8 @@ import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
-import { launchResident } from "./launch.ts";
+import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
+import { launchResident, residentLaunchControlReport } from "./launch.ts";
 import { residentMarkTitle, residentProfileMark, residentSessionMark } from "./marker.ts";
 
 /** How often a still-starting launch is replayed - the same request id - to read its outcome. */
@@ -61,6 +62,11 @@ interface DockLaunch {
    * is kept, so Launch checks this same launch again rather than starting another.
    */
   stillStarting: boolean;
+  /**
+   * The launch reached its session without the session control its profile asks for, or with it
+   * still pending, or null when there is nothing to say.
+   */
+  controlReport: "pending" | "not-granted" | null;
 }
 
 /**
@@ -108,6 +114,9 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {
+      // A live row's session control menu opens in a portal outside the panel; using it is
+      // still using the dock.
+      if ((e.target as Element | null)?.closest?.(".session-toolbar-menu")) return;
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     // Escape closes the dock and stops there: this popover is not a registered overlay, so
@@ -161,10 +170,12 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
       error: null,
       launched: false,
       stillStarting: false,
+      controlReport: null,
     });
     const input = { repoRoot, requestId };
     const startedAt = Date.now();
-    let answer = await launchResident(profile.id, input);
+    // Still inside the Launch click: the one call that may arm session control for this run.
+    let answer = await launchResident(profile.id, input, { profile });
     // Still starting: replay the SAME request id until it settles. A replay reads the one run
     // this id reserved and never starts another. Bounded, so a stalled startup gives Launch
     // back - with the id kept - instead of holding the row busy indefinitely.
@@ -181,7 +192,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     if (!mounted.current) return;
     switch (answer.state) {
       case "launched":
-        patchLaunch(profile.id, { ...freshLaunch(), launched: true });
+        patchLaunch(profile.id, {
+          ...freshLaunch(),
+          launched: true,
+          controlReport: residentLaunchControlReport(answer.run, false),
+        });
         return;
       case "failed":
         // Definitive: the next attempt is a new launch.
@@ -247,6 +262,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           Open
                         </button>
                       </Tooltip>
+                      {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+                        <div className="residents-pop-control">
+                          <ResidentControlStatus session={session} name={mark.name} />
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -300,6 +320,18 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           never starts a second resident.
                         </p>
                       )}
+                      {state?.controlReport === "not-granted" && (
+                        <p className="residents-pop-note" role="status">
+                          Started without session control: only a Launch click in the Mission
+                          Control desktop app grants it.
+                        </p>
+                      )}
+                      {state?.controlReport === "pending" && (
+                        <p className="residents-pop-note" role="status">
+                          Started; session control is not granted yet. It is given once the
+                          session is ready, and its live row reads control granted when it is.
+                        </p>
+                      )}
                     </li>
                   );
                 })}
@@ -332,5 +364,6 @@ function freshLaunch(): DockLaunch {
     error: null,
     launched: false,
     stillStarting: false,
+    controlReport: null,
   };
 }

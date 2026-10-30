@@ -6,7 +6,9 @@ import {
   launchInputsMatch,
   normalizeRunInstructions,
   residentLaunchInput,
+  residentRunControlRecorded,
   residentRunSummary,
+  type ResidentRunControl,
   type ResidentRunSummary,
   type LaunchResident,
   type ResidentLaunchInput,
@@ -19,10 +21,11 @@ import {
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import type { Persona } from "@shared/workflow.ts";
-import type { ServerEvent, SessionRuntime, Task } from "@shared/types.ts";
-import { getTask as getDurableTask } from "../db.ts";
+import type { ServerEvent, Session, SessionRuntime, Task } from "@shared/types.ts";
+import { getTask as getDurableTask, logEvent } from "../db.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
 import { getSdkSession, sdkSessionIdsForTask } from "../sdk/store.ts";
+import { residentLaunchAuthorization, type AuthorizeResidentLaunch } from "../session-control-authorization.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
 import { createResidentWorkspace, removeResidentWorkspace, residentWorkspaceDir } from "./workspace.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -31,6 +34,7 @@ import {
   ResidentNameConflictError,
   ResidentProfileLimitError,
   archiveResidentProfile,
+  clearResidentRunControl,
   createResidentProfile,
   endResidentRun,
   endedResidentWorkspaces,
@@ -41,10 +45,13 @@ import {
   listPendingResidentRuns,
   markResidentRunFailed,
   markResidentRunLaunched,
+  recordResidentRunControlAuthorized,
+  recordResidentRunControlGrant,
   reserveResidentRun,
   residentRunForTask,
   residentRunIdentityByRequest,
   updateResidentProfile,
+  type ResidentRunControlIdentity,
   type ResidentRunIdentity,
   type StoredResidentRun,
 } from "./store.ts";
@@ -84,14 +91,32 @@ const DEFAULT_SETTLEMENT_RETRY_MS = 2_000;
 /** The registry surface this manager reads and notifies. */
 export interface ResidentRegistry {
   getTask(id: string): Task | undefined;
-  getSession(id: string): unknown;
   subscribe(fn: (event: ServerEvent) => void): () => void;
   onSessionsObserved(fn: () => void): () => void;
   upsertResidentProfile(profile: ResidentProfile): void;
   removeResidentProfile(id: string): void;
   upsertResidentRun(summary: ResidentRunSummary): void;
   removeResidentRun(id: string): void;
+  getSession(id: string): Session | undefined;
+  // The existing session-control grant machinery, reused unchanged: the identity it binds and
+  // rechecks, and the grant itself.
+  sessionControlIdentity(id: string): string | null;
+  workEpisodeForSession(id: string): { episodeId: string } | null;
+  taskForSession(sessionId: string, cwd: string | null): Task | undefined;
+  setSessionControlEnabled(id: string, enabled: boolean): boolean;
 }
+
+/**
+ * A run whose session-control grant waits for its session to have a full identity.
+ *
+ * - `launch`: the run's desktop Launch click was consumed. The grant is applied to the run's first
+ *   identified session and its identity recorded.
+ * - `restore`: the run recorded a grant before a daemon restart. It is applied again only when the
+ *   restored session's conversation, working directory, work episode and task all match.
+ */
+type GrantWatch =
+  | { taskId: string; kind: "launch" }
+  | { taskId: string; kind: "restore"; recorded: ResidentRunControl };
 
 export interface ResidentManagerDeps {
   registry: ResidentRegistry;
@@ -112,6 +137,20 @@ export interface ResidentManagerDeps {
   launchResponseWaitMs?: number;
   /** The first delay before an uncertain settlement is retried; later attempts back off. */
   settlementRetryMs?: number;
+  /**
+   * Consume the operator's desktop Launch click over the private shell channel. Defaults to the
+   * real channel, which a standalone daemon does not have, so it fails closed.
+   */
+  authorizeLaunch?: AuthorizeResidentLaunch;
+}
+
+/** How the launch route vouches for its caller. */
+export interface ResidentLaunchOptions {
+  /**
+   * Whether this request may consume a desktop Launch click: never for a tool, an agent or a
+   * foreign origin (`sessionControlCallerRefusal`). Off by default.
+   */
+  mayConsumeControlClick?: boolean;
 }
 
 /** What a profile write answered. */
@@ -155,9 +194,21 @@ export class ResidentManager {
   private readonly reportedCleanupFailures = new Set<string>();
   private cleanupScanFailed = false;
   private subscriptions: Array<() => void> = [];
+  private readonly authorizeLaunch: AuthorizeResidentLaunch;
+  /** Runs whose grant waits for their session, by run id. At most one per live resident. */
+  private readonly grantWatches = new Map<string, GrantWatch>();
+  /** Who waits for a watch to be decided or dropped: a launch answers only once it knows. */
+  private readonly grantWaiters = new Map<string, Array<() => void>>();
+  /**
+   * Runs whose grant this daemon run has already decided - applied, refused or forgotten. A
+   * recorded grant is restored at most once per daemon run: a run granted by a Launch click while
+   * restore was still settling, or a second sessions-observed callback, never applies it again.
+   */
+  private readonly decidedGrants = new Set<string>();
 
   constructor(private readonly deps: ResidentManagerDeps) {
     this.now = deps.now ?? Date.now;
+    this.authorizeLaunch = deps.authorizeLaunch ?? residentLaunchAuthorization();
     this.resolveRepoRoot = deps.resolveRepoRoot ?? resolveTaskRepoRoot;
     this.sessionRowsForTask = deps.sessionRowsForTask ?? sdkSessionIdsForTask;
     this.durableTask = deps.durableTask ?? getDurableTask;
@@ -179,8 +230,12 @@ export class ResidentManager {
     this.cleanupTimer.unref();
     this.subscriptions.push(this.deps.registry.subscribe((event) => this.observe(event)));
     // The startup twin of the `session_remove` arm: once sessions have been observed, end
-    // every launched run whose task already settled while this daemon was down.
-    this.subscriptions.push(this.deps.registry.onSessionsObserved(() => this.reconcileRunEnds()));
+    // every launched run whose task already settled while this daemon was down. The first
+    // observation also follows SDK restore, which is when a recorded grant may be re-applied.
+    this.subscriptions.push(this.deps.registry.onSessionsObserved(() => {
+      this.reconcileRunEnds();
+      this.watchRestoredGrants();
+    }));
   }
 
   async stop(): Promise<void> {
@@ -192,6 +247,7 @@ export class ResidentManager {
     }
     this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    for (const runId of [...this.grantWatches.keys()]) this.dropGrantWatch(runId);
     await Promise.all(this.cleaningWorkspaces.values());
   }
 
@@ -287,7 +343,11 @@ export class ResidentManager {
    * Launch a resident from a profile's current revision. Idempotent on `requestId` and safe
    * across a crash at every boundary; see the class comment.
    */
-  async launch(profileId: string, input: LaunchResident): Promise<ResidentLaunchOutcome> {
+  async launch(
+    profileId: string,
+    input: LaunchResident,
+    options: ResidentLaunchOptions = {},
+  ): Promise<ResidentLaunchOutcome> {
     const spelling = input.repoRoot?.trim() ?? "";
     const resolved = spelling ? await this.resolveRepoRoot(spelling) : { ok: true as const, repoRoot: null };
     // A replay first, from the run row alone, read AFTER the await: a racing request with the
@@ -346,11 +406,75 @@ export class ResidentManager {
     if (!stored) throw new Error(`resident run ${runId} vanished after its reservation`);
     this.publishRun(runId);
 
-    const settlement = this.createAndSettle(stored.run, request);
+    const settlement = this.authorizeAndSettle(stored.run, request, options.mayConsumeControlClick === true);
     this.settling.set(runId, settlement);
     void settlement.finally(() => this.settling.delete(runId));
     await this.awaitBriefly(settlement);
     return this.answer(runId);
+  }
+
+  /**
+   * Consume the desktop Launch click, when the run may have one, then create and settle.
+   *
+   * After the reservation, so only the request that reserved the run consumes a click: a racing
+   * duplicate is answered as this one's replay and never asks. Before the task, so the session
+   * cannot exist before its grant is decided. Never rejects.
+   */
+  private async authorizeAndSettle(
+    run: ResidentRun,
+    request: ResidentLaunchInput,
+    mayConsumeControlClick: boolean,
+  ): Promise<void> {
+    // Authority comes from the run's pinned revision, never the profile as it reads now.
+    if (mayConsumeControlClick && run.settings.authority.controlOtherSessions) {
+      await this.consumeLaunchClick(run);
+    }
+    await this.createAndSettle(run, request);
+    // The launch answers with the grant's outcome - applied or not - rather than with a consumed
+    // click, so Dispatch and the dock can say which. Bounded like the launch itself: a session
+    // that never gets an identity leaves the click recorded and the outcome pending.
+    await this.awaitBriefly(this.grantDecided(run.id));
+  }
+
+  /** Resolves once this run has no grant waiting: decided, dropped, or never armed. */
+  private grantDecided(runId: string): Promise<void> {
+    if (!this.grantWatches.has(runId)) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.grantWaiters.set(runId, [...(this.grantWaiters.get(runId) ?? []), resolve]);
+    });
+  }
+
+  /** Forget a waiting grant and release whoever waits on its decision. */
+  private dropGrantWatch(runId: string): void {
+    this.grantWatches.delete(runId);
+    for (const resolve of this.grantWaiters.get(runId) ?? []) resolve();
+    this.grantWaiters.delete(runId);
+  }
+
+  /**
+   * Ask the shell for the click armed for exactly this launch request, profile and revision, and
+   * record it. Anything else - no desktop parent, no click, an expired or replayed one, a different
+   * revision, a write that failed - leaves the run ungranted.
+   */
+  private async consumeLaunchClick(run: ResidentRun): Promise<void> {
+    let authorized = false;
+    try {
+      authorized = await this.authorizeLaunch({
+        requestId: run.launchRequestId,
+        profileId: run.profileId,
+        revision: run.profileRevision,
+      });
+    } catch (error) {
+      console.error(`[residents] could not consume the Launch click for resident run ${run.id}:`, error);
+    }
+    if (!authorized) return;
+    try {
+      if (recordResidentRunControlAuthorized(run.id, this.now())) {
+        this.grantWatches.set(run.id, { taskId: run.taskId, kind: "launch" });
+      }
+    } catch (error) {
+      console.error(`[residents] could not record the Launch click for resident run ${run.id}; it starts without control:`, error);
+    }
   }
 
   /** Create the reserved task, wait for its dispatch, and record the outcome in one write. */
@@ -448,7 +572,13 @@ export class ResidentManager {
     const stored = getResidentRun(runId);
     const summary = stored ? residentRunSummary(stored.run) : null;
     if (summary) this.deps.registry.upsertResidentRun(summary);
-    else this.deps.registry.removeResidentRun(runId);
+    else {
+      // A run that failed or ended has no session left to grant.
+      this.dropGrantWatch(runId);
+      this.decidedGrants.delete(runId);
+      this.deps.registry.removeResidentRun(runId);
+    }
+    if (summary?.launchState === "launched") this.applyWaitingGrants();
   }
 
   private startedSession(taskId: string, task: Task | undefined): string | null {
@@ -591,6 +721,10 @@ export class ResidentManager {
         if (event.task.kind === "resident" && isTerminalTask(event.task.status)) {
           this.endRunForTask(event.task.id);
         }
+        this.applyWaitingGrants();
+        return;
+      case "session_upsert":
+        this.applyWaitingGrants();
         return;
       case "task_remove":
         this.endRunForTask(event.id);
@@ -657,5 +791,155 @@ export class ResidentManager {
       }
     }
     return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
+  }
+
+  // ---- session control: the grant a desktop Launch click gives a run ----
+
+  /**
+   * After SDK restore, watch every open run that recorded a complete grant. A run missing any of
+   * the four recorded fields - including every run from before they existed - stays ungranted.
+   *
+   * A run holding only a consumed click lost the in-memory watch that would have applied it when
+   * the previous daemon stopped, so nothing will ever apply it now. Its record is cleared, so a
+   * launch replay reads not granted rather than pending. Runs this daemon run launched or decided
+   * are its own watches' business and are left alone.
+   */
+  private watchRestoredGrants(): void {
+    for (const { run } of listOpenResidentRuns()) {
+      if (run.launchState !== "launched") continue;
+      if (this.decidedGrants.has(run.id) || this.grantWatches.has(run.id)) continue;
+      if (!residentRunControlRecorded(run.control) || !run.settings.authority.controlOtherSessions) {
+        if (run.control.authorizedAt !== null) {
+          this.decidedGrants.add(run.id);
+          clearResidentRunControl(run.id);
+        }
+        continue;
+      }
+      this.grantWatches.set(run.id, { taskId: run.taskId, kind: "restore", recorded: { ...run.control } });
+    }
+    this.applyWaitingGrants();
+  }
+
+  /**
+   * Decide every waiting grant whose session now has a full identity. Synchronous from the
+   * identity read through the grant, so nothing can replace the conversation in between: what is
+   * granted, and what is recorded, is the identity the Registry binds right now.
+   */
+  private applyWaitingGrants(): void {
+    if (this.grantWatches.size === 0) return;
+    // Deleting the entry being visited is safe while iterating a Map.
+    for (const [runId, watch] of this.grantWatches) {
+      const sessionId = this.watchedSession(watch);
+      if (!sessionId) continue;
+      const identity = this.grantIdentity(sessionId, watch.taskId);
+      if (identity === "waiting") continue;
+      this.grantWatches.delete(runId);
+      try {
+        this.decideGrant(runId, sessionId, watch, identity);
+      } catch (error) {
+        console.error(`[residents] could not decide session control for resident run ${runId}:`, error);
+      } finally {
+        this.dropGrantWatch(runId);
+      }
+    }
+  }
+
+  /**
+   * The session a waiting grant is decided on: the one the run's task is bound to. After a restart
+   * the Registry may have bound that session to another task, which unbinds the run's; the run's
+   * own `sdk_sessions` row still names the session it launched, so the identity check sees the
+   * other task and the grant is forgotten rather than waited on for the rest of the run.
+   */
+  private watchedSession(watch: GrantWatch): string | null {
+    const bound = this.deps.registry.getTask(watch.taskId)?.sessionId ?? null;
+    if (bound || watch.kind === "launch") return bound;
+    const rows = this.sessionRowsForTask(watch.taskId);
+    return rows[rows.length - 1] ?? null;
+  }
+
+  private decideGrant(
+    runId: string,
+    sessionId: string,
+    watch: GrantWatch,
+    identity: ResidentRunControlIdentity | null,
+  ): void {
+    this.decidedGrants.add(runId);
+    if (watch.kind === "restore") {
+      const same = identity !== null
+        && identity.conversationId === watch.recorded.conversationId
+        && identity.cwd === watch.recorded.cwd
+        && identity.episodeId === watch.recorded.episodeId;
+      // A clear, a new conversation, a changed working directory or a replacement work episode
+      // does not carry the grant, and nothing later can bring it back.
+      if (!same) {
+        clearResidentRunControl(runId);
+        return;
+      }
+      // A grant this restore cannot apply is forgotten too: otherwise a later restart would apply
+      // from a record that this one refused.
+      if (!this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+        clearResidentRunControl(runId);
+        return;
+      }
+      this.logGrant(sessionId, runId, "restore");
+      return;
+    }
+    // A grant that could not be applied leaves the run with no record at all, so the launch
+    // answers - and Dispatch and the dock say - that it started without control.
+    if (!identity || !this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+      clearResidentRunControl(runId);
+      return;
+    }
+    // Apply, then record, then log. Applying first means no record outlives a grant that never
+    // applied; recording before anything else that can fail means a live grant is always one a
+    // restart can restore. A record that cannot be written takes the live grant back.
+    try {
+      if (!recordResidentRunControlGrant(runId, identity)) throw new Error("the run no longer holds its Launch click");
+    } catch (error) {
+      this.deps.registry.setSessionControlEnabled(sessionId, false);
+      clearResidentRunControl(runId);
+      throw error;
+    }
+    this.logGrant(sessionId, runId, "launch_click");
+  }
+
+  /** The grant's audit line. Best effort: the grant and its record already agree without it. */
+  private logGrant(sessionId: string, runId: string, source: "launch_click" | "restore"): void {
+    try {
+      logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source });
+    } catch (error) {
+      console.error(`[residents] could not log the session-control grant for resident run ${runId}:`, error);
+    }
+  }
+
+  /**
+   * The grant identity of a run's session, minus the process id: `waiting` while the Registry has
+   * no full identity for it yet, or null when the session cannot take this run's grant - it is
+   * gone, or the Registry binds it to a task other than this run's.
+   */
+  private grantIdentity(sessionId: string, taskId: string): ResidentRunControlIdentity | "waiting" | null {
+    const registry = this.deps.registry;
+    const session = registry.getSession(sessionId);
+    if (!session || session.state === "exited") return null;
+    if (registry.sessionControlIdentity(sessionId) === null) return "waiting";
+    const episode = registry.workEpisodeForSession(sessionId);
+    if (!episode || !session.agentSessionId || !session.cwd) return "waiting";
+    if (registry.taskForSession(sessionId, session.cwd)?.id !== taskId) return null;
+    return { conversationId: session.agentSessionId, cwd: session.cwd, episodeId: episode.episodeId };
+  }
+
+  /**
+   * The operator is turning this session's control off with the existing toggle, and the route
+   * calls this before the live grant goes. When the session is a resident run's, forget the run's
+   * grant first, so no later failure can leave a record a restart would give back.
+   */
+  sessionControlRevoked(sessionId: string): void {
+    const session = this.deps.registry.getSession(sessionId);
+    const taskId = session?.task?.id ?? this.deps.registry.taskForSession(sessionId, session?.cwd ?? null)?.id;
+    if (!taskId) return;
+    const stored = residentRunForTask(taskId);
+    if (!stored) return;
+    this.dropGrantWatch(stored.run.id);
+    clearResidentRunControl(stored.run.id);
   }
 }

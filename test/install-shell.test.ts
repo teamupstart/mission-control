@@ -6,9 +6,12 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { renderInstallBootstrap } from '../scripts/render-install-bootstrap.mjs';
+import { DMG_ROOT_EXTRAS } from '../src/shared/binary-distribution.mjs';
 
 const root = process.cwd();
 const shell = renderInstallBootstrap();
+// Every non-app entry electron-builder put at the root of alpha-80b1258e's published DMG.
+const publishedDmgRoot = ['Read Me.txt', '.DS_Store', '.VolumeIcon.icns', '.background.tiff'];
 const commit = 'a'.repeat(40);
 function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Control.app') {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'binary-bootstrap-')));
@@ -68,7 +71,7 @@ else if(tool==='stat') console.log(statSync(args.at(-1)).size);
 else if(tool==='od') console.log(fail==='architecture'?'ce fa ed fe 07 00 00 00':'cf fa ed fe 0c 00 00 01');
 else if(tool==='codesign') {if(fail==='signer')process.exit(1);}
 else if(tool==='spctl') {console.error(fail==='notarization'?'source=Developer ID':'source=Notarized Developer ID');}
-else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);cpSync(${JSON.stringify(candidate)},join(args.at(-1),fail==='root-mismatch'?'Mission Control.app':${JSON.stringify(appName)}),{recursive:true,verbatimSymlinks:true});if(fail==='mixed-root')cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true});}}
+else if(tool==='hdiutil') {if(args[0]==='attach') {if(fail==='mount')process.exit(1);for(const name of ${JSON.stringify(publishedDmgRoot)})writeFileSync(join(args.at(-1),name),'volume metadata');if(fail==='stray-root')writeFileSync(join(args.at(-1),'payload.command'),'#!/bin/sh');cpSync(${JSON.stringify(candidate)},join(args.at(-1),fail==='root-mismatch'?'Mission Control.app':${JSON.stringify(appName)}),{recursive:true,verbatimSymlinks:true});if(fail==='mixed-root')cpSync(${JSON.stringify(candidate)},join(args.at(-1),'Mission Control.app'),{recursive:true});}}
 else if(tool==='ditto') cpSync(args[0],args[1],{recursive:true,verbatimSymlinks:true});
 else {process.exit(99);}
 `;
@@ -87,6 +90,11 @@ else {process.exit(99);}
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {
   assert.equal(readFileSync(join(root, 'scripts/install.sh'), 'utf8'), shell);
 });
+test('bootstrap DMG root check is rendered from the shared allow-list', () => {
+  const words = shell.match(/case "\$\{entry##\*\/\}" in "\$app_bundle"\|([^)]*)\)/)?.[1];
+  assert.deepEqual(words?.split('|').map((word) => word.slice(1, -1)), [...DMG_ROOT_EXTRAS]);
+  for (const name of publishedDmgRoot) assert.ok(DMG_ROOT_EXTRAS.includes(name), name);
+});
 test('native bootstrap verifies twice, unmounts, and forwards quoted options without host build tools', t => {
   const f = fixture(t); const result = f.run(['--apps-dir', '/A folder/Applications', '--dry-run']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -102,6 +110,7 @@ for (const [failure, message] of Object.entries({
   'signed-name': /signed app name differs/,
   'root-mismatch': /unexpected entry|Unexpected DMG|does not contain|unexpected DMG|exactly one/i,
   'mixed-root': /unexpected entry|Unexpected DMG|does not contain|unexpected DMG|exactly one/i,
+  'stray-root': /Unexpected DMG root/,
   'missing-gh': /GitHub CLI \(gh\) is required/,
   identity: /signed app differs from the selected release/,
   oversize: /Canonical download failed|Download exceeds its size limit/,

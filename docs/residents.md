@@ -275,11 +275,13 @@ every resume after that reads only the copy:
 - A global server added later, a field added to a native entry, an edited or deleted custom
   server, a changed secret or an edited profile never reaches a running resident. The next launch
   picks it up.
-- Only the snapshot's servers start, plus Mission Control's own. Native MCP configuration is not
-  read for a resident at all: on Claude Code a repository's `.mcp.json`, local-scope servers,
-  plugin servers and claude.ai connectors do not load. On Codex, a server that only a trusted
-  project's `.codex/config.toml` (or a system or managed configuration) defines is switched off
-  for the run.
+- Only the snapshot's servers start, plus Mission Control's own. Native MCP configuration is
+  consulted, never loaded: a launch reads each harness's global servers to resolve the set, and
+  Codex's configuration layers are read again to verify the run before any server starts, but a
+  native definition reaches a resident only as its snapshot copy. On Claude Code a repository's
+  `.mcp.json`, local-scope servers, plugin servers and claude.ai connectors do not load. On Codex,
+  a server that only a trusted project's `.codex/config.toml` (or a system or managed
+  configuration) defines is switched off for the run.
 - A launch is refused, with the reason, when the set cannot be pinned: an inherited or selected
   global server residents cannot use, a custom server named like a global server of that harness,
   a selected server that no longer exists, a custom secret that is not set, or, on Codex, another

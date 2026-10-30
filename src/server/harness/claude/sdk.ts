@@ -1289,7 +1289,8 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
  * because a resident's launcher entries carry that start's single-use credentials.
  */
 function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
-  const servers: Record<string, unknown> = {};
+  // No prototype, so every server name - whatever a configuration used - is an own entry.
+  const servers: Record<string, unknown> = Object.create(null);
   if (opts.mcp) {
     servers[opts.mcp.serverName] = { type: "stdio", command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env };
   }
@@ -1321,10 +1322,15 @@ async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions):
     }),
   ]);
   if (timer) clearTimeout(timer);
-  const extra = statuses?.find((status) => !allowed.has(status.name) && status.status !== "disabled");
-  if (!extra) return;
+  if (!statuses) return;
+  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  const configured = new Set(statuses.map((status) => status.name));
+  const missing = [...allowed].find((name) => !configured.has(name));
+  if (!extra && !missing) return;
   await query.return(undefined).catch(() => {});
-  throw new Error(`this resident's Claude Code session configured the MCP server ${extra.name}, which is not in its snapshot`);
+  throw new Error(extra
+    ? `this resident's Claude Code session configured the MCP server ${extra.name}, which is not in its snapshot`
+    : `this resident's Claude Code session did not configure its MCP server ${missing}`);
 }
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {

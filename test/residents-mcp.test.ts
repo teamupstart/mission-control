@@ -313,6 +313,28 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
   assert.match(catalog.parseCodexServer("web", { url: "https://x" }, undefined).summary.unavailable!, /could not say how it authenticates/);
 });
 
+test("a global server named __proto__ is listed as unavailable on either harness, never silently dropped", () => {
+  // Hand-written JSON: JSON.parse keeps `__proto__` as an own key, which is what an operator's
+  // .claude.json would carry.
+  const dir = mkdtempSync(join(home, "claude-proto-"));
+  const path = join(dir, ".claude.json");
+  writeFileSync(path, `{"mcpServers":{"__proto__":{"command":"srv"},"ok":{"command":"srv"}}}`);
+  const read = catalog.readClaudeGlobalMcp(path, {});
+  assert.deepEqual(read.servers.map((server) => server.summary.name), ["__proto__", "ok"]);
+  assert.match(read.servers[0]!.summary.unavailable!, /its name __proto__ cannot be carried/);
+  assert.equal(read.servers[0]!.transport, null, "nothing to snapshot");
+  assert.equal(read.servers[1]!.summary.unavailable, null);
+  assert.match(catalog.parseCodexServer("__proto__", { command: "srv" }, null).summary.unavailable!, /its name __proto__ cannot be carried/);
+});
+
+test("a harness without a global reader offers no global servers, never another harness's", async () => {
+  // Pi has no resident MCP selection today; a reader asked for it must not fall through to Codex.
+  const read = await catalog.readGlobalMcp("pi" as never);
+  assert.equal(read.agent, "pi");
+  assert.deepEqual(read.servers, []);
+  assert.equal(read.problem, null);
+});
+
 // ---- the effective set ----
 
 function globalsOf(agent: "claude" | "codex", servers: Record<string, unknown>): GlobalRead {

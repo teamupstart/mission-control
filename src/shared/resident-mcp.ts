@@ -53,6 +53,15 @@ export function residentMcpNameProblem(name: string): string | null {
   return null;
 }
 
+/**
+ * Why a global server's name cannot be carried into a resident run, or null. A harness's own
+ * configuration may use any key, but `__proto__` is not an ordinary key once it is copied into a
+ * JavaScript object, so a server by that name could silently vanish from a launch.
+ */
+export function residentMcpGlobalNameProblem(name: string): string | null {
+  return name === "__proto__" ? "its name __proto__ cannot be carried into a resident's configuration" : null;
+}
+
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** RFC 9110 token characters, the grammar of a header field name. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;

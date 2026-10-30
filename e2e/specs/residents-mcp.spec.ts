@@ -177,3 +177,66 @@ test("a custom MCP server's secret is write-only, its selection reaches the laun
   expect(second.status).toBe(1);
   expect(second.stderr).toContain("credential file is missing");
 });
+
+test("a profile that selects a global server with inheritance off launches with only that server and Mission Control's", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // Two usable globals and one residents cannot use: with inheritance off, only the selection
+  // may reach the launch, and the unusable one no longer refuses it.
+  writeFileSync(join(daemon.home, ".claude.json"), JSON.stringify({
+    hasCompletedOnboarding: true,
+    mcpServers: {
+      "github-global": { command: "/usr/local/bin/github-mcp", args: ["--stdio"], env: { GITHUB_TOKEN: GLOBAL_SECRET } },
+      "docs-global": { command: "/usr/local/bin/docs-mcp" },
+      leaky: { command: "srv", args: [`--token=${GLOBAL_SECRET}`] },
+    },
+  }));
+
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const profile = page.getByRole("region", { name: "New resident profile" });
+  await profile.getByLabel("Name").fill("Selection Resident");
+  await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
+  await profile.getByLabel("Default repository").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  const inherit = profile.getByRole("checkbox", { name: "Inherit harness defaults" });
+  await inherit.uncheck();
+  await expect(profile.getByText("Only the selection.", { exact: false })).toBeVisible();
+  const add = profile.getByRole("combobox", { name: "Add an MCP server" });
+  await add.selectOption({ label: "github-global" });
+  await profile.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(profile.getByRole("list", { name: "Selected MCP servers" })).toContainText("github-global");
+  await profile.getByRole("button", { name: "Save" }).click();
+  const saved = page.getByRole("region", { name: "Resident profile Selection Resident" });
+  await expect(saved).toContainText("Revision 1");
+
+  // The saved profile shows the final state: inheritance off, one global server selected.
+  const section = saved.getByRole("region", { name: "MCP servers" });
+  await expect(section.getByRole("checkbox", { name: "Inherit harness defaults" })).not.toBeChecked();
+  const selected = section.getByRole("list", { name: "Selected MCP servers" });
+  await expect(selected.getByRole("listitem")).toHaveCount(1);
+  await expect(selected).toContainText("github-global");
+  await section.scrollIntoViewIfNeeded();
+  await capture(section, "profile-mcp-selection-only");
+
+  await saved.getByRole("button", { name: "Launch" }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toContainText("MCP: only github-global");
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+  // The launch the agent received: strict MCP config, and exactly the selection plus Mission's
+  // server. Neither the other usable global nor the unusable one is attached.
+  let argv: string[] = [];
+  await expect.poll(() => {
+    const record = recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+      .find((entry) => entry.argv.includes("--strict-mcp-config"));
+    argv = record?.argv ?? [];
+    return argv.length > 0;
+  }, { timeout: 60_000 }).toBe(true);
+  const servers = JSON.parse(argvValue(argv, "--mcp-config") ?? "{}").mcpServers as Record<string, { args: string[] }>;
+  expect(Object.keys(servers).sort()).toEqual(["github-global", "mission-control"]);
+  expect(servers["github-global"]!.args).toContain("--credential");
+  expect(argv.join(" ")).not.toContain(GLOBAL_SECRET);
+});

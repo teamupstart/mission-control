@@ -530,8 +530,10 @@ remaining window; the startup-status watch catches any server it would add.
 Reproduce with `npm run build:resident-mcp-launcher && node --import tsx scripts/probe-resident-mcp.ts`.
 It drives the production drivers against the real binaries, with every home disposable, both model
 APIs answered by loopback mocks and every agent environment built from scratch, so it spends no
-tokens and reads no operator configuration. Measured on Claude Code 2.1.310 and Codex 0.160.0, at
-launch and on resume:
+tokens and reads no operator configuration. Measured on 2026-10-30 on Claude Code 2.1.310 and
+Codex 0.160.0, at launch and on resume, 74 of 74 checks passing; the output is
+[retained on pull request #1269](https://github.com/teamupstart/mission-control/pull/1269#issuecomment-6532515313).
+A later harness release is not covered until the probe is run against it:
 
 - Fixture servers that record their own start, placed in every native source a fixture can reach
   (Claude: user, local, project and plugin; Codex: user and a trusted project, including a dotted

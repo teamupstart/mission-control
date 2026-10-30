@@ -229,10 +229,14 @@ refuses new requests; it does not undo an action already accepted by a runtime.
 
 A custom MCP server's secret values - environment variables and headers marked **Secret**, and
 every URL query value - are write-only. They are accepted on a save and never returned: every
-route answers with the field's name and whether it is set. They are kept apart from the
+dashboard route answers with the field's name and whether it is set. They are kept apart from the
 definition, which lives in `app_config` (`residents.mcpServers`) and travels with settings
-snapshots, in the `resident_mcp_secrets` table, which no route, SSE frame, settings snapshot or
-log reads.
+snapshots, in the `resident_mcp_secrets` table, which no dashboard route, SSE frame, settings
+snapshot or log reads.
+
+The one exception is the scoped launcher's redemption route, `POST /api/residents/mcp/redeem`
+(below). It answers only a holder of a valid single-use ticket, and only with that ticket's one
+server's definition and values, read from the run's snapshot rather than from this table.
 
 A global server's configuration does not say which of its parts are credentials, so all of it is
 treated as private: the catalog the dashboard sees carries only its name, transport, command

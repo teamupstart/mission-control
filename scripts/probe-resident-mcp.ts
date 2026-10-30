@@ -235,8 +235,12 @@ function observedLaunch(runId: string): Launch {
 
 const SNAPSHOT_SERVERS = ["foo.bar", "global-stdio", "mission-control", "secret-stdio", "snap"];
 
-/** Only this probe's own descendants, by pid and parent alone; then just their argv. */
-function descendantArgs(): string[] {
+/**
+ * Only this probe's own descendants, by pid and parent alone; then just their argv. The agent is
+ * still running whenever this is called, so finding nothing to inspect, or failing to read what
+ * was found, fails the probe: an empty list would pass the secret scan without observing anything.
+ */
+function descendantArgs(label: string): string[] {
   const table = execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" })
     .split("\n").map((line) => line.trim().split(/\s+/).map(Number)).filter((row) => row.length === 2 && row.every(Number.isFinite));
   const children = new Map<number, number[]>();
@@ -249,12 +253,17 @@ function descendantArgs(): string[] {
     }
   };
   walk(process.pid);
-  if (mine.length === 0) return [];
+  assert.ok(mine.length > 0, `${label}: no descendant process was running to inspect`);
+  let args: string[];
   try {
-    return execFileSync("ps", ["-ww", "-o", "args=", "-p", mine.join(",")], { encoding: "utf8" }).split("\n");
-  } catch {
-    return [];
+    args = execFileSync("ps", ["-ww", "-o", "args=", "-p", mine.join(",")], { encoding: "utf8" }).split("\n").filter(Boolean);
+  } catch (err) {
+    const running = mine.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }).length;
+    throw new Error(`${label}: could not read the arguments of this probe's descendant processes (${running} of ${mine.length} still running)`, { cause: err });
   }
+  assert.ok(args.length > 0, `${label}: ps listed none of this probe's ${mine.length} descendant processes`);
+  say({ check: `${label}: process arguments read for every running descendant`, processes: args.length, pass: true });
+  return args;
 }
 
 function filesUnder(dir: string): string[] {
@@ -441,7 +450,7 @@ async function probeClaude(): Promise<void> {
       say({ harness: "claude", phase, check: "the agent ran a shell command whose output was captured", pass: shellRan, requests: bodies.length, toolSent });
       assert.ok(shellRan, "the shell command did not run");
       leaks(`claude ${phase}`, {
-        "process arguments": descendantArgs().join("\n"),
+        "process arguments": descendantArgs(`claude ${phase}`).join("\n"),
         "the agent environment": JSON.stringify(agentEnv),
         "the shell command's environment and every model request": bodies.join("\n"),
         transcripts: filesUnder(join(config, "projects")).map((path) => readFileSync(path, "utf8")).join("\n"),
@@ -593,7 +602,7 @@ async function probeCodex(): Promise<void> {
       say({ harness: "codex", phase, check: "no Codex database was created inside the overlay instead of the operator's home", pass: strayDatabases.length === 0, strayDatabases });
       assert.equal(strayDatabases.length, 0, "a Codex database was created inside the overlay");
       leaks(`codex ${phase}`, {
-        "process arguments": descendantArgs().join("\n"),
+        "process arguments": descendantArgs(`codex ${phase}`).join("\n"),
         "the agent environment": JSON.stringify(agentEnvs),
         "the shell command's environment and every model request": bodies.join("\n"),
         "the generated configuration": generated,

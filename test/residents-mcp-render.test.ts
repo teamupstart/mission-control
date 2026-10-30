@@ -251,6 +251,36 @@ test("a Claude session that configured a server outside its snapshot fails the l
   );
 });
 
+test("a Claude session that did not configure a snapshot server fails the launch", async () => {
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => idleQuery(() => ["mission-control"]) as never,
+  });
+  await assert.rejects(
+    spec.launch(sdkOptions({ residentMcp: residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]) })),
+    /did not configure its MCP server snap/,
+  );
+});
+
+test("a server name that is an Object.prototype key is an own mcpServers entry, so it is not silently dropped", async () => {
+  let servers: Record<string, unknown> = {};
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      servers = (options as { mcpServers: Record<string, unknown> }).mcpServers;
+      return idleQuery(() => Object.keys(servers)) as never;
+    },
+  });
+  const handle = await spec.launch(sdkOptions({
+    residentMcp: residentLaunch(["__proto__"], () => [{ name: "__proto__", options: {}, shape: "stdio", command: "p", args: [], env: {} }]),
+  }));
+  assert.deepEqual(Object.keys(servers), ["mission-control", "__proto__"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(servers)).__proto__, { type: "stdio", command: "p", args: [], env: {} }, "serialized into --mcp-config");
+  await handle.stop();
+});
+
 /** A scripted app-server: replies by method; `config/read` answers from a function. */
 class ScriptedServer implements AppServerTransport {
   readonly sent: Array<Record<string, unknown>> = [];

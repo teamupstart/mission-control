@@ -8,6 +8,7 @@ import {
   credentialArgumentProblem,
   credentialFormArgs,
   plaintextCredentialProblem,
+  residentMcpGlobalNameProblem,
   residentMcpSecretField,
   type ResidentMcpCatalog,
   type ResidentMcpGlobalServer,
@@ -199,6 +200,8 @@ function claudeOptions(entry: Record<string, unknown>): ResidentMcpOptions | str
 
 /** Parse one Claude Code server entry into a snapshot definition, or the reason it cannot be. */
 export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.ProcessEnv = process.env): GlobalMcpDefinition {
+  const badName = residentMcpGlobalNameProblem(name);
+  if (badName) return unreadable(name, "stdio", badName);
   if (!PLAIN(entry)) return unreadable(name, "stdio", "its configuration is not an object");
   const type = entry.type ?? "stdio";
   if (type !== "stdio" && type !== "http" && type !== "sse") {
@@ -330,6 +333,8 @@ function codexOptions(entry: Record<string, unknown>): ResidentMcpOptions | stri
  * login for the server, which the launcher's bridge cannot perform.
  */
 export function parseCodexServer(name: string, entry: unknown, authStatus: string | null | undefined): GlobalMcpDefinition {
+  const badName = residentMcpGlobalNameProblem(name);
+  if (badName) return unreadable(name, "stdio", badName);
   if (!PLAIN(entry)) return unreadable(name, "stdio", "its configuration is not a table");
   const http = entry.url !== undefined;
   const allowed = http ? CODEX_HTTP_FIELDS : CODEX_STDIO_FIELDS;
@@ -472,8 +477,12 @@ export async function readCodexGlobalMcp(now = Date.now()): Promise<GlobalMcpRea
 }
 
 /** The production readers. */
-export const readGlobalMcp: GlobalMcpReader = async (agent) =>
-  agent === "claude" ? readClaudeGlobalMcp() : readCodexGlobalMcp();
+export const readGlobalMcp: GlobalMcpReader = async (agent) => {
+  if (agent === "claude") return readClaudeGlobalMcp();
+  if (agent === "codex") return readCodexGlobalMcp();
+  // A harness without a reader here has no global servers to offer; never another harness's.
+  return { agent, servers: [], problem: null, readAt: Date.now() };
+};
 
 /** No global servers at all: what a manager constructed without a reader sees. */
 export const noGlobalMcp: GlobalMcpReader = async (agent) => ({ agent, servers: [], problem: null, readAt: Date.now() });

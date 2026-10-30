@@ -13,17 +13,22 @@ const shell = renderInstallBootstrap();
 // Every non-app entry electron-builder put at the root of alpha-80b1258e's published DMG.
 const publishedDmgRoot = ['Read Me.txt', '.DS_Store', '.VolumeIcon.icns', '.background.tiff'];
 const commit = 'a'.repeat(40);
-function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Control.app') {
+// Main moved past the published alpha, whose Signed distribution run is still pending.
+const pendingHead = 'c'.repeat(40);
+// A two-digit minor proves releases are compared as versions, not as strings.
+const version = '1.10.0';
+type Listed = {tag_name: string; draft: boolean; prerelease: boolean; assets: {id: number; name: string; size: number; state: string}[]};
+function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Control.app', inventory?: Listed[]) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'binary-bootstrap-')));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const candidate = join(dir, 'candidate.app');
-  const alpha = failure === 'alpha' || failure === 'missing-alpha';
+  const alpha = failure === 'alpha' || failure === 'missing-alpha' || failure === 'alpha-pending';
   mkdirSync(join(candidate, 'Contents/MacOS'), {recursive: true});
   mkdirSync(join(candidate, 'Contents/Resources/app/scripts'), {recursive: true});
   const log = join(dir, 'tools.log'); writeFileSync(log, '');
   writeFileSync(join(candidate, 'Contents/Info.plist'), JSON.stringify({CFBundleIdentifier: 'com.mission-control.app', CFBundleExecutable: 'Mission Control'}));
-  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...(appName === 'Agent Mission Control.app' && failure !== 'signed-name' ? {appBundleName: appName} : {}), commit: failure === 'identity' ? 'b'.repeat(40) : commit, version: '1.2.3'}}));
+  writeFileSync(join(candidate, 'Contents/Resources/app/package.json'), JSON.stringify({missionBinary: {...(appName === 'Agent Mission Control.app' && failure !== 'signed-name' ? {appBundleName: appName} : {}), commit: failure === 'identity' ? 'b'.repeat(40) : commit, version}}));
   writeFileSync(join(candidate, 'Contents/MacOS/Mission Control'), '#!/bin/bash\nprintf "runtime:%s\\n" "$@" >> "$PROBE_LOG"\n[[ $ELECTRON_RUN_AS_NODE == 1 ]]\n', {mode: 0o755});
   if (failure === 'symlink') symlinkSync('/etc/passwd', join(candidate, 'Contents/escape'));
   if (failure === 'symlink-parent') symlinkSync('..', join(candidate, 'escape'));
@@ -40,17 +45,18 @@ function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Con
   // minimum payload so logging cannot fail before the fixture downloads it.
   const dmg = Buffer.alloc(64 * 1024, 'signed dmg fixture');
   const manifest = {protocol: 1, ...(appName === 'Agent Mission Control.app' ? {appBundleName: failure === 'manifest-name' ? 'Unrelated.app' : appName} : {}), repo: 'teamupstart/mission-control', bundleId: 'com.mission-control.app',
-    channel: alpha ? 'alpha' : 'stable', releaseTag: alpha ? null : 'v1.2.3', version: '1.2.3', commit, platform: 'darwin', arch: failure === 'manifest-arch' ? 'x64' : 'arm64',
+    channel: alpha ? 'alpha' : 'stable', releaseTag: alpha ? null : `v${version}`, version, commit, platform: 'darwin', arch: failure === 'manifest-arch' ? 'x64' : 'arm64',
     minimumSystemVersion: '12.0', helperProtocol: {min: 1, max: 1}, assets: [
       {kind: 'app-zip', id: '12', name: 'app.zip', bytes: 3, sha256: 'a'.repeat(64)},
       {kind: 'dmg', id: '13', name: 'app.dmg', bytes: dmg.length, sha256: failure === 'digest' ? 'b'.repeat(64) : createHash('sha256').update(dmg).digest('hex')},
     ]};
-  const release = {tag_name: alpha ? `alpha-${commit}` : 'v1.2.3', draft: false, prerelease: alpha, assets: [
+  const release: Listed = {tag_name: alpha ? `alpha-${commit}` : `v${version}`, draft: false, prerelease: alpha, assets: [
     {id: 11, name: 'mission-control-manifest.json', size: 1024, state: 'uploaded'},
     ...manifest.assets.map(a => ({id: Number(a.id), name: a.name, size: a.bytes, state: 'uploaded'})),
   ]};
   if (failure === 'incomplete') release.assets.pop();
   if (failure === 'no-manifest') release.assets.shift();
+  const listing = inventory ?? (failure === 'missing-alpha' ? [] : [release]);
   const script = `#!${process.execPath}
 import {appendFileSync,readFileSync,writeFileSync,statSync,cpSync,mkdirSync,mkdtempSync} from 'node:fs';
 import {basename,join} from 'node:path';
@@ -59,10 +65,14 @@ appendFileSync(${JSON.stringify(log)}, tool+':'+JSON.stringify(args)+'\\n');
 if(tool==='gh') {
   const endpoint=args[3];
   if(fail==='transport') {console.error('error connecting to api.github.com');process.exit(1);}
-  if((fail.startsWith('missing-')||fail==='no-access')&&(endpoint.includes('/releases/tags/')||endpoint.endsWith('/releases/latest'))) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+  if((fail.startsWith('missing-')||fail==='no-access')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+  if(fail==='no-access'&&endpoint.includes('/releases?')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(fail==='no-access'&&endpoint==='repos/teamupstart/mission-control') {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(endpoint.endsWith('/assets/11')) process.stdout.write(fail==='oversize'?'x'.repeat(20000):fail==='malformed'?'invalid':${JSON.stringify(JSON.stringify(manifest))});
   else if(endpoint.endsWith('/assets/13')) process.stdout.write(fail==='truncated'?'short':${JSON.stringify(dmg.toString())});
+  else if(endpoint.includes('/releases?')) console.log(endpoint.endsWith('&page=1')?${JSON.stringify(JSON.stringify(listing))}:'[]');
+  else if(endpoint.includes('/commits?')) console.log(endpoint.endsWith('&page=1')?JSON.stringify((fail==='alpha-pending'?[${JSON.stringify(pendingHead)}]:[]).concat(${JSON.stringify(commit)}).map(sha=>({sha}))):'[]');
+  else if(endpoint.endsWith('/commits/main')) console.log(JSON.stringify({sha:fail==='alpha-pending'?${JSON.stringify(pendingHead)}:${JSON.stringify(commit)}}));
   else if(endpoint.includes('/commits/')) console.log(JSON.stringify({sha:${JSON.stringify(commit)}}));
   else console.log(${JSON.stringify(JSON.stringify(release))});
 } else if(tool==='plutil') {
@@ -87,7 +97,9 @@ else {process.exit(99);}
   for (const tool of mocked.filter(t => t !== 'gh')) input = input.replaceAll(`/usr/bin/${tool}`, join(bin, tool)).replaceAll(`/usr/sbin/${tool}`, join(bin, tool));
   // Missing fixture tools must stay missing even on hosts with gh installed.
   // Production OS utilities use absolute paths; PATH contains only our probes.
-  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: 30_000})};
+  // Every fake tool is a Node process, so a complete run already takes 15-20s on a
+  // loaded host; the bound catches a hang without failing a slow, correct run.
+  return {log, run: (args: string[] = []) => spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: 60_000})};
 }
 
 test('standalone bootstrap stays generated from the shipped publisher policy', () => {
@@ -131,7 +143,8 @@ for (const [failure, message] of Object.entries({
   'symlink-parent': /app contains an escaping or invalid link/,
 })) {
   test(`bootstrap refuses ${failure} before executing downloaded code`, t => {
-    const f = fixture(t, failure); const result = f.run();
+    // A plain run skips a release without a manifest, so name that release explicitly.
+    const f = fixture(t, failure); const result = f.run(failure === 'no-manifest' ? ['--ref', `v${version}`] : []);
     assert.notEqual(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stderr, message);
     assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
@@ -144,23 +157,78 @@ for (const args of [['--scope','user','--scope','system'], ['--scope','user','--
   });
 }
 
-test('alpha bootstrap pins the selected full main SHA without falling back to stable', t => {
+const ready = (tag_name: string, extra: Partial<Listed> = {}): Listed => ({tag_name, draft: false, prerelease: tag_name.startsWith('alpha-'), assets: [
+  {id: 90, name: 'app.dmg', size: 64, state: 'uploaded'}, {id: 91, name: 'mission-control-manifest.json', size: 1024, state: 'uploaded'}], ...extra});
+
+test('a default install selects the newest ready stable version, never merely the newest release record', t => {
+  const f = fixture(t, '', undefined, [
+    ready('v1.11.0', {assets: [{id: 92, name: 'app.dmg', size: 64, state: 'uploaded'}]}),
+    ready('v1.12.0', {assets: [{id: 93, name: 'mission-control-manifest.json', size: 1024, state: 'new'}]}),
+    ready('v2.0.0', {draft: true}), ready('v3.0.0', {prerelease: true}), ready(`alpha-${'d'.repeat(40)}`),
+    ready('v1.9.0'), ready(`v${version}`), ready('v1.2.30'),
+  ]);
+  const result = f.run(['--dry-run']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const log = readFileSync(f.log, 'utf8');
+  assert.ok(log.includes('"repos/teamupstart/mission-control/releases?per_page=100&page=1"'));
+  assert.deepEqual(log.match(/releases\/tags\/[^"]+/g), [`releases/tags/v${version}`]);
+  assert.doesNotMatch(log, /releases\/latest|commits\/main|forbidden:/);
+  assert.doesNotMatch(result.stderr, /alpha/);
+});
+
+test('a default install falls back to the newest alpha while no stable release has a ready binary', t => {
+  const f = fixture(t, 'alpha', undefined, [ready('v1.27.2', {assets: []}), ready(`alpha-${commit}`)]);
+  const result = f.run(['--dry-run']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /No stable release has a ready binary yet; installing the newest alpha\. The app offers stable releases as they publish\./);
+  const log = readFileSync(f.log, 'utf8');
+  assert.deepEqual(log.match(/releases\/tags\/[^"]+/g), [`releases/tags/alpha-${commit}`]);
+  assert.match(log, /runtime:--dry-run/);
+});
+
+test('an explicit stable channel never falls back to alpha', t => {
+  const f = fixture(t, 'alpha'); const result = f.run(['--channel', 'stable']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No stable release has a ready binary yet\. Pin one with --ref vX\.Y\.Z once it publishes, or follow main with --channel alpha/);
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /commits\/main|releases\/tags\/|runtime:|forbidden:/);
+});
+
+test('alpha bootstrap installs main\'s exact head when its alpha is ready', t => {
   const f = fixture(t, 'alpha'); const result = f.run(['--channel', 'alpha', '--dry-run']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /behind main/);
   const log = readFileSync(f.log, 'utf8');
   assert.match(log, /commits\/main/); assert.ok(log.includes(`releases/tags/alpha-${commit}`));
   assert.doesNotMatch(log, /releases\/latest|forbidden:/);
 });
 
-test('an unpublished alpha names the exact commit and its recovery instead of blaming transport', t => {
-  const f = fixture(t, 'missing-alpha'); const result = f.run(['--channel', 'alpha']);
+test('alpha bootstrap installs the newest published ancestor while main\'s head is still publishing', t => {
+  const f = fixture(t, 'alpha-pending'); const result = f.run(['--channel', 'alpha', '--dry-run']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, new RegExp(`Main ${pendingHead} has no published alpha yet; .*Installing the newest published alpha, 1 commit\\(s\\) behind main\\.`));
+  const log = readFileSync(f.log, 'utf8');
+  assert.ok(log.includes(`"repos/teamupstart/mission-control/commits?sha=${pendingHead}&per_page=100&page=1"`), 'walks the exact head, not a moving branch');
+  assert.deepEqual(log.match(/releases\/tags\/[^"]+/g), [`releases/tags/alpha-${commit}`]);
+  assert.match(log, /runtime:--dry-run/);
+});
+
+test('an alpha that is not in main\'s history is never substituted', t => {
+  const f = fixture(t, 'alpha', undefined, [ready(`alpha-${'e'.repeat(40)}`)]);
+  const result = f.run(['--channel', 'alpha']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No commit in main's recent history has a published alpha\. .*Retry after one publishes/);
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /releases\/tags\/|runtime:|forbidden:/);
+});
+
+test('a pinned unpublished alpha names the exact commit and its recovery instead of blaming transport', t => {
+  const f = fixture(t, 'missing-alpha'); const result = f.run(['--ref', commit]);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, new RegExp(`Commit ${commit} has no published alpha\\..*Retry after it publishes, or pin a published alpha with --ref FULL_SHA`));
   assert.doesNotMatch(result.stderr, /Canonical download failed/);
   const log = readFileSync(f.log, 'utf8');
   assert.equal((log.match(/releases\/tags\//g) ?? []).length, 1, 'no other alpha is substituted');
   assert.ok(log.includes(`"repos/teamupstart/mission-control/releases/tags/alpha-${commit}"`), 'requests the exact alpha release');
-  assert.doesNotMatch(log, /releases\/latest|runtime:|forbidden:/);
+  assert.doesNotMatch(log, /releases\/latest|releases\?|runtime:|forbidden:/);
 });
 
 test('an unpublished stable tag is named as missing', t => {
@@ -172,13 +240,12 @@ test('an unpublished stable tag is named as missing', t => {
   assert.doesNotMatch(log, /runtime:|forbidden:/);
 });
 
-test('a default stable install with no published release says so', t => {
-  const f = fixture(t, 'missing-latest'); const result = f.run();
+test('a default install with no ready release anywhere says so', t => {
+  const f = fixture(t, 'missing-alpha'); const result = f.run();
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /No stable release is published\. Pin one with --ref vX\.Y\.Z once it publishes, or follow main with --channel alpha/);
-  const log = readFileSync(f.log, 'utf8');
-  assert.ok(log.includes('"repos/teamupstart/mission-control/releases/latest"'));
-  assert.doesNotMatch(log, /releases\/tags\/|runtime:|forbidden:/);
+  assert.match(result.stderr, /No stable release has a ready binary yet; installing the newest alpha/);
+  assert.match(result.stderr, /No commit in main's recent history has a published alpha/);
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /releases\/latest|releases\/tags\/|runtime:|forbidden:/);
 });
 
 test('a release 404 from a repository gh cannot see keeps the authentication guidance', t => {
@@ -209,7 +276,7 @@ for (const channel of ['stable', 'alpha']) {
     assert.match(result.stderr, /Select a current Agent Mission Control release/);
     const log = readFileSync(f.log, 'utf8');
     assert.match(log, /releases\/assets\/11/);
-    assert.ok(log.includes(channel === 'alpha' ? `releases/tags/alpha-${commit}` : 'releases/latest'));
+    assert.ok(log.includes(channel === 'alpha' ? `releases/tags/alpha-${commit}` : `releases/tags/v${version}`));
     assert.doesNotMatch(log, /releases\/assets\/13|codesign:|spctl:|hdiutil:|ditto:|runtime:|forbidden:/);
     if (channel === 'alpha') assert.doesNotMatch(log, /releases\/latest/);
   });

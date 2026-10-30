@@ -1,4 +1,4 @@
-import { after, test, type TestContext } from "node:test";
+import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os, { homedir, tmpdir } from "node:os";
@@ -9,12 +9,19 @@ import { randomUUID } from "node:crypto";
 const root = mkdtempSync(join(tmpdir(), "resident-skills-test-"));
 process.env.MISSION_HOME = join(root, "state");
 after(() => rmSync(root, { recursive: true, force: true }));
-const { defaultSkillSources, parseResidentSkill, scanSkillSources, saveResidentSkillSources, residentSkillIndex, validateSkillDirectories } = await import("../src/server/residents/skill-index.ts");
+const { defaultSkillSources, parseResidentSkill, scanSkillSources, saveResidentSkillSources, residentSkillIndex, rescanResidentSkillIndex, validateSkillDirectories } = await import("../src/server/residents/skill-index.ts");
 const { ResidentSkillSourcesSchema } = await import("../src/shared/resident-skills.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { getAppConfig, setAppConfig } = await import("../src/server/db.ts");
 const { captureSettingsConfig, stageSettingsConfigRestore, restoreSettingsConfigInTransaction } = await import("../src/server/settings-backups/config-registry.ts");
 const { openDb } = await import("../src/server/db.ts");
+
+// These catalog fixtures model separate actions; the route tests pin the clock boundary.
+let scanClock = 0;
+beforeEach((t) => {
+  assert.ok("mock" in t);
+  t.mock.method(performance, "now", () => scanClock += 1_000);
+});
 
 function skill(path: string, name: string, description = "A fixture") {
   mkdirSync(path, { recursive: true });
@@ -469,7 +476,7 @@ test("saved catalogs remain stable until rescan, and source removal preserves fi
   const initial = saveResidentSkillSources({ directories: [row] });
   skill(join(path, "two"), "two");
   assert.equal(residentSkillIndex(), initial);
-  const refreshed = residentSkillIndex(true);
+  const refreshed = rescanResidentSkillIndex();
   assert.equal(refreshed.skills.filter((s) => s.sourceId === row.id).length, 2);
   saveResidentSkillSources({ directories: [] });
   assert.ok(!residentSkillIndex().skills.some((s) => s.sourceId === row.id));
@@ -483,7 +490,7 @@ test("a registered symlink becoming a home root is refused again on rescan", () 
   saveResidentSkillSources({ directories: [row] });
   rmSync(link);
   symlinkSync(homedir(), link);
-  assert.ok(residentSkillIndex(true).sources.find((s) => s.id === row.id)?.problems.some((p) => p.includes("above your home")));
+  assert.ok(rescanResidentSkillIndex().sources.find((s) => s.id === row.id)?.problems.some((p) => p.includes("above your home")));
 });
 
 test("sources round-trip in settings backups; old snapshots leave the current list intact", () => {
@@ -504,7 +511,7 @@ test("sources round-trip in settings backups; old snapshots leave the current li
 test("restored invalid source paths are reported and never scanned", () => {
   const row = directory("relative/skills");
   setAppConfig(APP_CONFIG_ENTRIES.residentSkillSources, { directories: [row] });
-  const index = residentSkillIndex(true);
+  const index = rescanResidentSkillIndex();
   assert.ok(index.sources.find((source) => source.id === row.id)?.problems.some((problem) => problem.includes("not an absolute path")));
   assert.ok(!index.skills.some((skill) => skill.sourceId === row.id));
 });

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const RESIDENT_SKILL_RESCAN_COOLDOWN_MS = 1_000;
+
 /** Persisted source ids. Append only. Custom sources use a separate UUID namespace. */
 export const RESIDENT_SKILL_SOURCE_IDS = [
   "mission", "claude-global", "agents-global", "codex-global", "claude-builtin", "codex-builtin",

@@ -26,10 +26,12 @@ test("a rescan cooldown tells the operator when to retry and clears after a succ
   // the visible retry behavior independent of browser scheduling under CI contention.
   await page.route("**/api/residents/skills/rescan", route => route.fulfill({
     status: 429, contentType: "application/json", headers: { "Retry-After": "1" },
-    body: JSON.stringify({ error: "Wait a second before rescanning skill sources again." }),
+    body: JSON.stringify({ error: "Wait a second before updating or rescanning skill sources again." }),
   }), { times: 1 });
   await panel.getByRole("button", { name: "Rescan" }).click();
-  await expect(panel.getByRole("alert")).toHaveText("Wait a second before rescanning skill sources again.");
+  await expect(panel.getByRole("alert")).toHaveText("Wait a second before updating or rescanning skill sources again.");
+  await expect(panel.getByRole("button", { name: "Rescan" })).toBeDisabled();
+  await expect(panel.getByLabel("Skill folder")).toBeDisabled();
   await capture(page, panel, "rescan-cooldown");
   await panel.getByRole("button", { name: "Rescan" }).click();
   await expect(panel.getByRole("alert")).toHaveCount(0);

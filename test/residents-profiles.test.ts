@@ -99,6 +99,8 @@ function body(name: string, over: Record<string, unknown> = {}) {
 }
 
 async function request(method: string, path: string, payload?: unknown) {
+  // Ordinary fixtures model separate operator actions; cooldown tests use app.request directly.
+  scanClock += 1_000;
   const response = await app.request(path, {
     method,
     headers,
@@ -402,6 +404,40 @@ test("all local clients share the rescan cooldown and can retry at its boundary"
   assert.equal(reads(), afterScan + 1);
 });
 
+test("source saves and rescans share admission without persisting a refused save", async (t) => {
+  const initial = (await request("GET", "/api/residents/skills")).json;
+  const reads = countSkillConfigReads(t);
+  const stored = () => openDb().prepare("SELECT value FROM app_config WHERE key = ?").get("residents.skillSources");
+  const before = stored();
+  const config = { directories: [{ id: "custom-00000000-0000-0000-0000-000000000004", path: join(home, "cooldown-source") }] };
+  const save = (expectedRevision: unknown = initial.configRevision) => app.request("/api/residents/skill-sources", {
+    method: "PUT", headers, body: JSON.stringify({ expectedRevision, config }),
+  });
+  const rescan = () => app.request("/api/residents/skills/rescan", { method: "POST", headers, body: "{}" });
+  assert.equal((await rescan()).status, 200);
+  const afterScan = reads();
+  scanClock += 999;
+  const refused = await save();
+  assert.equal(refused.status, 429);
+  assert.equal(refused.headers.get("retry-after"), "1");
+  assert.match((await refused.json() as { error: string }).error, /Wait a second/);
+  assert.equal(reads(), afterScan + 1, "a refused save checks the revision but never rebuilds the index");
+  assert.deepEqual(stored(), before, "429 must leave the stored registrations unchanged");
+  assert.equal((await save("0".repeat(64))).status, 409, "stale revisions take precedence over admission");
+  scanClock += 1;
+  const accepted = await save();
+  assert.equal(accepted.status, 200, "a valid save is admitted at exactly one second");
+  const saved = await accepted.json() as { configRevision: string };
+  const afterSave = reads();
+  for (const response of await Promise.all([rescan(), save(saved.configRevision)])) {
+    assert.equal(response.status, 429, "neither route bypasses the cooldown started by a save");
+    assert.equal(response.headers.get("retry-after"), "1");
+  }
+  assert.equal(reads(), afterSave + 1, "only the save's revision check runs during cooldown");
+  scanClock += 1_000;
+  assert.equal((await rescan()).status, 200);
+});
+
 test("skill-source validation returns 400 while storage failures stay server errors", async (t) => {
   const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
   const { homedir } = await import("node:os");
@@ -413,7 +449,10 @@ test("skill-source validation returns 400 while storage failures stay server err
   const db = openDb();
   const prepare = db.prepare.bind(db);
   t.mock.method(db, "prepare", (sql: string) => {
-    if (/INSERT INTO app_config/.test(sql)) throw new Error("private-storage-fault");
+    if (/INSERT INTO app_config/.test(sql)) {
+      scanClock += 5_000; // A slow failed operation must not consume its own cooldown.
+      throw new Error("private-storage-fault");
+    }
     return prepare(sql);
   });
   t.mock.method(console, "error", () => {});
@@ -422,6 +461,10 @@ test("skill-source validation returns 400 while storage failures stay server err
   });
   assert.equal(response.status, 500);
   assert.ok(!(await response.text()).includes("private-storage-fault"));
+  const rescan = () => app.request("/api/residents/skills/rescan", { method: "POST", headers, body: "{}" });
+  assert.equal((await rescan()).status, 429, "failure starts the cooldown after the operation finishes");
+  scanClock += 1_000;
+  assert.equal((await rescan()).status, 200);
 });
 
 test("malformed stored sources keep global skills readable and require the current revision to repair", async () => {

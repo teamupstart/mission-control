@@ -61,26 +61,35 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    launch, naming the reason. The operator either chooses a priced model or clears the cap.
 2. **Persistence**:
    - `addColumn` on `resident_runs` for `loop_state` (`working`, `waiting`, `compacting`,
-     `paused`), `iteration`, `next_wake_at`, `consumed_generation`, `pause_reason`,
-     `wake_reason`, `delivery_state` (`idle`, `sending`), `delivery_seq` and
-     `delivery_offset`.
-   - A new append-only `resident_iterations` table (`run_id`, `seq`, `trigger` of `launch`,
-     `loop` or `run_now`, `delivery` of `claimed` or `sent`, `sent_at`) indexed by
-     (`run_id`, `sent_at`).
-   - **`iteration` is the durable cumulative counter.** It lives on `resident_runs` and is never
-     recomputed from rows. Each iteration writes a row whose `seq` equals the new `iteration`,
-     so `iteration` always equals the highest `seq` ever written. Rows are pruned beyond seven
-     days. They exist only to count the rolling 24-hour window, and pruning older rows never
-     changes that count or the counter.
+     `paused`), `iteration`, `last_seq`, `next_wake_at`, `consumed_generation`, `pause_reason`
+     and `wake_reason`.
+   - A new `resident_iterations` table with one row per wake claim: `run_id`, `seq`, `trigger`
+     (`launch`, `loop` or `run_now`), `delivery` (`claimed`, `sent`, `released` or
+     `unconfirmed`), `transcript_offset`, `claimed_at` and `sent_at`. It is indexed by
+     (`run_id`, `claimed_at`). A partial unique index on `run_id` where `delivery` is `claimed`
+     makes a second in-flight wake for one run impossible to write. The `trigger` and `delivery`
+     vocabularies are append-only persisted identifiers.
+   - **Two durable counters live on `resident_runs`. Neither is recomputed from rows, and
+     neither ever decreases.**
+     - `last_seq` is the highest `seq` ever allocated. Every claim takes `last_seq + 1`, so a
+       `seq` is never reused, including after a released claim.
+     - `iteration` is the number of wakes that count: rows that reached `sent` or
+       `unconfirmed`. A claim does not change it. It goes up by one in the same write that moves
+       a row to `sent` or `unconfirmed`. A `released` row never counts.
+     - `iteration` is therefore at most `last_seq`. The difference is the number of released
+       claims, plus one while a claim is in flight.
+   - Rows are pruned once their `claimed_at` is more than seven days old. They exist only to count
+     the rolling 24-hour window and to bind crash recovery, so pruning never changes either
+     counter or the 24-hour count.
    - Upgrade test from a Phase 1 database.
 3. **ResidentLoop** in `src/server/residents/loop.ts`, constructed in `src/server/index.ts` after
    SDK restore settles. It reads the loop prompt, cadence, bounds, guardrails and compaction
    settings only from the run's pinned revision (`ResidentStore.revision`):
    - **The launch turn is iteration 1.** When `ResidentManager.launch` records a run, the loop
-     initializes its state with `iteration` 1 and appends a `resident_iterations` row with
-     `seq` 1, trigger `launch`, delivery `sent` and `sent_at` equal to the launch time, in the
-     same write. A run already live when this phase deploys is adopted the same way, at
-     adoption time.
+     initializes its state with `iteration` 1 and `last_seq` 1, and appends a
+     `resident_iterations` row with `seq` 1, trigger `launch`, delivery `sent`, and `claimed_at`
+     and `sent_at` equal to the launch time, in the same write. A run already live when this
+     phase deploys is adopted the same way, at adoption time.
    - Subscribes to Registry session upserts. When a resident session's work-cycle generation
      advances past `consumed_generation` and the driver is idle, it consumes that generation and
      schedules `next_wake_at` in one write.
@@ -88,32 +97,40 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
      pause with that reason; if `contextPct` is at or above the threshold, compact first. Then
      deliver the loop prompt through the claim below. Compaction turns and human turns are not
      iterations.
-   - **Claim before send.** One write claims the wake:
-     - it increments `iteration`;
-     - it appends a `resident_iterations` row with `seq` equal to the new `iteration`, trigger
-       `loop` (or `run_now` for **Run now**) and delivery `claimed`;
-     - it records the target transcript's byte size as `delivery_offset`;
-     - it sets `delivery_state` to `sending` and `delivery_seq` to that `seq`.
+   - **Claim before send.** One write claims the wake. It is refused if the run already has a
+     `claimed` row. Otherwise it:
+     - increments `last_seq`;
+     - appends a `resident_iterations` row with `seq` equal to the new `last_seq`, trigger
+       `loop` (or `run_now` for **Run now**), delivery `claimed`, `claimed_at` set to now, and
+       the target transcript's byte size as `transcript_offset` (null when it cannot be read).
      Only after that write commits is the loop prompt sent with `sendWhenIdle` and origin
-     `resident`. The prompt carries a hidden marker naming the run and `seq`. At most one wake
-     per run is ever `sending`.
-   - **Outcome.**
-     - The driver's positive acceptance marks the row `sent` and returns `delivery_state` to
-       `idle`, in one write.
-     - A positive refusal (the driver was not idle or rejected the turn before accepting it)
-       releases the claim in one write: the row is deleted and `iteration` goes back by one,
-       because nothing landed.
-     - Nothing else releases a claim.
-   - **Crash reconciliation** runs once SDK restore settles, for every run still `sending`:
-     - **Evidence that the wake landed** marks the row `sent`, and the loop continues: the
-       `seq` marker in the transcript after `delivery_offset`, `turn_in_progress` set for the
-       session, or a work-cycle generation past `consumed_generation`.
-     - **Without that evidence the outcome is unknown, and an unknown wake is never resent.**
-       The row stays `claimed` and counts toward the cap. The run pauses with the reason "wake
-       delivery unconfirmed" and raises attention. **Resume** or **Run now** then claims the next
-       iteration.
-   - A human turn (pending-turn delivery) cancels the pending wake; the next completed
-     generation reschedules.
+     `resident`. The prompt carries a marker naming the run and `seq`, which the transcript view
+     hides. A run is sending a wake exactly while it has a `claimed` row, and the partial unique
+     index allows at most one.
+   - **Outcome.** Each outcome is one write that moves the row out of `claimed`:
+     - the driver's positive acceptance sets it to `sent`, sets `sent_at` and increments
+       `iteration`;
+     - a positive refusal (the driver was not idle, or rejected the turn before accepting it)
+       sets it to `released`. Nothing landed, so neither counter changes, the row never counts,
+       and the next claim takes a new `seq`;
+     - nothing else releases a claim.
+   - **Crash reconciliation** runs once SDK restore settles, for every run with a `claimed` row.
+     The only evidence that a wake landed is its own marker, naming this run and this `seq`, in a
+     user turn written after `transcript_offset`. Nothing else proves anything about this wake: a
+     human turn, a restart continuation, `turn_in_progress` or an advanced work-cycle generation
+     could each come from a different turn.
+     - **With the marker**, one write sets the row to `sent`, takes the marker turn's time as
+       `sent_at` and increments `iteration`, and the loop continues.
+     - **Without the marker, or when `transcript_offset` is null or the transcript cannot be
+       read**, the outcome is unknown and the wake is never resent. One write sets the row to
+       `unconfirmed`, increments `iteration`, sets `loop_state` to `paused` with the reason "wake
+       delivery unconfirmed", and raises attention. The row keeps its `claimed_at`, so it counts
+       toward the rolling cap for the 24 hours after its claim.
+     - After either write the run has no `claimed` row. **Resume** or **Run now** then claims the
+       next wake under a new `seq`, and a later restart finds nothing to reconcile.
+   - A human turn (pending-turn delivery) cancels a wake that is scheduled but not yet claimed;
+     the next completed generation reschedules. A wake already claimed follows the outcome rules
+     above.
    - Restart: wakes that came due while the daemon was down fire once; paused runs stay paused.
    - Timers are `unref`'d and the service stops cleanly on shutdown.
 4. **Turn origin**: append `resident` to `TurnOrigin` and label loop turns in the transcript.
@@ -140,12 +157,13 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
      harness.** Ask the operator with `request_input` whether to ship with the remaining layer,
      or to approve a wider mechanism such as a clear plus a summary handoff. Record the answer in
      the pull request. The editor and card state exactly which layers are active for a run.
-7. **Guardrails over a rolling 24 hours**: before each wake the loop counts `resident_iterations`
-   rows with `sent_at` within the 24 hours before now, and sums spend with
+7. **Guardrails over a rolling 24 hours**: before each claim, the loop counts the run's
+   `resident_iterations` rows whose `delivery` is `claimed`, `sent` or `unconfirmed` and whose
+   `claimed_at` is within the 24 hours before now. `released` rows never count. It sums spend with
    `sessionSpendSince(noteKeys, now - 24h)`, added beside `automationSpendSince` in
    `src/server/db.ts`. Reaching either cap pauses the run and raises attention. Resume is accepted
-   once the window has room; otherwise it is refused with the time the oldest counted iteration
-   (or spend) leaves the window.
+   once the window has room; otherwise it is refused with the time the oldest counted row's
+   `claimed_at` (or the oldest counted spend) leaves the window.
    - **Spend must be measurable for both harnesses before the cap ships.** Claude SDK turns
      arrive through `recordDriverSessionUsage` with reported cost. Codex turns are priced by
      `estimateStandardApiUsage` (`src/server/harness/codex/pricing.ts`). Verify both with
@@ -177,24 +195,37 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
   generation, duplicate turn ends, human precedence, `needs-you` pause, compaction ordering,
   clamp of `schedule_next_iteration`, restart re-arm firing a missed wake once, and shutdown.
 - Iteration tests:
-  - a launch records iteration 1 with a `launch` row of `seq` 1;
-  - each wake and **Run now** claims exactly one row whose `seq` equals the new `iteration`;
+  - a launch records `iteration` 1 and `last_seq` 1 with a `launch` row of `seq` 1;
+  - each wake and **Run now** claims exactly one row with `seq` `last_seq + 1`, and adds one to
+    `iteration` when the row reaches `sent`;
+  - a positive refusal marks the row `released` and leaves `iteration` unchanged; the next claim
+    takes a new `seq`, so no `seq` is ever written twice;
   - compaction and human turns add none;
-  - after rows older than seven days are pruned, `iteration` is unchanged and still equals the
-    highest `seq` written, and the 24-hour count is unchanged.
+  - after rows older than seven days are pruned, `iteration`, `last_seq` and the 24-hour count are
+    all unchanged, including when a pruned row was `released` or `unconfirmed`.
 - Delivery crash tests with injected failures at each boundary:
   - a crash after the claim commits and before the send is not resent: reconciliation finds no
-    evidence, the row stays `claimed`, and the run pauses with "wake delivery unconfirmed";
-  - a crash after the driver accepted and before the `sent` write is reconciled as delivered
-    from the transcript marker or `turn_in_progress`, without a second send;
-  - a positive refusal releases the claim, and the next wake reuses that `seq`;
-  - reconciliation is idempotent across repeated restarts, and no run ever has two wakes
-    `sending`.
+    marker, the row becomes `unconfirmed`, `iteration` goes up by one, and the run pauses with
+    "wake delivery unconfirmed";
+  - a crash after the driver accepted and before the `sent` write is reconciled as `sent` from
+    the marker after `transcript_offset`, without a second send;
+  - an unrelated turn after the claim is not evidence. A human turn, and separately a restart
+    continuation, is written after `transcript_offset`, sets `turn_in_progress` and advances the
+    generation, but carries no marker. The row becomes `unconfirmed` and the run pauses without
+    resending;
+  - an unreadable transcript, or a null `transcript_offset`, reconciles as `unconfirmed`;
+  - after an `unconfirmed` reconciliation, repeated restarts change nothing. A following
+    **Resume**, and separately **Run now**, claims `seq` `last_seq + 1` while the `unconfirmed` row
+    is kept, and the run again has exactly one `claimed` row;
+  - writing a second `claimed` row for one run is refused by the partial unique index.
 - Guardrail boundary tests:
-  - an iteration sent exactly 24 hours before a wake no longer counts, and one sent 1 ms later
-    does;
-  - with the launch turn and 199 wakes inside the window (200 rows), the next wake pauses
-    instead of sending;
+  - a counted row claimed exactly 24 hours before a wake no longer counts, and one claimed 1 ms
+    later does;
+  - with the launch turn and 199 counted wakes inside the window (200 rows), the next wake pauses
+    instead of claiming;
+  - an `unconfirmed` row from a crash before delivery counts until 24 hours after its
+    `claimed_at`. As the 200th row it pauses the next wake, and at its `claimed_at` plus 24 hours
+    the window has room again. A `released` row never counts;
   - Resume is refused while the window is full, naming the right time, and accepted once it
     frees;
   - the same boundaries hold for spend, for both a Claude run and a Codex run;
@@ -242,3 +273,11 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   - Restart on new profile is in the card menu and is verified on all four surfaces;
   - wake delivery is claim-before-send, with crash reconciliation that never resends an
     unknown outcome.
+- Repair round 4:
+  - `last_seq` and `iteration` are separate counters that never decrease, so a refused wake is
+    `released` without reusing its `seq` or lowering a counter;
+  - the rolling cap counts `claimed`, `sent` and `unconfirmed` rows by `claimed_at`, so an
+    unconfirmed wake counts for 24 hours from its claim;
+  - reconciliation moves an unresolved claim to `unconfirmed` before any new claim, and a partial
+    unique index keeps one in-flight wake per run;
+  - only the wake's own marker after the recorded offset proves delivery.

@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 5, repaired after plan validation). Implementation is split into seven phases in
+Status: decisions recorded (revision 6, repaired after plan validation). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -170,18 +170,22 @@ stateDiagram-v2
 3. **Self-pacing within bounds**: `schedule_next_iteration({ delaySeconds, reason })` sets the
    next wake, clamped to the profile, with the reason shown on the card.
 4. **Guardrails pause, never stop.** The launch turn is iteration 1, and every wake or **Run now**
-   is the next. Before each wake the loop counts the iterations in a durable, timestamped iteration
-   log, and the spend in the existing usage ledger, over the 24 hours before that wake. A capped
-   run stays paused until the operator resumes it. Resume is accepted once the window has room,
-   and the refusal names when that will be. The spend cap is enforced for both harnesses: Claude
-   Code turns carry the cost Claude Code reports, and Codex turns are priced from their token
-   usage. A profile whose model cannot be priced cannot keep a spend cap. Save and launch refuse
-   it with that reason, and the operator either picks a priced model or clears the cap themselves.
+   that is delivered, or whose delivery cannot be confirmed, is the next. A wake the session
+   refuses before accepting it is not an iteration. Before each wake the loop counts the
+   iterations in a durable, timestamped iteration log, and the spend in the existing usage
+   ledger, over the 24 hours before that wake. A capped run stays paused until the operator
+   resumes it. Resume is accepted once the window has room, and the refusal names when that will
+   be. The spend cap is enforced for both harnesses: Claude Code turns carry the cost Claude Code
+   reports, and Codex turns are priced from their token usage. A profile whose model cannot be
+   priced cannot keep a spend cap. Save and launch refuse it with that reason, and the operator
+   either picks a priced model or clears the cap themselves.
 5. **Durable**: `resident_runs` holds loop state. After a restart the loop re-arms once SDK
    restore settles, and a missed wake fires once. Each wake is claimed in the database before it
-   is sent, following the repository's claim-before-inject contract. After a crash, a wake with
-   evidence that it landed continues normally. A wake without that evidence is never resent; the
-   run pauses and asks for attention.
+   is sent, following the repository's claim-before-inject contract. After a crash, a wake
+   continues normally only when its own marker appears in the transcript after the point where
+   it was claimed. Any other outcome, including an unrelated turn, is never resent: the wake is
+   recorded as unconfirmed, still counts toward the caps for 24 hours from its claim, and the run
+   pauses and asks for attention.
 6. **Controls**: Pause, Resume, Run now and Restart on new profile on the card menu, Console band,
    dock and page.
 

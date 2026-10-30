@@ -922,6 +922,7 @@ test("workspace removal failure keeps cleanup owed until a later manager retries
   symlinkSync(savedDirectory, directory);
   const errors = t.mock.method(console, "error", () => {});
   await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+  await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
   assert.equal(errors.mock.callCount(), 1, "the manager caught a real removal failure");
   const failure = errors.mock.calls[0];
   assert.ok(failure);
@@ -978,6 +979,49 @@ test("cleanup retries an owed per-run directory after the workspace was already 
   assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
   assert.deepEqual(store.endedResidentWorkspaces(), []);
   assert.equal(errors.mock.callCount(), 1);
+});
+
+test("workspace cleanup contains database read failures and retries without losing the obligation", async (t) => {
+  const { existsSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "cleanup-read-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  const errors = t.mock.method(console, "error", () => {});
+  // Exercise every synchronous read before removal, using the real stores and query flow.
+  for (const read of [/FROM resident_runs WHERE ended_at/, /FROM sdk_sessions WHERE task_id/, /FROM sdk_sessions WHERE id/]) {
+    const failingRead = t.mock.method(db, "prepare", (sql: string) => {
+      if (read.test(sql)) throw new Error("database is locked");
+      return prepare(sql);
+    });
+    try {
+      await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+      await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+    } finally {
+      failingRead.mock.restore();
+    }
+    assert.ok(existsSync(run.workspaceDir!));
+    assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, run.workspaceDir);
+  }
+  assert.equal(errors.mock.callCount(), 1, "a continuous scan failure is reported once until a pass succeeds");
+  assert.match(String(errors.mock.calls[0]!.arguments[0]), /could not scan ended workspaces/);
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(run.workspaceDir!), false);
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  const laterFailure = t.mock.method(db, "prepare", () => { throw new Error("database is locked again"); });
+  try {
+    await setup.residents.cleanupEndedWorkspaces();
+    assert.equal(errors.mock.callCount(), 2, "a later failure after recovery is reported again");
+  } finally {
+    laterFailure.mock.restore();
+  }
 });
 
 test("workspace cleanup yields, serializes each run, and drains before manager shutdown", async () => {

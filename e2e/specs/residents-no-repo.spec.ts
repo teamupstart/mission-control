@@ -51,7 +51,17 @@ for (const agent of ["claude", "codex"] as const) {
       mkdirSync(evidence, { recursive: true });
       await dialog.screenshot({ path: join(evidence, `${agent}-dispatch.png`) });
     }
-    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    // Whitespace-only input has the same meaning as an empty repository. Inspect the
+    // actual request as well as the successful launch; Codex keeps the empty-input case.
+    if (agent === "claude") {
+      await dialog.getByLabel("Repository").fill("   ");
+      await page.keyboard.press("Escape");
+    }
+    const [request] = await Promise.all([
+      page.waitForRequest((request) => request.method() === "POST" && /\/residents\/profiles\/[^/]+\/launch$/.test(request.url())),
+      dialog.getByRole("button", { name: "Launch resident" }).click(),
+    ]);
+    expect(request.postDataJSON().repoRoot).toBeNull();
     await expect(dialog).toBeHidden({ timeout: 60_000 });
     const task = (await read<Task[]>("/api/tasks")).find((candidate) => candidate.kind === "resident")!;
     expect(task).toMatchObject({ status: "running", workspaceKind: "resident-workspace", worktreePath: null, branch: null, provider: null });

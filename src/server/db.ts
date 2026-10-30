@@ -180,7 +180,8 @@ let db: DatabaseSync | undefined;
 // 7: claim-version retirement identities and immutable retirement sequence boundaries.
 // 8: repository-specific retirement of shared coverage claim versions.
 // 9: retain staged claim versions still applicable to sibling repositories.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
+// 10: repository-free resident task markers and durable workspace cleanup obligations.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 10;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

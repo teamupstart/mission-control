@@ -122,8 +122,11 @@ failed launch, or one interrupted by a restart before its session started, is re
 reason and is never relaunched; launch the profile again.
 
 A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
-The Files panel browses its working directory directly, without Git or managed repository plans. Its
-workspace survives daemon restarts while the run is active. When the run ends, Mission removes
+The Files panel browses its working directory directly, without Git or managed repository plans.
+Listing is capped at 10,000 files and refuses trees exceeding 10,000 directories or 64 nested
+levels. Traversal checks a 15-second budget between filesystem operations.
+
+The workspace survives daemon restarts while the run is active. When the run ends, Mission removes
 that workspace after its session is gone and its SDK runtime has stopped. Failed launches also
 remove their directories. Cleanup failures remain recorded and retry, including after restart;
 the repository retention clock never applies to these directories. Files saved there are temporary.

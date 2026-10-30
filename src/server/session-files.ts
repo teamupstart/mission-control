@@ -155,14 +155,25 @@ export async function resolveSessionFilePath(cwd: string, relativePath: string):
 /** Plain resident directories have no Git index or ignore rules to consult. */
 async function listDirectoryFiles(root: string): Promise<SessionFileEntry[]> {
   const files: SessionFileEntry[] = [];
-  const pending = [""];
+  const pending = [{ relative: "", depth: 0 }];
+  let directories = 1;
+  const deadline = performance.now() + 15_000;
+  // Check between filesystem operations; a large empty tree must not evade the file cap.
+  const checkTime = () => {
+    if (performance.now() > deadline) throw new SessionFileError("session directory listing exceeded its time budget", 503);
+  };
   while (pending.length > 0 && files.length < MAX_SESSION_FILE_ENTRIES) {
-    const relative = pending.pop()!;
+    checkTime();
+    const { relative, depth } = pending.pop()!;
     const directory = await opendir(path.join(root, relative));
     for await (const entry of directory) {
+      checkTime();
       const filePath = path.join(relative, entry.name);
-      if (entry.isDirectory()) pending.push(filePath);
-      else if (entry.isFile()) files.push({ path: filePath });
+      if (entry.isDirectory()) {
+        if (depth >= 64) throw new SessionFileError("session directory listing exceeded its depth limit", 413);
+        if (++directories > 10_000) throw new SessionFileError("session directory listing exceeded its directory count limit", 413);
+        pending.push({ relative: filePath, depth: depth + 1 });
+      } else if (entry.isFile()) files.push({ path: filePath });
       if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
     }
   }

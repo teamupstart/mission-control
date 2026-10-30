@@ -104,6 +104,40 @@ test("resident Files lists its plain directory without Git and excludes symlink 
   ]);
 });
 
+test("resident Files bounds empty-directory breadth and nesting depth", async (t) => {
+  const { listSessionFiles, SessionFileError } = await import("../src/server/session-files.ts");
+  const resident = { kind: "resident", workspaceKind: "resident-workspace" } as const;
+  await t.test("empty-directory breadth", async () => {
+    const directory = mkdtempSync(join(home, "wide-files-"));
+    for (let i = 0; i < 9_999; i += 1) mkdirSync(join(directory, `empty-${i}`));
+    assert.deepEqual(await listSessionFiles(directory, resident), [], "10,000 directories including the root are allowed");
+    mkdirSync(join(directory, "one-too-many"));
+    await assert.rejects(() => listSessionFiles(directory, resident), (error: unknown) =>
+      error instanceof SessionFileError && error.status === 413 && /directory count/.test(error.message));
+  });
+  await t.test("deep nesting", async () => {
+    const directory = mkdtempSync(join(home, "deep-files-"));
+    let nested = directory;
+    for (let depth = 0; depth < 64; depth += 1) {
+      nested = join(nested, "d");
+      mkdirSync(nested);
+    }
+    assert.deepEqual(await listSessionFiles(directory, resident), [], "64 nested directories are allowed");
+    mkdirSync(join(nested, "one-too-deep"));
+    await assert.rejects(() => listSessionFiles(directory, resident), (error: unknown) =>
+      error instanceof SessionFileError && error.status === 413 && /depth/.test(error.message));
+  });
+});
+
+test("resident Files stops traversal when its elapsed-time budget is exhausted", async (t) => {
+  const { listSessionFiles, SessionFileError } = await import("../src/server/session-files.ts");
+  const directory = mkdtempSync(join(home, "slow-files-"));
+  let reads = 0;
+  t.mock.method(performance, "now", () => reads++ === 0 ? 0 : 15_001);
+  await assert.rejects(() => listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }),
+    (error: unknown) => error instanceof SessionFileError && error.status === 503 && /time budget/.test(error.message));
+});
+
 test("repository reset operations refuse a repo-less resident before consulting Git", async () => {
   const { resetWouldDestroyWork, branchReleasedByReset, resetPreview, resetToOrigin, resetToCommit } = await import("../src/server/actions.ts");
   const session = mkSession({ cwd: "/must-not-probe" });

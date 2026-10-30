@@ -152,6 +152,8 @@ export class ResidentManager {
   private stopped = false;
   private cleanupTimer?: NodeJS.Timeout;
   private readonly cleaningWorkspaces = new Map<string, Promise<void>>();
+  private readonly reportedCleanupFailures = new Set<string>();
+  private cleanupScanFailed = false;
   private subscriptions: Array<() => void> = [];
 
   constructor(private readonly deps: ResidentManagerDeps) {
@@ -624,23 +626,35 @@ export class ResidentManager {
   /** Completion may precede eviction. Preserve cwd until every owned SDK runtime has stopped. */
   cleanupEndedWorkspaces(): Promise<void> {
     if (this.stopped) return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
-    for (const run of endedResidentWorkspaces()) {
-      if (this.settling.has(run.id) || this.cleaningWorkspaces.has(run.id)) continue;
-      const sessions = this.sessionRowsForTask(run.taskId);
-      if (sessions.some((id) => {
-        if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
-        const row = getSdkSession(id);
-        return row && row.status !== "exited" && row.status !== "failed";
-      })) continue;
-      const cleanup = (async () => {
-        try {
-          await (this.deps.removeWorkspace ?? removeResidentWorkspace)(run.id, run.workspaceDir);
-          clearResidentWorkspace(run.id);
-        } catch (error) {
-          console.error(`[residents] workspace cleanup remains owed for ${run.id}:`, error);
-        }
-      })().finally(() => this.cleaningWorkspaces.delete(run.id));
-      this.cleaningWorkspaces.set(run.id, cleanup);
+    try {
+      for (const run of endedResidentWorkspaces()) {
+        if (this.settling.has(run.id) || this.cleaningWorkspaces.has(run.id)) continue;
+        const sessions = this.sessionRowsForTask(run.taskId);
+        if (sessions.some((id) => {
+          if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
+          const row = getSdkSession(id);
+          return row && row.status !== "exited" && row.status !== "failed";
+        })) continue;
+        const cleanup = (async () => {
+          try {
+            await (this.deps.removeWorkspace ?? removeResidentWorkspace)(run.id, run.workspaceDir);
+            clearResidentWorkspace(run.id);
+            this.reportedCleanupFailures.delete(run.id);
+          } catch (error) {
+            if (!this.reportedCleanupFailures.has(run.id)) {
+              this.reportedCleanupFailures.add(run.id);
+              console.error(`[residents] workspace cleanup remains owed for ${run.id}:`, error);
+            }
+          }
+        })().finally(() => this.cleaningWorkspaces.delete(run.id));
+        this.cleaningWorkspaces.set(run.id, cleanup);
+      }
+      this.cleanupScanFailed = false;
+    } catch (error) {
+      if (!this.cleanupScanFailed) {
+        console.error("[residents] could not scan ended workspaces; retrying on the next pass:", error);
+        this.cleanupScanFailed = true;
+      }
     }
     return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
   }

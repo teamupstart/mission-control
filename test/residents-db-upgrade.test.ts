@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -49,18 +49,32 @@ test("Phase 1 rows upgrade with null workspace markers and keep their pinned rev
   store.reserveResidentRun({ id: "phase1-run", profileId: "phase1-profile", profileRevision: 1, taskId: "phase1-task",
     launchRequestId: "phase1-request", launchInput: { ...residentLaunchInput("/existing/repo", ""), version: 1 },
     repoSpelling: "/existing/repo", persona: { personaId: "p", name: "P", guidanceMarkdown: "Keep watching" }, runInstructions: "", at: 1 });
+  store.markResidentRunLaunched("phase1-run", null);
   closeDb();
   // Exact Phase 1 table shapes, with real existing rows rather than an empty upgrade.
   const phase1 = new DatabaseSync(join(home, "harness.db"));
-  phase1.exec("ALTER TABLE tasks DROP COLUMN workspace_kind; ALTER TABLE resident_runs DROP COLUMN workspace_dir;");
+  phase1.exec("ALTER TABLE tasks DROP COLUMN workspace_kind; ALTER TABLE resident_runs DROP COLUMN workspace_dir; PRAGMA user_version = 9;");
   phase1.close();
+  const backupRoot = join(home, "backups", "database");
+  const previousBackups = new Set(readdirSync(backupRoot));
   const db = openDb();
+  const newBackups = readdirSync(backupRoot).filter((name) => !previousBackups.has(name) && name.startsWith("pre-migration-"));
+  assert.equal(newBackups.length, 1, "upgrading version 9 captures its own pre-migration recovery point");
+  const recovery = new DatabaseSync(join(backupRoot, newBackups[0]!), { readOnly: true });
+  try {
+    assert.equal((recovery.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+    assert.equal((recovery.prepare("PRAGMA table_info(resident_runs)").all() as Array<{ name: string }>).some((c) => c.name === "workspace_dir"), false);
+    assert.equal((recovery.prepare("SELECT launch_state FROM resident_runs WHERE id = 'phase1-run'").get() as { launch_state: string }).launch_state, "launched");
+  } finally {
+    recovery.close();
+  }
   const task = getTask("phase1-task")!;
   assert.equal(task.workspaceKind, null);
   assert.equal(task.repoRoot, "/existing/repo");
   assert.equal(taskHasRepository(task), true);
   const run = store.getResidentRun("phase1-run")!;
   assert.equal(run.run.workspaceDir, null);
+  assert.equal(run.run.launchState, "launched");
   assert.equal(run.run.profileRevision, 1);
   assert.equal(run.run.persona.guidanceMarkdown, "Keep watching");
   assert.ok(launchInputsMatch(run.launchInput, residentLaunchInput("/existing/repo", "")));

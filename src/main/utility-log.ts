@@ -31,8 +31,12 @@ export function openPrivateUtilityLog(logPath: string): WriteStream {
     chmodSync(logPath, 0o600);
     const log = createWriteStream(logPath, { fd, autoClose: true });
     // A stream error with no listener is an uncaught exception in Electron's main
-    // process. Losing a diagnostic line must never take the app down with it.
-    log.on("error", () => {});
+    // process. Losing a diagnostic line must never take the app down with it, so report
+    // only the code: a filesystem error's message carries the log path.
+    log.on("error", (err: NodeJS.ErrnoException) => {
+      try { console.error(`Could not write a utility log: ${err.code ?? err.name}`); }
+      catch { /* An unavailable stderr must not turn a lost log line into a crash. */ }
+    });
     return log;
   } catch (err) {
     closeSync(fd);

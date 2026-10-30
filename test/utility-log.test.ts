@@ -103,9 +103,10 @@ test("pipes that already finished before exit close the log without waiting out 
   assert.equal(readFileSync(logPath, "utf8"), "daemon: done\n[mission-control] mission-control-daemon stopped\n");
 });
 
-test("a log stream failure is contained instead of becoming an uncaught exception", async () => {
+test("a log stream failure is reported without its path instead of becoming an uncaught exception", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "mission-utility-log-"));
   const log = openPrivateUtilityLog(join(root, "daemon.log"));
+  const reported = t.mock.method(console, "error", () => {});
   let uncaught: unknown = null;
   const onUncaught = (err: unknown) => { uncaught = err; };
   process.on("uncaughtException", onUncaught);
@@ -121,4 +122,5 @@ test("a log stream failure is contained instead of becoming an uncaught exceptio
     process.off("uncaughtException", onUncaught);
   }
   assert.equal(uncaught, null);
+  assert.deepEqual(reported.mock.calls.map((call) => call.arguments), [["Could not write a utility log: ERR_STREAM_WRITE_AFTER_END"]]);
 });

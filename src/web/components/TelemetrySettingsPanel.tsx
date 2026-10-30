@@ -4,7 +4,7 @@ import type {
   TelemetryProfileSummary,
   TelemetryPauseReason,
 } from "@shared/telemetry.ts";
-import type { TelemetryOrganizationStatus } from "@shared/organizations.ts";
+import { sentenceCase, type TelemetryOrganizationStatus } from "@shared/organizations.ts";
 import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
 import {
   TELEMETRY_EXPORT_SHAPE_IDS,
@@ -183,7 +183,7 @@ function ManagedTelemetryPanel({
           <span className="kb-row-desc">
             {organization.withdrawing
               ? "These settings stay view-only until removing them finishes."
-              : `${organization.label} sets telemetry on this Mac, so these settings can be viewed here but not changed.`}
+              : `${sentenceCase(organization.label)} sets telemetry on this Mac, so these settings can be viewed here but not changed.`}
           </span>
           <p className="tele-managed-state">{managedStateLine(organization, product)}</p>
 

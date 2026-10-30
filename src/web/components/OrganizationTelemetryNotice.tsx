@@ -42,16 +42,9 @@ function VisibleNotice({
   if (acknowledged) return null;
 
   return (
-    <section className="app-banner app-banner-organization" role="status" aria-label={`${notice.label} telemetry notice`}>
+    <section className="app-banner app-banner-organization" role="status" aria-label="Organization telemetry notice">
       <div className="app-banner-copy">
-        <strong>Mission Control usage telemetry is on for this {notice.label}-managed Mac.</strong>
-        <p>
-          Because this Mac is enrolled in {notice.label}'s device management, Mission Control
-          sends a minimized set of its own activity metrics and traces through
-          {` ${notice.label}'s telemetry gateway to ${notice.label}'s Datadog. ${notice.label} manages this setting. `}
-          Prompts, code, file paths, terminal output and names are
-          excluded. The gateway also copies metrics to a second destination managed by its owners.
-        </p>
+        <strong>Telemetry is enabled by your organization for Claude and Codex.</strong>
         {error && <p className="settings-error" role="alert">{error}</p>}
       </div>
       <div className="app-banner-actions">

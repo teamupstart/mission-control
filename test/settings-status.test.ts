@@ -352,7 +352,7 @@ test("the suppression compares every field, so no change can be dropped in silen
     "telemetry.enabled": { ...base, telemetry: { ...telemetry(base), enabled: !telemetry(base).enabled } },
     "telemetry.organizationNotice": {
       ...base,
-      telemetry: { ...telemetry(base), organizationNotice: { label: "Upstart" } },
+      telemetry: { ...telemetry(base), organizationNotice: { label: "your organization" } },
     },
     "telemetry.configRevision": {
       ...base,

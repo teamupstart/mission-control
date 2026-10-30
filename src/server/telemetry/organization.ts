@@ -23,7 +23,7 @@ import {
   type TelemetryOrganizationRecord,
 } from "@shared/organizations.ts";
 import { deleteAppConfig, getAppConfig, hasAppConfigRow, setAppConfig } from "../db.ts";
-import { ORGANIZATION_IDS } from "@shared/organizations.ts";
+import { ORGANIZATION_IDS, sentenceCase } from "@shared/organizations.ts";
 import {
   currentOrganization,
   defaultOrganizationDetectionDeps,
@@ -274,14 +274,14 @@ export function setPilotEnrollment(enrolled: boolean, now = Date.now()): PilotEn
     return {
       ok: false,
       status: 409,
-      error: `${organization.entry.label} no longer manages this Mac, and removing its telemetry settings has not finished. Re-check to complete it.`,
+      error: `${sentenceCase(organization.entry.label)} no longer manages this Mac, and removing its telemetry settings has not finished. Re-check to complete it.`,
     };
   }
   if (organization.entry.rollout !== "pilot") {
     return {
       ok: false,
       status: 409,
-      error: `${organization.entry.label}'s telemetry is no longer in its pilot.`,
+      error: `${sentenceCase(organization.entry.label)}'s telemetry is no longer in its pilot.`,
     };
   }
   // Apply first, so a record is guaranteed to exist and to describe this organization.

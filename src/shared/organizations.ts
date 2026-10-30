@@ -108,6 +108,11 @@ export interface TelemetryOrganizationStatus {
   };
 }
 
+/** An organization's label at the start of a sentence, e.g. "your organization" -> "Your organization". */
+export function sentenceCase(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 /** The refusal every person-facing telemetry settings write answers while managed. */
 export function managedTelemetryRefusal(
   id: OrganizationId,

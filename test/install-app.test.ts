@@ -832,7 +832,7 @@ test("an unwritable /Applications uses one narrowly scoped administrator transac
   });
   assert.equal(commands.length, 1);
   assert.match(commands[0]!, /^set -eu\n/);
-  assert.match(commands[0]!, /\/bin\/cp -R/);
+  assert.match(commands[0]!, /\/bin\/cp -pR /, "the staged copy must preserve modes");
   assert.match(commands[0]!, /'"'"'/, "a quote in the source path is shell-escaped");
   assert.match(commands[0]!, /\/Applications\/\.Mission Control\.app\.incoming-4242/);
   assert.match(commands[0]!, /\/Applications\/Mission Control\.app/);

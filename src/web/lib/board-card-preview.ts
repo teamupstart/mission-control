@@ -1,6 +1,7 @@
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
+import type { ResidentSessionMark } from "../residents/marker.ts";
 
 /**
  * The session the Board card panel's preview draws, and the only session fixture in
@@ -227,4 +228,20 @@ export const PREVIEW_WORKFLOW_RUN: WorkflowRunSummary = {
   uncertainDeliveryCount: 0,
   refusedDeliveryCount: 0,
   updatedAt: 0,
+};
+
+/**
+ * The preview card as a resident, so the Resident marker checkbox visibly governs something.
+ * The name and label are the plan's own example; the preview has no run behind it.
+ */
+export const PREVIEW_RESIDENT: ResidentSessionMark = {
+  runId: "board-card-preview-resident-run",
+  profileId: "board-card-preview-resident",
+  name: "Triage Bot",
+  personaName: "Fleet Triage",
+  colorId: "cyan",
+  label: "TRI",
+  pin: true,
+  revision: 1,
+  changedTo: null,
 };

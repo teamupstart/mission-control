@@ -33,7 +33,7 @@ import {
   productIssueClientFromEnvironment,
   type ProductIssueRequest,
 } from "@shared/product-issues.ts";
-import { reportProductFeedback, reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
@@ -289,27 +289,6 @@ server.registerTool(
   async (args) => {
     const res = await http("/mcp/session-control/act", "POST", args, true);
     return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
-  },
-);
-
-server.registerTool(
-  "share_plan",
-  {
-    title: "Share a plan with the human",
-    description:
-      "Display a readable markdown plan in the Mission Control dashboard for the human to skim. Returns immediately without waiting.",
-    inputSchema: {
-      title: z.string().describe("Short title for the plan"),
-      plan: z.string().describe("The plan as GitHub-flavored markdown"),
-    },
-  },
-  async ({ title, plan }) => {
-    try {
-      await createReview("plan", title, plan);
-      return textResult("Plan shared to the Mission Control dashboard.");
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
   },
 );
 
@@ -700,7 +679,7 @@ server.registerTool(
   },
 );
 
-// Both MCP entry points use the dashboard's report contract and daemon service.
+// The MCP entry point uses the dashboard's report contract and daemon service.
 const productIssueTransport = {
   requestId: randomUUID,
   preview: async (request: ProductIssueRequest) => responseResult(await http(
@@ -712,28 +691,6 @@ const productIssueTransport = {
     { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
   )),
 };
-
-server.registerTool(
-  "report_product_feedback",
-  {
-    title: "Report product feedback",
-    description:
-      "Report product feedback about Mission Control as a public GitHub issue only after the user " +
-      "explicitly asks you to report it. Publishes automatically without a second dashboard approval " +
-      "and returns the issue URL. Choose the report type from the user's request. " +
-      "Include only public-safe details, never secrets, private repository content, or personal data. " +
-      "Optional attachmentUploadIds must be daemon-issued screenshot ids, never filesystem paths.",
-    inputSchema: ProductIssueDraftSchema.shape,
-  },
-  async (draft) => {
-    try {
-      const result = await reportProductFeedback(draft, PRODUCT_ISSUE_CLIENT, productIssueTransport);
-      return textResult(result.text, result.isError);
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
-  },
-);
 
 server.registerTool(
   "report_product_issue",
@@ -784,7 +741,7 @@ server.registerTool(
 
 // Answer one line comment a human left on a file, in the thread it was written in.
 //
-// Non-blocking and `share_plan`-shaped: no `extra`, no long poll. The agent posts its answer
+// Non-blocking: no `extra`, no long poll. The agent posts its answer
 // and carries on with the work the comment asked for - waiting on a human here would stall the
 // very turn the comment exists to steer.
 server.registerTool(

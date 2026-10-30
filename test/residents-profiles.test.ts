@@ -110,9 +110,10 @@ test("a revision fills every later section with its defaults and round-trips unc
     instructions: { markdown: "" },
     execution: { agent: "claude", model: null, effort: null },
     workspace: { defaultRepoRoot: null },
+    board: { colorId: "cyan", label: null, pin: true },
   });
   assert.deepEqual(ResidentProfileRevisionSchema.parse(JSON.parse(JSON.stringify(parsed))), parsed);
-  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace"]);
+  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board"]);
   // A stored revision from a newer build, carrying a section this build does not know, still reads.
   assert.equal(ResidentProfileRevisionSchema.safeParse({ ...parsed, marker: { color: "cyan" } }).success, true);
   // A request body may not smuggle one in.

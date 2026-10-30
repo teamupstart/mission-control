@@ -198,7 +198,12 @@ signing identity or a rejected notarization. Apple documents that meaning in
 [QA1941](https://developer.apple.com/library/archive/qa/qa1941/_index.html).
 
 The shared app/DMG ticket validator now repeats this specific transport failure at most
-three times, after 1, 2 and 4 seconds. Each native invocation retains its 60-second timeout.
+eight times, after 1, 2, 4, 8 and 16 seconds and then three times after 30 seconds, about
+two minutes of backoff in all. The first bound of three retries after 1, 2 and 4 seconds
+exhausted in [run 41049955795](https://github.com/teamupstart/mission-control/actions/runs/41049955795)
+at `d96187d1a`: four `-1005` failures spanning 30 seconds on the copied `Runtime.app`, after
+app notarization was Accepted. Each run validates four bundles, so one brief CloudKit outage
+cost the whole alpha. Each native invocation retains its 60-second timeout.
 Validation must actually succeed before qualification continues. Missing, invalid or revoked
 tickets, unknown failures, TLS errors and process failures remain immediate refusals; a
 persistent connection loss also fails closed. Retry diagnostics contain only the operation,
@@ -211,8 +216,8 @@ the retry limit and continued refusal of unqualified publication inputs. They do
 Apple service availability or a completed signed runtime journey. The linked run never reached
 DMG creation, final archive qualification or publication.
 
-For recovery, use the next eligible protected Signed distribution run containing the fix
-and its normal `desktop-distribution` approval. Re-running the failed job at its old SHA can
+For recovery, use the next eligible protected Signed distribution run containing the fix;
+it starts without approval under the automatic distribution policy below. Re-running the failed job at its old SHA can
 recover if the network is healthy, but does not pick up this repair. If the bounded retries
 also exhaust, retain the diagnostic and investigate connectivity from the runner to
 `api.apple-cloudkit.com` before retrying through the existing release procedure. This error
@@ -288,16 +293,20 @@ That inventory establishes publication availability, not the R1/R2 signed instal
 and recovery qualification. An alpha offer still names the current main commit exactly;
 an older available publication is not silently substituted for a failed or pending one.
 
-**Environment change pending administrator access:** GitHub still reported the
-`developer-platform` team as required reviewers on `desktop-distribution` during this
-investigation. Removing that requirement as `Jordan7265` returned HTTP 403, "Must have
-admin rights to Repository." The attempted update did not change the environment.
-A repository administrator must remove **Required reviewers** in
-**Settings > Environments > desktop-distribution**, retaining selected branch `main`,
-tag pattern `v*`, and all existing signing secrets and variables. Once saved, eligible
-jobs start without another approval. This operator instruction supersedes the earlier
-per-build reviewer policy recorded above; it does not relax CI, signer, notarization,
-source-identity, or manifest verification.
+**Environment change applied (2026-10-29 22:45 UTC):** an earlier attempt as `Jordan7265`
+returned HTTP 403, "Must have admin rights to Repository." A repository administrator then
+removed **Required reviewers** from `desktop-distribution`. Selected branch `main`, tag
+pattern `v*`, admin bypass and every signing secret and variable were retained. This operator
+instruction supersedes the earlier per-build reviewer policy recorded above; it does not relax
+CI, signer, notarization, source-identity, or manifest verification.
+
+GitHub failed the jobs that had been waiting for hours when the rule was removed, without
+running a step. A job that had entered `waiting` minutes earlier kept an empty reviewer list
+that nobody could approve, and it held the `distribution-alpha` concurrency group until it was
+cancelled. Check for such a job after any later environment change.
+[Run 40974755792](https://github.com/teamupstart/mission-control/actions/runs/40974755792)
+then started without approval and published `alpha-5d9ede07d199fc47949c2b9659dd03d502181890`,
+retiring the three older alphas. Later `main` commits have signed and published on their own.
 
 ## Ownership and prerequisites
 
@@ -390,7 +399,8 @@ base64 -i '/absolute/path/AuthKey_KEYID.p8' | gh secret set APPLE_API_KEY_BASE64
 
 After provisioning, verify secret **names** and environment protection rules, confirm the
 certificate belongs to the pinned team, and run qualification on the final exact commit through the
-normal reviewed workflow. Configuration alone does not satisfy the release exit gate.
+automatic Signed distribution workflow and its protected `desktop-distribution` environment.
+Configuration alone does not satisfy the release exit gate.
 The existing release App remains the publication owner; do not replace it with a personal
 token to work around missing admin access.
 

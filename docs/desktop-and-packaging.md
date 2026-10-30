@@ -58,7 +58,10 @@ Python, jq or compiler participates. Native `gh` owns authentication and redirec
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
 Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+current main commit. An unavailable/retired alpha requires a new explicit selection: a
+merged commit has no alpha until its Signed distribution run publishes, so the installer names
+the unpublished commit, says to retry or pin a published one with `--ref FULL_SHA`, and never
+substitutes an older alpha. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows
@@ -471,6 +474,14 @@ copy is checked before publication on the ordinary swap path and again before la
 includes modes, file bytes and internal framework symlinks; escaping links and oversized
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
+
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
 
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained

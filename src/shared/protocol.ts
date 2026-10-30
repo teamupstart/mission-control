@@ -859,6 +859,7 @@ export const PlanDecisionAnswerSchema = z.object({
   decisionId: z.string().min(1),
   selected: z.array(z.string().min(1)),
   other: z.string().nullable().optional().default(null),
+  note: z.string().nullable().optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 

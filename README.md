@@ -19,8 +19,10 @@ New binaries install **Agent Mission Control.app**. Existing managed installatio
 the same folder, preserving their state and receipt scope. Older saved installers must be
 replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
 
-**Release qualification is still pending.** Until a signed ready manifest is published, this
-command refuses installation. It never falls back to compilation. The explicit developer route
+Each eligible `main` commit publishes a signed, notarized alpha automatically; `--channel alpha`
+installs the current one. A stable release becomes installable once its tag's Signed
+distribution run publishes a ready manifest. A release without one is refused, and the
+installer never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
 See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
 for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
@@ -496,9 +498,10 @@ and build contracts.
 ## Community participation
 
 Sessions can [report product feedback](docs/sessions.md) with the
-`report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
-dashboard approval. The dashboard feedback form uses the same destination.
+`report_product_issue` MCP tool. After an explicit user request, it shows the exact public issue
+in the dashboard and publishes it in `teamupstart/mission-control` by default only when you select
+Submit public issue, then returns its GitHub URL. The dashboard feedback form uses the same
+destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository

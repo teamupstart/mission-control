@@ -36774,3 +36774,19 @@ body.foreman-sidecar-open .modal-backdrop {
 .residents-pop-manage {
   align-self: flex-start;
 }
+
+/* Resident MCP servers: the custom-server editor and the profile section's selection. */
+.resident-mcp-editor { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel-2); }
+.resident-mcp-fields, .resident-mcp-harnesses { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.resident-mcp-harnesses { flex-direction: row; flex-wrap: wrap; gap: 14px; }
+.resident-mcp-harnesses > legend { width: 100%; margin-bottom: 4px; }
+.resident-mcp-field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto auto; gap: 8px; align-items: center; }
+.resident-mcp-secret { white-space: nowrap; }
+.resident-mcp-args { min-height: 72px; font-family: var(--mono); }
+.resident-mcp-selected { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.resident-mcp-selected > li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.resident-mcp-name { font-weight: 600; overflow-wrap: anywhere; }
+.resident-mcp-unavailable { font-size: 12px; color: var(--attention); overflow-wrap: anywhere; }
+.resident-mcp-selected > li > button { margin-left: auto; }
+.resident-mcp-add { display: flex; gap: 12px; align-items: end; }
+.resident-mcp-add .field { flex: 1; min-width: 0; }

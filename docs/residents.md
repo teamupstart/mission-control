@@ -6,8 +6,8 @@ launch it from **Dispatch > Resident**. It runs as an ordinary session in the Ag
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
 This page describes profiles, launch, lifecycle, repository-free residents, how you find a
-resident on the board and from the top bar, and how a resident gets session control. The wake
-loop and skill and MCP selection are later phases of
+resident on the board and from the top bar, how a resident gets session control, and which MCP
+servers it starts with. The wake loop and skill selection are later phases of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -24,6 +24,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Workspace | The repository Dispatch pre-fills | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
+| MCP servers | Whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | inherit on, none selected |
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
 opened, so two windows cannot overwrite each other silently. **Archive** removes a profile from
@@ -171,9 +172,87 @@ that workspace after its session is gone and its SDK runtime has stopped. Failed
 remove their directories. Cleanup failures remain recorded and retry, including after restart;
 the repository retention clock never applies to these directories. Files saved there are temporary.
 
+## MCP servers
+
+**MCP servers** in the profile editor decides which MCP servers a resident starts with, besides
+Mission Control's own, which every resident always has.
+
+- **Inherit harness defaults** (on by default) adds every global server the harness configures
+  when the resident launches: the user-scope `mcpServers` in Claude Code's `~/.claude.json` (or
+  `$CLAUDE_CONFIG_DIR/.claude.json`), or the `mcp_servers` in Codex's own `config.toml`.
+- **Add an MCP server** adds one of those global servers, or a [custom server](#custom-mcp-servers)
+  that applies to the profile's harness. With inheritance off, the resident starts with only the
+  selection. A selected server that is also inherited starts once.
+
+Dispatch's launch summary says what the launch carries, such as `MCP: defaults + linear`.
+
+### What a run starts
+
+A launch resolves the run's set once, from the revision it pins and each harness's configuration
+as it is at that moment, and keeps a private copy of every definition and value. Every start and
+every resume after that reads only the copy:
+
+- A global server added later, a field added to a native entry, an edited or deleted custom
+  server, a changed secret or an edited profile never reaches a running resident. The next launch
+  picks it up.
+- Only the snapshot's servers start, plus Mission Control's own. Native MCP configuration is not
+  read for a resident at all: on Claude Code a repository's `.mcp.json`, local-scope servers,
+  plugin servers and claude.ai connectors do not load. On Codex, a server that only a trusted
+  project's `.codex/config.toml` (or a system or managed configuration) defines is switched off
+  for the run.
+- A launch is refused, with the reason, when the set cannot be pinned: an inherited or selected
+  global server residents cannot use, a custom server named like a global server of that harness,
+  a selected server that no longer exists, a custom secret that is not set, or, on Codex, another
+  configuration layer that changes one of the run's servers or forces a server on itself. Nothing
+  is renamed or dropped silently.
+
+Each launcher credential is good for one start, so a server that exits during a session is not
+restarted by the harness; it starts again with the session's next start, such as a resume.
+
+A global server residents cannot use is shown as unavailable, with the reason, in the catalog and
+the picker. That happens when it uses a field residents cannot carry (anything beyond the command,
+arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
+one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
+`env_http_headers`), relies on an OAuth login the harness holds, has a credential in an argument,
+or references an environment variable that is not set. A Claude Code `${VAR}` reference is
+expanded once, at launch.
+
+How each harness is held to exactly this set, and what was measured, is in
+[resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
+
+### Custom MCP servers
+
+**Residents > Custom MCP servers** defines servers for residents and lists each harness's global
+servers. A custom server has a name, the harnesses it applies to, and either a **stdio command**
+(command, arguments, environment variables) or an **HTTP URL** (URL, query parameters, headers).
+
+- **Secret** values are write-only. An environment variable or header marked secret, and every
+  query parameter, is stored on this machine, shown afterwards only as *Set*, never returned by
+  the dashboard, and never included in a settings snapshot. Leave a set value blank when editing to
+  keep it; renaming the field clears it.
+- An argument that looks like a credential (`--api-key=…`, `--token`, `TOKEN=…`, a URL with a user
+  name or query, a bearer credential) is refused, naming the argument. Put the credential in a
+  secret environment variable instead. Arguments are otherwise stored and backed up as written.
+- A URL with a user name or password is refused; a URL's query becomes secret query parameters.
+- Names are unique, are never `mission-control`, and may not equal a global server's name on a
+  harness the server applies to. A dotted name such as `foo.bar` is one server on both harnesses.
+- **Delete** removes the definition and its secrets. A running resident keeps the copy it launched
+  with; a profile that still selects it cannot launch until the selection is removed.
+
+A secret, and every value of a global server, reaches only its own server's process, through
+Mission Control's launcher; never the agent's environment, a command line, a generated
+configuration file, a log or the transcript. See [security](security.md#resident-mcp-secrets).
+
+When a run ends, its copy of the servers and their values, its launch tickets and its Codex
+configuration overlay are removed once its session has stopped.
+
 ## Backups
 
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).
+Custom MCP server definitions are too, under their own domain, without any secret value: a
+snapshot restored onto another machine brings the servers back with their secrets *Not set*. A
+snapshot taken before custom MCP servers existed restores without touching them. Full-database
+recovery points are scrubbed of every secret before they are written.
 Restoring a snapshot writes each changed profile as a new revision, reactivates profiles the
 snapshot holds and archives live profiles it does not. Revisions that running residents pinned are
 kept. A snapshot taken before residents existed restores without touching profiles.

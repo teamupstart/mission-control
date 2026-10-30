@@ -1,4 +1,5 @@
 import { ResidentSkillSourcesPanel } from "./ResidentSkillSources.tsx";
+import { ResidentMcpServersPanel } from "./ResidentMcpServers.tsx";
 import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
@@ -38,6 +39,8 @@ export function ResidentsPage({
   creating,
   skillSources = false,
   onSkillSources,
+  mcpServers = false,
+  onMcpServers,
   onSelect,
   onCreate,
   onSettle,
@@ -52,6 +55,8 @@ export function ResidentsPage({
   creating: boolean;
   skillSources?: boolean;
   onSkillSources?: () => void;
+  mcpServers?: boolean;
+  onMcpServers?: () => void;
   /** An operator choice of profile: gated by the router while a draft is unsaved. */
   onSelect: (profileId: string | null) => void;
   /** Open a blank editor: gated the same way. */
@@ -128,13 +133,14 @@ export function ResidentsPage({
                 </p>
               )}
             </LibraryRailGroup>
-            <LibraryRailGroup label="Resources" count={1}>
+            <LibraryRailGroup label="Resources" count={2}>
               <LibraryRailRow className="resident-list-item" name="Skill sources" detail="Global and registered folders" selected={skillSources} tooltip="Browse and rescan skill sources" onSelect={() => onSkillSources?.()} />
+              <LibraryRailRow className="resident-list-item" name="Custom MCP servers" detail="Custom servers and each harness's global servers" selected={mcpServers} tooltip="Define custom MCP servers and browse global ones" onSelect={() => onMcpServers?.()} />
             </LibraryRailGroup>
           </div>
         </aside>
         <div className="residents-workspace">
-          {skillSources ? <ResidentSkillSourcesPanel /> : creating ? (
+          {skillSources ? <ResidentSkillSourcesPanel /> : mcpServers ? <ResidentMcpServersPanel /> : creating ? (
             <ResidentProfileEditor
               key="new"
               profile={null}

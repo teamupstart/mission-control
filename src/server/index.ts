@@ -81,6 +81,7 @@ import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/ind
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
+import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
@@ -394,9 +395,15 @@ const residents = new ResidentManager({
   persona: (id) => personas.store.getPersona(id),
   launchResponseWaitMs: residentLaunchWaitMs(),
   hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
+  // The real harness configuration, read only - never written.
+  mcpCatalog: new ResidentMcpCatalogCache(readGlobalMcp),
 });
-tasks.registerResidentLaunch((task, repository, runtime) =>
-  residents.composeLaunch(task, repository, runtime));
+tasks.registerResidentLaunch(
+  (task, repository, runtime) => residents.composeLaunch(task, repository, runtime),
+  (task) => residents.mcpLaunchForTask(task),
+);
+// A resumed resident renders its MCP servers from its run's snapshot, through the same reader.
+sdkSessions.registerResidentMcp((task) => residents.mcpLaunchForTask(task));
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.

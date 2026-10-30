@@ -318,3 +318,24 @@ test("a snapshot predating skill sources validates and restores without clearing
   restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(migrateSettingsBackupSnapshot(old).settings));
   assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources), config);
 });
+
+test("a snapshot carries custom MCP server definitions and never a secret value", async () => {
+  const { createResidentMcpServer } = await import("../src/server/residents/mcp-store.ts");
+  const { CreateResidentMcpServerSchema } = await import("../src/shared/resident-mcp.ts");
+  db.exec("DELETE FROM app_config; DELETE FROM resident_mcp_secrets;");
+  const secret = "backup-sentinel-secret-4417";
+  createResidentMcpServer(CreateResidentMcpServerSchema.parse({
+    name: "linear",
+    harnesses: ["claude"],
+    transport: { type: "http", url: `https://mcp.example.com/mcp?key=${secret}`, headers: [{ name: "Authorization", secret: true, value: `Bearer ${secret}` }] },
+  }) as never, { id: "00000000-0000-4000-8000-000000000042", at: 1, globals: new Map() });
+  const root = join(home, "mcp-servers");
+  const captured = await service(root).ensureDailySnapshot("2026-10-30");
+  assert.equal(captured.status, "ready");
+  if (captured.status !== "ready") return;
+  const entry = captured.snapshot.domains.find((domain) => domain.domain === "resident-mcp-servers");
+  const payload = JSON.stringify(entry?.payload);
+  assert.match(payload, /"name":"linear"/);
+  assert.match(payload, /"query":\["key"\]/);
+  assert.ok(!readFileSync(join(root, `${captured.snapshot.id}.json`), "utf8").includes(secret), "the snapshot file holds no secret");
+});

@@ -224,3 +224,56 @@ which already has access to other local dashboard actions and operator-owned fil
 private click boundary specifically prevents local HTTP from self-granting this capability;
 it does not protect against OS-level UI automation or a compromised desktop process. Revocation
 refuses new requests; it does not undo an action already accepted by a runtime.
+
+## Resident MCP secrets
+
+A custom MCP server's secret values - environment variables and headers marked **Secret**, and
+every URL query value - are write-only. They are accepted on a save and never returned: every
+route answers with the field's name and whether it is set. They are kept apart from the
+definition, which lives in `app_config` (`residents.mcpServers`) and travels with settings
+snapshots, in the `resident_mcp_secrets` table, which no route, SSE frame, settings snapshot or
+log reads.
+
+A global server's configuration does not say which of its parts are credentials, so all of it is
+treated as private: the catalog the dashboard sees carries only its name, transport, command
+basename or URL origin, and the names of its environment variables and headers.
+
+At launch a run copies its servers' definitions and values once, into `resident_run_mcp_servers`
+and `resident_run_mcp_secrets`. Both are daemon-private like the secrets table, read again only by
+that run's starts, and removed when the run ends.
+
+**No secret on a command line, in a configuration file or in the agent's environment.** Each
+harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
+written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
+environment is inherited by every shell and tool it runs. So a global server, and a custom server
+with any secret, is rendered as an entry for Mission's scoped launcher, whose arguments name only
+the run, the server's name and a credential file:
+
+- For each process start the daemon writes one credential file per launcher entry in the run's
+  private directory: owner-only, created exclusively, holding a single-use ticket bound to that
+  run, that server and that start, which expires 30 seconds later. The daemon removes any file left
+  unredeemed once its ticket expires, and every such file at startup.
+- The launcher reads its file, removes it, and redeems the ticket over the loopback API
+  (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
+  presentation, whatever the outcome. The answer is that one server's definition and values.
+- A stdio server is started with its values in its own environment only. For an HTTP server the
+  launcher is a stdio bridge that adds the headers and query values to every request itself.
+- A missing, spent or expired ticket, or a run that has ended, starts nothing.
+
+Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
+`env_http_headers` - read the agent's own environment, so a global server that uses one is not
+available to residents. So is a global server with a credential-shaped argument, or one whose
+authentication the harness holds (an OAuth login). A custom server's argument in a credential
+form is refused when it is saved; detection is a guard rather than a proof, which is why the
+editor says arguments are stored and backed up as written.
+
+**Backups.** Settings snapshots carry custom server definitions without their values. A
+full-database recovery point is scrubbed of both secret tables before it is published, with the
+freed pages overwritten, so a restored database shows those secrets as not set, and a restored run
+whose snapshot lost one refuses to start that server rather than start it without its credential.
+
+This boundary is what the agent is handed - its environment, arguments, configuration and
+transcript - and it was measured on real Claude Code and Codex installations
+(`scripts/probe-resident-mcp.ts`). A credential file's path is metadata, not a secret. Mission
+Control does not claim an operating-system sandbox against a process running as the same user as
+the daemon, which could read an owner-only file before the launcher does.

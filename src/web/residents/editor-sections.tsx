@@ -8,7 +8,9 @@ import {
   RESIDENT_MARKER_LABEL_MAX,
   defaultResidentMarkerLabel,
   residentMarkerColor,
+  residentMcpRefKey,
   type ResidentAgent,
+  type ResidentMcpServerRef,
   type ResidentProfileRevision,
   type ResidentProfileSectionId,
 } from "@shared/residents.ts";
@@ -19,6 +21,7 @@ import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
 import { residentAccentStyle } from "./marker.ts";
+import { residentMcpRefTarget, residentMcpSelectable, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
 /** What every section editor is handed. Each writes only its own slice of the draft. */
 export interface ResidentEditorSectionProps {
@@ -301,6 +304,126 @@ function AuthoritySection({ draft, update, disabled }: ResidentEditorSectionProp
   );
 }
 
+function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  const { catalog, error } = useResidentMcpCatalog();
+  const [choice, setChoice] = useState("");
+  const agent = draft.execution.agent;
+  const label = AGENT_IDENTITY[agent].label;
+  const mcp = draft.mcp;
+  const selectable = residentMcpSelectable(catalog, agent);
+  const chosen = new Set(mcp.selected.map(residentMcpRefKey));
+  const harness = catalog?.harnesses.find((row) => row.agent === agent) ?? null;
+  const options: Array<{ key: string; label: string; ref: ResidentMcpServerRef; group: "global" | "custom"; unavailable: string | null }> = [
+    ...(harness?.servers ?? []).map((server) => ({
+      ref: { source: "global" as const, agent, name: server.name },
+      label: server.name,
+      group: "global" as const,
+      unavailable: server.unavailable,
+    })),
+    ...(catalog?.custom ?? [])
+      .filter((server) => server.harnesses.includes(agent))
+      .map((server) => ({ ref: { source: "custom" as const, id: server.id }, label: server.name, group: "custom" as const, unavailable: null })),
+  ]
+    .map((option) => ({ ...option, key: residentMcpRefKey(option.ref) }))
+    .filter((option) => !chosen.has(option.key));
+  const set = (next: typeof mcp): void => update("mcp", next);
+  const add = (): void => {
+    const option = options.find((candidate) => candidate.key === choice);
+    if (!option) return;
+    set({ ...mcp, selected: [...mcp.selected, option.ref] });
+    setChoice("");
+  };
+  const locked = disabled || selectable === false;
+  return (
+    <div className="resident-fields">
+      {error && <p role="alert" className="resident-error">{error}</p>}
+      {selectable === false && (
+        <p className="resident-skill-notice">
+          Residents on {label} cannot choose MCP servers: no measured launch control pins the set.
+          They start with the harness's own servers.
+        </p>
+      )}
+      <label className="alert-row resident-mcp-inherit">
+        <Tooltip label={`Start with every global MCP server ${label} configures at launch, plus the selection below`}>
+          <input
+            type="checkbox"
+            checked={mcp.inheritDefaults}
+            disabled={locked}
+            onChange={(event) => set({ ...mcp, inheritDefaults: event.target.checked })}
+          />
+        </Tooltip>
+        <span>Inherit harness defaults</span>
+      </label>
+      <p className="field-hint">
+        {mcp.inheritDefaults
+          ? `Every global server ${label} has when the resident launches, plus the selection.`
+          : "Only the selection."}{" "}
+        Mission Control's own server is always attached. A running resident keeps the set it
+        launched with.
+      </p>
+      <ul className="resident-mcp-selected" aria-label="Selected MCP servers">
+        {mcp.selected.map((ref, index) => {
+          const target = residentMcpRefTarget(catalog, ref);
+          const problem = ref.source === "global" && ref.agent !== agent
+            ? `belongs to ${AGENT_IDENTITY[ref.agent].label}`
+            : catalog && !target
+              ? "no longer exists"
+              : target?.kind === "global"
+                ? target.server.unavailable
+                : target?.kind === "custom" && !target.server.harnesses.includes(agent)
+                  ? `does not apply to ${label}`
+                  : null;
+          const name = target?.server.name ?? (ref.source === "global" ? ref.name : "Custom server");
+          return (
+            <li key={residentMcpRefKey(ref)}>
+              <span className="resident-mcp-name">{name}</span>
+              <span className="resident-editor-meta">{ref.source === "global" ? "global" : "custom"}</span>
+              {problem && <span className="resident-mcp-unavailable">{problem}</span>}
+              <Tooltip label={`Remove ${name} from this profile`}>
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  aria-label={`Remove MCP server ${name}`}
+                  disabled={disabled}
+                  onClick={() => set({ ...mcp, selected: mcp.selected.filter((_, at) => at !== index) })}
+                >
+                  Remove
+                </button>
+              </Tooltip>
+            </li>
+          );
+        })}
+        {mcp.selected.length === 0 && <li className="resident-section-blurb">None selected.</li>}
+      </ul>
+      <div className="resident-mcp-add">
+        <label className="field">
+          <span className="field-label">Add an MCP server</span>
+          <Tooltip label={`A global server ${label} configures, or a custom server that applies to ${label}`}>
+            <select className="field-input" value={choice} disabled={locked || options.length === 0} onChange={(event) => setChoice(event.target.value)}>
+              <option value="">{catalog ? (options.length ? "Choose a server…" : "No more servers") : "Loading…"}</option>
+              <optgroup label={`${label} global`}>
+                {options.filter((option) => option.group === "global").map((option) => (
+                  <option key={option.key} value={option.key} disabled={option.unavailable !== null}>
+                    {option.label}{option.unavailable ? " (unavailable)" : ""}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Custom">
+                {options.filter((option) => option.group === "custom").map((option) => (
+                  <option key={option.key} value={option.key}>{option.label}</option>
+                ))}
+              </optgroup>
+            </select>
+          </Tooltip>
+        </label>
+        <Tooltip label="Add the chosen server to this profile">
+          <button type="button" className="btn" disabled={locked || !choice} onClick={add}>Add</button>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The editor's sections, in order. Phase 1 registers the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
@@ -347,5 +470,11 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     title: "Authority",
     blurb: "What this resident may do beyond its own session.",
     Body: AuthoritySection,
+  },
+  {
+    id: "mcp",
+    title: "MCP servers",
+    blurb: "Which MCP servers the resident starts with, from its harness's global servers and your custom ones.",
+    Body: McpSection,
   },
 ];

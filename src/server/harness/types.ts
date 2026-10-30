@@ -734,6 +734,57 @@ export interface ResumeSpec {
   argv(agentSessionId: string, permissionMode: PermissionMode | null): readonly string[];
 }
 
+/**
+ * The native per-server fields a resident MCP entry may carry, each mapped one-to-one onto the
+ * harness's own field. Anything outside this allowlist makes a global server unavailable to
+ * residents rather than being dropped or passed through.
+ */
+export interface ResidentMcpOptions {
+  claude?: {
+    /** `timeout`, per tool call, in milliseconds. */
+    timeoutMs?: number;
+    /** `alwaysLoad`. */
+    alwaysLoad?: boolean;
+  };
+  codex?: {
+    startupTimeoutSec?: number;
+    toolTimeoutSec?: number;
+    enabledTools?: string[];
+    disabledTools?: string[];
+  };
+}
+
+/**
+ * One server of a resident run's MCP set, ready for a driver to render. No shape carries a
+ * secret value: a server with one, and every global server, is a `launcher` entry whose
+ * arguments name only the run, the server and a single-use credential file.
+ */
+export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
+  | { shape: "stdio"; command: string; args: string[]; env: Record<string, string> }
+  | { shape: "http"; url: string; headers: Record<string, string> }
+  | { shape: "launcher"; command: string; args: string[]; env: Record<string, string> }
+);
+
+/**
+ * A resident run's pinned MCP set (`src/server/residents/mcp-launch.ts`), beside Mission's own
+ * descriptor in `SdkLaunchOptions.mcp`, which keeps its meaning and is never overwritten.
+ *
+ * A driver renders exactly Mission's server plus these entries and nothing from the harness's
+ * native MCP configuration, by the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection` records.
+ */
+export interface ResidentMcpLaunch {
+  /** The run's names, for verifying what actually started. Never includes Mission's. */
+  names: readonly string[];
+  /**
+   * This process start's entries. Each call mints fresh single-use credential files for the
+   * launcher entries, so call it once per process start - a launch, a resume, or a driver's own
+   * relaunch - immediately before the harness reads its configuration.
+   */
+  forStart(): ResidentMcpEntry[];
+  /** The run's private directory for per-run harness configuration (the Codex overlay). */
+  privateDir: string;
+}
+
 export interface SdkLaunchOptions {
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */
@@ -746,6 +797,11 @@ export interface SdkLaunchOptions {
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
   mcp: MissionMcpDescriptor | null;
+  /**
+   * A resident run's pinned MCP set, or absent for every other launch, which keeps the
+   * harness's native MCP behaviour. When present the driver starts exactly `mcp` plus these.
+   */
+  residentMcp?: ResidentMcpLaunch | null;
   /**
    * Absolute paths, beyond `cwd`, this session must be able to WRITE to - the secondary
    * worktrees of a multi-repo task. Empty on every ordinary dispatch.

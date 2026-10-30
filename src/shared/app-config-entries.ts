@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
+import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
 import {
   AwayConfigSchema,
   BacklogPlanSchema,
@@ -295,6 +296,9 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  */
 export const APP_CONFIG_ENTRIES = {
   residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
+  // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
+  // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.
+  residentMcpServers: { ...fieldsEntry("residents.mcpServers", ResidentMcpServersDocumentSchema, "resident-mcp-servers", { servers: "setting" }), optionalInSnapshot: true },
   harnesses: fieldsEntry(
     "harnesses", HarnessesConfigSchema, "harnesses", harnessesFields, "harnesses",
   ),

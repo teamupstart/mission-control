@@ -106,6 +106,23 @@ export interface SkillSelectionSpec {
 }
 
 /**
+ * A measured launch control that starts exactly a resident run's MCP snapshot, plus Mission
+ * Control's own server, on every start and resume (`scripts/probe-resident-mcp.ts`).
+ *
+ * - `strict-mcp-config`: the SDK's `strictMcpConfig` with the snapshot in `mcpServers`, so no
+ *   user, local, project or plugin configuration is read for the run.
+ * - `codex-home-overlay`: a per-run `CODEX_HOME` whose generated `config.toml` holds only the
+ *   snapshot, verified before every thread start against every other configuration layer.
+ *
+ * `secrets` is how a secret-bearing or global server reaches only its own process: Mission's
+ * scoped launcher, which redeems a single-use ticket for that one server's definition.
+ */
+export interface McpSelectionSpec {
+  mechanism: "strict-mcp-config" | "codex-home-overlay";
+  secrets: "scoped-launcher";
+}
+
+/**
  * Installing skills for a harness and invoking them in a live session.
  *
  * Null means the harness does not load Mission Control-managed skills. Within a
@@ -538,6 +555,8 @@ interface HarnessCapabilitiesBase {
   skills: SkillsSpec | null;
   /** Null until exact isolation, including native additions on resume, has passed a real probe. */
   skillSelection: SkillSelectionSpec | null;
+  /** Null until a real probe shows a launch starts exactly a run's MCP snapshot. */
+  mcpSelection: McpSelectionSpec | null;
   extensions: ExtensionsSpec | null;
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
@@ -628,6 +647,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     extensions: null,
     skills: CLAUDE_SKILLS,
     skillSelection: null, // 2.1.310: overlay and launch settings still expose project skills.
+    // 2.1.310 and SDK 0.3.310: `strictMcpConfig` excluded user, local, project and plugin
+    // fixtures; only the passed servers started, each with exactly its passed definition.
+    mcpSelection: { mechanism: "strict-mcp-config", secrets: "scoped-launcher" },
     workQueue: {
       uninstrumentedWhy:
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
@@ -762,6 +784,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // broadcast.
     extensions: null,
     skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
+    // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
+    // so every start also verifies the layers and disables foreign servers before they load.
+    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher" },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -895,6 +920,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
     // makes its transcript an attributable idle source for the verified command.
     skillSelection: null,
+    mcpSelection: null, // No MCP client.
     skills: {
       reloadCommand: "/reload",
       reloadIdleSource: "transcript",

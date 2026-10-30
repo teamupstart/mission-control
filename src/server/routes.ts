@@ -1,3 +1,12 @@
+import {
+  CreateResidentMcpServerSchema,
+  DeleteResidentMcpServerSchema,
+  RedeemResidentMcpTicketSchema,
+  RefreshResidentMcpCatalogSchema,
+  UpdateResidentMcpServerSchema,
+} from "@shared/resident-mcp.ts";
+import { ResidentMcpServerError } from "./residents/mcp-store.ts";
+import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
 import { residentSkillIndex, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
@@ -8156,6 +8165,65 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // completion (including failure), so a slow scan cannot consume its own cooldown.
     try { return c.json(residentSkillIndex(true)); }
     finally { residentSkillRescanReadyAt = performance.now() + 1_000; }
+  });
+
+  // --- resident MCP servers ---
+  //
+  // The catalog is on demand, never an SSE collection: global servers as allowlisted metadata
+  // and custom servers whose secret fields say only "set" or "not set". No route here returns a
+  // secret value, except `redeem` to the scoped launcher holding that server's single-use ticket.
+  app.get("/api/residents/mcp-catalog", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    return c.json(await residents.mcpServerCatalog());
+  });
+  app.post("/api/residents/mcp-catalog/refresh", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RefreshResidentMcpCatalogSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(await residents.mcpServerCatalog(true));
+  });
+  const mcpServerWrite = async (c: Context, write: () => Promise<unknown> | unknown, status: 200 | 201 = 200) => {
+    try {
+      const result = await write();
+      return result === undefined ? c.json({ ok: true }) : c.json(result, status);
+    } catch (error) {
+      if (error instanceof ResidentMcpServerError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  };
+  app.post("/api/residents/mcp-servers", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, CreateResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.createMcpServer(parsed.data), 201);
+  });
+  app.put("/api/residents/mcp-servers/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, UpdateResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.updateMcpServer(c.req.param("id"), parsed.data));
+  });
+  app.delete("/api/residents/mcp-servers/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, DeleteResidentMcpServerSchema);
+    if (!parsed.ok) return parsed.res;
+    return mcpServerWrite(c, () => residents.deleteMcpServer(c.req.param("id"), parsed.data.expectedRevision));
+  });
+  // The scoped launcher's redemption. The ticket is the whole credential: single-use, bound to
+  // one run, one server and one start, and expiring within seconds. The answer is that server's
+  // definition and secrets alone; it is never logged.
+  app.post("/api/residents/mcp/redeem", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RedeemResidentMcpTicketSchema);
+    if (!parsed.ok) return parsed.res;
+    const redeemed = redeemResidentMcpTicket(parsed.data);
+    return redeemed.ok
+      ? c.json({ definition: redeemed.definition })
+      : c.json({ error: redeemed.error }, redeemed.status);
   });
 
   // --- resident profiles and their one launch path ---

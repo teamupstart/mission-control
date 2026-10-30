@@ -117,6 +117,8 @@ export interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkMessage> {
    * lets this live gauge affect the session lifecycle.
    */
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse>;
+  /** The MCP servers this query configured, by name. Absent on scripted test transports. */
+  mcpServerStatus?(): Promise<Array<{ name: string; status: string }>>;
 }
 
 /**
@@ -184,6 +186,16 @@ export interface ClaudeSdkQueryOptions {
   };
   resume?: string;
   mcpServers?: Record<string, unknown>;
+  /**
+   * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
+   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch.
+   */
+  strictMcpConfig?: boolean;
+  /**
+   * Launch-scoped flag settings, merged over the operator's. A resident run sets only
+   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set.
+   */
+  settings?: { disableClaudeAiConnectors?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,

@@ -27,7 +27,14 @@ test("an upgraded database gains the resident tables empty, with the idempotency
   const db = openDb();
   const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'resident_%'`)
     .all() as Array<{ name: string }>).map((row) => row.name).sort();
-  assert.deepEqual(tables, ["resident_profile_revisions", "resident_profiles", "resident_runs"]);
+  assert.deepEqual(tables, [
+    "resident_mcp_secrets",
+    "resident_profile_revisions",
+    "resident_profiles",
+    "resident_run_mcp_secrets",
+    "resident_run_mcp_servers",
+    "resident_runs",
+  ]);
   const runColumns = db.prepare(`PRAGMA table_info(resident_runs)`).all() as Array<{ name: string; notnull: number }>;
   for (const column of ["launch_request_id", "launch_input", "launch_repo_spelling", "launch_state", "task_id", "persona_snapshot"]) {
     assert.equal(runColumns.find((c) => c.name === column)?.notnull, 1, `${column} must be NOT NULL`);

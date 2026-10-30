@@ -14,6 +14,7 @@ import type {
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   SdkEvent,
+  ResidentMcpEntry,
   SdkLaunchOptions,
   SdkSessionHandle,
   SdkSpec,
@@ -1252,6 +1253,61 @@ function withArtifactTool(env: Record<string, string | undefined>): Record<strin
   return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
 }
 
+/** One resident entry as Claude Code's `mcpServers` value. */
+function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> {
+  const claude = entry.options.claude ?? {};
+  const options = {
+    ...(claude.timeoutMs !== undefined ? { timeout: claude.timeoutMs } : {}),
+    ...(claude.alwaysLoad !== undefined ? { alwaysLoad: claude.alwaysLoad } : {}),
+  };
+  if (entry.shape === "http") return { type: "http", url: entry.url, headers: entry.headers, ...options };
+  return { type: "stdio", command: entry.command, args: entry.args, env: entry.env, ...options };
+}
+
+/**
+ * Mission's server, and for a resident run its snapshot under `strictMcpConfig`, so the CLI
+ * reads no user, local, project or plugin MCP configuration. Called once per process start,
+ * because a resident's launcher entries carry that start's single-use credentials.
+ */
+function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
+  const servers: Record<string, unknown> = {};
+  if (opts.mcp) {
+    servers[opts.mcp.serverName] = { type: "stdio", command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env };
+  }
+  if (!opts.residentMcp) return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+  for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  return {
+    ...(Object.keys(servers).length > 0 ? { mcpServers: servers } : {}),
+    strictMcpConfig: true,
+    // `strictMcpConfig` names configuration files; claude.ai's cloud connectors are fetched
+    // for an account instead, and this is the setting that keeps them out.
+    settings: { disableClaudeAiConnectors: true },
+  };
+}
+
+/**
+ * Confirm the CLI configured exactly Mission's server and the run's snapshot - the direct check
+ * behind `strictMcpConfig`, which also covers sources no fixture can reach, such as managed
+ * configuration. A query that cannot answer in time is let through: the flag already decided.
+ */
+async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions): Promise<void> {
+  if (!query.mcpServerStatus) return;
+  const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
+  let timer: NodeJS.Timeout | undefined;
+  const statuses = await Promise.race([
+    query.mcpServerStatus().catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 10_000);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  const extra = statuses?.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  if (!extra) return;
+  await query.return(undefined).catch(() => {});
+  throw new Error(`this resident's Claude Code session configured the MCP server ${extra.name}, which is not in its snapshot`);
+}
+
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
@@ -1315,18 +1371,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // every session that started in any other mode unable to reach bypass at all.
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
-        ...(opts.mcp
-          ? {
-              mcpServers: {
-                [opts.mcp.serverName]: {
-                  type: "stdio",
-                  command: opts.mcp.command,
-                  args: opts.mcp.args,
-                  env: opts.mcp.env,
-                },
-              },
-            }
-          : {}),
+        ...claudeMcpOptions(opts),
         // The ask channel's disallow + redirect are deliberately NOT rendered here. They
         // exist because a menu on a child's screen is unreadable to the dashboard; a
         // driver request IS the dashboard's own control, so the native tool is better
@@ -1344,10 +1389,13 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       };
       session.configureRelaunch((prompt, resume) => {
         const { resume: _previousResume, ...base } = options;
-        return deps.query({ prompt, options: { ...base, resume } });
+        // A resident's launcher credentials are single-use and were spent by the process being
+        // replaced, so the replacement mints its own.
+        return deps.query({ prompt, options: { ...base, ...claudeMcpOptions(opts), resume } });
       });
       const query = await deps.query({ prompt: session.input(), options });
       session.attach(query);
+      if (opts.residentMcp) await verifyResidentMcp(query, opts);
       return session;
     },
   };

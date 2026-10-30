@@ -1204,6 +1204,10 @@ them and never edits another phase's entry:
 - `RESIDENT_PROFILE_SECTIONS` (`src/shared/residents.ts`) - the named section schemas a profile
   revision is made of. A new section is optional with defaults (`.default({})` when its fields all
   default), so a revision saved before it parses unchanged. Section keys are persisted JSON keys.
+  An older build never drops what a newer one wrote: request bodies stay strictly validated, the
+  store carries every stored section or field the request does not know forward on edit
+  (`preserveUnknownResidentSettings`), and settings snapshots carry and restore each revision as
+  stored.
 - `RESIDENT_EDITOR_SECTIONS` (`src/web/residents/editor-sections.tsx`) - how each section is
   edited on `#/residents`, keyed by the same section id. `blankResidentDraft` reads section
   defaults from the schema registry, so a new section needs no edit there.

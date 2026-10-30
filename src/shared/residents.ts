@@ -130,6 +130,37 @@ export type ResidentProfileRevision = z.infer<typeof ResidentProfileRevisionSche
 /** What an editor may submit before defaults apply. */
 export type ResidentProfileRevisionInput = z.input<typeof ResidentProfileRevisionSchema>;
 
+/** A stored revision as JSON, including any section or field a newer build wrote. */
+export type StoredResidentSettings = Record<string, unknown>;
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Carry forward what this build does not know.
+ *
+ * `known` is what this build parsed and validated - a request body, or a section it rewrote.
+ * Every key `stored` holds that `known` lacks, at any depth, is copied over unchanged: a section
+ * or a field a newer build added. Known keys always come from `known`, so validation of what
+ * this build understands is never bypassed, and nothing it does not understand is dropped by
+ * reading a revision and saving it again.
+ */
+export function preserveUnknownResidentSettings(
+  stored: unknown,
+  known: Record<string, unknown>,
+): StoredResidentSettings {
+  if (!plainObject(stored)) return { ...known };
+  const out: Record<string, unknown> = { ...known };
+  for (const [key, value] of Object.entries(stored)) {
+    if (!(key in known)) out[key] = value;
+    else if (plainObject(value) && plainObject(known[key])) {
+      out[key] = preserveUnknownResidentSettings(value, known[key] as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
 /** The request-body form: unknown top-level sections are refused rather than dropped. */
 export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict();
 

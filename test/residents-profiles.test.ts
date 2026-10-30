@@ -256,3 +256,42 @@ test("resident is refused on every task creation path except the resident launch
   if (!retried.ok) assert.equal(retried.error, RESIDENT_TASK_REFUSAL);
   assert.equal((await tasks.reschedule("resident-failed")).error, RESIDENT_TASK_REFUSAL);
 });
+
+test("a section or field written by a newer build survives this build reading, editing and re-saving the profile", async () => {
+  const created = await request("POST", "/api/residents/profiles", { settings: body("Forward Compat") });
+  assert.equal(created.status, 201);
+  const profile = created.json as unknown as ResidentProfile;
+  // What a newer build would have written: a whole section, and a field inside a known section.
+  const newer = {
+    ...ResidentProfileRevisionSchema.parse(body("Forward Compat")),
+    marker: { color: "cyan", label: "FWD" },
+    execution: { agent: "claude", model: null, effort: null, loopHint: 5 },
+  };
+  openDb().prepare("UPDATE resident_profile_revisions SET settings_json = ? WHERE profile_id = ? AND revision = 1")
+    .run(JSON.stringify(newer), profile.id);
+
+  // Read: this build parses what it knows and keeps the profile readable.
+  const read = store.getResidentProfile(profile.id)!;
+  assert.equal(read.settings.execution.agent, "claude");
+  assert.equal((read.settings as Record<string, unknown>).marker, undefined, "the typed view holds only known sections");
+
+  // A request body is still strictly validated: it cannot smuggle a section in itself.
+  const smuggled = await request("PATCH", `/api/residents/profiles/${profile.id}`, {
+    expectedRevision: 1,
+    settings: { ...body("Forward Compat"), marker: { color: "red" } },
+  });
+  assert.equal(smuggled.status, 400);
+
+  // Save: an edit through the route carries the unknown section and field forward.
+  const saved = await request("PATCH", `/api/residents/profiles/${profile.id}`, {
+    expectedRevision: 1,
+    settings: body("Forward Compat", { instructions: { markdown: "Edited here." }, execution: { agent: "codex" } }),
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.json));
+  const stored = store.storedResidentSettings(profile.id, 2)!;
+  assert.deepEqual(stored.marker, { color: "cyan", label: "FWD" });
+  assert.deepEqual(stored.execution, { agent: "codex", model: null, effort: null, loopHint: 5 }, "known values from the request, unknown kept");
+  assert.deepEqual(stored.instructions, { markdown: "Edited here." });
+  // And the revision it replaced is untouched.
+  assert.deepEqual(store.storedResidentSettings(profile.id, 1)!.marker, { color: "cyan", label: "FWD" });
+});

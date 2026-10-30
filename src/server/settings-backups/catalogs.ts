@@ -23,7 +23,11 @@ import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts"
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
 import { RESIDENT_LIMITS, ResidentProfileRevisionSchema } from "@shared/residents.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
-import { listBackupResidentProfiles, normalizeResidentName } from "../residents/store.ts";
+import {
+  listBackupResidentProfiles,
+  normalizeResidentName,
+  storedResidentSettings,
+} from "../residents/store.ts";
 
 const id = z.string().min(1).max(200);
 const name = z.string().min(1).max(200);
@@ -120,7 +124,14 @@ export const SettingsBackupResidentProfileSchema = z.object({
   archivedAt,
   createdAt: timestamp,
   updatedAt: timestamp,
-  settings: ResidentProfileRevisionSchema,
+  // The revision as stored, validated against this build's schema but NOT reduced to it: a
+  // section or field a newer build wrote travels through the snapshot unchanged.
+  settings: z.record(z.unknown()).superRefine((value, ctx) => {
+    const parsed = ResidentProfileRevisionSchema.safeParse(value);
+    if (!parsed.success) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error.issues[0]?.message ?? "invalid resident settings" });
+    }
+  }),
 }).strict();
 
 export type SettingsBackupPersona = z.infer<typeof SettingsBackupPersonaSchema>;
@@ -215,7 +226,7 @@ export const SETTINGS_BACKUP_CATALOGS = [
       archivedAt: profile.archivedAt,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
-      settings: profile.settings,
+      settings: storedResidentSettings(profile.id, profile.revision) ?? profile.settings,
     })),
   },
 ] as const satisfies readonly CatalogDescriptor[];

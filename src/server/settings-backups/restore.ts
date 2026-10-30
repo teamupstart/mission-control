@@ -38,8 +38,13 @@ import {
   type StagedSettingsConfigRestore,
 } from "./config-registry.ts";
 import { validateSettingsBackupDomains } from "./format.ts";
-import { RESIDENT_LIMITS, canonicalResidentJson, type ResidentProfile } from "@shared/residents.ts";
-import { listAllResidentProfiles, normalizeResidentName } from "../residents/store.ts";
+import {
+  RESIDENT_LIMITS,
+  ResidentProfileRevisionSchema,
+  canonicalResidentJson,
+  type ResidentProfile,
+} from "@shared/residents.ts";
+import { listAllResidentProfiles, normalizeResidentName, storedResidentSettings } from "../residents/store.ts";
 
 export interface MigratedSettingsBackup {
   snapshot: SettingsBackupEnvelopeV1;
@@ -182,8 +187,12 @@ function workflowContent(value: WorkflowDefinition | SettingsBackupWorkflowDefin
   return content;
 }
 
+/** Compared as stored, so a section only a newer build understands still counts as content. */
 function residentContent(value: ResidentProfile | SettingsBackupResidentProfile): unknown {
-  return { name: value.name, settings: JSON.parse(canonicalResidentJson(value.settings)) as unknown };
+  const settings = "normalizedName" in value
+    ? value.settings
+    : storedResidentSettings(value.id, value.revision) ?? value.settings;
+  return { name: value.name, settings: JSON.parse(canonicalResidentJson(settings)) as unknown };
 }
 
 /**
@@ -203,11 +212,13 @@ function residentPersonaBlockers(
   ]);
   const residents = staged.residentProfiles === null
     ? listAllResidentProfiles().filter((row) => row.archivedAt === null)
-    : staged.residentProfiles.filter((row) => row.archivedAt === null);
+      .map((row) => ({ name: row.name, personaId: row.settings.persona.personaId }))
+    : staged.residentProfiles.filter((row) => row.archivedAt === null)
+      .map((row) => ({ name: row.name, personaId: ResidentProfileRevisionSchema.parse(row.settings).persona.personaId }));
   return residents
-    .filter((row) => !livePersonas.has(row.settings.persona.personaId))
+    .filter((row) => !livePersonas.has(row.personaId))
     .map((row) =>
-      `Resident profile ${row.name} uses Persona ${row.settings.persona.personaId}, which would not be live after this restore`);
+      `Resident profile ${row.name} uses Persona ${row.personaId}, which would not be live after this restore`);
 }
 
 /** Blockers and preview counts for the resident catalog, or zeros when the snapshot predates it. */

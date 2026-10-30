@@ -12,6 +12,8 @@ import {
   type ResidentProfile,
   type ResidentProfileRevision,
   type ResidentRun,
+  type StoredResidentSettings,
+  preserveUnknownResidentSettings,
 } from "@shared/residents.ts";
 import { openDb } from "../db.ts";
 
@@ -152,6 +154,25 @@ export function listBackupResidentProfiles(archivedLimit: number): ResidentProfi
 }
 
 /**
+ * A revision exactly as stored - every section and field, including ones a newer build wrote and
+ * this build does not know - or null. What the store merges into and what a backup carries.
+ */
+export function storedResidentSettings(profileId: string, revision: number): StoredResidentSettings | null {
+  const row = openDb()
+    .prepare(`SELECT settings_json FROM resident_profile_revisions WHERE profile_id = ? AND revision = ?`)
+    .get(profileId, revision) as { settings_json: string } | undefined;
+  if (!row) return null;
+  try {
+    const parsed = JSON.parse(row.settings_json) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as StoredResidentSettings
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Any pinned revision of a profile, or null. The daemon's one read of a live run's settings:
  * the profile's current revision is for new launches only.
  */
@@ -169,7 +190,7 @@ function insertRevision(
   d: DatabaseSync,
   profileId: string,
   revision: number,
-  settings: ResidentProfileRevision,
+  settings: ResidentProfileRevision | StoredResidentSettings,
   at: number,
 ): void {
   d.prepare(
@@ -245,7 +266,13 @@ export function updateResidentProfile(input: {
       throw new ResidentNameConflictError(`a resident named ${name} already exists`);
     }
     const revision = current.revision + 1;
-    insertRevision(d, input.id, revision, input.settings, input.at);
+    // The request was validated against this build's schema; anything the stored revision holds
+    // that this build does not know (a newer build's section or field) is carried forward.
+    const settings = preserveUnknownResidentSettings(
+      storedResidentSettings(input.id, current.revision),
+      input.settings,
+    );
+    insertRevision(d, input.id, revision, settings, input.at);
     d.prepare(
       `UPDATE resident_profiles SET name = ?, normalized_name = ?, revision = ?, updated_at = ?
         WHERE id = ?`,
@@ -278,7 +305,8 @@ export interface RestoredResidentProfile {
   name: string;
   archivedAt: number | null;
   createdAt: number;
-  settings: ResidentProfileRevision;
+  /** As the snapshot stored it, unknown sections and fields included. */
+  settings: StoredResidentSettings;
 }
 
 /**
@@ -326,11 +354,14 @@ export function restoreResidentProfilesInTransaction(
         insertRevision(d, row.id, 1, row.settings, at);
         continue;
       }
-      const sameSettings =
-        canonicalResidentJson(current.settings) === canonicalResidentJson(row.settings);
+      // The snapshot's settings win; a key only the current revision holds (written by a build
+      // newer than the snapshot) is carried forward rather than dropped.
+      const currentStored = storedResidentSettings(row.id, current.revision);
+      const settings = preserveUnknownResidentSettings(currentStored, row.settings);
+      const sameSettings = canonicalResidentJson(currentStored) === canonicalResidentJson(settings);
       const unchanged = sameSettings && current.archivedAt === row.archivedAt && current.name === row.name;
       const revision = sameSettings ? current.revision : current.revision + 1;
-      if (!sameSettings) insertRevision(d, row.id, revision, row.settings, at);
+      if (!sameSettings) insertRevision(d, row.id, revision, settings, at);
       d.prepare(
         `UPDATE resident_profiles
             SET name = ?, normalized_name = ?, revision = ?, archived_at = ?, updated_at = ?

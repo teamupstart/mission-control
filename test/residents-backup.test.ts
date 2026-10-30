@@ -271,3 +271,32 @@ test("a snapshot carries every live profile and only the most recent archived on
   assert.equal(oldest?.revision, 1);
   assert.equal(store.residentProfileRevision("archived-0001", 1)?.identity.name, "Archived 1", "its pinned revision is kept");
 });
+
+test("a newer build's sections travel through a snapshot, onto a fresh installation and over an existing profile", async () => {
+  store.createResidentProfile({ id: "fwd", settings: settings("Forward", "v1"), at: 1 });
+  const newer = { ...settings("Forward", "v1"), marker: { color: "cyan" } };
+  db.prepare("UPDATE resident_profile_revisions SET settings_json = ? WHERE profile_id = 'fwd' AND revision = 1")
+    .run(JSON.stringify(newer));
+  const root = join(home, "forward-compat");
+  const svc = service(root);
+  const captured = await svc.ensureDailySnapshot("2026-10-30");
+  if (captured.status !== "ready") assert.fail(captured.status);
+  const rows = captured.snapshot.domains.find((entry) => entry.domain === "resident-profiles")?.payload as Array<{ id: string; settings: Record<string, unknown> }>;
+  assert.deepEqual(rows.find((row) => row.id === "fwd")?.settings.marker, { color: "cyan" }, "the snapshot carries it");
+
+  // A fresh installation: the profile is recreated with the section intact.
+  db.exec("DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles;");
+  const fresh = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
+  assert.equal(fresh.status, "restored", JSON.stringify(fresh));
+  assert.deepEqual(store.storedResidentSettings("fwd", 1)?.marker, { color: "cyan" });
+
+  // Over an existing profile whose current revision holds a key the snapshot does not: kept.
+  db.prepare("UPDATE resident_profile_revisions SET settings_json = ? WHERE profile_id = 'fwd' AND revision = 1")
+    .run(JSON.stringify({ ...newer, loop: { cadence: 300 } }));
+  const again = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
+  assert.equal(again.status, "restored", JSON.stringify(again));
+  const current = store.getResidentProfile("fwd")!;
+  const stored = store.storedResidentSettings("fwd", current.revision)!;
+  assert.deepEqual(stored.marker, { color: "cyan" });
+  assert.deepEqual(stored.loop, { cadence: 300 });
+});

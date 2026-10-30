@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 13, repaired after plan validation and review). Implementation is split into seven phases in
+Status: decisions recorded (revision 14, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -87,12 +87,13 @@ profile**.
 
 ## Skills and MCP servers
 
-**Skill sources.** The built-in sources are:
+**Skill sources.** The predefined sources are:
 
 - Mission Control's `skills/`;
 - `~/.claude/skills`, skipping Mission's own `mission-*` links;
 - `~/.agents/skills`;
-- `~/.codex/skills`.
+- `~/.codex/skills`;
+- the skills built into each harness.
 
 Operators add folders of `<skill>/SKILL.md`, validated like indexed repository directories. The
 index is read on demand and on **Rescan**, and is never pushed over SSE.

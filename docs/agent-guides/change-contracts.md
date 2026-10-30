@@ -1234,6 +1234,12 @@ Four rules hold across phases:
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
 
+Repo-less residents use the existing workspace section and resident creation capability.
+`tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
+keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
+obligation before directory creation and is cleared only after successful removal. Repository
+consumers use the shared predicate or `taskRepoRefs`, never infer a repository from cwd.
+
 The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and
 creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a
 profile is authoring state, and a launched resident reaches the Line as its task and session.

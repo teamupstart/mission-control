@@ -94,7 +94,7 @@ export const ResidentExecutionSectionSchema = z
     }
   });
 
-/** The repository Dispatch pre-fills. Phase 1 still requires one at launch. */
+/** The repository Dispatch pre-fills; null launches in a Mission-owned workspace. */
 export const ResidentWorkspaceSectionSchema = z.object({
   defaultRepoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
 });
@@ -194,6 +194,8 @@ export type ResidentPersonaSnapshot = z.infer<typeof ResidentPersonaSnapshotSche
 
 /** A resident run: the durable identity of one launch. */
 export interface ResidentRun {
+  /** Mission-owned cwd awaiting cleanup; null for repository runs or after removal. */
+  workspaceDir: string | null;
   id: string;
   profileId: string;
   /** The revision this run pinned. A live run reads its settings only from here. */
@@ -217,7 +219,7 @@ export interface ResidentRun {
  */
 export const LaunchResidentSchema = z
   .object({
-    repoRoot: z.string().trim().min(1, "choose a repository").max(RESIDENT_LIMITS.pathLength),
+    repoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
     instructions: z.string().max(RESIDENT_LIMITS.runInstructionsLength).optional(),
     requestId: z
       .string()
@@ -233,7 +235,7 @@ export type LaunchResident = z.infer<typeof LaunchResidentSchema>;
  * launch field bumps this and gives the field a default in `ResidentLaunchInputSchema`, so a
  * run recorded at an older version still compares correctly.
  */
-export const RESIDENT_LAUNCH_INPUT_VERSION = 1;
+export const RESIDENT_LAUNCH_INPUT_VERSION = 2;
 
 /**
  * The normalized launch input, as stored in `resident_runs.launch_input`: the parsed request
@@ -242,7 +244,7 @@ export const RESIDENT_LAUNCH_INPUT_VERSION = 1;
  */
 export const ResidentLaunchInputSchema = z.object({
   version: z.number().int().positive(),
-  repoRoot: z.string(),
+  repoRoot: z.string().nullable(),
   instructions: z.string().default(""),
 });
 export type ResidentLaunchInput = z.infer<typeof ResidentLaunchInputSchema>;
@@ -253,7 +255,7 @@ export function normalizeRunInstructions(instructions: string | undefined): stri
 }
 
 /** Build the current-version normalized input from a request whose repository is resolved. */
-export function residentLaunchInput(resolvedRepoRoot: string, instructions: string | undefined): ResidentLaunchInput {
+export function residentLaunchInput(resolvedRepoRoot: string | null, instructions: string | undefined): ResidentLaunchInput {
   return {
     version: RESIDENT_LAUNCH_INPUT_VERSION,
     repoRoot: resolvedRepoRoot,

@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { dispatchPhase, type DispatchPhase } from "@shared/session.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import type { Task } from "@shared/types.ts";
@@ -40,7 +41,7 @@ import { Tooltip } from "./Tooltip.tsx";
 
 /** What the phase says, in words. The only copy in the app that names a provisioning step. */
 const PHASE_COPY: Record<DispatchPhase, (task: Task) => string> = {
-  prepare: () => "Provisioning its worktree",
+  prepare: (task) => taskHasRepository(task) ? "Provisioning its worktree" : "Preparing its working directory",
   launch: (task) => `Launching ${task.agent}`,
   discover: (task) => `Waiting for ${task.agent} to appear`,
   handover: () => "Handing over the task",
@@ -126,8 +127,8 @@ function PendingTile({ task }: { task: Task }): React.JSX.Element {
             the phase advances - so the foot fills in as the row progresses rather than
             reserving space for a value that may never arrive. */}
         <span className="pend-branch">{task.branch ?? "no branch yet"}</span>
-        <Tooltip label={task.repoRoot}>
-          <span className="pend-repo">{repoLeaf(task.repoRoot)}</span>
+        <Tooltip label={taskHasRepository(task) ? task.repoRoot : "No repository"}>
+          <span className="pend-repo">{taskHasRepository(task) ? repoLeaf(task.repoRoot) : "no repository"}</span>
         </Tooltip>
       </span>
     </div>
@@ -162,7 +163,7 @@ function PendingRailRow({ task }: { task: Task }): React.JSX.Element {
       <span className="rail-sub">
         {PHASE_COPY[phase](task)}
         <span className="pend-sep" aria-hidden>·</span>
-        {repoLeaf(task.repoRoot)}
+        {taskHasRepository(task) ? repoLeaf(task.repoRoot) : "no repository"}
       </span>
       <span className="rail-right">
         <span className="rail-state-line">

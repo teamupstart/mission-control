@@ -33,7 +33,7 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { isShippingTaskKind } from "@shared/task.ts";
+import { taskHasRepository, isShippingTaskKind } from "@shared/task.ts";
 import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -3184,7 +3184,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return c.json({ files: await listGitTreeFiles(resolved.repoRoot, resolved.view.commit) });
       }
       if (!resolved.root) return c.json({ error: "session has no working directory" }, 400);
-      return c.json({ files: await listSessionFiles(resolved.root) });
+      return c.json({ files: await listSessionFiles(resolved.root, session.task ?? undefined) });
     } catch (error) {
       const known = error instanceof SessionFileError ? error : null;
       return c.json({ error: known?.message ?? "could not list session files" }, known?.status === 404 ? 404 : 500);
@@ -4287,6 +4287,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, StandardsRequestSchema);
     if (!parsed.ok) return parsed.res;
+    if (!taskHasRepository(session.task ?? {})) return c.json({ docs: [], truncated: false });
     const resolved = await resolveRouteWorkspace(session.id);
     if (
       resolved.view?.authority === "provider" &&
@@ -4478,6 +4479,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    if (!taskHasRepository(session.task ?? {})) return c.json(await computeSessionDiff(null));
     const resolved = await resolveRouteWorkspace(session.id);
     // `commit` isolates ONE commit (`<sha>^..<sha>`). Distinct from `base`, which
     // diffs from the merge-base and would answer with everything since that sha.
@@ -6640,7 +6642,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ) {
       return c.json({ error: "the managed task is no longer current" }, 409);
     }
-    const diff = await computeSessionDiff(session.cwd);
+    const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(

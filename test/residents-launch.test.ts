@@ -120,6 +120,7 @@ function harness(options: {
   resolve?: typeof resolveRepoRoot;
   waitMs?: number;
   start?: boolean;
+  hasLiveDriver?: (id: string) => boolean;
 } = {}): Harness {
   const registry = options.registry ?? new Registry();
   const tasks = new TaskManager(registry);
@@ -152,6 +153,7 @@ function harness(options: {
       return (options.resolve ?? resolveRepoRoot)(path);
     },
     launchResponseWaitMs: options.waitMs ?? 5_000,
+    hasLiveDriver: options.hasLiveDriver,
   });
   if (options.start !== false) residents.start();
   managers.push(residents);
@@ -649,7 +651,7 @@ function reserveOnly(profileId: string, requestId: string, taskId: string, input
     taskId,
     launchRequestId: requestId,
     launchInput: input,
-    repoSpelling: input.repoRoot,
+    repoSpelling: input.repoRoot ?? "",
     persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
     runInstructions: input.instructions,
     at: 1,
@@ -866,4 +868,126 @@ test("a profile cannot be saved against a missing Persona", () => {
   }));
   assert.equal(saved.ok, false);
   if (!saved.ok) assert.equal(saved.status, 400);
+});
+
+test("repo-less launch skips repository resolution; completion waits for runtime shutdown and retries on startup", async () => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-lifetime" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  assert.equal(setup.resolveCalls.count, 0);
+  assert.ok(existsSync(directory));
+  writeFileSync(join(directory, "notes.txt"), "still needed");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  assert.ok(existsSync(directory), "completion alone is not proof that the runtime stopped");
+  setup.residents.stop();
+  let driverAlive = true;
+  const restored = harness({ registry: setup.registry, hasLiveDriver: () => driverAlive });
+  assert.ok(existsSync(directory), "a suspended or running SDK row protects the workspace after restart");
+  setSdkSessionStatus(task.sessionId!, "exited");
+  restored.residents.reconcileRunEnds();
+  assert.ok(existsSync(directory), "an exited row does not override a supervisor-owned handle");
+  driverAlive = false;
+  restored.residents.reconcileRunEnds();
+  assert.equal(existsSync(directory), false);
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  restored.residents.cleanupEndedWorkspaces();
+});
+
+test("workspace removal failure keeps cleanup owed until a later manager retries successfully", async (t) => {
+  const { existsSync, lstatSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-cleanup-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const savedDirectory = `${directory}-saved`;
+  writeFileSync(join(directory, "notes.txt"), "preserve until cleanup succeeds");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+
+  // Exercise the real ownership check: cleanup must refuse a symlink without forgetting
+  // the directory it still owes, even though the run and its runtime have both ended.
+  renameSync(directory, savedDirectory);
+  symlinkSync(savedDirectory, directory);
+  const errors = t.mock.method(console, "error", () => {});
+  assert.doesNotThrow(() => setup.residents.cleanupEndedWorkspaces());
+  assert.equal(errors.mock.callCount(), 1, "the manager caught a real removal failure");
+  const failure = errors.mock.calls[0];
+  assert.ok(failure);
+  const [message, error] = failure.arguments;
+  assert.equal(message, `[residents] workspace cleanup remains owed for ${run.id}:`);
+  assert.ok(error instanceof Error && /owned directory/.test(error.message));
+  const failedCleanup = store.getResidentRun(run.id)!.run;
+  assert.notEqual(failedCleanup.endedAt, null);
+  assert.equal(failedCleanup.workspaceDir, directory, "failed cleanup retains the durable marker");
+  assert.deepEqual(store.endedResidentWorkspaces().map(({ id }) => id), [run.id]);
+  assert.ok(lstatSync(directory).isSymbolicLink());
+  assert.equal(readFileSync(join(savedDirectory, "notes.txt"), "utf8"), "preserve until cleanup succeeds");
+  setup.residents.stop();
+
+  unlinkSync(directory);
+  renameSync(savedDirectory, directory);
+  harness({ registry: setup.registry });
+  assert.equal(existsSync(directory), false, "startup retries the persisted cleanup obligation");
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.deepEqual(store.endedResidentWorkspaces(), []);
+  assert.equal(errors.mock.callCount(), 1, "the retry completed without another removal error");
+});
+
+test("a failed repo-less launch removes its workspace and a replay does not recreate it", async () => {
+  const { existsSync } = await import("node:fs");
+  const setup = harness({ mode: "fail" });
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-failure" });
+  assert.ok("result" in outcome);
+  const run = outcome.result.run;
+  assert.equal(run.launchState, "failed");
+  const { residentWorkspaceDir } = await import("../src/server/residents/workspace.ts");
+  setup.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(residentWorkspaceDir(run.id)), false);
+  await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-failure" });
+  assert.equal(existsSync(residentWorkspaceDir(run.id)), false);
+  assert.equal(setup.dispatched.length, 1);
+});
+
+test("startup removes a workspace left by a crash between reservation and task creation", async () => {
+  const { existsSync } = await import("node:fs");
+  const { createResidentWorkspace, residentWorkspaceDir } = await import("../src/server/residents/workspace.ts");
+  const setup = harness({ start: false });
+  const profile = profileIn(setup);
+  const id = "crashed-workspace";
+  const directory = residentWorkspaceDir(id);
+  store.reserveResidentRun({ id, profileId: profile.id, profileRevision: 1, taskId: "missing-task",
+    launchRequestId: id, launchInput: residentLaunchInput(null, ""), repoSpelling: "", workspaceDir: directory,
+    persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
+    runInstructions: "", at: 1 });
+  createResidentWorkspace(id, directory);
+  setup.residents.start();
+  assert.equal(store.getResidentRun(id)!.run.launchState, "failed");
+  assert.equal(existsSync(directory), false);
+});
+
+test("startup binds a repo-less task whose driver accepted launch before the task recorded its session", async () => {
+  const registry = new Registry();
+  const taskId = "repo-less-accepted-before-bind";
+  registry.upsertTask(mkTask({ id: taskId, kind: "resident", workspaceKind: "resident-workspace",
+    status: "dispatching", repoRoot: "/resident/workspace", worktreePath: null, provider: null,
+    homeName: null, sessionId: null }));
+  const supervisor = {
+    taskLiveness: () => true,
+    liveSessionForTask: () => "sdk-repo-less-unbound",
+  } as unknown as ConstructorParameters<typeof TaskManager>[2];
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  assert.equal(registry.getTask(taskId)?.sessionId, "sdk-repo-less-unbound");
+  tasks.stop();
 });

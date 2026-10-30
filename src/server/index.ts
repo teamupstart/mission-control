@@ -393,6 +393,7 @@ const residents = new ResidentManager({
   createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
   persona: (id) => personas.store.getPersona(id),
   launchResponseWaitMs: residentLaunchWaitMs(),
+  hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
 });
 tasks.registerResidentLaunch((task, repository, runtime) =>
   residents.composeLaunch(task, repository, runtime));

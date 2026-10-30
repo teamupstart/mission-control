@@ -37,3 +37,33 @@ test("an upgraded database gains the resident tables empty, with the idempotency
   assert.deepEqual(store.listLiveResidentProfiles(), []);
   assert.equal((db.prepare(`SELECT value FROM app_config WHERE key = 'ui'`).get() as { value: string }).value, "{}");
 });
+
+test("Phase 1 rows upgrade with null workspace markers and keep their pinned revision and task repository", async () => {
+  const { closeDb, upsertTask, getTask } = await import("../src/server/db.ts");
+  const { mkTask } = await import("./helpers/session-fixture.ts");
+  const { ResidentProfileRevisionSchema, residentLaunchInput, launchInputsMatch } = await import("../src/shared/residents.ts");
+  const { taskHasRepository } = await import("../src/shared/task.ts");
+  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Existing resident" }, persona: { personaId: "p" } });
+  store.createResidentProfile({ id: "phase1-profile", settings, at: 1 });
+  upsertTask(mkTask({ id: "phase1-task", kind: "resident", repoRoot: "/existing/repo" }));
+  store.reserveResidentRun({ id: "phase1-run", profileId: "phase1-profile", profileRevision: 1, taskId: "phase1-task",
+    launchRequestId: "phase1-request", launchInput: { ...residentLaunchInput("/existing/repo", ""), version: 1 },
+    repoSpelling: "/existing/repo", persona: { personaId: "p", name: "P", guidanceMarkdown: "Keep watching" }, runInstructions: "", at: 1 });
+  closeDb();
+  // Exact Phase 1 table shapes, with real existing rows rather than an empty upgrade.
+  const phase1 = new DatabaseSync(join(home, "harness.db"));
+  phase1.exec("ALTER TABLE tasks DROP COLUMN workspace_kind; ALTER TABLE resident_runs DROP COLUMN workspace_dir;");
+  phase1.close();
+  const db = openDb();
+  const task = getTask("phase1-task")!;
+  assert.equal(task.workspaceKind, null);
+  assert.equal(task.repoRoot, "/existing/repo");
+  assert.equal(taskHasRepository(task), true);
+  const run = store.getResidentRun("phase1-run")!;
+  assert.equal(run.run.workspaceDir, null);
+  assert.equal(run.run.profileRevision, 1);
+  assert.equal(run.run.persona.guidanceMarkdown, "Keep watching");
+  assert.ok(launchInputsMatch(run.launchInput, residentLaunchInput("/existing/repo", "")));
+  const columns = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string; notnull: number }>;
+  assert.equal(columns.find((column) => column.name === "repo_root")!.notnull, 1);
+});

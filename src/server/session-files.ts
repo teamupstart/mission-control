@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
-import { lstat, open, realpath, rename, stat, unlink } from "node:fs/promises";
+import { lstat, open, opendir, realpath, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -11,6 +11,7 @@ import type {
   SessionFileSaveResult,
 } from "@shared/types.ts";
 import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { run } from "./util/exec.ts";
 import { locateExecutable } from "./executables/locator.ts";
 
@@ -151,10 +152,31 @@ export async function resolveSessionFilePath(cwd: string, relativePath: string):
   return target;
 }
 
-export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]> {
+/** Plain resident directories have no Git index or ignore rules to consult. */
+async function listDirectoryFiles(root: string): Promise<SessionFileEntry[]> {
+  const files: SessionFileEntry[] = [];
+  const pending = [""];
+  while (pending.length > 0 && files.length < MAX_SESSION_FILE_ENTRIES) {
+    const relative = pending.pop()!;
+    const directory = await opendir(path.join(root, relative));
+    for await (const entry of directory) {
+      const filePath = path.join(relative, entry.name);
+      if (entry.isDirectory()) pending.push(filePath);
+      else if (entry.isFile()) files.push({ path: filePath });
+      if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
+    }
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export async function listSessionFiles(
+  cwd: string,
+  task?: Parameters<typeof taskHasRepository>[0],
+): Promise<SessionFileEntry[]> {
   const root = await realpath(cwd).catch(() => {
     throw new SessionFileError("session checkout is unavailable", 404);
   });
+  if (task && !taskHasRepository(task)) return listDirectoryFiles(root);
   const result = await run(
     "git",
     ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],

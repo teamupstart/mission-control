@@ -20,8 +20,10 @@ import type { Persona } from "@shared/workflow.ts";
 import type { ServerEvent, SessionRuntime, Task } from "@shared/types.ts";
 import { getTask as getDurableTask } from "../db.ts";
 import { resolveTaskRepoRoot } from "../repos.ts";
-import { sdkSessionIdsForTask } from "../sdk/store.ts";
+import { getSdkSession, sdkSessionIdsForTask } from "../sdk/store.ts";
 import type { CreateTaskInput, InternalCreateOptions } from "../tasks.ts";
+import { createResidentWorkspace, removeResidentWorkspace, residentWorkspaceDir } from "./workspace.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { composeResidentLaunch } from "./launch.ts";
 import {
   ResidentNameConflictError,
@@ -29,6 +31,8 @@ import {
   archiveResidentProfile,
   createResidentProfile,
   endResidentRun,
+  endedResidentWorkspaces,
+  clearResidentWorkspace,
   getResidentProfile,
   getResidentRun,
   listOpenResidentRuns,
@@ -78,6 +82,7 @@ const DEFAULT_SETTLEMENT_RETRY_MS = 2_000;
 /** The registry surface this manager reads and notifies. */
 export interface ResidentRegistry {
   getTask(id: string): Task | undefined;
+  getSession(id: string): unknown;
   subscribe(fn: (event: ServerEvent) => void): () => void;
   onSessionsObserved(fn: () => void): () => void;
   upsertResidentProfile(profile: ResidentProfile): void;
@@ -93,6 +98,8 @@ export interface ResidentManagerDeps {
   resolveRepoRoot?: typeof resolveTaskRepoRoot;
   /** Every `sdk_sessions` row id carrying this task id: the session-start evidence. */
   sessionRowsForTask?: (taskId: string) => string[];
+  /** The supervisor may still own a handle after an exited row or forced Registry retirement. */
+  hasLiveDriver?: (sessionId: string) => boolean;
   /** A task as SQLite holds it, for startup reconciliation of rows the board did not load. */
   durableTask?: (taskId: string) => Task | undefined;
   now?: () => number;
@@ -137,6 +144,7 @@ export class ResidentManager {
   /** Pending retry waits, each with the resolver that ends it early when the manager stops. */
   private readonly retryTimers = new Map<NodeJS.Timeout, (proceed: boolean) => void>();
   private stopped = false;
+  private cleanupTimer?: NodeJS.Timeout;
   private subscriptions: Array<() => void> = [];
 
   constructor(private readonly deps: ResidentManagerDeps) {
@@ -157,6 +165,9 @@ export class ResidentManager {
    */
   start(): void {
     this.reconcilePendingRuns();
+    this.cleanupEndedWorkspaces();
+    this.cleanupTimer = setInterval(() => this.cleanupEndedWorkspaces(), 2_000);
+    this.cleanupTimer.unref();
     this.subscriptions.push(this.deps.registry.subscribe((event) => this.observe(event)));
     // The startup twin of the `session_remove` arm: once sessions have been observed, end
     // every launched run whose task already settled while this daemon was down.
@@ -165,6 +176,7 @@ export class ResidentManager {
 
   stop(): void {
     this.stopped = true;
+    clearInterval(this.cleanupTimer);
     for (const [timer, resolve] of this.retryTimers) {
       clearTimeout(timer);
       resolve(false);
@@ -266,8 +278,8 @@ export class ResidentManager {
    * across a crash at every boundary; see the class comment.
    */
   async launch(profileId: string, input: LaunchResident): Promise<ResidentLaunchOutcome> {
-    const spelling = input.repoRoot.trim();
-    const resolved = await this.resolveRepoRoot(input.repoRoot);
+    const spelling = input.repoRoot?.trim() ?? "";
+    const resolved = spelling ? await this.resolveRepoRoot(spelling) : { ok: true as const, repoRoot: null };
     // A replay first, from the run row alone, read AFTER the await: a racing request with the
     // same id may have reserved while this one resolved its repository, and its run - not this
     // request's view of the profile - decides the answer. A known request id never re-validates
@@ -305,6 +317,7 @@ export class ResidentManager {
       launchRequestId: input.requestId,
       launchInput: request,
       repoSpelling: spelling,
+      workspaceDir: request.repoRoot === null ? residentWorkspaceDir(runId) : null,
       persona: snapshot,
       runInstructions: normalizeRunInstructions(input.instructions),
       at: this.now(),
@@ -373,9 +386,10 @@ export class ResidentManager {
   private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
     const execution = run.settings.execution;
     try {
+      if (run.workspaceDir) createResidentWorkspace(run.id, run.workspaceDir);
       this.deps.createTask(
         {
-          repoRoot: request.repoRoot,
+          repoRoot: run.workspaceDir ?? request.repoRoot!,
           intent: RESIDENT_OPENING_TURN,
           title: run.settings.identity.name,
           kind: "resident",
@@ -385,10 +399,11 @@ export class ResidentManager {
           workflowId: null,
           backlog: false,
         },
-        { id: run.taskId, resident: { runId: run.id } },
+        { id: run.taskId, resident: { runId: run.id, workspaceDir: run.workspaceDir } },
       );
     } catch (error) {
       markResidentRunFailed(run.id, error instanceof Error ? error.message : String(error), this.now());
+      this.cleanupEndedWorkspaces();
       return;
     }
     await this.dispatchSettled(run.taskId);
@@ -407,6 +422,7 @@ export class ResidentManager {
       return;
     }
     markResidentRunFailed(run.id, task?.error ?? RESIDENT_SESSION_DID_NOT_START, at);
+    this.cleanupEndedWorkspaces();
   }
 
   private startedSession(taskId: string, task: Task | undefined): string | null {
@@ -512,6 +528,9 @@ export class ResidentManager {
   ): StandingInstructionsDelivery {
     const stored = residentRunForTask(task.id);
     if (!stored) throw new Error(`resident task ${task.id} has no resident run`);
+    if (!taskHasRepository(task) && stored.run.workspaceDir !== task.repoRoot) {
+      throw new Error("resident task does not own its workspace");
+    }
     return composeResidentLaunch({ run: stored.run, agent: task.agent, runtime }, repository).standing;
   }
 
@@ -561,6 +580,7 @@ export class ResidentManager {
     const stored = residentRunForTask(taskId);
     if (stored && stored.run.launchState === "launched" && stored.run.endedAt === null) {
       endResidentRun(stored.run.id, this.now());
+      this.cleanupEndedWorkspaces();
     }
   }
 
@@ -570,6 +590,26 @@ export class ResidentManager {
       if (run.launchState !== "launched") continue;
       const task = this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId);
       if (!task || isTerminalTask(task.status)) endResidentRun(run.id, this.now());
+    }
+    this.cleanupEndedWorkspaces();
+  }
+
+  /** Completion may precede eviction. Preserve cwd until every owned SDK runtime has stopped. */
+  cleanupEndedWorkspaces(): void {
+    for (const run of endedResidentWorkspaces()) {
+      if (this.settling.has(run.id)) continue;
+      const sessions = this.sessionRowsForTask(run.taskId);
+      if (sessions.some((id) => {
+        if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
+        const row = getSdkSession(id);
+        return row && row.status !== "exited" && row.status !== "failed";
+      })) continue;
+      try {
+        removeResidentWorkspace(run.id, run.workspaceDir);
+        clearResidentWorkspace(run.id);
+      } catch (error) {
+        console.error(`[residents] workspace cleanup remains owed for ${run.id}:`, error);
+      }
     }
   }
 }

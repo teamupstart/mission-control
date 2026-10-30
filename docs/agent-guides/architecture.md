@@ -177,6 +177,11 @@ row at all - a first observation is what starts a window, never a pre-existing t
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
+A repo-less resident is the exception to task repository ownership. Its task carries a nullable
+workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
+grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
+and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.

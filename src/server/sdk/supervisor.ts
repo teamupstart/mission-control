@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -1246,8 +1247,8 @@ export class SdkSupervisor {
           initialState: row.turnInProgress ? "starting" : "idle",
           permissionMode: row.permissionMode,
           gitBranch: task?.branch ?? null,
-          gitRoot: row.cwd,
-          repoRoot: task?.repoRoot ?? null,
+          gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
+          repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
         },
         handle,
         stateHome,
@@ -1348,8 +1349,8 @@ export class SdkSupervisor {
         cwd: row.cwd,
         permissionMode: row.permissionMode,
         gitBranch: task?.branch ?? null,
-        gitRoot: row.cwd,
-        repoRoot: task?.repoRoot ?? null,
+        gitRoot: task && !taskHasRepository(task) ? null : row.cwd,
+        repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
       });
       this.registry.applyDriverEvent(row.id, {
         kind: "exited",
@@ -1369,7 +1370,7 @@ export class SdkSupervisor {
       agent: row.agent,
       name: restoredName(row, task?.title ?? null),
       cwd: row.cwd,
-      repoRoot: task?.repoRoot ?? null,
+      repoRoot: task && taskHasRepository(task) ? task.repoRoot : null,
       taskId: row.taskId,
       taskTitle: task?.title ?? null,
       createdAt: row.createdAt,

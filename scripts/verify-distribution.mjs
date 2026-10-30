@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
@@ -23,7 +24,7 @@ function macTool(command, args) {
 }
 
 export async function validateDistributionTicket(path, {
-  run = runMacTool, wait = (ms) => new Promise((done) => setTimeout(done, ms)), log = console.log,
+  run = runMacTool, wait = (ms) => sleep(ms), log = console.log,
 } = {}) {
   for (let attempt = 0; ; attempt++) {
     const result = run('/usr/bin/xcrun', ['stapler', 'validate', path]);

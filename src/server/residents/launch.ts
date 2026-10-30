@@ -1,4 +1,4 @@
-import { standingInstructionsChannel } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, standingInstructionsChannel } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
@@ -26,6 +26,7 @@ export interface ResidentLaunchContext {
 export interface ResidentLaunchContribution {
   /** A block appended to the resident section of the standing instructions. */
   standingInstructions?: string;
+  residentCompaction?: { threshold: number };
 }
 
 export interface ResidentLaunchContributor {
@@ -58,12 +59,15 @@ export const personaInstructionsContributor: ResidentLaunchContributor = {
 /** Ordered. Append; never reorder an existing entry, because order is delivery order. */
 export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] = [
   personaInstructionsContributor,
+  { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
+    ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
 ];
 
 /** The composed resident additions to one launch. */
 export interface ResidentLaunchPlan {
   /** The standing-instruction delivery to launch with: repository rules, then the resident section. */
   standing: StandingInstructionsDelivery;
+  residentCompaction?: { threshold: number };
 }
 
 /**
@@ -80,12 +84,15 @@ export function composeResidentLaunch(
   repository: StandingInstructionsDelivery,
   contributors: readonly ResidentLaunchContributor[] = RESIDENT_LAUNCH_CONTRIBUTORS,
 ): ResidentLaunchPlan {
-  const sections = contributors
-    .map((contributor) => contributor.contribute(context).standingInstructions?.trim() ?? "")
+  const contributions = contributors.map((contributor) => contributor.contribute(context));
+  const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
+  const sections = contributions
+    .map((part) => part.standingInstructions?.trim() ?? "")
     .filter((text) => text.length > 0);
-  if (sections.length === 0) return { standing: repository };
+  if (sections.length === 0) return { standing: repository, residentCompaction };
   const text = [repository.text, ...sections].filter((part) => part.length > 0).join("\n\n");
   return {
+    residentCompaction,
     standing: {
       text,
       mechanism: repository.mechanism === "none"
@@ -94,4 +101,15 @@ export function composeResidentLaunch(
       sources: repository.sources,
     },
   };
+}
+
+/** Both fresh launch and SDK restore use the same pinned contributor list. */
+export async function residentNativeCompactionForTask(taskId: string | null, tokenLimit?: number) {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  if (!run) return undefined;
+  const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
+    .find((part) => part.residentCompaction)?.residentCompaction;
+  return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
 }

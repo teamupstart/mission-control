@@ -735,6 +735,7 @@ export interface ResumeSpec {
 }
 
 export interface SdkLaunchOptions {
+  residentCompaction?: { threshold: number; /** Previously measured native limit, replayed on resume. */ tokenLimit?: number };
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */
   stateHome: string;
@@ -812,6 +813,8 @@ export interface SdkTurn {
  * a stream-json subprocess, a JSON-RPC server or a JSONL pipe.
  */
 export interface SdkSessionHandle {
+  /** Native resident backstop actually configured at launch; persisted for the next resume. */
+  readonly residentCompactionTokenLimit?: number;
   /**
    * The process whose lifetime owns this driver, for read-only crash recovery. An
    * in-process driver names the daemon; a subprocess driver names its current child.
@@ -855,6 +858,7 @@ export interface SdkSessionHandle {
   setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
+  compact?: (focus: string) => Promise<import("./compaction.ts").CompactionResult>;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */
   stop(): Promise<void>;
   /**

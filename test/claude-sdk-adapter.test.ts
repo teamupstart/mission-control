@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   claudeSdkRateLimits,
   claudeSdkSpec,
@@ -184,6 +185,31 @@ function launchOpts(over: Record<string, unknown> = {}) {
     ...over,
   } as Parameters<ReturnType<typeof claudeSdkSpec>["launch"]>[0];
 }
+
+test("resident compaction waits for the observed native boundary and result", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  const operation = handle.compact!("Keep the current objective");
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(turns[0]?.message.content, "/compact Keep the current objective");
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
+  for (const frame of fixture) query.emit(frame);
+  assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  await handle.stop();
+});
+
+test("resident compaction without a measured boundary refuses rather than accepting a completed command", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query } = await started;
+  const operation = handle.compact!("");
+  const refused = assert.rejects(operation, /without a measured context boundary/);
+  query.emit({ type: "result", subtype: "success" });
+  await refused; await handle.stop();
+});
 
 test("standing instructions APPEND to the Claude Code preset, and are omitted when empty", async () => {
   // The preset object is the only non-destructive form. A bare `systemPrompt: string`

@@ -5,9 +5,8 @@ once - a Persona, instructions, a harness, model and effort, and a default repos
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, lifecycle, repository-free residents, how you find a
-resident on the board and from the top bar, and how a resident gets session control. The wake
-loop and skill and MCP selection are later phases of
+This page describes profiles, launch, the persistent wake loop, repository-free residents,
+skill sources, session control and their dashboard controls. Skill and MCP selection remain later phases of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -23,6 +22,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
+| Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
@@ -153,8 +153,8 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 
 ## Lifecycle
 
-After its first turn a resident idles like a chat: Foreman never completes it automatically,
-because it has no explicit Workflow. It ends when you choose **Complete & close** on its session,
+After each completed turn a resident waits for its next wake. Foreman never completes it
+automatically. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
 failed launch, or one interrupted by a restart before its session started, is recorded with its
 reason and is never relaunched; launch the profile again.
@@ -171,6 +171,86 @@ that workspace after its session is gone and its SDK runtime has stopped. Failed
 remove their directories. Cleanup failures remain recorded and retry, including after restart;
 the repository retention clock never applies to these directories. Files saved there are temporary.
 
+## The persistent loop
+
+The daemon owns every loop turn. After a completed turn it waits the pinned profile's cadence,
+then sends its loop prompt. The default asks the resident to check what changed, act, and end
+with a one-line status. The card, Console band, dock and live-run rows on the Residents page show
+its state, cumulative iteration, next wake and the agent's wake reason.
+
+The resident can call `schedule_next_iteration` with `delaySeconds` and an optional `reason`.
+The delay is clamped to the profile's minimum and maximum. During a turn, the last new request
+wins and its delay starts when the turn completes. It applies once; the following completion
+uses the normal cadence unless the agent requests another delay. A late request replaces an
+already waiting wake with now plus its delay.
+
+The tool returns a `callId`. Replaying that id returns the original receipt without rescheduling,
+even after a newer request or daemon restart. A new id is a new intent. The HTTP call has a
+10-second timeout; an unknown outcome says the request may still apply and includes its id for
+safe replay. Only a typed refusal or a refused connection proves nothing was recorded.
+
+**Human input has priority.** Queuing a human message cancels the scheduled wake and pending
+agent delay. After the human turn, the normal cadence applies unless the agent requests another
+delay. A request for human input (`needs-you`) pauses the loop until the request is resolved and
+you resume it. Pausing does not interrupt an already running turn.
+
+All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
+Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
+After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
+and launches the latest revision in a new conversation. It preserves the repository choice and
+run instructions; a repository-free resident receives a fresh private workspace. New conversation
+creation ensures every changed launch option takes effect. Retrying an interrupted Restart
+finishes the same replacement request, including an interruption after the old task completed.
+The replacement conversation does not inherit a session-control grant from the old run;
+only the desktop Launch flow or the existing session-control menu can grant that authority.
+
+### Compaction and guardrails
+
+Before a wake at or above the context threshold, the daemon asks the harness to compact and
+waits for a measured result below that threshold. Compaction and human turns do not count as
+iterations. Missing or invalid context readings pause before a wake until a fresh measurement
+is available and you resume. An interrupted or unconfirmed compaction also pauses instead of
+sending a loop prompt.
+
+The editor and every live-run surface name the active compaction layers:
+
+- **Claude Code:** compaction before wakes is active. The configured native backstop did not
+  fire in the Claude Code 2.1.310 probe on 2026-10-30.[^claude-native-backstop-probe] The operator
+  approved shipping with manual compaction only, so the native backstop remains unavailable.
+  A long turn therefore has no profile-threshold native backstop.
+- **Codex:** compaction before wakes and the native backstop are active. The latter is computed
+  from the explicit model's context window in Codex's native model catalog. Launch refuses if
+  that window is unavailable. The measured native token limit is saved with the SDK session
+  and replayed on resume, so a later catalog refresh cannot remove the configured backstop.
+  Older sessions without a saved limit must resolve it from the catalog once.
+  Codex's compact operation does not accept a focus instruction;
+  the focus field is used by Claude.
+
+The default rolling 24-hour limits are **200 iterations** and **$20**. Clearing either cap in
+the editor disables that cap for new runs. Launch is iteration one only after the session
+actually starts. Claims, sent wakes and uncertain deliveries count toward the iteration window;
+positively refused sends do not. Rows exactly 24 hours old no longer count. Spend uses Claude's
+reported costs and Codex's estimated Standard API costs, including human and maintenance turns
+in the same resident conversation. It is a between-turn limit, not an interruption of spend
+inside a running turn. Unpriced models cannot retain a spend cap at save or launch, and unpriced
+usage pauses a capped run instead of treating it as free.
+
+Reaching a cap pauses and appears in the attention inbox. Resume is refused until the rolling
+window has room; the refusal names the earliest release time. Editing the profile cannot lift
+a live run's pinned cap. Restart on new profile is the explicit way to adopt different settings.
+
+### Restart recovery
+
+The next wake, consumed completion generation, pacing requests and cumulative counters are
+durable. A missed wake is rearmed once after SDK restoration. Each delivery is claimed before
+sending, with a unique sequence and transcript offset. Only its own marker after that offset
+confirms delivery after a crash. Missing or unreadable evidence becomes **wake delivery
+unconfirmed**, counts conservatively, and pauses for you; it is never silently resent.
+
+Sent and released delivery rows are retained for seven days. Unresolved claims are reconciled
+before pruning, and uncertain deliveries stay until the run ends. Pruning never decreases the
+cumulative iteration or reuses a sequence. Pacing receipts remain for the run's lifetime.
+
 ## Backups
 
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).
@@ -180,8 +260,8 @@ kept. A snapshot taken before residents existed restores without touching profil
 
 A snapshot carries **every live profile** with its current revision, and only the **200 most
 recently archived** ones. Archive never deletes a profile, so the full history grows without
-limit and would eventually push snapshots past their size limit and stop automatic backups; at
-the largest profile sizes, 200 live and 200 archived profiles fit in about 7 MB.
+limit and would eventually push snapshots past their size limit and stop automatic backups. In the multibyte-text backup fixture, 200 live and 200 archived
+profiles with maximum instruction and loop text fit in about 15 MB. The snapshot file limit remains 16 MiB.
 
 - **Restoring on the same machine** changes no archived profile the snapshot left out: restore
   only archives *live* profiles a snapshot omits, and every revision a run pinned is kept.
@@ -198,6 +278,11 @@ The registries later phases extend, the single launch path, the pinned-revision 
 launch and recovery guarantees are maintained in
 [change contracts](agent-guides/change-contracts.md#resident-profiles).
 
+[^claude-native-backstop-probe]: Mission Control workflow run
+    `bfb6fe70-1862-4a6c-bfbd-ac54cb644b26`, round 6, segment 2,
+    `probe-claude-20.log`, artifact `txt_4606a312dc45c5b01382778be74b210d`.
+    The retained probe did not auto-compact at the requested 20% setting; explicit manual
+    compaction emitted a boundary with 54,678 tokens before and 494 after.
 ## Skill sources
 
 Open **Residents > Skill sources** to browse Mission Control's `skills/`, `~/.claude/skills`,

@@ -1,3 +1,4 @@
+import { residentNativeCompactionForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
@@ -402,6 +403,7 @@ export class SdkSupervisor {
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
+        residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
         permissionMode: input.permissionMode,
@@ -566,6 +568,7 @@ export class SdkSupervisor {
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
       turnInProgress: durable.turnInProgress,
+      residentCompactionTokenLimit: handle.residentCompactionTokenLimit,
     });
     const session = this.registry.registerSdkSession({
       ...registration,
@@ -705,6 +708,28 @@ export class SdkSupervisor {
       } finally {
         this.acceptingTurns.delete(id);
       }
+    });
+  }
+
+  /** Maintenance stays inside the same serialized driver boundary as human and loop input. */
+  compact(id: string, focus: string, beforeSend?: () => string | null): Promise<number> {
+    return this.serialize(id, async (handle) => {
+      const blocked = transferForSource(id) ? TRANSFER_HOLD_REASON : beforeSend?.();
+      if (blocked) throw new Error(blocked);
+      if (!handle.compact) throw new Error("This harness cannot compact between iterations.");
+      const result = await handle.compact(focus);
+      const current = this.registry.getSession(id);
+      const window = result.contextWindow ?? current?.meta?.contextWindow;
+      if (!current || !window || window <= 0) throw new Error("Compaction context window could not be measured.");
+      const pct = result.contextTokens / window * 100;
+      this.registry.applyRuntimeMeta(id, {
+        modelId: current.meta?.modelId ?? null, contextTokens: result.contextTokens, contextWindow: window,
+        contextPct: pct, longContext: window >= 1_000_000, thinkingLevel: current.meta?.thinkingLevel ?? null,
+        effortRevision: null,
+      }, "transcript");
+      // The driver stream is pumped independently. Give its queued turn_done to the Registry.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return pct;
     });
   }
 
@@ -1188,6 +1213,7 @@ export class SdkSupervisor {
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
+        residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
         permissionMode: row.permissionMode,

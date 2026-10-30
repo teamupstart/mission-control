@@ -36774,3 +36774,14 @@ body.foreman-sidecar-open .modal-backdrop {
 .residents-pop-manage {
   align-self: flex-start;
 }
+
+/* Resident controls share their layout across the dock, Console, card and page. */
+.resident-loop-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.resident-loop-status { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.resident-compaction-layers { display: block; margin-top: 3px; }
+.resident-loop-error { color: var(--danger); flex-basis: 100%; font-size: 12px; }
+.resident-live-run { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
+.resident-card-loop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.residents-pop-row > .resident-loop-status,
+.residents-pop-row > .resident-loop-controls { grid-column: 1 / -1; }
+.resident-band { flex-wrap: wrap; }

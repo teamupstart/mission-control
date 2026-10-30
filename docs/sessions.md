@@ -1610,7 +1610,7 @@ reason: its hook delivery is the first arrival and so is the capture.
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
-restart are all typed into the session exactly the way you type, and the agent reports each
+restart, and resident loop wakes are all typed into the session exactly the way you type, and the agent reports each
 one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
 arrivals are recognized and discarded rather than captured. Without that rule a
 completion-review packet became the session's ask, was frozen onto the next workflow run, and
@@ -1628,6 +1628,10 @@ the session, it is heard and the Goal moves. The conversation log still credits 
 originally typed each turn; only the recognition is used up. Recognition is also in-memory, so
 a daemon restart landing between a delivery and its echo lets that single turn through as
 though you had typed it.
+
+Resident wake turns carry the `resident` origin. The conversation displays the loop prompt
+without its delivery marker; the native transcript retains that marker for crash reconciliation.
+Human and compaction turns are not resident iterations. See [the resident loop](residents.md#the-persistent-loop).
 
 Each reconciliation records one of five relationships:
 

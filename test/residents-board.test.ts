@@ -55,6 +55,8 @@ function summary(over: Partial<ResidentRunSummary> & { taskId: string }): Reside
     profileRevision: 1,
     launchState: "launched",
     personaName: "Fleet Triage",
+    compaction: { betweenIterations: true, nativeBackstop: false },
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
     settings: revision(),
     createdAt: 1,
     ...over,
@@ -132,6 +134,7 @@ test("only a live run has a wire summary", () => {
     launchRequestId: "req",
     launchState: "launched" as const,
     launchError: null,
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
     workspaceDir: null,
     persona: { personaId: "x", name: "Fleet Triage", guidanceMarkdown: "long text" },
     runInstructions: "today",
@@ -147,7 +150,9 @@ test("only a live run has a wire summary", () => {
     taskId: "t1",
     launchState: "launched",
     personaName: "Fleet Triage",
-    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority },
+    compaction: { betweenIterations: true, nativeBackstop: false },
+    loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    settings: { identity: run.settings.identity, board: run.settings.board, authority: run.settings.authority, loop: run.settings.loop },
     createdAt: 5,
   });
   // Projected to the sections the browser draws: the instruction text, Persona id, execution

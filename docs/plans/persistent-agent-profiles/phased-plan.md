@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 10). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 11). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 
@@ -14,6 +14,7 @@ requirements.
 | Marker | Border glow only; profiles choose color and label | 2 |
 | Loop pacing | Daemon cadence plus agent self-pacing within bounds | 3 |
 | Spend guardrails | On by default (200 iterations, $20 per rolling 24 hours), editable | 3 |
+| Skill pinning | Freeze inherited and selected skills | 4 |
 | Session control | Trusted dispatch click, kept for that run | 6 (after 2) |
 | Harnesses | Claude Code and Codex | 1 (launch), 4 and 5 (tools) |
 | Workspace | Repository optional | 1 (repository residents), 7 (repo-less) |
@@ -63,7 +64,7 @@ requirements.
 ## Sizing
 
 Estimated gross production lines added or materially changed, excluding tests, generated
-bindings and documentation: **7,000 to 9,800**. Assumptions: the task, dispatch, SDK
+bindings and documentation: **7,300 to 10,300**. Assumptions: the task, dispatch, SDK
 supervisor, standing-instructions, Registry grant, settings-backup and Library rail owners are
 reused as inspected; no new harness driver is written; Pi is out of scope. This is a planning
 signal, not a diff-size promise.
@@ -73,8 +74,8 @@ signal, not a diff-size promise.
 | 1 Profiles and launch | 1,700-2,300 | The smallest vertical slice that authors and launches a resident; schema, store, task kind, launch composer, Dispatch tab and editor only work together. |
 | 2 Board presence and the dock | 900-1,300 | The chosen UI location and marker are visible-surface work with their own e2e and geometry checks; nothing in Phase 1 depends on them. |
 | 3 The resident loop | 1,500-2,100 | The daemon-owned state machine, compaction and guardrails are the highest-concurrency risk; combining with Phase 2 would exceed a reviewable unit. |
-| 4 Skill sources and selection | 900-1,300 | A new index, a new setting and per-harness skill delivery with measured isolation; independent of the loop. |
-| 5 MCP catalog and selection | 1,100-1,500 | Custom servers, write-only secrets and per-harness MCP rendering form one security-relevant slice; it reuses Phase 4's launch extension seam. |
+| 4 Skill sources and selection | 1,000-1,500 | A new index, a new setting and per-harness skill delivery with measured isolation; independent of the loop. |
+| 5 MCP catalog and selection | 1,300-1,800 | Custom servers, write-only secrets and per-harness MCP rendering form one security-relevant slice; it reuses Phase 4's launch extension seam. |
 | 6 Session control via the Launch click | 400-650 | Amends a documented security contract; it deserves its own focused review. |
 | 7 Repo-less residents | 500-850 | Relaxes the task repository invariant; isolating it keeps every other phase on the existing, proven task path. |
 
@@ -134,9 +135,12 @@ flowchart LR
    compaction, skill and MCP selection, and authority all come from the run's pinned revision.
    The daemon reads that revision through `ResidentStore.revision(profileId, revision)`; the
    browser reads it from the run's `settings` in the `residentRuns` collection. Skills and MCP
-   servers go one step further: each run renders them from immutable snapshots taken at launch
-   (Phases 4 and 5), so their sources are never reread on resume. Only a new launch or
-   **Restart on new profile** adopts a newer revision.
+   servers go one step further: each run renders them from immutable snapshots of its effective
+   set, taken at launch (Phases 4 and 5). By the operator's decision to freeze inherited and
+   selected skills, an inherit-on snapshot holds the inherited defaults present at launch as
+   well as the selections. No skill content, MCP definition, value or secret is taken from a
+   native source after launch. Only a new launch or **Restart on new profile** adopts a newer
+   revision or native changes.
 
 ## Final verification
 

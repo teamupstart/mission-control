@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 10, repaired after plan validation and review). Implementation is split into seven phases in
+Status: decisions recorded (revision 11, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -46,9 +46,11 @@ the revision it launched from, following `mission_schedules` and `mission_schedu
 cadence and bounds, guardrails, compaction, skills, MCP servers and authority, including when the
 run is restored after a daemon restart. The profile's current revision is used only for new
 launches and to show that a run's profile has changed since launch. Skills and MCP servers are
-also snapshotted per run at launch, including resolved server definitions and their secrets, so
-a later edit or deletion of a skill folder, a global or custom server, or a secret never changes
-or breaks a live run.
+also snapshotted per run at launch, including resolved server definitions and their secrets.
+A run's skill snapshot is its effective set: with inherit on, the inherited default skills
+present at launch plus the selected ones; with inherit off, only the selected ones. A later
+addition, edit or deletion of a skill, a global or custom server, or a secret therefore never
+changes or breaks a live run.
 
 | Field | Meaning | Default |
 |---|---|---|
@@ -102,14 +104,16 @@ index is read on demand and on **Rescan**, and is never pushed over SSE.
 - custom servers, each a stdio command or an HTTP URL, with the harnesses it applies to.
 
 Mission Control's own server is always attached and hidden from the picker. Secret values live in
-a write-only table. They never reach the browser or backups, and never appear on a command line.
+a write-only table. They never reach the browser, backups, a command line, a configuration file
+or the agent's environment. Each reaches only its own server process, through a Mission-owned
+launcher.
 
 | Profile setting | Claude Code (Agent SDK) | Codex (app-server) |
 |---|---|---|
-| Extra skills | Per-run bundle loaded as a local plugin (`--plugin-dir`) | `skills.config` path entries; fallback: a launch-scoped `CODEX_HOME` overlay whose `skills/` holds the bundle |
-| Use only selected skills | Every setting source kept; a launch-scoped `--settings` turns unselected skills off through `skillOverrides`, plus `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `skills.config` disable entries for every unselected default; fallback: the same overlay |
-| Extra MCP servers | The run's MCP snapshot, inherited globals included, in `options.mcpServers` with `--strict-mcp-config` | `-c mcp_servers.<name>.*` from the run's snapshot, secrets by env name |
-| Use only selected MCPs | The same, with only the selected servers in the snapshot | Globals outside the snapshot disabled per server; fallback: the overlay's `config.toml` generated from the snapshot |
+| Extra skills | The run's skill snapshot (inherited defaults at launch plus selections) in a per-run `CLAUDE_CONFIG_DIR` overlay; fallback: wholesale native-skill switches with the snapshot through `--plugin-dir` | The run's skill snapshot in the per-run `CODEX_HOME` overlay's `skills/`; fallback: wholesale native-skill switches with the snapshot through `skills.config` path entries |
+| Use only selected skills | The same, with only the selected skills in the snapshot | The same, with only the selected skills in the snapshot |
+| Extra MCP servers | The run's MCP snapshot, inherited globals included, in `options.mcpServers` with `--strict-mcp-config` | The run's MCP snapshot as the only MCP servers in a per-run `CODEX_HOME` overlay's generated `config.toml`, secrets only through Mission's scoped launcher |
+| Use only selected MCPs | The same, with only the selected servers in the snapshot | The same, with only the selected servers in the snapshot; offered only once an exact-set probe passes |
 | Compaction backstop | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `model_auto_compact_token_limit` |
 
 The installed Claude Code 2.1.310 carries every Claude flag named above, and the installed Codex
@@ -122,8 +126,9 @@ instead. The Codex overlay links `auth.json` and `sessions/` back to the operato
 and generates `config.toml` from the operator's configuration.
 
 If both the primary and the fallback fail for a cell, the phase stops before building that cell.
-It asks the operator to choose between shipping that harness without selected-only, or approving
-a wider mechanism. The editor never offers a switch that the launch cannot honor.
+It asks the operator to choose between shipping that harness without that capability, or
+approving a wider mechanism. A weaker mode, such as inherited skills that refresh on resume,
+never ships without that answer. The editor never offers a switch that the launch cannot honor.
 
 ## Launch
 
@@ -319,6 +324,7 @@ The existing grant machinery is reused unchanged.
 | Marker | **Border glow** only; profiles choose color and label |
 | Loop pacing | **Daemon cadence plus agent self-pacing** within profile bounds |
 | Spend guardrails | **On by default, editable per profile** |
+| Skill pinning | **Freeze inherited and selected skills**: with inherit on, the inherited defaults present at launch are captured with the selections, and resumes use that snapshot |
 | Session control | **Trusted dispatch click, kept for that run** |
 | Harnesses | **Claude Code and Codex** |
 | Workspace | **Repository optional** |
@@ -338,7 +344,8 @@ The existing grant machinery is reused unchanged.
 | Assumption | Confidence | If wrong |
 |---|---|---|
 | The pinned Claude Agent SDK exposes typed options for strict MCP and local plugins | medium | The verified CLI flags are passed through the SDK's extra-arguments option |
-| Codex `skills.config` entries and per-server disables behave as their names suggest | medium | The launch-scoped `CODEX_HOME` overlay is built instead |
+| Per-run configuration overlays pin the exact skill and MCP sets for each harness | medium | The measured fallback is built; if neither holds the exact set, Phase 4 or 5 stops and asks the operator |
+| Mission's scoped launcher delivers each secret only to its own stdio or HTTP server, on both harnesses | medium | Phase 5 stops and asks the operator before offering secret-bearing servers for that harness |
 | A fallback also fails its probe | low | The phase stops and asks the operator before building that cell |
 | `/compact` as a user turn compacts an SDK Claude session | medium to high | Phase 3 stops and asks the operator before shipping that harness with one layer |
 | Default caps suit a 5-minute cadence | medium | Caps are editable and shown on every card |

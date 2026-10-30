@@ -7,7 +7,8 @@ Part of [the phased plan](phased-plan.md) for [Residents](plan.md).
 Mission Control indexes every global skill and any skill folders the operator registers, and a
 resident profile chooses a subset. The subset reaches Claude Code and Codex launches, either
 added to the harness's own skills or, where the harness offers a narrow enough per-launch
-control, instead of them.
+control, instead of them. By the operator's decision to freeze inherited and selected skills, a
+run's effective skills are captured at launch and never change on resume.
 
 ## Entry criteria and dependencies
 
@@ -18,7 +19,8 @@ control, instead of them.
 - `residents.skillSources` setting (operator directories) and built-in sources.
 - Skill index service and `GET /api/skill-index`, `POST /api/skill-index/rescan`.
 - Profile section `skills`: `inheritDefaults` (default on) and `selected` skill ids.
-- Per-run skill bundle and the harness launch seam for skills; measured isolation capability.
+- A per-run snapshot of the effective skill set, taken at launch, and the harness launch seam
+  that loads only that snapshot; a measured isolation capability for both modes.
 - Skill sources UI on the resident page rail and the skill picker in the editor.
 
 ### Non-goals
@@ -36,7 +38,8 @@ Pi.
   (`src/server/llm/claude-sdk.ts`). Dropping `user` also drops user settings, so selected-only
   never drops it. Claude Code 2.1.310 instead offers the `skillOverrides` setting, where an
   entry set to off disables a skill, beside `disableBundledSkills`, and accepts launch-scoped
-  settings through `--settings`.
+  settings through `--settings`. Its `--bare` mode stops reading OAuth and the keychain, and
+  `--disable-slash-commands` disables every skill, the run's own included, so neither qualifies.
 - `validateIndexedDirectories` (`src/server/repo-index-config.ts`) is the validation pattern.
 - `SessionActionSkillControl` (`src/web/workflows/SessionActionEditor.tsx`) is the picker
   precedent. `SdkLaunchOptions` (`src/server/harness/types.ts`) has no skill field.
@@ -44,28 +47,43 @@ Pi.
 
 ## Implementation steps
 
-1. **Probe, then build what passes.** For each harness and each cell (add extra skills; use only
-   selected skills), probe the primary mechanism and then its fallback against a real
-   installation. The probe confirms that selected skills load, unselected defaults do not, and
-   `CLAUDE.md`, `AGENTS.md`, authentication, Mission's MCP server and the session files Mission
-   Control reads all survive.
-   - Claude, extra skills: the per-run bundle as a local plugin via the SDK's plugin option.
-     Fallback: `--plugin-dir` through the SDK's extra-arguments option.
-   - Claude, selected only: every setting source stays loaded, including `user`, so user
-     settings are never dropped. A launch-scoped `--settings` JSON sets a `skillOverrides` entry
-     to off for every unselected skill the index found, and bundled skills are turned off with
-     `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`; the snapshot is added as in the extra-skills cell.
-     Fallback: the same settings through the SDK's extra-arguments option. The probe also
-     confirms the effective user settings match a launch without the overrides.
-   - Codex, extra skills: `skills.config` path entries for the bundle. Fallback: a launch-scoped
-     `CODEX_HOME` overlay with `auth.json` and `sessions/` linked to the operator's `CODEX_HOME`, a
-     generated `config.toml`, and `skills/` holding the bundle.
-   - Codex, selected only: `skills.config` disable entries for every unselected default skill the
-     index found. Fallback: the same overlay.
+1. **Probe, then build what passes.** The operator chose to freeze inherited and selected
+   skills, so both modes need the same guarantee. The session loads exactly the run's snapshot
+   (step 5), and nothing from a native skill source. For each harness, probe the primary
+   mechanism and then its fallback against a real installation:
+   - Claude primary: a per-run configuration overlay through `CLAUDE_CONFIG_DIR`. Its `skills/`
+     holds only the snapshot, and its generated settings keep every non-skill user setting and
+     turn installed plugins' skills off. Fallback: every setting source kept, with a
+     launch-scoped `--settings` that turns each native skill source off wholesale, if the
+     installed version offers such a setting, and the snapshot loaded through `--plugin-dir`.
+   - Codex primary: the per-run `CODEX_HOME` overlay that Phase 5 also uses. Its `skills/` holds
+     only the snapshot, and its generated `config.toml` keeps every setting except skill
+     configuration. Fallback: a launch-scoped setting that turns native skill discovery off
+     wholesale, with the snapshot added through `skills.config` path entries.
+   - Name-by-name disables (`skillOverrides` for Claude, `skills.config` disable entries for
+     Codex) may supplement a mechanism. They never qualify alone, because a skill added after
+     the last name read would still load.
+   The probe is an exact-set check:
+   - fixture skills are placed in every native source the harness would otherwise load: the
+     global skill directories (`~/.claude/skills`, `~/.agents/skills`, `$CODEX_HOME/skills`),
+     project skill directories in the run's working directory, and installed plugins;
+   - skills built into the harness have no folder to copy, so the snapshot records them by
+     name, and the check confirms the mechanism keeps exactly those, including across a
+     harness upgrade that adds or removes one;
+   - after launch, one fixture is added, one edited and one deleted;
+   - the check passes only if, at launch and after a restart and resume, the session offers
+     exactly the snapshot's skills with the snapshot's content. It observes this both from the
+     skills the session reports and by invoking fixtures. A skill outside the snapshot must be
+     unavailable, and an edited one must still run its launch content;
+   - the mechanism must keep authentication, `CLAUDE.md` and `AGENTS.md`, repository
+     instructions, Mission's MCP server, every non-skill setting and the session files Mission
+     Control reads, and Claude's effective user settings must match a launch without it.
    Record the mechanism that passed as a new `SkillSelectionSpec` in `HARNESS_CAPABILITIES`
-   (`src/shared/harness-capabilities.ts`). **If both fail for a cell, stop before building that
-   cell.** Ask the operator with `request_input` to choose between shipping that harness without
-   it, or approving a wider mechanism, and record the answer in the pull request.
+   (`src/shared/harness-capabilities.ts`). **If both fail for a harness, stop before building
+   resident skills for it.** Ask the operator with `request_input` to choose between shipping
+   that harness without resident skill selection, or approving a wider mechanism, and record the
+   answer in the pull request. A weaker mode, such as inherited skills that refresh on resume,
+   never ships without that answer.
 2. **Sources**: `residents.skillSources` in `APP_CONFIG_ENTRIES` with a backup domain; built-in
    source ids (append-only) `mission`, `claude-global` (`~/.claude/skills`, skipping
    `mission-*`), `agents-global` (`~/.agents/skills`), `codex-global` (`~/.codex/skills`).
@@ -73,16 +91,28 @@ Pi.
 3. **Index** in `src/server/residents/skill-index.ts`: reads `<dir>/<skill>/SKILL.md`
    frontmatter (`name`, `description`), records source, path and problems; identity
    `<source id>:<folder>`. Built on daemon start and on rescan; served by GET, never over SSE.
-4. **Profile section** `skills` and `ResidentSkillsSection`: inherit switch (offered exactly where
-   step 1 recorded a working mechanism), a picker filtered by search and source, duplicate-name
-   conflict refused at save.
-5. **Snapshot and seam**: a `skills` contributor that materializes a per-run snapshot under
-   `$MISSION_HOME/residents/runs/<runId>/skills/`, and an optional `skills` field on
+4. **Profile section** `skills` and `ResidentSkillsSection`: the inherit switch, which decides
+   what is captured at launch, a picker filtered by search and source, and a duplicate-name
+   conflict refused at save. The section is offered, in either mode, only for a harness where
+   step 1 recorded a working mechanism.
+5. **Snapshot and seam**: a `skills` contributor that captures the run's effective skill set at
+   launch under `$MISSION_HOME/residents/runs/<runId>/skills/`, and an optional `skills` field on
    `SdkLaunchOptions` that each driver renders with the mechanism step 1 recorded.
-   - The snapshot is an immutable copy of each selected skill folder, taken from the run's pinned
-     revision at launch, with a content hash recorded per skill.
-   - Resume after a daemon restart reuses the snapshot and never rereads the source folders, so
-     a later edit or deletion of a source cannot change or break a live run.
+   - **What is captured.** The pinned revision's `inheritDefaults` decides. With inherit on, the
+     snapshot holds every default skill the harness would load for the run at launch, from
+     every source step 1's check covers, plus the selected skills. With inherit off, it holds
+     only the selected skills.
+   - **Identity and collisions.** The snapshot is a set keyed by skill identity, the source and
+     folder. A selected skill that is the same identity as an inherited default appears once.
+     Two distinct identities that would share the harness's effective skill name refuse the
+     launch with the reason, and nothing is renamed.
+   - The snapshot is an immutable copy of each skill folder, with a content hash recorded per
+     skill. Built-in skills are recorded by name.
+   - Every resume after a daemon restart renders from the snapshot alone and never rereads a
+     native skill source. Adding, editing or deleting a skill natively after launch, an
+     inherited default included, cannot change the run's effective skills.
+   - A new launch, or **Restart on new profile**, captures a new snapshot and adopts those
+     changes.
    - A skill folder over a fixed size cap, or one containing a link that leaves the folder, is
      refused at launch with the reason.
    - The snapshot is removed with the run.
@@ -96,18 +126,29 @@ Pi.
 - Unit: source validation, index parsing and problems, `mission-*` skipping, identity
   stability, section defaults, snapshot creation, hashes and cleanup, per-driver option rendering
   for both primary and fallback mechanisms, and resume rendering from the pinned revision after
-  the profile is edited. Snapshot isolation: editing a source skill, and separately deleting
-  it, after launch leaves the run's skills byte-identical across a daemon restart and resume.
-  Claude selected-only leaves the effective user settings unchanged.
-- Harness tests against real installations for every capability recorded as supported.
+  the profile is edited. Claude's mechanism leaves the effective user settings unchanged.
+- Effective-set tests, for each harness, with inherit on and with inherit off:
+  - with fixture skills in every source step 1 covers, the snapshot holds exactly the inherited
+    defaults present at launch plus the selections with inherit on, and exactly the selections
+    with inherit off;
+  - a selected skill that is also inherited, with the same identity, appears once and does not
+    refuse the launch. Two distinct skills with the same effective name do refuse it;
+  - after launch, each of these is followed by a daemon restart and resume, and leaves the
+    run's effective skills byte-identical to its launch snapshot: adding a native skill,
+    editing an inherited default, deleting an inherited default, and editing, and separately
+    deleting, a selected source skill;
+  - a new launch, and **Restart on new profile**, adopt each of those changes.
+- Harness tests against real installations for every capability recorded as supported,
+  including the step 1 exact-set check, saved as a fixture.
 - Playwright `e2e/specs/residents-skills.spec.ts`: add a source folder from a fixture, rescan,
   select a skill, launch, and see the selection in the launch summary.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run test:e2e`.
 
 ## Exit criteria
 
-Selected skills are available in a launched resident for each supported harness, and the
-inherit switch behaves exactly as the measured capability says.
+Each supported harness runs a resident with exactly its launch snapshot. With inherit on that
+is the inherited defaults plus the selected skills; with inherit off, the selected skills alone.
+The snapshot is unchanged across restarts until a new launch or **Restart on new profile**.
 
 ## Downstream handoff
 
@@ -123,3 +164,10 @@ Phase 5 reuses the measured-capability pattern and the optional-field approach o
   an operator decision gate if both fail; the Codex overlay introduced here is reused by Phase 5.
 - Pull request review (CodeRabbit): Claude selected-only keeps user settings and turns skills
   off through `skillOverrides`, and runs use immutable skill snapshots instead of links.
+- Operator decision, "Freeze inherited and selected skills": `inheritDefaults` decides what is
+  captured at launch, and both modes resume from that snapshot alone. The mechanism must pass an
+  exact-set check across every native skill source, and name-by-name overrides no longer
+  qualify alone. Effective-set tests cover additions, edits and deletions after launch.
+- Pull request review (CodeRabbit, third batch, applied to skills): the snapshot is a set keyed
+  by skill identity. An identical inherited and selected skill is kept once, and only distinct
+  skills that share an effective name are refused.

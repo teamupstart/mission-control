@@ -50,8 +50,13 @@ test("the conversation header preview redraws with each style and band cell", as
   const previewBox = (await preview.boundingBox())!;
   expect(previewBox.x).toBeGreaterThan(pickerBox.x + pickerBox.width);
 
+  // The preview's stage is `inert`, so nothing in it is in the accessibility tree a person
+  // using the dashboard gets. Its contents are asserted as drawn markup, not through roles,
+  // so these checks do not lean on the test runner exposing what assistive tech cannot see.
+  const name = preview.locator(".detail-title h2");
+
   // The session's identity is always drawn, whatever the style.
-  await expect(preview.getByRole("heading", { name: "Fix the parser" })).toBeVisible();
+  await expect(name).toHaveText("Fix the parser");
 
   // Shipped style: the badge leads the name.
   await expect(picker.getByRole("radio", { name: "Title badge" })).toBeChecked();
@@ -65,7 +70,7 @@ test("the conversation header preview redraws with each style and band cell", as
 
   await picker.getByText("Kind tile", { exact: true }).click();
   await expect(preview.locator(".detail-head.tk-edge .tk-tile")).toBeVisible();
-  await expect(preview.getByRole("img", { name: "ship task" })).toBeVisible();
+  await expect(preview.locator(".tk-tile")).toHaveAttribute("aria-label", "ship task");
   await shot(customizer, "kind-tile");
 
   await picker.getByText("Tab strip", { exact: true }).click();
@@ -74,7 +79,7 @@ test("the conversation header preview redraws with each style and band cell", as
 
   await picker.getByText("Off", { exact: true }).click();
   await expect(preview.locator(".tk-mark")).toHaveCount(0);
-  await expect(preview.getByRole("heading", { name: "Fix the parser" })).toBeVisible();
+  await expect(name).toHaveText("Fix the parser");
   await shot(customizer, "off");
 
   // The band's two cells move it too, and the band goes whole when both are off.

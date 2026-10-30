@@ -199,6 +199,12 @@ export class ResidentManager {
   private readonly grantWatches = new Map<string, GrantWatch>();
   /** Who waits for a watch to be decided or dropped: a launch answers only once it knows. */
   private readonly grantWaiters = new Map<string, Array<() => void>>();
+  /**
+   * Runs whose grant this daemon run has already decided - applied, refused or forgotten. A
+   * recorded grant is restored at most once per daemon run: a run granted by a Launch click while
+   * restore was still settling, or a second sessions-observed callback, never applies it again.
+   */
+  private readonly decidedGrants = new Set<string>();
 
   constructor(private readonly deps: ResidentManagerDeps) {
     this.now = deps.now ?? Date.now;
@@ -569,6 +575,7 @@ export class ResidentManager {
     else {
       // A run that failed or ended has no session left to grant.
       this.dropGrantWatch(runId);
+      this.decidedGrants.delete(runId);
       this.deps.registry.removeResidentRun(runId);
     }
     if (summary?.launchState === "launched") this.applyWaitingGrants();
@@ -797,6 +804,7 @@ export class ResidentManager {
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched" || !residentRunControlRecorded(run.control)) continue;
       if (!run.settings.authority.controlOtherSessions) continue;
+      if (this.decidedGrants.has(run.id) || this.grantWatches.has(run.id)) continue;
       this.grantWatches.set(run.id, { taskId: run.taskId, kind: "restore", recorded: { ...run.control } });
     }
     this.applyWaitingGrants();
@@ -845,6 +853,7 @@ export class ResidentManager {
     watch: GrantWatch,
     identity: ResidentRunControlIdentity | null,
   ): void {
+    this.decidedGrants.add(runId);
     if (watch.kind === "restore") {
       const same = identity !== null
         && identity.conversationId === watch.recorded.conversationId

@@ -611,6 +611,52 @@ test("a restore whose grant the Registry refuses forgets the record, so a later 
   assert.equal(later.h.registry.sessionControlEnabled(later.sessionId), false, "nothing is left to apply");
 });
 
+/** How many times the session event ledger recorded a session-control grant for this session. */
+function grantEvents(sessionId: string): number {
+  return (openDb().prepare(`SELECT COUNT(*) AS n FROM session_events WHERE session_id = ? AND kind = 'session_control_grant'`)
+    .get(sessionId) as { n: number }).n;
+}
+
+/** A Registry that calls its sessions-observed listeners on every sweep, not only the first. */
+class EverySweepRegistry extends Registry {
+  private readonly observers = new Set<() => void>();
+  override onSessionsObserved(fn: () => void): () => void {
+    this.observers.add(fn);
+    return () => { this.observers.delete(fn); };
+  }
+  override applyDiscovery(...args: Parameters<Registry["applyDiscovery"]>): void {
+    super.applyDiscovery(...args);
+    for (const fn of [...this.observers]) fn();
+  }
+}
+
+test("a run granted by a Launch click while restore is settling is not granted again by the first sweep", async () => {
+  // The daemon serves launches before its first sweep completes: this harness has not swept yet.
+  const h = harness();
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(residentRunControlRecorded(control(run.id)), true);
+  assert.equal(grantEvents(sessionId), 1);
+  h.registry.applyDiscovery([]);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(grantEvents(sessionId), 1, "the first sweep does not restore a grant this daemon run already applied");
+});
+
+test("a recorded grant is restored once per daemon run, however often sessions are observed", async () => {
+  const { run } = await grantedRun();
+  const before = grantEvents(`sdk:${run.taskId}`);
+  const registry = new EverySweepRegistry();
+  const { h, sessionId } = restart(run, `native-${run.taskId}`, undefined, () => registry);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(grantEvents(sessionId), before + 1, "restored and logged once");
+  registry.applyDiscovery([]);
+  registry.applyDiscovery([]);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(grantEvents(sessionId), before + 1, "later sweeps neither re-apply nor log it again");
+});
+
 test("a run whose click was consumed but whose grant never applied stays ungranted after a restart", async () => {
   const { run } = await grantedRun();
   openDb().prepare(`UPDATE resident_runs SET control_conversation_id = NULL, control_cwd = NULL, control_episode_id = NULL WHERE id = ?`).run(run.id);

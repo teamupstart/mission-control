@@ -7506,7 +7506,8 @@ a.btn {
   color: var(--muted);
   line-height: 1.4;
 }
-.decision-other {
+.decision-other,
+.decision-note {
   font: inherit;
   font-size: 13px;
   color: var(--fg);
@@ -7516,7 +7517,14 @@ a.btn {
   padding: 7px 10px;
   outline: none;
 }
-.decision-other:focus {
+/* Several lines tall and resizable: a note carries instructions, not a one-word answer. */
+.decision-note {
+  min-height: 64px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.decision-other:focus,
+.decision-note:focus {
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
 .decisions-actions {
@@ -32333,6 +32341,10 @@ body.foreman-sidecar-open .modal-backdrop {
   font: 13px/1.45 var(--sans);
   color: var(--fg);
   overflow-wrap: anywhere;
+}
+/* A note is instructions, so its line breaks are kept as typed. */
+.review-answer-note {
+  white-space: pre-wrap;
 }
 .review-answer-other-tag {
   flex: none;

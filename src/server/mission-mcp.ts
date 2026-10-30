@@ -62,7 +62,6 @@ export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
   "trigger_workflow_action",
-  "share_plan",
   "read_sessions",
   "control_session",
   PLAN_DECISIONS_TOOL,
@@ -77,7 +76,6 @@ export const MISSION_MCP_TOOLS = [
   "publish_plan",
   "get_pull_request_policy",
   "request_input",
-  "report_product_feedback",
   "report_product_issue",
   "report_status",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`

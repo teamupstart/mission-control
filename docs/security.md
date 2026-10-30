@@ -285,6 +285,8 @@ lost a secret or a definition refuses to start that server rather than start it 
 
 This boundary is what the agent is handed - its environment, arguments, configuration and
 transcript - and it was measured on real Claude Code and Codex installations
-(`scripts/probe-resident-mcp.ts`). A credential file's path is metadata, not a secret. Mission
+(`scripts/probe-resident-mcp.ts`). The date, harness versions, result and retained output, and
+what that measurement does not cover, are in
+[resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
 Control does not claim an operating-system sandbox against a process running as the same user as
 the daemon, which could read an owner-only file before the launcher does.

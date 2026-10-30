@@ -161,3 +161,23 @@ test("schema 11 wakes upgrade without inventing authorship and native bindings s
   assert.deepEqual({ ...openDb().prepare(query).get() }, { conversation_key: "native", message_id: "turn", message_ts: 100 });
   assert.equal(openDb().prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
 });
+
+test("schema 12 upgrade captures recovery and leaves old SDK native limits unknown", async () => {
+  const { closeDb } = await import("../src/server/db.ts");
+  const { upsertSdkSession, getSdkSession } = await import("../src/server/sdk/store.ts");
+  upsertSdkSession({ id: "native-backstop", agent: "codex", agentSessionId: "native-thread", cwd: "/repo", taskId: null,
+    model: "model", effort: null, permissionMode: null, status: "suspended", turnInProgress: false });
+  closeDb();
+  const previous = new DatabaseSync(join(home, "harness.db"));
+  previous.exec("ALTER TABLE sdk_sessions DROP COLUMN resident_compaction_token_limit; PRAGMA user_version = 12;");
+  previous.close();
+  const backupRoot = join(home, "backups", "database");
+  const before = new Set(readdirSync(backupRoot));
+  const db = openDb();
+  assert.equal(readdirSync(backupRoot).filter(name => !before.has(name) && name.startsWith("pre-migration-")).length, 1);
+  assert.equal(getSdkSession("native-backstop")!.residentCompactionTokenLimit, undefined);
+  assert.equal(getSdkSession("native-backstop")!.agentSessionId, "native-thread");
+  db.prepare("UPDATE sdk_sessions SET resident_compaction_token_limit = 180880 WHERE id = 'native-backstop'").run();
+  closeDb();
+  assert.equal(getSdkSession("native-backstop")!.residentCompactionTokenLimit, 180880);
+});

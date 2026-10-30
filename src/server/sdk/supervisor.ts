@@ -568,6 +568,7 @@ export class SdkSupervisor {
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
       turnInProgress: durable.turnInProgress,
+      residentCompactionTokenLimit: handle.residentCompactionTokenLimit,
     });
     const session = this.registry.registerSdkSession({
       ...registration,
@@ -1212,7 +1213,7 @@ export class SdkSupervisor {
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
-        residentCompaction: await residentNativeCompactionForTask(row.taskId),
+        residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
         permissionMode: row.permissionMode,

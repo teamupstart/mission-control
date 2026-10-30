@@ -104,11 +104,12 @@ export function composeResidentLaunch(
 }
 
 /** Both fresh launch and SDK restore use the same pinned contributor list. */
-export async function residentNativeCompactionForTask(taskId: string | null) {
+export async function residentNativeCompactionForTask(taskId: string | null, tokenLimit?: number) {
   if (!taskId) return undefined;
   const { residentRunForTask } = await import("./store.ts");
   const run = residentRunForTask(taskId)?.run;
   if (!run) return undefined;
-  return RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
+  const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
     .find((part) => part.residentCompaction)?.residentCompaction;
+  return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
 }

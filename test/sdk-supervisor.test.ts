@@ -215,6 +215,36 @@ const START = {
   taskId: null,
 };
 
+test("a resident's measured native limit is persisted and replayed by a fresh supervisor", async t => {
+  const { ResidentProfileRevisionSchema, residentLaunchInput } = await import("../src/shared/residents.ts");
+  const residents = await import("../src/server/residents/store.ts");
+  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Native backstop" }, persona: { personaId: "p" }, execution: { agent: "codex", model: "test-model" } });
+  residents.createResidentProfile({ id: "native-profile", settings, at: 1 });
+  residents.reserveResidentRun({ id: "native-run", profileId: "native-profile", profileRevision: 1, taskId: "native-task", launchRequestId: "native-request", launchInput: residentLaunchInput("/repo", ""), repoSpelling: "/repo", persona: { personaId: "p", name: "P", guidanceMarkdown: "" }, runInstructions: "", at: 1 });
+  const first = Object.assign(fakeHandle(), { residentCompactionTokenLimit: 180880 });
+  const second = Object.assign(fakeHandle(), { residentCompactionTokenLimit: 180880 });
+  const handles = [first, second];
+  const fake = withFakeCodexDriver(async () => handles.shift()!);
+  t.after(fake.restore);
+  const registry = new Registry();
+  registry.upsertTask(mkTask({ id: "native-task", kind: "resident", status: "running", agent: "codex" }));
+  const original = new SdkSupervisor(registry);
+  const session = await original.start({ ...START, agent: "codex", model: "test-model", taskId: "native-task" });
+  first.push({ kind: "bound", agentSessionId: "native-thread", transcriptPath: null, modelId: "test-model", pid: null });
+  await drain();
+  assert.equal(fake.calls[0]?.residentCompaction?.tokenLimit, undefined);
+  assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
+  residents.markResidentRunLaunched("native-run", null);
+  await original.stopAll();
+  const restored = new SdkSupervisor(new Registry());
+  t.after(() => restored.stopAll());
+  await restored.restore();
+  assert.equal(fake.calls[1]?.resume, "native-thread");
+  assert.deepEqual(fake.calls[1]?.residentCompaction, { threshold: 70, tokenLimit: 180880 });
+  assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
+  assert.equal(residents.getResidentRun("native-run")?.run.endedAt, null);
+});
+
 test("the supervisor persists the observed child lifetime after the stream ends and clears it on replacement", async (t) => {
   const handle = fakeHandle();
   let pid: number | null = 41001;

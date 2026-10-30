@@ -1,4 +1,4 @@
-import { codexResidentCompactionArgs } from "./compaction.ts";
+import { codexResidentCompactionLimit } from "./compaction.ts";
 import { CompactionCompletion } from "../compaction.ts";
 import type { ThreadCompactStartParams, ThreadCompactStartResponse } from "./app-server/protocol.ts";
 import { randomUUID } from "node:crypto";
@@ -332,6 +332,7 @@ interface Pending {
 
 /** What a launch was configured with, kept so `clearContext` can start an identical thread. */
 interface LaunchConfig {
+  residentCompactionTokenLimit?: number;
   cwd: string;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -412,6 +413,10 @@ class CodexSdkSession implements SdkSessionHandle {
 
   get events(): AsyncIterable<SdkEvent> {
     return this.out;
+  }
+
+  get residentCompactionTokenLimit(): number | undefined {
+    return this.config.residentCompactionTokenLimit;
   }
 
   get recoveryProcessId(): number | null {
@@ -1459,9 +1464,14 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
           ? multiRepo.launchArgs(opts.extraDirs)
           : [];
-      const compactArgs = opts.residentCompaction ? codexResidentCompactionArgs(opts.model, opts.residentCompaction.threshold) : [];
+      const compactLimit = opts.residentCompaction
+        ? opts.residentCompaction.tokenLimit ?? codexResidentCompactionLimit(opts.model, opts.residentCompaction.threshold)
+        : undefined;
+      if (compactLimit !== undefined && (!Number.isSafeInteger(compactLimit) || compactLimit <= 0)) throw new Error("Invalid native resident compaction limit.");
+      const compactArgs = compactLimit === undefined ? [] : ["-c", `model_auto_compact_token_limit=${compactLimit}`];
       const transport = await deps.connect([...args, ...extraDirArgs, ...compactArgs], opts.cwd, opts.stateHome);
       const config: LaunchConfig = {
+        residentCompactionTokenLimit: compactLimit,
         cwd: opts.cwd,
         model: opts.model,
         effort: opts.effort,

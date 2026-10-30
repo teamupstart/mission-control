@@ -220,7 +220,10 @@ The editor and every live-run surface name the active compaction layers:
   A long turn therefore has no profile-threshold native backstop.
 - **Codex:** compaction before wakes and the native backstop are active. The latter is computed
   from the explicit model's context window in Codex's native model catalog. Launch refuses if
-  that window is unavailable. Codex's compact operation does not accept a focus instruction;
+  that window is unavailable. The measured native token limit is saved with the SDK session
+  and replayed on resume, so a later catalog refresh cannot remove the configured backstop.
+  Older sessions without a saved limit must resolve it from the catalog once.
+  Codex's compact operation does not accept a focus instruction;
   the focus field is used by Claude.
 
 The default rolling 24-hour limits are **200 iterations** and **$20**. Clearing either cap in

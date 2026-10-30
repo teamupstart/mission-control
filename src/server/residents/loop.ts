@@ -1,4 +1,4 @@
-import { ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
+import { RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
 import { residentWakeMarker } from "@shared/resident-turn.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
@@ -105,7 +105,9 @@ export class ResidentLoop {
     this.queued.add(id);
     queueMicrotask(() => {
       this.queued.delete(id);
-      if (!this.stopped) this.observe(id);
+      if (this.stopped) return;
+      try { this.observe(id); }
+      catch (error) { console.error(`[residents] could not observe resident run ${id}:`, error); }
     });
   }
   private observe(id: string): void {
@@ -137,7 +139,7 @@ export class ResidentLoop {
     timer.unref();
     this.timers.set(id, timer);
   }
-  pause(id: string, reason = "Paused by operator"): void {
+  pause(id: string, reason = RESIDENT_OPERATOR_PAUSE_REASON): void {
     liveRun(id);
     pauseResident(id, reason);
     this.cancelTimer(id);

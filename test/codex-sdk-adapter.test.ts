@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
   codexSdkSpec,
@@ -165,8 +167,9 @@ function defaultReplies(overrides: Record<string, unknown> = {}) {
 async function launch(
   server: FakeServer,
   opts: Partial<Parameters<ReturnType<typeof codexSdkSpec>["launch"]>[0]> = {},
+  connectArgs?: string[][],
 ): Promise<{ handle: SdkSessionHandle; events: SdkEvent[]; drained: Promise<void> }> {
-  const spec = codexSdkSpec({ connect: async () => server });
+  const spec = codexSdkSpec({ connect: async (args) => { connectArgs?.push([...args]); return server; } });
   const handle = await spec.launch({
     cwd: "/work/repo",
     stateHome: "/tmp/mission-sdk-state",
@@ -190,6 +193,30 @@ async function launch(
 
 /** Let queued microtasks and the event pump settle. */
 const settle = () => new Promise((r) => setTimeout(r, 5));
+
+test("a resumed resident retains its measured native backstop after the catalog disappears", async t => {
+  const home = mkdtempSync(join(tmpdir(), "codex-resident-backstop-"));
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; rmSync(home, { recursive: true, force: true }); });
+  const options = { model: "test-model", residentCompaction: { threshold: 70 } };
+  await assert.rejects(launch(new FakeServer(defaultReplies()), options), /context window is unavailable/);
+  const path = join(home, "models_cache.json");
+  writeFileSync(path, JSON.stringify({ models: [{ slug: "test-model", context_window: 272_000, effective_context_window_percent: 95 }] }));
+  const args: string[][] = [];
+  const first = await launch(new FakeServer(defaultReplies()), options, args);
+  assert.equal(first.handle.residentCompactionTokenLimit, 180880);
+  await first.handle.stop(); await first.drained;
+  rmSync(path);
+  const server = new FakeServer(defaultReplies());
+  const resumed = await launch(server, { ...options, prompt: "", resume: THREAD.id,
+    residentCompaction: { threshold: 70, tokenLimit: first.handle.residentCompactionTokenLimit } }, args);
+  assert.equal(server.calls("thread/resume").length, 1);
+  assert.equal(server.calls("turn/start").length, 0, "restoration does not repeat the opening turn");
+  assert.equal(resumed.handle.residentCompactionTokenLimit, 180880);
+  for (const call of args) assert.ok(call.includes("model_auto_compact_token_limit=180880"));
+  await resumed.handle.stop(); await resumed.drained;
+});
 
 test("resident compaction uses thread/compact/start and measured contextCompaction completion", async () => {
   const server = new FakeServer(defaultReplies({ "thread/compact/start": {} }));

@@ -183,7 +183,8 @@ let db: DatabaseSync | undefined;
 // 10: repository-free resident task markers and durable workspace cleanup obligations.
 // 11: resident loop state, generation delivery claims and durable pacing receipts.
 // 12: bind resident wake attribution to its recorded conversation and native turn.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 12;
+// 13: retain a resident SDK session's measured native compaction limit across resumes.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 13;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3320,6 +3321,7 @@ function migrate(d: DatabaseSync): void {
 
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+  addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2

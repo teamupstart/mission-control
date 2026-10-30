@@ -2,7 +2,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
-import { ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
+import { residentRunSummary, ResidentProfileRevisionSchema, type ResidentLoopSettings } from "../src/shared/residents.ts";
+import { foldAttention } from "../src/web/lib/attention.ts";
 import { residentWakeMarker } from "../src/shared/resident-turn.ts";
 import { mkSession, mkTask, mkTaskSummary, meta } from "./helpers/session-fixture.ts";
 import { openDb } from "../src/server/db.ts";
@@ -17,6 +18,32 @@ const loops: ResidentLoop[] = [];
 beforeEach(() => openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles; DELETE FROM sdk_sessions; DELETE FROM usage_ledger;"));
 afterEach(async () => { for (const loop of loops.splice(0)) await loop.stop(); });
 const flush = () => delay(15);
+
+test("an observation exception is contained and the next event can schedule normally", t => {
+  const pending: Array<() => void> = [];
+  t.mock.method(globalThis, "queueMicrotask", (fn: () => void) => pending.push(fn));
+  const logged = t.mock.method(console, "error", () => {});
+  const f = fixture(); f.loop();
+  const failure = t.mock.method(openDb(), "prepare", () => { throw new Error("temporary database failure"); });
+  assert.doesNotThrow(() => pending.shift()!());
+  failure.mock.restore();
+  assert.match(String(logged.mock.calls[0]?.arguments[0]), /resident run run/);
+  assert.equal(f.run().nextWakeAt, null);
+  f.complete();
+  while (pending.length) pending.shift()!();
+  assert.equal(f.run().nextWakeAt, f.now + 300_000, "queued bookkeeping is released despite the exception");
+  assert.deepEqual(f.calls, []);
+});
+
+test("an operator pause stays out of attention while a guardrail pause is owed", () => {
+  const f = fixture(); const loop = f.loop();
+  const attention = () => foldAttention({ sessions: [f.session], reviews: [], ensembles: [], residentRuns: [residentRunSummary(f.run())!] });
+  loop.pause("run");
+  assert.equal(attention().total, 0);
+  loop.pause("run", "Spend guardrail reached");
+  assert.equal(attention().total, 1);
+  assert.equal(attention().items[0]?.kind, "session_blocked");
+});
 
 function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let now = 1_800_000_000_000;

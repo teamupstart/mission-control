@@ -24,6 +24,8 @@ import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
 import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
+export const RESIDENT_OPERATOR_PAUSE_REASON = "Paused by operator";
+
 /**
  * The harnesses a resident may run on, in picker order.
  *

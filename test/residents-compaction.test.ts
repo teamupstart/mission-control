@@ -13,6 +13,10 @@ test("Codex's backstop uses the native effective window and refuses absent or ma
   const path = join(home, "models_cache.json");
   writeFileSync(path, JSON.stringify({ models: [{ slug: "test-model", context_window: 272_000, effective_context_window_percent: 95 }] }));
   assert.deepEqual(codexResidentCompactionArgs("test-model", 70, path), ["-c", "model_auto_compact_token_limit=180880"]);
+  writeFileSync(path, JSON.stringify({ models: [null, { slug: "unrelated", context_window: null },
+    { slug: "test-model", context_window: 272_000, effective_context_window_percent: 95 }] }));
+  assert.deepEqual(codexResidentCompactionArgs("test-model", 70, path), ["-c", "model_auto_compact_token_limit=180880"], "unrelated malformed entries cannot disable the selected model");
+  assert.throws(() => codexResidentCompactionArgs("unrelated", 70, path), /context window is unavailable/);
   for (const model of [null, "unknown"]) assert.throws(() => codexResidentCompactionArgs(model, 70, path), /context window is unavailable/);
   for (const content of ["{}", "malformed", "x".repeat(4_000_001)]) {
     writeFileSync(path, content);

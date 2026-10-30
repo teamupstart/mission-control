@@ -51,6 +51,11 @@ The store binds its first matching turn after the recorded transcript offset to 
 id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
 without conversation evidence are not attributed from their marker syntax.
 
+The SDK driver reports the resident native token limit it actually configured. The supervisor
+persists it with the SDK session and passes it back on resume. Codex therefore keeps its measured
+backstop across catalog refreshes, rather than recomputing from missing metadata or silently
+dropping the layer. Fresh launches and legacy rows without a saved limit still require the catalog.
+
 `schedule_next_iteration` uses the existing signed session/episode credential, without granting
 session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
 its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.

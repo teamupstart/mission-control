@@ -950,6 +950,41 @@ test("workspace removal failure keeps cleanup owed until a later manager retries
   assert.equal(errors.mock.callCount(), 1, "the retry completed without another removal error");
 });
 
+test("an unreadable workspace directory keeps cleanup owed until permissions are restored", {
+  skip: process.getuid?.() === 0 ? "root bypasses directory permissions" : false,
+}, async (t) => {
+  const { chmodSync, existsSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "unreadable-cleanup-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const denied = join(directory, "unreadable");
+  mkdirSync(denied);
+  writeFileSync(join(denied, "keep-until-accessible.txt"), "temporary");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const errors = t.mock.method(console, "error", () => {});
+  chmodSync(denied, 0o000);
+  try {
+    await setup.residents.cleanupEndedWorkspaces();
+    await setup.residents.cleanupEndedWorkspaces();
+    assert.equal(errors.mock.callCount(), 1);
+    assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, directory);
+    assert.ok(existsSync(denied));
+  } finally {
+    chmodSync(denied, 0o700);
+  }
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.equal(existsSync(dirname(directory)), false);
+  assert.equal(errors.mock.callCount(), 1);
+});
+
 test("cleanup retries an owed per-run directory after the workspace was already removed", async (t) => {
   const { existsSync, unlinkSync, writeFileSync } = await import("node:fs");
   const { dirname } = await import("node:path");

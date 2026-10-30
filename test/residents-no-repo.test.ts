@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { TASK_KINDS } from "../src/shared/types.ts";
@@ -131,6 +131,26 @@ test("workspace cleanup removes nested files and link entries without following 
   await removeResidentWorkspace("nested", directory);
   assert.equal(existsSync(dirname(directory)), false);
   assert.equal(readFileSync(join(foreign, "keep.txt"), "utf8"), "foreign data");
+});
+
+test("workspace cleanup restores owner access on held read-only directories without changing link targets", async () => {
+  const directory = residentWorkspaceDir("read-only");
+  createResidentWorkspace("read-only", directory);
+  const nested = join(directory, "cache");
+  mkdirSync(nested);
+  writeFileSync(join(nested, "entry.txt"), "cache");
+  const foreign = mkdtempSync(join(home, "read-only-foreign-"));
+  writeFileSync(join(foreign, "keep.txt"), "foreign");
+  symlinkSync(foreign, join(nested, "link"));
+  for (const entry of [nested, directory, dirname(directory), foreign]) chmodSync(entry, 0o555);
+  try {
+    await removeResidentWorkspace("read-only", directory);
+    assert.equal(existsSync(dirname(directory)), false);
+    assert.equal(readFileSync(join(foreign, "keep.txt"), "utf8"), "foreign");
+    assert.equal(statSync(foreign).mode & 0o777, 0o555, "permission repair never follows a link");
+  } finally {
+    for (const entry of [nested, directory, dirname(directory), foreign]) if (existsSync(entry)) chmodSync(entry, 0o700);
+  }
 });
 
 test("workflow repository capture has no checkout for a repo-less resident", async () => {

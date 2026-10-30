@@ -1242,6 +1242,9 @@ and its empty run directory. Removal is asynchronous, serialized per run, and dr
 daemon shutdown. Creation and cleanup use the native descriptor-relative filesystem operations:
 each component is opened without following symlinks, and recursive removal runs on a worker
 against held directory descriptors so an ancestor swap cannot redirect deletion.
+Removal restores owner access on an already-open directory after a permission-denied unlink
+and retries once. A directory that cannot be opened stays owed until its access is restored;
+cleanup never changes permissions through a pathname.
 Repository consumers use the shared predicate or `taskRepoRefs`, never infer
 a repository from cwd.
 

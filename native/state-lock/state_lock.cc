@@ -473,6 +473,19 @@ struct RemoveDirectoryWork {
   napi_deferred deferred = nullptr;
 };
 
+// Permission repair is limited to a directory we already hold. Never chmod a path:
+// a substituted entry could redirect that operation just as it could redirect removal.
+int UnlinkForRemoval(int parent, const std::string& name, int flags) {
+  int result = unlinkat(parent, name.c_str(), flags);
+  if (result != 0 && errno == EACCES) {
+    struct stat info;
+    if (fstat(parent, &info) == 0 && fchmod(parent, info.st_mode | S_IRWXU) == 0) {
+      result = unlinkat(parent, name.c_str(), flags);
+    }
+  }
+  return result;
+}
+
 // All traversal and unlink operations stay relative to held descriptors. A name swapped
 // for a symlink is either unlinked as an entry or refused, never followed. The explicit
 // stack avoids native stack growth on an agent-created deeply nested tree.
@@ -498,7 +511,7 @@ void RemoveDirectoryExecute(napi_env, void* data) {
       const std::string name = frame.name;
       closedir(frame.directory);
       stack.pop_back();
-      if (unlinkat(parent, name.c_str(), AT_REMOVEDIR) != 0 && errno != ENOENT) work->error = errno;
+      if (UnlinkForRemoval(parent, name, AT_REMOVEDIR) != 0 && errno != ENOENT) work->error = errno;
       continue;
     }
     if (!std::strcmp(entry->d_name, ".") || !std::strcmp(entry->d_name, "..")) continue;
@@ -510,7 +523,7 @@ void RemoveDirectoryExecute(napi_env, void* data) {
       if (!directory) { work->error = errno; close(child); break; }
       stack.push_back({directory, parent, name});
     } else if (errno == ENOTDIR || errno == ELOOP) {
-      if (unlinkat(parent, name.c_str(), 0) != 0 && errno != ENOENT) work->error = errno;
+      if (UnlinkForRemoval(parent, name, 0) != 0 && errno != ENOENT) work->error = errno;
     } else if (errno != ENOENT) {
       work->error = errno;
     }

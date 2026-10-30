@@ -49,8 +49,8 @@ export const ORGANIZATIONS: Readonly<Record<OrganizationId, OrganizationEntry>> 
     label: "your organization",
     mdmHosts: ["upstart.jamfcloud.com"],
     evidence: (host) => `This Mac is enrolled in your organization's device management (${host}).`,
-    destinationLabel: "your organization's telemetry gateway",
-    networkLabel: "your organization's network",
+    destinationLabel: "the configured telemetry collector",
+    networkLabel: "the network",
     preset: {
       endpoint: "https://corp-otel-staging-1.upstart.com",
       temporality: "delta",

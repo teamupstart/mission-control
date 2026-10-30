@@ -175,9 +175,9 @@ state directory inside the temp dir.
 **Managed by your organization** block with the evidence, the lane's state and the configuration it uses.
 The state is one of:
 
-- "Sending to your organization's telemetry gateway";
-- "Waiting for your organization's network", when the gateway's network edge refuses this network;
-- "Stopped sending to your organization's telemetry gateway", when the daemon paused the destination after a
+- "Sending to the configured telemetry collector";
+- "Waiting for the network", when the gateway's network edge refuses this network;
+- "Stopped sending to the configured telemetry collector", when the daemon paused the destination after a
   refusal, with the reason and **Try again** below it;
 - "Removing your organization's telemetry settings", when the Mac has left Upstart's management but the
   write that removes the managed settings failed. Nothing is sent, and **Re-check** retries.

@@ -242,7 +242,7 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
       `MISSION_ORGANIZATION forces your organization on this daemon, sending to a collector on this machine (${collector.endpoint}).`,
     ),
   ).toBeVisible();
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toBeVisible();
 
   // The effective configuration, read-only.
   const configuration = panel.getByLabel("Managed telemetry configuration");
@@ -265,7 +265,7 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
     panel.getByRole("button", { name: "Check again whether your organization manages this Mac" }),
   ).toBeEnabled();
   await expect(
-    panel.getByRole("button", { name: "Test the connection to your organization's telemetry gateway" }),
+    panel.getByRole("button", { name: "Test the connection to the configured telemetry collector" }),
   ).toBeEnabled();
   await shoot(dashboard, "01-managed-default-on");
 
@@ -285,9 +285,9 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
     { data: { enrolled: false } },
   );
   expect(retired.status()).toBe(409);
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toBeVisible();
   await expect(
-    panel.getByRole("button", { name: "Test the connection to your organization's telemetry gateway" }),
+    panel.getByRole("button", { name: "Test the connection to the configured telemetry collector" }),
   ).toBeEnabled();
 
   // Default-on survives a restart: the record re-asserts the rollout at start. The
@@ -297,7 +297,7 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
   await daemon.crash();
   await daemon.restart();
   await dashboard.reload();
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toBeVisible();
 
   // A real export reaches the collector, in the preset's Datadog-ready shape.
   const decodedNow = () => collector.metrics.map(decodeMetricsRequest);
@@ -325,7 +325,7 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
   expect(sums.every((metric) => metric.sumTemporality === 1)).toBe(true);
   await shoot(dashboard, "02-default-on-sending");
 
-  // A Cloudflare-shaped refusal reads as waiting for your organization's network, not as a failure.
+  // A Cloudflare-shaped refusal reads as waiting for the network, not as a failure.
   // The restart queues a fresh `mission.daemon.starts` fact, so the next drain is certain to
   // have something to send into the refusal rather than depending on a health change.
   collector.refuse(true);
@@ -336,14 +336,14 @@ test("a managed Mac shows organization telemetry view-only, refuses edits, and s
     .poll(
       async () => {
         await dashboard.request.post(`${daemon.baseURL}/api/telemetry/drain`);
-        return panel.getByText("Waiting for your organization's network", { exact: true }).isVisible();
+        return panel.getByText("Waiting for the network", { exact: true }).isVisible();
       },
       { timeout: 30_000, intervals: [1_000] },
     )
     .toBe(true);
   await expect(
     panel.getByText(
-      "Waiting for network access to your organization's telemetry gateway. Queued data is kept and sent when it can get through.",
+      "Waiting for network access to the configured telemetry collector. Queued data is kept and sent when it can get through.",
     ),
   ).toBeVisible();
   await expect(panel.getByText(/^Stopped:/)).toBeHidden();
@@ -372,14 +372,14 @@ test("a managed lane does not claim to be sending before its live status arrives
     .locator("section.settings-section")
     .filter({ hasText: "Managed by your organization" });
   await expect(
-    panel.getByText("Checking whether this Mac is sending to your organization's telemetry gateway", { exact: true }),
+    panel.getByText("Checking whether this Mac is sending to the configured telemetry collector", { exact: true }),
   ).toBeVisible();
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toHaveCount(0);
 
   // Once the stream is back the summary arrives, and the line reports what it shows.
   await dashboard.unroute("**/events");
   await dashboard.reload();
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toBeVisible();
 });
 
 test("a managed lane the daemon paused says it stopped sending, and offers Try again", async ({
@@ -397,16 +397,16 @@ test("a managed lane the daemon paused says it stopped sending, and offers Try a
     .poll(
       async () => {
         await dashboard.request.post(`${daemon.baseURL}/api/telemetry/drain`);
-        return panel.getByText("Stopped sending to your organization's telemetry gateway", { exact: true }).isVisible();
+        return panel.getByText("Stopped sending to the configured telemetry collector", { exact: true }).isVisible();
       },
       { timeout: 30_000, intervals: [1_000] },
     )
     .toBe(true);
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toHaveCount(0);
   await expect(
     panel.getByText("Stopped: the destination rejected the credential. Fix it and use Try again."),
   ).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Try sending to your organization's telemetry gateway again" })).toBeEnabled();
+  await expect(panel.getByRole("button", { name: "Try sending to the configured telemetry collector again" })).toBeEnabled();
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
   await shoot(dashboard, "04-paused");
 });
@@ -436,7 +436,7 @@ test("a Mac that left Upstart stays locked until its withdrawal is written, then
   await expect(
     panel.getByText(/removing your organization's telemetry settings has not finished/),
   ).toBeVisible();
-  await expect(panel.getByText("Sending to your organization's telemetry gateway", { exact: true })).toHaveCount(0);
+  await expect(panel.getByText("Sending to the configured telemetry collector", { exact: true })).toHaveCount(0);
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
   const refused = await dashboard.request.put(`${daemon.baseURL}/api/telemetry/config`, {
     data: { enabled: false },
@@ -447,7 +447,7 @@ test("a Mac that left Upstart stays locked until its withdrawal is written, then
   ).toBeVisible();
   await expect(panel.getByText(/sets telemetry on this Mac/)).toHaveCount(0);
   await expect(
-    panel.getByText("Nothing is sent to your organization's telemetry gateway until removing these settings finishes."),
+    panel.getByText("Nothing is sent to the configured telemetry collector until removing these settings finishes."),
   ).toBeVisible();
   await expect(panel.getByText(/no endpoint is configured/)).toHaveCount(0);
   // The successor daemon's event stream is up, so the capture shows a live dashboard.

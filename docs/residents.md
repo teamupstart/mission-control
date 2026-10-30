@@ -125,6 +125,8 @@ A run without a repository has no Git worktree, diff, pull request, repository r
 The Files panel browses its working directory directly, without Git or managed repository plans.
 Listing is capped at 10,000 files and refuses trees exceeding 10,000 directories or 64 nested
 levels. Traversal checks a 15-second budget between filesystem operations.
+Directory scans run asynchronously against open directory handles and refuse symlinked
+boundaries, including directories replaced while a listing is in progress.
 
 The workspace survives daemon restarts while the run is active. When the run ends, Mission removes
 that workspace after its session is gone and its SDK runtime has stopped. Failed launches also

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { closeSync, constants, openSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { lstat, open, opendir, realpath, rename, stat, unlink } from "node:fs/promises";
+import { lstat, open, realpath, rename, stat, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -14,6 +14,7 @@ import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { run } from "./util/exec.ts";
 import { locateExecutable } from "./executables/locator.ts";
+import { nativePlanFiles } from "./plans/native.ts";
 
 export const MAX_SESSION_FILE_ENTRIES = 10_000;
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
@@ -155,27 +156,61 @@ export async function resolveSessionFilePath(cwd: string, relativePath: string):
 /** Plain resident directories have no Git index or ignore rules to consult. */
 async function listDirectoryFiles(root: string): Promise<SessionFileEntry[]> {
   const files: SessionFileEntry[] = [];
-  const pending = [{ relative: "", depth: 0 }];
+  const native = nativePlanFiles();
   let directories = 1;
   const deadline = performance.now() + 15_000;
-  // Check between filesystem operations; a large empty tree must not evade the file cap.
   const checkTime = () => {
-    if (performance.now() > deadline) throw new SessionFileError("session directory listing exceeded its time budget", 503);
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new SessionFileError("session directory listing exceeded its time budget", 503);
+    return Math.ceil(remaining);
   };
-  while (pending.length > 0 && files.length < MAX_SESSION_FILE_ENTRIES) {
-    checkTime();
-    const { relative, depth } = pending.pop()!;
-    const directory = await opendir(path.join(root, relative));
-    for await (const entry of directory) {
+  const visit = async (fd: number, relative: string, depth: number): Promise<void> => {
+    // At this many regular entries either the file or directory cap must be reached.
+    // The worker bounds its scan time too, including entries excluded as symlinks.
+    const entries = await native.readPlanDirectoryEntries(fd, MAX_SESSION_FILE_ENTRIES + 10_000, checkTime());
+    const pending: string[] = [];
+    for (const entry of entries) {
       checkTime();
       const filePath = path.join(relative, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.directory) {
         if (depth >= 64) throw new SessionFileError("session directory listing exceeded its depth limit", 413);
         if (++directories > 10_000) throw new SessionFileError("session directory listing exceeded its directory count limit", 413);
-        pending.push({ relative: filePath, depth: depth + 1 });
-      } else if (entry.isFile()) files.push({ path: filePath });
+        pending.push(entry.name);
+      } else files.push({ path: filePath });
       if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
     }
+    for (const name of pending.reverse()) {
+      if (files.length >= MAX_SESSION_FILE_ENTRIES) break;
+      checkTime();
+      let child: number;
+      try { child = native.openPlanEntry(fd, name, constants.O_RDONLY | constants.O_DIRECTORY); }
+      catch (error) {
+        if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
+        throw error;
+      }
+      try { await visit(child, path.join(relative, name), depth + 1); }
+      finally { closeSync(child); }
+    }
+  };
+  // Resident cwd is already canonical when allocated. Do not realpath it again:
+  // resolving an agent-substituted boundary would turn an escape into a new root.
+  let rootFd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    for (const name of path.resolve(root).split("/").filter(Boolean)) {
+      const child = native.openPlanEntry(rootFd, name, constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(rootFd);
+      rootFd = child;
+    }
+    await visit(rootFd, "", 0);
+    checkTime();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ETIMEDOUT") throw new SessionFileError("session directory listing exceeded its time budget", 503);
+    if (code === "ENOENT") throw new SessionFileError("session checkout is unavailable", 404);
+    if (code === "ENOTDIR" || code === "ELOOP") throw new SessionFileError("session directory resolves through a symbolic link or non-directory", 403);
+    throw error;
+  } finally {
+    closeSync(rootFd);
   }
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
@@ -184,10 +219,10 @@ export async function listSessionFiles(
   cwd: string,
   task?: Parameters<typeof taskHasRepository>[0],
 ): Promise<SessionFileEntry[]> {
+  if (task && !taskHasRepository(task)) return listDirectoryFiles(cwd);
   const root = await realpath(cwd).catch(() => {
     throw new SessionFileError("session checkout is unavailable", 404);
   });
-  if (task && !taskHasRepository(task)) return listDirectoryFiles(root);
   const result = await run(
     "git",
     ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],

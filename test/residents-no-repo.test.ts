@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { TASK_KINDS } from "../src/shared/types.ts";
@@ -13,7 +13,7 @@ import { LaunchResidentSchema } from "../src/shared/residents.ts";
 
 ensureNativeStateLockAddon();
 
-const home = mkdtempSync(join(tmpdir(), "resident-owned-workspace-"));
+const home = realpathSync(mkdtempSync(join(tmpdir(), "resident-owned-workspace-")));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 const { residentWorkspaceDir, createResidentWorkspace, removeResidentWorkspace } = await import("../src/server/residents/workspace.ts");
@@ -154,6 +154,61 @@ test("resident Files lists its plain directory without Git and excludes symlink 
   assert.deepEqual(await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }), [
     { path: "nested/detail.md" }, { path: "notes.txt" },
   ]);
+});
+
+test("resident Files does not follow a queued directory swapped for a symlink", async (t) => {
+  const { listSessionFiles } = await import("../src/server/session-files.ts");
+  for (const swapAt of [3, 4, 5]) {
+    await t.test(`swap at traversal checkpoint ${swapAt}`, async (t) => {
+      const directory = mkdtempSync(join(home, "listing-swap-"));
+      const queued = join(directory, "queued");
+      mkdirSync(queued);
+      writeFileSync(join(queued, "owned.txt"), "owned");
+      const foreign = mkdtempSync(join(home, "listing-foreign-"));
+      writeFileSync(join(foreign, "outside-secret-name.txt"), "foreign");
+      let checkpoints = 0;
+      t.mock.method(performance, "now", () => {
+        if (++checkpoints === swapAt) {
+          renameSync(queued, `${queued}-saved`);
+          symlinkSync(foreign, queued);
+        }
+        return 0;
+      });
+      const files = await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" });
+      assert.ok(checkpoints >= swapAt, "the adversarial swap happened during traversal");
+      assert.ok(files.every(({ path }) => !path.includes("outside-secret-name")), JSON.stringify(files));
+      assert.equal(readFileSync(join(foreign, "outside-secret-name.txt"), "utf8"), "foreign");
+    });
+  }
+});
+
+test("resident Files refuses a substituted root or root ancestor", async (t) => {
+  const { listSessionFiles, SessionFileError } = await import("../src/server/session-files.ts");
+  for (const ancestor of [false, true]) {
+    await t.test(ancestor ? "ancestor" : "root", async () => {
+      const parent = mkdtempSync(join(home, "listing-root-"));
+      const directory = join(parent, "workspace");
+      mkdirSync(directory);
+      const foreign = mkdtempSync(join(home, "listing-outside-"));
+      mkdirSync(join(foreign, "workspace"));
+      writeFileSync(join(foreign, "outside-secret-name.txt"), "foreign");
+      writeFileSync(join(foreign, "workspace", "outside-secret-name.txt"), "foreign");
+      const boundary = ancestor ? parent : directory;
+      renameSync(boundary, `${boundary}-saved`);
+      symlinkSync(foreign, boundary);
+      await assert.rejects(() => listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }),
+        (error: unknown) => error instanceof SessionFileError && error.status === 403);
+    });
+  }
+});
+
+test("resident Files caps regular entries returned by the asynchronous directory scan", async () => {
+  const { listSessionFiles, MAX_SESSION_FILE_ENTRIES } = await import("../src/server/session-files.ts");
+  const directory = mkdtempSync(join(home, "listing-file-cap-"));
+  for (let i = 0; i <= MAX_SESSION_FILE_ENTRIES; i += 1) writeFileSync(join(directory, `file-${i}.txt`), "");
+  const files = await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" });
+  assert.equal(files.length, MAX_SESSION_FILE_ENTRIES);
+  assert.equal(new Set(files.map(({ path }) => path)).size, MAX_SESSION_FILE_ENTRIES);
 });
 
 test("resident Files bounds empty-directory breadth and nesting depth", async (t) => {

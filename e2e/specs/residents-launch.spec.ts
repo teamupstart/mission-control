@@ -352,3 +352,27 @@ test("leaving a profile with unsaved edits - New, the address bar, or another pa
   await expect(dashboard).toHaveURL(/#\/fleet$/);
   await expect(dashboard.locator("main.residents-page")).toHaveCount(0);
 });
+
+test("archiving a profile with unsaved edits asks first, and Cancel keeps both the draft and the profile", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  const instructions = editor.getByLabel("Profile instructions");
+  await instructions.fill("An edit I have not saved.");
+
+  await editor.getByRole("button", { name: "Archive" }).click();
+  const confirm = dashboard.getByRole("dialog", { name: `Archive ${PROFILE}` });
+  await expect(confirm).toContainText("Unsaved changes in the editor are discarded");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(instructions).toHaveValue("An edit I have not saved.");
+  expect((await api<Array<{ name: string }>>(daemon, "/api/residents/profiles")).map((p) => p.name)).toEqual([PROFILE]);
+
+  await editor.getByRole("button", { name: "Archive" }).click();
+  await confirm.getByRole("button", { name: "Discard changes and archive" }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
+  await expect.poll(async () => (await api<unknown[]>(daemon, "/api/residents/profiles")).length).toBe(0);
+});

@@ -16,6 +16,7 @@ import {
   updateResidentProfile,
 } from "./api.ts";
 import { RESIDENT_EDITOR_SECTIONS } from "./editor-sections.tsx";
+import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "../workflows/WorkflowConfirmModal.tsx";
 
 /**
  * A new profile's draft: no name and no Persona yet, and every other section at its schema
@@ -72,6 +73,7 @@ export function ResidentProfileEditor({
   const [dirty, setDirtyState] = useState(profile === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const setDirty = (next: boolean): void => {
     setDirtyState(next);
     onDirtyChange?.(next);
@@ -129,6 +131,29 @@ export function ResidentProfileEditor({
     setError(null);
   }
 
+  /**
+   * Archive, asking first when there are unsaved edits: archiving closes the editor, and a draft
+   * is never thrown away without the operator choosing to. One dialog for both decisions, as the
+   * Persona library does.
+   */
+  function requestArchive(): void {
+    if (!base || busy) return;
+    if (!dirty) {
+      void archive();
+      return;
+    }
+    setConfirm({
+      title: `Archive ${base.name}`,
+      body: `Unsaved changes in the editor are discarded. ${base.name} moves to the archive and `
+        + "stops being offered in Dispatch; running residents keep the revision they launched with.",
+      confirmLabel: "Discard changes and archive",
+      confirmHint: "Throw the unsaved edits away and archive this profile",
+      cancelHint: "Keep editing; nothing is archived",
+      danger: true,
+      onConfirm: () => void archive(),
+    });
+  }
+
   async function archive(): Promise<void> {
     if (!base || busy) return;
     setBusy(true);
@@ -161,7 +186,7 @@ export function ResidentProfileEditor({
         <div className="resident-editor-actions">
           {profile && (
             <Tooltip label="Move this profile to the archive; running residents keep their revision">
-              <button type="button" className="btn btn-ghost" disabled={busy || archivedElsewhere} onClick={() => void archive()}>
+              <button type="button" className="btn btn-ghost" disabled={busy || archivedElsewhere} onClick={requestArchive}>
                 Archive
               </button>
             </Tooltip>
@@ -249,6 +274,7 @@ export function ResidentProfileEditor({
           <Body draft={draft} update={update} personas={personas} disabled={busy} />
         </section>
       ))}
+      {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </section>
   );
 }

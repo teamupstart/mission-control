@@ -134,29 +134,39 @@ test("scan accepts a 128 KiB document and rejects one additional byte", () => {
   assert.deepEqual(rejected.sources[0]!.problems, ["bounded: SKILL.md must be a file no larger than 128 KiB."]);
 });
 
-test("scan accepts 5000 entries including the source root and stops before entry 5001", () => {
+test("scan accepts 5000 entries including skill documents and stops before reading entry 5001", (t) => {
   const path = join(root, "entry-limit");
-  // The source root consumes one entry; the remaining 4999 entries are skill folders.
-  const folders = Array.from({ length: 4999 }, (_, i) => `skill-${String(i + 1).padStart(4, "0")}`);
+  // Root + 2499 folders + 2499 SKILL.md documents + one ordinary file = 5000.
+  const folders = Array.from({ length: 2499 }, (_, i) => `skill-${String(i + 1).padStart(4, "0")}`);
   for (const folder of folders) skill(join(path, folder), folder);
-  const accepted = scanSkillSources([source(path)], { directories: [] });
-  assert.deepEqual(accepted.skills.map((entry) => entry.folder), folders);
-  assert.deepEqual(accepted.sources[0]!.problems, []);
+  writeFileSync(join(path, "padding"), "");
+  const read = fs.readFileSync;
+  let documentReads = 0;
+  const observe = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+    if (String(args[0]).endsWith("SKILL.md")) documentReads++;
+    return read(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const accepted = scanSkillSources([source(path)], { directories: [] });
+    assert.deepEqual(accepted.skills.map((entry) => entry.folder), folders);
+    assert.deepEqual(accepted.sources[0]!.problems, []);
+    assert.equal(documentReads, 2499);
 
-  skill(join(path, "skill-5000"), "beyond-limit");
-  const capped = scanSkillSources([source(path)], { directories: [] });
-  // When truncated, the bounded prefix follows filesystem enumeration order.
-  assert.equal(capped.skills.length, 4999);
-  const allFolders = new Set([...folders, "skill-5000"]);
-  assert.ok(capped.skills.every((entry) => allFolders.has(entry.folder)));
-  assert.deepEqual(capped.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
+    writeFileSync(join(path, "one-more-file"), "");
+    documentReads = 0;
+    const capped = scanSkillSources([source(path)], { directories: [] });
+    assert.deepEqual(capped.skills.map((entry) => entry.folder), folders.slice(0, -1));
+    assert.equal(documentReads, 2498, "the overflowing skill document is never read");
+    assert.deepEqual(capped.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
+  } finally { observe.mock.restore(); syncBuiltinESMExports(); }
 });
 
 test("ordinary and hidden files consume the shared enumeration budget before grouped skills", () => {
   const path = join(root, "file-entry-limit");
   skill(join(path, "group/skill"), "at-limit");
-  // Root, group and skill consume three entries; even ignored files consume the rest.
-  for (let i = 0; i < 4997; i++) writeFileSync(join(path, `${i % 2 ? "." : ""}file-${i}`), "");
+  // Root, group, skill and SKILL.md consume four entries; ignored files consume the rest.
+  for (let i = 0; i < 4996; i++) writeFileSync(join(path, `${i % 2 ? "." : ""}file-${i}`), "");
   const accepted = scanSkillSources([source(path)], { directories: [] });
   assert.deepEqual(accepted.skills.map((entry) => entry.id), ["test:group/skill"]);
   assert.deepEqual(accepted.sources[0]!.problems, []);

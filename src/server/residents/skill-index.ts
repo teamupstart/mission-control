@@ -119,7 +119,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
       return children.sort((a, b) => a.name.localeCompare(b.name));
     };
     const walk = (directory: string, folder: string, depth: number): void => {
-      if (result.truncated) return;
+      if (result.truncated || entries > MAX_ENTRIES_PER_SOURCE) return;
       try {
         const real = realpathSync(directory);
         // Recheck every resolved directory: a child link can be just as broad as a root.
@@ -135,6 +135,12 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         if (folder && documentExists) {
+          // This directory is a leaf, so childrenOf never enumerates its SKILL.md.
+          // Charge the document separately before reading or parsing any of its bytes.
+          if (++entries > MAX_ENTRIES_PER_SOURCE) {
+            problem("Source exceeds the 5000-entry scan limit.");
+            return;
+          }
           try {
             const stat = statSync(document);
             if (!stat.isFile() || stat.size > MAX_DOCUMENT_BYTES) throw new Error("SKILL.md must be a file no larger than 128 KiB.");

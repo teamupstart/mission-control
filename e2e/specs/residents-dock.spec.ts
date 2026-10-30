@@ -500,3 +500,113 @@ test("a launch that stays starting past the dock's limit gives Launch back, and 
   expect(new Set(sent.map((body) => body.requestId)).size, "the retry reused the stalled launch's id").toBe(1);
   await expect.poll(() => residentTaskCount(daemon), { timeout: 30_000 }).toBe(1);
 });
+
+/**
+ * Another window moves the profile's default repository: a PATCH straight to the daemon, then
+ * wait until this dashboard has the new revision, so a retry below is made with the edit in hand.
+ */
+async function moveDefaultRepo(page: Page, daemon: DaemonHandle, to: string): Promise<void> {
+  type Stored = { id: string; name: string; revision: number; settings: { workspace: Record<string, unknown> } & Record<string, unknown> };
+  const profile = (await api<Stored[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE)!;
+  const response = await fetch(`${daemon.baseURL}/api/residents/profiles/${profile.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: profile.revision,
+      settings: { ...profile.settings, workspace: { ...profile.settings.workspace, defaultRepoRoot: to } },
+    }),
+  });
+  expect(response.status).toBe(200);
+  await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+  await expect(page.getByRole("region", { name: `Resident profile ${PROFILE}` }))
+    .toContainText(`Revision ${profile.revision + 1}`);
+}
+
+test.describe("a dock launch is replayed exactly as it was sent until it has a definitive answer", () => {
+  test("a pending launch, then a new default repository: the retry after closing the dock sends the original id and repository", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    await dashboard.clock.install();
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    const { sent } = watchLaunches(dashboard);
+
+    // Still starting, past the dock's replay limit: answered here, so the daemon never sees it.
+    const launchRoute = /\/api\/residents\/profiles\/[^/]+\/launch$/;
+    await dashboard.route(launchRoute, (route) => route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ state: "pending", run: { id: "run-stalled" } }),
+    }));
+    const dockButton = dashboard.getByRole("button", { name: /^Residents - \d+ live$/ });
+    const dock = dashboard.getByRole("dialog", { name: "Residents" });
+    const launch = dock.getByRole("button", { name: `Launch ${PROFILE}` });
+    await dockButton.click();
+    await launch.click();
+    await expect(launch).toBeDisabled();
+    for (let i = 0; i < 45 && (await launch.isDisabled()); i += 1) {
+      await dashboard.clock.fastForward(1_500);
+    }
+    await expect(launch).toBeEnabled();
+    const original = sent[0]!;
+    expect(original).toEqual({ repoRoot: daemon.repo, requestId: original.requestId });
+
+    // The default moves while that launch is outstanding, and the dock is closed meanwhile.
+    await dashboard.keyboard.press("Escape");
+    await expect(dock).toBeHidden();
+    await dashboard.unroute(launchRoute);
+    await moveDefaultRepo(dashboard, daemon, `${daemon.repo}-moved`);
+
+    // Reopened, Launch checks on the outstanding launch: same id, same repository.
+    await dockButton.click();
+    await launch.click();
+    await expect(dock.getByRole("button", { name: `Open ${PROFILE}` })).toBeEnabled({ timeout: 60_000 });
+    for (const body of sent) expect(body).toEqual(original);
+    await expect.poll(() => residentTaskCount(daemon), { timeout: 30_000 }).toBe(1);
+    await expect(dock.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("a dropped response, then a new default repository: the retry after closing the dock replays the original launch, and one resident starts", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    const { sent, answered } = watchLaunches(dashboard);
+
+    // The launch REACHES the daemon and reserves its run, but its answer is lost.
+    const launchRoute = /\/api\/residents\/profiles\/[^/]+\/launch$/;
+    await dashboard.route(launchRoute, async (route) => {
+      await route.fetch();
+      await route.abort("failed");
+    });
+    const dockButton = dashboard.getByRole("button", { name: /^Residents - \d+ live$/ });
+    const dock = dashboard.getByRole("dialog", { name: "Residents" });
+    const launch = dock.getByRole("button", { name: `Launch ${PROFILE}` });
+    await dockButton.click();
+    await launch.click();
+    await expect(dock.getByRole("alert")).toBeVisible();
+    await expect(launch).toBeEnabled();
+    const original = sent[0]!;
+    expect(original).toEqual({ repoRoot: daemon.repo, requestId: original.requestId });
+
+    // The default moves, and the dock is closed and reopened.
+    await dashboard.keyboard.press("Escape");
+    await dashboard.unroute(launchRoute);
+    await moveDefaultRepo(dashboard, daemon, `${daemon.repo}-moved`);
+    await dockButton.click();
+
+    // The retry replays exactly what the daemon recorded, so it is answered by that launch's
+    // run - not refused as a different launch, and never a second resident.
+    await launch.click();
+    await expect(dock.getByRole("button", { name: `Open ${PROFILE}` })).toBeEnabled({ timeout: 60_000 });
+    await expect(dock.getByRole("alert")).toHaveCount(0);
+    // Every answer the page received was this launch's own: never a refusal (an http 4xx).
+    expect(answered.every((state) => state === "pending" || state === "launched"), answered.join(", ")).toBe(true);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    for (const body of sent) expect(body).toEqual(original);
+    await expect.poll(() => residentTaskCount(daemon), { timeout: 30_000 }).toBe(1);
+    expect(await residentTaskCount(daemon)).toBe(1);
+  });
+});

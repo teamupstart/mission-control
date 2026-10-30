@@ -41,7 +41,17 @@ export interface ResidentsDockProps {
 
 /** One profile's launch from the dock, kept while the panel is shut so a retry replays it. */
 interface DockLaunch {
+  /** The id the next NEW launch will use. An outstanding launch replays its own instead. */
   requestId: string;
+  /**
+   * Exactly what an outstanding launch sent - sent, with no definitive answer yet: still
+   * starting, stopped at the replay limit, or its answer lost. Every retry replays this, not the
+   * profile as it reads now. The daemon compares a reused id with the input it recorded, so a
+   * default repository edited mid-launch would turn the replay into a refused "different
+   * launch", and the fresh id that follows could start a second resident. Cleared only by a
+   * definitive answer.
+   */
+  outstanding: { requestId: string; repoRoot: string } | null;
   busy: boolean;
   error: string | null;
   /** The launch reached its session; cleared on the next launch. */
@@ -132,14 +142,26 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     });
 
   async function launch(profile: ResidentProfile): Promise<void> {
-    const repoRoot = profile.settings.workspace.defaultRepoRoot?.trim();
+    const current = launches[profile.id];
+    // An outstanding launch is replayed exactly as it was sent, whatever the profile says now.
+    const outstanding = current?.outstanding ?? null;
+    const repoRoot = outstanding?.repoRoot ?? profile.settings.workspace.defaultRepoRoot?.trim();
     if (!repoRoot) {
       setOpen(false);
       props.onOpenLaunch(profile.id);
       return;
     }
-    const requestId = launches[profile.id]?.requestId ?? crypto.randomUUID();
-    patchLaunch(profile.id, { requestId, busy: true, error: null, launched: false, stillStarting: false });
+    const requestId = outstanding?.requestId ?? current?.requestId ?? crypto.randomUUID();
+    const sent = { requestId, repoRoot };
+    // Recorded BEFORE it is sent: from here until a definitive answer, this is the launch.
+    patchLaunch(profile.id, {
+      requestId,
+      outstanding: sent,
+      busy: true,
+      error: null,
+      launched: false,
+      stillStarting: false,
+    });
     const input = { repoRoot, requestId };
     const startedAt = Date.now();
     let answer = await launchResident(profile.id, input);
@@ -149,7 +171,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     while (answer.state === "pending") {
       if (!mounted.current) return;
       if (Date.now() - startedAt >= DOCK_PENDING_LIMIT_MS) {
-        patchLaunch(profile.id, { requestId, busy: false, error: null, launched: false, stillStarting: true });
+        patchLaunch(profile.id, { busy: false, error: null, launched: false, stillStarting: true });
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
@@ -166,13 +188,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
         patchLaunch(profile.id, { ...freshLaunch(), error: `Did not start: ${answer.error}` });
         return;
       case "refused":
-        // No answer at all keeps the id, so a retry replays a launch the daemon may hold; a
-        // refusal created nothing, and reusing its id would be a conflict.
-        patchLaunch(profile.id, {
-          ...(answer.code === "unavailable" ? { requestId } : { requestId: crypto.randomUUID() }),
-          busy: false,
-          error: answer.error,
-        });
+        // No answer at all keeps the outstanding launch, so a retry replays what the daemon may
+        // hold; a refusal created nothing, and reusing its id would be a conflict.
+        patchLaunch(profile.id, answer.code === "unavailable"
+          ? { busy: false, error: answer.error }
+          : { requestId: crypto.randomUUID(), outstanding: null, busy: false, error: answer.error });
         return;
     }
   }
@@ -253,9 +273,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           : state?.stillStarting ? "still starting" : state?.launched ? "launched" : ""}
                       </span>
                       <Tooltip
-                        label={repo
-                          ? `Launch ${profile.name} in ${repo}`
-                          : `Choose a repository for ${profile.name} in Dispatch`}
+                        label={state?.outstanding
+                          ? `Check on the launch of ${profile.name} in ${state.outstanding.repoRoot}`
+                          : repo
+                            ? `Launch ${profile.name} in ${repo}`
+                            : `Choose a repository for ${profile.name} in Dispatch`}
                       >
                         <button
                           type="button"
@@ -264,7 +286,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           disabled={state?.busy}
                           onClick={() => void launch(profile)}
                         >
-                          {repo ? "Launch" : "Launch…"}
+                          {repo || state?.outstanding ? "Launch" : "Launch…"}
                         </button>
                       </Tooltip>
                       {/* Its own line across the row, not the state cell: a reason is a
@@ -303,5 +325,12 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
 }
 
 function freshLaunch(): DockLaunch {
-  return { requestId: crypto.randomUUID(), busy: false, error: null, launched: false, stillStarting: false };
+  return {
+    requestId: crypto.randomUUID(),
+    outstanding: null,
+    busy: false,
+    error: null,
+    launched: false,
+    stillStarting: false,
+  };
 }

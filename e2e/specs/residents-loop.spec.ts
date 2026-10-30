@@ -58,6 +58,7 @@ test("a human copying a resident wake keeps human attribution after reload", asy
   const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name: "Wake attribution" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
     workspace: { defaultRepoRoot: daemon.repo },
+    execution: { model: "claude-fable-5" }, // The fake records measured context for this catalog model.
     loop: { prompt: "Check the fixture status.", delaySeconds: 1, minDelaySeconds: 1, iterationCap: 2 },
   } });
   await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "attribution-launch" });
@@ -76,6 +77,7 @@ test("a human copying a resident wake keeps human attribution after reload", asy
   await expect(human).toHaveCount(1);
   await expect(resident).toHaveCount(1);
   await page.reload();
+  await surface(page, daemon, profile, "band");
   await expect(human).toHaveCount(1);
   await expect(resident).toHaveCount(1);
   await capture(page, "copied-wake-human");
@@ -87,6 +89,7 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   expect(persona).toBeTruthy();
   const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name: `Loop ${kind}` }, persona: { personaId: persona.id }, workspace: { defaultRepoRoot: daemon.repo },
+    execution: { model: "claude-fable-5" },
     loop: { delaySeconds: 2, minDelaySeconds: 1, maxDelaySeconds: 3600, iterationCap: 3 },
   } });
   await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
@@ -173,6 +176,7 @@ test("a daemon crash rearms one overdue wake and a second restart preserves the 
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name: "Restart watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+    execution: { model: "claude-fable-5" },
     loop: { delaySeconds: 3, minDelaySeconds: 1, iterationCap: 2 },
   } });
   await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "restart-probe" });
@@ -190,6 +194,23 @@ test("a daemon crash rearms one overdue wake and a second restart preserves the 
   await expect(page.getByRole("region", { name: "Live run of Restart watcher" })).toContainText("paused · iteration 2");
   expect(live(daemon)!.iteration).toBe(2);
   await capture(page, "daemon-restart-paused");
+});
+
+test("unknown context pauses before a wake and explains how to resume", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Unknown context" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+    // The default fake model writes no context measurement.
+    loop: { delaySeconds: 1, minDelaySeconds: 1 },
+  } });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "unknown-context" });
+  await expect.poll(() => live(daemon)?.pause_reason).toBe("Context cannot be measured. Resume after the context reading is available.");
+  expect(live(daemon)?.iteration).toBe(1);
+  expect(withDaemonDb(daemon, db => db.prepare("SELECT seq FROM resident_iterations").all())).toEqual([{ seq: 1 }]);
+  const host = await surface(page, daemon, profile, "band");
+  await expect(host).toContainText("Context cannot be measured. Resume after the context reading is available.");
+  await expect(host.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
+  await capture(page, "unknown-context-paused");
 });
 
 test("Restart on new profile preserves a resident's no-repository workspace mode", async ({ daemon, dashboard: page }) => {

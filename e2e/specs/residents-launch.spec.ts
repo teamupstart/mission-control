@@ -56,7 +56,7 @@ async function authorProfile(page: Page, daemon: DaemonHandle): Promise<void> {
   await editor.getByRole("button", { name: "Save" }).click();
 
   await expect(rail.getByRole("button", { name: new RegExp(PROFILE) })).toHaveAttribute("aria-current", "true");
-  await expect(page).toHaveURL(/#\/residents\/[^/]+$/);
+  await expect(page).toHaveURL(/#\/residents\/(?!new$)[^/]+$/);
   await expect(page.getByRole("region", { name: `Resident profile ${PROFILE}` })).toContainText("Revision 1");
   await capture(page.locator("main.residents-page"), "residents-page");
 }
@@ -321,4 +321,34 @@ test("a profile archived in another window keeps this window's unsaved draft unt
   await expect(editor).toHaveCount(0);
   await expect(dashboard.getByRole("heading", { name: "This resident profile is not available" })).toBeVisible();
   await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
+});
+
+test("leaving a profile with unsaved edits - New, the address bar, or another page - asks before discarding the draft", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  const instructions = editor.getByLabel("Profile instructions");
+  await instructions.fill("A draft I am not done with.");
+  const gate = dashboard.getByRole("dialog", { name: "Leave with unsaved changes" });
+
+  // New on the rail is a route change, so the same gate holds it.
+  await dashboard.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  await expect(gate).toContainText("resident profile");
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(instructions).toHaveValue("A draft I am not done with.");
+
+  // Another page - the palette's, a shortcut's or Back's route change - is held the same way.
+  await dashboard.evaluate(() => { window.location.hash = "#/fleet"; });
+  await expect(gate).toBeVisible();
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(dashboard).toHaveURL(/#\/residents\/(?!new$)[^/]+$/);
+  await expect(instructions).toHaveValue("A draft I am not done with.");
+
+  // Confirming discards the draft and goes.
+  await dashboard.evaluate(() => { window.location.hash = "#/fleet"; });
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(dashboard).toHaveURL(/#\/fleet$/);
+  await expect(dashboard.locator("main.residents-page")).toHaveCount(0);
 });

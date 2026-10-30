@@ -3973,7 +3973,12 @@ export function App(): React.JSX.Element {
               profiles={residentProfiles}
               personas={personas}
               selectedId={route.profileId ?? null}
+              creating={route.creating === true}
               onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onCreate={() => navigate({ page: "residents", creating: true })}
+              // Ungated: the page itself just settled the draft (saved, archived, discarded).
+              onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onDirtyChange={setWorkflowDirty}
               onLaunch={(profile) => openResidentLaunch(profile.id)}
             />
           ) : null}
@@ -4475,7 +4480,7 @@ export function App(): React.JSX.Element {
             request={{
               title: "Leave with unsaved changes",
               body:
-                "The workflow or Persona open in the editor has changes that have not been "
+                "The workflow, Persona or resident profile open in the editor has changes that have not been "
                 + "saved. Leaving this page discards them.",
               confirmLabel: "Discard and leave",
               confirmHint: "Throw the unsaved edits away and go to the page you asked for",

@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
-import { WorkflowConfirmModal, type WorkflowConfirmRequest } from "../workflows/WorkflowConfirmModal.tsx";
 import { ResidentProfileEditor } from "./ResidentProfileEditor.tsx";
 
 /** The rail row's distinguishing facts: whose role it is, and on which harness. */
@@ -24,26 +23,45 @@ export function residentProfileFact(profile: ResidentProfile, personas: readonly
  * are the SSE `residentProfiles` collection, so a save here or anywhere else reaches the rail
  * through the same frame. Launch hands the profile to Dispatch's Resident mode, which owns
  * the repository and run instructions and is the one place a launch is submitted.
+ *
+ * Which profile is open, and whether a new one is being authored, is the ROUTE
+ * (`#/residents/:id`, `#/residents/new`). The editor's unsaved state is reported to the
+ * router's dirty-draft gate, the one the Library uses, so choosing another profile, New, the
+ * palette, a page shortcut or Back all ask before discarding a draft - there is no second
+ * confirm here to disagree with it.
  */
 export function ResidentsPage({
   profiles,
   personas,
   selectedId,
+  creating,
   onSelect,
+  onCreate,
+  onSettle,
+  onDirtyChange,
   onLaunch,
 }: {
   profiles: readonly ResidentProfile[];
   personas: readonly PersonaView[];
   /** From the route. Null shows the rail with nothing open. */
   selectedId: string | null;
+  /** From the route: a new profile is being authored. */
+  creating: boolean;
+  /** An operator choice of profile: gated by the router while a draft is unsaved. */
   onSelect: (profileId: string | null) => void;
+  /** Open a blank editor: gated the same way. */
+  onCreate: () => void;
+  /** Move the route after the page itself settled the draft (saved, archived, discarded). */
+  onSettle: (profileId: string | null) => void;
+  /** Report unsaved edits to the router's dirty-draft gate. */
+  onDirtyChange: (dirty: boolean) => void;
   onLaunch: (profile: ResidentProfile) => void;
 }): React.JSX.Element {
-  const [creating, setCreating] = useState(false);
   const [dirty, setDirty] = useState(false);
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   // A profile saved or archived here may beat its SSE frame back; hold it until the frame lands.
   const [local, setLocal] = useState<ResidentProfile | null>(null);
-  const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   // The newer of the catalog's copy and one saved here, whichever frame arrived first.
   const fromCatalog = selectedId ? profiles.find((profile) => profile.id === selectedId) ?? null : null;
   const selected = local && local.id === selectedId && (!fromCatalog || local.revision > fromCatalog.revision)
@@ -60,25 +78,6 @@ export function ResidentsPage({
   if (selected && (held?.id !== selected.id || held.revision !== selected.revision)) setHeld(selected);
   const archivedElsewhere = !selected && !creating && dirty && held !== null && held.id === selectedId;
   const shown = selected ?? (archivedElsewhere ? held : null);
-
-  const leave = (next: () => void): void => {
-    const go = (): void => {
-      setDirty(false);
-      next();
-    };
-    if (!dirty) {
-      go();
-      return;
-    }
-    setConfirm({
-      title: "Discard unsaved changes",
-      body: "This resident profile has changes that are not saved. Leaving discards them; the saved revision is unchanged.",
-      confirmLabel: "Discard changes",
-      confirmHint: "Leave this profile without saving",
-      danger: true,
-      onConfirm: go,
-    });
-  };
 
   return (
     <main className="workflow-page residents-page">
@@ -100,14 +99,7 @@ export function ResidentsPage({
               <p>{profiles.length} live</p>
             </div>
             <Tooltip label="Author a new resident profile">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => leave(() => {
-                  setCreating(true);
-                  onSelect(null);
-                })}
-              >
+              <button type="button" className="btn" onClick={onCreate}>
                 New
               </button>
             </Tooltip>
@@ -122,10 +114,7 @@ export function ResidentsPage({
                   detail={residentProfileFact(profile, personas)}
                   selected={!creating && profile.id === selectedId}
                   tooltip={`Open ${profile.name}`}
-                  onSelect={() => leave(() => {
-                    setCreating(false);
-                    onSelect(profile.id);
-                  })}
+                  onSelect={() => onSelect(profile.id)}
                 />
               ))}
               {profiles.length === 0 && (
@@ -145,9 +134,8 @@ export function ResidentsPage({
               onDirtyChange={setDirty}
               onSaved={(profile) => {
                 setLocal(profile);
-                setCreating(false);
                 setDirty(false);
-                onSelect(profile.id);
+                onSettle(profile.id);
               }}
               onArchived={() => {}}
               onLaunch={onLaunch}
@@ -165,7 +153,7 @@ export function ResidentsPage({
               onArchived={() => {
                 setLocal(null);
                 setDirty(false);
-                onSelect(null);
+                onSettle(null);
               }}
               onLaunch={onLaunch}
             />
@@ -181,7 +169,6 @@ export function ResidentsPage({
           )}
         </div>
       </section>
-      {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}
     </main>
   );
 }

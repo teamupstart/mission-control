@@ -30,10 +30,10 @@ beforeEach(() => {
   db.exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles;");
 });
 
-function settings(name: string, instructions: string) {
+function settings(name: string, instructions: string, personaId = "builtin:code-risk-reviewer") {
   return ResidentProfileRevisionSchema.parse({
     identity: { name },
-    persona: { personaId: "builtin:code-reviewer" },
+    persona: { personaId },
     instructions: { markdown: instructions },
   });
 }
@@ -185,4 +185,38 @@ test("the restore write boundary refuses a catalog past the live bound and rolls
   db.exec("ROLLBACK");
   assert.equal(db.prepare("SELECT value FROM app_config WHERE key = 'residents-guard-probe'").get(), undefined, "another domain's write in the same transaction is rolled back");
   assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id), ["kept"]);
+});
+
+test("restore is blocked when a resident it leaves live would name a Persona that is not live afterwards", async () => {
+  const root = join(home, "persona-guard");
+  const svc = service(root);
+  const captured = await svc.ensureDailySnapshot("2026-10-30");
+  if (captured.status !== "ready") assert.fail(captured.status);
+
+  // An older snapshot (no resident domain) keeps current residents as they are; its Persona
+  // catalog has no operator Persona, so a resident on one would be stranded.
+  const { digest: _digest, ...body } = structuredClone(captured.snapshot);
+  body.domains = body.domains.filter((entry) => entry.domain !== "resident-profiles");
+  delete body.counts.residentProfiles;
+  const older = createSettingsBackupEnvelope({ ...body, id: "daily-2026-10-29", localDate: "2026-10-29" });
+  new SettingsBackupStore(root).write(older);
+
+  store.createResidentProfile({ id: "on-builtin", settings: settings("On builtin", ""), at: 5 });
+  const fine = svc.previewRestore(older.id);
+  assert.equal(fine.status, "ready", JSON.stringify(fine));
+
+  store.createResidentProfile({ id: "stranded", settings: settings("Stranded", "", "operator-persona-gone"), at: 5 });
+  const blocked = svc.previewRestore(older.id);
+  assert.equal(blocked.status, "preflight_blocked", JSON.stringify(blocked));
+  if (blocked.status === "preflight_blocked") {
+    assert.ok(blocked.preview.blockers.some((b) => /Stranded uses Persona operator-persona-gone/.test(b)), blocked.preview.blockers.join());
+  }
+  assert.equal((await svc.restore(older.id, older.digest)).status, "preflight_blocked");
+
+  // A snapshot that carries the resident domain is checked against its own rows the same way.
+  const withResidents = await svc.ensureDailySnapshot("2026-10-31");
+  if (withResidents.status !== "ready") assert.fail(withResidents.status);
+  assert.ok(withResidents.snapshot.domains.some((entry) => entry.domain === "resident-profiles"));
+  const own = svc.previewRestore(withResidents.snapshot.id);
+  assert.equal(own.status, "preflight_blocked");
 });

@@ -101,6 +101,7 @@ export function ResidentDispatch({
       className="modal dispatch-modal dispatch-modal-resident"
       role="dialog"
       ariaLabel="Dispatch an agent"
+      ariaModal
       closable={!busy}
     >
       <header className="modal-head">

@@ -483,6 +483,42 @@ test("an exact replay is recognized after its repository stops resolving; anothe
   assert.equal(h.dispatched.length, 1);
 });
 
+test("a database failure while settling a launch fails the run instead of rejecting the request", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher = {
+    async dispatch(id) {
+      await Promise.resolve();
+      startSession(registry, id);
+    },
+  };
+  const residents = new ResidentManager({
+    registry,
+    createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+    persona: (id) => (id === PERSONA.id ? PERSONA : null),
+    resolveRepoRoot,
+    sessionRowsForTask: () => {
+      throw new Error("database is locked");
+    },
+  });
+  managers.push(residents);
+  residents.start();
+  const created = residents.createProfile(settings({ name: "Settle Failure" }));
+  if (!created.ok) assert.fail(created.error);
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    const outcome = await residents.launch(created.profile.id, { repoRoot: REPO, requestId: "req-settle-fails" });
+    if (!("result" in outcome) || outcome.result.state !== "failed") assert.fail(JSON.stringify(outcome));
+    assert.match(outcome.result.error, /could not be settled: database is locked/);
+    assert.notEqual(outcome.result.run.endedAt, null);
+  } finally {
+    console.error = original;
+  }
+  assert.ok(errors.length > 0, "the failure is logged");
+});
+
 test("two spellings of one repository normalize to the same launch input", async () => {
   const h = harness();
   const profile = profileIn(h);

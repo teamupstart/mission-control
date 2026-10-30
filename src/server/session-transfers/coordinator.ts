@@ -162,7 +162,12 @@ export class SessionTransferCoordinator {
     if (this.registry.sessionResetInProgress(source.id)) return { ok: false, error: "This session is being reset" };
     const task = this.registry.listTasks().find((t) => t.sessionId === source.id && isActiveTask(t.status)) ?? null;
     if (task && (transferForTask(task.id) || this.options.taskBlocked?.(task.id))) return { ok: false, error: "This task already has an ownership operation in progress" };
-    const runtimeRefusal = task ? taskKindTerminalHandoffRefusal(task.kind) : null;
+    // The kind of the task this conversation belongs to, active or not: a resident whose agent
+    // went away has a settled task with no session pointer, and its embedded row still names it.
+    const ownerTaskId = task?.id ?? (source.runtime === "sdk" ? getSdkSession(source.id)?.taskId ?? null : null);
+    const ownerKind = task?.kind
+      ?? (ownerTaskId ? (this.registry.getTask(ownerTaskId) ?? getTask(ownerTaskId))?.kind ?? null : null);
+    const runtimeRefusal = ownerKind ? taskKindTerminalHandoffRefusal(ownerKind) : null;
     if (runtimeRefusal) return { ok: false, error: runtimeRefusal };
     const bindings = this.store.activeBindingsForNote(noteKeyFor(source)).map(transferBinding);
     if (bindings.some((b) => b.sessionId !== source.id)) return { ok: false, error: "The pinned workflow belongs to another session; resolve its ownership first" };

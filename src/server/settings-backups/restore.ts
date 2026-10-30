@@ -186,6 +186,30 @@ function residentContent(value: ResidentProfile | SettingsBackupResidentProfile)
   return { name: value.name, settings: JSON.parse(canonicalResidentJson(value.settings)) as unknown };
 }
 
+/**
+ * Every live resident after this restore must still name a live Persona, or it could no longer
+ * be launched. The post-restore residents are the snapshot's live rows, or - for a snapshot that
+ * predates the domain - the live residents kept as they are. The post-restore Personas are the
+ * built-ins plus the snapshot's live operator Personas: restore archives operator Personas it
+ * does not name.
+ */
+function residentPersonaBlockers(
+  staged: StagedSettingsBackup,
+  builtinPersonaIds: ReadonlySet<string>,
+): string[] {
+  const livePersonas = new Set([
+    ...builtinPersonaIds,
+    ...staged.personas.filter((row) => row.archivedAt === null).map((row) => row.id),
+  ]);
+  const residents = staged.residentProfiles === null
+    ? listAllResidentProfiles().filter((row) => row.archivedAt === null)
+    : staged.residentProfiles.filter((row) => row.archivedAt === null);
+  return residents
+    .filter((row) => !livePersonas.has(row.settings.persona.personaId))
+    .map((row) =>
+      `Resident profile ${row.name} uses Persona ${row.settings.persona.personaId}, which would not be live after this restore`);
+}
+
 /** Blockers and preview counts for the resident catalog, or zeros when the snapshot predates it. */
 function residentProfileRestore(staged: StagedSettingsBackup): {
   blockers: string[];
@@ -457,6 +481,7 @@ export function preflightSettingsRestore(
   }).length;
   const residents = residentProfileRestore(staged);
   blockers.push(...residents.blockers);
+  blockers.push(...residentPersonaBlockers(staged, builtinPersonaIds));
   const changedDomains = staged.config.filter((item) => item.changed).map((item) => item.domain);
   const externalEffects = ["skills", "cost"] as const;
 

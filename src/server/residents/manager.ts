@@ -311,7 +311,27 @@ export class ResidentManager {
   }
 
   /** Create the reserved task, wait for its dispatch, and record the outcome in one write. */
+  /**
+   * Never rejects. A failure after the task exists - a SQLite error reading the evidence or
+   * writing the outcome - is logged and the run is failed on a best-effort basis, so the route
+   * answers with the run instead of a 500 and nothing is left as an unhandled rejection. A run
+   * whose failure write itself fails stays `pending` for startup reconciliation.
+   */
   private async createAndSettle(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
+    try {
+      await this.createAndSettleUnguarded(run, request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[residents] could not settle resident run ${run.id}: ${message}`);
+      try {
+        markResidentRunFailed(run.id, `the launch could not be settled: ${message}`, this.now());
+      } catch (writeError) {
+        console.error(`[residents] could not record resident run ${run.id} as failed:`, writeError);
+      }
+    }
+  }
+
+  private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
     const execution = run.settings.execution;
     try {
       this.deps.createTask(

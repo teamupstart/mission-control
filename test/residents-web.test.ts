@@ -32,8 +32,10 @@ function profile(id: string, repo: string | null): ResidentProfile {
   };
 }
 
-test("#/residents round-trips with and without a profile", () => {
+test("#/residents round-trips with and without a profile, and on a new draft", () => {
   assert.deepEqual(parseMissionRoute("#/residents"), { page: "residents" });
+  assert.deepEqual(parseMissionRoute("#/residents/new"), { page: "residents", creating: true });
+  assert.equal(missionRouteHash({ page: "residents", creating: true }), "#/residents/new");
   assert.deepEqual(parseMissionRoute("#/residents/p%201"), { page: "residents", profileId: "p 1" });
   assert.equal(missionRouteHash({ page: "residents", profileId: "p 1" }), "#/residents/p%201");
   assert.equal(missionRouteHash({ page: "residents" }), "#/residents");
@@ -84,6 +86,7 @@ test("the Dispatch layer renders Resident mode with the shared three-way toggle 
     onClose: () => {},
   })));
   assert.match(html, /aria-label="Launch mode"/);
+  assert.match(html, /role="dialog"[^>]*aria-modal="true"|aria-modal="true"[^>]*role="dialog"/);
   for (const label of ["Single agent", "Ensemble", "Resident"]) assert.match(html, new RegExp(`>${label}<`));
   assert.match(html, /role="radio" aria-checked="true"[^>]*>Resident</);
   assert.match(html, /Profile a/);

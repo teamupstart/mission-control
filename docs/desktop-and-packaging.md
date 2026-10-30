@@ -58,7 +58,10 @@ Python, jq or compiler participates. Native `gh` owns authentication and redirec
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
 Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+current main commit. An unavailable/retired alpha requires a new explicit selection: a
+merged commit has no alpha until its Signed distribution run publishes, so the installer names
+the unpublished commit, says to retry or pin a published one with `--ref FULL_SHA`, and never
+substitutes an older alpha. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows

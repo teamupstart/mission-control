@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
@@ -23,7 +24,7 @@ function macTool(command, args) {
 }
 
 export async function validateDistributionTicket(path, {
-  run = runMacTool, wait = (ms) => new Promise((done) => setTimeout(done, ms)), log = console.log,
+  run = runMacTool, wait = (ms) => sleep(ms), log = console.log,
 } = {}) {
   for (let attempt = 0; ; attempt++) {
     const result = run('/usr/bin/xcrun', ['stapler', 'validate', path]);
@@ -32,8 +33,10 @@ export async function validateDistributionTicket(path, {
     // the observed dropped-connection failure, never a ticket/trust refusal.
     const connectionLost = result.status === 68 && !result.error && !result.signal
       && /\bNSURLErrorDomain Code=-1005\b/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
-    if (!connectionLost || attempt === 3) throw distributionToolError('/usr/bin/xcrun', result);
-    const retryInMs = 1000 * 2 ** attempt;
+    // A run validates four bundles, and one CloudKit outage outlasted 30s of
+    // retries (run 41049955795). Back off to 30s for about two minutes in all.
+    if (!connectionLost || attempt === 8) throw distributionToolError('/usr/bin/xcrun', result);
+    const retryInMs = Math.min(1000 * 2 ** attempt, 30_000);
     // No raw tool output or argv in retry logs; the final failure goes through
     // the existing bounded, redacted stage diagnostic.
     log(`[distribution] ${distributionDiagnostic({command: 'stapler', operation: 'validate',

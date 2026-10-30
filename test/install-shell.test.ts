@@ -18,7 +18,7 @@ function fixture(t: test.TestContext, failure = '', appName = 'Agent Mission Con
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin'); mkdirSync(bin);
   const candidate = join(dir, 'candidate.app');
-  const alpha = failure === 'alpha';
+  const alpha = failure === 'alpha' || failure === 'missing-alpha';
   mkdirSync(join(candidate, 'Contents/MacOS'), {recursive: true});
   mkdirSync(join(candidate, 'Contents/Resources/app/scripts'), {recursive: true});
   const log = join(dir, 'tools.log'); writeFileSync(log, '');
@@ -58,6 +58,8 @@ const tool=basename(process.argv[1]), args=process.argv.slice(2), fail=${JSON.st
 appendFileSync(${JSON.stringify(log)}, tool+':'+JSON.stringify(args)+'\\n');
 if(tool==='gh') {
   const endpoint=args[3];
+  if(fail==='transport') {console.error('error connecting to api.github.com');process.exit(1);}
+  if(fail.startsWith('missing-')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(endpoint.endsWith('/assets/11')) process.stdout.write(fail==='oversize'?'x'.repeat(20000):fail==='malformed'?'invalid':${JSON.stringify(JSON.stringify(manifest))});
   else if(endpoint.endsWith('/assets/13')) process.stdout.write(fail==='truncated'?'short':${JSON.stringify(dmg.toString())});
   else if(endpoint.includes('/commits/')) console.log(JSON.stringify({sha:${JSON.stringify(commit)}}));
@@ -147,6 +149,29 @@ test('alpha bootstrap pins the selected full main SHA without falling back to st
   const log = readFileSync(f.log, 'utf8');
   assert.match(log, /commits\/main/); assert.ok(log.includes(`releases/tags/alpha-${commit}`));
   assert.doesNotMatch(log, /releases\/latest|forbidden:/);
+});
+
+test('an unpublished alpha names the exact commit and its recovery instead of blaming transport', t => {
+  const f = fixture(t, 'missing-alpha'); const result = f.run(['--channel', 'alpha']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, new RegExp(`Commit ${commit} has no published alpha\\..*Retry after it publishes, or pin a published alpha with --ref FULL_SHA`));
+  assert.doesNotMatch(result.stderr, /Canonical download failed/);
+  const log = readFileSync(f.log, 'utf8');
+  assert.equal((log.match(/releases\/tags\//g) ?? []).length, 1, 'no other alpha is substituted');
+  assert.doesNotMatch(log, /releases\/latest|runtime:|forbidden:/);
+});
+
+test('an unpublished stable tag is named as missing', t => {
+  const f = fixture(t, 'missing-stable'); const result = f.run(['--ref', 'v9.9.9']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Release v9\.9\.9 is not published\. Select an existing vX\.Y\.Z tag/);
+  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
+});
+
+test('a transport failure keeps the authentication and connectivity guidance', t => {
+  const f = fixture(t, 'transport'); const result = f.run(['--channel', 'alpha']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Canonical download failed\. Check gh authentication and connectivity/);
 });
 
 test('bootstrap accepts internal framework link chains and normalized internal file targets', t => {

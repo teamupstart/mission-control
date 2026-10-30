@@ -900,6 +900,8 @@ test("a launch publishes its run while it is live, carrying the pinned settings,
   assert.equal(live?.taskId, taskId);
   assert.equal(live?.personaName, PERSONA.name);
   assert.deepEqual(live?.settings.board, { colorId: "cyan", label: null, pin: true });
+  // Only the sections the browser draws: never the profile instructions or the repository.
+  assert.deepEqual(Object.keys(live!.settings).sort(), ["board", "identity"]);
   // The wire summary leaves out what no board surface reads.
   assert.equal("persona" in (live as object), false);
   assert.equal("runInstructions" in (live as object), false);

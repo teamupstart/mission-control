@@ -182,6 +182,47 @@ test("a resident launched from the dock glows, pins to the top of its column, ca
     const host = (el.closest(".cdetail") ?? el.parentElement!).getBoundingClientRect();
     return action.width > 20 && action.right <= host.right + 0.5;
   }), { message: "the band's Profile button is drawn inside the detail pane once it settles" }).toBe(true);
+
+  // The profile is edited in another window while the resident runs: the band says so, and in
+  // this narrow pane the note wraps onto its own line rather than running past the edge.
+  type Stored = { id: string; name: string; revision: number; settings: { instructions: { markdown: string } } & Record<string, unknown> };
+  const stored = (await api<Stored[]>(daemon, "/api/residents/profiles")).find((p) => p.name === PROFILE)!;
+  const edited = await fetch(`${daemon.baseURL}/api/residents/profiles/${stored.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: stored.revision,
+      settings: { ...stored.settings, instructions: { markdown: "Edited in another window." } },
+    }),
+  });
+  expect(edited.status).toBe(200);
+  const changed = band.getByRole("status");
+  await expect(changed).toHaveText(`Profile changed since launch (now revision ${stored.revision + 1})`);
+  // Narrower than the note's one-line width (about 256px): the width a Console detail pane is
+  // left with when its rail is dragged wide. Set on the pane itself so the claim is about how
+  // the band lays out at that width, whatever window the runner happens to have.
+  const pane = band.locator("xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' cdetail ')][1]");
+  await pane.evaluate((el) => {
+    (el as HTMLElement).style.width = "220px";
+    (el as HTMLElement).style.maxWidth = "220px";
+  });
+  await expect.poll(() => changed.evaluate((el) => {
+    const note = el.getBoundingClientRect();
+    const host = el.closest(".cdetail")!.getBoundingClientRect();
+    const owner = el.closest(".resident-band")!.getBoundingClientRect();
+    // Inside the pane across, inside its own band down - the band grows to hold it rather than
+    // leaving it under the tab strip - and actually the thing painted where it sits.
+    const hit = document.elementFromPoint(note.left + note.width / 2, note.top + note.height / 2);
+    return note.width > 20
+      && note.left >= host.left - 0.5 && note.right <= host.right + 0.5
+      && note.top >= owner.top - 0.5 && note.bottom <= owner.bottom + 0.5
+      && hit !== null && (hit === el || el.contains(hit));
+  }), { message: "the changed-profile note wraps inside a 220px detail pane and stays visible" }).toBe(true);
+  await capture(band, "05b-console-band-profile-changed-narrow");
+  await pane.evaluate((el) => {
+    (el as HTMLElement).style.width = "";
+    (el as HTMLElement).style.maxWidth = "";
+  });
   // The drilled-in rail row carries the accent edge too, and leads its column like the tile.
   const railRows = dashboard.locator(".rail-row");
   await expect(railRows.first()).toHaveClass(/\bis-resident\b/);

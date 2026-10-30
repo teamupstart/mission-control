@@ -86,6 +86,11 @@ test("the marker label is 1 to 4 characters and defaults from the name", () => {
   assert.equal(defaultResidentMarkerLabel("Triage"), "TRI");
   assert.equal(defaultResidentMarkerLabel("docs gardener weekly run extra"), "DGWR");
   assert.equal(defaultResidentMarkerLabel("   "), "RES");
+  // Capped AFTER upper-casing, by grapheme: `ß` upper-cases to `SS`, and four such initials
+  // would otherwise make an eight-character label.
+  assert.equal(defaultResidentMarkerLabel("ßa ßb ßc ßd"), "SSSS");
+  assert.equal(defaultResidentMarkerLabel("ßtraße"), "SSTR");
+  assert.equal(defaultResidentMarkerLabel("e\u0301clair Bot"), "\u00c9B".normalize("NFD"));
   assert.equal(residentMarker(revision({ label: "ops" })).label, "ops");
 
   const body = { identity: { name: "Triage Bot" }, persona: { personaId: "p" } };
@@ -139,9 +144,16 @@ test("only a live run has a wire summary", () => {
     taskId: "t1",
     launchState: "launched",
     personaName: "Fleet Triage",
-    settings: run.settings,
+    settings: { identity: run.settings.identity, board: run.settings.board },
     createdAt: 5,
   });
+  // Projected to the sections the browser draws: the instruction text, Persona id, execution
+  // and workspace stay on the daemon.
+  const wire = JSON.stringify(residentRunSummary({
+    ...run,
+    settings: { ...run.settings, instructions: { markdown: "SECRET-INSTRUCTION-TEXT" } },
+  }));
+  assert.doesNotMatch(wire, /SECRET-INSTRUCTION-TEXT|builtin:fleet-triage|defaultRepoRoot|"execution"/);
   assert.equal(residentRunSummary({ ...run, endedAt: 9 }), null);
   assert.equal(residentRunSummary({ ...run, launchState: "failed", endedAt: 9 }), null);
   assert.notEqual(residentRunSummary({ ...run, launchState: "pending" }), null);

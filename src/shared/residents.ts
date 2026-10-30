@@ -154,18 +154,28 @@ export const ResidentBoardSectionSchema = z.object({
 });
 export type ResidentBoardSection = z.infer<typeof ResidentBoardSectionSchema>;
 
+/** A string's user-perceived characters, so an accented letter or an emoji counts once. */
+function graphemes(text: string): string[] {
+  return [...new Intl.Segmenter("en-US", { granularity: "grapheme" }).segment(text)]
+    .map((part) => part.segment);
+}
+
 /**
  * The label a name gives when the profile sets none: the initials of a multi-word name
  * ("Triage Bot" is TB, "Docs Gardener Weekly" is DGW), or the first three letters of a single
  * word ("Triage" is TRI), upper-cased.
+ *
+ * Capped at `RESIDENT_MARKER_LABEL_MAX` characters AFTER upper-casing, counted by grapheme:
+ * upper-casing can lengthen text (`ß` becomes `SS`), so four initials can become eight.
  */
 export function defaultResidentMarkerLabel(name: string): string {
-  const words = name.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  // Combining marks (`\p{M}`) belong to the word they decorate: a decomposed `é` is one letter.
+  const words = name.trim().split(/[^\p{L}\p{M}\p{N}]+/u).filter(Boolean);
   if (words.length === 0) return "RES";
   const label = words.length === 1
-    ? [...words[0]!].slice(0, 3).join("")
-    : words.slice(0, RESIDENT_MARKER_LABEL_MAX).map((word) => [...word][0]).join("");
-  return label.toLocaleUpperCase("en-US");
+    ? graphemes(words[0]!).slice(0, 3).join("")
+    : words.slice(0, RESIDENT_MARKER_LABEL_MAX).map((word) => graphemes(word)[0]).join("");
+  return graphemes(label.toLocaleUpperCase("en-US")).slice(0, RESIDENT_MARKER_LABEL_MAX).join("");
 }
 
 /** What a revision draws on the board: the resolved color, chip label and pin. */
@@ -297,9 +307,27 @@ export interface ResidentRun {
 }
 
 /**
+ * The pinned-revision sections a live run's summary carries to the browser: the ones a board,
+ * Console or dock surface draws from. A registry like `RESIDENT_PROFILE_SECTIONS`, extended the
+ * same way - a later phase that shows its pinned settings in the browser (the loop's state in
+ * the Console band, the session-control grant) appends its section id here in one line.
+ *
+ * Everything not listed stays on the daemon, which reads a run's whole pinned revision through
+ * `ResidentStore.revision`. That keeps the profile instructions, the Persona id, the execution
+ * and workspace choices, and every section a later phase adds for the daemon alone (skills, MCP
+ * servers) off this event, which is re-sent on every launch-state change of every live run.
+ */
+export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board"] as const satisfies readonly ResidentProfileSectionId[];
+export type ResidentRunSummarySectionId = (typeof RESIDENT_RUN_SUMMARY_SECTIONS)[number];
+
+/** The pinned revision as a run summary carries it: only `RESIDENT_RUN_SUMMARY_SECTIONS`. */
+export type ResidentRunSummarySettings = Pick<ResidentProfileRevision, ResidentRunSummarySectionId>;
+
+/**
  * A live run as the `residentRuns` SSE collection carries it: what the browser needs to join a
- * session to its run and draw it - the pinned revision's settings above all - without the
- * persona text, run instructions or launch input, which no board surface reads.
+ * session to its run and draw it - the pinned revision's settings, projected to the sections
+ * the browser draws - without the persona text, run instructions or launch input, which no
+ * board surface reads.
  *
  * Only open runs (not ended, not failed) are in the collection, so it is bounded by the
  * residents actually running: each holds a live, non-terminal `resident` task.
@@ -311,8 +339,16 @@ export interface ResidentRunSummary {
   taskId: string;
   launchState: Exclude<ResidentLaunchState, "failed">;
   personaName: string;
-  settings: ResidentProfileRevision;
+  /** The pinned revision's `RESIDENT_RUN_SUMMARY_SECTIONS`, never the profile's current one. */
+  settings: ResidentRunSummarySettings;
   createdAt: number;
+}
+
+/** Project a pinned revision to the sections a run summary carries. */
+export function residentRunSummarySettings(settings: ResidentProfileRevision): ResidentRunSummarySettings {
+  return Object.fromEntries(
+    RESIDENT_RUN_SUMMARY_SECTIONS.map((id) => [id, settings[id]]),
+  ) as ResidentRunSummarySettings;
 }
 
 /** The wire summary of a run, or null when the run is not live and leaves the collection. */
@@ -325,7 +361,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     taskId: run.taskId,
     launchState: run.launchState,
     personaName: run.persona.name,
-    settings: run.settings,
+    settings: residentRunSummarySettings(run.settings),
     createdAt: run.createdAt,
   };
 }

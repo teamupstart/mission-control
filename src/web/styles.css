@@ -36451,6 +36451,10 @@ body.foreman-sidecar-open .modal-backdrop {
 /* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one
    action must stay reachable there. The facts give way first, then the action takes a line. */
 .resident-band {
+  /* Its content's height, never less: it is a child of the detail's flex column, and shrinking
+     there would leave wrapped lines - the changed-profile note, the Profile action - painted
+     under the tab strip below it. */
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -36484,9 +36488,13 @@ body.foreman-sidecar-open .modal-backdrop {
   text-overflow: ellipsis;
   min-width: 0;
 }
+/* Wraps, unlike the facts beside it: it is the one sentence here that must be read whole - which
+   revision the profile is on now - and on a narrow pane it takes its own line rather than run
+   past the edge. */
 .resident-band-changed {
   color: var(--attention);
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .resident-band-spacer {
   flex: 1 0 0;

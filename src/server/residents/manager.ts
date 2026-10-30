@@ -342,11 +342,11 @@ export class ResidentManager {
   }
 
   async createMcpServer(input: CreateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
-    return createResidentMcpServer(input, { id: randomUUID(), at: this.now(), globals: await this.mcpCatalog.names() });
+    return createResidentMcpServer(input, { id: randomUUID(), at: this.now(), globals: await this.mcpCatalog.names(input.harnesses) });
   }
 
   async updateMcpServer(id: string, input: UpdateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
-    return updateResidentMcpServer(id, input, { at: this.now(), globals: await this.mcpCatalog.names() });
+    return updateResidentMcpServer(id, input, { at: this.now(), globals: await this.mcpCatalog.names(input.harnesses) });
   }
 
   deleteMcpServer(id: string, expectedRevision: number): void {

@@ -514,8 +514,9 @@ export class ResidentMcpCatalogCache {
    * Global names per harness, lower-cased, for the custom-server collision check. Read fresh by
    * default: a global server added since the catalog was cached must still block the name.
    */
-  async names(fresh = true): Promise<Map<ResidentAgent, Set<string>>> {
-    const reads = await Promise.all(RESIDENT_AGENTS.map((agent) => this.read(agent, fresh)));
+  async names(agents: readonly ResidentAgent[] = RESIDENT_AGENTS, fresh = true): Promise<Map<ResidentAgent, Set<string>>> {
+    // Only the harnesses a custom server applies to: another harness's read cannot block it.
+    const reads = await Promise.all(agents.map((agent) => this.read(agent, fresh)));
     // A read that failed knows no names, which is not the same as there being none.
     const failed = reads.find((read) => read.problem);
     if (failed) {

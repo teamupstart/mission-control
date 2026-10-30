@@ -595,3 +595,29 @@ test("the launcher refuses to send credentials over plain http to another host, 
     daemon.close();
   }
 });
+
+test("the configured query rides every bridged request once, on the server's own endpoint and after a redirect", async () => {
+  const { fetchOnOrigin } = await import("../src/server/residents/mcp-launcher.ts");
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url ?? "");
+    if (req.url?.startsWith("/moved")) res.writeHead(307, { location: "/messages" }).end();
+    else res.writeHead(200).end("{}");
+  });
+  const port = await listen(server);
+  const base = `http://127.0.0.1:${port}`;
+  const query = new URLSearchParams({ key: SECRET });
+  try {
+    await fetchOnOrigin(base, {}, `${base}/messages?session=1`, { method: "POST", body: "{}" }, query);
+    await fetchOnOrigin(base, {}, `${base}/sse?key=${SECRET}`, {}, query);
+    await fetchOnOrigin(base, {}, `${base}/moved`, { method: "POST", body: "{}" }, query);
+    assert.deepEqual(seen, [
+      `/messages?session=1&key=${SECRET}`,
+      `/sse?key=${SECRET}`,
+      `/moved?key=${SECRET}`,
+      `/messages?key=${SECRET}`,
+    ]);
+  } finally {
+    server.close();
+  }
+});

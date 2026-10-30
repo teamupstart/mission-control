@@ -100,8 +100,8 @@ function runStdio(runtime: Extract<ResidentMcpLauncherDefinition, { transport: "
 const MAX_REDIRECTS = 5;
 
 /**
- * Every request the bridge makes, the event stream included, carries the server's headers - and
- * only to the configured origin. Redirects are handled here rather than by `fetch`, which would
+ * Every request the bridge makes, the event stream and an SSE server's message endpoint
+ * included, carries the server's headers and query values - and only to the configured origin. Redirects are handled here rather than by `fetch`, which would
  * follow one to another origin with these headers attached: a redirect within the origin is
  * followed with them, and one that leaves it is refused, so no other host ever receives them.
  */
@@ -110,6 +110,7 @@ export async function fetchOnOrigin(
   secretHeaders: Readonly<Record<string, string>>,
   input: string | URL | Request,
   init: RequestInit = {},
+  secretQuery: URLSearchParams = new URLSearchParams(),
 ): Promise<Response> {
   let target = new URL(input instanceof Request ? input.url : String(input));
   let request: RequestInit = input instanceof Request
@@ -121,6 +122,9 @@ export async function fetchOnOrigin(
     }
     const headers = new Headers(request.headers);
     for (const [name, value] of Object.entries(secretHeaders)) headers.set(name, value);
+    // The configured query rides every request too: an SSE server names its own message
+    // endpoint, and a redirect may drop the query, but the credential is the server's.
+    for (const [name, value] of secretQuery) if (!target.searchParams.has(name)) target.searchParams.append(name, value);
     const response = await fetch(target, { ...request, headers, redirect: "manual" });
     const location = response.headers.get("location");
     if (response.status < 300 || response.status >= 400 || !location) return response;
@@ -148,7 +152,7 @@ async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { tr
     fail("refusing to send this server's credentials over plain http to another host");
   }
   const withHeaders = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
-    fetchOnOrigin(url.origin, definition.headers, input, init);
+    fetchOnOrigin(url.origin, definition.headers, input, init, url.searchParams);
   const remote = definition.transport === "sse"
     ? new SSEClientTransport(url, { fetch: withHeaders })
     : new StreamableHTTPClientTransport(url, { fetch: withHeaders });

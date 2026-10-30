@@ -644,15 +644,21 @@ test("a preview renders the same servers without minting a credential", () => {
   assert.equal(existsSync(join(launch.residentMcpRunDir(runId), "credentials")), false, "nothing written, nothing to expire");
 });
 
-test("a failed global read refuses a custom server's name check instead of passing it", async () => {
-  const { residents } = manager(async (agent) => agent === "codex"
-    ? { agent, servers: [], problem: "codex is not installed", readAt: 1 }
-    : globalsOf(agent, {}));
+test("a failed global read refuses a custom server's name check on the harnesses it applies to, and only those", async () => {
+  const reads: string[] = [];
+  const { residents } = manager(async (agent) => {
+    reads.push(agent);
+    return agent === "codex" ? { agent, servers: [], problem: "codex is not installed", readAt: 1 } : globalsOf(agent, {});
+  });
   await assert.rejects(
-    residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "anything", harnesses: ["claude"], transport: { type: "stdio", command: "a" } }) as CreateInput),
+    residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "anything", harnesses: ["claude", "codex"], transport: { type: "stdio", command: "a" } }) as CreateInput),
     (error: Error & { status?: number }) => error.status === 503 && /could not read Codex's global MCP servers to check this name \(codex is not installed\); try again/.test(error.message),
   );
   assert.equal(mcpStore.residentMcpServerViews().length, 0, "nothing was saved");
+  reads.length = 0;
+  const claudeOnly = await residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "claude-only", harnesses: ["claude"], transport: { type: "stdio", command: "a" } }) as CreateInput);
+  assert.equal(claudeOnly.name, "claude-only", "a Codex read failure cannot block a server that does not apply to Codex");
+  assert.deepEqual(reads, ["claude"], "only the applicable harness was read");
 });
 
 test("an MCP state scan that cannot read never stops workspace cleanup", async (t) => {
@@ -767,7 +773,9 @@ test("a Claude global SSE server starts through the scoped launcher with its own
     const get = seen.find((row) => row.method === "GET")!;
     assert.equal(get.header, header, "the event stream carried its secret header");
     assert.equal(get.url, `/sse?key=${query}`, "and its secret query value");
-    assert.ok(seen.filter((row) => row.method === "POST").every((row) => row.header === header), "every message carried the header");
+    const posts = seen.filter((row) => row.method === "POST");
+    assert.ok(posts.length > 0 && posts.every((row) => row.header === header), "every message carried the header");
+    assert.ok(posts.every((row) => new URL(row.url, "http://x").searchParams.getAll("key").join() === query && row.url.includes("session=1")), "and the secret query value, once, beside the server's own endpoint parameters");
   } finally {
     open.stream?.end();
     sse.closeAllConnections();
@@ -795,4 +803,134 @@ test("the startup sweep keeps a credential this daemon already issued", () => {
   launch.sweepResidentMcpCredentials();
   assert.equal(existsSync(issued), true, "a restored resident starting before the sweep keeps its ticket");
   assert.equal(existsSync(stale), false);
+});
+
+test("Claude's internal relaunch mints fresh launcher credentials, and the server starts again after the first ticket was spent", async () => {
+  const { spawn } = await import("node:child_process");
+  const { createServer } = await import("node:http");
+  const { claudeSdkSpec } = await import("../src/server/harness/claude/sdk.ts");
+  type Message = import("../src/server/harness/claude/sdk-types.ts").ClaudeSdkMessage;
+  // A secret-bearing stdio server: the fixture records the environment it starts with.
+  const started = join(home, `relaunch-started-${crypto.randomUUID()}.jsonl`);
+  const fixture = join(home, "relaunch-fixture.mjs");
+  writeFileSync(fixture, `import { appendFileSync } from "node:fs";\nappendFileSync(process.argv[2], JSON.stringify({ token: process.env.RELAUNCH_TOKEN }) + "\\n");\n`);
+  const runId = crypto.randomUUID();
+  const secret = `relaunch-secret-${crypto.randomUUID()}`;
+  seedRun(runId, [{
+    source: "custom", name: "relaunch-server",
+    transport: { type: "stdio", command: process.execPath, args: [fixture, started], env: {}, secretEnv: ["RELAUNCH_TOKEN"], cwd: null },
+    launcher: true, options: {}, secrets: new Map([["env:RELAUNCH_TOKEN", secret]]),
+  }]);
+  // The daemon's redemption route, answered by the production redemption.
+  const daemon = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const redeemed = launch.redeemResidentMcpTicket(JSON.parse(raw));
+    res.writeHead(redeemed.ok ? 200 : redeemed.status, { "content-type": "application/json" })
+      .end(JSON.stringify(redeemed.ok ? { definition: redeemed.definition } : { error: redeemed.error }));
+  });
+  const daemonPort = await new Promise<number>((resolve) => daemon.listen(0, "127.0.0.1", () => resolve((daemon.address() as { port: number }).port)));
+  // What Claude Code does with a launcher entry: start it.
+  const startServer = (entry: { command: string; args: string[]; env: Record<string, string> }) => {
+    const credential = entry.args.at(-1)!;
+    if (existsSync(credential)) {
+      const file = JSON.parse(readFileSync(credential, "utf8")) as { redeemUrl: string };
+      writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
+    }
+    return new Promise<{ code: number | null; stderr: string }>((resolveStart) => {
+      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+        env: { PATH: process.env.PATH, ...entry.env },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.on("exit", (code) => resolveStart({ code, stderr }));
+    });
+  };
+
+  // A scripted Claude Code: each query records its options and plays the frames it is given.
+  class ScriptedQuery {
+    private queue: Message[] = [];
+    private waiting: ((value: IteratorResult<Message>) => void) | null = null;
+    private done = false;
+    emit(message: Message) {
+      const waiter = this.waiting;
+      if (waiter) { this.waiting = null; waiter({ value: message, done: false }); } else this.queue.push(message);
+    }
+    end() {
+      this.done = true;
+      const waiter = this.waiting;
+      if (waiter) { this.waiting = null; waiter({ value: undefined as never, done: true }); }
+    }
+    [Symbol.asyncIterator]() {
+      return {
+        next: async (): Promise<IteratorResult<Message>> => {
+          const next = this.queue.shift();
+          if (next) return { value: next, done: false };
+          if (this.done) return { value: undefined as never, done: true };
+          return new Promise((resolveNext) => { this.waiting = resolveNext; });
+        },
+      };
+    }
+    async return() { this.end(); return { value: undefined, done: true as const }; }
+    async interrupt() { return undefined; }
+    async setPermissionMode() {}
+    async applyFlagSettings() {}
+    async setModel() {}
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() { return {} as never; }
+    constructor(readonly servers: string[]) {}
+    async mcpServerStatus() { return this.servers.map((name) => ({ name, status: "connected" })); }
+  }
+  const starts: Array<{ query: ScriptedQuery; options: { mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string> }>; resume?: string } }> = [];
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const servers = Object.keys((options as { mcpServers?: Record<string, unknown> }).mcpServers ?? {});
+      const query = new ScriptedQuery(servers);
+      starts.push({ query, options: options as never });
+      void (async () => { for await (const _turn of prompt) { /* accepted */ } query.end(); })();
+      return query as never;
+    },
+  });
+  const resident = launch.residentMcpLaunchForRun(runId)!;
+  const collect = async (events: AsyncIterable<{ kind: string }>, stop: (event: { kind: string; state?: string }) => boolean) => {
+    for await (const event of events) if (stop(event as never)) break;
+  };
+  try {
+    const handle = await spec.launch({
+      cwd: home, stateHome: join(home, "relaunch-state"), prompt: "go", model: null, effort: null, permissionMode: null,
+      mcp: { serverName: "mission-control", command: process.execPath, args: ["/mission.mjs"], env: {} },
+      residentMcp: resident, extraDirs: [], standingInstructions: "", standingInstructionsPrompt: "", resume: null,
+    });
+    const first = starts[0]!.options.mcpServers!["relaunch-server"]!;
+    assert.ok(starts[0]!.options.mcpServers!["mission-control"], "Mission's server is attached");
+    // Claude starts the server: the first ticket is redeemed and spent.
+    const firstStart = await startServer(first);
+    assert.equal(firstStart.code, 0, firstStart.stderr);
+    const respent = await startServer(first);
+    assert.equal(respent.code, 1, "the first credential cannot start the server twice");
+
+    // Authentication fails, then the next turn relaunches the Claude process.
+    starts[0]!.query.emit({ type: "system", subtype: "init", session_id: "relaunch-conversation", model: "claude-opus-5" } as Message);
+    await collect(handle.events, (event) => event.kind === "bound");
+    starts[0]!.query.emit({ type: "assistant", session_id: "relaunch-conversation", error: "authentication_failed", message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] } } as Message);
+    starts[0]!.query.emit({ type: "result", subtype: "error_during_execution", session_id: "relaunch-conversation", errors: ["Not logged in"], uuid: "auth-failure" } as Message);
+    await collect(handle.events, (event) => event.kind === "turn_done");
+    assert.equal(await handle.sendIfIdle({ text: "continue after login" }), "started");
+    assert.equal(starts.length, 2, "the Claude process was relaunched once");
+    assert.equal(starts[1]!.options.resume, "relaunch-conversation");
+    const second = starts[1]!.options.mcpServers!["relaunch-server"]!;
+    assert.ok(starts[1]!.options.mcpServers!["mission-control"], "Mission's server stays attached on relaunch");
+    assert.notEqual(second.args.at(-1), first.args.at(-1), "the relaunch carries a fresh credential, not the spent one");
+    assert.ok(!JSON.stringify(starts.map((start) => start.options.mcpServers)).includes(secret), "no secret in either process's configuration");
+    // The relaunched Claude starts the server again, with its own secret.
+    const secondStart = await startServer(second);
+    assert.equal(secondStart.code, 0, secondStart.stderr);
+    const records = readFileSync(started, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { token: string });
+    assert.deepEqual(records.map((record) => record.token), [secret, secret], "both starts received the secret; the spent ticket started nothing");
+    await handle.stop();
+  } finally {
+    daemon.close();
+  }
 });

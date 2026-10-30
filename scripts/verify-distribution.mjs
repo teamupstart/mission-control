@@ -1,7 +1,7 @@
 import { APP_EXECUTABLE_NAME, binaryBundleName } from "../src/shared/app-naming.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
@@ -10,6 +10,7 @@ import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
 import { distributionDiagnostic, distributionToolError } from './distribution-diagnostics.mjs';
 import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
+import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
 
 function runMacTool(command, args) {
   return spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
@@ -74,6 +75,13 @@ export async function verifyDistributionDmg(dmg, policy) {
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);
 }
 
+// The installer refuses any root entry outside the shared allow-list, so producer
+// qualification refuses the same image before it can be published.
+export function verifyDistributionDmgRoot(mount, appBundleName) {
+  const problem = dmgRootProblem(readdirSync(mount), appBundleName);
+  if (problem) throw new Error(problem);
+}
+
 export async function verifyDistributionArchives({app, appDigest, files, metadata, policy, requalifyRuntime = false}) {
   const root = mkdtempSync(join(tmpdir(), 'mission-archive-verification-'));
   const mount = join(root, 'image'); mkdirSync(mount);
@@ -83,6 +91,7 @@ export async function verifyDistributionArchives({app, appDigest, files, metadat
     assert.match(digest ?? '', /^[a-f0-9]{64}$/);
     macTool('/usr/bin/hdiutil', ['attach', files.dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
     mounted = true;
+    verifyDistributionDmgRoot(mount, binaryBundleName(metadata));
     const dmgApp = join(mount, binaryBundleName(metadata));
     assert.equal(inspectBundle(dmgApp).digest, digest, 'DMG must contain the exact signed app');
     await verifyDistributionApp(dmgApp, metadata, policy);

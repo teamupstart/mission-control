@@ -51,7 +51,7 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 The standard [Bash installer](../scripts/install.sh) downloads canonical, immutable stable or
 exact-SHA alpha assets. Native macOS tools verify the size, SHA-256, product identity,
 arm64 executable, pinned Developer ID team and notarization before any downloaded code runs.
-It mounts the DMG read-only, checks its roots and links, copies the complete app to a private
+It mounts the DMG read-only, checks its root entries against the shared DMG layout contract and its links, copies the complete app to a private
 directory, verifies it again and unmounts the image. Only then does its embedded Electron Node
 engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, npm, npx, Git,
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
@@ -337,6 +337,13 @@ checked-in offline Read Me ([`build/dmg/readme.txt`](../build/dmg/readme.txt), w
 here twice over - it points every recipient at the destination that needs an administrator
 password, and a disk image is opened on somebody else's Mac, where no fixed link can name their
 own Applications folder and nothing expands a literal `~`.
+
+The published DMG's root also carries the window background (`.background.tiff`), volume icon
+and `.DS_Store` electron-builder writes for that layout. The standalone installer refuses any
+other root entry, and its allow-list is rendered from `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs), the same list producer
+qualification enforces on the mounted image. Changing the `dmg:` layout therefore means
+updating that list, or the Signed distribution job refuses the image before publication.
 
 Dragging the app out of a disk image records no receipt, so that copy never updates itself. The
 Read Me says so, names both destinations in words, and gives `make install` as the way to get

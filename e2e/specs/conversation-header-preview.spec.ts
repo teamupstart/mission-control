@@ -85,6 +85,12 @@ test("the conversation header preview redraws with each style and band cell", as
   // The band's two cells move it too, and the band goes whole when both are off.
   const band = preview.locator(".detail-sub");
   await expect(band.getByText("mission/fix-the-parser")).toBeVisible();
+  // Each cell on its own: the path off leaves the band standing for the branch...
+  await customizer.getByRole("checkbox", { name: "Working directory", exact: true }).uncheck();
+  await expect(band.getByText("mission/fix-the-parser")).toBeVisible();
+  await expect(band.getByText("path", { exact: true })).toHaveCount(0);
+  await customizer.getByRole("checkbox", { name: "Working directory", exact: true }).check();
+  // ...and the branch off leaves it standing for the path.
   await customizer.getByRole("checkbox", { name: "Git branch", exact: true }).uncheck();
   await expect(band.getByText("mission/fix-the-parser")).toHaveCount(0);
   await expect(band.getByText("path", { exact: true })).toBeVisible();

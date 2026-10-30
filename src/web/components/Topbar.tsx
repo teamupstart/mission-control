@@ -17,6 +17,7 @@ import {
 import type { ForemanState } from "../useForeman.ts";
 import { AlertBar } from "./AlertBar.tsx";
 import { ForemanBar } from "./ForemanBar.tsx";
+import { ResidentsDock, type ResidentsDockProps } from "../residents/ResidentsDock.tsx";
 import { KeepAwakeControl } from "./KeepAwakeControl.tsx";
 import { Keycap } from "./Keycap.tsx";
 import { SpendChip } from "./SpendChip.tsx";
@@ -64,6 +65,11 @@ export interface TopbarProps {
   foremanOpenRequest?: number;
   onOpenModels: () => void;
   onOpenForemanSettings: () => void;
+  /**
+   * The Residents dock's data and destinations, beside Foreman. Optional so the Display
+   * preview, which has no fleet behind it, still draws the button with nothing live.
+   */
+  residents?: Omit<ResidentsDockProps, "compact">;
   onOpenDispatch: () => void;
   dispatchRef?: Ref<HTMLButtonElement>;
   onOpenFeedback: () => void;
@@ -77,6 +83,16 @@ export interface TopbarProps {
   setAway: (patch: Partial<AwayConfig>) => Promise<void>;
   buffered: AwayBufferSummary | null;
 }
+
+/** The dock as the Display preview draws it: the real button, with nothing live behind it. */
+const PREVIEW_RESIDENTS_DOCK: Omit<ResidentsDockProps, "compact"> = {
+  runs: [],
+  profiles: [],
+  sessions: [],
+  onOpenSession: () => {},
+  onOpenLaunch: () => {},
+  onManage: () => {},
+};
 
 export function Topbar(props: TopbarProps): React.JSX.Element {
   const { layout, page, filter, onFilterChange, filterRef } = props;
@@ -221,6 +237,12 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
             {...(props.foremanOpenRequest !== undefined ? { openRequest: props.foremanOpenRequest } : {})}
             onOpenModels={props.onOpenModels}
             onOpenSettings={props.onOpenForemanSettings}
+          />
+          {/* Beside Foreman, inside the group of controls that act on the fleet: a resident
+              is an agent you keep running, and the dock is where you reach one. */}
+          <ResidentsDock
+            {...(props.residents ?? PREVIEW_RESIDENTS_DOCK)}
+            compact={isTopbarItemCompact(layout, "residents")}
           />
           <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
             <button className="dispatch-btn" onClick={props.onOpenDispatch} ref={props.dispatchRef}>

@@ -9,7 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
-import type { ResidentProfile } from "./residents.ts";
+import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -3103,6 +3103,14 @@ export type ServerEvent =
        */
       residentProfiles?: ResidentProfile[];
       /**
+       * Live resident runs - launched or still launching, never ended or failed - each with
+       * its pinned revision's settings, so the board joins a session to its run (marker,
+       * label, pin) through its task id. Bounded by the residents actually running: a run
+       * leaves through `resident_run_remove` when it ends. Optional so a snapshot from a
+       * build that predates the collection still parses.
+       */
+      residentRuns?: ResidentRunSummary[];
+      /**
        * Every pipeline run the daemon is projecting, for the repositories an operator has
        * consented to. EMPTY on every fleet with no pipeline provider enabled, which is the
        * shipped state - so this collection costs an ordinary installation one `[]`.
@@ -3233,6 +3241,12 @@ export type ServerEvent =
    */
   | { type: "resident_profile_upsert"; profile: ResidentProfile }
   | { type: "resident_profile_remove"; id: string }
+  /**
+   * A resident run was reserved or settled its launch. Carries the whole live summary.
+   * `resident_run_remove` fires when the run ends or its launch failed, after the write.
+   */
+  | { type: "resident_run_upsert"; run: ResidentRunSummary }
+  | { type: "resident_run_remove"; id: string }
   /**
    * A pipeline run's projection moved - a step changed state, a gate answered, the engine
    * halted, or the run appeared for the first time. Carries the WHOLE run, like

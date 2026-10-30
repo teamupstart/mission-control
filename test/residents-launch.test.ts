@@ -997,8 +997,10 @@ test("workspace cleanup yields, serializes each run, and drains before manager s
   const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "async-cleanup" });
   if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
   const run = outcome.result.run;
+  assert.deepEqual(setup.registry.listResidentRuns().map(({ id }) => id), [run.id]);
   const task = setup.registry.getTask(run.taskId)!;
   setup.registry.upsertTask({ ...task, status: "done" });
+  assert.deepEqual(setup.registry.listResidentRuns(), [], "the live summary leaves before deferred filesystem cleanup");
   setSdkSessionStatus(task.sessionId!, "exited");
   const first = setup.residents.cleanupEndedWorkspaces();
   const second = setup.residents.cleanupEndedWorkspaces();
@@ -1010,6 +1012,7 @@ test("workspace cleanup yields, serializes each run, and drains before manager s
     assert.equal(stopped, false, "shutdown waits for the in-flight filesystem operation");
     assert.ok(existsSync(run.workspaceDir!));
     assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, run.workspaceDir);
+    assert.deepEqual(new Registry().snapshot().residentRuns, [], "reconnect cannot revive an ended run awaiting cleanup");
   } finally {
     release();
     await Promise.all([first, second, stopping]);
@@ -1102,4 +1105,110 @@ test("startup binds a repo-less task whose driver accepted launch before the tas
   assert.equal(registry.getTask(taskId)?.status, "running");
   assert.equal(registry.getTask(taskId)?.sessionId, "sdk-repo-less-unbound");
   tasks.stop();
+});
+
+// ---- Phase 2: the `residentRuns` collection and the pinned marker ----
+
+function runFrames(registry: Registry): Array<{ type: string; id: string; launchState?: string }> {
+  const frames: Array<{ type: string; id: string; launchState?: string }> = [];
+  registry.subscribe((event) => {
+    if (event.type === "resident_run_upsert") {
+      frames.push({ type: event.type, id: event.run.id, launchState: event.run.launchState });
+    } else if (event.type === "resident_run_remove") {
+      frames.push({ type: event.type, id: event.id });
+    }
+  });
+  return frames;
+}
+
+test("a launch publishes its run while it is live, carrying the pinned settings, and removes it when the run ends", async () => {
+  const h = harness();
+  const frames = runFrames(h.registry);
+  const profile = profileIn(h);
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-live" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const { run, taskId } = outcome.result;
+
+  // Reserved (pending), then launched: both frames carry the whole live summary.
+  assert.deepEqual(frames, [
+    { type: "resident_run_upsert", id: run.id, launchState: "pending" },
+    { type: "resident_run_upsert", id: run.id, launchState: "launched" },
+  ]);
+  const [live] = h.registry.listResidentRuns();
+  assert.equal(live?.id, run.id);
+  assert.equal(live?.taskId, taskId);
+  assert.equal(live?.personaName, PERSONA.name);
+  assert.deepEqual(live?.settings.board, { colorId: "cyan", label: null, pin: true });
+  // Only the sections the browser draws: never the profile instructions or the repository.
+  assert.deepEqual(Object.keys(live!.settings).sort(), ["board", "identity"]);
+  // The wire summary leaves out what no board surface reads.
+  assert.equal("persona" in (live as object), false);
+  assert.equal("runInstructions" in (live as object), false);
+  assert.deepEqual(h.registry.snapshot().residentRuns.map((r) => r.id), [run.id]);
+
+  // Complete & close settles the task; the run ends and leaves the collection.
+  h.registry.upsertTask({ ...h.registry.getTask(taskId)!, status: "done" });
+  assert.deepEqual(frames.at(-1), { type: "resident_run_remove", id: run.id });
+  assert.deepEqual(h.registry.listResidentRuns(), []);
+  assert.deepEqual(h.registry.snapshot().residentRuns, []);
+});
+
+test("a failed launch never stays in the collection, and a fresh registry seeds only open runs", async () => {
+  const h = harness({ mode: "fail" });
+  const frames = runFrames(h.registry);
+  const profile = profileIn(h);
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-fail" });
+  assert.equal(outcome.ok, false);
+  const runId = frames[0]!.id;
+  assert.deepEqual(frames, [
+    { type: "resident_run_upsert", id: runId, launchState: "pending" },
+    { type: "resident_run_remove", id: runId },
+  ]);
+  assert.deepEqual(h.registry.listResidentRuns(), []);
+
+  // One live run and one failed run in the database: a reconnect snapshot from a new registry
+  // carries exactly the live one. The collection is bounded by the residents running.
+  h.mode.current = "start";
+  const second = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-live-2" });
+  if (!("result" in second) || second.result.state !== "launched") assert.fail(JSON.stringify(second));
+  assert.equal(runCount(), 2);
+  const fresh = new Registry();
+  assert.deepEqual(fresh.snapshot().residentRuns.map((r) => r.id), [second.result.run.id]);
+});
+
+test("editing a profile's color, label or pin leaves a live run's marker and position unchanged; the next launch uses the edit", async () => {
+  const h = harness();
+  const profile = profileIn(h);
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-before-edit" });
+  if (!("result" in first) || first.result.state !== "launched") assert.fail(JSON.stringify(first));
+
+  const edited = h.residents.updateProfile(profile.id, 1, {
+    ...profile.settings,
+    board: { colorId: "violet", label: "DOC", pin: false },
+  });
+  assert.equal(edited.ok, true);
+  const current = edited.ok ? edited.profile : assert.fail("edit");
+
+  const { residentMarksBySession, pinnedResidentSessions } = await import("../src/web/residents/marker.ts");
+  const { mkSession, mkTaskSummary } = await import("./helpers/session-fixture.ts");
+  const liveSession = mkSession({ id: "s-live", task: mkTaskSummary({ id: first.result.taskId, kind: "resident" }) });
+  const marks = residentMarksBySession([liveSession], h.registry.listResidentRuns(), [current]);
+  const mark = marks.get("s-live")!;
+  assert.equal(mark.colorId, "cyan", "the live run keeps the color it launched with");
+  assert.equal(mark.label, "TB", "and the label its pinned revision derived from the name");
+  assert.equal(mark.pin, true, "and stays pinned");
+  assert.equal(mark.revision, 1);
+  assert.equal(mark.changedTo, 2, "the profile's edit is only reported, never followed");
+  assert.deepEqual([...pinnedResidentSessions(marks)], ["s-live"]);
+
+  const second = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-after-edit" });
+  if (!("result" in second) || second.result.state !== "launched") assert.fail(JSON.stringify(second));
+  const nextSession = mkSession({ id: "s-next", task: mkTaskSummary({ id: second.result.taskId, kind: "resident" }) });
+  const both = residentMarksBySession([liveSession, nextSession], h.registry.listResidentRuns(), [current]);
+  assert.deepEqual(
+    { colorId: both.get("s-next")!.colorId, label: both.get("s-next")!.label, pin: both.get("s-next")!.pin },
+    { colorId: "violet", label: "DOC", pin: false },
+  );
+  assert.equal(both.get("s-next")!.changedTo, null);
+  assert.deepEqual([...pinnedResidentSessions(both)], ["s-live"], "only the run whose pinned revision pins it sorts first");
 });

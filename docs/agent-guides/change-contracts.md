@@ -1246,6 +1246,24 @@ The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfile
 creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a
 profile is authoring state, and a launched resident reaches the Line as its task and session.
 
+The `residentRuns` collection carries each live run (`ResidentRunSummary`: not ended, not failed)
+with its pinned revision's settings, and nothing is added to `Session`: the browser joins a
+session to its run through the task id (`residentMarksBySession`). Its `settings` is the pinned
+revision projected to `RESIDENT_RUN_SUMMARY_SECTIONS` (`identity` and `board`), not the whole
+revision: the profile instructions, Persona id, execution and workspace choices stay on the
+daemon, which reads the full pinned revision through `ResidentStore.revision`. A later phase that
+shows its own pinned section in the browser appends that section id to the list, in one line,
+and the summary carries it from then on. `ResidentManager` publishes
+after every run write, reading the row back (`publishRun`), so the collection is bounded by the
+residents running. `resident_run_upsert` and `resident_run_remove` are not `LINE_INPUT_EVENTS`
+either. The board's marker and pin read only that join:
+
+- Marker colors are `RESIDENT_MARKER_COLORS` ids, persisted in `board.colorId` and drawn through
+  the `--resident-<id>` tokens in `styles.css`. Append-only; an unknown id draws as the first color.
+- The pin is an argument to `orderSessions` (`pinnedResidentSessions`), the outermost partition
+  inside a tone group, ahead of free and held. App, `BoardView` and `ConsoleView` all pass it, so
+  the three orderings and the arrow keys agree.
+
 ## Electron and build surfaces
 
 An Electron capability spans:

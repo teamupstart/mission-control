@@ -4,6 +4,10 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import {
   RESIDENT_AGENTS,
   RESIDENT_LIMITS,
+  RESIDENT_MARKER_COLORS,
+  RESIDENT_MARKER_LABEL_MAX,
+  defaultResidentMarkerLabel,
+  residentMarkerColor,
   type ResidentAgent,
   type ResidentProfileRevision,
   type ResidentProfileSectionId,
@@ -14,6 +18,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { fetchRepos } from "../lib/api.ts";
 import { ModelCatalogNotice, ModelCatalogOptions, useHarnessModelCatalogs } from "../model-catalog.tsx";
+import { residentAccentStyle } from "./marker.ts";
 
 /** What every section editor is handed. Each writes only its own slice of the draft. */
 export interface ResidentEditorSectionProps {
@@ -210,6 +215,68 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
   );
 }
 
+function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  const board = draft.board;
+  const colorId = residentMarkerColor(board.colorId);
+  const derived = defaultResidentMarkerLabel(draft.identity.name);
+  return (
+    <div className="resident-fields">
+      <div className="field">
+        <span className="field-label" id="resident-marker-color-label">Marker color</span>
+        <div className="resident-swatches" role="radiogroup" aria-labelledby="resident-marker-color-label">
+          {RESIDENT_MARKER_COLORS.map((color) => (
+            <Tooltip key={color.id} label={`${color.label} border glow`}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={color.id === colorId}
+                aria-label={color.label}
+                className={`resident-swatch${color.id === colorId ? " active" : ""}`}
+                style={residentAccentStyle(color.id)}
+                disabled={disabled}
+                onClick={() => update("board", { ...board, colorId: color.id })}
+              />
+            </Tooltip>
+          ))}
+        </div>
+      </div>
+      <div className="resident-fields-row">
+        <label className="field">
+          <span className="field-label">
+            Marker label <span className="field-hint">up to {RESIDENT_MARKER_LABEL_MAX} characters</span>
+          </span>
+          <input
+            className="field-input resident-marker-label"
+            value={board.label ?? ""}
+            maxLength={RESIDENT_MARKER_LABEL_MAX}
+            disabled={disabled}
+            placeholder={derived}
+            onChange={(event) => update("board", { ...board, label: event.target.value.trim() ? event.target.value : null })}
+          />
+        </label>
+        <label className="alert-row resident-pin">
+          <Tooltip label="Sort this resident's sessions first in their board column and Console rail group">
+            <input
+              type="checkbox"
+              checked={board.pin}
+              disabled={disabled}
+              onChange={(event) => update("board", { ...board, pin: event.target.checked })}
+            />
+          </Tooltip>
+          <span>Pin to top of column</span>
+        </label>
+      </div>
+      <p className="field-hint">
+        Preview: <span className="resident-chip" style={residentAccentStyle(colorId)} aria-hidden>
+          {board.pin && <span className="resident-chip-pin">⤒</span>}
+          {board.label?.trim() || derived}
+        </span>{" "}
+        Running residents keep the marker they launched with.
+      </p>
+    </div>
+  );
+}
+
 /**
  * The editor's sections, in order. Phase 1 registers the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
@@ -244,5 +311,11 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     title: "Workspace",
     blurb: "Choose a repository for a task worktree, or no repository for a private directory removed when the run ends.",
     Body: WorkspaceSection,
+  },
+  {
+    id: "board",
+    title: "Board presence",
+    blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
+    Body: BoardSection,
   },
 ];

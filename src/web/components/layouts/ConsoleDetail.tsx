@@ -33,6 +33,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { ResidentBand } from "../../residents/ResidentBand.tsx";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -209,6 +210,7 @@ export function ConsoleDetail({
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
+  const resident = view.residentBySession?.get(session.id) ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -639,6 +641,14 @@ export function ConsoleDetail({
         <RuntimeMetaRow meta={session.meta} session={session} />
         <CostChip cost={session.cost} />
       </header>
+
+      {/* The resident this session is, under the header rather than in it: the header's
+          one-row fit already has a give-way order to keep, and the band is the surface the
+          loop's state and controls join later. Not gated on the marker item - it is where a
+          resident is named, not decoration on top of it. */}
+      {resident && (
+        <ResidentBand mark={resident} onOpenProfile={view.onOpenResidentProfile} />
+      )}
 
       {pipelineCommission && (
         <div className="detail-pipeline-meter">

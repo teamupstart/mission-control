@@ -39,6 +39,11 @@ const SET_FROM_JS = new Map<string, string>([
   // stylesheet cannot declare it and a fallback would be a fifth colour nobody chose. Every
   // rule reading it is inside a `.board-repo` / `.rail-repo` that sets it.
   ["--repo-c", "a repository's colour, inline from repoColor() (see lib/repo-color.ts)"],
+  // A resident's marker colour, inline from `residentAccentStyle` (`residents/marker.ts`) as
+  // `var(--resident-<id>)` - always one of the palette tokens declared in `:root`. The sibling
+  // of `--repo-c`: per element, and every rule reading it is on an element that sets it
+  // (`.is-resident`, `.resident-chip`, `.resident-band`, `.resident-swatch`).
+  ["--resident", "a resident's marker colour, inline from residentAccentStyle() (see residents/marker.ts)"],
   ["--topbar-h", "measured in App.tsx (see AGENTS.md)"],
   ["--tt-caret", "the tooltip caret offset, inline from Tooltip.tsx"],
   ["--pct", "a bar's own fill percentage, inline from SpendChip.tsx"],

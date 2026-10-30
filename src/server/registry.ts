@@ -61,7 +61,7 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
-import type { ResidentProfile } from "@shared/residents.ts";
+import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -145,7 +145,7 @@ import { claimInjectionEcho } from "./injections.ts";
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
-import { listLiveResidentProfiles } from "./residents/store.ts";
+import { listLiveResidentProfiles, listOpenResidentRuns } from "./residents/store.ts";
 // The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
 // store with it: everything it reads is gathered by `lineSummaryNow` below.
 import type { LineSummary } from "@shared/line.ts";
@@ -575,6 +575,9 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   // `resident_profile_upsert` / `resident_profile_remove` are DELIBERATELY absent: a profile is
   // authoring state, like a Persona. A launched resident reaches the Line as its task and its
   // session, through the frames above.
+  // `resident_run_upsert` / `resident_run_remove` are DELIBERATELY absent too: the
+  // `residentRuns` collection only joins a session to the run that launched it, for the board
+  // marker and pin. Nothing in it is a Line input - the run's task and session already are.
   // Moves the Shipped stage's per-PR figure.
   "cost_fleet",
   // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
@@ -862,6 +865,12 @@ export class Registry extends EventEmitter {
    * Bounded by `RESIDENT_LIMITS.liveProfiles`.
    */
   private residentProfiles = new Map<string, ResidentProfile>();
+  /**
+   * Live resident runs, by run id. A cache and a notifier on the same terms as the profiles
+   * above. Bounded by the residents running: only open runs enter, and each leaves when it
+   * ends or its launch fails.
+   */
+  private residentRuns = new Map<string, ResidentRunSummary>();
   /**
    * The pipeline projection, keyed `provider repoRoot slug` (see `pipelineRunKey`).
    *
@@ -1153,6 +1162,10 @@ export class Registry extends EventEmitter {
     // tick. Empty on every machine that has never saved a schedule.
     for (const s of loadActiveSchedules()) this.schedules.set(s.id, s);
     for (const profile of listLiveResidentProfiles()) this.residentProfiles.set(profile.id, profile);
+    for (const { run } of listOpenResidentRuns()) {
+      const summary = residentRunSummary(run);
+      if (summary) this.residentRuns.set(summary.id, summary);
+    }
     // Every non-orphaned thread, so a dashboard reconnecting after a daemon restart is
     // handed the same queue it was looking at. Threads whose session went away while the
     // daemon was down are still here at this point and are settled by the
@@ -1191,6 +1204,7 @@ export class Registry extends EventEmitter {
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
     residentProfiles: ResidentProfile[];
+    residentRuns: ResidentRunSummary[];
     pipelineRuns: PipelineRun[];
     pipelineCommissions: PipelineCommission[];
     fileCommentThreads: FileCommentThread[];
@@ -1216,6 +1230,7 @@ export class Registry extends EventEmitter {
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
       residentProfiles: [...this.residentProfiles.values()],
+      residentRuns: [...this.residentRuns.values()],
       // Seeded from the projection at boot, so a dashboard connecting before the watcher's
       // first pass is already right rather than blank for one tick. Empty on every fleet
       // that has enabled no pipeline repository.
@@ -2087,6 +2102,20 @@ export class Registry extends EventEmitter {
 
   removeResidentProfile(id: string): void {
     if (this.residentProfiles.delete(id)) this.emitEvent({ type: "resident_profile_remove", id });
+  }
+
+  listResidentRuns(): ResidentRunSummary[] {
+    return [...this.residentRuns.values()];
+  }
+
+  /** Announce a live run. `ResidentManager` calls this after the write it reflects. */
+  upsertResidentRun(summary: ResidentRunSummary): void {
+    this.residentRuns.set(summary.id, summary);
+    this.emitEvent({ type: "resident_run_upsert", run: summary });
+  }
+
+  removeResidentRun(id: string): void {
+    if (this.residentRuns.delete(id)) this.emitEvent({ type: "resident_run_remove", id });
   }
 
   /** Replace the live catalog after a settings restore, emitting only what changed. */

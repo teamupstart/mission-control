@@ -92,6 +92,9 @@ export interface FleetToneGroup extends ToneGroup {
   heldFrom: number | null;
 }
 
+/** No pinned sessions: the default, which reproduces the order before pinning existed. */
+const NO_PINNED_SESSIONS: ReadonlySet<string> = new Set();
+
 export interface FleetOrder {
   /** The flat display order, every tone group concatenated in `TONE_GROUPS` order. */
   sessions: Session[];
@@ -172,9 +175,17 @@ export type FleetBlock =
  * are arguments rather than something read off the session precisely so every side passes the
  * same value - all three call sites read `byRepo` from the one `useUiConfig` store.
  *
- * `held` defaults to empty and `byRepo` to false, which together reproduce the pre-workflow,
- * pre-repository ordering exactly - so a caller that has neither (and every test that predates
- * them) is unaffected.
+ * PINNED RESIDENTS SORT FIRST IN EVERY COLUMN, ahead of free and held. `pinned` is the set of
+ * sessions whose resident run's pinned revision says "pin to top of column" - a join, like
+ * `held`, so it arrives as an argument (`pinnedResidentSessions`). It is the OUTERMOST
+ * partition, inside the tone group and outside everything else: a pinned resident is first
+ * in its column whatever its repository, and the tone rule still holds, so a pinned resident
+ * that needs you sits at the top of "needs you", not of its old column. A pinned session is
+ * never also held - pinned wins - because a resident has no Workflow to hold it.
+ *
+ * `held` defaults to empty, `byRepo` to false and `pinned` to empty, which together reproduce
+ * the pre-workflow, pre-repository, pre-resident ordering exactly - so a caller that has none of
+ * them (and every test that predates them) is unaffected.
  */
 export function orderSessions(
   sessions: readonly Session[],
@@ -182,6 +193,7 @@ export function orderSessions(
   byRepo = false,
   pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>,
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>,
+  pinned: ReadonlySet<string> = NO_PINNED_SESSIONS,
 ): FleetOrder {
   const display = (session: Session) => {
     const commissionId = session.task?.pipelineCommissionId;
@@ -198,7 +210,7 @@ export function orderSessions(
   });
 
   const groups = groupByTone(baseline, (session) => display(session).tone)
-    .map((group) => clusterGroup(group, held, byRepo));
+    .map((group) => clusterGroup(group, held, byRepo, pinned));
   return { sessions: groups.flatMap((g) => g.sessions), groups };
 }
 
@@ -239,6 +251,7 @@ function clusterGroup(
   group: ToneGroup,
   held: ReadonlySet<string>,
   byRepo: boolean,
+  pinned: ReadonlySet<string>,
 ): FleetToneGroup {
   // The free/held split happens BEFORE clustering, and each side is then clustered on its own.
   // Clustering the group as a whole and splitting after would not work: the buckets are keyed by
@@ -248,19 +261,26 @@ function clusterGroup(
   //
   // The consequence is the same one the tone-boundary rule already has: such a run is drawn as
   // two frames, one per side, and its header's own rollup is what ties the halves together.
-  const partitions = group.tone === "idle" && group.sessions.some((s) => held.has(s.id))
+  //
+  // Pinned residents are split off first, for the same reason and in the same way: each side is
+  // clustered and repository-grouped on its own, so no frame straddles the pinned boundary.
+  const pinnedPart = pinned.size > 0 ? group.sessions.filter((s) => pinned.has(s.id)) : [];
+  const rest = pinnedPart.length > 0 ? group.sessions.filter((s) => !pinned.has(s.id)) : group.sessions;
+  const unpinned = group.tone === "idle" && rest.some((s) => held.has(s.id))
     ? [
-        group.sessions.filter((s) => !held.has(s.id)),
-        group.sessions.filter((s) => held.has(s.id)),
+        rest.filter((s) => !held.has(s.id)),
+        rest.filter((s) => held.has(s.id)),
       ]
-    : [group.sessions];
+    : [rest];
+  const partitions = pinnedPart.length > 0 ? [pinnedPart, ...unpinned] : unpinned;
+  const heldPartition = pinnedPart.length > 0 ? 2 : 1;
 
   const sessions: Session[] = [];
   const clusters: FleetClusterSpan[] = [];
   const repos: FleetRepoSpan[] = [];
   let heldFrom: number | null = null;
   for (const [index, partition] of partitions.entries()) {
-    if (index === 1) heldFrom = sessions.length;
+    if (index === heldPartition) heldFrom = sessions.length;
     // Repositories partition INSIDE the free/held split and OUTSIDE the run clustering, which
     // is the only order the three can compose in. Outside the held split, a repository span
     // would straddle the boundary and swallow the section rule, exactly as a run cluster

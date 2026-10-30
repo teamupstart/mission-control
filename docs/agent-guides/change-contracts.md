@@ -296,6 +296,11 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   established is excluded from a human prompt trail rather than admitted to one. Append,
   never reorder - `human` is the only value whose text is retained at all, and even that is
   trimmed and clipped to `SCOUT_PROMPT_LIMITS.entryBytes` rather than kept byte-for-byte
+- Resident identifiers - the task kind `resident`, the launch-state vocabulary
+  (`RESIDENT_LAUNCH_STATES` in `src/shared/residents.ts`, written into
+  `resident_runs.launch_state`), the profile section keys (`RESIDENT_PROFILE_SECTIONS`, the JSON
+  keys every stored revision carries) and the `resident-profiles` settings-backup domain. Append,
+  never rename or reorder. See [Resident profiles](#resident-profiles)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and
@@ -1174,6 +1179,8 @@ Extend existing registries instead of adding parallel lists:
 - Task sources: `TASK_SOURCE_KIND_INFO` and `TASK_SOURCES`
 - Pipeline providers: `PIPELINE_PROVIDER_INFO` / `PIPELINE_STEPS` (`src/shared/pipeline.ts`)
   and `PIPELINE_PROVIDERS` (`src/server/pipelines/index.ts`)
+- Resident profiles: `RESIDENT_PROFILE_SECTIONS`, `RESIDENT_EDITOR_SECTIONS` and
+  `RESIDENT_LAUNCH_CONTRIBUTORS`; see [Resident profiles](#resident-profiles)
 - Task kinds: `TASK_KINDS` (`src/shared/types.ts`) for the ids and their picker order, `TASK_KIND_INFO` and `TASK_KIND_BEHAVIOR` (`src/shared/task.ts`) for how they are named, where they are available, who owns the launch, and whether backlog autopilot may act. Append, never reorder - `ship` at index 0 is what `DEFAULT_TASK_KIND` derives from, and it is the kind every automated writer takes and the one an unreadable persisted value degrades to. `pipeline` is append-only and fail-closed: it is offered only in an enabled pipeline repository, launches through the provider-owned terminal path, and is never backlog-autopilot work. Anything that enumerates the SET - a `z.enum`, a check over a persisted value, an `<option>` list - reads the tuple. Comparing against one kind (`kind === "scout"`) is ordinary code and needs nothing; a rule that is really about a PROPERTY of the kind is not, and states it as a predicate or behavior record over the vocabulary instead (`hasReviewableDiff`, `allowsBacklogAutopilot`). Nothing is grandfathered any more: `TaskSourcesPanel.tsx` and `ScheduleEditor.tsx` hand-wrote their `<option>`s until adding a third kind showed what that costs - they compiled cleanly and silently kept offering two - and both now render from the registry. `test/task-kinds.test.ts` compares the offender set exactly against an empty `KNOWN_HAND_WRITTEN`, and its detector flags any TWO ids declared together, so a stale subset fails as loudly as a complete copy
 - Ensemble strategies: shared strategy info and server compiler registry
 - Shared model choice: `resolveModelChoice`
@@ -1187,6 +1194,49 @@ Exhaustive `Record<Id, Value>` registries are intentional compiler enforcement.
 - `detectPathTokens(text)` - the fallback for a caller that cannot ask, which is the ensemble scorecard rendering a rationale before any file union is fetched. It guesses from shape and therefore misses every extensionless name, dotfile, and spaced path.
 
 Do not reach for the shape matcher while holding a listing, and do not add a third: they already share the word-boundary and `:line[:column]` rules, and the copies that preceded them had drifted.
+
+## Resident profiles
+
+Residents are extended through three registries, each owned by Phase 1 of
+[the residents plan](../plans/persistent-agent-profiles/phased-plan.md). A later phase appends to
+them and never edits another phase's entry:
+
+- `RESIDENT_PROFILE_SECTIONS` (`src/shared/residents.ts`) - the named section schemas a profile
+  revision is made of. A new section is optional with defaults (`.default({})` when its fields all
+  default), so a revision saved before it parses unchanged. Section keys are persisted JSON keys.
+  An older build never drops what a newer one wrote: request bodies stay strictly validated, the
+  store carries every stored section or field the request does not know forward on edit
+  (`preserveUnknownResidentSettings`), and settings snapshots carry and restore each revision as
+  stored.
+- `RESIDENT_EDITOR_SECTIONS` (`src/web/residents/editor-sections.tsx`) - how each section is
+  edited on `#/residents`, keyed by the same section id. `blankResidentDraft` reads section
+  defaults from the schema registry, so a new section needs no edit there.
+- `RESIDENT_LAUNCH_CONTRIBUTORS` (`src/server/residents/launch.ts`) - what each section adds to an
+  SDK launch. Contributors read only the run: its pinned revision, persona snapshot and run
+  instructions. Widen `ResidentLaunchContribution` with an optional field; never branch on a
+  harness id.
+
+Four rules hold across phases:
+
+1. **One launch path.** `ResidentManager.launch` behind `POST /api/residents/profiles/:id/launch`,
+   and `launchResident()` (`src/web/residents/launch.ts`) for every browser affordance. Only the
+   resident capability (`RESIDENT_LAUNCH_TASK_CREATE`) can create a `resident` task, and only with
+   the id its run reserved; `DispatchSchema`, MCP, schedules and task sources refuse the kind
+   (`taskKindCreator`).
+2. **A live run reads only its pinned revision**, through `ResidentStore.revision` on the daemon
+   and the run's `settings` in the browser. The current revision is for new launches.
+3. **The run is the durable identity.** `resident_runs` is written before its task, with the task
+   id reserved and the normalized launch input stored, so a replay - including two concurrent
+   requests with one `requestId` - is answered from the row alone. `launched` requires an
+   `sdk_sessions` row carrying the task id; the task existing is never evidence. Later phases add
+   columns with `addColumn` and an upgrade test.
+4. **Persona and instructions are standing instructions**, appended after repository standing
+   instructions by the composer at the dispatcher's one resident call site, recorded in
+   `session_standing_instructions` and replayed on resume.
+
+The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and
+creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a
+profile is authoring state, and a launched resident reaches the Line as its task and session.
 
 ## Electron and build surfaces
 

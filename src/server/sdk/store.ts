@@ -191,6 +191,19 @@ export function listSdkSessions(): SdkSessionRow[] {
     .map((r) => mapRow(r as unknown as Row));
 }
 
+/**
+ * Every embedded session row that names this task, oldest first.
+ *
+ * The durable evidence that a task's session STARTED: `SdkSupervisor.start` writes the row
+ * only after the driver accepted turn one, so a row carrying the task id means the agent
+ * received its first turn, whatever became of the task afterwards.
+ */
+export function sdkSessionIdsForTask(taskId: string): string[] {
+  return (openDb()
+    .prepare(`SELECT id FROM sdk_sessions WHERE task_id = ? ORDER BY created_at ASC`)
+    .all(taskId) as Array<{ id: string }>).map((row) => row.id);
+}
+
 export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(

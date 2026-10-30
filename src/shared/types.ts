@@ -9,6 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { ResidentProfile } from "./residents.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -1906,7 +1907,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "resident"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -3092,6 +3093,13 @@ export type ServerEvent =
        */
       schedules: MissionSchedule[];
       /**
+       * Live resident profiles, each with its current revision. Bounded by
+       * `RESIDENT_LIMITS.liveProfiles` (200): creation past it is refused, so the collection
+       * is never truncated. Archived profiles leave through `resident_profile_remove`.
+       * Optional so a snapshot from a build that predates residents still parses.
+       */
+      residentProfiles?: ResidentProfile[];
+      /**
        * Every pipeline run the daemon is projecting, for the repositories an operator has
        * consented to. EMPTY on every fleet with no pipeline provider enabled, which is the
        * shipped state - so this collection costs an ordinary installation one `[]`.
@@ -3215,6 +3223,13 @@ export type ServerEvent =
    */
   | { type: "schedule_upsert"; schedule: MissionSchedule }
   | { type: "schedule_remove"; id: string }
+  /**
+   * A resident profile was created, edited, or restored - carrying the whole profile with its
+   * current revision, so a browser never fetches to reconcile. `resident_profile_remove`
+   * fires on archive, after the durable write.
+   */
+  | { type: "resident_profile_upsert"; profile: ResidentProfile }
+  | { type: "resident_profile_remove"; id: string }
   /**
    * A pipeline run's projection moved - a step changed state, a gate answered, the engine
    * halted, or the run appeared for the first time. Carries the WHOLE run, like

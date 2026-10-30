@@ -261,6 +261,8 @@ test("verified restore reloads its window and invalidates other windows without 
   await expect(verifiedPreview).toBeVisible();
   await expect(dashboard.getByLabel("Restore sequence")).toContainText("Capture safety snapshot");
   await expect(dashboard.getByText("Workflow commands", { exact: true })).toBeVisible();
+  // Resident profiles are a catalog of their own in the preview, beside the Library's.
+  await expect(dashboard.getByText("Resident profiles", { exact: true })).toBeVisible();
   await verifiedPreview.scrollIntoViewIfNeeded();
   await shoot(dashboard, "verified-preview");
 

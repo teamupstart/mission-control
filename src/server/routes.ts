@@ -126,6 +126,10 @@ import {
   ResolveReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
+  CreateResidentProfileSchema,
+  UpdateResidentProfileSchema,
+  ArchiveResidentProfileSchema,
+  LaunchResidentRequestSchema,
   RunScheduleNowSchema,
   ScheduleHistoryQuerySchema,
   SchedulePreviewSchema,
@@ -611,6 +615,7 @@ import {
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
 import type { ScheduleService } from "./schedules/manager.ts";
+import type { ResidentManager } from "./residents/manager.ts";
 import { SCHEDULE_HISTORY_DEFAULT_LIMIT } from "@shared/schedules.ts";
 import type { ScheduleValidationError } from "@shared/schedules.ts";
 import type { EnsembleManager, EnsembleSubmitResult } from "./ensembles/manager.ts";
@@ -1128,6 +1133,11 @@ export interface RouteDeps {
    * than constructing a second manager here.
    */
   schedules?: ScheduleService;
+  /**
+   * Resident profiles and the one resident launch path. The resident routes answer 503 when
+   * it is absent rather than constructing a second manager here.
+   */
+  residents?: ResidentManager;
   ensembles?: EnsembleManager;
   /**
    * The owner of embedded (SDK-runtime) sessions.
@@ -1235,6 +1245,7 @@ export const ROUTE_DEP_NAMES = [
   "workflows",
   "sessionTransfers",
   "schedules",
+  "residents",
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
@@ -1526,6 +1537,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     personas,
     workflows,
     schedules,
+    residents,
     ensembles,
     sdkSessions,
     authorizeSessionControl,
@@ -8109,6 +8121,61 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     return c.json(task);
+  });
+
+  // --- resident profiles and their one launch path ---
+  //
+  // `ResidentManager` is the only writer of the resident tables; the Registry is its live cache
+  // and notifier, so a GET and a reconnect return the same catalog.
+  app.get("/api/residents/profiles", (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    return c.json(registry.listResidentProfiles());
+  });
+
+  app.post("/api/residents/profiles", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, CreateResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.createProfile(parsed.data.settings);
+    return result.ok
+      ? c.json(result.profile, 201)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  app.patch("/api/residents/profiles/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, UpdateResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.updateProfile(
+      c.req.param("id"),
+      parsed.data.expectedRevision,
+      parsed.data.settings,
+    );
+    return result.ok
+      ? c.json(result.profile)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  app.delete("/api/residents/profiles/:id", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ArchiveResidentProfileSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = residents.archiveProfile(c.req.param("id"), parsed.data.expectedRevision);
+    return result.ok
+      ? c.json(result.profile)
+      : c.json({ error: result.error, ...(result.profile ? { profile: result.profile } : {}) }, result.status);
+  });
+
+  // The ONE resident launch route. Idempotent on the body's `requestId`: 200 launched,
+  // 202 still starting (replay the same request to read the outcome), 409 for a failed launch
+  // (with its recorded reason) or a request id reused for a different launch.
+  app.post("/api/residents/profiles/:id/launch", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, LaunchResidentRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const outcome = await residents.launch(c.req.param("id"), parsed.data);
+    if ("result" in outcome) return c.json(outcome.result, outcome.status);
+    return c.json({ error: outcome.error, code: outcome.code }, outcome.status);
   });
 
   // The tour route family. Not a second dispatch API: the body chooses only a repository,

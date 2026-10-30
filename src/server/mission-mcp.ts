@@ -138,6 +138,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
   chat: [],
+  resident: [],
 };
 
 /**

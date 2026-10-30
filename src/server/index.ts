@@ -10,7 +10,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT } from "./config.ts";
+import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
@@ -34,7 +34,7 @@ import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
-import { TaskManager } from "./tasks.ts";
+import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
@@ -80,6 +80,7 @@ import {
 import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
+import { ResidentManager } from "./residents/manager.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
@@ -383,6 +384,18 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+// Resident profiles and the one resident launch path. It creates its tasks through
+// `TaskManager.create` with the resident capability, and the dispatcher asks it for each
+// resident's standing instructions, so both directions are installed here, after both exist.
+// Its startup reconciliation writes durable rows and starts after the port is won, below.
+const residents = new ResidentManager({
+  registry,
+  createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+  persona: (id) => personas.store.getPersona(id),
+  launchResponseWaitMs: residentLaunchWaitMs(),
+});
+tasks.registerResidentLaunch((task, repository, runtime) =>
+  residents.composeLaunch(task, repository, runtime));
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.
@@ -686,6 +699,7 @@ const app = buildApp({
   personas,
   workflows,
   schedules,
+  residents,
   ensembles,
   sdkSessions,
   sessionActions,
@@ -754,6 +768,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
+  // Settle resident runs a previous process left pending, from session-start evidence, then
+  // follow run ends. After the port for the reason the schedules above are: it writes rows.
+  residents.start();
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
@@ -926,6 +943,7 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.

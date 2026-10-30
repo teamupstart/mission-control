@@ -25,8 +25,18 @@ test("scout is an absolute automatic-wrap-up block", () => {
   assert.equal(result?.kind, "scout");
 });
 
+test("a resident is never wrapped up automatically, even when its objective reads as shippable", () => {
+  const result = block({
+    taskKind: "resident",
+    workflowId: null,
+    objective: "Begin your standing task. Implement the fix and open a pull request.",
+  });
+  assert.equal(result?.kind, "human_ended");
+  assert.equal(result?.reason, "the linked resident task has no explicit Workflow");
+});
+
 test("chat stays human-ended unless an explicit Workflow is selected", () => {
-  assert.equal(block({ taskKind: "chat", workflowId: null })?.kind, "chat");
+  assert.equal(block({ taskKind: "chat", workflowId: null })?.kind, "human_ended");
   assert.equal(
     block({ taskKind: "chat", workflowId: "workflow-review" }),
     null,

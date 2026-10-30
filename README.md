@@ -160,6 +160,11 @@ Mission Control supports five kinds of work:
 - **Pipeline** hands the work to an external SDLC engine while keeping it visible here.
 - **Chat** opens a conversation with no required deliverable or ceremony.
 
+**Residents** are long-running agents with a standing role. Author a resident profile once - a
+Persona, instructions, a harness, model and effort - on the Residents page, then launch it from
+**Dispatch > Resident**. It runs in the Agent SDK with its persona as standing instructions and ends
+only when you choose **Complete & close**. Read more in [Residents](docs/residents.md).
+
 ![Mission Control dispatch](docs/images/dispatch.png)
 
 Read more in [Dispatch, backlog, and task sources](docs/dispatch-and-backlog.md).

@@ -137,6 +137,7 @@ import { CommandLibrary } from "./workflows/CommandLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
+import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -321,6 +322,7 @@ export function App(): React.JSX.Element {
     archivesRevision,
     settingsRestoreNotice,
     schedules,
+    residentProfiles,
     connected,
     hasSnapshot,
     sessionTransfers,
@@ -345,6 +347,7 @@ export function App(): React.JSX.Element {
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.page === "residents" ? "residents"
       : route.kind === "pipelines" ? "pipelines" : "runs";
     featureVisit("page", JSON.stringify(route), feature);
   }, [route]);
@@ -832,6 +835,11 @@ export function App(): React.JSX.Element {
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
   const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
+  const openResidentLaunch = useCallback(
+    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
+    [],
+  );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
    * Ensemble mode on that strategy.
@@ -3019,6 +3027,14 @@ export function App(): React.JSX.Element {
         navigate(shortcutTarget);
         return;
       }
+      // Residents is a route rather than a title-bar segment, with the same stand-downs.
+      if (
+        chord === bindings.residents && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        navigate({ page: "residents" });
+        return;
+      }
 
       // Every page that is not the fleet owns its own keys - the Workflows editor, the
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
@@ -3952,6 +3968,20 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          residents={route.page === "residents" ? (
+            <ResidentsPage
+              profiles={residentProfiles}
+              personas={personas}
+              selectedId={route.profileId ?? null}
+              creating={route.creating === true}
+              onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onCreate={() => navigate({ page: "residents", creating: true })}
+              // Ungated: the page itself just settled the draft (saved, archived, discarded).
+              onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onDirtyChange={setWorkflowDirty}
+              onLaunch={(profile) => openResidentLaunch(profile.id)}
+            />
+          ) : null}
           scouts={
             // Mounted only when the route IS Scouts, like every other slot, so the archive
             // list and detail fetches never run while somebody is on the fleet. The page
@@ -4334,6 +4364,9 @@ export function App(): React.JSX.Element {
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
                 onEnsembleLaunched={openEnsembleRun}
+                residentProfiles={residentProfiles}
+                onEditResidentProfile={(profileId) =>
+                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
               />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
@@ -4447,7 +4480,7 @@ export function App(): React.JSX.Element {
             request={{
               title: "Leave with unsaved changes",
               body:
-                "The workflow or Persona open in the editor has changes that have not been "
+                "The workflow, Persona or resident profile open in the editor has changes that have not been "
                 + "saved. Leaving this page discards them.",
               confirmLabel: "Discard and leave",
               confirmHint: "Throw the unsaved edits away and go to the page you asked for",

@@ -54,6 +54,31 @@ for (const stopStarted of [false, true]) for (const leaseState of ["revoked", "c
   });
 }
 
+test("a resident never continues in a terminal: the handoff is refused before anything stops or launches", async (t) => {
+  const f = transferFixture(t);
+  // The refused handoff leaves this fixture's SDK row live; a later restart case must not restore it.
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+  f.registry.upsertTask({ ...f.registry.getTask(f.task!.id)!, kind: "resident" });
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /resident runs only in the Agent SDK/);
+  assert.equal(f.counts().launches, 0);
+  assert.equal(transferForSource(f.source.id), null);
+  assert.equal(f.registry.getTask(f.task!.id)?.status, "running");
+});
+
+test("a resident whose task already settled is still refused a terminal handoff, from its embedded row", async (t) => {
+  const f = transferFixture(t);
+  t.after(() => { openDb().prepare("DELETE FROM sdk_sessions WHERE id = ?").run(f.source.id); });
+  // The agent went away: the task is failed and no longer points at the session.
+  f.registry.upsertTask({ ...f.registry.getTask(f.task!.id)!, kind: "resident", status: "failed", sessionId: null });
+  const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /resident runs only in the Agent SDK/);
+  assert.equal(f.counts().launches, 0);
+  assert.equal(transferForSource(f.source.id), null);
+});
+
 test("resolution revalidates the transfer vocabulary after asynchronous observation", async (t) => {
   const f = transferFixture(t);
   const result = await handOffToTerminal(f.registry, f.supervisor, f.source, f.deps);

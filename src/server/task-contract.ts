@@ -108,6 +108,9 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   ].join("\n\n"),
   pipeline: () => null,
   chat: () => null,
+  // A resident's role travels as standing instructions, and it has no completion boundary of
+  // its own: it ends only when a human chooses Complete & close.
+  resident: () => null,
 };
 
 /**

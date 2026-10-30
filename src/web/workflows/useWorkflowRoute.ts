@@ -253,7 +253,19 @@ export type MissionRoute =
       archiveKey?: string;
       filters?: ScoutFilters;
     }
-  | { page: "settings"; category: SettingsCategoryId };
+  | { page: "settings"; category: SettingsCategoryId }
+  | {
+      /**
+       * Resident profiles: the rail of profiles and the editor beside it. A route rather than
+       * a top-bar segment - it is reached from Dispatch's Resident mode, the ⌘K palette and its
+       * shortcut, so the title bar keeps its four pages.
+       */
+      page: "residents";
+      /** The profile the editor has open. Absent shows the rail with nothing selected. */
+      profileId?: string;
+      /** A new profile is being authored. Never set together with `profileId`. */
+      creating?: true;
+    };
 
 /**
  * The route a direct page shortcut navigates to, or `null` when it must stand down.
@@ -465,6 +477,13 @@ export function parseMissionRoute(hash: string): MissionRoute {
   // never had one - and the catch-all above has already sent that hash to the Library,
   // which is where every unrecognized legacy sub-path goes.
   if (path === "/shipped") return { page: "shipped" };
+  if (path === "/residents") return { page: "residents" };
+  if (path === `/residents/${LIBRARY_NEW_SEGMENT}`) return { page: "residents", creating: true };
+  const resident = /^\/residents\/([^/]+)$/.exec(path);
+  if (resident) {
+    const profileId = segment(resident[1]!);
+    return profileId ? { page: "residents", profileId } : { page: "residents" };
+  }
   if (path === "/settings") return { page: "settings", category: DEFAULT_SETTINGS_CATEGORY };
   const settings = /^\/settings\/([^/]+)$/.exec(path);
   if (settings) {
@@ -503,6 +522,10 @@ export function missionRouteHash(route: MissionRoute): string {
   // compile - it silently serializes to `#/ensembles`, and `navigate({page:"shipped"})`
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
+  if (route.page === "residents") {
+    if (route.creating) return `#/residents/${LIBRARY_NEW_SEGMENT}`;
+    return route.profileId ? `#/residents/${encodeURIComponent(route.profileId)}` : "#/residents";
+  }
   if (route.page === "scouts") {
     // The key is emitted only when it is well formed, mirroring the parser. A hand-built
     // route carrying a malformed key would otherwise serialize to a hash that parses back

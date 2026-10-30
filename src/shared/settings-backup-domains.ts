@@ -31,6 +31,10 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "workflow-commands", surface: "library" },
   { id: "workflow-definitions", surface: "library" },
   { id: "workflow-versions", surface: "library" },
+  // Resident profiles and their current revisions, authored on the Residents page. Added after
+  // the first published format, so a snapshot written before it carries no such domain and
+  // restores without touching profiles (see `SETTINGS_BACKUP_CATALOGS`).
+  { id: "resident-profiles", surface: "residents" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

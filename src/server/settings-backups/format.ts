@@ -6,7 +6,11 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "@shared/settings-backups.ts";
-import { SETTINGS_BACKUP_CATALOGS, parseSettingsCatalogPayload } from "./catalogs.ts";
+import {
+  SETTINGS_BACKUP_CATALOGS,
+  parseSettingsCatalogPayload,
+  settingsCatalogIsOptional,
+} from "./catalogs.ts";
 import {
   SETTINGS_CONFIG_BACKUP_ENTRIES,
   parseSettingPayload,
@@ -47,6 +51,9 @@ export function validateSettingsBackupDomains(snapshot: SettingsBackupEnvelopeV1
     if (config) parseSettingPayload(config, entry.payload);
     else parseSettingsCatalogPayload(entry.domain, entry.payload);
   }
+  for (const domain of [...expectedDomains]) {
+    if (domain !== null && settingsCatalogIsOptional(domain)) expectedDomains.delete(domain);
+  }
   if (expectedDomains.size > 0) {
     throw new TypeError(`Snapshot is missing domains: ${[...expectedDomains].join(", ")}`);
   }
@@ -56,12 +63,17 @@ export function validateSettingsBackupDomains(snapshot: SettingsBackupEnvelopeV1
     return Array.isArray(value) ? value.length : -1;
   };
   SettingsBackupCountsSchema.parse(snapshot.counts);
+  const hasDomain = (domain: string): boolean =>
+    snapshot.domains.some((entry) => entry.domain === domain);
   const actual = {
     personas: payloadLength("personas"),
     sessionActions: payloadLength("session-actions"),
     workflowCommands: payloadLength("workflow-commands"),
     workflowDefinitions: payloadLength("workflow-definitions"),
     workflowVersions: payloadLength("workflow-versions"),
+    ...(hasDomain("resident-profiles")
+      ? { residentProfiles: payloadLength("resident-profiles") }
+      : {}),
   };
   if (canonicalSettingsBackupJson(actual) !== canonicalSettingsBackupJson(snapshot.counts)) {
     throw new TypeError("Snapshot catalog counts do not match its payloads");

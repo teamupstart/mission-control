@@ -1,6 +1,7 @@
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
+import { ModelIdSchema } from "./model-id.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
@@ -8,11 +9,14 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
-  TASK_KIND_BACKLOG_REFUSAL,
+  RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
+  taskKindCreator,
 } from "./task.ts";
+import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
@@ -942,34 +946,11 @@ const TaskDependenciesSchema = z
   });
 
 /**
- * A model id, in the only shape that is safe to hand to a harness CLI.
- *
- * Terminal backends preserve argv boundaries, but the value still passes through each
- * harness's option parser. Requiring an alphanumeric first character rejects flag- and
- * path-shaped inputs, while the restricted remainder excludes whitespace and control
- * characters before the id is stored. Real Claude and Codex ids fit that alphabet
- * (`claude-opus-4-8`, `gpt-5.6-sol`). Note this deliberately excludes Claude's `[1m]`
- * long-context marker: the CLI takes the bare id and picks the window itself.
+ * The model id vocabulary. Defined in `model-id.ts`, a leaf module, so browser-safe shared
+ * modules that `protocol.ts` itself imports (the resident profile schema) can use it without
+ * an import cycle; re-exported here for every existing reader.
  */
-export const ModelIdSchema = z
-  .string()
-  .max(80)
-  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
-  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
-  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
-  // the leading-char class.
-  //
-  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
-  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
-  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
-  // the edge, it dropped a third of that provider's catalog silently: the row never reached
-  // the picker, so the model simply did not exist as far as an operator could tell. It is
-  // no weaker than the rest of the class - not whitespace, not a control character, not a
-  // path separator, and not able to start the string.
-  //
-  // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
-  // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
+export { ModelIdSchema };
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -1107,19 +1088,28 @@ export const DispatchSchema = z
     message: "reasoning effort is not supported by this harness",
   })
   .superRefine((o, ctx) => {
+    // A resident is created only by its profile's launch, which reserves the run first.
+    if (taskKindCreator(o.kind) === "resident-launch") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["kind"],
+        message: RESIDENT_TASK_REFUSAL,
+      });
+      return;
+    }
     if (taskKindAllowsBacklog(o.kind)) return;
     if (o.backlog) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["backlog"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
     if (o.dependencies.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["dependencies"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
   });
@@ -1335,7 +1325,7 @@ const UpdateTaskFieldsSchema = z
     title: z.string().optional(),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
@@ -1427,7 +1417,7 @@ export const BulkUpdateTasksSchema = z
       .object({
         kind: z
           .enum(TASK_KINDS)
-          .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+          .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
           .optional(),
         agent: z.enum(AGENT_TYPES).optional(),
         enabled: z.boolean().optional(),
@@ -7516,7 +7506,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -8110,3 +8100,29 @@ export const SessionControlRequestSchema = z.object({
   command: SessionControlActionSchema,
 }).strict();
 export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;
+
+// ---- resident profiles ----
+
+/** `POST /api/residents/profiles`: revision 1 of a new profile. */
+export const CreateResidentProfileSchema = z
+  .object({ settings: ResidentProfileRevisionRequestSchema })
+  .strict();
+export type CreateResidentProfile = z.infer<typeof CreateResidentProfileSchema>;
+
+/** `PATCH /api/residents/profiles/:id`: a new revision, refused unless it follows `expectedRevision`. */
+export const UpdateResidentProfileSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    settings: ResidentProfileRevisionRequestSchema,
+  })
+  .strict();
+export type UpdateResidentProfile = z.infer<typeof UpdateResidentProfileSchema>;
+
+/** `DELETE /api/residents/profiles/:id`: archive, compare-and-set on the revision the editor read. */
+export const ArchiveResidentProfileSchema = z
+  .object({ expectedRevision: z.number().int().positive() })
+  .strict();
+export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
+
+/** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema;

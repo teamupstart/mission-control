@@ -30,11 +30,20 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_TASK_KIND, TASK_KINDS, type TaskKind } from "../src/shared/types.ts";
 import {
   BACKLOG_TASK_KINDS,
+  DISPATCH_TASK_KINDS,
+  RESIDENT_TASK_REFUSAL,
+  TASK_KIND_BACKLOG_REFUSAL,
   TASK_KIND_BEHAVIOR,
   TASK_KIND_INFO,
+  allowsBacklogAutopilot,
   hasReviewableDiff,
   providerOwnsTaskCompletion,
+  taskDefaultWorkflowId,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
+  taskKindCreator,
+  taskKindForcedRuntime,
+  taskKindLaunchesHarness,
 } from "../src/shared/task.ts";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
@@ -93,7 +102,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 test("the kinds preserve the append-only order and derive the type from it", () => {
-  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
+  assert.deepEqual([...TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "resident"]);
   // Order is a contract, not an accident of how they were typed: it is the order the
   // dispatch form lists the options in, and the order the guided pass offers them.
   assert.equal(TASK_KINDS[0], "ship", "ship leads - it is the default and the common case");
@@ -105,7 +114,7 @@ test("the kinds preserve the append-only order and derive the type from it", () 
   // `(typeof TASK_KINDS)[number]`, so a value the tuple does not hold is not assignable
   // and this file would not compile - which is the assertion.
   const every: readonly TaskKind[] = TASK_KINDS;
-  assert.equal(every.length, 7);
+  assert.equal(every.length, 8);
 });
 
 test("every kind says how it is offered", () => {
@@ -148,14 +157,29 @@ test("the diffless kinds are the ones whose blurb promises no after-work", () =>
   assert.equal(hasReviewableDiff("scout"), false);
   assert.equal(hasReviewableDiff("pipeline"), false);
   assert.equal(hasReviewableDiff("chat"), false);
+  assert.equal(hasReviewableDiff("resident"), false);
 });
 
-test("only chat is excluded from backlog-producing surfaces", () => {
+test("only chat and resident are excluded from backlog-producing surfaces", () => {
   assert.deepEqual([...BACKLOG_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "bugfix", "document"]);
   assert.deepEqual(
     Object.fromEntries(TASK_KINDS.map((kind) => [kind, taskKindAllowsBacklog(kind)])),
-    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true },
+    { ship: true, scout: true, plan: true, pipeline: true, chat: false, bugfix: true, document: true, resident: false },
   );
+});
+
+test("resident is launched only from a profile: Dispatch does not offer it and it forces the SDK", () => {
+  assert.deepEqual([...DISPATCH_TASK_KINDS], ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
+  assert.equal(taskKindCreator("resident"), "resident-launch");
+  assert.equal(taskKindCreator("chat"), "dispatch");
+  assert.equal(taskKindCreator("ship"), "any");
+  assert.equal(taskKindForcedRuntime("resident"), "sdk");
+  assert.equal(taskKindForcedRuntime("chat"), null);
+  assert.equal(taskKindLaunchesHarness("resident"), false, "the profile, not a per-kind default, owns its launch");
+  assert.equal(allowsBacklogAutopilot("resident"), false);
+  assert.equal(taskDefaultWorkflowId("resident", null), null);
+  assert.equal(taskKindBacklogRefusal("resident"), RESIDENT_TASK_REFUSAL);
+  assert.equal(taskKindBacklogRefusal("chat"), TASK_KIND_BACKLOG_REFUSAL);
 });
 
 test("every kind has its own colour, so no two marks can be mistaken for each other", () => {

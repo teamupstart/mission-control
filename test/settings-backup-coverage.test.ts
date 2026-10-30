@@ -60,7 +60,7 @@ test("Settings, runtime config, and Library domains have exactly one registered 
   const libraryDomains = SETTINGS_BACKUP_CATALOGS.map((entry) => entry.domain);
   assert.deepEqual(
     [...libraryDomains].sort(),
-    SETTINGS_BACKUP_DOMAINS.filter((domain) => domain.surface === "library")
+    SETTINGS_BACKUP_DOMAINS.filter((domain) => domain.surface === "library" || domain.surface === "residents")
       .map((domain) => domain.id)
       .sort(),
   );

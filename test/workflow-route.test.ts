@@ -481,6 +481,7 @@ test("global overlays stay mounted on every page, and only one page body renders
     shipped: "shipped body",
     scouts: "scouts body",
     settings: "settings body",
+    residents: "residents body",
   };
   const pages = Object.keys(bodies) as MissionRoute["page"][];
   for (const page of pages) {
@@ -493,6 +494,7 @@ test("global overlays stay mounted on every page, and only one page body renders
       shipped: createElement("main", null, bodies.shipped),
       scouts: createElement("main", null, bodies.scouts),
       settings: createElement("main", null, bodies.settings),
+      residents: createElement("main", null, bodies.residents),
       overlays: createElement("aside", null, "global overlays"),
     }));
     assert.match(html, new RegExp(`${page} body`));

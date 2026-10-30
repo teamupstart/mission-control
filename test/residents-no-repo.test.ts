@@ -222,6 +222,74 @@ test("resident Files refuses a substituted root or root ancestor", async (t) => 
   }
 });
 
+test("resident Files lists an ordinary replacement at the run path without traversing its former parent", async () => {
+  const { listSessionFiles } = await import("../src/server/session-files.ts");
+  const directory = residentWorkspaceDir("ordinary-replacement");
+  createResidentWorkspace("ordinary-replacement", directory);
+  writeFileSync(join(directory, "original.txt"), "original run content");
+  const original = statSync(directory, { bigint: true });
+  const outside = mkdtempSync(join(home, "replacement-source-"));
+  const replacement = join(outside, "moved-directory");
+  mkdirSync(replacement);
+  writeFileSync(join(replacement, "moved.txt"), "content moved into the run");
+  writeFileSync(join(outside, "outside-only.txt"), "stays outside");
+  const moved = statSync(replacement, { bigint: true });
+  renameSync(directory, `${directory}-saved`);
+  renameSync(replacement, directory);
+  assert.notEqual(moved.ino, original.ino);
+  assert.equal(statSync(directory, { bigint: true }).ino, moved.ino);
+  assert.equal(existsSync(replacement), false, "rename moves the directory; it creates no outside alias");
+  assert.deepEqual(await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }), [
+    { path: "moved.txt" },
+  ]);
+  assert.equal(readFileSync(join(outside, "outside-only.txt"), "utf8"), "stays outside");
+});
+
+test("resident Files keeps its opened root when an ordinary replacement is moved over the pathname", async (t) => {
+  const { listSessionFiles } = await import("../src/server/session-files.ts");
+  const directory = residentWorkspaceDir("ordinary-root-race");
+  createResidentWorkspace("ordinary-root-race", directory);
+  mkdirSync(join(directory, "nested"));
+  writeFileSync(join(directory, "nested", "original.txt"), "original run content");
+  const replacement = mkdtempSync(join(home, "replacement-race-"));
+  writeFileSync(join(replacement, "replacement-only.txt"), "replacement content");
+  let checkpoints = 0;
+  t.mock.method(performance, "now", () => {
+    if (++checkpoints === 2) {
+      // The root is open, immediately before its first asynchronous enumeration.
+      renameSync(directory, `${directory}-saved`);
+      renameSync(replacement, directory);
+    }
+    return 0;
+  });
+  assert.deepEqual(await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }), [
+    { path: "nested/original.txt" },
+  ]);
+  assert.ok(checkpoints >= 2);
+  assert.equal(readFileSync(join(directory, "replacement-only.txt"), "utf8"), "replacement content");
+});
+
+test("moving an outside directory to a resident root requires write access to its source parent", {
+  skip: process.getuid?.() === 0 ? "root bypasses directory permissions" : false,
+}, () => {
+  const directory = residentWorkspaceDir("replacement-permissions");
+  createResidentWorkspace("replacement-permissions", directory);
+  rmSync(directory, { recursive: true });
+  const outside = mkdtempSync(join(home, "replacement-denied-"));
+  const source = join(outside, "private-directory");
+  mkdirSync(source);
+  writeFileSync(join(source, "outside-only.txt"), "stays outside");
+  chmodSync(outside, 0o555);
+  try {
+    assert.throws(() => renameSync(source, directory), (error: unknown) =>
+      ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""));
+    assert.equal(existsSync(directory), false);
+    assert.equal(readFileSync(join(source, "outside-only.txt"), "utf8"), "stays outside");
+  } finally {
+    chmodSync(outside, 0o700);
+  }
+});
+
 test("resident Files caps regular entries returned by the asynchronous directory scan", async () => {
   const { listSessionFiles, MAX_SESSION_FILE_ENTRIES } = await import("../src/server/session-files.ts");
   const directory = mkdtempSync(join(home, "listing-file-cap-"));

@@ -1245,6 +1245,11 @@ against held directory descriptors so an ancestor swap cannot redirect deletion.
 Removal restores owner access on an already-open directory after a permission-denied unlink
 and retries once. A directory that cannot be opened stays owed until its access is restored;
 cleanup never changes permissions through a pathname.
+Workspace ownership records the reserved run path, not a persistent device/inode identity.
+Files opens the ordinary directory currently at that path for each request and holds its
+descriptor throughout traversal. Replacing the root after it opens cannot redirect that listing;
+an ordinary directory moved into the reserved path before the request becomes its current
+contents. This does not grant the resident permission to move or read directories elsewhere.
 Repository consumers use the shared predicate or `taskRepoRefs`, never infer
 a repository from cwd.
 

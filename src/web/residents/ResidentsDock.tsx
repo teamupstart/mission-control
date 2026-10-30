@@ -70,6 +70,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
   const [launches, setLaunches] = useState<Record<string, DockLaunch>>({});
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const handledOpenRequest = useRef(openRequest);
   const mounted = useRef(true);
   useEffect(() => {
@@ -104,6 +105,9 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     function onKey(e: KeyboardEvent): void {
       if (open && e.key === "Escape") {
         e.stopPropagation();
+        // Closing unmounts whatever inside the panel held focus, which would drop it on
+        // <body>. Hand it back to the button the dock hangs off, where the keyboard was.
+        if (panelRef.current?.contains(document.activeElement)) buttonRef.current?.focus();
         setOpen(false);
       }
     }
@@ -177,6 +181,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
     <div className="residents-dock" ref={ref}>
       <Tooltip label="Residents - long-running agents: open a live one, or launch one from its profile">
         <button
+          ref={buttonRef}
           className={`ghost-btn residents-btn${live > 0 ? " on" : ""}${compact ? " tb-compact" : ""}`}
           onClick={() => setOpen((o) => !o)}
           // Named explicitly because the word is a `.tb-label` the narrow ladder takes away;

@@ -239,6 +239,8 @@ test("the dock opens from its chord and from the palette, lists profiles, and a 
   await expect(dock).toContainText("Docs Gardener");
   await dashboard.keyboard.press("Escape");
   await expect(dock).toBeHidden();
+  // Escape hands focus back to the button the dock hangs off, not to the page body.
+  await expect(dashboard.getByRole("button", { name: /^Residents - \d+ live$/ })).toBeFocused();
 
   await dashboard.keyboard.press("Meta+K");
   const palette = dashboard.getByRole("dialog").filter({ has: dashboard.getByRole("combobox") }).first();

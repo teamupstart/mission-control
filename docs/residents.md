@@ -123,9 +123,10 @@ that way at every width.
 **Control other sessions**, under **Authority**, is off by default. Turned on, it lets a
 resident's run receive the same grant as the
 [session control menu](sessions.md#let-a-session-steer-other-sessions), so it can read and steer
-your other live sessions. Only one thing gives it that grant: your **Launch** click in the
-Mission Control desktop app, on **Launch resident** in Dispatch or **Launch** in the Residents
-dock.
+your other live sessions. Your **Launch** click in the Mission Control desktop app, on
+**Launch resident** in Dispatch or **Launch** in the Residents dock, is the only thing that gives
+it a grant that lasts for the run and through a restart. The session control menu can still grant
+control for one conversation, as it can for any session, and that grant ends at the next restart.
 
 - **For that run only.** The click authorizes exactly that launch of that profile revision. It
   is consumed when the launch starts, cannot be replayed, and expires after 15 seconds. Editing

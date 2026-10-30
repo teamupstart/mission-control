@@ -856,7 +856,13 @@ export class ResidentManager {
         clearResidentRunControl(runId);
         return;
       }
-      if (this.deps.registry.setSessionControlEnabled(sessionId, true)) this.logGrant(sessionId, runId, "restore");
+      // A grant this restore cannot apply is forgotten too: otherwise a later restart would apply
+      // from a record that this one refused.
+      if (!this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+        clearResidentRunControl(runId);
+        return;
+      }
+      this.logGrant(sessionId, runId, "restore");
       return;
     }
     // A grant that could not be applied leaves the run with no record at all, so the launch

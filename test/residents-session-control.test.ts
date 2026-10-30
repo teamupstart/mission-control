@@ -506,9 +506,14 @@ test("a revoke whose event log fails still forgets the run's grant, so a restart
  * task, bound to that same session: the restarted Registry loads it first, so its grant identity
  * names it as the session's task instead of the run's.
  */
-function restart(run: { taskId: string }, conversation = `native-${run.taskId}`, claimedBy?: Task) {
+function restart(
+  run: { taskId: string },
+  conversation = `native-${run.taskId}`,
+  claimedBy?: Task,
+  makeRegistry: () => Registry = () => new Registry(),
+) {
   if (claimedBy) upsertTask(claimedBy);
-  const registry = new Registry();
+  const registry = makeRegistry();
   const h = harness(registry);
   const sessionId = `sdk:${run.taskId}`;
   registry.registerSdkSession({
@@ -592,6 +597,19 @@ for (const field of ["control_authorized_at", "control_conversation_id", "contro
     assert.equal(h.registry.sessionControlEnabled(sessionId), false);
   });
 }
+
+test("a restore whose grant the Registry refuses forgets the record, so a later restart cannot apply it", async () => {
+  const { run } = await grantedRun();
+  // The restored session matches the record, but the Registry refuses to apply the grant.
+  const refusing = new GrantRefusingRegistry();
+  const { h, sessionId } = restart(run, `native-${run.taskId}`, undefined, () => refusing);
+  assert.equal(refusing.refusedGrants, 1, "the restore attempted the grant once");
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
+  for (const manager of managers.splice(0)) manager.stop();
+  const later = restart(run);
+  assert.equal(later.h.registry.sessionControlEnabled(later.sessionId), false, "nothing is left to apply");
+});
 
 test("a run whose click was consumed but whose grant never applied stays ungranted after a restart", async () => {
   const { run } = await grantedRun();

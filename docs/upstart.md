@@ -156,8 +156,9 @@ internal tracker becomes backlog rows.
 On a Mac enrolled in Upstart's own Jamf tenant, Mission Control configures its **Product
 analytics** telemetry destination to send to Upstart's telemetry gateway, which forwards to
 Upstart's Datadog. It turns collection and this destination on by default when the Mac is
-recognized. Every other Mac is unchanged. The dashboard shows a one-time notice that can be
-dismissed after reading it.
+recognized. Every other Mac is unchanged. The dashboard shows a one-time notice, "Telemetry is
+enabled by your organization for Claude and Codex.", that can be dismissed. Dashboard copy for
+the managed lane says "your organization" rather than naming Upstart.
 
 **What is detected.** Mission Control asks macOS for this Mac's current device management
 enrollment (`profiles status -type enrollment`, which needs no admin rights). The Mac is
@@ -171,14 +172,14 @@ on macOS and only in the desktop app or the built daemon, never under a test run
 state directory inside the temp dir.
 
 **It is managed, so it is view-only.** On a recognized Mac, **Settings > Telemetry** shows a
-**Managed by Upstart** block with the evidence, the lane's state and the configuration it uses.
+**Managed by your organization** block with the evidence, the lane's state and the configuration it uses.
 The state is one of:
 
-- "Sending to Upstart's Datadog";
-- "Waiting for the Upstart network", when the gateway's network edge refuses this network;
-- "Stopped sending to Upstart's Datadog", when the daemon paused the destination after a
+- "Sending to the configured telemetry collector";
+- "Waiting for the network", when the gateway's network edge refuses this network;
+- "Stopped sending to the configured telemetry collector", when the daemon paused the destination after a
   refusal, with the reason and **Try again** below it;
-- "Removing Upstart's telemetry settings", when the Mac has left Upstart's management but the
+- "Removing your organization's telemetry settings", when the Mac has left Upstart's management but the
   write that removes the managed settings failed. Nothing is sent, and **Re-check** retries.
 
 The panel has no switches, fields or Save buttons. The daemon refuses
@@ -210,7 +211,7 @@ withdrawn is in [Organization defaults](observability.md#organization-defaults).
 own metrics to Upstart's telemetry gateway. A managed policy outranks `~/.claude/settings.json`,
 so sessions you start yourself in a terminal never report their cost to Mission Control, even
 with the Cost switch on. Mission Control does not override the policy. Instead, **Settings >
-Cost** says "Upstart's managed Claude Code policy sends metrics to
+Cost** says "Your organization's managed Claude Code policy sends metrics to
 `corp-otel-staging-1.upstart.com`, so the estimate covers only sessions Mission Control runs."
 Sessions Mission Control runs are still counted. Only the host is read out of the policy. See
 [When a managed policy decides where metrics go](sessions.md#when-a-managed-policy-decides-where-metrics-go).

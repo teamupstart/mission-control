@@ -7,7 +7,7 @@ import {
   permissionPrompt,
   sdkPermissionMode,
 } from "../src/server/harness/claude/sdk.ts";
-import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
+import { defaultClaudeSdkDeps, sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type {
@@ -1388,4 +1388,42 @@ test("the adapter refuses a duplicated question too, against its own request", a
       }),
     /answered twice/,
   );
+});
+
+// ---- managed telemetry stays the agent's own --------------------------------------------
+
+/**
+ * Anything that would change where or whether Claude Code's OpenTelemetry is exported:
+ * exporter routing, protocol, headers, export cadence, the SDK and enable switches, and the
+ * capture switches. On a managed Mac the organization's policy sets these; Mission Control
+ * must never contribute one. Trace-context propagation (`TRACEPARENT`) is not routing.
+ */
+const CLAUDE_OTEL_ROUTING =
+  /\bOTEL_(?:EXPORTER_|BSP_|LOGS_|METRICS?_|TRACES_|LOG_|SDK_DISABLED)|\bCLAUDE_CODE_(?:ENABLE_TELEMETRY|ENHANCED_TELEMETRY)/;
+
+test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps deciding it", async (t) => {
+  // MDM is read by Claude itself. Remove inherited routing keys for this assertion so any
+  // match came from Mission Control, including its shipped environment callback.
+  const inherited = Object.entries(process.env).filter(([name]) => CLAUDE_OTEL_ROUTING.test(name));
+  t.after(() => {
+    for (const [name, value] of inherited) process.env[name] = value;
+  });
+  for (const [name] of inherited) delete process.env[name];
+  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
+    const { deps, started } = fakeDeps();
+    deps.env = defaultClaudeSdkDeps.env;
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ mcp }));
+    try {
+      const { options } = await started;
+      const seen = JSON.stringify(options, (_key, value: unknown) => (typeof value === "function" ? undefined : value));
+      assert.doesNotMatch(seen, CLAUDE_OTEL_ROUTING);
+    } finally {
+      await handle.stop();
+    }
+  }
+});
+
+test("the SDK subprocess env adds no OpenTelemetry routing of its own", () => {
+  const env = sdkSubprocessEnv({ PATH: "/bin", HOME: "/home/op" }, "/wt/one", "/tmp/mission-sdk-state");
+  assert.deepEqual(Object.keys(env).filter((name) => CLAUDE_OTEL_ROUTING.test(name)), []);
 });

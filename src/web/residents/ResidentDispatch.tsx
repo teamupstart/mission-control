@@ -219,7 +219,9 @@ export function ResidentDispatch({
                   mode.onResidentChange(chooseResidentRepo(draft, value));
                 }}
               />
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => mode.onResidentChange(chooseResidentRepo(draft, ""))}>No repository</button>
+              <Tooltip label="Launch in a private working directory without a repository">
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => mode.onResidentChange(chooseResidentRepo(draft, ""))}>No repository</button>
+              </Tooltip>
               {!repoRoot.trim() && <p className="field-hint">A private working directory is created for this run and removed when it ends.</p>}
             </div>
             <label className="field">

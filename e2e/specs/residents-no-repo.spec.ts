@@ -11,6 +11,8 @@ test.use({ daemonEnv: { MC_E2E_CODEX_THREAD_ID: "01999999-7777-7000-8000-0000000
 
 for (const agent of ["claude", "codex"] as const) {
   test(`a ${agent} resident without a repository survives restart and removes its workspace on Complete & close`, async ({ dashboard: page, daemon }) => {
+    const evidence = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ?? "residents-no-repo");
+    if (process.env.MC_E2E_EVIDENCE) mkdirSync(evidence, { recursive: true });
     const read = async <T,>(path: string): Promise<T> => {
       const response = await fetch(`${daemon.baseURL}${path}`);
       expect(response.ok).toBeTruthy();
@@ -30,6 +32,9 @@ for (const agent of ["claude", "codex"] as const) {
     await page.keyboard.press("Escape");
     await editor.getByRole("button", { name: "No repository" }).click();
     await expect(editor.getByLabel("Default repository")).toHaveValue("");
+    await editor.getByRole("button", { name: "No repository" }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Clear the default repository for this resident profile");
+    if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-editor-tooltip.png`) });
     await editor.getByRole("button", { name: "Save" }).click();
     const saved = page.getByRole("region", { name: `Resident profile ${name}` });
     await saved.getByRole("button", { name: "Launch" }).click();
@@ -38,8 +43,10 @@ for (const agent of ["claude", "codex"] as const) {
     await page.keyboard.press("Escape");
     await dialog.getByRole("button", { name: "No repository" }).click();
     await expect(dialog.getByLabel("Repository")).toHaveValue("");
+    await dialog.getByRole("button", { name: "No repository" }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Launch in a private working directory without a repository");
+    if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-dispatch-tooltip.png`) });
     await expectContentClearsBorder(dialog);
-    const evidence = artifactsDir("residents-no-repo");
     if (process.env.MC_E2E_EVIDENCE) {
       mkdirSync(evidence, { recursive: true });
       await dialog.screenshot({ path: join(evidence, `${agent}-dispatch.png`) });

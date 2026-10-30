@@ -203,7 +203,9 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
         disabled={disabled}
         onChange={(value) => update("workspace", { defaultRepoRoot: value.trim() ? value : null })}
       />
-      <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => update("workspace", { defaultRepoRoot: null })}>No repository</button>
+      <Tooltip label="Clear the default repository for this resident profile">
+        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => update("workspace", { defaultRepoRoot: null })}>No repository</button>
+      </Tooltip>
     </div>
   );
 }

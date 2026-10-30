@@ -381,7 +381,7 @@ test.describe("a launch that is still starting when the daemon answers", () => {
   // Every launch answers "still starting" at once, so the in-progress path is the one taken.
   test.use({ daemonEnv: { MISSION_RESIDENT_LAUNCH_WAIT_MS: "0" } });
 
-  test("keeps its request id and input through a lost response, a retry, Starting, close and reopen - and makes one resident", async ({
+  test("keeps its request id and input through a lost response, close, reopen and retry - and makes one resident", async ({
     dashboard,
     daemon,
   }) => {
@@ -417,16 +417,15 @@ test.describe("a launch that is still starting when the daemon answers", () => {
     await expect(dialog.getByRole("alert")).toBeVisible();
     await expect(dialog).toBeVisible();
 
-    // Retrying replays the same launch: it is still starting, and the form waits it out.
-    await dialog.getByRole("button", { name: "Launch resident" }).click();
-    await expect(dialog.getByRole("status")).toContainText("Starting the resident");
-    await expect(dialog.getByRole("button", { name: "Starting…" })).toBeDisabled();
-
-    // Closing mid-launch keeps the id and input; Launch again resumes it rather than starting another.
+    // Close and reopen: the lost launch is still recorded, with its id and input. Launching again
+    // replays it - whether the daemon still reports it starting (the form waits it out, as the
+    // next test pins) or it has already started - and never starts a second resident. The
+    // replay's answer is deliberately not assumed: how fast the agent starts is the runner's.
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toBeHidden();
     await editor.getByRole("button", { name: "Launch" }).click();
     await expect(dialog.getByLabel("Instructions for this run")).toHaveValue(RUN_BRIEF);
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { name: "Launch resident" }).click();
     await expect(dialog).toBeHidden({ timeout: 60_000 });
 
@@ -438,7 +437,7 @@ test.describe("a launch that is still starting when the daemon answers", () => {
     expect(await residents()).toBe(1);
 
     // One request id and one input across the whole lifecycle.
-    expect(sent.length).toBeGreaterThanOrEqual(3);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
     expect(new Set(sent.map((body) => body.requestId)).size).toBe(1);
     expect(new Set(sent.map((body) => JSON.stringify(body))).size).toBe(1);
     expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, instructions: RUN_BRIEF });

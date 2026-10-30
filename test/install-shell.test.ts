@@ -59,7 +59,7 @@ appendFileSync(${JSON.stringify(log)}, tool+':'+JSON.stringify(args)+'\\n');
 if(tool==='gh') {
   const endpoint=args[3];
   if(fail==='transport') {console.error('error connecting to api.github.com');process.exit(1);}
-  if((fail.startsWith('missing-')||fail==='no-access')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+  if((fail.startsWith('missing-')||fail==='no-access')&&(endpoint.includes('/releases/tags/')||endpoint.endsWith('/releases/latest'))) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(fail==='no-access'&&endpoint==='repos/teamupstart/mission-control') {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(endpoint.endsWith('/assets/11')) process.stdout.write(fail==='oversize'?'x'.repeat(20000):fail==='malformed'?'invalid':${JSON.stringify(JSON.stringify(manifest))});
   else if(endpoint.endsWith('/assets/13')) process.stdout.write(fail==='truncated'?'short':${JSON.stringify(dmg.toString())});
@@ -159,6 +159,7 @@ test('an unpublished alpha names the exact commit and its recovery instead of bl
   assert.doesNotMatch(result.stderr, /Canonical download failed/);
   const log = readFileSync(f.log, 'utf8');
   assert.equal((log.match(/releases\/tags\//g) ?? []).length, 1, 'no other alpha is substituted');
+  assert.ok(log.includes(`"repos/teamupstart/mission-control/releases/tags/alpha-${commit}"`), 'requests the exact alpha release');
   assert.doesNotMatch(log, /releases\/latest|runtime:|forbidden:/);
 });
 
@@ -166,7 +167,18 @@ test('an unpublished stable tag is named as missing', t => {
   const f = fixture(t, 'missing-stable'); const result = f.run(['--ref', 'v9.9.9']);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Release v9\.9\.9 is not published\. Select an existing vX\.Y\.Z tag/);
-  assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
+  const log = readFileSync(f.log, 'utf8');
+  assert.ok(log.includes('"repos/teamupstart/mission-control/releases/tags/v9.9.9"'), 'requests the exact stable release');
+  assert.doesNotMatch(log, /runtime:|forbidden:/);
+});
+
+test('a default stable install with no published release says so', t => {
+  const f = fixture(t, 'missing-latest'); const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No stable release is published\. Pin one with --ref vX\.Y\.Z once it publishes, or follow main with --channel alpha/);
+  const log = readFileSync(f.log, 'utf8');
+  assert.ok(log.includes('"repos/teamupstart/mission-control/releases/latest"'));
+  assert.doesNotMatch(log, /releases\/tags\/|runtime:|forbidden:/);
 });
 
 test('a release 404 from a repository gh cannot see keeps the authentication guidance', t => {

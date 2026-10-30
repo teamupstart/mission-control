@@ -120,7 +120,8 @@ main() {
     missing="Commit $ref has no published alpha. Its Signed distribution run may still be pending or may have failed, or the alpha was retired. Retry after it publishes, or pin a published alpha with --ref FULL_SHA (gh release list --repo @REPO@)."
   else
     tag=$ref
-    [[ -z "$tag" ]] || missing="Release $tag is not published. Select an existing vX.Y.Z tag (gh release list --repo @REPO@)."
+    if [[ -n "$tag" ]]; then missing="Release $tag is not published. Select an existing vX.Y.Z tag (gh release list --repo @REPO@)."
+    else missing="No stable release is published. Pin one with --ref vX.Y.Z once it publishes, or follow main with --channel alpha (gh release list --repo @REPO@)."; fi
   fi
   endpoint="repos/@REPO@/releases/tags/$tag"; [[ -n "$tag" ]] || endpoint='repos/@REPO@/releases/latest'
   download "$endpoint" "$release" 1048576 application/vnd.github+json "$missing"

@@ -60,7 +60,7 @@ test("Control other sessions is off by default, and a revision from before it re
   assert.match(html, /A launch from the browser, or from anywhere else, starts\s+without session control/);
 });
 
-test("a launched run says whether its click was consumed, only when its pinned revision asks", () => {
+test("a launched run says whether its grant applied, only when its pinned revision asks", () => {
   const base = {
     id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", launchState: "launched" as const,
     launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" }, runInstructions: "",
@@ -69,7 +69,13 @@ test("a launched run says whether its click was consumed, only when its pinned r
   const none = { authorizedAt: null, conversationId: null, cwd: null, episodeId: null };
   assert.equal(residentRunControlOutcome({ ...base, settings: revision(false), control: none }), null);
   assert.equal(residentRunControlOutcome({ ...base, settings: revision(true), control: none }), "not-granted");
-  assert.equal(residentRunControlOutcome({ ...base, settings: revision(true), control: { ...none, authorizedAt: 5 } }), "authorized");
+  // A consumed click is not a grant: only a recorded, applied grant reads as granted.
+  assert.equal(residentRunControlOutcome({ ...base, settings: revision(true), control: { ...none, authorizedAt: 5 } }), "pending");
+  assert.equal(residentRunControlOutcome({
+    ...base,
+    settings: revision(true),
+    control: { authorizedAt: 5, conversationId: "native-1", cwd: "/worktrees/t", episodeId: "episode-1" },
+  }), "granted");
 });
 
 test("the band says control granted, or control not granted beside the existing menu", () => {

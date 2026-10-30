@@ -1,4 +1,10 @@
-import type { LaunchResident, ResidentLaunchResult, ResidentProfile, ResidentRun } from "@shared/residents.ts";
+import {
+  residentRunControlRecorded,
+  type LaunchResident,
+  type ResidentLaunchResult,
+  type ResidentProfile,
+  type ResidentRun,
+} from "@shared/residents.ts";
 import { actionFetch } from "../lib/experience.ts";
 import { authorizeResidentLaunch, canAuthorizeSessionControl } from "../lib/session-control-authorization.ts";
 
@@ -21,11 +27,15 @@ export function residentLaunchCanGrantControl(): boolean {
 
 /**
  * What a launched run says about session control, or null when its pinned revision does not ask
- * for it: `authorized` when the daemon consumed this launch's desktop click, else `not-granted`.
+ * for it. Read from the grant, not the click: `granted` once the Registry applied it and the run
+ * recorded the identity it applied to; `pending` while a consumed click still waits for the
+ * session's identity; `not-granted` when no click was consumed, or the grant could not be applied
+ * or recorded - the daemon clears the run's record in both cases.
  */
-export function residentRunControlOutcome(run: ResidentRun): "authorized" | "not-granted" | null {
+export function residentRunControlOutcome(run: ResidentRun): "granted" | "pending" | "not-granted" | null {
   if (!run.settings.authority.controlOtherSessions) return null;
-  return run.control.authorizedAt !== null ? "authorized" : "not-granted";
+  if (residentRunControlRecorded(run.control)) return "granted";
+  return run.control.authorizedAt !== null ? "pending" : "not-granted";
 }
 
 /**

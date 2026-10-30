@@ -29,6 +29,7 @@ const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { openDb, upsertTask } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ResidentProfileRevisionSchema, residentRunControlRecorded } = await import("../src/shared/residents.ts");
+const { residentRunControlOutcome } = await import("../src/web/residents/launch.ts");
 const {
   armResidentLaunchAuthorization,
   armSessionControlAuthorization,
@@ -235,20 +236,61 @@ class GrantRefusingRegistry extends Registry {
   }
 }
 
-test("a Launch click whose grant the Registry refuses records nothing a restart could restore", async () => {
+test("a Launch click whose grant the Registry refuses answers not granted and records nothing a restart could restore", async () => {
   const registry = new GrantRefusingRegistry();
   const h = harness(registry);
   const profile = profileIn(h, true);
   const requestId = randomUUID();
   h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
   const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(h.asked.length, 1, "the click was consumed");
   assert.equal(registry.refusedGrants, 1, "the grant was attempted once, and refused");
   assert.equal(registry.sessionControlEnabled(sessionId), false);
-  const recorded = control(run.id);
-  assert.equal(typeof recorded.authorizedAt, "number", "the click itself was consumed");
-  assert.deepEqual({ conversationId: recorded.conversationId, cwd: recorded.cwd, episodeId: recorded.episodeId },
-    { conversationId: null, cwd: null, episodeId: null }, "no identity is recorded for a grant that never applied");
-  assert.equal(residentRunControlRecorded(recorded), false);
+  // The launch answers with the grant's outcome, not the consumed click's.
+  assert.equal(residentRunControlOutcome(run), "not-granted");
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
+});
+
+/** Run `fn` while SQLite refuses the writes `trigger` describes, then lift the refusal. */
+async function refusing<T>(name: string, trigger: string, fn: () => Promise<T>): Promise<T> {
+  openDb().exec(`CREATE TRIGGER ${name} ${trigger} BEGIN SELECT RAISE(ABORT, '${name}'); END;`);
+  try {
+    return await fn();
+  } finally {
+    openDb().exec(`DROP TRIGGER ${name}`);
+  }
+}
+
+test("a launch grant whose event log fails stays live and recorded, and a restart restores it", async () => {
+  const h = harness();
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await refusing("refuse_grant_log", "BEFORE INSERT ON session_events",
+    () => launched(h, profile.id, requestId));
+  assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(residentRunControlOutcome(run), "granted", "the launch answers granted");
+  assert.equal(residentRunControlRecorded(control(run.id)), true, "the identity was saved before the log write");
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), true);
+});
+
+test("a launch grant whose record cannot be saved is taken back, and the launch answers not granted", async () => {
+  const h = harness();
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await refusing("refuse_grant_record",
+    "BEFORE UPDATE OF control_conversation_id ON resident_runs WHEN NEW.control_conversation_id IS NOT NULL",
+    () => launched(h, profile.id, requestId));
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false, "no live grant without a record a restart could restore");
+  assert.equal(h.registry.getSession(sessionId)!.sessionControlEnabled, false);
+  assert.equal(residentRunControlOutcome(run), "not-granted");
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
   for (const manager of managers.splice(0)) manager.stop();
   const after = restart(run);
   assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
@@ -262,6 +304,7 @@ test("a desktop Launch click grants the run session control and records the iden
   const { run, sessionId } = await launched(h, profile.id, requestId);
   assert.deepEqual(h.asked, [{ requestId, profileId: profile.id, revision: 1 }]);
   assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(residentRunControlOutcome(run), "granted", "the launch answers with the applied grant");
   assert.equal(h.registry.getSession(sessionId)!.sessionControlEnabled, true);
   const recorded = control(run.id);
   assert.equal(typeof recorded.authorizedAt, "number");

@@ -190,8 +190,10 @@ in the desktop app.
   consumes a click. A replay is answered from the run row and asks for nothing.
 - **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
   then applies the existing Registry grant to the run's session once that session has a full
-  identity bound to the run's task. It also records the conversation, working directory and work
-  episode that the grant was applied to.
+  identity bound to the run's task, and records the conversation, working directory and work
+  episode it applied to before it writes the grant's audit event. If the grant cannot be
+  applied, or its identity cannot be recorded, the live grant is taken back and the run's record
+  is cleared, so the launch reports that it started without control.
 - **After a restart.** This is the one grant that survives a daemon restart, and only for the
   same conversation. After SDK restore it is applied again only when all four recorded fields are
   set and the restored session's conversation, working directory, work episode and task all

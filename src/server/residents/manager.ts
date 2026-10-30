@@ -185,6 +185,8 @@ export class ResidentManager {
   private readonly authorizeLaunch: AuthorizeResidentLaunch;
   /** Runs whose grant waits for their session, by run id. At most one per live resident. */
   private readonly grantWatches = new Map<string, GrantWatch>();
+  /** Who waits for a watch to be decided or dropped: a launch answers only once it knows. */
+  private readonly grantWaiters = new Map<string, Array<() => void>>();
 
   constructor(private readonly deps: ResidentManagerDeps) {
     this.now = deps.now ?? Date.now;
@@ -223,7 +225,7 @@ export class ResidentManager {
     }
     this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
-    this.grantWatches.clear();
+    for (const runId of [...this.grantWatches.keys()]) this.dropGrantWatch(runId);
   }
 
   // ---- profiles ----
@@ -404,6 +406,25 @@ export class ResidentManager {
       await this.consumeLaunchClick(run);
     }
     await this.createAndSettle(run, request);
+    // The launch answers with the grant's outcome - applied or not - rather than with a consumed
+    // click, so Dispatch and the dock can say which. Bounded like the launch itself: a session
+    // that never gets an identity leaves the click recorded and the outcome pending.
+    await this.awaitBriefly(this.grantDecided(run.id));
+  }
+
+  /** Resolves once this run has no grant waiting: decided, dropped, or never armed. */
+  private grantDecided(runId: string): Promise<void> {
+    if (!this.grantWatches.has(runId)) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.grantWaiters.set(runId, [...(this.grantWaiters.get(runId) ?? []), resolve]);
+    });
+  }
+
+  /** Forget a waiting grant and release whoever waits on its decision. */
+  private dropGrantWatch(runId: string): void {
+    this.grantWatches.delete(runId);
+    for (const resolve of this.grantWaiters.get(runId) ?? []) resolve();
+    this.grantWaiters.delete(runId);
   }
 
   /**
@@ -526,7 +547,7 @@ export class ResidentManager {
     if (summary) this.deps.registry.upsertResidentRun(summary);
     else {
       // A run that failed or ended has no session left to grant.
-      this.grantWatches.delete(runId);
+      this.dropGrantWatch(runId);
       this.deps.registry.removeResidentRun(runId);
     }
     if (summary?.launchState === "launched") this.applyWaitingGrants();
@@ -737,6 +758,8 @@ export class ResidentManager {
         this.decideGrant(runId, sessionId, watch, identity);
       } catch (error) {
         console.error(`[residents] could not decide session control for resident run ${runId}:`, error);
+      } finally {
+        this.dropGrantWatch(runId);
       }
     }
   }
@@ -771,16 +794,35 @@ export class ResidentManager {
         clearResidentRunControl(runId);
         return;
       }
-      if (this.deps.registry.setSessionControlEnabled(sessionId, true)) {
-        logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source: "restore" });
-      }
+      if (this.deps.registry.setSessionControlEnabled(sessionId, true)) this.logGrant(sessionId, runId, "restore");
       return;
     }
-    // Apply first, record second: a record that outlived a grant never applied would be
-    // re-applied by the next restart.
-    if (!identity || !this.deps.registry.setSessionControlEnabled(sessionId, true)) return;
-    logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source: "launch_click" });
-    recordResidentRunControlGrant(runId, identity);
+    // A grant that could not be applied leaves the run with no record at all, so the launch
+    // answers - and Dispatch and the dock say - that it started without control.
+    if (!identity || !this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+      clearResidentRunControl(runId);
+      return;
+    }
+    // Apply, then record, then log. Applying first means no record outlives a grant that never
+    // applied; recording before anything else that can fail means a live grant is always one a
+    // restart can restore. A record that cannot be written takes the live grant back.
+    try {
+      if (!recordResidentRunControlGrant(runId, identity)) throw new Error("the run no longer holds its Launch click");
+    } catch (error) {
+      this.deps.registry.setSessionControlEnabled(sessionId, false);
+      clearResidentRunControl(runId);
+      throw error;
+    }
+    this.logGrant(sessionId, runId, "launch_click");
+  }
+
+  /** The grant's audit line. Best effort: the grant and its record already agree without it. */
+  private logGrant(sessionId: string, runId: string, source: "launch_click" | "restore"): void {
+    try {
+      logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source });
+    } catch (error) {
+      console.error(`[residents] could not log the session-control grant for resident run ${runId}:`, error);
+    }
   }
 
   /**
@@ -810,7 +852,7 @@ export class ResidentManager {
     if (!taskId) return;
     const stored = residentRunForTask(taskId);
     if (!stored) return;
-    this.grantWatches.delete(stored.run.id);
+    this.dropGrantWatch(stored.run.id);
     clearResidentRunControl(stored.run.id);
   }
 }

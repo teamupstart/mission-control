@@ -42,9 +42,21 @@ export function migrationPortOccupied(port) {
   });
 }
 
+/**
+ * Open the migration app, giving the launchd sweep the migration's own budget.
+ *
+ * The sweep (`assertSafeAppLaunch`) is the expensive step, and a step that runs out of time
+ * rejects rather than retrying, so it gets the budget the migration actually has rather than a
+ * fixed default; its cost is recorded on `inspectAppLaunches`.
+ *
+ * That budget is `MIGRATION_TIMEOUT_MS` and deliberately NOT the ports' `timeout`. That one
+ * bounds how long to wait for a state change to appear and a caller is free to shorten it -
+ * the tests set it to milliseconds - while how long one OS command may take is a different
+ * question that must not shrink with it.
+ */
 async function openMigrationApp(bundle, args, mac, stateDirectory = process.env.MISSION_HOME) {
   await prepareAppLaunch(bundle, mac);
-  await assertSafeAppLaunch(bundle, mac);
+  await assertSafeAppLaunch(bundle, mac, MIGRATION_TIMEOUT_MS);
   const result = await mac.run("/usr/bin/open", [bundle, ...(stateDirectory ? ["--env", `MISSION_HOME=${stateDirectory}`] : []), ...(args.length ? ["--args", ...args] : [])], COMMAND_TIMEOUT_MS);
   if (result.code !== 0) throw new Error("LaunchServices could not open the migration app.");
 }

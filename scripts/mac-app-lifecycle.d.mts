@@ -13,14 +13,17 @@ export interface MacAppOps {
 export const APP_ID: string;
 export const LAUNCH_TIMEOUT_MS: number;
 export const COMMAND_TIMEOUT_MS: number;
+export const LAUNCH_INSPECTION_TIMEOUT_MS: number;
 export function launchAckPath(directory: string, nonce: string): string;
 export function realMacAppOps(directory?: string): MacAppOps;
 export function parseAppProcesses(output: string): AppProcess[];
 export function parseLaunchServices(output: string): AppRegistration[];
 export function jobLaunchesBundle(text: string, bundle: string): boolean;
 export function inspectAppLaunch(bundle: string, ops?: MacAppOps, timeout?: number): Promise<{jobs: string[]; unregistered: number[]}>;
+export function inspectAppLaunches(bundles: string[], ops?: MacAppOps, timeout?: number): Promise<Array<{jobs: string[]; unregistered: number[]}>>;
 export function launchConflictMessage(conflicts: {jobs: string[]; unregistered: number[]}, uid: number): string | null;
-export function assertSafeAppLaunch(bundle: string, ops?: MacAppOps): Promise<void>;
+export function assertSafeAppLaunch(bundle: string, ops?: MacAppOps, timeout?: number): Promise<void>;
+export function assertSafeAppLaunches(bundles: string[], ops?: MacAppOps, timeout?: number): Promise<void>;
 export function waitForBundleExit(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function prepareAppLaunch(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function verifyAppLaunch(bundle: string, nonce: string, ops: MacAppOps, timeout?: number): Promise<void>;

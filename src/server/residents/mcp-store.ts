@@ -18,6 +18,7 @@ import {
   type ResidentMcpStoredTransport,
 } from "@shared/resident-mcp.ts";
 import type { ResidentAgent } from "@shared/residents.ts";
+import { canonicalSettingsBackupJson } from "@shared/settings-backups.ts";
 import type { ResidentMcpOptions } from "../harness/types.ts";
 import { getAppConfig, openDb, setAppConfig } from "../db.ts";
 
@@ -220,6 +221,30 @@ function writeDocument(d: DatabaseSync, servers: ResidentMcpCustomServer[]): voi
   d.prepare(
     `DELETE FROM resident_mcp_secrets WHERE server_id NOT IN (${ids.map(() => "?").join(",") || "''"})`,
   ).run(...ids);
+}
+
+/**
+ * A settings restore of the custom server document, inside the restore's transaction and before
+ * the document is written. A snapshot never carries a secret value, so it cannot say which value
+ * went with a definition it brings back. A value survives only when it was already set when the
+ * snapshot was taken and the restore leaves its server's connection (its transport) unchanged;
+ * every other value is cleared and reads Not set. So a value replaced after the snapshot is not
+ * passed off as the snapshot's, and no value reaches a connection it was not entered for.
+ */
+export function restoreResidentMcpSecretsInTransaction(d: DatabaseSync, restoredDocument: unknown, snapshotAt: number): void {
+  const restored = ResidentMcpServersDocumentSchema.parse(restoredDocument).servers;
+  const current = new Map(readResidentMcpServers().servers.map((server) => [server.id, server]));
+  const unchanged = new Set(restored
+    .filter((server) => {
+      const before = current.get(server.id);
+      return before !== undefined && canonicalSettingsBackupJson(before.transport) === canonicalSettingsBackupJson(server.transport);
+    })
+    .map((server) => server.id));
+  const rows = d.prepare("SELECT server_id, field, updated_at FROM resident_mcp_secrets").all() as Array<{ server_id: string; field: string; updated_at: number }>;
+  const remove = d.prepare("DELETE FROM resident_mcp_secrets WHERE server_id = ? AND field = ?");
+  for (const row of rows) {
+    if (!unchanged.has(row.server_id) || row.updated_at >= snapshotAt) remove.run(row.server_id, row.field);
+  }
 }
 
 function applySecrets(d: DatabaseSync, serverId: string, normalized: Normalized, at: number): void {

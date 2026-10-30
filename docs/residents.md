@@ -343,9 +343,12 @@ configuration overlay are removed once its session has stopped.
 ## Backups
 
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).
-Custom MCP server definitions are too, under their own domain, without any secret value: a
-snapshot restored onto another machine brings the servers back with their secrets *Not set*. A
-snapshot taken before custom MCP servers existed restores without touching them. Full-database
+Custom MCP server definitions are too, under their own domain, without any secret value. Because
+a snapshot cannot say which value went with a definition it brings back, a restore keeps a secret
+only when it was already set when the snapshot was taken and the restore leaves its server's
+connection unchanged. Every other value reads *Not set* until it is entered again: one replaced
+after the snapshot, one whose server the restore points somewhere else, and every value on another
+machine. A snapshot taken before custom MCP servers existed restores without touching them. Full-database
 recovery points are scrubbed of every secret, and of every global server's definition in a run's
 snapshot, before they are written; a run restored from one is refused those servers until it is
 launched again.

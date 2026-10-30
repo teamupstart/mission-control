@@ -340,3 +340,75 @@ test("a snapshot carries custom MCP server definitions and never a secret value"
   assert.match(payload, /"query":\["key"\]/);
   assert.ok(!readFileSync(join(root, `${captured.snapshot.id}.json`), "utf8").includes(secret), "the snapshot file holds no secret");
 });
+
+test("restoring a snapshot keeps a secret only if it was set before the snapshot for an unchanged connection", async () => {
+  const mcp = await import("../src/server/residents/mcp-store.ts");
+  const { CreateResidentMcpServerSchema } = await import("../src/shared/resident-mcp.ts");
+  db.exec("DELETE FROM app_config; DELETE FROM resident_mcp_secrets;");
+  // Disposable sentinels. The snapshot is taken at the service's clock, 2026-10-30T18:00Z.
+  const snapshotAt = Date.parse("2026-10-30T18:00:00.000Z");
+  const before = snapshotAt - 60_000;
+  const after = snapshotAt + 60_000;
+  const original = `restore-original-${crypto.randomUUID()}`;
+  const rotated = `restore-rotated-${crypto.randomUUID()}`;
+  const kept = `restore-kept-${crypto.randomUUID()}`;
+  const moved = `restore-moved-${crypto.randomUUID()}`;
+  // An omitted value keeps the stored one, as the editor sends a secret left blank.
+  const input = (name: string, command: string, value?: string) => CreateResidentMcpServerSchema.parse({
+    name,
+    harnesses: ["claude"],
+    transport: { type: "stdio", command, args: [], env: [{ name: "TOKEN", secret: true, ...(value === undefined ? {} : { value }) }] },
+  }) as import("../src/shared/resident-mcp.ts").CreateResidentMcpServer;
+  const ids = {
+    rotated: "00000000-0000-4000-8000-000000000051",
+    kept: "00000000-0000-4000-8000-000000000052",
+    moved: "00000000-0000-4000-8000-000000000053",
+    added: "00000000-0000-4000-8000-000000000054",
+  };
+  mcp.createResidentMcpServer(input("rotated", "srv", original), { id: ids.rotated, at: before, globals: new Map() });
+  mcp.createResidentMcpServer(input("kept", "srv", kept), { id: ids.kept, at: before, globals: new Map() });
+  mcp.createResidentMcpServer(input("moved", "old-srv", moved), { id: ids.moved, at: before, globals: new Map() });
+  const svc = service(join(home, "mcp-restore"));
+  const captured = await svc.ensureDailySnapshot("2026-10-30");
+  assert.equal(captured.status, "ready");
+  if (captured.status !== "ready") return;
+
+  // After the snapshot: one secret is replaced with an identical definition, one server points
+  // somewhere else while its secret stays, and a new server is added.
+  mcp.updateResidentMcpServer(ids.rotated, { ...input("rotated", "srv", rotated), expectedRevision: 1 }, { at: after, globals: new Map() });
+  mcp.updateResidentMcpServer(ids.moved, { ...input("moved", "new-srv"), expectedRevision: 1 }, { at: after, globals: new Map() });
+  mcp.createResidentMcpServer(input("added", "srv", `restore-added-${crypto.randomUUID()}`), { id: ids.added, at: after, globals: new Map() });
+  assert.equal(mcp.customSecretValues(ids.rotated).get("env:TOKEN"), rotated);
+  assert.equal(mcp.customSecretValues(ids.moved).get("env:TOKEN"), moved, "an edit that leaves the secret blank keeps it");
+
+  // The clearing is part of the restore's transaction: a restore that fails clears nothing.
+  const failing = new SettingsBackupService(
+    workflowStore,
+    new SettingsBackupStore(join(home, "mcp-restore")),
+    () => new Date("2026-10-30T18:00:00.000Z"),
+    "residents-test",
+    {
+      registry: new Registry(),
+      preflightSkills: () => [],
+      preflightCost: () => {},
+      reconcileSkills: () => {},
+      reconcileCost: () => {},
+      beforeCommit: () => { throw new Error("rollback seam"); },
+    },
+  );
+  assert.equal((await failing.restore(captured.snapshot.id, captured.snapshot.digest)).status, "restore_failed");
+  assert.equal(mcp.customSecretValues(ids.rotated).get("env:TOKEN"), rotated, "a failed restore clears nothing");
+
+  const restored = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
+  assert.equal(restored.status, "restored");
+  const views = new Map(mcp.residentMcpServerViews().map((server) => [server.id, server]));
+  assert.deepEqual([...views.keys()].sort(), [ids.rotated, ids.kept, ids.moved].sort(), "the later server is gone");
+  // The snapshot never held a value, so a value set after it cannot be what it restores.
+  assert.equal(mcp.customSecretValues(ids.rotated).size, 0, "a value replaced after the snapshot is Not set");
+  // A value set for another connection never follows the restored definition back.
+  assert.equal(mcp.customSecretValues(ids.moved).size, 0, "a value whose connection the restore replaces is Not set");
+  assert.equal(mcp.customSecretValues(ids.kept).get("env:TOKEN"), kept, "a value untouched since the snapshot, on an unchanged connection, stays");
+  assert.equal(mcp.customSecretValues(ids.added).size, 0, "a server the snapshot does not hold leaves no value behind");
+  const views2 = JSON.stringify([...views.values()]);
+  for (const value of [original, rotated, kept, moved]) assert.ok(!views2.includes(value));
+});

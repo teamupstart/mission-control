@@ -36,6 +36,8 @@ import {
   listLiveResidentProfiles,
   restoreResidentProfilesInTransaction,
 } from "../residents/store.ts";
+import { restoreResidentMcpSecretsInTransaction } from "../residents/mcp-store.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 
 export interface SettingsBackupErrorStatus {
   at: string;
@@ -269,6 +271,12 @@ export class SettingsBackupService {
 
     try {
       this.workflowStore.transact((db) => {
+        // Before the document is replaced: which secret values survive depends on it. Run even
+        // when the definitions are unchanged, because a value set since the snapshot is not its.
+        const mcpServers = stage.staged.config.find((item) => item.entry.key === APP_CONFIG_ENTRIES.residentMcpServers.key);
+        if (mcpServers) {
+          restoreResidentMcpSecretsInTransaction(db, mcpServers.mergedValue, Date.parse(stage.staged.snapshot.createdAt));
+        }
         restoreSettingsConfigInTransaction(db, stage.staged.config);
         this.runtime.afterConfigRestore?.();
         this.workflowStore.restoreSettingsCatalogsInTransaction(stage.staged, this.now().getTime());

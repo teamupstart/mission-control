@@ -277,8 +277,11 @@ authentication the harness holds (an OAuth login). A custom server's argument in
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
 
-**Backups.** Settings snapshots carry custom server definitions without their values. A
-full-database recovery point is scrubbed of both secret tables before it is published, and every
+**Backups.** Settings snapshots carry custom server definitions without their values. Restoring
+one keeps a value only when it was set before the snapshot was taken and the restore leaves its
+server's connection unchanged; every other value is cleared in the same transaction, so a later
+value is never passed off as the snapshot's and no value reaches a connection it was not entered
+for. A full-database recovery point is scrubbed of both secret tables before it is published, and every
 global server's definition in a run snapshot is redacted in place, with the freed pages
 overwritten. A restored database shows those secrets as not set, and a restored run whose snapshot
 lost a secret or a definition refuses to start that server rather than start it without it.

@@ -141,6 +141,34 @@ test("manual compaction finishes below threshold before sending and never counts
   assert.equal(f.run().iteration, 2); assert.equal(f.rows().length, 2);
 });
 
+for (const threshold of [70, 45]) test(`context threshold ${threshold}%: compact at the boundary, not just below, before sending`, async () => {
+  const f = fixture({ contextThreshold: threshold }); const loop = f.loop(); await flush();
+  f.patch({ meta: meta({ contextPct: threshold - 0.01 }) });
+  await loop.runNow("run");
+  assert.equal(f.calls.length, 1, "just below the threshold sends without compaction");
+  assert.match(f.calls[0]!, /mission-resident:run:2/);
+  assert.equal(f.run().iteration, 2);
+  f.complete(); await flush();
+
+  let finishCompaction!: (pct: number) => void;
+  const compacted = new Promise<number>(resolve => { finishCompaction = resolve; });
+  f.setCompact(async () => { f.calls.push("compact"); return compacted; });
+  f.patch({ meta: meta({ contextPct: threshold }) });
+  const wake = loop.runNow("run");
+  await flush();
+  assert.deepEqual(f.calls.slice(1), ["compact"], "at the threshold, sending waits for compaction");
+  assert.equal(f.run().loopState, "compacting");
+  assert.equal(f.run().iteration, 2);
+  assert.equal(f.rows().length, 2, "compaction does not claim an iteration");
+
+  finishCompaction(threshold - 0.01);
+  await wake;
+  assert.equal(f.calls.length, 3);
+  assert.match(f.calls[2]!, /mission-resident:run:3/);
+  assert.equal(f.run().iteration, 3);
+  assert.equal(f.rows().length, 3);
+});
+
 test("an overdue wake refreshes context after restore before deciding whether to compact", async () => {
   const f = fixture(); const first = f.loop(); await flush(); await first.stop();
   f.patch({ meta: null });

@@ -4,6 +4,8 @@ import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Hono } from "hono";
+import type { ResidentLaunchResult } from "../src/shared/residents.ts";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { Task } from "../src/shared/types.ts";
@@ -28,6 +30,8 @@ const {
 const store = await import("../src/server/residents/store.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { ResidentLoop } = await import("../src/server/residents/loop.ts");
+const { registerResidentLoopRoutes } = await import("../src/server/residents/routes.ts");
 const {
   RESIDENT_OPENING_TURN,
   ResidentProfileRevisionSchema,
@@ -82,6 +86,7 @@ type DispatchMode = "start" | "fail" | "hold";
 
 interface Harness {
   registry: Registry;
+  tasks: InstanceType<typeof TaskManager>;
   residents: Manager;
   dispatched: string[];
   mode: { current: DispatchMode };
@@ -162,7 +167,7 @@ function harness(options: {
   });
   if (options.start !== false) residents.start();
   managers.push(residents);
-  return { registry, residents, dispatched, mode, release: () => releaseHeld(), resolveCalls };
+  return { registry, tasks, residents, dispatched, mode, release: () => releaseHeld(), resolveCalls };
 }
 
 function profileIn(h: Harness, over: Parameters<typeof settings>[0] = {}) {
@@ -232,6 +237,44 @@ test("a repeated requestId returns the same run and task and dispatches once", a
   assert.equal(runCount(), 1);
   assert.equal(residentTasks(h.registry).length, 1);
   assert.equal(h.dispatched.length, 1);
+});
+
+test("the restart route replays the same run and task without repeating completion or dispatch", async t => {
+  const h = harness();
+  const loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
+  t.after(() => loop.stop());
+  const complete = t.mock.method(h.tasks, "complete");
+  const app = new Hono();
+  registerResidentLoopRoutes(app, { registry: h.registry, loop, tasks: h.tasks, residents: h.residents });
+  const profile = profileIn(h);
+  const original = await h.residents.launch(profile.id, { repoRoot: REPO, instructions: "Watch the release", requestId: "before-restart" });
+  if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
+  assert.equal(h.residents.updateProfile(profile.id, 1, settings({ instructions: "Updated brief" })).ok, true);
+  const restart = () => app.request(`/api/residents/runs/${original.result.run.id}/restart`, { method: "POST" });
+
+  const response = await restart();
+  assert.equal(response.status, 200);
+  const first = await response.json() as ResidentLaunchResult;
+  assert.equal(first.state, "launched");
+  assert.notEqual(first.run.id, original.result.run.id);
+  assert.notEqual(first.taskId, original.result.taskId);
+  assert.equal(first.run.profileRevision, 2);
+  assert.equal(first.run.runInstructions, "Watch the release");
+  assert.notEqual(store.getResidentRun(original.result.run.id)!.run.endedAt, null);
+  assert.equal(h.registry.getTask(original.result.taskId)!.status, "done");
+
+  const replayResponse = await restart();
+  assert.equal(replayResponse.status, 200);
+  const replay = await replayResponse.json() as ResidentLaunchResult;
+  assert.equal(replay.state, "launched");
+  assert.equal(replay.run.id, first.run.id);
+  assert.equal(replay.taskId, first.taskId);
+  assert.equal(replay.run.profileRevision, 2);
+  assert.equal(runCount(), 2, "only the original and its replacement run exist");
+  assert.equal(residentTasks(h.registry).length, 2);
+  assert.deepEqual(h.dispatched, [original.result.taskId, first.taskId], "the replacement dispatch happens once");
+  assert.equal(complete.mock.callCount(), 1, "a replay never completes the original task again");
+  assert.equal(complete.mock.calls[0]!.arguments[0], original.result.taskId);
 });
 
 test("a replay after the profile is edited returns the original run and its pinned revision", async () => {

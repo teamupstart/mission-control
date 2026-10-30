@@ -5,6 +5,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import {
+  plaintextCredentialProblem,
   residentMcpSecretField,
   type ResidentMcpCredentialFile,
   type ResidentMcpCustomServer,
@@ -116,6 +117,10 @@ function resolvedCustom(server: ResidentMcpCustomServer, secrets: ReadonlyMap<st
   for (const name of server.transport.query) {
     const missing = need(residentMcpSecretField("query", name), `query parameter ${name}`);
     if (missing) return missing;
+  }
+  if (secretHeaders.length > 0 || server.transport.query.length > 0) {
+    const plaintext = plaintextCredentialProblem(new URL(server.transport.url));
+    if (plaintext) return `the custom MCP server ${server.name} cannot be used: ${plaintext}`;
   }
   return {
     source: "custom",

@@ -5,6 +5,7 @@ import {
   ResidentMcpServersDocumentSchema,
   credentialArgumentProblem,
   credentialFormArgs,
+  plaintextCredentialProblem,
   residentMcpCustomServerView,
   residentMcpEnvNameProblem,
   residentMcpHeaderNameProblem,
@@ -30,7 +31,7 @@ import { getAppConfig, openDb, setAppConfig } from "../db.ts";
 
 /** A refused custom-server write, with the HTTP status the route answers with. */
 export class ResidentMcpServerError extends Error {
-  constructor(message: string, readonly status: 400 | 404 | 409) {
+  constructor(message: string, readonly status: 400 | 404 | 409 | 503) {
     super(message);
   }
 }
@@ -160,7 +161,12 @@ function normalizeTransport(input: CreateResidentMcpServer["transport"], existin
     );
   }
   if (url.hash) throw new ResidentMcpServerError("the server URL cannot carry a #fragment", 400);
-  const query: Array<{ name: string; value?: string }> = [...url.searchParams].map(([name, value]) => ({ name, value }));
+  const query: Array<{ name: string; value?: string }> = [];
+  for (const [name, value] of url.searchParams) {
+    // One secret per parameter name, so a repeated name has no value it could keep.
+    if (query.some((row) => row.name === name)) throw new ResidentMcpServerError(`query parameter ${name} is given twice`, 400);
+    query.push({ name, value });
+  }
   for (const row of input.query) {
     const at = query.findIndex((candidate) => candidate.name === row.name);
     if (at >= 0 && query[at]!.value !== undefined && row.value !== undefined) {
@@ -178,12 +184,12 @@ function normalizeTransport(input: CreateResidentMcpServer["transport"], existin
     if (row.value !== undefined || existing.has(field)) out.keep.add(field);
   }
   url.search = "";
-  out.transport = {
-    type: "http",
-    url: url.toString(),
-    query: query.map((row) => row.name),
-    headers: normalizeFields("header", input.headers, existing, out),
-  };
+  const headers = normalizeFields("header", input.headers, existing, out);
+  const plaintext = plaintextCredentialProblem(url);
+  if (plaintext && (query.length > 0 || headers.some((row) => row.secret))) {
+    throw new ResidentMcpServerError(`this server's secret headers or query values cannot be sent over plain http to another host; use https`, 400);
+  }
+  out.transport = { type: "http", url: url.toString(), query: query.map((row) => row.name), headers };
   return out;
 }
 

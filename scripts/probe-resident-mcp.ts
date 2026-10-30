@@ -591,6 +591,7 @@ async function probeCodex(): Promise<void> {
       assert.ok(linked && instructions);
       const strayDatabases = readdirSync(overlay, { withFileTypes: true }).filter((entry) => entry.isFile() && /\.sqlite/.test(entry.name)).map((entry) => entry.name);
       say({ harness: "codex", phase, check: "no Codex database was created inside the overlay instead of the operator's home", pass: strayDatabases.length === 0, strayDatabases });
+      assert.equal(strayDatabases.length, 0, "a Codex database was created inside the overlay");
       leaks(`codex ${phase}`, {
         "process arguments": descendantArgs().join("\n"),
         "the agent environment": JSON.stringify(agentEnvs),

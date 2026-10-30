@@ -374,7 +374,8 @@ function layerLabel(name: unknown): string {
  * - Another layer that adds a field to a snapshot server, or enables a server the overlay
  *   switched off, refuses the start, naming the layer: its definition would no longer be the
  *   snapshot's, and nothing can remove a field another layer sets.
- * - Mission Control's own server rides the session flags, as on every Codex launch.
+ * - Mission Control's own server rides the session flags, as on every Codex launch, and only
+ *   there: another layer that defines it - to switch it off or add a field - refuses the start.
  */
 export function codexResidentMcpVerdict(
   result: unknown,
@@ -400,7 +401,9 @@ export function codexResidentMcpVerdict(
       continue;
     }
     for (const name of Object.keys(servers)) {
-      if (name === input.missionServer) continue;
+      if (input.missionServer && name === input.missionServer) {
+        return { kind: "refuse", reason: `${layerLabel(layer.name)} also defines Mission Control's own MCP server ${name}; remove it there to launch this resident` };
+      }
       if (expected.has(name)) {
         return { kind: "refuse", reason: `${layerLabel(layer.name)} also defines the resident's MCP server ${name}; remove it there to launch this resident` };
       }
@@ -426,6 +429,12 @@ export function codexResidentMcpVerdict(
     }
   }
   if (pending.length > 0) return { kind: "disable", names: pending };
+  if (input.missionServer) {
+    const mission = effective[input.missionServer];
+    if (!plain(mission) || mission.enabled === false) {
+      return { kind: "refuse", reason: `Codex would not start Mission Control's own MCP server ${input.missionServer}` };
+    }
+  }
   for (const name of Object.keys(effective)) {
     const server = effective[name];
     if (name === input.missionServer || expected.has(name)) continue;

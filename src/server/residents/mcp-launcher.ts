@@ -16,7 +16,11 @@
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { ResidentMcpCredentialFile, ResidentMcpLauncherDefinition } from "../../shared/resident-mcp.ts";
+import {
+  plaintextCredentialProblem,
+  type ResidentMcpCredentialFile,
+  type ResidentMcpLauncherDefinition,
+} from "../../shared/resident-mcp.ts";
 
 function fail(message: string): never {
   process.stderr.write(`resident-mcp-launcher: ${message}\n`);
@@ -139,6 +143,10 @@ async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { tr
     import("@modelcontextprotocol/sdk/client/sse.js"),
   ]);
   const url = new URL(definition.url);
+  // Never put a credential on the wire unencrypted, whatever the snapshot says.
+  if ((Object.keys(definition.headers).length > 0 || url.search) && plaintextCredentialProblem(url)) {
+    fail("refusing to send this server's credentials over plain http to another host");
+  }
   const withHeaders = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
     fetchOnOrigin(url.origin, definition.headers, input, init);
   const remote = definition.transport === "sse"

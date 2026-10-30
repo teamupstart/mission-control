@@ -226,6 +226,7 @@ export class ResidentManager {
   private readonly cleaningWorkspaces = new Map<string, Promise<void>>();
   private readonly reportedCleanupFailures = new Set<string>();
   private cleanupScanFailed = false;
+  private mcpCleanupScanFailed = false;
   private subscriptions: Array<() => void> = [];
   private readonly authorizeLaunch: AuthorizeResidentLaunch;
   readonly mcpCatalog: ResidentMcpCatalogCache;
@@ -870,16 +871,21 @@ export class ResidentManager {
   /** Completion may precede eviction. Preserve cwd until every owned SDK runtime has stopped. */
   cleanupEndedWorkspaces(): Promise<void> {
     if (this.stopped) return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
+    // Independent of the workspace scan below: a store that cannot be read for one must not
+    // stop the other. Each reports once while it keeps failing.
     try {
       this.cleanupFinishedMcp();
+      this.mcpCleanupScanFailed = false;
+    } catch (error) {
+      if (!this.mcpCleanupScanFailed) {
+        console.error("[residents] could not scan finished runs for MCP state; retrying on the next pass:", error);
+        this.mcpCleanupScanFailed = true;
+      }
+    }
+    try {
       for (const run of endedResidentWorkspaces()) {
         if (this.settling.has(run.id) || this.cleaningWorkspaces.has(run.id)) continue;
-        const sessions = this.sessionRowsForTask(run.taskId);
-        if (sessions.some((id) => {
-          if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
-          const row = getSdkSession(id);
-          return row && row.status !== "exited" && row.status !== "failed";
-        })) continue;
+        if (this.runtimeStillRunning(run.taskId)) continue;
         const cleanup = (async () => {
           try {
             await (this.deps.removeWorkspace ?? removeResidentWorkspace)(run.id, run.workspaceDir);
@@ -910,7 +916,7 @@ export class ResidentManager {
    * the ended-workspace pass, so it runs at startup, on every run end and on that pass's timer.
    */
   private cleanupFinishedMcp(): void {
-    // A read failure throws to the caller's scan, which reports it once and retries next pass.
+    // A read failure throws to the caller, which reports it once and retries on the next pass.
     for (const runId of residentMcpStateToRemove(finishedRunsWithMcpState())) {
       if (this.settling.has(runId)) continue;
       const run = getResidentRun(runId)?.run;

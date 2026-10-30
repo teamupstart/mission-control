@@ -293,7 +293,8 @@ A global server residents cannot use is shown as unavailable, with the reason, i
 the picker. That happens when it uses a field residents cannot carry (anything beyond the command,
 arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
 one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
-`env_http_headers`), relies on an OAuth login the harness holds, has a credential in an argument,
+`env_http_headers`), relies on an OAuth login the harness holds, would send its headers or query
+values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
@@ -315,7 +316,11 @@ servers. A custom server has a name, the harnesses it applies to, and either a *
 - An argument that looks like a credential (`--api-key=…`, `--token`, `TOKEN=…`, a URL with a user
   name or query, a bearer credential) is refused, naming the argument. Put the credential in a
   secret environment variable instead. Arguments are otherwise stored and backed up as written.
-- A URL with a user name or password is refused; a URL's query becomes secret query parameters.
+- A URL with a user name or password is refused; a URL's query becomes secret query parameters,
+  and a parameter named twice is refused.
+- Secret headers and query values travel only over `https`, or over plain `http` to this machine
+  (`localhost`, `127.0.0.1`, `::1`); a server that would send them anywhere else in the clear is
+  refused at save.
 - Names are unique, are never `mission-control`, and may not equal a global server's name on a
   harness the server applies to. A dotted name such as `foo.bar` is one server on both harnesses.
 - **Delete** removes the definition and its secrets. A running resident keeps the copy it launched

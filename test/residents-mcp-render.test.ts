@@ -136,7 +136,7 @@ test("Codex's layers decide whether a start is exact, needs foreign servers swit
   assert.deepEqual(codexResidentMcpVerdict(exact, input), { kind: "exact" });
   const foreign = { config: { mcp_servers: { snap: {}, "proj.dot": { command: "p" } } }, layers: [flags, project({ "proj.dot": { command: "p" } }), user({ snap: {} })] };
   assert.deepEqual(codexResidentMcpVerdict(foreign, input), { kind: "disable", names: ["proj.dot"] });
-  const disabled = { config: { mcp_servers: { snap: {}, "proj.dot": { command: "p", enabled: false } } }, layers: [flags, project({ "proj.dot": { command: "p" } }), user({ snap: {}, "proj.dot": { enabled: false } })] };
+  const disabled = { config: { mcp_servers: { snap: {}, "mission-control": { command: "m" }, "proj.dot": { command: "p", enabled: false } } }, layers: [flags, project({ "proj.dot": { command: "p" } }), user({ snap: {}, "proj.dot": { enabled: false } })] };
   assert.deepEqual(codexResidentMcpVerdict(disabled, { ...input, disabled: ["proj.dot"] }), { kind: "exact" });
   const forced = { config: { mcp_servers: { snap: {}, forced: { enabled: true } } }, layers: [flags, project({ forced: { enabled: true } }), user({ snap: {}, forced: { enabled: false } })] };
   assert.match((codexResidentMcpVerdict(forced, { ...input, disabled: ["forced"] }) as { reason: string }).reason, /enables the MCP server forced itself/);
@@ -144,6 +144,15 @@ test("Codex's layers decide whether a start is exact, needs foreign servers swit
   assert.match((codexResidentMcpVerdict(merged, input) as { reason: string }).reason, /\/repo\/\.codex also defines the resident's MCP server snap/);
   assert.equal(codexResidentMcpVerdict({}, input).kind, "refuse", "an answer without layers is never trusted");
   assert.equal(codexResidentMcpVerdict({ config: {}, layers: [flags] }, input).kind, "refuse", "the overlay must have loaded");
+});
+
+test("another layer that switches off or changes Mission Control's own server refuses the start", () => {
+  const disabled = { config: { mcp_servers: { snap: {}, "mission-control": { command: "m", enabled: false } } }, layers: [flags, project({ "mission-control": { enabled: false } }), user({ snap: {} })] };
+  assert.match((codexResidentMcpVerdict(disabled, input) as { reason: string }).reason, /also defines Mission Control's own MCP server mission-control/);
+  const changed = { config: { mcp_servers: { snap: {}, "mission-control": { command: "m", env: { X: "1" } } } }, layers: [flags, project({ "mission-control": { env: { X: "1" } } }), user({ snap: {} })] };
+  assert.equal(codexResidentMcpVerdict(changed, input).kind, "refuse");
+  const absent = { config: { mcp_servers: { snap: {} } }, layers: [flags, user({ snap: {} })] };
+  assert.match((codexResidentMcpVerdict(absent, input) as { reason: string }).reason, /would not start Mission Control's own MCP server/);
 });
 
 // ---- the drivers ----
@@ -565,6 +574,24 @@ test("a bridged request redirected off its origin answers with an error, never f
   } finally {
     remote.close();
     other.close();
+    daemon.close();
+  }
+});
+
+test("the launcher refuses to send credentials over plain http to another host, before any request", async () => {
+  const daemon = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ definition: { transport: "http", url: "http://mcp.example.invalid/mcp?key=q", headers: { "X-Secret": SECRET } } }));
+  });
+  const port = await listen(daemon);
+  try {
+    const credential = join(root, "cred-plaintext.json");
+    writeFileSync(credential, JSON.stringify({ ticket: "p".repeat(43), expiresAt: Date.now() + 30_000, redeemUrl: `http://127.0.0.1:${port}/api/residents/mcp/redeem` }));
+    const result = await runLauncher(credential);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /refusing to send this server's credentials over plain http to another host/);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes(SECRET));
+  } finally {
     daemon.close();
   }
 });

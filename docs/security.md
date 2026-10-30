@@ -257,7 +257,11 @@ the run, the server's name and a credential file:
   (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
   presentation, whatever the outcome. The answer is that one server's definition and values.
 - A stdio server is started with its values in its own environment only. For an HTTP server the
-  launcher is a stdio bridge that adds the headers and query values to every request itself.
+  launcher is a stdio bridge that adds the headers and query values to every request itself, only
+  to the configured origin: a redirect within it is followed, one to another origin is refused.
+- Secret headers and query values travel only over `https`, or over plain `http` to this machine's
+  loopback. A custom server that would send them elsewhere in the clear is refused at save, a
+  global one is unavailable to residents, and the launcher refuses either before any request.
 - A missing, spent or expired ticket, or a run that has ended, starts nothing.
 
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and

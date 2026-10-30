@@ -112,6 +112,44 @@ test("a URL query is stored as secret parameters, so no stored or shown URL carr
   assert.equal(mcpStore.customSecretValues(view.id).get("query:key"), SECRET);
 });
 
+test("a repeated URL query parameter is refused, so no secret value is sent in place of another", () => {
+  assert.throws(
+    () => create({ name: "dup", harnesses: ["claude"], transport: { type: "http", url: "https://mcp.example.com/mcp?a=1&a=2" } }),
+    /query parameter a is given twice/,
+  );
+});
+
+test("secret headers and query values travel only over https or plain http to this machine", () => {
+  const header = [{ name: "Authorization", secret: true, value: `Bearer ${SECRET}` }];
+  assert.throws(
+    () => create({ name: "plain-remote", harnesses: ["claude"], transport: { type: "http", url: "http://mcp.example.com/mcp", headers: header } }),
+    /cannot be sent over plain http to another host; use https/,
+  );
+  assert.throws(
+    () => create({ name: "plain-query", harnesses: ["claude"], transport: { type: "http", url: "http://mcp.example.com/mcp?key=v" } }),
+    /plain http/,
+  );
+  for (const [name, url] of [["loopback", "http://127.0.0.1:9000/mcp"], ["localhost", "http://localhost:9000/mcp"], ["remote-tls", "https://mcp.example.com/mcp"]] as const) {
+    assert.equal(create({ name, harnesses: ["claude"], transport: { type: "http", url, headers: header } }).name, name);
+  }
+  // Without any secret, plain http is only a URL.
+  assert.equal(create({ name: "plain-open", harnesses: ["claude"], transport: { type: "http", url: "http://mcp.example.com/mcp", headers: [{ name: "Accept", secret: false, value: "x" }] } }).name, "plain-open");
+  const read = catalog.readClaudeGlobalMcp((() => {
+    const dir = mkdtempSync(join(home, "claude-plain-"));
+    writeFileSync(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      "global-plain": { type: "http", url: "http://mcp.example.com/mcp", headers: { Authorization: "Bearer x" } },
+      "global-sse-plain": { type: "sse", url: "http://mcp.example.com/sse?key=v" },
+      "global-loopback": { type: "http", url: "http://127.0.0.1:9000/mcp", headers: { Authorization: "Bearer x" } },
+    } }));
+    return join(dir, ".claude.json");
+  })(), {});
+  assert.match(read.servers[0]!.summary.unavailable!, /plain http to another host/);
+  assert.match(read.servers[1]!.summary.unavailable!, /plain http to another host/);
+  assert.equal(read.servers[2]!.summary.unavailable, null);
+  const codex = catalog.parseCodexServer("codex-plain", { url: "http://mcp.example.com/mcp", http_headers: { Authorization: "Bearer x" } }, "bearer_token");
+  assert.match(codex.summary.unavailable!, /plain http to another host/);
+});
+
 test("credentials outside secret fields are refused at save, naming the argument", () => {
   for (const arg of ["--api-key=abc", "--token", "GITHUB_TOKEN=abc", "https://user:pass@example.com", "https://example.com/?k=v", "Bearer abc"]) {
     assert.ok(credentialFormArgument(arg), arg);
@@ -604,6 +642,138 @@ test("a preview renders the same servers without minting a credential", () => {
   assert.deepEqual(preview.map((entry) => entry.name), ["foo.bar", "plain"]);
   assert.equal(preview[0]!.shape === "launcher" && preview[0]!.args.at(-1), "unissued");
   assert.equal(existsSync(join(launch.residentMcpRunDir(runId), "credentials")), false, "nothing written, nothing to expire");
+});
+
+test("a failed global read refuses a custom server's name check instead of passing it", async () => {
+  const { residents } = manager(async (agent) => agent === "codex"
+    ? { agent, servers: [], problem: "codex is not installed", readAt: 1 }
+    : globalsOf(agent, {}));
+  await assert.rejects(
+    residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "anything", harnesses: ["claude"], transport: { type: "stdio", command: "a" } }) as CreateInput),
+    (error: Error & { status?: number }) => error.status === 503 && /could not read Codex's global MCP servers to check this name \(codex is not installed\); try again/.test(error.message),
+  );
+  assert.equal(mcpStore.residentMcpServerViews().length, 0, "nothing was saved");
+});
+
+test("an MCP state scan that cannot read never stops workspace cleanup", async (t) => {
+  const { registry, residents } = manager(catalog.noGlobalMcp);
+  const created = residents.createProfile(ResidentProfileRevisionSchema.parse({ identity: { name: "Cleanup" }, persona: { personaId: PERSONA.id } }));
+  assert.ok(created.ok);
+  const outcome = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-cleanup-isolated" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const workspace = outcome.result.run.workspaceDir!;
+  assert.ok(existsSync(workspace));
+  const task = registry.getTask(outcome.result.taskId)!;
+  registry.upsertTask({ ...task, status: "done" });
+  openDb().prepare("UPDATE sdk_sessions SET status = 'exited' WHERE task_id = ?").run(task.id);
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  const errors = t.mock.method(console, "error", () => {});
+  const failing = t.mock.method(db, "prepare", (sql: string) => {
+    if (/resident_run_mcp_servers UNION/.test(sql)) throw new Error("mcp store unreadable");
+    return prepare(sql);
+  });
+  try {
+    await residents.cleanupEndedWorkspaces();
+    await residents.cleanupEndedWorkspaces();
+  } finally {
+    failing.mock.restore();
+  }
+  assert.equal(existsSync(workspace), false, "the workspace was removed despite the MCP scan failing");
+  const reports = errors.mock.calls.map((call) => String(call.arguments[0]));
+  assert.equal(reports.filter((message) => /scan finished runs for MCP state/.test(message)).length, 1, "reported once, naming the MCP scan");
+  assert.equal(reports.filter((message) => /could not scan ended workspaces/.test(message)).length, 0);
+});
+
+test("a Claude global SSE server starts through the scoped launcher with its own secret header and query", async () => {
+  const { spawn } = await import("node:child_process");
+  const { createServer } = await import("node:http");
+  const listen = (server: import("node:http").Server) => new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as { port: number }).port)));
+  const header = `sse-header-${crypto.randomUUID()}`;
+  const query = `sse-query-${crypto.randomUUID()}`;
+  // A legacy SSE MCP server: GET opens the stream and names the message endpoint; each POST is
+  // answered over that stream. Every request's secret header and query are recorded.
+  const seen: Array<{ method: string; url: string; header: unknown }> = [];
+  const open: { stream: import("node:http").ServerResponse | null } = { stream: null };
+  const sse = createServer(async (req, res) => {
+    seen.push({ method: req.method ?? "", url: req.url ?? "", header: req.headers["x-api-key"] });
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      res.write("event: endpoint\ndata: /messages?session=1\n\n");
+      open.stream = res;
+      return;
+    }
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    res.writeHead(202).end();
+    const msg = JSON.parse(raw) as { id?: number; params?: { protocolVersion?: string } };
+    if (msg.id !== undefined) {
+      open.stream?.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? "2024-11-05", capabilities: {}, serverInfo: { name: "sse-fixture", version: "1" } } })}\n\n`);
+    }
+  });
+  const ssePort = await listen(sse);
+  // The global server exactly as Claude Code's configuration holds it, through the catalog,
+  // the effective set and the snapshot.
+  const dir = mkdtempSync(join(home, "claude-sse-"));
+  writeFileSync(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+    "events": { type: "sse", url: `http://127.0.0.1:${ssePort}/sse?key=${query}`, headers: { "X-Api-Key": header } },
+  } }));
+  const read = catalog.readClaudeGlobalMcp(join(dir, ".claude.json"), {});
+  assert.equal(read.servers[0]!.summary.unavailable, null);
+  const resolved = await resolve(profile(), read);
+  assert.ok(resolved.ok && resolved.servers);
+  const runId = crypto.randomUUID();
+  seedRun(runId, resolved.servers);
+  const entry = launch.residentMcpLaunchForRun(runId)!.forStart()[0]!;
+  assert.equal(entry.shape, "launcher");
+  if (entry.shape !== "launcher") return;
+  assert.ok(!JSON.stringify(entry).includes(header) && !JSON.stringify(entry).includes(query), "no secret in the entry");
+  // The daemon's redemption route, answered by the production redemption.
+  const daemon = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const redeemed = launch.redeemResidentMcpTicket(JSON.parse(raw));
+    res.writeHead(redeemed.ok ? 200 : redeemed.status, { "content-type": "application/json" })
+      .end(JSON.stringify(redeemed.ok ? { definition: redeemed.definition } : { error: redeemed.error }));
+  });
+  const daemonPort = await listen(daemon);
+  const credential = entry.args.at(-1)!;
+  const file = JSON.parse(readFileSync(credential, "utf8")) as { redeemUrl: string };
+  writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
+  try {
+    const answer = await new Promise<{ id: number; result?: { serverInfo?: { name: string } } }>((resolveAnswer, reject) => {
+      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+        env: { PATH: process.env.PATH },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let out = "";
+      let errText = "";
+      const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`no answer: ${errText}`)); }, 15_000);
+      child.stderr.on("data", (chunk) => { errText += chunk; });
+      child.stdout.on("data", (chunk) => {
+        out += chunk;
+        const line = out.split("\n")[0];
+        if (out.includes("\n")) {
+          clearTimeout(timer);
+          child.kill("SIGTERM");
+          resolveAnswer(JSON.parse(line!));
+        }
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "1" } } })}\n`);
+    });
+    assert.equal(answer.id, 3);
+    assert.equal(answer.result?.serverInfo?.name, "sse-fixture", "initialization succeeded over the SSE bridge");
+    assert.equal(existsSync(credential), false);
+    const get = seen.find((row) => row.method === "GET")!;
+    assert.equal(get.header, header, "the event stream carried its secret header");
+    assert.equal(get.url, `/sse?key=${query}`, "and its secret query value");
+    assert.ok(seen.filter((row) => row.method === "POST").every((row) => row.header === header), "every message carried the header");
+  } finally {
+    open.stream?.end();
+    sse.closeAllConnections();
+    sse.close();
+    daemon.close();
+  }
 });
 
 test("startup removes every credential file a previous process left", () => {

@@ -351,6 +351,23 @@ export function credentialArgumentProblem(found: { index: number; arg: string; r
   return `argument ${found.index + 1}${shown} looks like ${found.reason}; put the credential in a secret environment variable instead`;
 }
 
+/** Whether a URL names this machine, where plain http never leaves the loopback interface. */
+export function residentMcpLoopbackHost(url: URL): boolean {
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * Why a URL may not carry an MCP server's credentials, or null. Secret headers and query values
+ * travel only over https, or over plain http to this machine; anywhere else they would cross
+ * the network unencrypted.
+ */
+export function plaintextCredentialProblem(url: URL): string | null {
+  return url.protocol === "http:" && !residentMcpLoopbackHost(url)
+    ? "it would send its credentials over plain http to another host; use https"
+    : null;
+}
+
 export function residentMcpEnvNameProblem(name: string): string | null {
   return ENV_NAME.test(name) ? null : `${name} is not an environment variable name`;
 }

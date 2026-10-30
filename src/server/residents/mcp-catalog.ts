@@ -7,6 +7,7 @@ import {
   RESIDENT_MCP_RESERVED_NAME,
   credentialArgumentProblem,
   credentialFormArgs,
+  plaintextCredentialProblem,
   residentMcpSecretField,
   type ResidentMcpCatalog,
   type ResidentMcpGlobalServer,
@@ -15,7 +16,8 @@ import {
 import { RESIDENT_AGENTS, type ResidentAgent } from "@shared/residents.ts";
 import type { ResidentMcpOptions } from "../harness/types.ts";
 import { operatorCodexHome } from "../harness/codex/resident-home.ts";
-import type { ResidentMcpSnapshotTransport } from "./mcp-store.ts";
+import { ResidentMcpServerError, type ResidentMcpSnapshotTransport } from "./mcp-store.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 // The global MCP catalog: each harness's own user-scope servers, read on demand.
 //
@@ -251,6 +253,7 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     const split = splitUrl(url, headers, secrets);
     if (typeof split === "string") return unreadable(name, type, split);
     for (const [key, value] of Object.entries(headers)) secrets.set(residentMcpSecretField("header", key), value);
+    if (Object.keys(headers).length > 0 || split.secretQuery.length > 0) problem ??= plaintextCredentialProblem(new URL(split.url));
     transport = { type, url: split.url, headers: {}, secretHeaders: Object.keys(headers), secretQuery: split.secretQuery };
   }
   const options = claudeOptions(entry);
@@ -344,6 +347,7 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
     const split = splitUrl(entry.url, headers, secrets);
     if (typeof split === "string") return unreadable(name, "http", split);
     for (const [key, value] of Object.entries(headers)) secrets.set(residentMcpSecretField("header", key), value);
+    if (Object.keys(headers).length > 0 || split.secretQuery.length > 0) problem ??= plaintextCredentialProblem(new URL(split.url));
     if (authStatus === undefined) problem ??= "Codex could not say how it authenticates to this server";
     else if (authStatus === "o_auth") problem ??= "it uses an OAuth login held by Codex";
     transport = { type: "http", url: split.url, headers: {}, secretHeaders: Object.keys(headers), secretQuery: split.secretQuery };
@@ -512,6 +516,14 @@ export class ResidentMcpCatalogCache {
    */
   async names(fresh = true): Promise<Map<ResidentAgent, Set<string>>> {
     const reads = await Promise.all(RESIDENT_AGENTS.map((agent) => this.read(agent, fresh)));
+    // A read that failed knows no names, which is not the same as there being none.
+    const failed = reads.find((read) => read.problem);
+    if (failed) {
+      throw new ResidentMcpServerError(
+        `could not read ${AGENT_IDENTITY[failed.agent].label}'s global MCP servers to check this name (${failed.problem}); try again`,
+        503,
+      );
+    }
     return new Map(reads.map((read) => [read.agent, new Set(read.servers.map((server) => server.summary.name.toLowerCase()))]));
   }
 

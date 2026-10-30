@@ -48,7 +48,7 @@ raw.exec(`
 `);
 raw.close();
 
-const { openDb } = await import("../src/server/db.ts");
+const { closeDb, openDb } = await import("../src/server/db.ts");
 const store = await import("../src/server/residents/store.ts");
 const { residentRunControlRecorded } = await import("../src/shared/residents.ts");
 
@@ -71,6 +71,16 @@ test("a Phase 2 database gains nullable grant columns and its runs stay ungrante
   assert.equal(residentRunControlRecorded(open.run.control), false);
   // Its pinned revision predates the authority section, so it reads as off.
   assert.equal(open.run.settings.authority.controlOtherSessions, false);
-  // Re-opening runs the migration again without changing anything.
-  assert.deepEqual(store.getResidentRun("r1")!.run.control, open.run.control);
+});
+
+test("opening the upgraded database again runs the migration again and changes nothing", () => {
+  const controlColumns = () => (openDb().prepare(`PRAGMA table_info(resident_runs)`).all() as Array<{ name: string }>)
+    .map((c) => c.name).filter((name) => name.startsWith("control_"));
+  assert.deepEqual(controlColumns(), ["control_authorized_at", "control_conversation_id", "control_cwd", "control_episode_id"]);
+  // A real second open of the same file: the connection is closed, so `openDb` creates the
+  // schema and runs `migrate()` over the already-upgraded table.
+  closeDb();
+  assert.deepEqual(controlColumns(), ["control_authorized_at", "control_conversation_id", "control_cwd", "control_episode_id"],
+    "each column is added once, not again");
+  assert.deepEqual(store.getResidentRun("r1")!.run.control, { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
 });

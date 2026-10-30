@@ -236,11 +236,14 @@ port. `ResidentManager.launch` consumes the click after reserving the run and be
 task, and only for a caller `sessionControlCallerRefusal` accepts and a pinned revision with
 `authority.controlOtherSessions` on. It records `control_authorized_at`, then calls
 `Registry.setSessionControlEnabled` once the run's session has a `sessionControlIdentity` bound
-to the run's task. It records the conversation, cwd and work episode it applied to. After SDK
+to the run's task, and records the conversation, cwd and work episode it applied to before it
+logs the grant. A grant it cannot apply or record is taken back and the record cleared. After SDK
 restore, on the first completed sweep, it re-applies the grant only when those three and the task
 match exactly, and otherwise clears the record. A revoke through the toggle route clears it
-through `ResidentManager.sessionControlRevoked`. Nothing else calls
-`setSessionControlEnabled(id, true)`.
+through `ResidentManager.sessionControlRevoked` before the live grant is turned off. Resident
+launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
+session-control route's trusted menu click above is the other grant source, as
+[security](../security.md#delegated-session-control) states.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control

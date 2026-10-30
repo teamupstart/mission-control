@@ -21,7 +21,7 @@ import {
   runMcpSecretValues,
   runMcpSnapshot,
   type ResidentMcpResolvedServer,
-  type ResidentMcpSnapshotServer,
+  type StoredMcpSnapshotServer,
 } from "./mcp-store.ts";
 
 // A resident run's MCP servers, from launch to the server process.
@@ -215,7 +215,7 @@ export async function resolveResidentMcpSet(
 
 interface Grant {
   runId: string;
-  source: ResidentMcpSnapshotServer["source"];
+  source: StoredMcpSnapshotServer["source"];
   server: string;
   startId: string;
   expiresAt: number;
@@ -241,7 +241,7 @@ function forget(key: string): void {
  * single-use ticket bound to this run, this server and this start, and its expiry. Removed by
  * the launcher when read, and by the daemon once the ticket expires unredeemed.
  */
-function issueCredential(runId: string, server: ResidentMcpSnapshotServer, startId: string, now = Date.now()): string {
+function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId: string, now = Date.now()): string {
   const dir = join(residentMcpRunDir(runId), "credentials");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const ticket = randomBytes(32).toString("base64url");
@@ -259,9 +259,10 @@ function issueCredential(runId: string, server: ResidentMcpSnapshotServer, start
 const UNISSUED_CREDENTIAL = "unissued";
 
 /** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
-function entryFor(runId: string, server: ResidentMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
+function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
   const { name, options, transport } = server;
-  if (!server.launcher) {
+  // A redacted definition renders as a launcher entry, whose redemption refuses it.
+  if (!server.launcher && transport.type !== "redacted") {
     if (transport.type === "stdio") {
       return { name, options, shape: "stdio", command: transport.command, args: [...transport.args], env: { ...transport.env } };
     }
@@ -338,6 +339,13 @@ export function redeemResidentMcpTicket(
     error: `the snapshot no longer holds the secret ${name}; launch the resident again`,
   });
   const { transport } = server;
+  if (transport.type === "redacted") {
+    return {
+      ok: false,
+      status: 409,
+      error: "this server's definition was not kept when the database was restored from a backup; launch the resident again",
+    };
+  }
   if (transport.type === "stdio") {
     const env = { ...transport.env };
     for (const name of transport.secretEnv) {

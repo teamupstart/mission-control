@@ -362,6 +362,16 @@ export interface ResidentMcpSnapshotServer {
   options: ResidentMcpOptions;
 }
 
+/**
+ * A snapshot server as read back. A full-database recovery point redacts every global server's
+ * transport (`DatabaseBackupService`), because its whole definition is private; a run restored
+ * from one still knows the server's name and refuses to start it rather than start it without
+ * its definition.
+ */
+export interface StoredMcpSnapshotServer extends Omit<ResidentMcpSnapshotServer, "transport"> {
+  transport: ResidentMcpSnapshotTransport | { type: "redacted" };
+}
+
 /** A server about to be snapshotted: its definition and the secret values bound to it. */
 export interface ResidentMcpResolvedServer extends ResidentMcpSnapshotServer {
   secrets: ReadonlyMap<string, string>;
@@ -393,7 +403,7 @@ export function writeRunMcpSnapshot(runId: string, servers: readonly ResidentMcp
  * A run's snapshot, or null for a run launched before snapshots existed (it keeps the native
  * MCP behaviour it launched with). An empty array is a real snapshot: Mission's server only.
  */
-export function runMcpSnapshot(runId: string): ResidentMcpSnapshotServer[] | null {
+export function runMcpSnapshot(runId: string): StoredMcpSnapshotServer[] | null {
   const d = openDb();
   const run = d.prepare("SELECT mcp_snapshot_at FROM resident_runs WHERE id = ?").get(runId) as
     | { mcp_snapshot_at: number | null }
@@ -402,7 +412,7 @@ export function runMcpSnapshot(runId: string): ResidentMcpSnapshotServer[] | nul
   const rows = d
     .prepare("SELECT definition_json FROM resident_run_mcp_servers WHERE run_id = ? ORDER BY position")
     .all(runId) as Array<{ definition_json: string }>;
-  return rows.map((row) => JSON.parse(row.definition_json) as ResidentMcpSnapshotServer);
+  return rows.map((row) => JSON.parse(row.definition_json) as StoredMcpSnapshotServer);
 }
 
 /** One snapshot server's secret values. Daemon-only: read by the launcher's redemption. */

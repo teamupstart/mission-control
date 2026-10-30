@@ -334,7 +334,9 @@ Resident profiles are part of [automatic settings snapshots](configuration.md#au
 Custom MCP server definitions are too, under their own domain, without any secret value: a
 snapshot restored onto another machine brings the servers back with their secrets *Not set*. A
 snapshot taken before custom MCP servers existed restores without touching them. Full-database
-recovery points are scrubbed of every secret before they are written.
+recovery points are scrubbed of every secret, and of every global server's definition in a run's
+snapshot, before they are written; a run restored from one is refused those servers until it is
+launched again.
 Restoring a snapshot writes each changed profile as a new revision, reactivates profiles the
 snapshot holds and archives live profiles it does not. Revisions that running residents pinned are
 kept. A snapshot taken before residents existed restores without touching profiles.

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -14,6 +14,7 @@ import {
 } from "@shared/resident-mcp.ts";
 import { RESIDENT_AGENTS, type ResidentAgent } from "@shared/residents.ts";
 import type { ResidentMcpOptions } from "../harness/types.ts";
+import { operatorCodexHome } from "../harness/codex/resident-home.ts";
 import type { ResidentMcpSnapshotTransport } from "./mcp-store.ts";
 
 // The global MCP catalog: each harness's own user-scope servers, read on demand.
@@ -376,12 +377,19 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
   };
 }
 
-/** The user layer's raw `mcp_servers` table from a `config/read` answer, or a problem. */
-export function codexUserMcpTable(result: unknown): Record<string, unknown> | string {
+/**
+ * The user layer's raw `mcp_servers` table from a `config/read` answer, or why it cannot be read.
+ *
+ * An answer without its layers, or without the user layer while the user configuration file
+ * exists, is a failed read rather than "no servers": treating it as empty would let an inherit-on
+ * launch silently drop every global server and snapshot that omission. Only a user
+ * configuration that does not exist means there are none.
+ */
+export function codexUserMcpTable(result: unknown, userConfigExists: boolean): Record<string, unknown> | string {
   if (!PLAIN(result)) return "Codex answered config/read with something that is not an object";
-  if (!Array.isArray(result.layers)) return {};
+  if (!Array.isArray(result.layers)) return "Codex did not report its configuration layers";
   const user = result.layers.find((layer) => PLAIN(layer) && PLAIN(layer.name) && layer.name.type === "user");
-  if (!PLAIN(user)) return {};
+  if (!PLAIN(user)) return userConfigExists ? "Codex did not report its user configuration layer" : {};
   const config = user.config;
   if (!PLAIN(config) || config.mcp_servers === undefined) return {};
   return PLAIN(config.mcp_servers) ? config.mcp_servers : "mcp_servers in Codex's configuration is not a table";
@@ -433,7 +441,8 @@ export async function readCodexGlobalMcp(now = Date.now()): Promise<GlobalMcpRea
         client.request("initialize", { clientInfo: { name: "mission_control_mcp_catalog", version: "1" }, capabilities: { experimentalApi: true } }),
         timeout,
       ]);
-      table = codexUserMcpTable(await Promise.race([client.request("config/read", { cwd: neutral, includeLayers: true }), timeout]));
+      const answer = await Promise.race([client.request("config/read", { cwd: neutral, includeLayers: true }), timeout]);
+      table = codexUserMcpTable(answer, existsSync(join(operatorCodexHome(), "config.toml")));
     } catch (error) {
       return fail(`could not read Codex's configuration: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

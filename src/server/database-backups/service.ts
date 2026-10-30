@@ -56,7 +56,25 @@ interface DatabaseBackupServiceOptions {
  */
 export const WRITE_ONLY_SECRET_TABLES = ["resident_mcp_secrets", "resident_run_mcp_secrets"] as const;
 
-/** Delete every write-only secret from a captured copy, overwriting the freed pages. */
+/**
+ * Private definitions redacted in place, so their rows survive and only their content does not.
+ * A global MCP server's whole definition - command and arguments included - is private, because
+ * native configuration does not mark which parts are credentials; a restored run keeps the
+ * server's name and refuses to start it.
+ */
+const PRIVATE_DEFINITION_REDACTIONS = [
+  {
+    table: "resident_run_mcp_servers",
+    sql: `UPDATE resident_run_mcp_servers
+          SET definition_json = json_set(definition_json, '$.transport', json('{"type":"redacted"}'))
+          WHERE source = 'global'`,
+  },
+] as const;
+
+/**
+ * Delete every write-only secret, and redact every private definition, in a captured copy,
+ * overwriting the freed pages.
+ */
 export function scrubWriteOnlySecrets(path: string): void {
   const copy = new DatabaseSync(path);
   try {
@@ -65,11 +83,13 @@ export function scrubWriteOnlySecrets(path: string): void {
         .map((row) => row.name),
     );
     const tables = WRITE_ONLY_SECRET_TABLES.filter((table) => present.has(table));
-    if (tables.length === 0) return;
-    // `secure_delete` zeroes the deleted cells; VACUUM then rebuilds the file without the
-    // freed pages, so no secret survives in free space either.
+    const redactions = PRIVATE_DEFINITION_REDACTIONS.filter((redaction) => present.has(redaction.table));
+    if (tables.length === 0 && redactions.length === 0) return;
+    // `secure_delete` zeroes the deleted cells and the old row images an update replaces;
+    // VACUUM then rebuilds the file without the freed pages, so nothing survives in free space.
     copy.exec("PRAGMA secure_delete = ON");
     for (const table of tables) copy.exec(`DELETE FROM ${table}`);
+    for (const redaction of redactions) copy.exec(redaction.sql);
     copy.exec("VACUUM");
   } finally {
     copy.close();

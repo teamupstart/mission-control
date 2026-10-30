@@ -233,6 +233,18 @@ test("a Claude global value read from the environment the agent inherits is neve
   assert.ok(!selected.ok && !selected.error.includes(sentinel) && /reads DISPOSABLE_MCP_TOKEN/.test(selected.error));
 });
 
+test("a Codex answer missing its layers is a failed read, so an inherit-on launch refuses rather than dropping servers", async () => {
+  const project = { name: { type: "project" }, config: { mcp_servers: { p: { command: "x" } } } };
+  assert.equal(catalog.codexUserMcpTable({ config: {} }, true), "Codex did not report its configuration layers");
+  assert.equal(catalog.codexUserMcpTable({ config: {} }, false), "Codex did not report its configuration layers");
+  assert.equal(catalog.codexUserMcpTable({ config: {}, layers: [project] }, true), "Codex did not report its user configuration layer");
+  assert.deepEqual(catalog.codexUserMcpTable({ config: {}, layers: [project] }, false), {}, "no user configuration file: no global servers");
+  assert.deepEqual(catalog.codexUserMcpTable({ config: {}, layers: [{ name: { type: "user", file: "/u/config.toml" }, config: {} }] }, true), {});
+  const failed: GlobalRead = { agent: "codex", servers: [], problem: "Codex did not report its configuration layers", readAt: 1 };
+  const inherited = await resolve(profile({ agent: "codex" }), failed);
+  assert.ok(!inherited.ok && /could not read Codex's global MCP servers: Codex did not report its configuration layers/.test(inherited.error));
+});
+
 test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and env references", () => {
   const table = catalog.codexUserMcpTable({ config: {}, layers: [
     { name: { type: "project" }, config: { mcp_servers: { projectonly: { command: "x" } } } },
@@ -244,7 +256,7 @@ test("Codex's catalog reads the raw user layer and refuses fields it cannot map,
       bearer: { url: "https://b.example.com", bearer_token_env_var: "TOK" },
       off: { command: "x", enabled: false },
     } } },
-  ] });
+  ] }, true);
   assert.ok(typeof table !== "string");
   assert.deepEqual(Object.keys(table), ["fs", "web", "oauth", "refs", "bearer", "off"], "only the user layer");
   const auth = new Map([["web", "bearer_token"], ["oauth", "o_auth"], ["bearer", "bearer_token"]]);
@@ -458,6 +470,34 @@ test("a database recovery point is scrubbed of every write-only secret", () => {
   assert.ok(readFileSync(copy).includes(SECRET), "the raw copy holds it before the scrub");
   scrubWriteOnlySecrets(copy);
   assert.ok(!readFileSync(copy).includes(SECRET), "no byte of it survives, free pages included");
+});
+
+test("a recovery point redacts a global server's private definition, and a run restored from it refuses that server", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  // A credential in a form the argument guard does not recognize: only redaction protects it.
+  const sentinel = `opaque-credential-${crypto.randomUUID()}`;
+  const runId = crypto.randomUUID();
+  seedRun(runId, [
+    { ...GLOBAL_SERVER, name: "private-global", transport: { type: "stdio", command: "/opt/private/bin/opaque-server", args: ["--connect", sentinel], env: {}, secretEnv: [], cwd: null }, secrets: new Map() },
+    PLAIN_SERVER,
+  ]);
+  const copy = join(home, `redact-${Date.now()}.sqlite3`);
+  openDb().prepare("VACUUM INTO ?").run(copy);
+  assert.ok(readFileSync(copy).includes(sentinel), "the raw copy holds it before the scrub");
+  scrubWriteOnlySecrets(copy);
+  const bytes = readFileSync(copy);
+  assert.ok(!bytes.includes(sentinel) && !bytes.includes("opaque-server"), "neither the argument nor the command survives, free pages included");
+  const restored = new DatabaseSync(copy);
+  const rows = restored.prepare("SELECT source, name, definition_json FROM resident_run_mcp_servers WHERE run_id = ? ORDER BY position").all(runId) as Array<{ source: string; name: string; definition_json: string }>;
+  restored.close();
+  assert.deepEqual(rows.map((row) => [row.source, row.name, JSON.parse(row.definition_json).transport.type]), [["global", "private-global", "redacted"], ["custom", "plain", "stdio"]], "the rows stay, a custom server's non-secret definition is kept");
+  // Restore that row into a live run: the server is not started without its definition.
+  openDb().prepare("UPDATE resident_run_mcp_servers SET definition_json = ? WHERE run_id = ? AND name = ?").run(rows[0]!.definition_json, runId, "private-global");
+  const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
+  assert.equal(entries[0]!.shape, "launcher", "a redacted server still renders only as a launcher entry");
+  const ticket = (JSON.parse(readFileSync(entries[0]!.shape === "launcher" ? entries[0]!.args.at(-1)! : "", "utf8")) as { ticket: string }).ticket;
+  const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "private-global" });
+  assert.ok(!redeemed.ok && redeemed.status === 409 && /launch the resident again/.test(redeemed.error));
 });
 
 // ---- through the manager ----

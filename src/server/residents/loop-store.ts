@@ -28,6 +28,23 @@ export function pauseResident(id: string, reason: string): void {
   openDb().prepare(`UPDATE resident_runs SET loop_state = 'paused', pause_reason = ?, next_wake_at = NULL,
     ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
 }
+export function resumeResident(id: string, working: boolean, generation: number | null, at: number): void {
+  const run = liveRun(id);
+  openDb().prepare(`UPDATE resident_runs SET loop_state = ?, pause_reason = NULL, wake_reason = NULL, next_wake_at = ?,
+    consumed_generation = ? WHERE id = ?`).run(working ? "working" : "waiting",
+    working ? null : at + run.settings.loop.delaySeconds * 1000,
+    working ? run.consumedGeneration : generation ?? run.consumedGeneration, id);
+}
+export function beginResidentCompaction(id: string): void {
+  liveRun(id);
+  openDb().prepare("UPDATE resident_runs SET loop_state = 'compacting' WHERE id = ?").run(id);
+}
+export function completeResidentCompaction(id: string, generation: number | null): void {
+  const run = liveRun(id);
+  // Consume the maintenance generation without scheduling or counting an iteration.
+  openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ? WHERE id = ?")
+    .run(generation ?? run.consumedGeneration, id);
+}
 export function humanResidentTurn(id: string): void {
   openDb().prepare(`UPDATE resident_runs SET next_wake_at = NULL, wake_reason = NULL, ${CLEAR_REQUEST},
     loop_state = CASE WHEN loop_state = 'paused' THEN 'paused' ELSE 'working' END

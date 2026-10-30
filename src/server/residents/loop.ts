@@ -2,16 +2,15 @@ import { ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingReq
 import { residentWakeMarker } from "@shared/resident-turn.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
-import { openDb } from "../db.ts";
 import { sessionMessages, type SessionMessages } from "../harness/index.ts";
 import { recordInjection, reserveInjection, releaseInjection } from "../injections.ts";
 import type { Registry } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
 import {
-  ResidentLoopRefusal, claimResidentWake, claimedIteration, completeResidentGeneration,
+  ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, completeResidentCompaction, completeResidentGeneration,
   humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, residentClaims,
-  residentGuardrail, settleResidentClaim, type ResidentIteration,
+  residentGuardrail, resumeResident, settleResidentClaim, type ResidentIteration,
 } from "./loop-store.ts";
 
 interface LoopDeps {
@@ -152,10 +151,7 @@ export class ResidentLoop {
     if (reportBucket(session) === "needs-you") throw new ResidentLoopRefusal("Resolve the resident's request for you before resuming.");
     this.cancelTimer(id);
     const working = session.workCycle?.active || session.state !== "idle";
-    openDb().prepare(`UPDATE resident_runs SET loop_state = ?, pause_reason = NULL, wake_reason = NULL, next_wake_at = ?,
-      consumed_generation = ? WHERE id = ?`).run(working ? "working" : "waiting",
-      working ? null : this.now() + run.settings.loop.delaySeconds * 1000,
-      working ? run.consumedGeneration : session.workCycle?.generation ?? run.consumedGeneration, id);
+    resumeResident(id, working, session.workCycle?.generation ?? null, this.now());
     this.publish(id);
     this.enqueue(id);
   }
@@ -214,7 +210,7 @@ export class ResidentLoop {
     const cap = residentGuardrail(run, this.now());
     if (cap) { this.pause(id, cap); return; }
     if ((session.meta?.contextPct ?? 0) >= run.settings.loop.contextThreshold) {
-      openDb().prepare("UPDATE resident_runs SET loop_state = 'compacting' WHERE id = ?").run(id);
+      beginResidentCompaction(id);
       this.publish(id);
       const compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
       run = liveRun(id);
@@ -226,9 +222,7 @@ export class ResidentLoop {
       if (!Number.isFinite(compactedPct) || compactedPct >= run.settings.loop.contextThreshold) {
         this.pause(id, "Compaction did not establish context below the profile threshold."); return;
       }
-      // Consume the maintenance generation without scheduling or counting an iteration.
-      openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ? WHERE id = ?")
-        .run(current.workCycle?.generation ?? run.consumedGeneration, id);
+      completeResidentCompaction(id, current.workCycle?.generation ?? null);
     }
     if (this.blocker(run, session)) return;
     // Compaction spends tokens too. Recheck the window after every awaited operation.

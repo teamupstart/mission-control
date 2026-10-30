@@ -135,6 +135,25 @@ test("human precedence cancels pacing and uses a fresh default cadence; needs-yo
   assert.throws(() => loop.resume("run"), /Resolve/);
 });
 
+for (const working of [false, true]) test(`resuming an ${working ? "active" : "idle"} resident preserves completion pacing`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  loop.schedule(f.session, { callId: "old-delay", delaySeconds: 1200, reason: "old reason" });
+  loop.pause("run");
+  f.advance(10_000);
+  if (working) f.human();
+  loop.resume("run");
+  assert.equal(f.run().pauseReason, null);
+  assert.equal(f.run().wakeReason, null);
+  const resumedAt = f.now;
+  assert.equal(f.run().nextWakeAt, working ? null : resumedAt + 300_000);
+  assert.equal(f.run().loopState, working ? "working" : "waiting");
+  f.advance(5_000); f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, (working ? f.now : resumedAt) + 300_000,
+    "an active turn starts its cadence on completion; an already consumed turn cannot move the resumed wake");
+  assert.equal(f.run().iteration, 1);
+  assert.equal(f.calls.length, 0, "resuming never sends immediately or counts a human turn");
+});
+
 test("manual compaction finishes below threshold before sending and never counts as an iteration", async () => {
   const f = fixture(); const loop = f.loop(); await flush(); f.patch({ meta: meta({ contextPct: 80 }) });
   await loop.runNow("run"); assert.equal(f.calls[0], "compact"); assert.match(f.calls[1]!, /mission-resident:run:2/);

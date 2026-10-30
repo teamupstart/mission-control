@@ -1891,9 +1891,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(body) : c.json(body, result.status as 404 | 409 | 502 | 504);
   });
   // A resident run's durable grant follows the operator's toggle: turning control off forgets
-  // it, so a restart never gives back what the operator took away.
-  registerSessionControlRoutes(app, registry, authorizeSessionControl, (sessionId, enabled) => {
-    if (!enabled) residents?.sessionControlRevoked(sessionId);
+  // it before the live grant goes, so a restart never gives back what the operator took away.
+  registerSessionControlRoutes(app, registry, authorizeSessionControl, (sessionId) => {
+    residents?.sessionControlRevoked(sessionId);
   });
 
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));

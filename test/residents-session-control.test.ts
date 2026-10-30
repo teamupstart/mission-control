@@ -376,6 +376,44 @@ test("turning control off with the session control toggle forgets the run's gran
   assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
 });
 
+test("a revoke whose event log fails still forgets the run's grant, so a restart cannot restore it", async () => {
+  const h = harness();
+  const menuClicks = new Set<string>();
+  const app = buildApp({
+    registry: h.registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as import("../src/server/tasks.ts").TaskManager,
+    queues: {} as QueueManager,
+    residents: h.residents,
+    authorizeSessionControl: async (input) => menuClicks.delete(input.requestId),
+  });
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: 1 });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(residentRunControlRecorded(control(run.id)), true);
+  const revoke = randomUUID();
+  menuClicks.add(revoke);
+  // The session event ledger refuses every write, as a full disk or a locked database would.
+  openDb().exec(`CREATE TRIGGER refuse_session_events BEFORE INSERT ON session_events
+    BEGIN SELECT RAISE(ABORT, 'session event ledger unavailable'); END;`);
+  try {
+    const response = await app.request(`/api/sessions/${encodeURIComponent(sessionId)}/session-control`, {
+      method: "PUT",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false, requestId: revoke }),
+    });
+    assert.equal(response.status, 500, "the failed log write still fails the request");
+  } finally {
+    openDb().exec("DROP TRIGGER refuse_session_events");
+  }
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false, "the revoked grant stays revoked");
+});
+
 // ---- after a restart ----
 
 /**

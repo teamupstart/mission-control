@@ -800,8 +800,9 @@ export class ResidentManager {
   }
 
   /**
-   * The operator turned this session's control off with the existing toggle. When the session is a
-   * resident run's, forget the run's grant, so a restart does not give it back.
+   * The operator is turning this session's control off with the existing toggle, and the route
+   * calls this before the live grant goes. When the session is a resident run's, forget the run's
+   * grant first, so no later failure can leave a record a restart would give back.
    */
   sessionControlRevoked(sessionId: string): void {
     const session = this.deps.registry.getSession(sessionId);

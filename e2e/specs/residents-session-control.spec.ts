@@ -71,6 +71,40 @@ async function band(page: Page, daemon: DaemonHandle): Promise<Locator> {
   return found;
 }
 
+/**
+ * The real sandboxed desktop shell with the production preload, registering the resident Launch
+ * click through the same `serveDashboardClick` registrar main uses.
+ */
+async function launchDesktop(daemon: DaemonHandle) {
+  const authorizationModule = join(daemon.home, "session-control-authorization.cjs");
+  buildSync({
+    stdin: {
+      contents: 'export * from "./src/main/session-control-authorization.ts"; export * from "./src/main/dashboard-click-ipc.ts";',
+      resolveDir: process.cwd(),
+      loader: "ts",
+    },
+    outfile: authorizationModule,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+  });
+  return electron.launch({
+    args: [fileURLToPath(new URL("../fixtures/desktop-session-control.cjs", import.meta.url)), authorizationModule],
+  });
+}
+
+/** A profile with Control other sessions on and a default repository, authored over HTTP. */
+function createControlProfile(daemon: DaemonHandle): Promise<{ id: string; revision: number }> {
+  return api(daemon, "/api/residents/profiles", {
+    settings: {
+      identity: { name: PROFILE },
+      persona: { personaId: PERSONA_ID },
+      workspace: { defaultRepoRoot: daemon.repo },
+      authority: { controlOtherSessions: true },
+    },
+  });
+}
+
 test("a resident launched from the standalone browser starts without session control, and every launch surface says so", async ({
   dashboard,
   daemon,
@@ -137,21 +171,7 @@ test("a desktop Launch click grants the resident session control, and a daemon r
   // has the private shell channel a Launch click is consumed over. No HTTP or environment
   // bypass exists for it.
   await daemon.crash();
-  const authorizationModule = join(daemon.home, "session-control-authorization.cjs");
-  buildSync({
-    stdin: {
-      contents: 'export * from "./src/main/session-control-authorization.ts"; export * from "./src/main/dashboard-click-ipc.ts";',
-      resolveDir: process.cwd(),
-      loader: "ts",
-    },
-    outfile: authorizationModule,
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-  });
-  const application = await electron.launch({
-    args: [fileURLToPath(new URL("../fixtures/desktop-session-control.cjs", import.meta.url)), authorizationModule],
-  });
+  const application = await launchDesktop(daemon);
   const startDaemon = async (): Promise<void> => {
     const pid = await application.evaluate(async (_electron, config) =>
       (globalThis as unknown as { startControlDaemon(config: unknown): Promise<number> }).startControlDaemon(config),
@@ -165,14 +185,7 @@ test("a desktop Launch click grants the resident session control, and a daemon r
     const dashboard = await application.firstWindow();
     await startDaemon();
     await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
-    const profile = await api<{ id: string; revision: number }>(daemon, "/api/residents/profiles", {
-      settings: {
-        identity: { name: PROFILE },
-        persona: { personaId: PERSONA_ID },
-        workspace: { defaultRepoRoot: daemon.repo },
-        authority: { controlOtherSessions: true },
-      },
-    });
+    const profile = await createControlProfile(daemon);
 
     // A page script cannot arm a launch: the capability is already claimed, and a forged one is
     // refused. Asked once the dock has rendered, because the module that claims it is the one
@@ -190,7 +203,7 @@ test("a desktop Launch click grants the resident session control, and a daemon r
 
     await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
     const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
-    await expect(dialog.getByRole("note")).toContainText("this Launch click gives this run session control");
+    await expect(dialog.getByRole("note")).toContainText("this Launch click asks for session control for this run");
     await capture(dialog, "05-dispatch-desktop-note");
     await dialog.getByRole("button", { name: "Launch resident" }).click();
     await expect(dialog).toBeHidden({ timeout: 60_000 });
@@ -218,6 +231,40 @@ test("a desktop Launch click grants the resident session control, and a daemon r
     await capture(dashboard, "07-band-control-granted-after-restart");
   } finally {
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
+    await application.close();
+  }
+});
+
+test("a desktop app attached to a daemon it did not start launches without session control, and Dispatch says so", async ({ daemon }) => {
+  test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
+  // The desktop shell and its preload, pointed at the fixture's ordinary standalone daemon: the
+  // page holds the click capability, but the daemon has no private channel to consume it over.
+  const application = await launchDesktop(daemon);
+  try {
+    const dashboard = await application.firstWindow();
+    await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+    const profile = await createControlProfile(daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/residents/${encodeURIComponent(profile.id)}`);
+    await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    // Before launch the form cannot know which daemon will answer, so it promises nothing.
+    await expect(dialog.getByRole("note")).toContainText("If it cannot be granted, Dispatch says so once the resident starts");
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+
+    // After launch it reports what actually happened, and waits to be read.
+    const outcome = dialog.getByRole("alert").filter({ hasText: `${PROFILE} launched without session control` });
+    await expect(outcome).toBeVisible({ timeout: 60_000 });
+    await expect(outcome).toContainText("running its own daemon");
+    await expect(dialog.getByRole("button", { name: "Launch resident" })).toHaveCount(0);
+    await capture(dialog, "08-dispatch-adopted-daemon-outcome");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(dialog).toBeHidden();
+
+    const resident = await idleResident(daemon);
+    expect(resident.sessionControlEnabled).toBe(false);
+    const residentBand = await band(dashboard, daemon);
+    await expect(residentBand.getByRole("status").filter({ hasText: "control not granted" })).toBeVisible();
+  } finally {
     await application.close();
   }
 });

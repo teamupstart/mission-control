@@ -10900,6 +10900,12 @@ mark.find-hit.is-current {
 .resident-control-note {
   margin: 0;
 }
+/* After a launch that started without the control its profile asked for: read before Done. */
+.resident-control-outcome {
+  margin: 0;
+  font-size: 12px;
+  color: var(--attention);
+}
 .resident-dispatch-empty {
   display: flex;
   align-items: center;

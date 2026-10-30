@@ -896,7 +896,7 @@ export function DispatchLayer({
               onLaunchModeChange: chooseLaunchMode,
               resident: residentDraft,
               onResidentChange: setResidentDraft,
-              onResidentLaunched: (submitted) => {
+              onResidentLaunched: (submitted, options) => {
                 // The same reconciliation a Single dispatch gets: a draft edited while the
                 // launch was in flight is newer input, and is kept with a fresh request id.
                 setResidentDraft((current) =>
@@ -911,7 +911,7 @@ export function DispatchLayer({
                         repoFromProfile: submitted.repoFromProfile,
                       }
                     : { ...current, requestId: crypto.randomUUID() });
-                onClose();
+                if (!options?.keepOpen) onClose();
               },
               profiles: residentProfiles,
               personas,

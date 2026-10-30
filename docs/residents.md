@@ -135,8 +135,10 @@ dock.
 - **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
   does not bring it back.
 - **Launched anywhere else, it starts without control.** Before you launch from the browser
-  dashboard, Dispatch says the launch will not carry control. A Launch from the dock reports
-  *Started without session control*, and the Console band reads **control not granted**. The
+  dashboard, Dispatch says the launch will not carry control. A desktop app attached to a daemon
+  it did not start cannot pass the click on either: Dispatch stays open after that launch to say
+  the resident launched without session control. A Launch from the dock reports *Started without
+  session control*, and the Console band reads **control not granted**. The
   session control menu in the desktop app can still grant it for that conversation, the way it
   can for any session; that grant ends at the next restart.
 

@@ -92,8 +92,12 @@ export function sessionControlCallerRefusal(c: Context): string | null {
 
 export function registerSessionControlRoutes(
   app: Hono, registry: Registry, authorize: AuthorizeSessionControl = sessionControlAuthorization(),
-  /** Told after the operator's setting is applied, so a durable record can follow a revoke. */
-  onChanged: (sessionId: string, enabled: boolean) => void = () => {},
+  /**
+   * Called for an authorized revoke BEFORE the live grant is turned off, so every durable copy
+   * of the grant is gone first: nothing that fails after it can leave a record a restart would
+   * apply again. A throw here refuses the revoke with the live grant untouched.
+   */
+  onRevoke: (sessionId: string) => void = () => {},
 ): void {
   app.put("/api/sessions/:id/session-control", async (c) => {
     // This is an operator setting. Neither a tool nor an attributed agent request can grant it.
@@ -109,11 +113,11 @@ export function registerSessionControlRoutes(
     // Revocation only removes authority, so an identity change must not block it.
     const before = registry.sessionControlIdentity(sessionId);
     if (!await authorize({ sessionId, enabled, requestId })) return c.json({ error: SESSION_CONTROL_DESKTOP_REQUIRED }, 403);
+    if (!enabled) onRevoke(sessionId);
     if ((enabled && registry.sessionControlIdentity(sessionId) !== before) || !registry.setSessionControlEnabled(sessionId, enabled)) {
       return c.json({ error: "Session control requires a live, registered conversation" }, 409);
     }
     logEvent(c.req.param("id"), Date.now(), "session_control_grant", { enabled: parsed.data.enabled });
-    onChanged(sessionId, enabled);
     return c.json({ ok: true });
   });
 

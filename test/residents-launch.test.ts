@@ -483,7 +483,59 @@ test("an exact replay is recognized after its repository stops resolving; anothe
   assert.equal(h.dispatched.length, 1);
 });
 
-test("a database failure while settling a launch fails the run instead of rejecting the request", async () => {
+test("an uncertain settlement leaves the run pending and retries it, never declaring a live session failed", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher = {
+    async dispatch(id) {
+      await Promise.resolve();
+      startSession(registry, id);
+    },
+  };
+  // The session really started (its row exists), but reading that evidence fails twice.
+  let failures = 2;
+  const residents = new ResidentManager({
+    registry,
+    createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+    persona: (id) => (id === PERSONA.id ? PERSONA : null),
+    resolveRepoRoot,
+    sessionRowsForTask: (taskId) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("database is locked");
+      }
+      return (openDb().prepare("SELECT id FROM sdk_sessions WHERE task_id = ?").all(taskId) as Array<{ id: string }>)
+        .map((row) => row.id);
+    },
+    launchResponseWaitMs: 5,
+    settlementRetryMs: 20,
+  });
+  managers.push(residents);
+  residents.start();
+  const created = residents.createProfile(settings({ name: "Settle Retry" }));
+  if (!created.ok) assert.fail(created.error);
+  const original = console.error;
+  const errors: unknown[] = [];
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    const first = await residents.launch(created.profile.id, { repoRoot: REPO, requestId: "req-settle-retry" });
+    if (!("result" in first)) assert.fail(JSON.stringify(first));
+    assert.equal(first.status, 202, "uncertain is in progress, not failed");
+    assert.equal(first.result.state, "pending");
+    assert.equal(store.getResidentRun(first.result.run.id)?.run.launchState, "pending");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const settled = await residents.launch(created.profile.id, { repoRoot: REPO, requestId: "req-settle-retry" });
+    if (!("result" in settled) || settled.result.state !== "launched") assert.fail(JSON.stringify(settled));
+    assert.equal(settled.result.run.endedAt, null);
+  } finally {
+    console.error = original;
+  }
+  assert.ok(errors.length >= 2, "each uncertain attempt is logged");
+  assert.equal(runCount(), 1);
+});
+
+test("a settlement that never becomes certain stays pending for startup reconciliation, which settles it from evidence", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher = {
@@ -500,23 +552,29 @@ test("a database failure while settling a launch fails the run instead of reject
     sessionRowsForTask: () => {
       throw new Error("database is locked");
     },
+    launchResponseWaitMs: 5,
+    settlementRetryMs: 1,
   });
   managers.push(residents);
   residents.start();
-  const created = residents.createProfile(settings({ name: "Settle Failure" }));
+  const created = residents.createProfile(settings({ name: "Never Certain" }));
   if (!created.ok) assert.fail(created.error);
-  const errors: unknown[] = [];
   const original = console.error;
-  console.error = (...args: unknown[]) => errors.push(args);
+  console.error = () => {};
+  let runId = "";
   try {
-    const outcome = await residents.launch(created.profile.id, { repoRoot: REPO, requestId: "req-settle-fails" });
-    if (!("result" in outcome) || outcome.result.state !== "failed") assert.fail(JSON.stringify(outcome));
-    assert.match(outcome.result.error, /could not be settled: database is locked/);
-    assert.notEqual(outcome.result.run.endedAt, null);
+    const outcome = await residents.launch(created.profile.id, { repoRoot: REPO, requestId: "req-never-certain" });
+    if (!("result" in outcome)) assert.fail(JSON.stringify(outcome));
+    runId = outcome.result.run.id;
+    await new Promise((resolve) => setTimeout(resolve, 150));
   } finally {
     console.error = original;
   }
-  assert.ok(errors.length > 0, "the failure is logged");
+  assert.equal(store.getResidentRun(runId)?.run.launchState, "pending", "never declared failed");
+  // A restarted daemon reads the evidence that exists and adopts the launch.
+  const restarted = harness({ registry });
+  void restarted;
+  assert.equal(store.getResidentRun(runId)?.run.launchState, "launched");
 });
 
 test("two spellings of one repository normalize to the same launch input", async () => {

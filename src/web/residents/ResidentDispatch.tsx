@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { RESIDENT_LIMITS, residentLaunchSummary, type ResidentProfile } from "@shared/residents.ts";
 import type { DispatchMode } from "../lib/dispatch-mode.ts";
@@ -12,6 +12,9 @@ import { launchResident } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
+
+/** How often a still-starting launch is replayed - the same request id - to read its outcome. */
+const PENDING_REPLAY_MS = 1_500;
 
 /**
  * Dispatch > Resident: choose a profile, a repository and optional run instructions, read
@@ -33,6 +36,15 @@ export function ResidentDispatch({
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The launch was accepted and is still starting; the form replays it until it settles. */
+  const [starting, setStarting] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     let live = true;
     void fetchRepos().then((list) => {
@@ -65,16 +77,27 @@ export function ResidentDispatch({
     setBusy(true);
     setError(null);
     const submitted = draft;
-    const answer = await launchResident(profile.id, {
+    const input = {
       repoRoot: repoRoot.trim(),
       ...(submitted.instructions.trim() ? { instructions: submitted.instructions } : {}),
       requestId: submitted.requestId,
-    });
+    };
+    let answer = await launchResident(profile.id, input);
+    // Still starting: keep the SAME request id and replay it until the launch settles. The
+    // replay is idempotent - it reads the one run this id reserved and never starts another -
+    // so closing the form here keeps the id in the draft, and Launch again resumes this launch.
+    while (answer.state === "pending") {
+      if (!mounted.current) return;
+      setStarting(true);
+      await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
+      if (!mounted.current) return;
+      answer = await launchResident(profile.id, input);
+    }
+    if (!mounted.current) return;
+    setStarting(false);
     setBusy(false);
     switch (answer.state) {
       case "launched":
-      case "pending":
-        // Pending is still starting: the task is on the board and its session follows.
         mode.onResidentLaunched(submitted);
         return;
       case "failed":
@@ -102,13 +125,18 @@ export function ResidentDispatch({
       role="dialog"
       ariaLabel="Dispatch an agent"
       ariaModal
-      closable={!busy}
+      // Closable while a launch is starting: nothing is lost, the draft keeps its request id.
+      closable={!busy || starting}
     >
       <header className="modal-head">
         <h2>Dispatch an agent</h2>
         <DispatchModeToggle mode="resident" onChange={mode.onLaunchModeChange} />
-        <Tooltip label={busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}>
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+        <Tooltip
+          label={starting
+            ? "Close; launching again resumes this same launch"
+            : busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}
+        >
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy && !starting}>
             ✕
           </button>
         </Tooltip>
@@ -193,12 +221,18 @@ export function ResidentDispatch({
             )}
           </>
         )}
+        {starting && (
+          <p className="field-hint resident-starting" role="status">
+            Starting the resident… This form updates when its session has started. You can close
+            it; launching again resumes this same launch rather than starting another.
+          </p>
+        )}
         {error && <p className="resident-error" role="alert">{error}</p>}
       </div>
       <footer className="modal-foot">
         <span className="actions-spacer" />
         <Tooltip label="Close without launching (Escape)">
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy && !starting}>
             Cancel
           </button>
         </Tooltip>
@@ -208,7 +242,7 @@ export function ResidentDispatch({
             disabled={blocked !== null}
             onClick={() => void launch()}
           >
-            {busy ? "Launching…" : "Launch resident"}
+            {starting ? "Starting…" : busy ? "Launching…" : "Launch resident"}
           </button>
         </Tooltip>
       </footer>

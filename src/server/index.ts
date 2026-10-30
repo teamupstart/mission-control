@@ -10,7 +10,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT } from "./config.ts";
+import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
@@ -392,6 +392,7 @@ const residents = new ResidentManager({
   registry,
   createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
   persona: (id) => personas.store.getPersona(id),
+  launchResponseWaitMs: residentLaunchWaitMs(),
 });
 tasks.registerResidentLaunch((task, repository, runtime) =>
   residents.composeLaunch(task, repository, runtime));

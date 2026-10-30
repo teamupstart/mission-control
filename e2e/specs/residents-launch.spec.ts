@@ -376,3 +376,71 @@ test("archiving a profile with unsaved edits asks first, and Cancel keeps both t
   await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
   await expect.poll(async () => (await api<unknown[]>(daemon, "/api/residents/profiles")).length).toBe(0);
 });
+
+test.describe("a launch that is still starting when the daemon answers", () => {
+  // Every launch answers "still starting" at once, so the in-progress path is the one taken.
+  test.use({ daemonEnv: { MISSION_RESIDENT_LAUNCH_WAIT_MS: "0" } });
+
+  test("keeps its request id and input through a lost response, a retry, Starting, close and reopen - and makes one resident", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    const residents = async () =>
+      (await api<Array<{ kind: string }>>(daemon, "/api/tasks")).filter((task) => task.kind === "resident").length;
+
+    // Every launch request this lifecycle sends, polling replays included.
+    const sent: Array<Record<string, unknown>> = [];
+    dashboard.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(request.url())) {
+        sent.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    // The first launch REACHES the daemon - it is accepted - but its response is lost.
+    let dropped = false;
+    await dashboard.route(/\/api\/residents\/profiles\/[^/]+\/launch$/, async (route) => {
+      if (dropped) {
+        await route.continue();
+        return;
+      }
+      dropped = true;
+      await route.fetch();
+      await route.abort("failed");
+    });
+
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await dialog.getByLabel("Instructions for this run").fill(RUN_BRIEF);
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    await expect(dialog).toBeVisible();
+
+    // Retrying replays the same launch: it is still starting, and the form waits it out.
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("status")).toContainText("Starting the resident");
+    await expect(dialog.getByRole("button", { name: "Starting…" })).toBeDisabled();
+
+    // Closing mid-launch keeps the id and input; Launch again resumes it rather than starting another.
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toBeHidden();
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await expect(dialog.getByLabel("Instructions for this run")).toHaveValue(RUN_BRIEF);
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+    await expect.poll(residents, { timeout: 30_000 }).toBe(1);
+    await expect.poll(async () =>
+      (await api<Array<{ kind: string; status: string }>>(daemon, "/api/tasks"))
+        .find((task) => task.kind === "resident")?.status ?? null,
+    { timeout: 60_000 }).toBe("running");
+    expect(await residents()).toBe(1);
+
+    // One request id and one input across the whole lifecycle.
+    expect(sent.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(sent.map((body) => body.requestId)).size).toBe(1);
+    expect(new Set(sent.map((body) => JSON.stringify(body))).size).toBe(1);
+    expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, instructions: RUN_BRIEF });
+  });
+});

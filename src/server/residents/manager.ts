@@ -69,6 +69,10 @@ function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: strin
  */
 const DEFAULT_LAUNCH_RESPONSE_WAIT_MS = 120_000;
 
+/** Retries of an uncertain settlement before it is left to startup reconciliation. */
+const SETTLEMENT_RETRIES = 6;
+const DEFAULT_SETTLEMENT_RETRY_MS = 2_000;
+
 /** The registry surface this manager reads and notifies. */
 export interface ResidentRegistry {
   getTask(id: string): Task | undefined;
@@ -91,6 +95,8 @@ export interface ResidentManagerDeps {
   durableTask?: (taskId: string) => Task | undefined;
   now?: () => number;
   launchResponseWaitMs?: number;
+  /** The first delay before an uncertain settlement is retried; later attempts back off. */
+  settlementRetryMs?: number;
 }
 
 /** What a profile write answered. */
@@ -125,6 +131,10 @@ export class ResidentManager {
   private readonly launchResponseWaitMs: number;
   /** In-process launch settlements, so a concurrent replay can wait on the same outcome. */
   private readonly settling = new Map<string, Promise<void>>();
+  private readonly settlementRetryMs: number;
+  /** Pending retry waits, each with the resolver that ends it early when the manager stops. */
+  private readonly retryTimers = new Map<NodeJS.Timeout, (proceed: boolean) => void>();
+  private stopped = false;
   private subscriptions: Array<() => void> = [];
 
   constructor(private readonly deps: ResidentManagerDeps) {
@@ -133,6 +143,7 @@ export class ResidentManager {
     this.sessionRowsForTask = deps.sessionRowsForTask ?? sdkSessionIdsForTask;
     this.durableTask = deps.durableTask ?? getDurableTask;
     this.launchResponseWaitMs = deps.launchResponseWaitMs ?? DEFAULT_LAUNCH_RESPONSE_WAIT_MS;
+    this.settlementRetryMs = deps.settlementRetryMs ?? DEFAULT_SETTLEMENT_RETRY_MS;
   }
 
   /**
@@ -151,6 +162,12 @@ export class ResidentManager {
   }
 
   stop(): void {
+    this.stopped = true;
+    for (const [timer, resolve] of this.retryTimers) {
+      clearTimeout(timer);
+      resolve(false);
+    }
+    this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
   }
 
@@ -312,23 +329,43 @@ export class ResidentManager {
 
   /** Create the reserved task, wait for its dispatch, and record the outcome in one write. */
   /**
-   * Never rejects. A failure after the task exists - a SQLite error reading the evidence or
-   * writing the outcome - is logged and the run is failed on a best-effort basis, so the route
-   * answers with the run instead of a 500 and nothing is left as an unhandled rejection. A run
-   * whose failure write itself fails stays `pending` for startup reconciliation.
+   * Never rejects, and never guesses. A failure while settling - a SQLite error reading the
+   * session evidence or writing the outcome - says nothing about whether the session started,
+   * so the run is NOT failed: it stays `pending` (answered as in progress) and the settlement
+   * is retried from the same evidence on a backoff. If every retry fails, the run is left
+   * `pending` for startup reconciliation, which applies the same evidence rule. Only a
+   * definitive outcome is ever written, so a live session is never reported as a failed launch.
    */
   private async createAndSettle(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
     try {
       await this.createAndSettleUnguarded(run, request);
+      return;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[residents] could not settle resident run ${run.id}: ${message}`);
+      console.error(`[residents] could not settle resident run ${run.id}; it stays pending and is retried:`, error);
+    }
+    for (let attempt = 1; attempt <= SETTLEMENT_RETRIES; attempt += 1) {
+      if (!(await this.retryDelay(this.settlementRetryMs * attempt))) return;
       try {
-        markResidentRunFailed(run.id, `the launch could not be settled: ${message}`, this.now());
-      } catch (writeError) {
-        console.error(`[residents] could not record resident run ${run.id} as failed:`, writeError);
+        this.settleFromEvidence(run, this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId));
+        return;
+      } catch (error) {
+        console.error(`[residents] settlement retry ${attempt} for resident run ${run.id} failed:`, error);
       }
     }
+    console.error(`[residents] resident run ${run.id} stays pending until startup reconciliation`);
+  }
+
+  /** Wait, unless the manager stops first. Resolves false when it stopped. */
+  private retryDelay(ms: number): Promise<boolean> {
+    if (this.stopped) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.retryTimers.delete(timer);
+        resolve(!this.stopped);
+      }, ms);
+      timer.unref?.();
+      this.retryTimers.set(timer, resolve);
+    });
   }
 
   private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {

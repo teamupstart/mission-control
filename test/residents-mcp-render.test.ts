@@ -495,3 +495,76 @@ test("the HTTP bridge adds the server's secret headers and query, and answers on
     daemon.close();
   }
 });
+
+test("the HTTP bridge follows a redirect only within the configured origin, so no other host gets its headers", async () => {
+  const { fetchOnOrigin } = await import("../src/server/residents/mcp-launcher.ts");
+  const elsewhere: Array<Record<string, unknown>> = [];
+  const other = createServer((req, res) => {
+    elsewhere.push({ url: req.url, headers: req.headers });
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  const otherPort = await listen(other);
+  const seen: Array<{ url: string; method: string; secret: unknown; body: string }> = [];
+  const origin = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    seen.push({ url: req.url ?? "", method: req.method ?? "", secret: req.headers["x-secret"], body });
+    if (req.url === "/same") res.writeHead(307, { location: "/mcp" }).end();
+    else if (req.url === "/see-other") res.writeHead(303, { location: "/mcp" }).end();
+    else if (req.url === "/away") res.writeHead(307, { location: `http://127.0.0.1:${otherPort}/steal` }).end();
+    else res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  const port = await listen(origin);
+  const base = `http://127.0.0.1:${port}`;
+  const headers = { "X-Secret": SECRET };
+  try {
+    const followed = await fetchOnOrigin(base, headers, `${base}/same`, { method: "POST", body: "{\"id\":1}" });
+    assert.equal(followed.status, 200);
+    assert.deepEqual(seen.map((row) => [row.url, row.method, row.secret, row.body]), [
+      ["/same", "POST", SECRET, "{\"id\":1}"],
+      ["/mcp", "POST", SECRET, "{\"id\":1}"],
+    ], "a 307 within the origin keeps its method, body and headers");
+    seen.length = 0;
+    await fetchOnOrigin(base, headers, `${base}/see-other`, { method: "POST", body: "{}" });
+    assert.deepEqual(seen.map((row) => [row.url, row.method, row.body]), [["/see-other", "POST", "{}"], ["/mcp", "GET", ""]]);
+    await assert.rejects(fetchOnOrigin(base, headers, `${base}/away`, { method: "POST", body: "{}" }), /redirected to another origin/);
+    await assert.rejects(fetchOnOrigin(base, headers, `http://127.0.0.1:${otherPort}/direct`), /another origin/);
+    assert.deepEqual(elsewhere, [], "the other origin received nothing at all");
+  } finally {
+    origin.close();
+    other.close();
+  }
+});
+
+test("a bridged request redirected off its origin answers with an error, never forwarding the headers", async () => {
+  const elsewhere: unknown[] = [];
+  const other = createServer((req, res) => {
+    elsewhere.push(req.headers);
+    res.writeHead(200).end("{}");
+  });
+  const otherPort = await listen(other);
+  const remote = createServer((_req, res) => {
+    res.writeHead(307, { location: `http://127.0.0.1:${otherPort}/mcp` }).end();
+  });
+  const remotePort = await listen(remote);
+  const daemon = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ definition: { transport: "http", url: `http://127.0.0.1:${remotePort}/mcp`, headers: { "X-Secret": SECRET } } }));
+  });
+  const port = await listen(daemon);
+  try {
+    const credential = join(root, "cred-redirect.json");
+    writeFileSync(credential, JSON.stringify({ ticket: "d".repeat(43), expiresAt: Date.now() + 30_000, redeemUrl: `http://127.0.0.1:${port}/api/residents/mcp/redeem` }));
+    const initialize = JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } });
+    const result = await runLauncher(credential, `${initialize}\n`);
+    const answer = JSON.parse(result.stdout.split("\n")[0]!) as { id: number; error?: { message: string } };
+    assert.equal(answer.id, 7);
+    assert.match(answer.error?.message ?? "", /redirected to another origin/);
+    assert.deepEqual(elsewhere, []);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes(SECRET));
+  } finally {
+    remote.close();
+    other.close();
+    daemon.close();
+  }
+});

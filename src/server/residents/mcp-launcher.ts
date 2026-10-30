@@ -14,7 +14,8 @@
 // or a value. Deliberately standalone: no import reaches the daemon's server graph.
 
 import { spawn } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import type { ResidentMcpCredentialFile, ResidentMcpLauncherDefinition } from "../../shared/resident-mcp.ts";
 
 function fail(message: string): never {
@@ -91,19 +92,55 @@ function runStdio(runtime: Extract<ResidentMcpLauncherDefinition, { transport: "
   });
 }
 
+/** Redirects a bridge request may follow before it gives up. */
+const MAX_REDIRECTS = 5;
+
+/**
+ * Every request the bridge makes, the event stream included, carries the server's headers - and
+ * only to the configured origin. Redirects are handled here rather than by `fetch`, which would
+ * follow one to another origin with these headers attached: a redirect within the origin is
+ * followed with them, and one that leaves it is refused, so no other host ever receives them.
+ */
+export async function fetchOnOrigin(
+  origin: string,
+  secretHeaders: Readonly<Record<string, string>>,
+  input: string | URL | Request,
+  init: RequestInit = {},
+): Promise<Response> {
+  let target = new URL(input instanceof Request ? input.url : String(input));
+  let request: RequestInit = input instanceof Request
+    ? { method: input.method, headers: input.headers, body: input.body, signal: input.signal, ...init }
+    : { ...init };
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    if (target.origin !== origin) {
+      throw new Error("the MCP server redirected to another origin, which never receives its headers");
+    }
+    const headers = new Headers(request.headers);
+    for (const [name, value] of Object.entries(secretHeaders)) headers.set(name, value);
+    const response = await fetch(target, { ...request, headers, redirect: "manual" });
+    const location = response.headers.get("location");
+    if (response.status < 300 || response.status >= 400 || !location) return response;
+    void response.body?.cancel().catch(() => {});
+    target = new URL(location, target);
+    // As a browser would: 303, and 301 or 302 after a POST, continue as a GET without a body.
+    const method = (request.method ?? "GET").toUpperCase();
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+      const { body: _body, ...rest } = request;
+      request = { ...rest, method: "GET" };
+    }
+  }
+  throw new Error("the MCP server redirected too many times");
+}
+
 async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { transport: "http" | "sse" }>): Promise<void> {
   const [{ StdioServerTransport }, { StreamableHTTPClientTransport }, { SSEClientTransport }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/stdio.js"),
     import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
     import("@modelcontextprotocol/sdk/client/sse.js"),
   ]);
-  // Every request this bridge makes carries the server's headers, the event stream included.
-  const withHeaders = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const headers = new Headers(init?.headers);
-    for (const [name, value] of Object.entries(definition.headers)) headers.set(name, value);
-    return fetch(input, { ...init, headers });
-  };
   const url = new URL(definition.url);
+  const withHeaders = (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+    fetchOnOrigin(url.origin, definition.headers, input, init);
   const remote = definition.transport === "sse"
     ? new SSEClientTransport(url, { fetch: withHeaders })
     : new StreamableHTTPClientTransport(url, { fetch: withHeaders });
@@ -150,4 +187,6 @@ async function main(): Promise<void> {
   else await runBridge(definition);
 }
 
-void main().catch(() => fail("the server could not be started"));
+// Run as the launcher; imported (by a test, for `fetchOnOrigin`) it starts nothing.
+const entry = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : "";
+if (import.meta.url === entry) void main().catch(() => fail("the server could not be started"));

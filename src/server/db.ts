@@ -827,6 +827,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, manifest_hash TEXT NOT NULL,
       binding_id TEXT, workflow_version_id TEXT
     );
+    -- One row per task whose operator ticked "approve all future bundles for this task".
+    -- review_id is the human answer that granted it, kept as provenance.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_approvals (
+      task_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, granted_at INTEGER NOT NULL
+    );
+    -- The remaining questions of a request whose final bundle a standing approval settled,
+    -- keyed to that approval so the agent's answer can say the bundle is already approved.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_follow_ups (
+      review_id TEXT PRIMARY KEY, approval_review_id TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS managed_plan_validations (
       submission_id TEXT NOT NULL, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
       review_id TEXT NOT NULL, binding_id TEXT NOT NULL, workflow_version_id TEXT NOT NULL,
@@ -4597,7 +4607,8 @@ export function loadPendingReviews(): ReviewItem[] {
 }
 
 /**
- * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ * The reviews a session's conversation replays: the ones a HUMAN settled, directly or through
+ * a standing approval for its task, oldest first.
  *
  * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
  * two ask different questions of the same table. That one gathers evidence of intent, so it
@@ -4621,6 +4632,8 @@ export function loadPendingReviews(): ReviewItem[] {
  * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  // A standing approval is the operator's own earlier, explicit grant for this task, so the
+  // final-bundle gate counts it. A delegated session's answer never does.
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
@@ -4635,7 +4648,7 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by = 'human'${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?

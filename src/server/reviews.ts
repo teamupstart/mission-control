@@ -246,7 +246,7 @@ export class ReviewManager {
    * writes the status off the item, and the item is already `answered`, so the half-written
    * row reads `answered` with a null `resolved_by` and null `selections`. Nothing restores
    * it as a question (`loadPendingReviews` filters on `pending`) and nothing shows it as an
-   * answer (`loadHumanResolvedReviews` requires `resolved_by = 'human'`), so it is inert -
+   * answer (`loadHumanResolvedReviews` requires a human or standing-approval actor), so it is inert -
    * today. It is still worth not writing. It is indistinguishable from a row that predates
    * the actor column, it accumulates where nothing will ever collect it, and its harmlessness
    * is a property of two queries in another module rather than of this write: the first
@@ -290,6 +290,8 @@ export class ReviewManager {
    * into a 409 - the operator would answer a question the agent is no longer blocked on.
    */
   record(o: {
+    /** Supplied when the caller must bind other state to the id before the row is published. */
+    id?: string;
     sessionId: string;
     kind: ReviewKind;
     title: string;
@@ -315,7 +317,7 @@ export class ReviewManager {
     }
     const now = o.at;
     const review: ReviewItem = {
-      id: randomUUID(),
+      id: o.id ?? randomUUID(),
       sessionId: o.sessionId,
       kind: o.kind,
       title: o.title,

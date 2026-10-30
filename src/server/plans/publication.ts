@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PLAN_APPROVAL_DECISION, PLAN_APPROVAL_OPTION, type PlanIdentity, type PlanPublicationReceipt, type PlanReadiness } from "@shared/managed-plans.ts";
-import type { PlanDecision, Task } from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionAnswer, Task } from "@shared/types.ts";
+import { decisionLead, formatResponse, STANDING_APPROVAL_NOTE } from "@shared/review-item.ts";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import type { WorkflowBinding, WorkflowSubmission, WorkflowVersion } from "@shared/workflow.ts";
 import { openDb, loadHumanResolvedReviews } from "../db.ts";
@@ -24,6 +25,50 @@ export const finalBundleDecision: PlanDecision = {
   options: [{ id: PLAN_APPROVAL_OPTION, label: "Approve final bundle" }, { id: "revise", label: "Needs revision" }],
   multiSelect: false, allowOther: false,
 };
+
+/** The task a final-bundle review belongs to, or a refusal when it cannot carry a standing approval. */
+function standingApprovalTask(reviewId: string): string {
+  const row = openDb().prepare("SELECT task_id FROM managed_plan_reviews WHERE review_id = ?").get(reviewId) as { task_id: string | null } | undefined;
+  if (!row) throw new PlanStoreError("Only a managed plan's final-bundle approval can approve future bundles", 400);
+  if (!row.task_id) throw new PlanStoreError("This plan session has no task to remember future approvals for", 400);
+  return row.task_id;
+}
+
+/** Refuses before the review is resolved, so a grant that cannot be kept leaves the question open. */
+export function assertStandingApprovalGrantable(reviewId: string): void {
+  standingApprovalTask(reviewId);
+}
+
+/** "Approve all future bundles for this task": recorded from the human answer that ticked it. */
+export function grantStandingBundleApproval(reviewId: string): void {
+  openDb().prepare("INSERT OR IGNORE INTO managed_plan_standing_approvals VALUES (?, ?, ?)").run(standingApprovalTask(reviewId), reviewId, Date.now());
+}
+
+export function hasStandingBundleApproval(taskId: string | null): boolean {
+  return Boolean(taskId && openDb().prepare("SELECT 1 FROM managed_plan_standing_approvals WHERE task_id = ?").get(taskId));
+}
+
+/** The answer a standing approval gives to the final-bundle question. */
+export function standingBundleAnswer(): { decisions: PlanDecision[]; selections: PlanDecisionAnswer[]; response: string } {
+  const decisions = [finalBundleDecision];
+  const selections = [{ decisionId: PLAN_APPROVAL_DECISION, selected: [PLAN_APPROVAL_OPTION], other: null }];
+  return { decisions, selections, response: `${STANDING_APPROVAL_NOTE}\n\n${formatResponse(decisions, selections, decisionLead("plan-decisions"))}` };
+}
+
+/**
+ * The bundle was approved automatically, but the agent asked other questions beside it; those
+ * go to the operator as their own review. Recorded so the agent's answer says the bundle is
+ * already approved, since that review no longer carries the approval question.
+ */
+export const STANDING_FOLLOW_UP_NOTE = "The final bundle was approved automatically: the operator chose to approve all future plan bundles for this task. Answers to the remaining decisions follow.";
+
+export function recordStandingFollowUp(reviewId: string, approvalReviewId: string): void {
+  openDb().prepare("INSERT OR IGNORE INTO managed_plan_standing_follow_ups VALUES (?, ?)").run(reviewId, approvalReviewId);
+}
+
+export function isStandingFollowUp(reviewId: string): boolean {
+  return Boolean(openDb().prepare("SELECT 1 FROM managed_plan_standing_follow_ups WHERE review_id = ?").get(reviewId));
+}
 
 /** Both selection and pinned bindings require review-only completion. */
 function localWorkflowCompatible(version: WorkflowVersion): boolean {

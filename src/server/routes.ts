@@ -7,7 +7,19 @@ import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOthe
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
 import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
 import { parseBody } from "./http-body.ts";
-import { localPlanAuthorityContext, validatePlanReview, bindPlanReview, finalBundleDecision } from "./plans/publication.ts";
+import {
+  localPlanAuthorityContext,
+  validatePlanReview,
+  bindPlanReview,
+  finalBundleDecision,
+  assertStandingApprovalGrantable,
+  grantStandingBundleApproval,
+  hasStandingBundleApproval,
+  isStandingFollowUp,
+  recordStandingFollowUp,
+  standingBundleAnswer,
+  STANDING_FOLLOW_UP_NOTE,
+} from "./plans/publication.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -4663,9 +4675,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const saved = readPlanRevision(target.planId, target.revision);
         const input = { planId: target.planId, revision: target.revision, repoKey: saved.manifest.repoKey };
         validatePlanReview(authority, input, manager);
-        const review = reviews.create(session.id, kind, title,
-          `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`,
-          [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision]);
+        const fullBody = `${body}\n\nFinal bundle: [${saved.manifest.slug}, revision ${target.revision}](${saved.preview}). Files: ${saved.manifest.files.map((f) => f.name).join(", ")}. Approval applies only to this complete immutable revision.`;
+        const allDecisions = [...(decisions ?? []).filter((d) => d.id !== PLAN_APPROVAL_DECISION), finalBundleDecision];
+        // The operator ticked "approve all future bundles for this task" on an earlier one, so
+        // this bundle is approved without a prompt and logged in the session's conversation.
+        // Any other open choice still needs a person, so only those are asked, as their own review.
+        if (hasStandingBundleApproval(authority.taskId)) {
+          const id = randomUUID();
+          bindPlanReview(authority, input, id, manager);
+          const approved = reviews.record({
+            id, sessionId: session.id, kind, title, body: fullBody,
+            ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
+          });
+          const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
+          if (remaining.length === 0) return c.json({ id: approved.id, sessionId: session.id });
+          const followUp = reviews.create(session.id, kind, title,
+            `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
+            remaining);
+          recordStandingFollowUp(followUp.id, approved.id);
+          return c.json({ id: followUp.id, sessionId: session.id });
+        }
+        const review = reviews.create(session.id, kind, title, fullBody, allDecisions);
         bindPlanReview(authority, input, review.id, manager);
         return c.json({ id: review.id, sessionId: session.id });
       }
@@ -5396,15 +5426,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
+    // "Approve all future bundles for this task" is the operator's standing grant. Checked
+    // before resolving, so a grant that cannot be kept leaves the question open to retry.
+    const grant = parsed.data.action === "answer" && parsed.data.approveFutureBundles === true;
+    if (grant) {
+      if (by !== "human") return c.json({ error: "Only the operator can approve future plan bundles" }, 403);
+      if (registry.getReview(c.req.param("id"))?.status !== "pending") return c.json({ error: "This review is already settled" }, 409);
+      try {
+        assertStandingApprovalGrantable(c.req.param("id"));
+      } catch (error) { return planFailure(c, error); }
+    }
     try {
+      // An answer to the questions left beside an auto-approved bundle tells the agent the
+      // bundle is already approved, because this form no longer asked about it.
+      const response = parsed.data.action === "answer" && parsed.data.response !== null && isStandingFollowUp(c.req.param("id"))
+        ? `${STANDING_FOLLOW_UP_NOTE}\n\n${parsed.data.response}`
+        : parsed.data.response;
       const updated = reviews.resolve(
         c.req.param("id"),
         parsed.data.action,
-        parsed.data.response,
+        response,
         by,
         parsed.data.selections,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
+      if (grant) grantStandingBundleApproval(updated.id);
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);

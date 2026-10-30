@@ -2482,8 +2482,12 @@ export type ReviewStatus =
  * reads as null for the same reason - it may well have been a human, but the record does
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
+ *
+ * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
+ * operator's behalf, because they ticked "approve all future bundles for this task" on an
+ * earlier one. It is logged in the conversation as what it is, never as the human's answer.
  */
-export type ReviewActor = "human" | "foreman" | `session:${string}`;
+export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {

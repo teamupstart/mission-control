@@ -877,6 +877,12 @@ export const ResolveReviewSchema = z.object({
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
   by: AnswerActorSchema,
+  /**
+   * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
+   * Only a submitted answer grants it: a dismissal decided nothing, so the route reads it
+   * only beside `action: "answer"`.
+   */
+  approveFutureBundles: z.boolean().optional(),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,

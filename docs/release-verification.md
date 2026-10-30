@@ -211,8 +211,8 @@ the retry limit and continued refusal of unqualified publication inputs. They do
 Apple service availability or a completed signed runtime journey. The linked run never reached
 DMG creation, final archive qualification or publication.
 
-For recovery, use the next eligible protected Signed distribution run containing the fix
-and its normal `desktop-distribution` approval. Re-running the failed job at its old SHA can
+For recovery, use the next eligible protected Signed distribution run containing the fix;
+it starts without approval under the automatic distribution policy below. Re-running the failed job at its old SHA can
 recover if the network is healthy, but does not pick up this repair. If the bounded retries
 also exhaust, retain the diagnostic and investigate connectivity from the runner to
 `api.apple-cloudkit.com` before retrying through the existing release procedure. This error
@@ -394,7 +394,8 @@ base64 -i '/absolute/path/AuthKey_KEYID.p8' | gh secret set APPLE_API_KEY_BASE64
 
 After provisioning, verify secret **names** and environment protection rules, confirm the
 certificate belongs to the pinned team, and run qualification on the final exact commit through the
-normal reviewed workflow. Configuration alone does not satisfy the release exit gate.
+automatic Signed distribution workflow and its protected `desktop-distribution` environment.
+Configuration alone does not satisfy the release exit gate.
 The existing release App remains the publication owner; do not replace it with a personal
 token to work around missing admin access.
 

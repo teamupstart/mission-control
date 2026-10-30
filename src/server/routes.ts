@@ -17,6 +17,7 @@ import {
   hasStandingBundleApproval,
   isStandingFollowUp,
   recordStandingFollowUp,
+  reusableStandingApproval,
   standingBundleAnswer,
   STANDING_FOLLOW_UP_NOTE,
 } from "./plans/publication.ts";
@@ -4681,18 +4682,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         // this bundle is approved without a prompt and logged in the session's conversation.
         // Any other open choice still needs a person, so only those are asked, as their own review.
         if (hasStandingBundleApproval(authority.taskId)) {
-          const id = randomUUID();
-          bindPlanReview(authority, input, id, manager);
-          const approved = reviews.record({
-            id, sessionId: session.id, kind, title, body: fullBody,
-            ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
-          });
+          // A retried identical ask reuses its approval rather than logging a second one.
+          let approvedId = reusableStandingApproval(authority, input, manager);
+          if (!approvedId) {
+            approvedId = randomUUID();
+            bindPlanReview(authority, input, approvedId, manager);
+            reviews.record({
+              id: approvedId, sessionId: session.id, kind, title, body: fullBody,
+              ...standingBundleAnswer(), resolvedBy: "standing-approval", at: Date.now(),
+            });
+          }
           const remaining = allDecisions.filter((d) => d.id !== PLAN_APPROVAL_DECISION);
-          if (remaining.length === 0) return c.json({ id: approved.id, sessionId: session.id });
+          if (remaining.length === 0) return c.json({ id: approvedId, sessionId: session.id });
           const followUp = reviews.create(session.id, kind, title,
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
             remaining);
-          recordStandingFollowUp(followUp.id, approved.id);
+          recordStandingFollowUp(followUp.id, approvedId);
           return c.json({ id: followUp.id, sessionId: session.id });
         }
         const review = reviews.create(session.id, kind, title, fullBody, allDecisions);

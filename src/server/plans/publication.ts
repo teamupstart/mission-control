@@ -48,6 +48,24 @@ export function hasStandingBundleApproval(taskId: string | null): boolean {
   return Boolean(taskId && openDb().prepare("SELECT 1 FROM managed_plan_standing_approvals WHERE task_id = ?").get(taskId));
 }
 
+/**
+ * The auto-approval to reuse when the agent asks again for the same exact bundle - a client
+ * timeout retries the identical request. Reused only while it is still the latest settled
+ * answer for that bundle identity, so a later human decision is never papered over.
+ */
+export function reusableStandingApproval(authority: PlanAuthority, input: PlanIdentity, workflows: WorkflowManager): string | null {
+  const context = workflows.planPublicationContext(authority.sessionId);
+  if (context.owner === "unavailable") return null;
+  const latest = openDb().prepare(`SELECT r.id, r.resolved_by FROM managed_plan_reviews m JOIN reviews r ON r.id = m.review_id
+    WHERE m.plan_id = ? AND m.revision = ? AND m.session_id = ? AND m.task_id IS ? AND m.episode_id IS ?
+      AND m.binding_id IS ? AND m.workflow_version_id IS ? AND m.manifest_hash = ? AND r.status != 'pending'
+    ORDER BY r.resolved_at DESC, r.created_at DESC LIMIT 1`)
+    .get(input.planId, input.revision, authority.sessionId, authority.taskId, authority.episodeId,
+      context.owner === "workflow" ? context.bindingId : null, context.owner === "workflow" ? context.workflowVersionId : null,
+      planRevisionRecord(input.planId, input.revision).manifest_hash) as { id: string; resolved_by: string | null } | undefined;
+  return latest?.resolved_by === "standing-approval" ? latest.id : null;
+}
+
 /** The answer a standing approval gives to the final-bundle question. */
 export function standingBundleAnswer(): { decisions: PlanDecision[]; selections: PlanDecisionAnswer[]; response: string } {
   const decisions = [finalBundleDecision];

@@ -92,6 +92,11 @@ test("ticking approve all future bundles approves later final bundles without pr
 
   // And it is the approval the publication gate accepts.
   assert.equal(f.service.readiness(f.input).state, "approved");
+
+  // A retried identical ask (an MCP client timeout) reuses that approval instead of logging another.
+  const retried = await f.ask();
+  assert.equal(retried.id, later.id);
+  assert.equal(loadConversationResolvedReviews(f.id).filter((r) => r.resolvedBy === "standing-approval").length, 1);
 });
 
 test("with a standing approval, a bundle's other open choices are asked on their own and the bundle is auto-approved", async () => {
@@ -111,6 +116,11 @@ test("with a standing approval, a bundle's other open choices are asked on their
   assert.equal(logged.length, 1);
   assert.deepEqual(logged[0]!.decisions?.map((d) => d.id), ["approve-final-bundle"]);
   assert.equal(f.service.readiness(f.input).state, "approved", "the gate accepts it before the other question is answered");
+
+  // A retry reuses both the approval and the pending follow-up.
+  const retried = await f.ask([scope]);
+  assert.equal(retried.id, later.id);
+  assert.equal(loadConversationResolvedReviews(f.id).filter((r) => r.resolvedBy === "standing-approval").length, 1);
 
   // Answering the remaining question tells the agent the bundle is already approved.
   const answered = await f.resolve(later.id, { action: "answer", response: "Plan decisions submitted:\n\n• Which scope?\n  → A", selections: [{ decisionId: "scope", selected: ["a"], other: null }] });

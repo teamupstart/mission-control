@@ -7487,6 +7487,16 @@ a.btn {
   justify-content: space-between;
   gap: 9px;
 }
+/* Sits against Submit, which it qualifies, rather than centred between the two buttons. */
+.decisions-standing-approval {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
 
 /* ---- diff ---- */
 .diffview {

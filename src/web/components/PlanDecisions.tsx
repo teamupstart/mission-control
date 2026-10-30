@@ -75,6 +75,7 @@ export function DecisionForm({
    */
   namePrefix = "d",
   foremanRecommended,
+  besideSubmit,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -96,6 +97,8 @@ export function DecisionForm({
    * Foreman note names this exact form, so an unmatched recommendation marks nothing.
    */
   foremanRecommended?: ReadonlySet<string>;
+  /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
+  besideSubmit?: React.ReactNode;
 }): React.JSX.Element {
   const [answers, setAnswers] = useState<Answers>({});
 
@@ -185,6 +188,7 @@ export function DecisionForm({
             </button>
           </Tooltip>
         )}
+        {besideSubmit}
         <Tooltip
           label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
         >

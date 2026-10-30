@@ -293,6 +293,9 @@ function urlCredential(text: string): string | null {
   return null;
 }
 
+/** A flag's name alone: up to `=` or whitespace, so `--token abc` names `--token` and nothing more. */
+const FLAG_NAME = /^-{1,2}[A-Za-z][A-Za-z0-9_.-]*/;
+
 /**
  * Why one command-line argument looks like a credential, or null.
  *
@@ -318,7 +321,8 @@ export function credentialFormArgument(arg: string): string | null {
     if (inner) return inner;
     return null;
   }
-  if (/^-{1,2}[A-Za-z]/.test(text) && credentialName(text)) return "a credential-named flag";
+  const flag = FLAG_NAME.exec(text)?.[0];
+  if (flag && credentialName(flag)) return "a credential-named flag";
   return null;
 }
 
@@ -341,7 +345,7 @@ export function credentialArgumentProblem(found: { index: number; arg: string; r
   const name = found.reason === "a credential-named value" && pair
     ? pair[1]
     : found.reason === "a credential-named flag"
-      ? found.arg.trim()
+      ? FLAG_NAME.exec(found.arg.trim())?.[0] ?? null
       : null;
   const shown = name ? ` (${name})` : "";
   return `argument ${found.index + 1}${shown} looks like ${found.reason}; put the credential in a secret environment variable instead`;

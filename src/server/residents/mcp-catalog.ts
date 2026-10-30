@@ -149,20 +149,36 @@ const CLAUDE_STDIO_FIELDS = new Set(["type", "command", "args", "env", "timeout"
 const CLAUDE_HTTP_FIELDS = new Set(["type", "url", "headers", "timeout", "alwaysLoad"]);
 const EXPANSION = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
+type Expansion = { value: string } | { missing: string } | { inherited: string };
+
 /**
  * Claude Code expands `${VAR}` and `${VAR:-default}` from its own environment, which is the
- * daemon's. The snapshot holds the expanded value, so a run keeps it after the variable changes.
+ * daemon's - and the resident's agent inherits that same environment, so a value read from it is
+ * already readable by every shell the agent runs. Such a server is never private to its own
+ * process, so a reference to a variable that is set makes it unavailable (`inherited`). A
+ * reference to an unset variable with a default is the literal default, which nothing else holds.
  */
-function expand(value: string, env: NodeJS.ProcessEnv): { value: string } | { missing: string } {
+function expand(value: string, env: NodeJS.ProcessEnv): Expansion {
   let missing: string | null = null;
+  let inherited: string | null = null;
   const out = value.replace(EXPANSION, (_match, name: string, fallback: string | undefined) => {
-    const found = env[name];
-    if (found !== undefined) return found;
+    if (env[name] !== undefined) {
+      inherited ??= name;
+      return "";
+    }
     if (fallback !== undefined) return fallback;
     missing ??= name;
     return "";
   });
+  if (inherited) return { inherited };
   return missing ? { missing } : { value: out };
+}
+
+/** Why an expansion cannot be snapshotted, naming the variable and never its value. */
+function expansionProblem(result: Exclude<Expansion, { value: string }>): string {
+  return "inherited" in result
+    ? `it reads ${result.inherited} from the environment, which the resident's agent inherits too; define it as a custom server with a secret instead`
+    : `it references the unset environment variable ${result.missing}`;
 }
 
 function claudeOptions(entry: Record<string, unknown>): ResidentMcpOptions | string {
@@ -188,9 +204,9 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
   const allowed = type === "stdio" ? CLAUDE_STDIO_FIELDS : CLAUDE_HTTP_FIELDS;
   const unknownField = Object.keys(entry).find((key) => !allowed.has(key));
   const secrets = new Map<string, string>();
-  const expanded = (value: string): string | { missing: string } => {
+  const expanded = (value: string): string | Exclude<Expansion, { value: string }> => {
     const result = expand(value, env);
-    return "missing" in result ? result : result.value;
+    return "value" in result ? result.value : result;
   };
   let transport: ResidentMcpSnapshotTransport;
   let problem: string | null = unknownField ? `it uses ${unknownField}, which residents cannot carry` : null;
@@ -205,7 +221,7 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     for (const [index, raw] of [entry.command, ...args].entries()) {
       const value = expanded(raw);
       if (typeof value !== "string") {
-        problem ??= `it references the unset environment variable ${value.missing}`;
+        problem ??= expansionProblem(value);
         continue;
       }
       if (index === 0) command = value;
@@ -213,7 +229,7 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     }
     for (const [key, raw] of Object.entries(envTable)) {
       const value = expanded(raw);
-      if (typeof value !== "string") problem ??= `it references the unset environment variable ${value.missing}`;
+      if (typeof value !== "string") problem ??= expansionProblem(value);
       else secrets.set(residentMcpSecretField("env", key), value);
     }
     const found = credentialFormArgs(resolved);
@@ -226,11 +242,11 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     const headers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(headerTable)) {
       const value = expanded(raw);
-      if (typeof value !== "string") problem ??= `it references the unset environment variable ${value.missing}`;
+      if (typeof value !== "string") problem ??= expansionProblem(value);
       else headers[key] = value;
     }
     const url = expanded(entry.url);
-    if (typeof url !== "string") return unreadable(name, type, `it references the unset environment variable ${url.missing}`);
+    if (typeof url !== "string") return unreadable(name, type, expansionProblem(url));
     const split = splitUrl(url, headers, secrets);
     if (typeof split === "string") return unreadable(name, type, split);
     for (const [key, value] of Object.entries(headers)) secrets.set(residentMcpSecretField("header", key), value);

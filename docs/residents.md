@@ -294,8 +294,10 @@ the picker. That happens when it uses a field residents cannot carry (anything b
 arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
 one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
 `env_http_headers`), relies on an OAuth login the harness holds, has a credential in an argument,
-or references an environment variable that is not set. A Claude Code `${VAR}` reference is
-expanded once, at launch.
+or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
+resident's agent inherits too, so it would not be private to the server; define that server as a
+custom server with a secret instead. A reference to an unset variable is refused unless it has a
+`:-default`, which is used as written.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).

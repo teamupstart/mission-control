@@ -130,6 +130,8 @@ test("credentials outside secret fields are refused at save, naming the argument
     ["--api-key=hunter2", "--api-key"],
     ["GITHUB_TOKEN=hunter2", "GITHUB_TOKEN"],
     ["--token", "--token"],
+    ["--token hunter2", "--token"],
+    ["--api-key\thunter2", "--api-key"],
   ] as const) {
     let message = "";
     try {
@@ -168,7 +170,7 @@ test("Claude's catalog projects allowlisted metadata only, and marks what reside
     "mission-control": { command: "node", args: ["mission.mjs"] },
     github: { command: "/usr/local/bin/github-mcp", args: ["--stdio"], env: { GITHUB_TOKEN: SECRET } },
     remote: { type: "http", url: `https://user:pw@mcp.example.com/mcp?key=${SECRET}`, headers: { "X-Api-Key": SECRET }, timeout: 5000 },
-    expanded: { command: "srv", env: { TOKEN: "${PROBE_TOKEN}", MODE: "${MISSING:-default}" } },
+    expanded: { command: "srv", env: { MODE: "${MISSING:-default}" } },
     unset: { command: "srv", env: { TOKEN: "${NO_SUCH_VAR}" } },
     helper: { type: "http", url: "https://mcp.example.com", headersHelper: "./h.sh" },
     leaky: { command: "srv", args: [`--token=${SECRET}`] },
@@ -186,12 +188,49 @@ test("Claude's catalog projects allowlisted metadata only, and marks what reside
   assert.ok(remote.transport?.type !== "stdio" && remote.transport?.url === "https://mcp.example.com/mcp");
   assert.equal(remote.secrets.get("query:key"), SECRET);
   assert.deepEqual(remote.options, { claude: { timeoutMs: 5000 } });
-  assert.equal(read.servers[2]!.secrets.get("env:TOKEN"), SECRET, "expanded from the daemon's environment");
-  assert.equal(read.servers[2]!.secrets.get("env:MODE"), "default");
+  assert.equal(read.servers[2]!.summary.unavailable, null);
+  assert.equal(read.servers[2]!.secrets.get("env:MODE"), "default", "an unset variable's default is a literal");
   assert.match(summaries[3]!.unavailable!, /unset environment variable NO_SUCH_VAR/);
   assert.match(summaries[4]!.unavailable!, /headersHelper/);
   assert.match(summaries[5]!.unavailable!, /argument 1/);
   assert.equal(read.servers[5]!.secrets.size, 0, "an unavailable server binds nothing");
+});
+
+test("a Claude global value read from the environment the agent inherits is never snapshotted, in any field", async () => {
+  // A disposable sentinel standing in for a real token set in the daemon's environment. The
+  // resident's agent inherits that same environment, so a server fed from it cannot be private.
+  const sentinel = `env-backed-sentinel-${crypto.randomUUID()}`;
+  const env = { DISPOSABLE_MCP_TOKEN: sentinel, DISPOSABLE_MCP_HOST: "mcp.example.com" };
+  const read = catalog.readClaudeGlobalMcp((() => {
+    const dir = mkdtempSync(join(home, "claude-env-"));
+    writeFileSync(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+      "env-in-env": { command: "srv", env: { TOKEN: "${DISPOSABLE_MCP_TOKEN}" } },
+      "env-in-arg": { command: "srv", args: ["--config", "/etc/${DISPOSABLE_MCP_TOKEN}.json"] },
+      "env-in-command": { command: "/opt/${DISPOSABLE_MCP_TOKEN}/srv" },
+      "env-in-header": { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer ${DISPOSABLE_MCP_TOKEN}" } },
+      "env-in-url": { type: "http", url: "https://${DISPOSABLE_MCP_HOST}/mcp" },
+      "env-with-default": { type: "http", url: "https://${DISPOSABLE_MCP_HOST:-fallback.example.com}/mcp" },
+    } }));
+    return join(dir, ".claude.json");
+  })(), env);
+  for (const server of read.servers) {
+    const variable = server.summary.name === "env-in-url" || server.summary.name === "env-with-default" ? "DISPOSABLE_MCP_HOST" : "DISPOSABLE_MCP_TOKEN";
+    assert.equal(
+      server.summary.unavailable,
+      `it reads ${variable} from the environment, which the resident's agent inherits too; define it as a custom server with a secret instead`,
+      server.summary.name,
+    );
+    assert.equal(server.transport, null, `${server.summary.name}: nothing to snapshot`);
+    assert.equal(server.secrets.size, 0, `${server.summary.name}: no value bound`);
+  }
+  const rendered = JSON.stringify(read.servers.map((server) => ({ summary: server.summary, secrets: [...server.secrets] })));
+  assert.ok(!rendered.includes(sentinel), "the value reaches no projection, reason or snapshot");
+  // Inherited, the launch is refused by name; selected, the same.
+  const inherited = await resolve(profile(), read);
+  assert.ok(!inherited.ok && /reads DISPOSABLE_MCP_TOKEN from the environment/.test(inherited.error), JSON.stringify(inherited));
+  assert.ok(!inherited.ok && !inherited.error.includes(sentinel));
+  const selected = await resolve(profile({ inheritDefaults: false, selected: [{ source: "global", agent: "claude", name: "env-in-header" }] }), read);
+  assert.ok(!selected.ok && !selected.error.includes(sentinel) && /reads DISPOSABLE_MCP_TOKEN/.test(selected.error));
 });
 
 test("Codex's catalog reads the raw user layer and refuses fields it cannot map, OAuth and env references", () => {

@@ -261,8 +261,9 @@ the run, the server's name and a credential file:
 - A missing, spent or expired ticket, or a run that has ended, starts nothing.
 
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
-`env_http_headers` - read the agent's own environment, so a global server that uses one is not
-available to residents. So is a global server with a credential-shaped argument, or one whose
+`env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
+the agent itself inherits, so a global server that uses one is not available to residents: its
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
 authentication the harness holds (an OAuth login). A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.

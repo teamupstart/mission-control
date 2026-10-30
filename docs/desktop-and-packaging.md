@@ -472,6 +472,14 @@ includes modes, file bytes and internal framework symlinks; escaping links and o
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
 
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
+
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained
 app; a cleanup failure reports the remaining path without undoing the committed installation.

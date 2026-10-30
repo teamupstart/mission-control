@@ -67,9 +67,16 @@ Pi.
    - fixture skills are placed in every native source the harness would otherwise load: the
      global skill directories (`~/.claude/skills`, `~/.agents/skills`, `$CODEX_HOME/skills`),
      project skill directories in the run's working directory, and installed plugins;
-   - skills built into the harness have no folder to copy, so the snapshot records them by
-     name, and the check confirms the mechanism keeps exactly those, including across a
-     harness upgrade that adds or removes one;
+   - skills built into the harness are frozen like the rest. Where the check shows their
+     content can be captured into the snapshot and loaded from it, with the harness's own copy
+     turned off, they are snapshotted like any other skill. Otherwise the snapshot records a
+     positively verifiable identity for them. That is each built-in skill's name with a content
+     hash where the harness exposes the content, and otherwise the harness's version with the
+     hash of its executable. The check must also show that the chosen identity covers the
+     built-in content, so that any change to a built-in skill changes the identity. If it
+     cannot show that, the built-in skills are unverifiable, and inherit on is not offered for
+     that harness until the operator gate below decides. With inherit off they are not in the
+     snapshot, and the check confirms they stay off;
    - after launch, one fixture is added, one edited and one deleted;
    - the check passes only if, at launch and after a restart and resume, the session offers
      exactly the snapshot's skills with the snapshot's content. It observes this both from the
@@ -98,6 +105,16 @@ Pi.
 5. **Snapshot and seam**: a `skills` contributor that captures the run's effective skill set at
    launch under `$MISSION_HOME/residents/runs/<runId>/skills/`, and an optional `skills` field on
    `SdkLaunchOptions` that each driver renders with the mechanism step 1 recorded.
+   - **Payload.** `skills` is a typed, driver-neutral value in `src/server/harness/types.ts`: the
+     snapshot directory, and one entry per skill with its identity (source and folder), its
+     effective name, its folder within the snapshot and its content hash. The run's snapshot
+     is its only input, at launch and on every resume. A built-in skill recorded by identity
+     also has an entry, with its name and the recorded identity and no folder, so the driver
+     can confirm it without a snapshot copy.
+   - **Mapping.** Each driver renders the payload through the `SkillSelectionSpec` that step 1
+     recorded for its harness. For Claude that is the `CLAUDE_CONFIG_DIR` overlay's `skills/`,
+     or the fallback's `--plugin-dir`. For Codex it is the `CODEX_HOME` overlay's `skills/`, or
+     the fallback's `skills.config` path entries. No driver reads a native skill source.
    - **What is captured.** The pinned revision's `inheritDefaults` decides. With inherit on, the
      snapshot holds every default skill the harness would load for the run at launch, from
      every source step 1's check covers, plus the selected skills. With inherit off, it holds
@@ -107,7 +124,23 @@ Pi.
      Two distinct identities that would share the harness's effective skill name refuse the
      launch with the reason, and nothing is renamed.
    - The snapshot is an immutable copy of each skill folder, with a content hash recorded per
-     skill. Built-in skills are recorded by name.
+     skill. Built-in skills are copied where step 1 showed they can be, and otherwise recorded by
+     the verifiable identity step 1 defines.
+   - **Copied built-in skills** are part of the isolated snapshot. A native change to them
+     leaves the run's copies in effect, and the run resumes normally.
+   - **Built-in skills recorded by identity hold the resume when they change.** Before a
+     resumed session starts, the daemon recomputes their identity. The run is not resumed when
+     the identity differs from the snapshot or cannot be computed: a built-in skill changed
+     under the same name, disappeared, or a new one appeared. Its session is not started and
+     no turn is sent.
+     - The run shows "built-in skills changed since launch" and two ways forward: restore the
+       harness version the run launched with, or start a new run that captures the current
+       built-in skills. A new run means a new launch or, once Phase 3 has merged, **Restart on
+       new profile**.
+     - Mission Control never installs or downgrades a harness itself. A matching identity
+       resumes normally.
+     - This applies the operator's freeze decision to built-in skills. Only the operator can
+       change it; the implementation does not relax it.
    - Every resume after a daemon restart renders from the snapshot alone and never rereads a
      native skill source. Adding, editing or deleting a skill natively after launch, an
      inherited default included, cannot change the run's effective skills.
@@ -137,7 +170,20 @@ Pi.
     run's effective skills byte-identical to its launch snapshot: adding a native skill,
     editing an inherited default, deleting an inherited default, and editing, and separately
     deleting, a selected source skill;
-  - a new launch, and **Restart on new profile**, adopt each of those changes.
+  - a new launch, and **Restart on new profile**, adopt each of those changes;
+  - copied built-in skills: changing, removing or adding a built-in skill natively after
+    launch leaves the run's copies in effect, and the run resumes normally;
+  - built-in skills verified by identity:
+    - a resume on an unchanged harness resumes normally;
+    - each of these holds the resume with the recovery reason: a built-in skill that changes
+      content under the same name, one that disappears, one newly added, and an identity that
+      cannot be computed;
+    - an identity the probe cannot show to cover built-in content leaves inherit on unoffered
+      for that harness;
+  - the `skills` payload carries an identity-only entry, with no folder, for each built-in
+    skill recorded by identity;
+  - the `skills` payload for a snapshot renders to each harness's recorded mechanism, and the
+    same payload is produced at launch and on resume.
 - Harness tests against real installations for every capability recorded as supported,
   including the step 1 exact-set check, saved as a fixture.
 - Playwright `e2e/specs/residents-skills.spec.ts`: add a source folder from a fixture, rescan,
@@ -171,3 +217,10 @@ Phase 5 reuses the measured-capability pattern and the optional-field approach o
 - Pull request review (CodeRabbit, third batch, applied to skills): the snapshot is a set keyed
   by skill identity. An identical inherited and selected skill is kept once, and only distinct
   skills that share an effective name are refused.
+- Pull request review (CodeRabbit, fourth batch):
+  - built-in skills are copied into the snapshot where possible, and otherwise verified by a
+    content or artifact identity;
+  - copied built-in skills stay in effect across native changes, while built-in skills recorded
+    by identity hold the run's resume when changed, missing, added or unverifiable, with a
+    recovery path. Nothing is installed or downgraded;
+  - the driver-neutral `skills` payload and its mapping are defined.

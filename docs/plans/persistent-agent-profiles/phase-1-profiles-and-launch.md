@@ -73,7 +73,8 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
    sources: residents are created only by the resident launch route.
 3. **Persistence** in `src/server/db.ts`: create the three tables in the fresh schema and in
    `migrate()`; `resident_runs` base columns are `id`, `profile_id`, `profile_revision`,
-   `task_id`, `launch_request_id` (`TEXT NOT NULL`), `launch_state` (`pending`, `launched` or
+   `task_id`, `launch_request_id` (`TEXT NOT NULL`), `launch_input` (`TEXT NOT NULL`, the
+   normalized launch input as canonical JSON), `launch_state` (`pending`, `launched` or
    `failed`, an append-only vocabulary), `launch_error`, `persona_snapshot` (JSON: persona id,
    name, guidance at launch), `run_instructions`, `created_at`, `ended_at`. A unique index on
    `launch_request_id`; because the column is `NOT NULL`, the index cannot admit two keyless
@@ -84,9 +85,11 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
    - `manager.ts`: `ResidentManager.launch(profileId, input)` is idempotent and crash-safe, and
      returns the task and run:
      - **Idempotent.** It first looks up a run by `launch_request_id`. A replay is compared with
-       the profile id and launch input recorded on that run, never with the profile's current
-       revision, and a different profile or input is refused as a conflict. A matching replay
-       creates nothing and answers by the run's `launch_state`:
+       the `profile_id` and `launch_input` recorded on that run, never with the profile's
+       current revision or with its task, and a different profile or input is refused as a
+       conflict. The comparison needs nothing but the run row, so it holds in every
+       `launch_state`, including a run reserved just before a crash that left no task. A
+       matching replay creates nothing and answers by the run's `launch_state`:
        - `launched` returns the original run, with the revision it pinned, and its task, even
          after the profile has been edited;
        - `pending` returns an in-progress result naming the run, so the caller can retry later;
@@ -95,8 +98,14 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
        A repeated click or a lost response therefore never creates a second run, and a replay
        never reads a task that does not exist.
      - **Reserve.** It validates the profile, repository and harness SDK support, snapshots the
-       persona, and writes the run with `launch_state` `pending` and a reserved `task_id`, in
-       one write.
+       persona, and writes the run with `launch_state` `pending`, a reserved `task_id` and the
+       normalized `launch_input`, in one write.
+     - **Normalized input.** `launch_input` is versioned canonical JSON: a `version` number and
+       the complete parsed `LaunchResidentSchema` body without `requestId`, with the repository
+       resolved to its real path and the run instructions as stored. A later phase that adds a
+       launch field bumps the version and gives the field a default. A stored input is
+       re-parsed through the current schema before the comparison, so a run recorded at an
+       older version still compares correctly.
      - **Create the task** through `TaskManager.create` with that reserved id, kind `resident`,
        runtime forced to SDK, and the profile's `agent`, `model` and `effort` all passed
        explicitly, so a Codex profile never falls back to a default agent. The intent is the
@@ -156,6 +165,13 @@ so a downgraded build reads a resident task as `ship`; this matches the existing
     profile is edited returns the original run and its pinned revision; a replay of a `pending`
     launch returns in progress, and of a `failed` launch its error, each creating nothing; a
     conflicting reuse is refused;
+  - a crash after the reservation write and before task creation, followed by a replay with the
+    same `requestId` but a different repository, and separately different run instructions, is
+    refused as a conflict. This holds both before startup reconciliation, while the run is
+    `pending`, and after it, once the run is `failed`. A replay with the same input returns in
+    progress, or the recorded failure;
+  - two spellings of the same repository path normalize to the same `launch_input`, and an
+    input stored at an older `version` compares equal to the same request after an upgrade;
   - crash reconciliation: a crash after the run write and before task creation ends the run as
     `failed`, and a crash after task creation and before `launched` adopts the task;
   - the profile's agent reaching the task, for both a Claude Code and a Codex profile;
@@ -194,3 +210,6 @@ run row as the durable identity, and the standing-instructions placement.
   through a `pending` run with a reserved task id and startup reconciliation, and passes the
   profile's agent explicitly. `launch_request_id` is `NOT NULL`, so its unique index enforces
   the key.
+- Pull request review (Inspector, round 5): the reservation write stores the normalized
+  `launch_input`, so a conflicting replay is refused from the run row alone, even when a crash
+  left no task.

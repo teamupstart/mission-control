@@ -104,6 +104,29 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
    Fields marked secret are stored only in `resident_mcp_secrets`, accepted on write, never
    returned (reads show "set" or "not set"). CRUD routes with `parseBody`. Backup domain for
    definitions only.
+   - **Credentials outside secret fields.** No unclassified value is assumed to be safe.
+     - A custom URL with userinfo is refused at save.
+     - Every query value in a custom URL is a secret by default. It is stored in
+       `resident_mcp_secrets`, the stored URL keeps only the parameter names, and the scoped
+       launcher's bridge (step 6) adds the values, so none appears in a URL the harness or
+       agent sees.
+     - A custom argument in a credential form is refused at save, naming the argument and
+       pointing to a secret environment variable instead. Credential forms are:
+       - a flag or `name=value` pair whose name indicates a token, key, secret, password or
+         authorization;
+       - a URL with userinfo or a query;
+       - a bearer or basic credential.
+     - Detection is a guard, not a proof. The editor states that arguments are stored and
+       backed up as written.
+   - **Global servers are private as a whole**, because native configuration classifies
+     nothing.
+     - A global server's command, arguments, environment, URL and headers live only in the
+       run's daemon-private snapshot. They reach only that server's own process, through a
+       launcher entry (step 6), and are never copied into the agent's MCP configuration or
+       argv.
+     - Its URL userinfo and query values are secrets.
+     - An argument in a credential form makes the server unavailable to residents, with the
+       reason, rather than putting that credential on a command line.
 4. **Profile section** `mcp` and `ResidentMcpSection`: picker grouped by global and custom,
    inherit switch offered exactly where step 1 recorded a working mechanism, harness mismatch
    refused at save.
@@ -146,8 +169,18 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
      name and one of three shapes:
      - `stdio`: command, arguments and non-secret environment;
      - `http`: URL and non-secret headers;
-     - `launcher`: a secret-bearing server, started through the scoped launcher below.
+     - `launcher`: a server started through the scoped launcher below. Every global server
+       takes this shape, as does every custom server with a secret field or a query value.
      No entry carries a secret value.
+   - **Fields beyond the three shapes.** Each entry also carries typed per-harness options,
+     limited to an allowlist of native fields that `residentMcp` maps one-to-one: timeouts, tool
+     filters and transport, as the step 1 probe confirms for each harness.
+     - Authentication that the launcher's bridge cannot perform itself, such as an OAuth login
+       held by the harness, is not mapped.
+     - A global server with any field outside the allowlist, or any unknown field, cannot be
+       represented. The picker shows it as unavailable to residents and names the field. With
+       inherit on, a launch that would inherit it is refused with the same reason.
+     - No field is dropped silently or passed through opaquely.
    - Each driver composes Mission's descriptor, through its existing path, with every
      `residentMcp` entry. The two never share a name, because step 5 refuses
      `mission-control`.
@@ -161,9 +194,9 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
      - The launcher reads the file, removes it, and redeems the ticket over the daemon's
        private authenticated channel. The daemon marks the ticket spent and answers with that
        server's secret values alone.
-     - For a stdio server, the launcher starts it with the values in that server's
-       environment only. For an HTTP server, it acts as a stdio bridge that adds the secret
-       headers itself.
+     - For a stdio server, the launcher starts it from the snapshot definition, with the
+       secret values in that server's environment only. For an HTTP server, it acts as a
+       stdio bridge that adds the secret headers and query values itself.
      - A missing, spent or expired ticket starts nothing. Every start writes new files. The
        daemon removes any unredeemed file once its ticket expires, and again at startup.
      - Ticket bytes never enter the agent's environment, a process argument, the generated MCP
@@ -209,7 +242,20 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
 - Launch-contract tests: at launch and on resume, `residentMcp` and Mission's `mcp` descriptor
   compose into exactly Mission's server plus the snapshot servers, for each harness. Mission's
   descriptor is never replaced. A dotted name such as `foo.bar` renders as one server for both
-  harnesses.
+  harnesses. Allowlisted native options (timeouts, tool filters, transport) round-trip
+  exactly. A global server with a field outside the allowlist, an unknown field, or
+  harness-held authentication is shown as unavailable when selected, and refuses an inherit-on
+  launch, naming the field.
+- Credential-form tests, each checking storage, rendering, logs and every process argument:
+  - a custom URL with userinfo is refused at save;
+  - a custom URL's query values are stored write-only, absent from the backup and from every
+    URL the harness sees, and added only by the launcher's bridge;
+  - a custom argument in each credential form is refused at save, naming the argument;
+  - a global server with URL userinfo or query values renders only as a launcher entry. One
+    with a credential-form argument is unavailable to residents and refuses an inherit-on
+    launch;
+  - no global server's command, arguments, environment, URL or headers appear in the agent's
+    MCP configuration or argv.
 - Secret-scope tests, for a stdio and an HTTP server on each harness, with sentinel values for
   both the MCP secrets and the launch tickets:
   - each MCP secret reaches only its own server;
@@ -283,3 +329,10 @@ The catalog, custom-server store and secret rules are stable for any later consu
     launcher's single-use ticket travels in an owner-only credential file, never in arguments,
     configuration, the environment, logs or the transcript;
   - the overlay is serialized with quoted keys and holds no secret value.
+- Pull request review (CodeRabbit, fourth batch):
+  - URL userinfo is refused, every custom query value is a secret by default, and
+    credential-form arguments are refused;
+  - global servers are private as a whole and reach only their own process through the
+    launcher;
+  - native fields map through a typed allowlist, or make the server unavailable, never dropped
+    silently or passed through.

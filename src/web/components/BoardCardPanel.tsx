@@ -14,6 +14,7 @@ import {
 } from "../lib/board-card.ts";
 import {
   PREVIEW_PIPELINE_RUN,
+  PREVIEW_RESIDENT,
   PREVIEW_WORKFLOW_RUN,
   previewSession,
 } from "../lib/board-card-preview.ts";
@@ -214,6 +215,7 @@ export function BoardCardPanel(): React.JSX.Element {
         // the branch - otherwise the Jump shortcut checkbox would be the one control in
         // this panel that looks identical checked and unchecked.
         shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[0])}
+        resident={PREVIEW_RESIDENT}
       />
     ),
     // The same fixture session, so the header and the card above it describe one session.

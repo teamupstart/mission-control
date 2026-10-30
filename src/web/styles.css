@@ -95,6 +95,21 @@
      sections and board columns, none of which should reorder by spend. */
   --cost: var(--purple);
 
+  /* The resident marker palette, one token per `RESIDENT_MARKER_COLORS` id in
+     `@shared/residents.ts` (append-only, and so is this list). A resident's border glow and
+     label chip read `--resident`, set inline to one of these, so a profile can only ever
+     choose a themed token, never an arbitrary colour. Tuned bright enough to glow on
+     --panel and to stay legible as chip text; none of them is a session-state tone, so a
+     resident's outline is never read as its state - the spine says that. */
+  --resident-cyan: #39c5cf;
+  --resident-violet: #b083f0;
+  --resident-amber: #e3b341;
+  --resident-rose: #f0709a;
+  --resident-lime: #9fd356;
+  --resident-blue: #6cb6ff;
+  --resident-orange: #f0883e;
+  --resident-teal: #2fbf9f;
+
   /* How wide a board column goes when you widen it to read. Sized to the CONTENT, not
      picked round: at 520px a tile's one-line name and a backlog card's blocked chip
      both stop being ellipsed at the lengths this fleet actually produces (a phase
@@ -3887,6 +3902,9 @@ body {
    spend popover it opens entirely inside the drag rectangle - and its whole point is a
    switch the OS must not eat. */
 .is-desktop .ka-pop,
+/* The Residents dock hangs off its button IN the bar, and on a narrow window it spans the
+   window directly under it; its Launch and Open buttons are its whole point. */
+.is-desktop .residents-pop,
 .is-desktop .combobox-list,
 /* The ⌘K search palette panel opens near the top of the viewport, so it can land inside
    the bar. Its backdrop is the shared `.modal-backdrop` above. */
@@ -4632,8 +4650,14 @@ body {
 
    Foreman's word survives here and gives up its mode chip instead - the dot beside it
    already carries live/off, and the chip is the wider of the two. Dispatch has no
-   `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
-.topbar[data-rung~="1"] .missions-btn .tb-label {
+   `.tb-label` at all and so never degrades: it is the one control you would hunt for.
+
+   The Residents button sheds here too, on Missions' terms: its ⌂ and its live count carry it,
+   and its `aria-label` names it. It is the newest control on the bar, so it gives up its word
+   before any control that predates it loses one - at rung 4 it took Library's word from a
+   slimmed bar that had fit before it arrived. */
+.topbar[data-rung~="1"] .missions-btn .tb-label,
+.topbar[data-rung~="1"] .residents-btn .tb-label {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -4795,6 +4819,19 @@ body {
 }
 .topbar[data-rung~="5"] .pulse-seg {
   padding: 0 9px;
+}
+/* Rung 5 is also where the action cluster may wrap its own groups, right-aligned - and ONLY
+   here, so it can never stand in for a rung the ladder still has: `fitTopbar` reads "taller
+   than the tallest child" as wrapped, and a cluster that wrapped inside itself would be that
+   tallest child. Below this rung the cluster stays one unbreakable item, exactly as before.
+   It wraps only when the cluster alone is wider than the bar: since the Residents button joined
+   Foreman and Dispatch, that is a phone-width window, where it otherwise scrolled the page
+   sideways. */
+.topbar[data-rung~="5"] .topbar-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 8px;
+  min-width: 0;
 }
 
 /* Operator-minimized controls: Settings > Display > Top bar. A control the operator asked to
@@ -36409,3 +36446,249 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-note { margin: 0; padding: 4px 8px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
+
+/* ---- Residents: the board marker, the Console band and the top-bar dock ----
+
+   One custom property, `--resident`, set inline from the run's pinned marker color
+   (`residentAccentStyle`), the way `--kind` drives a task-kind mark. It is decoration over
+   the state and never a replacement for it: the tone spine (`::before`, `--tone-color`) is
+   untouched, so a resident that needs you still reads amber at its left edge. */
+.tile.is-resident:not(.selected):not(.drop-over),
+.tile.is-resident:not(.selected):not(.drop-over):hover {
+  border-color: color-mix(in oklab, var(--resident) 70%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px color-mix(in oklab, var(--resident) 45%, transparent),
+    0 0 18px color-mix(in oklab, var(--resident) 26%, transparent);
+}
+/* The cursor ring wins the border, and the glow stays outside it, so a selected resident is
+   still both. */
+.tile.is-resident.selected:not(.drop-over),
+.tile.is-resident.selected:not(.drop-over):hover {
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px color-mix(in oklab, var(--select) 65%, transparent),
+    0 0 22px color-mix(in oklab, var(--resident) 30%, transparent);
+}
+/* The rail's accent edge sits on the RIGHT, opposite the tone spine on the left, so the two
+   never overlap at rail density. */
+.rail-row.is-resident {
+  box-shadow: inset -3px 0 0 color-mix(in oklab, var(--resident) 80%, transparent);
+  background: color-mix(in oklab, var(--resident) 5%, transparent);
+}
+.rail-row.is-resident .resident-chip {
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.resident-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 15px;
+  color: color-mix(in oklab, var(--resident) 85%, var(--fg));
+  background: color-mix(in oklab, var(--resident) 16%, transparent);
+  border: 1px solid color-mix(in oklab, var(--resident) 55%, transparent);
+  white-space: nowrap;
+}
+.resident-chip-pin {
+  font-size: 9px;
+  opacity: 0.85;
+}
+
+/* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one
+   action must stay reachable there. The facts give way first, then the action takes a line. */
+.resident-band {
+  /* Its content's height, never less: it is a child of the detail's flex column, and shrinking
+     there would leave wrapped lines - the changed-profile note, the Profile action - painted
+     under the tab strip below it. */
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 30px;
+  padding: 4px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid var(--resident);
+  background: color-mix(in oklab, var(--resident) 7%, var(--panel));
+  font-size: 12px;
+  min-width: 0;
+}
+.resident-band-word {
+  font-size: 9.5px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.resident-band-name {
+  font-weight: 620;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.resident-band-fact {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* Wraps, unlike the facts beside it: it is the one sentence here that must be read whole - which
+   revision the profile is on now - and on a narrow pane it takes its own line rather than run
+   past the edge. */
+.resident-band-changed {
+  color: var(--attention);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.resident-band-spacer {
+  flex: 1 0 0;
+}
+.resident-band-action {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 11.5px;
+}
+
+/* The profile editor's swatches: one round button per palette id. */
+.resident-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.resident-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--resident);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+.resident-swatch.active {
+  box-shadow:
+    0 0 0 2px var(--fg),
+    0 0 10px color-mix(in oklab, var(--resident) 50%, transparent);
+}
+.resident-swatch:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+}
+.resident-marker-label {
+  width: 8ch;
+  text-transform: uppercase;
+}
+.resident-pin {
+  align-self: end;
+  background: none;
+}
+
+/* The top-bar button and its dock. The dock hangs off `.alert-pop`, which already positions
+   it under its button and cancels the desktop drag region. */
+.residents-dock {
+  position: relative;
+}
+.residents-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.residents-btn.on {
+  color: var(--fg);
+}
+.residents-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+.residents-count {
+  font-size: 11px;
+  font-weight: 640;
+  padding: 1px 7px;
+  border-radius: 20px;
+  color: var(--fg);
+  background: color-mix(in oklab, var(--fg) 12%, transparent);
+}
+.residents-pop {
+  width: 340px;
+  gap: 12px;
+}
+/* On a window too narrow to hang 340px off the button without crossing the left edge, the
+   dock spans the window under the bar instead. `--topbar-h` is what App publishes from the
+   fitted bar, so the panel starts below it however many rows the bar took. */
+@media (max-width: 560px) {
+  .residents-pop {
+    position: fixed;
+    top: calc(var(--topbar-h, 88px) + 4px);
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-height: calc(100dvh - var(--topbar-h, 88px) - 16px);
+  }
+}
+.residents-pop-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.residents-pop-section > .alert-hint {
+  margin: 0;
+}
+.residents-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.residents-pop-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.residents-pop-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.residents-pop-state {
+  font-size: 11.5px;
+  color: var(--muted);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.residents-pop-action {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.residents-pop-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.residents-pop-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.residents-pop-manage {
+  align-self: flex-start;
+}

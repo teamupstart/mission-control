@@ -831,7 +831,8 @@ available:
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
-  reasoning effort, permission mode, cost, branch, worktree and last seen - and unchecking
+  reasoning effort, permission mode, cost, branch, worktree, last seen and the resident
+  marker - and unchecking
   one applies to every card in every column immediately. A live preview card sits in the
   panel and redraws as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
@@ -985,6 +986,13 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
+  has an outline and soft glow in its profile's color and a short label chip, and, when its
+  profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
+  draws the same chip and leads with the same sessions, and a resident's Console header gains a
+  band naming its profile and the revision it launched from. The tone spine is untouched: the
+  glow says *which* agent, the spine still says *what state*. The **Residents** button beside
+  Foreman in the top bar opens a dock of live residents and the profiles you can launch.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, and the console empties its pane. The session reads **stopping** during that drain, then **exited** until its ordinary

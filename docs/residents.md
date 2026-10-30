@@ -100,6 +100,8 @@ Residents dock** in the ⌘K palette.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
   launches straight away, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch.
+  If it is still starting after a minute, the dock stops waiting and the row reads *still
+  starting*; **Launch** then checks on that same launch rather than starting a second resident.
   A profile without a default repository shows **Launch…**, which opens **Dispatch > Resident**
   on it so you can choose one.
 - **Manage residents** opens the Residents page.

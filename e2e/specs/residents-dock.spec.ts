@@ -445,3 +445,56 @@ test("Settings > Display > Top bar describes the Residents button as it draws, a
   await expect(button).toHaveClass(/\btb-compact\b/);
   await expect(button.locator(".residents-count")).toHaveCount(0);
 });
+
+test("a launch that stays starting past the dock's limit gives Launch back, and the retry checks the same launch", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  // The page clock, so the dock's replay limit can be passed without waiting it out.
+  await dashboard.clock.install();
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  const { sent } = watchLaunches(dashboard);
+
+  // A startup that never settles: every launch answers "still starting". Answered here so the
+  // daemon never sees these requests - the stall is the subject, not a real launch.
+  const launchRoute = /\/api\/residents\/profiles\/[^/]+\/launch$/;
+  await dashboard.route(launchRoute, (route) => route.fulfill({
+    status: 202,
+    contentType: "application/json",
+    body: JSON.stringify({ state: "pending", run: { id: "run-stalled" } }),
+  }));
+
+  await dashboard.getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+  const dock = dashboard.getByRole("dialog", { name: "Residents" });
+  const launch = dock.getByRole("button", { name: `Launch ${PROFILE}` });
+  const row = dock.locator(".residents-pop-row")
+    .filter({ has: dashboard.getByRole("button", { name: `Launch ${PROFILE}` }) });
+
+  await launch.click();
+  await expect(row.getByRole("status")).toHaveText("starting…");
+  await expect(launch).toBeDisabled();
+  await expect.poll(() => sent.length).toBeGreaterThanOrEqual(1);
+
+  // Past the limit, replay by replay: the dock stops, keeps the id and hands Launch back.
+  for (let i = 0; i < 45 && (await launch.isDisabled()); i += 1) {
+    await dashboard.clock.fastForward(1_500);
+  }
+  await expect(launch).toBeEnabled();
+  await expect(row.getByRole("status")).toHaveText("still starting");
+  await expect(row).toContainText("Launch checks on this same launch; it never starts a second resident.");
+  await expect(dock.getByRole("alert")).toHaveCount(0);
+  const stalled = sent.length;
+  expect(stalled).toBeGreaterThanOrEqual(2);
+  expect(new Set(sent.map((body) => body.requestId)).size, "every replay used one request id").toBe(1);
+  await capture(dock, "10-dock-launch-still-starting");
+
+  // The retry checks the SAME launch: same id. With the daemon answering again, that one id
+  // starts the one resident.
+  await dashboard.unroute(launchRoute);
+  await launch.click();
+  await expect(dock.getByRole("button", { name: `Open ${PROFILE}` })).toBeEnabled({ timeout: 60_000 });
+  expect(sent.length).toBeGreaterThan(stalled);
+  expect(new Set(sent.map((body) => body.requestId)).size, "the retry reused the stalled launch's id").toBe(1);
+  await expect.poll(() => residentTaskCount(daemon), { timeout: 30_000 }).toBe(1);
+});

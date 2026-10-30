@@ -9,6 +9,12 @@ import { residentMarkTitle, residentProfileMark, residentSessionMark } from "./m
 
 /** How often a still-starting launch is replayed - the same request id - to read its outcome. */
 const PENDING_REPLAY_MS = 1_500;
+/**
+ * How long the dock keeps replaying a launch that is still starting before it stops and hands
+ * the choice back. A stalled startup must not leave Launch disabled for as long as the dock is
+ * mounted; the request id is kept, so the next Launch checks the same launch.
+ */
+export const DOCK_PENDING_LIMIT_MS = 60_000;
 
 export interface ResidentsDockProps {
   /** Live runs, oldest launch first - the `residentRuns` collection. */
@@ -40,6 +46,11 @@ interface DockLaunch {
   error: string | null;
   /** The launch reached its session; cleared on the next launch. */
   launched: boolean;
+  /**
+   * Still starting when the dock stopped replaying it (`DOCK_PENDING_LIMIT_MS`). The request id
+   * is kept, so Launch checks this same launch again rather than starting another.
+   */
+  stillStarting: boolean;
 }
 
 /**
@@ -124,13 +135,19 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
       return;
     }
     const requestId = launches[profile.id]?.requestId ?? crypto.randomUUID();
-    patchLaunch(profile.id, { requestId, busy: true, error: null, launched: false });
+    patchLaunch(profile.id, { requestId, busy: true, error: null, launched: false, stillStarting: false });
     const input = { repoRoot, requestId };
+    const startedAt = Date.now();
     let answer = await launchResident(profile.id, input);
     // Still starting: replay the SAME request id until it settles. A replay reads the one run
-    // this id reserved and never starts another.
+    // this id reserved and never starts another. Bounded, so a stalled startup gives Launch
+    // back - with the id kept - instead of holding the row busy indefinitely.
     while (answer.state === "pending") {
       if (!mounted.current) return;
+      if (Date.now() - startedAt >= DOCK_PENDING_LIMIT_MS) {
+        patchLaunch(profile.id, { requestId, busy: false, error: null, launched: false, stillStarting: true });
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
       if (!mounted.current) return;
       answer = await launchResident(profile.id, input);
@@ -226,7 +243,9 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                       <ResidentChip mark={mark} />
                       <span className="residents-pop-name">{profile.name}</span>
                       <span className="residents-pop-state" role="status">
-                        {state?.busy ? "starting…" : state?.launched ? "launched" : ""}
+                        {state?.busy
+                          ? "starting…"
+                          : state?.stillStarting ? "still starting" : state?.launched ? "launched" : ""}
                       </span>
                       <Tooltip
                         label={repo
@@ -247,6 +266,12 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           sentence, and an ellipsized one says nothing. */}
                       {state?.error && (
                         <p className="residents-pop-error" role="alert">{state.error}</p>
+                      )}
+                      {state?.stillStarting && (
+                        <p className="residents-pop-note">
+                          Taking longer than usual to start. Launch checks on this same launch; it
+                          never starts a second resident.
+                        </p>
                       )}
                     </li>
                   );
@@ -273,5 +298,5 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
 }
 
 function freshLaunch(): DockLaunch {
-  return { requestId: crypto.randomUUID(), busy: false, error: null, launched: false };
+  return { requestId: crypto.randomUUID(), busy: false, error: null, launched: false, stillStarting: false };
 }

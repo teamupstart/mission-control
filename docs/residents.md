@@ -73,9 +73,21 @@ reason and is never relaunched; launch the profile again.
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).
 Restoring a snapshot writes each changed profile as a new revision, reactivates profiles the
 snapshot holds and archives live profiles it does not. Revisions that running residents pinned are
-kept. A snapshot taken before residents existed restores without touching profiles. A snapshot
-carries every live profile and the most recently archived ones up to the backup catalog limit, so
-an ever-growing archive never stops automatic snapshots; an archived profile left out stays archived.
+kept. A snapshot taken before residents existed restores without touching profiles.
+
+A snapshot carries **every live profile** with its current revision, and only the **200 most
+recently archived** ones. Archive never deletes a profile, so the full history grows without
+limit and would eventually push snapshots past their size limit and stop automatic backups; at
+the largest profile sizes, 200 live and 200 archived profiles fit in about 7 MB.
+
+- **Restoring on the same machine** changes no archived profile the snapshot left out: restore
+  only archives *live* profiles a snapshot omits, and every revision a run pinned is kept.
+- **Restoring onto a fresh installation** recreates every live profile but not the archived ones
+  past the newest 200. Nothing in Mission Control can reopen an archived profile, so no profile an
+  operator can see or launch is lost.
+- Settings snapshots never carried full history: they hold each profile's current revision, not
+  earlier revisions or runs. To move the complete record to another machine, use a
+  [full-database recovery point](database-and-migrations.md#full-database-recovery-points).
 
 ## How it is built
 

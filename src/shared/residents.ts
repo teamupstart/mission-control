@@ -50,6 +50,12 @@ export const RESIDENT_LIMITS = {
    * silently drops a profile an operator can see on the page.
    */
   liveProfiles: 200,
+  /**
+   * Archived profiles a settings snapshot carries, most recently archived first. Archive never
+   * deletes rows, so history is unbounded; this keeps the resident catalog to (200 + 200)
+   * profiles of at most ~9 KB each, well inside the snapshot file limit. See `docs/residents.md`.
+   */
+  archivedInSnapshot: 200,
 } as const;
 
 /** Who the profile is. The name is unique among live profiles. */

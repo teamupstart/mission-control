@@ -1,6 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -222,21 +222,30 @@ test("restore is blocked when a resident it leaves live would name a Persona tha
   assert.equal(own.status, "preflight_blocked");
 });
 
-test("archived history beyond the catalog limit never stops snapshots, and restoring one changes no omitted profile", async () => {
-  const limit = SETTINGS_BACKUP_LIMITS.entriesPerCatalog;
+test("a snapshot carries every live profile and only the most recent archived ones, staying within the file limit at worst-case sizes", async () => {
+  const archivedCap = RESIDENT_LIMITS.archivedInSnapshot;
+  // Worst case: every profile at its largest, the live catalog full, and more archived history
+  // than a snapshot carries.
+  const big = (name: string) => ResidentProfileRevisionSchema.parse({
+    identity: { name, description: "d".repeat(RESIDENT_LIMITS.descriptionLength) },
+    persona: { personaId: "builtin:code-risk-reviewer" },
+    instructions: { markdown: "é".repeat(RESIDENT_LIMITS.instructionsLength) },
+  });
   const insertProfile = db.prepare(`INSERT INTO resident_profiles (id, name, normalized_name, revision, archived_at, created_at, updated_at) VALUES (?, ?, ?, 1, ?, 1, ?)`);
   const insertRevision = db.prepare(`INSERT INTO resident_profile_revisions (profile_id, revision, settings_json, created_at) VALUES (?, 1, ?, 1)`);
-  const body = JSON.stringify(settings("Archived", ""));
   db.exec("BEGIN");
-  // limit + 1 archived profiles: archived_at 1 is the oldest, so it is the one left out.
-  for (let i = 1; i <= limit + 1; i += 1) {
-    const id = `archived-${String(i).padStart(5, "0")}`;
+  for (let i = 1; i <= RESIDENT_LIMITS.liveProfiles; i += 1) {
+    const id = `live-${String(i).padStart(4, "0")}`;
+    insertProfile.run(id, `Live ${i}`, `live ${i}`, null, 1);
+    insertRevision.run(id, JSON.stringify(big(`Live ${i}`)));
+  }
+  // archivedCap + 50 archived: archived_at 1..50 are the oldest, so they are left out.
+  for (let i = 1; i <= archivedCap + 50; i += 1) {
+    const id = `archived-${String(i).padStart(4, "0")}`;
     insertProfile.run(id, `Archived ${i}`, `archived ${i}`, i, i);
-    insertRevision.run(id, body);
+    insertRevision.run(id, JSON.stringify(big(`Archived ${i}`)));
   }
   db.exec("COMMIT");
-  store.createResidentProfile({ id: "live-a", settings: settings("Live A", "a"), at: 10 });
-  store.createResidentProfile({ id: "live-b", settings: settings("Live B", "b"), at: 10 });
 
   const root = join(home, "archived-history");
   const svc = service(root);
@@ -244,18 +253,21 @@ test("archived history beyond the catalog limit never stops snapshots, and resto
   assert.equal(captured.status, "ready", JSON.stringify(captured).slice(0, 300));
   if (captured.status !== "ready") return;
   const rows = captured.snapshot.domains.find((entry) => entry.domain === "resident-profiles")?.payload as Array<{ id: string; archivedAt: number | null }>;
-  assert.equal(rows.length, limit);
-  assert.equal(captured.snapshot.counts.residentProfiles, limit);
+  assert.equal(rows.filter((row) => row.archivedAt === null).length, RESIDENT_LIMITS.liveProfiles, "every live profile is carried");
+  assert.equal(rows.filter((row) => row.archivedAt !== null).length, archivedCap);
   const ids = new Set(rows.map((row) => row.id));
-  assert.ok(ids.has("live-a") && ids.has("live-b"), "every live profile is carried");
-  assert.ok(ids.has(`archived-${String(limit + 1).padStart(5, "0")}`), "the most recently archived is carried");
-  assert.ok(!ids.has("archived-00001") && !ids.has("archived-00002") && !ids.has("archived-00003"), "the oldest archived are left out");
+  assert.ok(ids.has(`archived-${String(archivedCap + 50).padStart(4, "0")}`), "the most recently archived is carried");
+  assert.ok(!ids.has("archived-0001") && !ids.has("archived-0050"), "the oldest archived are left out");
+  const bytes = readFileSync(join(root, `${captured.snapshot.id}.json`)).length;
+  console.log(`worst-case resident snapshot: ${bytes} bytes of ${SETTINGS_BACKUP_LIMITS.fileBytes}`);
+  assert.ok(bytes < SETTINGS_BACKUP_LIMITS.fileBytes / 2, `worst-case snapshot is ${bytes} bytes`);
 
+  // Restoring it on the same machine changes no omitted profile.
   const restored = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
   assert.equal(restored.status, "restored", JSON.stringify(restored));
-  assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id).sort(), ["live-a", "live-b"]);
-  const oldest = store.getResidentProfile("archived-00001");
-  assert.equal(oldest?.archivedAt, 1, "an omitted archived profile is untouched");
+  assert.equal(store.listLiveResidentProfiles().length, RESIDENT_LIMITS.liveProfiles);
+  const oldest = store.getResidentProfile("archived-0001");
+  assert.equal(oldest?.archivedAt, 1, "an omitted archived profile stays archived");
   assert.equal(oldest?.revision, 1);
-  assert.equal(store.residentProfileRevision("archived-00001", 1)?.identity.name, "Archived", "its pinned revision is kept");
+  assert.equal(store.residentProfileRevision("archived-0001", 1)?.identity.name, "Archived 1", "its pinned revision is kept");
 });

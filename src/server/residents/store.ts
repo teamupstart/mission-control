@@ -127,19 +127,22 @@ export function listAllResidentProfiles(): ResidentProfile[] {
 }
 
 /**
- * The profiles a settings snapshot carries, at most `limit`: every live profile (bounded at
- * `RESIDENT_LIMITS.liveProfiles`), then the most recently archived ones up to the limit, in id
- * order. Archive never deletes rows, so carrying the whole history would eventually outgrow a
- * snapshot catalog and stop automatic backups. Leaving the oldest archived rows out changes no
- * restore: restore only archives LIVE profiles a snapshot omits, so an omitted archived profile
- * stays archived exactly as it would have if it had been carried.
+ * The profiles a settings snapshot carries: every live profile (bounded at
+ * `RESIDENT_LIMITS.liveProfiles`), then at most `archivedLimit` of the most recently archived,
+ * in id order. Archive never deletes rows, so carrying the whole history would eventually push a
+ * snapshot past its catalog and file-size limits and stop automatic backups.
+ *
+ * On the same machine, leaving the oldest archived rows out changes no restore: restore only
+ * archives LIVE profiles a snapshot omits, so an omitted archived profile stays archived. On a
+ * fresh installation those older archived profiles are not recreated; nothing can reopen an
+ * archived profile, and the full-database recovery points keep the whole history.
  */
-export function listBackupResidentProfiles(limit: number): ResidentProfile[] {
+export function listBackupResidentProfiles(archivedLimit: number): ResidentProfile[] {
   const d = openDb();
   const live = d
     .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL ORDER BY p.id`)
     .all() as unknown as ProfileRow[];
-  const room = Math.max(0, limit - live.length);
+  const room = Math.max(0, archivedLimit);
   const archived = room === 0 ? [] : d
     .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NOT NULL ORDER BY p.archived_at DESC, p.id LIMIT ?`)
     .all(room) as unknown as ProfileRow[];

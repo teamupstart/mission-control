@@ -98,6 +98,7 @@ type Handle = Awaited<ReturnType<ReturnType<typeof claudeSdkSpec>["launch"]>>;
 
 const startsLog = join(root, "starts.jsonl");
 const httpLog = join(root, "http.jsonl");
+const oauthLog = join(root, "oauth.jsonl");
 const stdioFixture = join(root, "fixture-stdio.mjs");
 writeFileSync(stdioFixture, `
 import { appendFileSync } from "node:fs";
@@ -161,6 +162,18 @@ const redeemServer: Server = createServer(async (req, res) => {
 });
 await new Promise<void>((resolve) => redeemServer.listen(freePort, "127.0.0.1", resolve));
 
+/**
+ * A remote MCP endpoint behind an OAuth login: it answers every request 401 with a Bearer
+ * challenge, as an OAuth-protected server does to a client without a token.
+ */
+const oauthFixture: Server = createServer(async (req, res) => {
+  for await (const _chunk of req) { /* drained */ }
+  writeFileSync(oauthLog, `${JSON.stringify({ method: req.method })}\n`, { flag: "a" });
+  res.writeHead(401, { "www-authenticate": 'Bearer realm="probe"' }).end();
+});
+await new Promise<void>((resolve) => oauthFixture.listen(0, "127.0.0.1", resolve));
+const oauthPort = (oauthFixture.address() as { port: number }).port;
+
 const sentinel = (label: string): string => `mcp-probe-${label}-${randomBytes(12).toString("hex")}`;
 const secrets = {
   stdio: sentinel("stdio-env"),
@@ -183,12 +196,15 @@ const reset = (): void => {
 };
 
 /** Seed one open run and its snapshot through the production store. */
-function seedRun(runId: string): void {
-  const d = openDb();
-  d.prepare(
+function seedRunRow(runId: string): void {
+  openDb().prepare(
     `INSERT INTO resident_runs (id, profile_id, profile_revision, task_id, launch_request_id, launch_input,
        launch_state, persona_snapshot, created_at) VALUES (?, 'probe', 1, ?, ?, '{}', 'launched', '{}', ?)`,
   ).run(runId, `task-${runId}`, `req-${runId}`, Date.now());
+}
+
+function seedRun(runId: string): void {
+  seedRunRow(runId);
   const plain = fixture("snap");
   const dotted = fixture("foo.bar");
   const secretStdio = fixture("secret-stdio");
@@ -468,6 +484,27 @@ async function probeClaude(): Promise<void> {
         })));
       }
     }
+
+    // A global remote server behind an OAuth login Claude Code holds. The launcher's bridge cannot
+    // present that login, so Claude must report the server as not connected and the start must be
+    // refused, naming it, instead of running without its tools.
+    const oauthRun = "00000000-0000-4000-8000-00000000c1a1";
+    seedRunRow(oauthRun);
+    store.writeRunMcpSnapshot(oauthRun, [{
+      source: "global", name: "oauth-remote",
+      transport: { type: "http", url: `http://127.0.0.1:${oauthPort}/mcp`, headers: {}, secretHeaders: [], secretQuery: [] },
+      launcher: true, options: {}, secrets: new Map(),
+    }], Date.now());
+    phaseName = "oauth";
+    toolSent = true;
+    const refused = await spec.launch({ ...options(null), residentMcp: observedLaunch(oauthRun) }).then(
+      async (handle) => { await handle.stop(); return null; },
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    const reached = existsSync(oauthLog) && readFileSync(oauthLog, "utf8").trim().length > 0;
+    say({ harness: "claude", check: "a remote server behind an OAuth login refuses the launch, named", pass: reached && /could not connect to its MCP server oauth-remote/.test(refused ?? ""), refused, reachedEndpoint: reached });
+    assert.ok(reached, "the bridge never reached the OAuth-protected endpoint");
+    assert.match(refused ?? "", /could not connect to its MCP server oauth-remote/);
   } finally {
     model.closeAllConnections();
     await new Promise<void>((resolve) => model.close(() => resolve()));
@@ -652,8 +689,10 @@ try {
 } finally {
   httpFixture.closeAllConnections();
   redeemServer.closeAllConnections();
+  oauthFixture.closeAllConnections();
   httpFixture.close();
   redeemServer.close();
+  oauthFixture.close();
   rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 process.exit(0);

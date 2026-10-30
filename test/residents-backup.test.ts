@@ -376,10 +376,15 @@ test("restoring a snapshot keeps a secret only if it was set before the snapshot
   // After the snapshot: one secret is replaced with an identical definition, one server points
   // somewhere else while its secret stays, and a new server is added.
   mcp.updateResidentMcpServer(ids.rotated, { ...input("rotated", "srv", rotated), expectedRevision: 1 }, { at: after, globals: new Map() });
-  mcp.updateResidentMcpServer(ids.moved, { ...input("moved", "new-srv"), expectedRevision: 1 }, { at: after, globals: new Map() });
+  // An edit cannot carry a secret to a new connection, so the new value is entered with it. The
+  // row is then backdated: a value that predates the snapshot yet belongs to another connection,
+  // as one carried in from another machine's history would.
+  const movedNew = `restore-moved-new-${crypto.randomUUID()}`;
+  mcp.updateResidentMcpServer(ids.moved, { ...input("moved", "new-srv", movedNew), expectedRevision: 1 }, { at: after, globals: new Map() });
+  db.prepare("UPDATE resident_mcp_secrets SET updated_at = ? WHERE server_id = ?").run(before, ids.moved);
   mcp.createResidentMcpServer(input("added", "srv", `restore-added-${crypto.randomUUID()}`), { id: ids.added, at: after, globals: new Map() });
   assert.equal(mcp.customSecretValues(ids.rotated).get("env:TOKEN"), rotated);
-  assert.equal(mcp.customSecretValues(ids.moved).get("env:TOKEN"), moved, "an edit that leaves the secret blank keeps it");
+  assert.equal(mcp.customSecretValues(ids.moved).get("env:TOKEN"), movedNew);
 
   // The clearing is part of the restore's transaction: a restore that fails clears nothing.
   const failing = new SettingsBackupService(
@@ -410,5 +415,5 @@ test("restoring a snapshot keeps a secret only if it was set before the snapshot
   assert.equal(mcp.customSecretValues(ids.kept).get("env:TOKEN"), kept, "a value untouched since the snapshot, on an unchanged connection, stays");
   assert.equal(mcp.customSecretValues(ids.added).size, 0, "a server the snapshot does not hold leaves no value behind");
   const views2 = JSON.stringify([...views.values()]);
-  for (const value of [original, rotated, kept, moved]) assert.ok(!views2.includes(value));
+  for (const value of [original, rotated, kept, moved, movedNew]) assert.ok(!views2.includes(value));
 });

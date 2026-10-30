@@ -97,7 +97,14 @@ function splitUrl(raw: string, headers: Record<string, string>, secrets: Map<str
     if (Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) {
       return "its URL carries a user name or password and it also sets an Authorization header";
     }
-    const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    // WHATWG URL keeps a malformed escape such as `%zz` as written, so decoding can throw. That
+    // is this server's problem, never a failed read of the whole catalog.
+    let pair: string;
+    try {
+      pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+    } catch {
+      return "its URL's user name or password is not valid percent-encoding";
+    }
     headers.Authorization = `Basic ${Buffer.from(pair).toString("base64")}`;
     url.username = "";
     url.password = "";

@@ -263,6 +263,42 @@ test("a Claude session that did not configure a snapshot server fails the launch
   );
 });
 
+test("a snapshot server Claude reports switched off, failed or waiting on a login refuses the launch, named", async () => {
+  const launchWith = (statuses: Array<{ name: string; status: string }>) => claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => ({ ...idleQuery(() => []), mcpServerStatus: async () => statuses }) as never,
+  }).launch(sdkOptions({ residentMcp: residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]) }));
+  const mission = { name: "mission-control", status: "connected" };
+  await assert.rejects(launchWith([mission, { name: "snap", status: "disabled" }]), /has its MCP server snap switched off/);
+  // An OAuth-backed remote server reaches Claude through the launcher's bridge, which cannot
+  // present that login, so Claude reports it failed.
+  await assert.rejects(launchWith([mission, { name: "snap", status: "failed" }]), /could not connect to its MCP server snap/);
+  await assert.rejects(launchWith([mission, { name: "snap", status: "needs-auth" }]), /its MCP server snap, which needs a login a resident cannot present/);
+  await assert.rejects(launchWith([{ name: "mission-control", status: "disabled" }, { name: "snap", status: "connected" }]), /has its MCP server mission-control switched off/);
+  // A server outside the set that Claude itself switched off is not running, so it is no extra.
+  const ok = await launchWith([mission, { name: "snap", status: "connected" }, { name: "native", status: "disabled" }]);
+  await ok.stop();
+});
+
+test("a snapshot server still pending is asked about again until it settles", async () => {
+  let asked = 0;
+  const statuses = () => {
+    asked += 1;
+    return [{ name: "mission-control", status: "connected" }, { name: "snap", status: asked < 3 ? "pending" : "failed" }];
+  };
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async () => ({ ...idleQuery(() => []), mcpServerStatus: async () => statuses() }) as never,
+  });
+  await assert.rejects(
+    spec.launch(sdkOptions({ residentMcp: residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]) })),
+    /could not connect to its MCP server snap/,
+  );
+  assert.equal(asked, 3, "pending twice, then the settled answer decided");
+});
+
 test("a server name that is an Object.prototype key is an own mcpServers entry, so it is not silently dropped", async () => {
   let servers: Record<string, unknown> = {};
   const spec = claudeSdkSpec({

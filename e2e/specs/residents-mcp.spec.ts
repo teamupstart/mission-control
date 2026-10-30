@@ -90,6 +90,14 @@ test("a custom MCP server's secret is write-only, its selection reaches the laun
   await expect(editor.getByLabel("Environment variable 2 value")).toHaveValue("info");
   expect(await page.content()).not.toContain(SECRET);
   await capture(panel, "custom-server-secret-set");
+  // A new connection with the secret left blank is refused, naming what to enter again: a value
+  // never follows the server to a different command.
+  await editor.getByLabel(/^Arguments/).fill(`${fixture}\n${started}\n--elsewhere`);
+  await editor.getByRole("button", { name: "Save server" }).click();
+  const refusal = panel.getByRole("alert");
+  await expect(refusal).toContainText("this server's connection changed, so enter LINEAR_TOKEN again");
+  await expect(editor).toBeVisible();
+  await capture(refusal, "custom-server-connection-changed");
   await editor.getByRole("button", { name: "Cancel" }).click();
 
   // No route returns a secret: the catalog carries names and "set", never values.

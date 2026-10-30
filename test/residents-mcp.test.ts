@@ -78,9 +78,13 @@ test("a secret is accepted on write and never returned: reads say only that it i
   assert.ok(!JSON.stringify(getAppConfig(APP_CONFIG_ENTRIES.residentMcpServers)).includes(SECRET), "the backed-up definition does not either");
   assert.equal(mcpStore.customSecretValues(view.id).get("env:LINEAR_TOKEN"), SECRET);
 
-  // An edit that omits the value keeps it; renaming the variable does not carry it over.
+  // An edit that omits the value keeps it while the connection is the same; renaming the
+  // variable does not carry it over.
   const kept = mcpStore.updateResidentMcpServer(view.id, {
-    ...(CreateResidentMcpServerSchema.parse({ name: "linear", harnesses: ["claude"], transport: { type: "stdio", command: "npx", env: [{ name: "LINEAR_TOKEN", secret: true }] } }) as CreateInput),
+    ...(CreateResidentMcpServerSchema.parse({ name: "linear", harnesses: ["claude"], transport: { type: "stdio", command: "npx", args: ["-y", "linear-mcp"], env: [
+      { name: "LINEAR_TOKEN", secret: true },
+      { name: "LOG_LEVEL", secret: false, value: "info" },
+    ] } }) as CreateInput),
     expectedRevision: 1,
   }, { at: 2, globals: NO_GLOBALS });
   assert.equal(kept.revision, 2);
@@ -97,6 +101,52 @@ test("a secret is accepted on write and never returned: reads say only that it i
   );
   mcpStore.deleteResidentMcpServer(view.id, 3);
   assert.equal(mcpStore.residentMcpServerViews().length, 0);
+});
+
+test("a secret left blank is never carried to a changed connection: the edit names what to enter again", () => {
+  const token = `edit-token-${crypto.randomUUID()}`;
+  const stdio = (over: { command?: string; args?: string[]; level?: string; name?: string; value?: string } = {}) => CreateResidentMcpServerSchema.parse({
+    name: over.name ?? "linear",
+    harnesses: ["claude"],
+    transport: { type: "stdio", command: over.command ?? "linear-mcp", args: over.args ?? ["--stdio"], env: [
+      { name: "LINEAR_TOKEN", secret: true, ...(over.value === undefined ? {} : { value: over.value }) },
+      { name: "LOG_LEVEL", secret: false, value: over.level ?? "info" },
+    ] },
+  }) as CreateInput;
+  const view = create(stdio({ value: token }));
+  let revision = 1;
+  const edit = (input: CreateInput) => mcpStore.updateResidentMcpServer(view.id, { ...input, expectedRevision: revision }, { at: 2, globals: NO_GLOBALS });
+  // A different command, different arguments, or a different plain setting is a new connection.
+  for (const changed of [stdio({ command: "/tmp/elsewhere" }), stdio({ args: ["--stdio", "--remote"] }), stdio({ level: "debug" })]) {
+    assert.throws(() => edit(changed), (error: unknown) =>
+      error instanceof mcpStore.ResidentMcpServerError && error.status === 400
+      && /connection changed, so enter LINEAR_TOKEN again/.test(error.message) && !error.message.includes(token));
+    assert.equal(mcpStore.customSecretValues(view.id).get("env:LINEAR_TOKEN"), token, "a refused edit changes nothing");
+  }
+  // The same connection keeps the value: a rename is not a new destination.
+  assert.equal(edit(stdio({ name: "linear-renamed" })).revision, 2);
+  revision = 2;
+  assert.equal(mcpStore.customSecretValues(view.id).get("env:LINEAR_TOKEN"), token);
+  // Entered again, the new connection takes the new value, never the old one.
+  const moved = `edit-moved-${crypto.randomUUID()}`;
+  assert.equal(edit(stdio({ command: "/tmp/elsewhere", value: moved })).revision, 3);
+  assert.equal(mcpStore.customSecretValues(view.id).get("env:LINEAR_TOKEN"), moved);
+
+  // HTTP: a new URL with its header and query values left blank names both.
+  const header = `edit-header-${crypto.randomUUID()}`;
+  const http = create({
+    name: "remote",
+    harnesses: ["claude"],
+    transport: { type: "http", url: `https://mcp.example.com/mcp?key=${header}`, headers: [{ name: "Authorization", secret: true, value: header }] },
+  });
+  assert.throws(
+    () => mcpStore.updateResidentMcpServer(http.id, {
+      ...(CreateResidentMcpServerSchema.parse({ name: "remote", harnesses: ["claude"], transport: { type: "http", url: "https://other.example.com/mcp", query: [{ name: "key" }], headers: [{ name: "Authorization", secret: true }] } }) as CreateInput),
+      expectedRevision: 1,
+    }, { at: 2, globals: NO_GLOBALS }),
+    /enter query parameter key, header Authorization again/,
+  );
+  assert.equal(mcpStore.customSecretValues(http.id).get("header:Authorization"), header);
 });
 
 test("a URL query is stored as secret parameters, so no stored or shown URL carries a value", () => {
@@ -325,6 +375,24 @@ test("a global server named __proto__ is listed as unavailable on either harness
   assert.equal(read.servers[0]!.transport, null, "nothing to snapshot");
   assert.equal(read.servers[1]!.summary.unavailable, null);
   assert.match(catalog.parseCodexServer("__proto__", { command: "srv" }, null).summary.unavailable!, /its name __proto__ cannot be carried/);
+});
+
+test("a URL whose user name is not valid percent-encoding makes only that server unavailable", () => {
+  const url = "https://user%zz@mcp.example.com/mcp";
+  const codex = catalog.parseCodexServer("bad-escape", { url }, "bearer_token");
+  assert.match(codex.summary.unavailable!, /user name or password is not valid percent-encoding/);
+  assert.equal(codex.transport, null);
+  assert.ok(!codex.summary.unavailable!.includes("user%zz"), "the reason does not echo the credential");
+  const claude = catalog.parseClaudeServer("bad-escape", { type: "http", url }, {});
+  assert.match(claude.summary.unavailable!, /not valid percent-encoding/);
+  // The whole Codex table still parses: one malformed server never fails the catalog read.
+  const table = catalog.codexUserMcpTable({ config: {}, layers: [{ name: { type: "user", file: "/u/config.toml" }, config: { mcp_servers: {
+    "bad-escape": { url },
+    fine: { command: "fine-mcp" },
+  } } }] }, true);
+  assert.ok(typeof table !== "string");
+  const parsed = Object.entries(table).map(([name, entry]) => catalog.parseCodexServer(name, entry, name === "bad-escape" ? "bearer_token" : null));
+  assert.deepEqual(parsed.map((server) => [server.summary.name, server.summary.unavailable === null]), [["bad-escape", false], ["fine", true]]);
 });
 
 test("a harness without a global reader offers no global servers, never another harness's", async () => {

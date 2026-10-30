@@ -285,8 +285,10 @@ every resume after that reads only the copy:
 - A launch is refused, with the reason, when the set cannot be pinned: an inherited or selected
   global server residents cannot use, a custom server named like a global server of that harness,
   a selected server that no longer exists, a custom secret that is not set, or, on Codex, another
-  configuration layer that changes one of the run's servers or forces a server on itself. Nothing
-  is renamed or dropped silently.
+  configuration layer that changes one of the run's servers or forces a server on itself. On
+  Claude Code a start is also refused when a server in the set does not connect, is switched off or
+  waits on a login once Claude has started it. That includes a remote server behind an OAuth login
+  Claude Code holds, which the launcher cannot present. Nothing is renamed or dropped silently.
 
 Each launcher credential is good for one start, so a server that exits during a session is not
 restarted by the harness; it starts again with the session's next start, such as a resume.
@@ -295,12 +297,14 @@ A global server residents cannot use is shown as unavailable, with the reason, i
 the picker. That happens when it uses a field residents cannot carry (anything beyond the command,
 arguments, environment, URL, headers, and the timeouts and tool filters each harness maps one to
 one), reads a value from the agent's environment (`env_vars`, `bearer_token_env_var`,
-`env_http_headers`), relies on an OAuth login the harness holds, would send its headers or query
+`env_http_headers`), relies on an OAuth login Codex holds, would send its headers or query
 values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
-`:-default`, which is used as written.
+`:-default`, which is used as written. Claude Code's configuration does not say which remote
+servers use its OAuth login, so such a server is listed as usable and refuses the start instead,
+as above.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
@@ -314,7 +318,10 @@ servers. A custom server has a name, the harnesses it applies to, and either a *
 - **Secret** values are write-only. An environment variable or header marked secret, and every
   query parameter, is stored on this machine, shown afterwards only as *Set*, never returned by
   the dashboard, and never included in a settings snapshot. Leave a set value blank when editing to
-  keep it; renaming the field clears it.
+  keep it, as long as the connection stays the same. Changing the command, the arguments, the URL,
+  or a plain environment variable or header refuses the save, naming each set secret to enter
+  again, so a value never follows the server to a different destination. Renaming the field
+  clears it.
 - An argument that looks like a credential (`--api-key=…`, `--token`, `TOKEN=…`, a URL with a user
   name or query, a bearer credential) is refused, naming the argument. Put the credential in a
   secret environment variable instead. Arguments are otherwise stored and backed up as written.

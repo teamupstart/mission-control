@@ -273,9 +273,14 @@ Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
 the agent itself inherits, so a global server that uses one is not available to residents: its
 value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
-authentication the harness holds (an OAuth login). A custom server's argument in a credential
+authentication the harness holds (an OAuth login). Claude Code's configuration does not mark such a
+server, so it cannot connect through the launcher, and the start is refused, naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
+
+**A value belongs to its connection.** An edit that changes a custom server's command, arguments,
+URL, or a plain environment variable or header refuses to keep a secret left blank, naming each
+one to enter again, so a value never reaches a destination it was not entered for.
 
 **Backups.** Settings snapshots carry custom server definitions without their values. Restoring
 one keeps a value only when it was set before the snapshot was taken and the restore leaves its

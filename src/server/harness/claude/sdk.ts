@@ -1305,32 +1305,68 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
   };
 }
 
+/** How long a resident's start waits for Claude to report its servers and for them to stop pending. */
+const RESIDENT_MCP_VERIFY_MS = 10_000;
+const RESIDENT_MCP_POLL_MS = 200;
+
 /**
- * Confirm the CLI configured exactly Mission's server and the run's snapshot - the direct check
- * behind `strictMcpConfig`, which also covers sources no fixture can reach, such as managed
- * configuration. A query that cannot answer in time is let through: the flag already decided.
+ * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
+ * the set must be configured and must not have failed, be switched off, or wait on a login: a
+ * resident never runs silently without one of its servers. A remote server behind an OAuth login
+ * Claude Code holds lands here as failed, because the launcher's bridge cannot present that login.
  */
-async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions): Promise<void> {
-  if (!query.mcpServerStatus) return;
-  const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
+function residentMcpStatusProblem(
+  statuses: ReadonlyArray<{ name: string; status: string }>,
+  allowed: ReadonlySet<string>,
+): string | null {
+  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  if (extra) return `configured the MCP server ${extra.name}, which is not in its snapshot`;
+  const reported = new Map(statuses.map((status) => [status.name, status.status]));
+  for (const name of allowed) {
+    const state = reported.get(name);
+    if (state === undefined) return `did not configure its MCP server ${name}`;
+    if (state === "disabled") return `has its MCP server ${name} switched off`;
+    if (state === "needs-auth") return `cannot use its MCP server ${name}, which needs a login a resident cannot present`;
+    if (state === "failed") return `could not connect to its MCP server ${name}`;
+  }
+  return null;
+}
+
+/** The query's server statuses, or null when it cannot answer before the deadline. */
+async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<Array<{ name: string; status: string }> | null> {
   let timer: NodeJS.Timeout | undefined;
   const statuses = await Promise.race([
-    query.mcpServerStatus().catch(() => null),
+    query.mcpServerStatus!().catch(() => null),
     new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), 10_000);
+      timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
       timer.unref?.();
     }),
   ]);
   if (timer) clearTimeout(timer);
+  return statuses;
+}
+
+/**
+ * Confirm the CLI configured exactly Mission's server and the run's snapshot, and that each one
+ * connected - the direct check behind `strictMcpConfig`, which also covers sources no fixture can
+ * reach, such as managed configuration. A server still pending is asked about again until the
+ * deadline. A query that cannot answer in time, or a server still pending at the deadline, is let
+ * through: the flag already decided the set.
+ */
+async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions): Promise<void> {
+  if (!query.mcpServerStatus) return;
+  const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
+  const deadline = Date.now() + RESIDENT_MCP_VERIFY_MS;
+  let statuses = await statusesBefore(query, deadline);
+  while (statuses?.some((status) => allowed.has(status.name) && status.status === "pending") && Date.now() + RESIDENT_MCP_POLL_MS < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, RESIDENT_MCP_POLL_MS));
+    statuses = await statusesBefore(query, deadline);
+  }
   if (!statuses) return;
-  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
-  const configured = new Set(statuses.map((status) => status.name));
-  const missing = [...allowed].find((name) => !configured.has(name));
-  if (!extra && !missing) return;
+  const problem = residentMcpStatusProblem(statuses, allowed);
+  if (!problem) return;
   await query.return(undefined).catch(() => {});
-  throw new Error(extra
-    ? `this resident's Claude Code session configured the MCP server ${extra.name}, which is not in its snapshot`
-    : `this resident's Claude Code session did not configure its MCP server ${missing}`);
+  throw new Error(`this resident's Claude Code session ${problem}`);
 }
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {

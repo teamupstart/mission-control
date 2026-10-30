@@ -224,6 +224,35 @@ function writeDocument(d: DatabaseSync, servers: ResidentMcpCustomServer[]): voi
 }
 
 /**
+ * A custom server's connection: what decides which process or endpoint its secrets reach - the
+ * command, arguments and plain environment, or the URL and plain headers. A plain value counts
+ * because it can redirect a server (an API base URL in its environment, say). Secret field names
+ * do not. A secret is entered for one connection and never follows the server to another.
+ */
+function connectionOf(transport: ResidentMcpStoredTransport): string {
+  const plain = (fields: readonly ResidentMcpStoredField[]) => fields.filter((field) => !field.secret);
+  return canonicalSettingsBackupJson(transport.type === "stdio"
+    ? { type: "stdio", command: transport.command, args: transport.args, env: plain(transport.env) }
+    : { type: "http", url: transport.url, headers: plain(transport.headers) });
+}
+
+/** Every secrets-table field a stored transport declares. */
+function secretFieldsOf(transport: ResidentMcpStoredTransport): Set<string> {
+  const declared = (kind: "env" | "header", fields: readonly ResidentMcpStoredField[]) =>
+    fields.filter((field) => field.secret).map((field) => residentMcpSecretField(kind, field.name));
+  return new Set(transport.type === "stdio"
+    ? declared("env", transport.env)
+    : [...declared("header", transport.headers), ...transport.query.map((name) => residentMcpSecretField("query", name))]);
+}
+
+/** A secrets-table field as the editor labels it. */
+function secretFieldLabel(field: string): string {
+  const [kind, ...rest] = field.split(":");
+  const name = rest.join(":");
+  return kind === "env" ? name : kind === "header" ? `header ${name}` : `query parameter ${name}`;
+}
+
+/**
  * A settings restore of the custom server document, inside the restore's transaction and before
  * the document is written. A snapshot never carries a secret value, so it cannot say which value
  * went with a definition it brings back. A value survives only when it was already set when the
@@ -234,16 +263,16 @@ function writeDocument(d: DatabaseSync, servers: ResidentMcpCustomServer[]): voi
 export function restoreResidentMcpSecretsInTransaction(d: DatabaseSync, restoredDocument: unknown, snapshotAt: number): void {
   const restored = ResidentMcpServersDocumentSchema.parse(restoredDocument).servers;
   const current = new Map(readResidentMcpServers().servers.map((server) => [server.id, server]));
-  const unchanged = new Set(restored
-    .filter((server) => {
-      const before = current.get(server.id);
-      return before !== undefined && canonicalSettingsBackupJson(before.transport) === canonicalSettingsBackupJson(server.transport);
-    })
-    .map((server) => server.id));
+  // For each server whose connection the restore keeps: the secret fields its restored definition declares.
+  const keepable = new Map<string, Set<string>>();
+  for (const server of restored) {
+    const before = current.get(server.id);
+    if (before && connectionOf(before.transport) === connectionOf(server.transport)) keepable.set(server.id, secretFieldsOf(server.transport));
+  }
   const rows = d.prepare("SELECT server_id, field, updated_at FROM resident_mcp_secrets").all() as Array<{ server_id: string; field: string; updated_at: number }>;
   const remove = d.prepare("DELETE FROM resident_mcp_secrets WHERE server_id = ? AND field = ?");
   for (const row of rows) {
-    if (!unchanged.has(row.server_id) || row.updated_at >= snapshotAt) remove.run(row.server_id, row.field);
+    if (!keepable.get(row.server_id)?.has(row.field) || row.updated_at >= snapshotAt) remove.run(row.server_id, row.field);
   }
 }
 
@@ -319,6 +348,17 @@ export function updateResidentMcpServer(
     // A secret is kept across an edit only while its field keeps the same kind and name, so a
     // renamed variable never inherits the old variable's value.
     const normalized = normalizeTransport(input.transport, setFields(id));
+    // ...and only while the connection is the same: a value left blank is never carried to a
+    // different command, URL or plain setting. The edit names what to enter again.
+    if (connectionOf(before.transport) !== connectionOf(normalized.transport)) {
+      const carried = [...normalized.keep].filter((field) => !normalized.set.has(field));
+      if (carried.length > 0) {
+        throw new ResidentMcpServerError(
+          `this server's connection changed, so enter ${carried.map(secretFieldLabel).join(", ")} again: a secret is never carried to a different command, URL or setting`,
+          400,
+        );
+      }
+    }
     const server: ResidentMcpCustomServer = {
       ...before,
       name: input.name,

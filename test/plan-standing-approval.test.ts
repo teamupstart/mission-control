@@ -129,6 +129,13 @@ test("with a standing approval, a bundle's other open choices are asked on their
   assert.ok(settled.response?.startsWith(STANDING_FOLLOW_UP_NOTE));
   assert.match(settled.response!, /→ A/);
   assert.equal(f.service.readiness(f.input).state, "approved", "answering the other question leaves the approval standing");
+
+  // An answer carrying selections but no response text still tells the agent.
+  const again = await f.ask([{ ...scope, question: "Which scope, again?" }]);
+  assert.equal(again.status, "pending");
+  const bare = await f.resolve(again.id, { action: "answer", selections: [{ decisionId: "scope", selected: ["b"], other: null }] });
+  assert.equal(bare.status, 200, await bare.clone().text());
+  assert.equal(f.registry.getReview(again.id)?.response, STANDING_FOLLOW_UP_NOTE);
 });
 
 test("without the checkbox, a later bundle is still asked", async () => {

@@ -5449,8 +5449,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       // An answer to the questions left beside an auto-approved bundle tells the agent the
       // bundle is already approved, because this form no longer asked about it.
-      const response = parsed.data.action === "answer" && parsed.data.response !== null && isStandingFollowUp(c.req.param("id"))
-        ? `${STANDING_FOLLOW_UP_NOTE}\n\n${parsed.data.response}`
+      // Every answer gets the note, including one sent with selections and no response text.
+      const response = parsed.data.action === "answer" && isStandingFollowUp(c.req.param("id"))
+        ? [STANDING_FOLLOW_UP_NOTE, parsed.data.response].filter(Boolean).join("\n\n")
         : parsed.data.response;
       const updated = reviews.resolve(
         c.req.param("id"),

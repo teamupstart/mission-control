@@ -444,3 +444,95 @@ test.describe("a launch that is still starting when the daemon answers", () => {
     expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, instructions: RUN_BRIEF });
   });
 });
+
+test.describe("a changed launch after a lost response", () => {
+  /** The first launch REACHES the daemon - it is accepted - but its response is lost. */
+  async function dropFirstLaunchResponse(page: Page, sent: Array<Record<string, unknown>>): Promise<void> {
+    page.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(request.url())) {
+        sent.push({ url: request.url(), ...(request.postDataJSON() as Record<string, unknown>) });
+      }
+    });
+    let dropped = false;
+    await page.route(/\/api\/residents\/profiles\/[^/]+\/launch$/, async (route) => {
+      if (dropped) {
+        await route.continue();
+        return;
+      }
+      dropped = true;
+      await route.fetch();
+      await route.abort("failed");
+    });
+  }
+
+  async function secondProfile(daemon: DaemonHandle): Promise<void> {
+    const [first] = await api<StoredProfile[]>(daemon, "/api/residents/profiles");
+    const response = await fetch(`${daemon.baseURL}/api/residents/profiles`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        settings: { ...first!.settings, identity: { name: "Release Watch", description: "" } },
+      }),
+    });
+    expect(response.status).toBe(201);
+  }
+
+  const residentTasks = async (daemon: DaemonHandle) =>
+    (await api<Array<{ kind: string; title: string }>>(daemon, "/api/tasks")).filter((task) => task.kind === "resident");
+
+  test("names the earlier launch, and Retry the earlier launch replays it exactly - one resident, one id", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    await secondProfile(daemon);
+    const sent: Array<Record<string, unknown>> = [];
+    await dropFirstLaunchResponse(dashboard, sent);
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+
+    await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+
+    // A deliberate change: another profile. Nothing is sent until the operator chooses.
+    await dialog.getByRole("radio", { name: /Release Watch/ }).click();
+    const notice = dialog.getByRole("alert").filter({ hasText: "may already be running" });
+    await expect(notice).toContainText(`An earlier launch of ${PROFILE}`);
+    await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeDisabled();
+    expect(sent).toHaveLength(1);
+
+    await notice.getByRole("button", { name: "Retry the earlier launch" }).click();
+    await expect(dialog.getByRole("radio", { name: new RegExp(PROFILE) })).toHaveAttribute("aria-checked", "true");
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    await expect.poll(async () => (await residentTasks(daemon)).map((task) => task.title)).toEqual([PROFILE]);
+  });
+
+  test("Launch as a new resident starts a separate one under a new id, without a conflict, and the earlier one is still there", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    await secondProfile(daemon);
+    const sent: Array<Record<string, unknown>> = [];
+    await dropFirstLaunchResponse(dashboard, sent);
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+
+    await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+
+    await dialog.getByRole("radio", { name: /Release Watch/ }).click();
+    await dialog.getByRole("button", { name: "Launch as a new resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.requestId).not.toBe(sent[0]!.requestId);
+    expect(sent[1]!.url).not.toBe(sent[0]!.url);
+    await expect.poll(async () => (await residentTasks(daemon)).map((task) => task.title).sort())
+      .toEqual([PROFILE, "Release Watch"].sort());
+  });
+});

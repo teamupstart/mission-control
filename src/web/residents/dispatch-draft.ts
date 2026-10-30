@@ -24,6 +24,22 @@ export interface ResidentDispatchDraft {
    * launch; replaced after a definitive outcome so the next launch is a new one.
    */
   requestId: string;
+  /**
+   * A launch the daemon may have received but whose answer never arrived (a network error).
+   * Its resident may already be running, so it is never forgotten silently: an exact retry
+   * replays it, and a changed launch must first choose between retrying it and starting a
+   * separate resident. Cleared by any definitive outcome.
+   */
+  uncertain: ResidentLaunchAttempt | null;
+}
+
+/** Exactly what one launch request carried. */
+export interface ResidentLaunchAttempt {
+  requestId: string;
+  profileId: string;
+  /** The repository as it was sent, not as the profile's default reads now. */
+  repoRoot: string;
+  instructions: string;
 }
 
 export function freshResidentDispatchDraft(): ResidentDispatchDraft {
@@ -33,6 +49,33 @@ export function freshResidentDispatchDraft(): ResidentDispatchDraft {
     repoFromProfile: true,
     instructions: "",
     requestId: crypto.randomUUID(),
+    uncertain: null,
+  };
+}
+
+/** Whether the form, as it stands, would send exactly what an earlier attempt sent. */
+export function residentAttemptMatches(
+  attempt: ResidentLaunchAttempt,
+  draft: ResidentDispatchDraft,
+  profile: ResidentProfile | null,
+): boolean {
+  return attempt.profileId === draft.profileId
+    && attempt.repoRoot === residentDispatchRepo(draft, profile).trim()
+    && attempt.instructions.trim() === draft.instructions.trim();
+}
+
+/** Put the form back on an uncertain attempt, with its id, so Launch replays it exactly. */
+export function retryResidentAttempt(
+  draft: ResidentDispatchDraft,
+  attempt: ResidentLaunchAttempt,
+): ResidentDispatchDraft {
+  return {
+    ...draft,
+    profileId: attempt.profileId,
+    repoRoot: attempt.repoRoot,
+    repoFromProfile: false,
+    instructions: attempt.instructions,
+    requestId: attempt.requestId,
   };
 }
 

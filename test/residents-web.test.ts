@@ -10,7 +10,9 @@ import { blankResidentDraft, residentDraftProblem } from "../src/web/residents/R
 import {
   chooseResidentRepo,
   freshResidentDispatchDraft,
+  residentAttemptMatches,
   residentDispatchRepo,
+  retryResidentAttempt,
   selectResidentProfile,
 } from "../src/web/residents/dispatch-draft.ts";
 import { parseMissionRoute, missionRouteHash } from "../src/web/workflows/useWorkflowRoute.ts";
@@ -93,4 +95,23 @@ test("the Dispatch layer renders Resident mode with the shared three-way toggle 
   assert.match(html, /Profile b/);
   assert.match(html, /Launch resident/);
   assert.match(html, /value="\/repos\/a"/);
+});
+
+test("an uncertain attempt matches only the exact input it sent, and retrying restores that input and id", () => {
+  const a = profile("a", "/repos/a");
+  const b = profile("b", "/repos/b");
+  const draft = { ...selectResidentProfile(freshResidentDispatchDraft(), a), instructions: "Today" };
+  const attempt = { requestId: draft.requestId, profileId: "a", repoRoot: "/repos/a", instructions: "Today" };
+  assert.equal(residentAttemptMatches(attempt, draft, a), true);
+  assert.equal(residentAttemptMatches(attempt, { ...draft, instructions: " Today " }, a), true, "whitespace alone is not a change");
+  assert.equal(residentAttemptMatches(attempt, selectResidentProfile(draft, b), b), false, "another profile");
+  assert.equal(residentAttemptMatches(attempt, chooseResidentRepo(draft, "/elsewhere"), a), false, "another repository");
+  assert.equal(residentAttemptMatches(attempt, { ...draft, instructions: "Tomorrow" }, a), false, "other instructions");
+  const changed = { ...selectResidentProfile(draft, b), requestId: "other", instructions: "Tomorrow" };
+  const retried = retryResidentAttempt(changed, attempt);
+  assert.equal(retried.requestId, attempt.requestId);
+  assert.equal(residentAttemptMatches(attempt, retried, a), true);
+  // The exact repository that was sent, even if the profile's default has moved since.
+  const moved = { ...a, settings: { ...a.settings, workspace: { defaultRepoRoot: "/repos/a-moved" } } };
+  assert.equal(residentDispatchRepo(retried, moved), "/repos/a");
 });

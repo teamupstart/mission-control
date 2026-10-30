@@ -903,6 +903,7 @@ export function DispatchLayer({
                   current.requestId === submitted.requestId && current.profileId === submitted.profileId
                     && current.repoRoot === submitted.repoRoot && current.repoFromProfile === submitted.repoFromProfile
                     && current.instructions === submitted.instructions
+                    && current.uncertain === submitted.uncertain
                     ? {
                         ...freshResidentDispatchDraft(),
                         profileId: submitted.profileId,

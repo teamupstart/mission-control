@@ -7,7 +7,14 @@ import { DispatchModeToggle } from "../components/DispatchModeToggle.tsx";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { chooseResidentRepo, residentDispatchRepo, selectResidentProfile } from "./dispatch-draft.ts";
+import {
+  chooseResidentRepo,
+  residentAttemptMatches,
+  residentDispatchRepo,
+  retryResidentAttempt,
+  selectResidentProfile,
+  type ResidentDispatchDraft,
+} from "./dispatch-draft.ts";
 import { launchResident } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 
@@ -64,6 +71,14 @@ export function ResidentDispatch({
     mode.onResidentChange(selectResidentProfile(draft, next));
   };
   const repoRoot = residentDispatchRepo(draft, profile);
+  // An earlier launch may be running (its answer was lost) and the form now asks for something
+  // else: the operator chooses before anything is sent, so that run is neither hidden nor
+  // collided with.
+  const changedAfterUncertain = draft.uncertain !== null
+    && !residentAttemptMatches(draft.uncertain, draft, profile);
+  const uncertainProfile = draft.uncertain
+    ? profiles.find((candidate) => candidate.id === draft.uncertain!.profileId) ?? null
+    : null;
   const blocked = busy
     ? "Waiting for the launch to answer"
     : !profile
@@ -72,13 +87,13 @@ export function ResidentDispatch({
         ? "Choose a repository"
         : null;
 
-  async function launch(): Promise<void> {
+  async function launch(from: ResidentDispatchDraft = draft): Promise<void> {
     if (!profile || blocked) return;
     setBusy(true);
     setError(null);
-    const submitted = draft;
+    const submitted = from;
     const input = {
-      repoRoot: repoRoot.trim(),
+      repoRoot: residentDispatchRepo(submitted, profile).trim(),
       ...(submitted.instructions.trim() ? { instructions: submitted.instructions } : {}),
       requestId: submitted.requestId,
     };
@@ -103,15 +118,26 @@ export function ResidentDispatch({
       case "failed":
         setError(`The resident did not start: ${answer.error}`);
         // A failed launch is definitive; the next attempt is a new launch.
-        mode.onResidentChange({ ...submitted, requestId: crypto.randomUUID() });
+        mode.onResidentChange({ ...submitted, requestId: crypto.randomUUID(), uncertain: null });
         return;
       case "refused":
         setError(answer.error);
-        // A refusal created nothing, and a reused id would be a conflict on the next try.
-        // Only a launch that may have been received keeps its id for an idempotent retry.
-        if (answer.code !== "unavailable") {
-          mode.onResidentChange({ ...submitted, requestId: crypto.randomUUID() });
+        if (answer.code === "unavailable") {
+          // No answer: the daemon may have received it. Keep the id for an exact retry and
+          // remember exactly what was sent, so a changed launch cannot hide or collide with it.
+          mode.onResidentChange({
+            ...submitted,
+            uncertain: {
+              requestId: input.requestId,
+              profileId: profile.id,
+              repoRoot: input.repoRoot,
+              instructions: submitted.instructions,
+            },
+          });
+          return;
         }
+        // A refusal created nothing, and a reused id would be a conflict on the next try.
+        mode.onResidentChange({ ...submitted, requestId: crypto.randomUUID(), uncertain: null });
         return;
     }
   }
@@ -221,6 +247,44 @@ export function ResidentDispatch({
             )}
           </>
         )}
+        {changedAfterUncertain && draft.uncertain && (
+          <div className="resident-conflict" role="alert">
+            <p>
+              An earlier launch of {uncertainProfile?.name ?? "a resident"} in{" "}
+              <code>{draft.uncertain.repoRoot}</code> may already be running: its answer never
+              arrived. Retry it exactly, or launch this changed request as a separate resident.
+            </p>
+            <div className="resident-conflict-actions">
+              <Tooltip label="Put the form back on the earlier launch and retry it; it never starts twice">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(null);
+                    mode.onResidentChange(retryResidentAttempt(draft, draft.uncertain!));
+                  }}
+                >
+                  Retry the earlier launch
+                </button>
+              </Tooltip>
+              <Tooltip label="Start a separate resident with what the form says now; check the board for the earlier one">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || !profile || !repoRoot.trim()}
+                  onClick={() => {
+                    const next = { ...draft, requestId: crypto.randomUUID(), uncertain: null };
+                    mode.onResidentChange(next);
+                    void launch(next);
+                  }}
+                >
+                  Launch as a new resident
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+        )}
         {starting && (
           <p className="field-hint resident-starting" role="status">
             Starting the resident… This form updates when its session has started. You can close
@@ -236,10 +300,14 @@ export function ResidentDispatch({
             Cancel
           </button>
         </Tooltip>
-        <Tooltip label={blocked ?? "Launch this resident in the Agent SDK"}>
+        <Tooltip
+          label={changedAfterUncertain
+            ? "An earlier launch may be running; choose above"
+            : blocked ?? "Launch this resident in the Agent SDK"}
+        >
           <button
             className="btn btn-primary"
-            disabled={blocked !== null}
+            disabled={blocked !== null || changedAfterUncertain}
             onClick={() => void launch()}
           >
             {starting ? "Starting…" : busy ? "Launching…" : "Launch resident"}

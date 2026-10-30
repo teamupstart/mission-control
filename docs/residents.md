@@ -328,9 +328,14 @@ servers. A custom server has a name, the harnesses it applies to, and either a *
 - **Delete** removes the definition and its secrets. A running resident keeps the copy it launched
   with; a profile that still selects it cannot launch until the selection is removed.
 
-A secret, and every value of a global server, reaches only its own server's process, through
-Mission Control's launcher; never the agent's environment, a command line, a generated
-configuration file, a log or the transcript. See [security](security.md#resident-mcp-secrets).
+A secret value never appears on a command line. It reaches only its own server, through Mission
+Control's launcher, as that server's environment, headers or query; never the agent's environment,
+a generated configuration file, a log or the transcript. A global server's definition stays out of
+the agent's launch arguments and generated configuration as well: the agent is handed only a
+launcher entry naming the run, the server and a credential file. The launcher then starts a stdio
+server with its configured command and arguments, so those ordinary arguments appear on that
+server's own process, as they would if the harness started it. See
+[security](security.md#resident-mcp-secrets).
 
 When a run ends, its copy of the servers and their values, its launch tickets and its Codex
 configuration overlay are removed once its session has stopped.

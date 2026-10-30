@@ -150,31 +150,92 @@ test("scan accepts a 128 KiB document and rejects one additional byte", () => {
   assert.deepEqual(rejected.sources[0]!.problems, ["bounded: SKILL.md must be a file no larger than 128 KiB."]);
 });
 
-test("scan accepts 5000 entries including skill documents and stops before reading entry 5001", (t) => {
+for (const change of ["grow", "replace-link"] as const) test(`document read stays bounded when the checked file changes: ${change}`, (t) => {
+  const path = join(root, `document-race-${change}`);
+  const folder = join(path, "skill");
+  skill(folder, "original");
+  const document = join(folder, "SKILL.md");
+  const oversized = "---\nname: replaced\ndescription: fixture\n---\n" + "x".repeat(256 * 1024);
+  if (change === "replace-link") {
+    fs.renameSync(document, join(root, "original-document"));
+    symlinkSync(join(root, "original-document"), document);
+    writeFileSync(join(root, "replacement-document"), oversized);
+  }
+  let changed = false;
+  const mutate = () => {
+    if (changed) return;
+    changed = true;
+    if (change === "grow") writeFileSync(document, oversized);
+    else {
+      fs.unlinkSync(document);
+      symlinkSync(join(root, "replacement-document"), document);
+    }
+  };
+  const stat = fs.statSync;
+  const fstat = fs.fstatSync;
+  const read = fs.readSync;
+  let pathChecks = 0;
+  let bytesRead = 0;
+  // Reproduce the race at the old path-based size check and at the repaired fd check.
+  const pathStat = t.mock.method(fs, "statSync", (...args: Parameters<typeof stat>) => {
+    const result = stat(...args);
+    if (String(args[0]) === document && ++pathChecks === 2) mutate();
+    return result;
+  });
+  const descriptorStat = t.mock.method(fs, "fstatSync", (...args: Parameters<typeof fstat>) => {
+    const result = fstat(...args);
+    mutate();
+    return result;
+  });
+  const observeRead = t.mock.method(fs, "readSync", (...args: Parameters<typeof read>) => {
+    const count = read(...args);
+    bytesRead += count;
+    return count;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = scanSkillSources([source(path)], { directories: [] });
+    assert.ok(changed, "the file changes after the size observation");
+    if (change === "grow") {
+      assert.deepEqual(result.skills, []);
+      assert.deepEqual(result.sources[0]!.problems, ["skill: SKILL.md must be a file no larger than 128 KiB."]);
+      assert.equal(bytesRead, 128 * 1024 + 1, "only the byte-limit probe may exceed the document limit");
+    } else {
+      assert.deepEqual(result.skills.map(skill => skill.name), ["original"], "the opened target survives a symlink replacement");
+      assert.deepEqual(result.sources[0]!.problems, []);
+    }
+    assert.ok(bytesRead <= 128 * 1024 + 1);
+  } finally {
+    for (const mock of [pathStat, descriptorStat, observeRead]) mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("scan accepts 5000 entries including skill documents and stops before opening entry 5001", (t) => {
   const path = join(root, "entry-limit");
   alphabeticalEnumeration(t, path);
   // Root + 2499 folders + 2499 SKILL.md documents + one ordinary file = 5000.
   const folders = Array.from({ length: 2499 }, (_, i) => `skill-${String(i + 1).padStart(4, "0")}`);
   for (const folder of folders) skill(join(path, folder), folder);
   writeFileSync(join(path, "padding"), "");
-  const read = fs.readFileSync;
-  let documentReads = 0;
-  const observe = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
-    if (String(args[0]).endsWith("SKILL.md")) documentReads++;
-    return read(...args);
+  const open = fs.openSync;
+  let documentOpens = 0;
+  const observe = t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+    if (String(args[0]).endsWith("SKILL.md")) documentOpens++;
+    return open(...args);
   });
   syncBuiltinESMExports();
   try {
     const accepted = scanSkillSources([source(path)], { directories: [] });
     assert.deepEqual(accepted.skills.map((entry) => entry.folder), folders);
     assert.deepEqual(accepted.sources[0]!.problems, []);
-    assert.equal(documentReads, 2499);
+    assert.equal(documentOpens, 2499);
 
     writeFileSync(join(path, "one-more-file"), "");
-    documentReads = 0;
+    documentOpens = 0;
     const capped = scanSkillSources([source(path)], { directories: [] });
     assert.deepEqual(capped.skills.map((entry) => entry.folder), folders.slice(0, -1));
-    assert.equal(documentReads, 2498, "the overflowing skill document is never read");
+    assert.equal(documentOpens, 2498, "the overflowing skill document is never opened");
     assert.deepEqual(capped.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
   } finally { observe.mock.restore(); syncBuiltinESMExports(); }
 });

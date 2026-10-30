@@ -1,4 +1,4 @@
-import { opendirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, opendirSync, readSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -87,6 +87,27 @@ export function parseResidentSkill(text: string): { name: string; description: s
   return { name: name.trim(), description: description.trim() };
 }
 
+function readSkillDocument(path: string): string {
+  // A symlink may change between observation and read. Pin one opened target, and
+  // avoid blocking on a FIFO substituted for the file before checking its type.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    const tooLarge = () => new Error("SKILL.md must be a file no larger than 128 KiB.");
+    if (!stat.isFile() || stat.size > MAX_DOCUMENT_BYTES) throw tooLarge();
+    // The same inode can grow after fstat. Never read more than the bound plus one
+    // overflow byte, regardless of its size now or how short each read happens to be.
+    const buffer = Buffer.alloc(MAX_DOCUMENT_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, buffer.length - length, null);
+      if (count === 0) return buffer.subarray(0, length).toString("utf8");
+      length += count;
+    }
+    throw tooLarge();
+  } finally { closeSync(fd); }
+}
+
 /** Bounded traversal also covers grouped skill folders and globally installed symlinked skills. */
 export function scanSkillSources(sources: readonly ResidentSkillSource[], config: ResidentSkillSources, configurationProblem: string | null = null): ResidentSkillIndex {
   const result: ResidentSkillIndex = {
@@ -154,9 +175,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
             return;
           }
           try {
-            const stat = statSync(document);
-            if (!stat.isFile() || stat.size > MAX_DOCUMENT_BYTES) throw new Error("SKILL.md must be a file no larger than 128 KiB.");
-            const parsed = parseResidentSkill(readFileSync(document, "utf8"));
+            const parsed = parseResidentSkill(readSkillDocument(document));
             const skill: IndexedResidentSkill = { id: `${source.id}:${folder}`, sourceId: source.id, folder, path: directory, ...parsed };
             retain(result.skills, skill);
             if (result.truncated) return;

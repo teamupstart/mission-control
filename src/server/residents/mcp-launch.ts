@@ -255,7 +255,11 @@ function issueCredential(runId: string, server: ResidentMcpSnapshotServer, start
   return path;
 }
 
-function entryFor(runId: string, server: ResidentMcpSnapshotServer, startId: string): ResidentMcpEntry {
+/** Stands in for a credential in a preview: a path no file is ever written to. */
+const UNISSUED_CREDENTIAL = "unissued";
+
+/** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
+function entryFor(runId: string, server: ResidentMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
   const { name, options, transport } = server;
   if (!server.launcher) {
     if (transport.type === "stdio") {
@@ -273,7 +277,7 @@ function entryFor(runId: string, server: ResidentMcpSnapshotServer, startId: str
       residentMcpLauncherPath(),
       "--run", runId,
       "--server", name,
-      "--credential", issueCredential(runId, server, startId),
+      "--credential", startId === null ? UNISSUED_CREDENTIAL : issueCredential(runId, server, startId),
     ],
     // Only what the runtime itself needs (Electron's node mode); never the daemon's environment.
     env: Object.fromEntries(Object.entries(runtime.env).filter((pair): pair is [string, string] => pair[1] !== undefined)),
@@ -295,6 +299,7 @@ export function residentMcpLaunchForRun(runId: string): ResidentMcpLaunch | null
       const startId = randomUUID();
       return snapshot.map((server) => entryFor(runId, server, startId));
     },
+    preview: () => snapshot.map((server) => entryFor(runId, server, null)),
   };
 }
 

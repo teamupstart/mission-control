@@ -539,6 +539,33 @@ test("a profile cannot save a selection another harness owns or a custom server 
   assert.ok(!notApplicable.ok && /does not apply to Claude Code/.test(notApplicable.error));
 });
 
+test("a custom server's name is checked against global servers as they are now, not as cached", async () => {
+  let globals: Record<string, unknown> = {};
+  const { residents } = manager(async (agent) => globalsOf(agent, agent === "claude" ? globals : {}));
+  await residents.mcpServerCatalog();
+  globals = { linear: { command: "native-linear" } };
+  await assert.rejects(
+    residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "linear", harnesses: ["claude"], transport: { type: "stdio", command: "l" } }) as CreateInput),
+    /Claude Code already has a global MCP server named linear/,
+  );
+  const other = await residents.createMcpServer(CreateResidentMcpServerSchema.parse({ name: "other", harnesses: ["claude"], transport: { type: "stdio", command: "o" } }) as CreateInput);
+  globals = { ...globals, renamed: { command: "native" } };
+  await assert.rejects(
+    residents.updateMcpServer(other.id, { ...(CreateResidentMcpServerSchema.parse({ name: "renamed", harnesses: ["claude"], transport: { type: "stdio", command: "o" } }) as CreateInput), expectedRevision: 1 }),
+    /Claude Code already has a global MCP server named renamed/,
+  );
+});
+
+test("a preview renders the same servers without minting a credential", () => {
+  const runId = crypto.randomUUID();
+  seedRun(runId, [GLOBAL_SERVER, PLAIN_SERVER]);
+  const resident = launch.residentMcpLaunchForRun(runId)!;
+  const preview = resident.preview();
+  assert.deepEqual(preview.map((entry) => entry.name), ["foo.bar", "plain"]);
+  assert.equal(preview[0]!.shape === "launcher" && preview[0]!.args.at(-1), "unissued");
+  assert.equal(existsSync(join(launch.residentMcpRunDir(runId), "credentials")), false, "nothing written, nothing to expire");
+});
+
 test("startup removes every credential file a previous process left", () => {
   const runId = crypto.randomUUID();
   const dir = join(launch.residentMcpRunDir(runId), "credentials");

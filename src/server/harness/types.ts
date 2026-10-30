@@ -781,6 +781,12 @@ export interface ResidentMcpLaunch {
    * relaunch - immediately before the harness reads its configuration.
    */
   forStart(): ResidentMcpEntry[];
+  /**
+   * The same entries without credentials, for configuration that is checked before any server
+   * starts. Mints nothing, so a slow check cannot outlive a ticket: a driver that verifies first
+   * calls `forStart()` only once the check has passed, immediately before servers load.
+   */
+  preview(): ResidentMcpEntry[];
   /** The run's private directory for per-run harness configuration (the Codex overlay). */
   privateDir: string;
 }

@@ -1484,9 +1484,12 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // every other configuration layer below before any thread loads a server.
       const resident = opts.residentMcp ?? null;
       const overlay = resident ? `${resident.privateDir}/codex-home` : null;
-      const residentEntries = resident ? resident.forStart() : [];
+      // Verified on credential-free entries first: this start's tickets are minted only once the
+      // layers check out, immediately before the thread loads its servers, so a slow startup or
+      // check cannot outlive them.
+      const previewEntries = resident ? resident.preview() : [];
       let overlayConfig: string | null = null;
-      if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: residentEntries });
+      if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
       const transport = await deps.connect(
         [...args, ...extraDirArgs, ...compactArgs],
         opts.cwd,
@@ -1603,19 +1606,26 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
           // At most two reads: the second confirms the servers only another layer defines are
           // now switched off. Anything else is refused before a thread exists to load it.
           let disabled: string[] = [];
-          for (let attempt = 0; ; attempt++) {
-            const read = await client.request("config/read", { cwd: opts.cwd, includeLayers: true });
-            const verdict = codexResidentMcpVerdict(read, {
+          const verify = async (): Promise<ReturnType<typeof codexResidentMcpVerdict>> =>
+            codexResidentMcpVerdict(await client.request("config/read", { cwd: opts.cwd, includeLayers: true }), {
               overlayConfig,
               names: resident.names,
               disabled,
               missionServer: opts.mcp?.serverName ?? "",
             });
+          for (let attempt = 0; ; attempt++) {
+            const verdict = await verify();
             if (verdict.kind === "exact") break;
             if (verdict.kind === "refuse") throw new Error(`this resident's MCP servers cannot be pinned: ${verdict.reason}`);
             if (attempt > 0) throw new Error("this resident's MCP servers cannot be pinned: Codex kept another layer's servers on");
             disabled = verdict.names;
-            prepareResidentCodexHome({ overlay, entries: residentEntries, disabled });
+            prepareResidentCodexHome({ overlay, entries: previewEntries, disabled });
+          }
+          // Now this start's credentials, and one last read of what the thread will load.
+          prepareResidentCodexHome({ overlay, entries: resident.forStart(), disabled });
+          const final = await verify();
+          if (final.kind !== "exact") {
+            throw new Error(`this resident's MCP servers cannot be pinned: ${final.kind === "refuse" ? final.reason : "another layer changed during the start"}`);
           }
         }
         if (opts.resume) {

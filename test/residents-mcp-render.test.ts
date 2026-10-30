@@ -148,15 +148,21 @@ test("Codex's layers decide whether a start is exact, needs foreign servers swit
 
 // ---- the drivers ----
 
-function residentLaunch(names: string[], built: () => ResidentMcpEntry[]): ResidentMcpLaunch & { starts: number } {
+function residentLaunch(
+  names: string[],
+  built: () => ResidentMcpEntry[],
+  onStart: () => void = () => {},
+): ResidentMcpLaunch & { starts: number } {
   const launch = {
     names,
     privateDir: join(root, `private-${Math.random().toString(36).slice(2)}`),
     starts: 0,
     forStart() {
       launch.starts += 1;
+      onStart();
       return built();
     },
+    preview: () => built().map((entry) => (entry.shape === "launcher" ? { ...entry, args: [...entry.args.slice(0, -1), "unissued"] } : entry)),
   };
   return launch;
 }
@@ -284,23 +290,35 @@ test("Codex starts on the run's overlay, switches off a foreign server, and veri
   mkdirSync(operator, { recursive: true });
   writeFileSync(join(operator, "config.toml"), `model = "gpt-5"\n[mcp_servers.native]\ncommand = "n"\n`);
   process.env.CODEX_HOME = operator;
-  const resident = residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]);
+  let layerReadsAtMint = -1;
+  const resident = residentLaunch(
+    ["snap", "secret"],
+    () => [
+      { name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} },
+      { name: "secret", options: {}, shape: "launcher", command: "/usr/bin/node", args: ["/l.mjs", "--credential", "/run/credentials/minted.json"], env: {} },
+    ],
+    () => { layerReadsAtMint = reads; },
+  );
   const overlay = join(resident.privateDir, "codex-home");
   const overlayConfig = join(overlay, "config.toml");
   let connected: { codexHome?: string } | undefined;
   let reads = 0;
+  let configAtThreadStart = "";
   const server = new ScriptedServer({
     initialize: () => ({ userAgent: "scripted" }),
     "config/read": (params) => {
       if ((params as { includeLayers?: boolean }).includeLayers) reads += 1;
       const disabled = readFileSync(overlayConfig, "utf8").includes('[mcp_servers."proj"]\nenabled = false');
       return {
-        config: { mcp_servers: { snap: { command: "s" }, "mission-control": {}, proj: { command: "p", ...(disabled ? { enabled: false } : {}) } } },
-        layers: [flags, project({ proj: { command: "p" } }), user({ snap: { command: "s" }, ...(disabled ? { proj: { enabled: false } } : {}) })]
+        config: { mcp_servers: { snap: { command: "s" }, secret: {}, "mission-control": {}, proj: { command: "p", ...(disabled ? { enabled: false } : {}) } } },
+        layers: [flags, project({ proj: { command: "p" } }), user({ snap: { command: "s" }, secret: {}, ...(disabled ? { proj: { enabled: false } } : {}) })]
           .map((layer) => (layer.name.type === "user" ? { ...layer, name: { type: "user", file: overlayConfig } } : layer)),
       };
     },
-    "thread/start": () => THREAD,
+    "thread/start": () => {
+      configAtThreadStart = readFileSync(overlayConfig, "utf8");
+      return THREAD;
+    },
     "turn/start": () => ({ turn: { id: "turn-1", status: "inProgress", items: [] } }),
   });
   const spec = codexSdkSpec({
@@ -312,7 +330,10 @@ test("Codex starts on the run's overlay, switches off a foreign server, and veri
   try {
     const handle = await spec.launch(sdkOptions({ residentMcp: resident }));
     assert.equal(connected?.codexHome, overlay, "the app-server runs on the run's private home");
-    assert.equal(reads, 2, "read the layers, switch off, read them again");
+    assert.equal(reads, 3, "read the layers, switch off, read again, then confirm the minted configuration");
+    assert.equal(layerReadsAtMint, 2, "credentials are minted only after the layer checks pass");
+    assert.ok(configAtThreadStart.includes("/run/credentials/minted.json"), "the thread starts on the minted configuration");
+    assert.ok(!configAtThreadStart.includes("unissued"));
     assert.ok(readFileSync(overlayConfig, "utf8").includes('[mcp_servers."proj"]\nenabled = false'));
     assert.ok(!readFileSync(overlayConfig, "utf8").includes("native"));
     const order = server.sent.map((frame) => frame.method).filter(Boolean);

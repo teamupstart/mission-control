@@ -8131,6 +8131,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(task);
   });
 
+  // All windows and local API callers share this daemon's rescan admission gate.
+  let residentSkillRescanReadyAt = 0;
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -8146,7 +8148,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
     const parsed = await parseBody(c, RescanResidentSkillsSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(residentSkillIndex(true));
+    if (performance.now() < residentSkillRescanReadyAt) {
+      c.header("Retry-After", "1");
+      return c.json({ error: "Wait a second before rescanning skill sources again." }, 429);
+    }
+    // Scanning is synchronous, so requests cannot overlap. Start the cooldown after
+    // completion (including failure), so a slow scan cannot consume its own cooldown.
+    try { return c.json(residentSkillIndex(true)); }
+    finally { residentSkillRescanReadyAt = performance.now() + 1_000; }
   });
 
   // --- resident profiles and their one launch path ---

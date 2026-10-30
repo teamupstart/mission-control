@@ -1,4 +1,4 @@
-import { after, beforeEach, test } from "node:test";
+import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -80,7 +80,12 @@ const app = buildApp({
 });
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
-beforeEach(() => {
+let scanClock = 0;
+beforeEach((t) => {
+  // Route fixtures start outside the preceding test's rescan cooldown.
+  scanClock += 10_000;
+  assert.ok("mock" in t);
+  t.mock.method(performance, "now", () => scanClock);
   openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles;");
   for (const profile of registry.listResidentProfiles()) registry.removeResidentProfile(profile.id);
 });
@@ -336,7 +341,7 @@ test("skill source writes reject stale adds and removals without losing another 
   assert.equal((await request("PUT", endpoint, { config: original, expectedRevision: saved.json.configRevision })).status, 200);
 });
 
-test("skill rescans refuse browser simple requests and untrusted origins before reading the catalog", async (t) => {
+function countSkillConfigReads(t: TestContext): () => number {
   const db = openDb();
   const prepare = db.prepare.bind(db);
   let configReads = 0;
@@ -351,6 +356,11 @@ test("skill rescans refuse browser simple requests and untrusted origins before 
     }
     return statement;
   });
+  return () => configReads;
+}
+
+test("skill rescans refuse browser simple requests and untrusted origins before reading the catalog", async (t) => {
+  const configReads = countSkillConfigReads(t);
   for (const overrides of [
     { "content-type": "text/plain", origin: "http://127.0.0.1:9999" },
     { "content-type": "application/x-www-form-urlencoded", origin: "https://example.com" },
@@ -361,16 +371,34 @@ test("skill rescans refuse browser simple requests and untrusted origins before 
     assert.equal(response.status, 403);
     assert.deepEqual(await response.json(), { error: "forbidden" });
   }
-  assert.equal(configReads, 0, "refused requests never reach the catalog");
+  assert.equal(configReads(), 0, "refused requests never reach the catalog");
   const preflight = await app.request("/api/residents/skills/rescan", { method: "OPTIONS", headers: {
     host: headers.host, origin: "http://127.0.0.1:9999", "access-control-request-method": "POST", "access-control-request-headers": "content-type",
   } });
   assert.equal(preflight.headers.get("access-control-allow-origin"), null, "another loopback website cannot preflight a JSON scan");
   const validOrigins: Array<Record<string, string>> = [{}, { origin: "http://127.0.0.1:7317" }, { origin: "http://localhost:5173" }];
   for (const extra of validOrigins) {
+    scanClock += 1_000;
     const response = await app.request("/api/residents/skills/rescan", { method: "POST", headers: { ...headers, ...extra }, body: "{}" });
     assert.equal(response.status, 200, "dashboard, dev proxy and local API JSON requests remain supported");
   }
+});
+
+test("all local clients share the rescan cooldown and can retry at its boundary", async (t) => {
+  const reads = countSkillConfigReads(t);
+  const rescan = () => app.request("/api/residents/skills/rescan", { method: "POST", headers, body: "{}" });
+  assert.equal((await rescan()).status, 200);
+  const afterScan = reads();
+  scanClock += 999;
+  for (const response of await Promise.all([rescan(), rescan()])) {
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "1");
+    assert.match((await response.json() as { error: string }).error, /Wait a second/);
+  }
+  assert.equal(reads(), afterScan, "rejected requests do not reach the catalog");
+  scanClock += 1;
+  assert.equal((await rescan()).status, 200);
+  assert.equal(reads(), afterScan + 1);
 });
 
 test("skill-source validation returns 400 while storage failures stay server errors", async (t) => {

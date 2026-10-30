@@ -18,6 +18,24 @@ async function capture(page: Page, panel: Locator, name: string): Promise<void> 
   ] });
 }
 
+test("a rescan cooldown tells the operator when to retry and clears after a successful retry", async ({ dashboard: page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/residents/skill-sources`);
+  const panel = page.getByRole("region", { name: "Skill sources" });
+  await expect(panel.getByRole("button", { name: "Rescan" })).toBeEnabled();
+  // The route tests exercise the real clock boundary. A scripted refusal here keeps
+  // the visible retry behavior independent of browser scheduling under CI contention.
+  await page.route("**/api/residents/skills/rescan", route => route.fulfill({
+    status: 429, contentType: "application/json", headers: { "Retry-After": "1" },
+    body: JSON.stringify({ error: "Wait a second before rescanning skill sources again." }),
+  }), { times: 1 });
+  await panel.getByRole("button", { name: "Rescan" }).click();
+  await expect(panel.getByRole("alert")).toHaveText("Wait a second before rescanning skill sources again.");
+  await capture(page, panel, "rescan-cooldown");
+  await panel.getByRole("button", { name: "Rescan" }).click();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Rescan" })).toBeEnabled();
+});
+
 test("invalid restored registrations leave global skills available and can be explicitly reset", async ({ dashboard: page, daemon }) => {
   const invalid = '{"directories":"invalid"}';
   withDaemonDb(daemon, db => db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run("residents.skillSources", invalid));

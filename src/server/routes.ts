@@ -8134,8 +8134,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- resident profiles and their one launch path ---
   //
-  // `ResidentManager` is the only writer of the resident tables; the Registry is its live cache
-  // and notifier, so a GET and a reconnect return the same catalog.
+  // `ResidentManager` owns profiles, launch reservations and task-driven run ends;
+  // `residents/loop-store.ts` owns durable loop transitions, wake claims and pacing.
+  // The Registry is their live cache and notifier, so a GET and a reconnect return
+  // the same catalog.
   app.get("/api/residents/profiles", (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     return c.json(registry.listResidentProfiles());

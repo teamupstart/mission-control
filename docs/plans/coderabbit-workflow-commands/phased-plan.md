@@ -42,12 +42,12 @@ R1: Phase 2 catalog and arbitrary-workflow E2E.
 R2: Phase 1 streaming/retention/MCP/UI E2E, consumed by Phase 2 findings.
 R3: Phase 1 policy migration, CAS, timeout and blocked recovery tests.
 R4: Phase 2 parser truth table and repair-vs-block tests.
-R5: Phase 2 no-rule/no-subprocess and per-repository isolation tests.
-R6: Phase 2 pinned comparison, dirty refusal, new-head repair and allowance tests.
+R5: Phase 2 YAML enablement/default-resolution, warning/error diagnostics, Setup navigation and per-repository isolation tests.
+R6: Phase 2 pinned comparison and YAML snapshot, dirty refusal, new-head repair and nonblocking allowance-exhaustion tests.
 R7: Phase 2 immutable-version/binding tests and No-Mistakes E2E.
 R8/R9: generic ownership, authorization and recovery remain Phase 1 responsibilities; Phase 2 verifies reuse with CodeRabbit. There is no duplicate requirement owner or unowned final acceptance case.
 
-2026-10-30 final reconciliation: reviewed the root and both phase files in dependency order. Root limits, typed CodeRabbit rule, committed scope, no-auto-spend policy, operator false-positive decision and required-vs-optional semantics agree. The Phase 1 read API uses immutable opaque ids; Phase 2 does not depend on discarded raw output. No earlier phase needs later code to pass. No concurrent phase pair is claimed.
+2026-10-30 final reconciliation: reviewed the root and both phase files in dependency order. Root requirements, typed CodeRabbit tuning, YAML enablement, committed scope, no-auto-spend policy, operator false-positive decision and conditional blocking semantics agree. The Phase 1 read API uses immutable opaque ids; Phase 2 does not depend on discarded raw output. No earlier phase needs later code to pass. No concurrent phase pair is claimed.
 
 ## Verification and publication
 Each phase owns its documentation, migrations, tests and UI runtime verification. Run the repository's isolated unit suite, typecheck, lint, build, smoke and E2E as described in the phase documents. Fake all agent/CodeRabbit/GitHub paths. Keep evidence out of Git.

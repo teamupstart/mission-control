@@ -132,6 +132,7 @@ test("only a live run has a wire summary", () => {
     launchRequestId: "req",
     launchState: "launched" as const,
     launchError: null,
+    workspaceDir: null,
     persona: { personaId: "x", name: "Fleet Triage", guidanceMarkdown: "long text" },
     runInstructions: "today",
     settings: revision(),

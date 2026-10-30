@@ -77,9 +77,9 @@ has no private utility-process channel, so preflight reports that the report mus
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
 The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_feedback` previews and publishes automatically through MCP. It
-does not request a second dashboard approval. The compatibility tool `report_product_issue`
-still waits for a human-submitted `input` review. Neither preview mints a dashboard grant.
+user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+review before it publishes. There is no MCP path that publishes without that review. The preview
+does not mint a dashboard grant.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside

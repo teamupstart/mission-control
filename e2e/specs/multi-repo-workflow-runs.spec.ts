@@ -61,6 +61,7 @@ interface SessionRow {
   agent: string;
   cwd: string;
   agentSessionId: string | null;
+  task?: { repoPrs: Array<{ prUrl: string | null }> };
 }
 
 interface RunRow {
@@ -292,11 +293,19 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   const task = await provisionedTask(daemon);
   createTaskBranches(task);
 
-  // One command, two pull requests: both repositories changed.
+  // One command, two pull requests: both repositories changed. Let the attached PR
+  // associate first to exercise independent poll completion, instead of assuming its
+  // arrival also means the primary PR has reached the task.
   await announcePullRequests(daemon, session, [PR_PRIMARY, PR_SECOND]);
-  scriptPullRequests(daemon, task, { primary: true, second: true });
+  scriptPullRequests(daemon, task, { second: true });
   await attachedRepoPr(daemon, task.id, PR_SECOND);
   const bindingId = await bindReview(daemon, session.id);
+  scriptPullRequests(daemon, task, { primary: true, second: true });
+  await expect.poll(async () => {
+    const sessions = await api<SessionRow[]>(daemon, "/api/sessions");
+    return sessions.find((s) => s.id === session.id)?.task?.repoPrs.map((pr) => pr.prUrl).sort();
+  }, { timeout: 30_000, message: "both PRs must be durably associated before reviewing the changed set" })
+    .toEqual([PR_PRIMARY, PR_SECOND].sort());
   await api(daemon, `/api/workflow-bindings/${bindingId}/submit`, {
     requestId: "e2e-multi-repo-review",
   });

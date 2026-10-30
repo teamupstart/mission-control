@@ -62,7 +62,8 @@ test("Control other sessions is off by default, and a revision from before it re
 
 test("a launched run says whether its grant applied, only when its pinned revision asks", () => {
   const base = {
-    id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", launchState: "launched" as const,
+    id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
+    launchState: "launched" as const,
     launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" }, runInstructions: "",
     createdAt: 1, endedAt: null,
   };

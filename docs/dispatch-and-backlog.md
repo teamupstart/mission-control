@@ -484,7 +484,7 @@ Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
 The **Single agent / Ensemble / Resident** toggle sits in the modal header, since it reshapes the
-whole dialog. **Resident** replaces the brief with profile cards, a repository, optional
+whole dialog. **Resident** replaces the brief with profile cards, an optional repository, optional
 instructions for this run, a read-only summary of what the launch carries, and **Edit profile**;
 see [Residents](residents.md#launching-a-resident). It is offered only on a new dispatch: editing a backlog task and the See the
 work tour's dispatch preview show neither it nor the **Guided** switch, because neither form

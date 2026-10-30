@@ -322,6 +322,10 @@ The same panel holds two **Task type** pickers, one under **Board card** and one
 how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
 medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
 the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+Each group has its own live preview, so picking a style shows what it changes without leaving
+Settings: the card's for **Board card**, and a console header for **Conversation header**. Each
+preview sits beside its group's controls, or under the group's heading when Settings is too
+narrow to hold it beside them.
 
 Display's last panel is **Top bar**, which chooses what the bar across the top of every page
 draws. A live preview of the real bar sits above its two lists and redraws as you change them.

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,8 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // `ResidentManager.launch` against a real Registry, a real TaskManager and real `sdk_sessions`
 // rows. Only the dispatcher is a stand-in: it plays the SDK supervisor's part by writing the
 // session row (the evidence the run waits for) and binding the task, or by failing.
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-residents-launch-"));
 process.env.HARNESS_HOME = home;
@@ -87,8 +90,8 @@ interface Harness {
 }
 
 const managers: Manager[] = [];
-afterEach(() => {
-  for (const manager of managers.splice(0)) manager.stop();
+afterEach(async () => {
+  for (const manager of managers.splice(0)) await manager.stop();
 });
 
 beforeEach(() => {
@@ -120,6 +123,8 @@ function harness(options: {
   resolve?: typeof resolveRepoRoot;
   waitMs?: number;
   start?: boolean;
+  hasLiveDriver?: (id: string) => boolean;
+  removeWorkspace?: ConstructorParameters<typeof ResidentManager>[0]["removeWorkspace"];
 } = {}): Harness {
   const registry = options.registry ?? new Registry();
   const tasks = new TaskManager(registry);
@@ -152,6 +157,8 @@ function harness(options: {
       return (options.resolve ?? resolveRepoRoot)(path);
     },
     launchResponseWaitMs: options.waitMs ?? 5_000,
+    hasLiveDriver: options.hasLiveDriver,
+    removeWorkspace: options.removeWorkspace,
   });
   if (options.start !== false) residents.start();
   managers.push(residents);
@@ -649,7 +656,7 @@ function reserveOnly(profileId: string, requestId: string, taskId: string, input
     taskId,
     launchRequestId: requestId,
     launchInput: input,
-    repoSpelling: input.repoRoot,
+    repoSpelling: input.repoRoot ?? "",
     persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
     runInstructions: input.instructions,
     at: 1,
@@ -831,7 +838,7 @@ test("a launched run ends when its task is completed, and the startup twin ends 
     persona: () => PERSONA,
   });
   managers.push(restarted);
-  restarted.reconcileRunEnds();
+  await restarted.reconcileRunEnds();
   assert.notEqual(store.getResidentRun(second.result.run.id)?.run.endedAt, null);
 });
 
@@ -866,6 +873,320 @@ test("a profile cannot be saved against a missing Persona", () => {
   }));
   assert.equal(saved.ok, false);
   if (!saved.ok) assert.equal(saved.status, 400);
+});
+
+test("repo-less launch skips repository resolution; completion waits for runtime shutdown and retries on startup", async () => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-lifetime" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  assert.equal(setup.resolveCalls.count, 0);
+  assert.ok(existsSync(directory));
+  writeFileSync(join(directory, "notes.txt"), "still needed");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  assert.ok(existsSync(directory), "completion alone is not proof that the runtime stopped");
+  await setup.residents.stop();
+  let driverAlive = true;
+  const restored = harness({ registry: setup.registry, hasLiveDriver: () => driverAlive });
+  assert.ok(existsSync(directory), "a suspended or running SDK row protects the workspace after restart");
+  setSdkSessionStatus(task.sessionId!, "exited");
+  await restored.residents.reconcileRunEnds();
+  assert.ok(existsSync(directory), "an exited row does not override a supervisor-owned handle");
+  driverAlive = false;
+  await restored.residents.reconcileRunEnds();
+  assert.equal(existsSync(directory), false);
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  await restored.residents.cleanupEndedWorkspaces();
+});
+
+test("workspace removal failure keeps cleanup owed until a later manager retries successfully", async (t) => {
+  const { existsSync, lstatSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-cleanup-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const savedDirectory = `${directory}-saved`;
+  writeFileSync(join(directory, "notes.txt"), "preserve until cleanup succeeds");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+
+  // Exercise the real ownership check: cleanup must refuse a symlink without forgetting
+  // the directory it still owes, even though the run and its runtime have both ended.
+  renameSync(directory, savedDirectory);
+  symlinkSync(savedDirectory, directory);
+  const errors = t.mock.method(console, "error", () => {});
+  await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+  await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+  assert.equal(errors.mock.callCount(), 1, "the manager caught a real removal failure");
+  const failure = errors.mock.calls[0];
+  assert.ok(failure);
+  const [message, error] = failure.arguments;
+  assert.equal(message, `[residents] workspace cleanup remains owed for ${run.id}:`);
+  assert.ok(error instanceof Error && /owned directory/.test(error.message));
+  const failedCleanup = store.getResidentRun(run.id)!.run;
+  assert.notEqual(failedCleanup.endedAt, null);
+  assert.equal(failedCleanup.workspaceDir, directory, "failed cleanup retains the durable marker");
+  assert.deepEqual(store.endedResidentWorkspaces().map(({ id }) => id), [run.id]);
+  assert.ok(lstatSync(directory).isSymbolicLink());
+  assert.equal(readFileSync(join(savedDirectory, "notes.txt"), "utf8"), "preserve until cleanup succeeds");
+  await setup.residents.stop();
+
+  unlinkSync(directory);
+  renameSync(savedDirectory, directory);
+  const restored = harness({ registry: setup.registry });
+  await restored.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(directory), false, "startup retries the persisted cleanup obligation");
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.deepEqual(store.endedResidentWorkspaces(), []);
+  assert.equal(errors.mock.callCount(), 1, "the retry completed without another removal error");
+});
+
+test("an unreadable workspace directory keeps cleanup owed until permissions are restored", {
+  skip: process.getuid?.() === 0 ? "root bypasses directory permissions" : false,
+}, async (t) => {
+  const { chmodSync, existsSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "unreadable-cleanup-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const denied = join(directory, "unreadable");
+  mkdirSync(denied);
+  writeFileSync(join(denied, "keep-until-accessible.txt"), "temporary");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const errors = t.mock.method(console, "error", () => {});
+  chmodSync(denied, 0o000);
+  try {
+    await setup.residents.cleanupEndedWorkspaces();
+    await setup.residents.cleanupEndedWorkspaces();
+    assert.equal(errors.mock.callCount(), 1);
+    assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, directory);
+    assert.ok(existsSync(denied));
+  } finally {
+    chmodSync(denied, 0o700);
+  }
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.equal(existsSync(dirname(directory)), false);
+  assert.equal(errors.mock.callCount(), 1);
+});
+
+test("cleanup retries an owed per-run directory after the workspace was already removed", async (t) => {
+  const { existsSync, unlinkSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "run-directory-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const runDirectory = dirname(directory);
+  const obstacle = join(runDirectory, "keep-until-released.txt");
+  writeFileSync(obstacle, "an unexpected sibling must not be recursively deleted");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const errors = t.mock.method(console, "error", () => {});
+  await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+  assert.equal(errors.mock.callCount(), 1);
+  assert.equal(existsSync(directory), false, "workspace removal succeeded before parent removal failed");
+  assert.ok(existsSync(obstacle));
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, directory);
+  assert.deepEqual(store.endedResidentWorkspaces().map(({ id }) => id), [run.id]);
+  await setup.residents.stop();
+
+  unlinkSync(obstacle);
+  const restored = harness({ registry: setup.registry });
+  await restored.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(runDirectory), false, "startup retries removal even with no workspace left");
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.deepEqual(store.endedResidentWorkspaces(), []);
+  assert.equal(errors.mock.callCount(), 1);
+});
+
+test("workspace cleanup contains database read failures and retries without losing the obligation", async (t) => {
+  const { existsSync } = await import("node:fs");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "cleanup-read-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  const errors = t.mock.method(console, "error", () => {});
+  // Exercise every synchronous read before removal, using the real stores and query flow.
+  for (const read of [/FROM resident_runs WHERE ended_at/, /FROM sdk_sessions WHERE task_id/, /FROM sdk_sessions WHERE id/]) {
+    const failingRead = t.mock.method(db, "prepare", (sql: string) => {
+      if (read.test(sql)) throw new Error("database is locked");
+      return prepare(sql);
+    });
+    try {
+      await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+      await assert.doesNotReject(() => setup.residents.cleanupEndedWorkspaces());
+    } finally {
+      failingRead.mock.restore();
+    }
+    assert.ok(existsSync(run.workspaceDir!));
+    assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, run.workspaceDir);
+  }
+  assert.equal(errors.mock.callCount(), 1, "a continuous scan failure is reported once until a pass succeeds");
+  assert.match(String(errors.mock.calls[0]!.arguments[0]), /could not scan ended workspaces/);
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(run.workspaceDir!), false);
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  const laterFailure = t.mock.method(db, "prepare", () => { throw new Error("database is locked again"); });
+  try {
+    await setup.residents.cleanupEndedWorkspaces();
+    assert.equal(errors.mock.callCount(), 2, "a later failure after recovery is reported again");
+  } finally {
+    laterFailure.mock.restore();
+  }
+});
+
+test("workspace cleanup yields, serializes each run, and drains before manager shutdown", async () => {
+  const { existsSync } = await import("node:fs");
+  const { setImmediate: yieldToLoop } = await import("node:timers/promises");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const { removeResidentWorkspace } = await import("../src/server/residents/workspace.ts");
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let attempts = 0;
+  const setup = harness({ removeWorkspace: async (id, directory) => {
+    attempts += 1;
+    await held;
+    await removeResidentWorkspace(id, directory);
+  } });
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "async-cleanup" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  assert.deepEqual(setup.registry.listResidentRuns().map(({ id }) => id), [run.id]);
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  assert.deepEqual(setup.registry.listResidentRuns(), [], "the live summary leaves before deferred filesystem cleanup");
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const first = setup.residents.cleanupEndedWorkspaces();
+  const second = setup.residents.cleanupEndedWorkspaces();
+  let stopped = false;
+  const stopping = setup.residents.stop().then(() => { stopped = true; });
+  try {
+    await yieldToLoop();
+    assert.equal(attempts, 1, "overlapping passes share one removal for this run");
+    assert.equal(stopped, false, "shutdown waits for the in-flight filesystem operation");
+    assert.ok(existsSync(run.workspaceDir!));
+    assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, run.workspaceDir);
+    assert.deepEqual(new Registry().snapshot().residentRuns, [], "reconnect cannot revive an ended run awaiting cleanup");
+  } finally {
+    release();
+    await Promise.all([first, second, stopping]);
+  }
+  assert.equal(stopped, true);
+  assert.equal(existsSync(run.workspaceDir!), false);
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(attempts, 1, "a stopped manager starts no new cleanup");
+});
+
+test("a failed repo-less launch removes its workspace and a replay does not recreate it", async () => {
+  const { existsSync } = await import("node:fs");
+  const setup = harness({ mode: "fail" });
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-failure" });
+  assert.ok("result" in outcome);
+  const run = outcome.result.run;
+  assert.equal(run.launchState, "failed");
+  const { residentWorkspaceDir } = await import("../src/server/residents/workspace.ts");
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(existsSync(residentWorkspaceDir(run.id)), false);
+  await setup.residents.launch(profile.id, { repoRoot: null, requestId: "workspace-failure" });
+  assert.equal(existsSync(residentWorkspaceDir(run.id)), false);
+  assert.equal(setup.dispatched.length, 1);
+});
+
+test("startup removes a workspace left by a crash between reservation and task creation", async () => {
+  const { existsSync } = await import("node:fs");
+  const { createResidentWorkspace, residentWorkspaceDir } = await import("../src/server/residents/workspace.ts");
+  const setup = harness({ start: false });
+  const profile = profileIn(setup);
+  const id = "crashed-workspace";
+  const directory = residentWorkspaceDir(id);
+  store.reserveResidentRun({ id, profileId: profile.id, profileRevision: 1, taskId: "missing-task",
+    launchRequestId: id, launchInput: residentLaunchInput(null, ""), repoSpelling: "", workspaceDir: directory,
+    persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
+    runInstructions: "", at: 1 });
+  createResidentWorkspace(id, directory);
+  setup.residents.start();
+  await setup.residents.cleanupEndedWorkspaces();
+  assert.equal(store.getResidentRun(id)!.run.launchState, "failed");
+  assert.equal(existsSync(directory), false);
+});
+
+test("cancellation stops an owned repo-less resident before settlement and retries a refused stop", async () => {
+  const registry = new Registry();
+  let refuseStop = true;
+  const stopped: string[] = [];
+  const supervisor = {
+    handleFor: () => ({}),
+    taskLiveness: () => true,
+    async stop(id: string) {
+      assert.equal(registry.getTask("cancel-resident")?.status, "running");
+      stopped.push(id);
+      if (refuseStop) throw new Error("driver still stopping");
+    },
+  } as unknown as ConstructorParameters<typeof TaskManager>[2];
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  const session = registry.registerSdkSession({ id: "sdk:cancel-resident", agent: "claude", name: "Resident", cwd: home });
+  registry.upsertTask(mkTask({ id: "cancel-resident", kind: "resident", workspaceKind: "resident-workspace",
+    status: "running", repoRoot: home, worktreePath: null, provider: null, homeName: null, sessionId: session.id }));
+  const refused = await tasks.cancel("cancel-resident");
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? "", /driver still stopping/);
+  assert.equal(registry.getTask("cancel-resident")?.status, "running");
+  refuseStop = false;
+  assert.equal((await tasks.cancel("cancel-resident")).ok, true);
+  assert.deepEqual(stopped, [session.id, session.id]);
+  assert.equal(registry.getTask("cancel-resident")?.status, "cancelled");
+
+  const assigned = registry.registerSdkSession({ id: "sdk:assigned-chat", agent: "claude", name: "Assigned", cwd: home });
+  registry.upsertTask(mkTask({ id: "assigned-chat", kind: "chat", workspaceKind: "resident-workspace",
+    status: "running", repoRoot: home, worktreePath: null, provider: null, homeName: null, sessionId: assigned.id }));
+  assert.equal((await tasks.cancel("assigned-chat")).ok, true);
+  assert.deepEqual(stopped, [session.id, session.id], "a stale marker on another kind cannot authorize stopping an assigned agent");
+});
+
+test("startup binds a repo-less task whose driver accepted launch before the task recorded its session", async () => {
+  const registry = new Registry();
+  const taskId = "repo-less-accepted-before-bind";
+  registry.upsertTask(mkTask({ id: taskId, kind: "resident", workspaceKind: "resident-workspace",
+    status: "dispatching", repoRoot: "/resident/workspace", worktreePath: null, provider: null,
+    homeName: null, sessionId: null }));
+  const supervisor = {
+    taskLiveness: () => true,
+    liveSessionForTask: () => "sdk-repo-less-unbound",
+  } as unknown as ConstructorParameters<typeof TaskManager>[2];
+  const tasks = new TaskManager(registry, undefined, supervisor);
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  assert.equal(registry.getTask(taskId)?.sessionId, "sdk-repo-less-unbound");
+  tasks.stop();
 });
 
 // ---- Phase 2: the `residentRuns` collection and the pinned marker ----

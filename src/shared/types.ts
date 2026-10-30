@@ -2084,6 +2084,8 @@ export interface TaskAutomaticCleanup {
 }
 
 export interface Task {
+  /** Null or absent on historical tasks means a Git checkout. */
+  workspaceKind?: "resident-workspace" | null;
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
@@ -2200,9 +2202,9 @@ export interface Task {
    * this path belongs to the Pipeline provider and is only a Files and Diff projection.
    */
   pipelineWorkspacePath?: string | null;
-  /** Absolute path of the source repo the worktree is cut from. */
+  /** Source repository, or the run cwd when taskHasRepository is false. */
   repoRoot: string;
-  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
+  /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
@@ -2355,6 +2357,7 @@ export interface BacklogPlan {
 
 /** Compact task view denormalized onto a Session card. */
 export interface TaskSummary {
+  workspaceKind?: Task["workspaceKind"];
   planPolicy?: ManagedPlanPolicy | null;
   planInputs?: TaskPlanInput[];
   id: string;
@@ -2538,6 +2541,15 @@ export interface PlanDecisionAnswer {
   selected: string[];
   /** What was typed into "Other", when the decision allowed it and the human used it. */
   other: string | null;
+  /**
+   * An optional note to the agent typed beside the selection, on a `plan-decisions` form.
+   *
+   * Separate from `other` because it qualifies a choice rather than replacing one: "Other"
+   * is an answer outside the options, a note is instructions that travel with whichever
+   * option was taken. It never answers a decision on its own. Optional because rows written
+   * before it, and every answer a form without the note box produces, simply lack it.
+   */
+  note?: string | null;
 }
 
 export interface ReviewItem {

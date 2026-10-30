@@ -94,9 +94,7 @@ export function ResidentDispatch({
     ? "Waiting for the launch to answer"
     : !profile && !archivedRetry
       ? "Choose a resident profile"
-      : !repoRoot.trim()
-        ? "Choose a repository"
-        : null;
+      : null;
 
   async function launch(from: ResidentDispatchDraft = draft): Promise<void> {
     const profileId = profile?.id ?? (from === draft ? archivedRetry?.profileId : undefined);
@@ -124,7 +122,7 @@ export function ResidentDispatch({
     };
     mode.onResidentChange(submitted);
     // Still inside the Launch click: the one call that may arm session control for this run.
-    let answer = await launchResident(profileId, input, { profile });
+    let answer = await launchResident(profileId, { ...input, repoRoot: input.repoRoot || null }, { profile });
     // Still starting: keep the SAME request id and replay it until the launch settles. The
     // replay is idempotent - it reads the one run this id reserved and never starts another -
     // so closing the form here keeps the id in the draft, and Launch again resumes this launch.
@@ -133,7 +131,7 @@ export function ResidentDispatch({
       setStarting(true);
       await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
       if (!mounted.current) return;
-      answer = await launchResident(profileId, input);
+      answer = await launchResident(profileId, { ...input, repoRoot: input.repoRoot || null });
     }
     if (!mounted.current) return;
     setStarting(false);
@@ -225,8 +223,9 @@ export function ResidentDispatch({
               </div>
             </div>
             <div className="field">
-              <label className="field-label" htmlFor="resident-dispatch-repo">Repository</label>
+              <label className="field-label" htmlFor="resident-dispatch-repo">Repository <span className="field-hint">optional</span></label>
               <RepoCombobox
+                placeholder="No repository"
                 id="resident-dispatch-repo"
                 repos={repos}
                 value={repoRoot}
@@ -236,6 +235,10 @@ export function ResidentDispatch({
                   mode.onResidentChange(chooseResidentRepo(draft, value));
                 }}
               />
+              <Tooltip label="Launch in a private working directory without a repository">
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => mode.onResidentChange(chooseResidentRepo(draft, ""))}>No repository</button>
+              </Tooltip>
+              {!repoRoot.trim() && <p className="field-hint">A private working directory is created for this run and removed when it ends.</p>}
             </div>
             <label className="field">
               <span className="field-label">
@@ -283,7 +286,7 @@ export function ResidentDispatch({
           <div className="resident-conflict" role="alert">
             <p>
               An earlier launch of {uncertainProfile?.name ?? draft.uncertain.profileName} in{" "}
-              <code>{draft.uncertain.repoRoot}</code> may already be running: its answer never
+              <code>{draft.uncertain.repoRoot || "no repository"}</code> may already be running: its answer never
               arrived. Retry it exactly, or launch this changed request as a separate resident.
             </p>
             <div className="resident-conflict-actions">
@@ -304,7 +307,7 @@ export function ResidentDispatch({
                 <button
                   type="button"
                   className="btn"
-                  disabled={busy || !profile || !repoRoot.trim()}
+                  disabled={busy || !profile}
                   onClick={() => {
                     const next = { ...draft, requestId: crypto.randomUUID(), uncertain: null };
                     mode.onResidentChange(next);

@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { codeRabbitSummary } from "./db.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
@@ -3140,6 +3141,7 @@ export class Registry extends EventEmitter {
    * `cwd`. Authorship is per pull request; the chip is per session.
    */
   private applyDriverPrCreated(s: Session, urls: string[]): void {
+    if (!taskHasRepository(s.task ?? {})) return;
     const url = urls[0];
     if (!url) return;
     // Native leases are detached at registration. The driver observed `gh pr create`, so
@@ -3307,7 +3309,7 @@ export class Registry extends EventEmitter {
       // branch untouched, but let the first real branch replace the acquisition-time null
       // so the existing PR and workflow lifecycles can use it immediately.
       const gitBranch = target.gitBranch ??
-        (target.runtime === "sdk" && target.cwd
+        (target.runtime === "sdk" && target.cwd && taskHasRepository(target.task ?? {})
           ? gitInfo(target.cwd).branch
           : null);
       let next: Session = {
@@ -4904,7 +4906,7 @@ export class Registry extends EventEmitter {
       episodeId: string | null;
     }[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.cwd || s.state === "exited") continue;
+      if (!s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       const episode = this.ensureWorkEpisode(s);
       out.push({
         id: s.id,
@@ -4934,7 +4936,7 @@ export class Registry extends EventEmitter {
   extraRepoPrPollTargets(): RepoPrPollTarget[] {
     const out: RepoPrPollTarget[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.cwd || s.state === "exited") continue;
+      if (!s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       const task = this.activeTaskFor(s.id, s.cwd);
       if (!task || task.extraRepos.length === 0) continue;
       const episode = sessionWorkEpisodeFor(s.id);
@@ -5224,7 +5226,7 @@ export class Registry extends EventEmitter {
   driverGitTargets(): { id: string; cwd: string }[] {
     const out: { id: string; cwd: string }[] = [];
     for (const s of this.sessions.values()) {
-      if (s.runtime !== "sdk" || !s.cwd || s.state === "exited") continue;
+      if (s.runtime !== "sdk" || !s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       out.push({ id: s.id, cwd: s.cwd });
     }
     return out;
@@ -5251,7 +5253,7 @@ export class Registry extends EventEmitter {
   ): void {
     for (const [id, snapshot] of snapshots) {
       const s = this.sessions.get(id);
-      if (!s || s.runtime !== "sdk" || s.state === "exited") continue;
+      if (!s || s.runtime !== "sdk" || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       if (s.gitBranch === snapshot.branch) continue;
       const next: Session = {
         ...s,
@@ -5279,7 +5281,7 @@ export class Registry extends EventEmitter {
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
-      if (skip.has(id)) continue;
+      if (skip.has(id) || !taskHasRepository(s.task ?? {})) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -7048,6 +7050,7 @@ export class Registry extends EventEmitter {
           title: t.title,
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
+          workspaceKind: t.workspaceKind ?? null,
           workflowId: t.workflowId,
           planPolicy: t.planPolicy,
           planInputs: t.planInputs,
@@ -7343,7 +7346,7 @@ export class Registry extends EventEmitter {
     if (!cwd) return undefined;
     let best: Task | undefined;
     for (const t of this.tasks.values()) {
-      if (t.worktreePath !== cwd) continue;
+      if ((taskHasRepository(t) ? t.worktreePath : t.repoRoot) !== cwd) continue;
       if (t.status === "backlog" || t.status === "cancelled") continue;
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }

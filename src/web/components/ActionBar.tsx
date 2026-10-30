@@ -4,7 +4,7 @@ import { PendingMessageDelivery } from "./MessageDelivery.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
-import { taskKindTerminalHandoffRefusal, taskRequeueRefusal } from "@shared/task.ts";
+import { taskHasRepository, taskKindTerminalHandoffRefusal, taskRequeueRefusal } from "@shared/task.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -559,7 +559,7 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
-          {session.cwd && onReset && (
+          {session.cwd && taskHasRepository(session.task ?? {}) && onReset && (
             <Tooltip
               label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >

@@ -5,9 +5,9 @@ once - a Persona, instructions, a harness, model and effort, and a default repos
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, lifecycle, how you find a resident on the board and from
-the top bar, and how a resident gets session control. The wake loop, skill and MCP selection and
-repository-free residents are later phases of
+This page describes profiles, launch, lifecycle, repository-free residents, how you find a
+resident on the board and from the top bar, and how a resident gets session control. The wake
+loop and skill and MCP selection are later phases of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -45,7 +45,9 @@ form on that profile.
 
 A launch is a task of kind `resident`:
 
-- It runs in a task worktree of the chosen repository, always in the **Agent SDK**, whatever the
+- With a repository it runs in a task worktree. **No repository** creates a private working
+  directory for this run under `$MISSION_HOME/residents/runs/<runId>/workspace/`. Both run
+  in the **Agent SDK**, whatever the
   harness's configured runtime is. **Continue in terminal** is unavailable for it.
 - It uses the profile's harness, model and effort. Per-kind defaults in **Settings > Models** do
   not apply, because the profile already answers them.
@@ -129,8 +131,8 @@ dock.
   is consumed when the launch starts, cannot be replayed, and expires after 15 seconds. Editing
   the profile afterwards changes the next launch, not this run.
 - **Through a restart, for the same conversation.** After Mission Control restarts, the grant
-  comes back only if the resident resumes the same conversation in the same worktree, on the same
-  work episode and task. A clear or a new conversation ends it, and a new launch of the profile
+  comes back only if the resident resumes the same conversation in the same working directory,
+  on the same work episode and task. A clear or a new conversation ends it, and a new launch of the profile
   needs its own Launch click.
 - **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
   does not bring it back.
@@ -151,6 +153,18 @@ because it has no explicit Workflow. It ends when you choose **Complete & close*
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
 failed launch, or one interrupted by a restart before its session started, is recorded with its
 reason and is never relaunched; launch the profile again.
+
+A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
+The Files panel browses its working directory directly, without Git or managed repository plans.
+Listing is capped at 10,000 files and refuses trees exceeding 10,000 directories or 64 nested
+levels. Traversal checks a 15-second budget between filesystem operations.
+Directory scans run asynchronously against open directory handles and refuse symlinked
+boundaries, including directories replaced while a listing is in progress.
+
+The workspace survives daemon restarts while the run is active. When the run ends, Mission removes
+that workspace after its session is gone and its SDK runtime has stopped. Failed launches also
+remove their directories. Cleanup failures remain recorded and retry, including after restart;
+the repository retention clock never applies to these directories. Files saved there are temporary.
 
 ## Backups
 

@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstring>
 #include <new>
 #include <string>
@@ -369,6 +370,210 @@ napi_value ReadPlanDirectory(napi_env env, napi_callback_info info) {
   return result;
 }
 
+struct ReadDirectoryWork {
+  int parent;
+  int limit;
+  int timeout_ms;
+  int error = 0;
+  std::vector<std::pair<std::string, bool>> entries;
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+};
+
+void ReadDirectoryExecute(napi_env, void* data) {
+  auto* work = static_cast<ReadDirectoryWork*>(data);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(work->timeout_ms);
+  const int fd = openat(work->parent, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  DIR* directory = fd < 0 ? nullptr : fdopendir(fd);
+  if (!directory) {
+    work->error = errno;
+    if (fd >= 0) close(fd);
+  } else {
+    while (work->entries.size() < static_cast<size_t>(work->limit)) {
+      if (std::chrono::steady_clock::now() >= deadline) { work->error = ETIMEDOUT; break; }
+      errno = 0;
+      dirent* entry = readdir(directory);
+      if (!entry) { work->error = errno; break; }
+      if (!std::strcmp(entry->d_name, ".") || !std::strcmp(entry->d_name, "..")) continue;
+      struct stat info;
+      if (fstatat(fd, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT) continue;
+        work->error = errno; break;
+      }
+      if (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode)) {
+        work->entries.emplace_back(entry->d_name, S_ISDIR(info.st_mode));
+      }
+    }
+    closedir(directory);
+  }
+  close(work->parent);
+  work->parent = -1;
+}
+
+void ReadDirectoryComplete(napi_env env, napi_status status, void* data) {
+  auto* work = static_cast<ReadDirectoryWork*>(data);
+  if (work->parent >= 0) close(work->parent);
+  if (work->error || status != napi_ok) {
+    const char* reason = work->error ? std::strerror(work->error) : "filesystem worker failed";
+    napi_value message, error, code;
+    napi_create_string_utf8(env, reason, NAPI_AUTO_LENGTH, &message);
+    napi_create_error(env, nullptr, message, &error);
+    napi_create_string_utf8(env, work->error == ETIMEDOUT ? "ETIMEDOUT" : "EDIRECTORY", NAPI_AUTO_LENGTH, &code);
+    napi_set_named_property(env, error, "code", code);
+    napi_reject_deferred(env, work->deferred, error);
+  } else {
+    napi_value result;
+    napi_create_array_with_length(env, work->entries.size(), &result);
+    for (size_t i = 0; i < work->entries.size(); ++i) {
+      napi_value entry, name, directory;
+      napi_create_object(env, &entry);
+      napi_create_string_utf8(env, work->entries[i].first.c_str(), work->entries[i].first.size(), &name);
+      napi_get_boolean(env, work->entries[i].second, &directory);
+      napi_set_named_property(env, entry, "name", name);
+      napi_set_named_property(env, entry, "directory", directory);
+      napi_set_element(env, result, i, entry);
+    }
+    napi_resolve_deferred(env, work->deferred, result);
+  }
+  napi_delete_async_work(env, work->work);
+  delete work;
+}
+
+napi_value ReadPlanDirectoryEntries(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int32_t parent, limit, timeout_ms;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      napi_get_value_int32(env, argv[1], &limit) != napi_ok || limit <= 0 ||
+      napi_get_value_int32(env, argv[2], &timeout_ms) != napi_ok || timeout_ms <= 0) {
+    return ThrowTypeError(env, "readPlanDirectoryEntries requires a directory descriptor, entry limit and time budget");
+  }
+  const int held = fcntl(parent, F_DUPFD_CLOEXEC, 0);
+  if (held < 0) return PlanIoError(env);
+  auto* work = new (std::nothrow) ReadDirectoryWork{held, limit, timeout_ms, 0, {}};
+  if (!work) { close(held); return ThrowSystemError(env, "ENOMEM", "could not allocate directory listing"); }
+  napi_value promise, resource;
+  if (napi_create_promise(env, &work->deferred, &promise) != napi_ok ||
+      napi_create_string_utf8(env, "anchored directory listing", NAPI_AUTO_LENGTH, &resource) != napi_ok ||
+      napi_create_async_work(env, nullptr, resource, ReadDirectoryExecute, ReadDirectoryComplete, work, &work->work) != napi_ok) {
+    close(held); delete work; return ThrowSystemError(env, "EASYNC", "could not schedule filesystem work");
+  }
+  if (napi_queue_async_work(env, work->work) != napi_ok) {
+    napi_delete_async_work(env, work->work); close(held); delete work; return ThrowSystemError(env, "EASYNC", "could not schedule filesystem work");
+  }
+  return promise;
+}
+
+struct RemoveDirectoryWork {
+  int parent;
+  std::string name;
+  int error = 0;
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+};
+
+// Permission repair is limited to a directory we already hold. Never chmod a path:
+// a substituted entry could redirect that operation just as it could redirect removal.
+int UnlinkForRemoval(int parent, const std::string& name, int flags) {
+  int result = unlinkat(parent, name.c_str(), flags);
+  if (result != 0 && errno == EACCES) {
+    struct stat info;
+    if (fstat(parent, &info) == 0 && fchmod(parent, info.st_mode | S_IRWXU) == 0) {
+      result = unlinkat(parent, name.c_str(), flags);
+    }
+  }
+  return result;
+}
+
+// All traversal and unlink operations stay relative to held descriptors. A name swapped
+// for a symlink is either unlinked as an entry or refused, never followed. The explicit
+// stack avoids native stack growth on an agent-created deeply nested tree.
+void RemoveDirectoryExecute(napi_env, void* data) {
+  auto* work = static_cast<RemoveDirectoryWork*>(data);
+  struct Frame { DIR* directory; int parent; std::string name; };
+  std::vector<Frame> stack;
+  const int root = openat(work->parent, work->name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (root < 0) {
+    if (errno != ENOENT) work->error = errno;
+  } else {
+    DIR* directory = fdopendir(root);
+    if (!directory) { work->error = errno; close(root); }
+    else stack.push_back({directory, work->parent, work->name});
+  }
+  while (!stack.empty() && !work->error) {
+    auto& frame = stack.back();
+    errno = 0;
+    dirent* entry = readdir(frame.directory);
+    if (!entry) {
+      if (errno) { work->error = errno; break; }
+      const int parent = frame.parent;
+      const std::string name = frame.name;
+      closedir(frame.directory);
+      stack.pop_back();
+      if (UnlinkForRemoval(parent, name, AT_REMOVEDIR) != 0 && errno != ENOENT) work->error = errno;
+      continue;
+    }
+    if (!std::strcmp(entry->d_name, ".") || !std::strcmp(entry->d_name, "..")) continue;
+    const int parent = dirfd(frame.directory);
+    const std::string name = entry->d_name;
+    const int child = openat(parent, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child >= 0) {
+      DIR* directory = fdopendir(child);
+      if (!directory) { work->error = errno; close(child); break; }
+      stack.push_back({directory, parent, name});
+    } else if (errno == ENOTDIR || errno == ELOOP) {
+      if (UnlinkForRemoval(parent, name, 0) != 0 && errno != ENOENT) work->error = errno;
+    } else if (errno != ENOENT) {
+      work->error = errno;
+    }
+  }
+  for (auto& frame : stack) closedir(frame.directory);
+  close(work->parent);
+  work->parent = -1;
+}
+
+void RemoveDirectoryComplete(napi_env env, napi_status status, void* data) {
+  auto* work = static_cast<RemoveDirectoryWork*>(data);
+  if (work->parent >= 0) close(work->parent);
+  if (work->error || status != napi_ok) {
+    const std::string reason = work->error ? std::strerror(work->error) : "filesystem worker failed";
+    napi_value message, error;
+    napi_create_string_utf8(env, reason.c_str(), reason.size(), &message);
+    napi_create_error(env, nullptr, message, &error);
+    napi_reject_deferred(env, work->deferred, error);
+  } else {
+    napi_resolve_deferred(env, work->deferred, Undefined(env));
+  }
+  napi_delete_async_work(env, work->work);
+  delete work;
+}
+
+napi_value RemovePlanDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  int32_t parent;
+  std::string name;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 || !ReadEntry(env, argv[1], &name)) {
+    return ThrowTypeError(env, "removePlanDirectory requires a directory descriptor and one entry name");
+  }
+  const int held = fcntl(parent, F_DUPFD_CLOEXEC, 0);
+  if (held < 0) return PlanIoError(env);
+  auto* work = new (std::nothrow) RemoveDirectoryWork{held, name};
+  if (!work) { close(held); return ThrowSystemError(env, "ENOMEM", "could not allocate directory removal"); }
+  napi_value promise, resource;
+  if (napi_create_promise(env, &work->deferred, &promise) != napi_ok ||
+      napi_create_string_utf8(env, "anchored directory removal", NAPI_AUTO_LENGTH, &resource) != napi_ok ||
+      napi_create_async_work(env, nullptr, resource, RemoveDirectoryExecute, RemoveDirectoryComplete, work, &work->work) != napi_ok) {
+    close(held); delete work; return ThrowSystemError(env, "EASYNC", "could not schedule filesystem work");
+  }
+  if (napi_queue_async_work(env, work->work) != napi_ok) {
+    napi_delete_async_work(env, work->work); close(held); delete work; return ThrowSystemError(env, "EASYNC", "could not schedule filesystem work");
+  }
+  return promise;
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
@@ -383,6 +588,8 @@ NAPI_MODULE_INIT() {
       {"renamePlanEntry", nullptr, RenamePlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"unlinkPlanEntry", nullptr, UnlinkPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectory", nullptr, ReadPlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"readPlanDirectoryEntries", nullptr, ReadPlanDirectoryEntries, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"removePlanDirectory", nullptr, RemovePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native state lock addon");

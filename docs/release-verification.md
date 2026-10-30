@@ -492,7 +492,9 @@ Stable recovery releases remain available indefinitely. Alpha publication keeps 
 newest complete ready build by Git ancestry, not release creation time. After verifying the
 replacement's actual archive bytes, the publisher marks each older ancestor release retired,
 removes its ready manifest, confirms readiness is gone, deletes its ZIP/DMG, and removes
-the empty release record. The tag remains as the retirement marker; a tag without a release
+the empty release record. The ZIP/DMG names come from the distribution contract and cover
+every app name it has shipped, so an alpha published before or after the app rename
+(`Mission-Control-` or `Agent-Mission-Control-`) is equally retirable. The tag remains as the retirement marker; a tag without a release
 refuses republication so an old retry cannot recreate a different asset identity.
 Unrelated assets, stable releases, divergent commits, and unverified newer
 builds are never deletion targets. Interrupted cleanup is resumable; it can temporarily retain

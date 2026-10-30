@@ -127,7 +127,8 @@ test("Shipping and Trust name the remote reviewer as GitHub Inspector", async ({
   await page.goto(`${daemon.baseURL}/#/settings/trust`);
   const matrix = page.getByRole("table", { name: "Repository trust grants" });
   await expect(matrix).toBeVisible();
-  await expect(matrix.getByText("GitHub Inspector posts reviews", { exact: true })).toBeVisible();
+  // The header prints the short name; the full grant name rides its tooltip and every cell.
+  await expect(matrix.getByText("GitHub Inspector", { exact: true })).toBeVisible();
   await shootWholePage(page, "trust-github-inspector-grant");
 });
 

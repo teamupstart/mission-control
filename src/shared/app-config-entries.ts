@@ -263,6 +263,8 @@ const uiFields = {
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
   collapsedBoardColumns: "setting",
+  hiddenTopbarItems: "setting",
+  compactTopbarItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {

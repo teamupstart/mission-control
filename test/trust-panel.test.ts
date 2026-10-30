@@ -10,6 +10,10 @@ import {
   checksArmedReading,
   grantPatch,
   candidateRepos,
+  addRepositoriesPatch,
+  DEFAULT_ADD_GRANTS,
+  grantFailureMessage,
+  planBatchAdd,
   type ChecksArmedReading,
   type TrustLists,
 } from "../src/web/lib/trust.ts";
@@ -212,6 +216,80 @@ test("the add picker omits repos already in the matrix", () => {
   assert.deepEqual(candidateRepos(["/a", "/b", "/c"], ["/b"]), ["/a", "/c"]);
 });
 
+// ---- what one batch add writes -----------------------------------------------------------
+
+test("an added repository is granted everything except YOLO merges", () => {
+  // The merge is the one grant that lands code on the base branch with nobody in the loop,
+  // so it is the one an add must never hand out by default.
+  assert.deepEqual([...DEFAULT_ADD_GRANTS], ["foreman", "workflows", "inspector"]);
+  assert.equal((DEFAULT_ADD_GRANTS as readonly string[]).includes("merge"), false);
+});
+
+test("a batch add appends every new repo once to each default-granted list", () => {
+  const patch = addRepositoriesPatch(
+    ["/a", "/b", "/a"],
+    lists({ foreman: ["/f"], workflows: ["/w", "/b"], inspector: [], shipping: ["/s"] }),
+  );
+  // Full lists, in the order given, with no repo written twice - even one the list already
+  // held or one the batch named twice.
+  assert.deepEqual(patch, {
+    foreman: ["/f", "/a", "/b"],
+    workflows: ["/w", "/b", "/a"],
+    inspector: ["/a", "/b"],
+  });
+  // And nothing for Shipping: the patch has no key that could reach the merge allowlist.
+  assert.equal("shipping" in patch, false);
+  assert.equal("merge" in patch, false);
+});
+
+test("a batch plan refuses unresolvable and already-present paths, and keeps their indexes", () => {
+  const plan = planBatchAdd(
+    ["/picked", "/typo", "/already", "~/picked-again"],
+    [
+      { ok: true, repoRoot: "/picked" },
+      { ok: false, error: "not a git repository" },
+      { ok: true, repoRoot: "/already" },
+      // A second spelling of the first pick: one repository, not an error.
+      { ok: true, repoRoot: "/picked" },
+    ],
+    new Set(["/already"]),
+  );
+  assert.deepEqual(plan.roots, ["/picked"]);
+  assert.deepEqual(plan.refused, [1, 2]);
+  assert.deepEqual(plan.errors, [
+    "/typo: not a git repository",
+    "/already is already in the matrix.",
+  ]);
+});
+
+test("a batch plan with nothing refused writes every root in request order", () => {
+  const plan = planBatchAdd(
+    ["/b", "/a"],
+    [{ ok: true, repoRoot: "/b" }, { ok: true, repoRoot: "/a" }],
+    new Set(),
+  );
+  assert.deepEqual(plan, { roots: ["/b", "/a"], refused: [], errors: [] });
+});
+
+test("grant failures say what happened and what to do about it", () => {
+  assert.equal(grantFailureMessage([], 3, false), null, "every grant landed: nothing to say");
+  // Some landed, so the rows exist and a cell click retries the rest.
+  assert.equal(
+    grantFailureMessage(["GitHub Inspector"], 1, false),
+    "Couldn't grant GitHub Inspector for the new repository - click a cell to try again.",
+  );
+  // None landed but staging did: the rows exist, ungranted, and the same advice holds.
+  assert.match(
+    grantFailureMessage(["Foreman", "Workflows", "GitHub Inspector"], 2, false)!,
+    /^Couldn't grant Foreman, Workflows, GitHub Inspector for the new repositories - click a cell/,
+  );
+  // None landed and staging failed: there is no row, so pointing at a cell would be wrong.
+  const lost = grantFailureMessage(["Foreman", "Workflows", "GitHub Inspector"], 2, true)!;
+  assert.match(lost, /^Couldn't add the new repositories/);
+  assert.match(lost, /Add again once the daemon answers/);
+  assert.doesNotMatch(lost, /click a cell/);
+});
+
 // ---- static render ---------------------------------------------------------------------
 
 function foreman(over: Partial<{ repoAllowlist: string[]; config: null }> = {}): ForemanState {
@@ -295,7 +373,7 @@ function render(
   );
 }
 
-test("the matrix renders one grant column per subsystem and the add row's anchor", () => {
+test("the matrix renders one grant column per subsystem and the add pane's anchor", () => {
   const repo = "/Users/dev/work/harness";
   const html = render(
     foreman({ repoAllowlist: [repo] }),
@@ -341,10 +419,42 @@ test("the Workflows column names both capabilities its one grant covers", () => 
   assert.doesNotMatch(html, /unless you switched them off/);
 });
 
-test("the add row says it grants nothing, so adding cannot read as consent", () => {
+test("the add pane says what an add grants, with YOLO merges off", () => {
   const html = render(foreman(), inspector(), shipping());
-  assert.match(html, /Adding a repo grants nothing yet/);
-  assert.match(html, /Adding is configuration; enabling is consent/);
+  assert.match(html, /New repositories get/);
+  const legend = html.slice(html.indexOf("New repositories get"));
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Foreman</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>Workflows</);
+  assert.match(legend, /trust-default is-on[^>]*><span class="trust-grant-dot"[^>]*><\/span>GitHub Inspector</);
+  assert.match(legend, /trust-default is-off[^>]*><span class="trust-grant-dot"[^>]*><\/span>YOLO merges off</);
+  // The old consent line described the behaviour this change removes.
+  assert.doesNotMatch(html, /grants nothing yet/);
+});
+
+test("the add pane and the matrix sit side by side, each with its own search", () => {
+  const html = render(foreman({ repoAllowlist: ["/repo"] }), inspector(), shipping());
+  const add = html.indexOf('data-anchor="trust/add"');
+  const matrix = html.indexOf('data-anchor="trust/matrix"');
+  assert.ok(add > -1 && matrix > add, "the add pane comes first, so it never sits under the table");
+  assert.match(html, /class="trust-split"/);
+  assert.match(html, /aria-label="Search repositories to add"/);
+  assert.match(html, /aria-label="Filter trusted repositories"/);
+  assert.match(html, /aria-label="Repository path"/);
+  // Nothing picked yet, so the batch button names no count and is disabled.
+  assert.match(html, /<button type="button" class="btn btn-primary trust-add-btn" disabled=""[^>]*>Add repositories<\/button>/);
+});
+
+test("an add waits for every default-granted subsystem to answer", () => {
+  // The CI race this pins: a quick add right after the page opened found the Inspector's
+  // config not loaded yet, skipped that write, and handed the repo two grants out of three.
+  // An unloaded config is not a refusal, so the add holds until all three can be written.
+  const waiting = render(foreman(), inspector({ config: null }), shipping());
+  assert.match(waiting, /trust-add-btn" disabled=""/);
+  assert.match(waiting, /Waiting for GitHub Inspector to answer before adding/);
+
+  // Shipping holds no default grant, so its silence does not hold an add.
+  const ready = render(foreman(), inspector(), shipping({ config: null }));
+  assert.doesNotMatch(ready, /Waiting for/);
 });
 
 test("a merge-without-review, armed, flies the dagger footnote with both fixes", () => {

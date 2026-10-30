@@ -678,8 +678,9 @@ The last three are what Mission Control MAY do on the operator's behalf, and whe
 6. **One table, four grants** selects Trust and spotlights the whole matrix - a row per
    repository, a column per grant - rather than a cell or a column, because which grants a
    machine needs depends on which repositories it works in.
-7. **Add a repository, then grant it** spotlights the add row and finishes, on the same
-   "adding is configuration; enabling is consent" line the panel itself draws.
+7. **Add the repositories you work in** spotlights the add pane and finishes. It says what an
+   add grants - Foreman, Workflows and GitHub Inspector, with YOLO merges left off - and
+   that every grant is one click to revoke.
 
 **It ends on Trust and stays there.** Every other tour replays the route it snapshotted;
 this one declares an `exit` route on its entry and hands the panel over instead, because
@@ -688,8 +689,9 @@ selection, Board drill-in, filter, and the open Line drawer are still restored, 
 route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
 the control that started the tour when it survived the move, and to the **Trust** rail row
 when it did not, which includes a startup-picker launch without an invoker. The rail row rather than the add
-field: a spotlight may be any element, but a landing control has to be focusable, and the add
-field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
+pane: a spotlight may be any element, but a landing control has to be focusable, and the add
+pane's first focusable control is its search field, which would put the caret in a box the
+operator never asked to type in. Those two never compete:
 the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
 non-focusable area leaves, so it is not started at all when the invoker took focus back.
 

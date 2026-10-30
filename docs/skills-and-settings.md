@@ -266,7 +266,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -304,7 +304,7 @@ folds each empty column into a chip beside its last column, and a chip brings it
 back. Uncheck it to hide that stash, so empty columns leave the board entirely. An empty
 **needs you** column is never in the stash: it stays as a slim all-clear rail either way.
 
-Display's last panel is **Board card**, and it is the checklist of every optional item a
+Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
 permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card
 in every column immediately, and a live preview card in the panel redraws as you toggle, so
@@ -322,6 +322,28 @@ The same panel holds two **Task type** pickers, one under **Board card** and one
 how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
 medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
 the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+
+Display's last panel is **Top bar**, which chooses what the bar across the top of every page
+draws. A live preview of the real bar sits above its two lists and redraws as you change them.
+
+- **Show or hide** covers the bar's optional readouts and tools: the **Session count**,
+  **Need you** and **Working** counts in the fleet pulse, **Search** (the fleet filter),
+  **Cost estimate**, **Report product feedback** and **Alerts and away mode**. Hiding Search
+  also clears any filter term, so the fleet is never filtered by a box you cannot see. The
+  feedback form stays in the palette (<kbd>⌘</kbd><kbd>K</kbd>), cost settings stay in
+  Settings → Cost, and the pulse's **to answer** count is not on the list: it is the only way
+  into the attention inbox.
+- **Expanded or minimized** covers the controls that are always on the bar: the **Fleet**,
+  **Library**, **Runs** and **Scouts** page buttons, **Recurring missions** and **Foreman**.
+  **Minimized** hides the control's text label at every window width, the way the bar does
+  when it runs out of room, and keeps its glyph. A page button also drops its shortcut keycap,
+  and Foreman drops its mode chip (`live`, `off`). Counts stay visible: the Recurring missions
+  attention badge, and Foreman's issue count and queue count. Its name, tooltip and shortcut
+  still work.
+
+The shipped bar hides nothing and minimizes nothing. Whatever you choose, the bar still
+minimizes what is left when the window narrows, so it stays on one row. **Reset all** in the
+panel header puts the shipped bar back.
 
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a
@@ -508,10 +530,27 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
-- **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
-  first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
-  off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
-  survives a reload before you come back to grant it.
+- **Add several repositories at once.** The page is two panes side by side. **Add
+  repositories**, on the left, lists every repository the workspace scan found that is not
+  in the matrix yet: search it, tick any number (or **Select all shown**), type a path for a
+  checkout the scan missed, and **Add** them in one batch. Each path is resolved and
+  canonicalized first, so a typo is refused. **Trusted**, on the right, is the matrix with a
+  filter of its own. Each pane scrolls inside itself, so the add controls never sit below a
+  long table.
+- **New repositories start with three grants.** An added repo gets **Foreman sends live**,
+  **Workflows act** and **GitHub Inspector posts reviews** straight away; **YOLO merges**
+  stays off until you click its cell. Every default is one click to revoke. Because the
+  Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
+  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. The
+  add waits until Foreman, Workflows and GitHub Inspector have all answered, and says which it
+  is waiting for, so an add is never made while one of them is still loading.
+- **A failed write is reported, not hidden.** The three grants are separate writes, so one
+  can fail while the others land. The new row then holds only the grants that landed, and
+  the pane names the ones that did not so you can click their cells to retry. If none of the
+  three can be written, the repo is kept as an ungranted row on this machine, which survives
+  a reload until its cells are granted. If that fallback cannot be saved either, no row is
+  created: the pane says the add was lost and keeps your picks and typed path, so adding
+  again is one click.
 - **Repository labels use directory names.** Read-only repository labels normally show only
   the final directory name; hover the label to see its complete path. If a Trust warning names
   two repositories with the same directory name, it shows their full paths in the warning so
@@ -523,7 +562,7 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   records the bare Git directory as the owner, including when it is named `.git`, rather
   than granting the containing folder. Tasks use the same owner and run in linked checkouts.
 - **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
-  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  the Trust row in the rail to the matrix and its add pane, and the tour leaves you on this
   page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
   a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,

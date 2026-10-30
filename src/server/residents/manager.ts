@@ -1,7 +1,32 @@
 import { residentSpendProblem } from "./spend.ts";
 import { residentSkillIndex } from "./skill-index.ts";
 import { randomUUID } from "node:crypto";
-import { harnessOffersRuntime } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, harnessOffersRuntime } from "@shared/harness-capabilities.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+import type {
+  CreateResidentMcpServer,
+  ResidentMcpCatalog,
+  ResidentMcpCustomServerView,
+  UpdateResidentMcpServer,
+} from "@shared/resident-mcp.ts";
+import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { ResidentMcpCatalogCache, noGlobalMcp } from "./mcp-catalog.ts";
+import {
+  removeResidentMcpRunState,
+  residentMcpStateToRemove,
+  resolveResidentMcpSet,
+  sweepResidentMcpCredentials,
+} from "./mcp-launch.ts";
+import {
+  createResidentMcpServer,
+  customSecretValues,
+  deleteResidentMcpServer,
+  finishedRunsWithMcpState,
+  listResidentMcpServers,
+  residentMcpServerViews,
+  updateResidentMcpServer,
+  writeRunMcpSnapshot,
+} from "./mcp-store.ts";
 import {
   RESIDENT_OPENING_TURN,
   isResidentAgent,
@@ -144,6 +169,12 @@ export interface ResidentManagerDeps {
    * real channel, which a standalone daemon does not have, so it fails closed.
    */
   authorizeLaunch?: AuthorizeResidentLaunch;
+  /**
+   * Each harness's global MCP servers. The daemon passes the real readers
+   * (`readGlobalMcp`); without one a manager sees no global servers at all, so a test never
+   * reads the operator's harness configuration by accident.
+   */
+  mcpCatalog?: ResidentMcpCatalogCache;
 }
 
 /** How the launch route vouches for its caller. */
@@ -195,8 +226,10 @@ export class ResidentManager {
   private readonly cleaningWorkspaces = new Map<string, Promise<void>>();
   private readonly reportedCleanupFailures = new Set<string>();
   private cleanupScanFailed = false;
+  private mcpCleanupScanFailed = false;
   private subscriptions: Array<() => void> = [];
   private readonly authorizeLaunch: AuthorizeResidentLaunch;
+  readonly mcpCatalog: ResidentMcpCatalogCache;
   /** Runs whose grant waits for their session, by run id. At most one per live resident. */
   private readonly grantWatches = new Map<string, GrantWatch>();
   /** Who waits for a watch to be decided or dropped: a launch answers only once it knows. */
@@ -216,6 +249,7 @@ export class ResidentManager {
     this.durableTask = deps.durableTask ?? getDurableTask;
     this.launchResponseWaitMs = deps.launchResponseWaitMs ?? DEFAULT_LAUNCH_RESPONSE_WAIT_MS;
     this.settlementRetryMs = deps.settlementRetryMs ?? DEFAULT_SETTLEMENT_RETRY_MS;
+    this.mcpCatalog = deps.mcpCatalog ?? new ResidentMcpCatalogCache(noGlobalMcp);
   }
 
   /**
@@ -227,6 +261,9 @@ export class ResidentManager {
    */
   start(): void {
     this.reconcilePendingRuns();
+    // Tickets live in memory, so every credential file a previous process left is void.
+    try { sweepResidentMcpCredentials(); }
+    catch (error) { console.error("[residents] could not remove stale MCP credential files:", error); }
     this.cleanupEndedWorkspaces();
     this.cleanupTimer = setInterval(() => this.cleanupEndedWorkspaces(), 2_000);
     this.cleanupTimer.unref();
@@ -268,7 +305,52 @@ export class ResidentManager {
     if (!harnessOffersRuntime(settings.execution.agent, "sdk")) {
       return `${settings.execution.agent} has no Agent SDK driver, so it cannot run a resident`;
     }
-    return residentSpendProblem(settings);
+    return residentSpendProblem(settings) ?? this.mcpProblem(settings);
+  }
+
+  /**
+   * Why a profile's MCP section cannot be saved for its harness, or null. Global servers are
+   * checked again at launch, against the harness's configuration as it is then.
+   */
+  private mcpProblem(settings: ResidentProfileRevision): string | null {
+    const agent = settings.execution.agent;
+    const label = AGENT_IDENTITY[agent].label;
+    const { inheritDefaults, selected } = settings.mcp;
+    if (capabilitiesFor(agent).mcpSelection === null && (selected.length > 0 || !inheritDefaults)) {
+      return `${label} cannot pin a resident's MCP servers, so a profile on it cannot choose them`;
+    }
+    const custom = selected.some((ref) => ref.source === "custom") ? listResidentMcpServers() : [];
+    for (const ref of selected) {
+      if (ref.source === "global") {
+        if (ref.agent !== agent) {
+          return `the MCP server ${ref.name} is ${AGENT_IDENTITY[ref.agent].label}'s, but this profile runs ${label}`;
+        }
+        continue;
+      }
+      const server = custom.find((candidate) => candidate.id === ref.id);
+      if (!server) return "a selected custom MCP server no longer exists";
+      if (!server.harnesses.includes(agent)) return `the custom MCP server ${server.name} does not apply to ${label}`;
+    }
+    return null;
+  }
+
+  // ---- custom MCP servers and the catalog ----
+
+  /** The browser's catalog: global metadata per harness and the custom servers, never a value. */
+  mcpServerCatalog(fresh = false): Promise<ResidentMcpCatalog> {
+    return this.mcpCatalog.catalog(residentMcpServerViews(), fresh);
+  }
+
+  async createMcpServer(input: CreateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
+    return createResidentMcpServer(input, { id: randomUUID(), at: this.now(), globals: await this.mcpCatalog.names(input.harnesses) });
+  }
+
+  async updateMcpServer(id: string, input: UpdateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
+    return updateResidentMcpServer(id, input, { at: this.now(), globals: await this.mcpCatalog.names(input.harnesses) });
+  }
+
+  deleteMcpServer(id: string, expectedRevision: number): void {
+    deleteResidentMcpServer(id, expectedRevision);
   }
 
   createProfile(settings: ResidentProfileRevision): ResidentProfileOutcome {
@@ -525,6 +607,17 @@ export class ResidentManager {
   private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
     const execution = run.settings.execution;
     try {
+      // The run's effective MCP set, resolved once from the revision it pinned and the
+      // harness's configuration as it is now, and snapshotted before the task exists, so every
+      // start and resume reads only the snapshot. A set that cannot be pinned fails the launch
+      // with its reason, before any secret is bound.
+      const mcp = await resolveResidentMcpSet(run.settings, {
+        globals: (agent) => this.mcpCatalog.read(agent, true),
+        custom: listResidentMcpServers,
+        customSecrets: customSecretValues,
+      });
+      if (!mcp.ok) throw new Error(mcp.error);
+      if (mcp.servers) writeRunMcpSnapshot(run.id, mcp.servers, this.now());
       if (run.workspaceDir) createResidentWorkspace(run.id, run.workspaceDir);
       this.deps.createTask(
         {
@@ -694,6 +787,20 @@ export class ResidentManager {
     return composeResidentLaunch({ run: stored.run, agent: task.agent, runtime }, repository).standing;
   }
 
+  /**
+   * A resident task's pinned MCP set, through the same composer, for the dispatcher and for
+   * every resume. Null for a run launched before snapshots existed.
+   */
+  mcpLaunchForTask(task: Task): ResidentMcpLaunch | null {
+    if (task.kind !== "resident") return null;
+    const stored = residentRunForTask(task.id);
+    if (!stored) throw new Error(`resident task ${task.id} has no resident run`);
+    return composeResidentLaunch(
+      { run: stored.run, agent: task.agent, runtime: "sdk" },
+      { text: "", mechanism: "none", sources: [] },
+    ).residentMcp;
+  }
+
   // ---- reconciliation and run end ----
 
   /** Settle each run a previous process left pending, one write per run. */
@@ -764,15 +871,21 @@ export class ResidentManager {
   /** Completion may precede eviction. Preserve cwd until every owned SDK runtime has stopped. */
   cleanupEndedWorkspaces(): Promise<void> {
     if (this.stopped) return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
+    // Independent of the workspace scan below: a store that cannot be read for one must not
+    // stop the other. Each reports once while it keeps failing.
+    try {
+      this.cleanupFinishedMcp();
+      this.mcpCleanupScanFailed = false;
+    } catch (error) {
+      if (!this.mcpCleanupScanFailed) {
+        console.error("[residents] could not scan finished runs for MCP state; retrying on the next pass:", error);
+        this.mcpCleanupScanFailed = true;
+      }
+    }
     try {
       for (const run of endedResidentWorkspaces()) {
         if (this.settling.has(run.id) || this.cleaningWorkspaces.has(run.id)) continue;
-        const sessions = this.sessionRowsForTask(run.taskId);
-        if (sessions.some((id) => {
-          if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
-          const row = getSdkSession(id);
-          return row && row.status !== "exited" && row.status !== "failed";
-        })) continue;
+        if (this.runtimeStillRunning(run.taskId)) continue;
         const cleanup = (async () => {
           try {
             await (this.deps.removeWorkspace ?? removeResidentWorkspace)(run.id, run.workspaceDir);
@@ -795,6 +908,34 @@ export class ResidentManager {
       }
     }
     return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
+  }
+
+  /**
+   * Remove the MCP state - snapshot, tickets, credential files, Codex overlay - of every run that
+   * finished, once nothing it launched is still running, including state left by a crash. Part of
+   * the ended-workspace pass, so it runs at startup, on every run end and on that pass's timer.
+   */
+  private cleanupFinishedMcp(): void {
+    // A read failure throws to the caller, which reports it once and retries on the next pass.
+    for (const runId of residentMcpStateToRemove(finishedRunsWithMcpState())) {
+      if (this.settling.has(runId)) continue;
+      const run = getResidentRun(runId)?.run;
+      if (run && this.runtimeStillRunning(run.taskId)) continue;
+      try {
+        removeResidentMcpRunState(runId);
+      } catch (error) {
+        console.error(`[residents] could not remove MCP state for ${runId}:`, error);
+      }
+    }
+  }
+
+  /** Whether any SDK runtime this task launched is still alive. */
+  private runtimeStillRunning(taskId: string): boolean {
+    return this.sessionRowsForTask(taskId).some((id) => {
+      if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
+      const row = getSdkSession(id);
+      return !!row && row.status !== "exited" && row.status !== "failed";
+    });
   }
 
   // ---- session control: the grant a desktop Launch click gives a run ----

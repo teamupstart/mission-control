@@ -1320,6 +1320,14 @@ rl.on("line", (line) => {
       });
       return;
     }
+    // The configured MCP servers, as the real CLI reports them: what `--mcp-config` named. A
+    // resident launch checks this against its snapshot, so answering with the argv keeps that
+    // check exercised without starting any server.
+    if (frame.request?.subtype === "mcp_status") {
+      const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
+      ok(frame.request_id, { mcpServers: Object.keys(configured).map((name) => ({ name, status: "connected" })) });
+      return;
+    }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
     return;
   }

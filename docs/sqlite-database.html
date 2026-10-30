@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>109</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>112</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -659,13 +659,16 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Resident profiles</strong><span>5 tables</span></summary>
+              <summary><strong>Resident profiles</strong><span>8 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>resident_profiles</code><p>Each resident profile's name, live-name uniqueness, archive state, and the current immutable revision new launches pin.</p></div>
                 <div class="table-row"><code>resident_profile_revisions</code><p>Immutable profile bodies: persona, instructions, harness, model, effort, workspace, authority, and loop settings. A live run reads only the revision it pinned.</p></div>
-                <div class="table-row"><code>resident_runs</code><p>One row per launch, written before its task: the pinned revision, reserved task id, unique launch request id, normalized launch input, persona snapshot, launch state, and end time. Durable loop state, iteration counters, consumed generation, pending pacing request, next wake, and pause reason survive daemon restarts. Four nullable <code>control_*</code> columns record the session-control grant a desktop Launch click gave the run: when the click was consumed, and the conversation, working directory and work episode the grant was applied to. A restart re-applies the grant only when all four are set and still match.</p></div>
+                <div class="table-row"><code>resident_runs</code><p>One row per launch, written before its task: the pinned revision, reserved task id, unique launch request id, normalized launch input, persona snapshot, launch state, and end time. Durable loop state, iteration counters, consumed generation, pending pacing request, next wake, and pause reason survive daemon restarts. Four nullable <code>control_*</code> columns record the session-control grant a desktop Launch click gave the run: when the click was consumed, and the conversation, working directory and work episode the grant was applied to. A restart re-applies the grant only when all four are set and still match. <code>mcp_snapshot_at</code> marks when the run's MCP snapshot was taken; it is null on a run from before snapshots, which keeps native MCP behaviour.</p></div>
                 <div class="table-row"><code>resident_iterations</code><p>Each daemon-owned iteration claim and its delivery outcome, with a sequence, trigger, transcript offset, timestamps, and nullable conversation and native-message identity for verified attribution. One outstanding claim per run prevents duplicate delivery; claim times enforce the rolling iteration guardrail.</p></div>
                 <div class="table-row"><code>resident_pacing_calls</code><p>Idempotent schedule_next_iteration receipts keyed by run and call id, so replaying a request returns its original result without scheduling another wake.</p></div>
+                <div class="table-row"><code>resident_mcp_secrets</code><p>The write-only secret values of custom MCP servers, by server id and field. Never returned by a route, published, logged, or carried by a settings snapshot, and scrubbed from every full-database recovery point. A settings restore keeps a value only when it was set before that snapshot and its server's connection is unchanged, and clears the rest. The definitions themselves live in <code>app_config</code>.</p></div>
+                <div class="table-row"><code>resident_run_mcp_servers</code><p>A run's MCP snapshot: each server of its effective set, by source and name, with its definition minus secret values, resolved once at launch and read by every start and resume. Removed when the run ends.</p></div>
+                <div class="table-row"><code>resident_run_mcp_secrets</code><p>The secret values a run's snapshot bound to each (source, name), every environment and header value of a global server included. Daemon-private like <code>resident_mcp_secrets</code>, scrubbed from recovery points, and removed when the run ends.</p></div>
               </div>
             </details>
 

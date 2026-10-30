@@ -4015,6 +4015,8 @@ export function App(): React.JSX.Element {
               creating={route.creating === true}
               skillSources={route.skillSources === true}
               onSkillSources={() => navigate({ page: "residents", skillSources: true })}
+              mcpServers={route.mcpServers === true}
+              onMcpServers={() => navigate({ page: "residents", mcpServers: true })}
               onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
               onCreate={() => navigate({ page: "residents", creating: true })}
               // Ungated: the page itself just settled the draft (saved, archived, discarded).

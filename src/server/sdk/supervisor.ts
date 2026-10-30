@@ -13,10 +13,11 @@ import type {
   RestoringSession,
   SdkSendDisposition,
   Session,
+  Task,
   ThinkingLevel,
 } from "@shared/types.ts";
 import type { Registry, SdkSessionRegistration } from "../registry.ts";
-import type { SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
+import type { ResidentMcpLaunch, SdkSessionHandle, SdkTurn, SessionRequestAnswer } from "../harness/types.ts";
 import { sdkFor } from "../harness/index.ts";
 import {
   missionMcpDescriptor,
@@ -187,6 +188,13 @@ export class SdkSupervisor {
    * reclaim the worktree of work that was merely interrupted.
    */
   private shuttingDown = false;
+  /** A resident task's pinned MCP set, installed once `ResidentManager` exists. */
+  private residentMcp?: (task: Task) => ResidentMcpLaunch | null;
+
+  /** Install the resident MCP reader the resume path renders a resident's servers from. */
+  registerResidentMcp(read: (task: Task) => ResidentMcpLaunch | null): void {
+    this.residentMcp = read;
+  }
 
   constructor(
     private readonly registry: Registry,
@@ -343,6 +351,8 @@ export class SdkSupervisor {
     effort: ThinkingLevel | null;
     permissionMode: PermissionMode | null;
     mcp: MissionMcpDescriptor | null;
+    /** A resident run's pinned MCP set; absent for every other launch. */
+    residentMcp?: ResidentMcpLaunch | null;
     /**
      * Secondary worktrees this session must be able to write to (multi-repo tasks).
      * Optional so every existing caller is unchanged; omitted means the ordinary
@@ -408,6 +418,7 @@ export class SdkSupervisor {
         effort: input.effort,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
+        residentMcp: input.residentMcp ?? null,
         extraDirs: input.extraDirs ?? [],
         standingInstructions: outOfBandStanding,
         // What to send instead if that channel turns out to be unusable. Composed by the
@@ -1218,6 +1229,9 @@ export class SdkSupervisor {
         effort: row.effort,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
+        // A resident's MCP set comes from its run's snapshot, never from native configuration,
+        // so a restart resumes exactly the servers it launched with.
+        residentMcp: task ? this.residentMcp?.(task) ?? null : null,
         // Rebuilt from the task row rather than remembered on the session row, because the
         // task is where the repo set durably lives - and this grant can only be made at
         // launch, so a resumed multi-repo session that omitted it would come back able to

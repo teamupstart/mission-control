@@ -963,6 +963,7 @@ export class TaskManager {
   ) => boolean = () => false;
   /** The resident launch composer, installed by the daemon once `ResidentManager` exists. */
   private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
+  private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
    * installed one. Absent in every focused test, which is exactly the shipped default
@@ -1015,6 +1016,7 @@ export class TaskManager {
         }
         return this.residentLaunch(task, repository, runtime);
       },
+      residentMcp: (task) => this.residentMcp?.(task) ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1435,8 +1437,12 @@ export class TaskManager {
   }
 
   /** Install the resident launch composer after `ResidentManager` exists. */
-  registerResidentLaunch(compose: NonNullable<TaskDispatcherDeps["residentLaunch"]>): void {
+  registerResidentLaunch(
+    compose: NonNullable<TaskDispatcherDeps["residentLaunch"]>,
+    mcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>,
+  ): void {
     this.residentLaunch = compose;
+    this.residentMcp = mcp;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */

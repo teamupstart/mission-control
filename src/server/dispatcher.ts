@@ -1,4 +1,5 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
+import type { ResidentMcpLaunch } from "./harness/types.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -331,6 +332,11 @@ export class Dispatcher {
         runtime: SessionRuntime,
       ) => StandingInstructionsDelivery;
       /**
+       * A resident task's pinned MCP set (`SdkLaunchOptions.residentMcp`), from the same
+       * composer, or null to keep the harness's native MCP behaviour.
+       */
+      residentMcp?: (task: Task) => ResidentMcpLaunch | null;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -626,9 +632,11 @@ export class Dispatcher {
       );
       // The one resident call site: the composer appends the run's resident section after the
       // repository block. Asked by launch owner, never by harness id.
-      const standing = TASK_KIND_BEHAVIOR[task.kind].launch === "resident"
+      const resident = TASK_KIND_BEHAVIOR[task.kind].launch === "resident";
+      const standing = resident
         ? this.residentStanding(task, repositoryStanding, runtime)
         : repositoryStanding;
+      const residentMcp = resident ? this.deps.residentMcp?.(task) ?? null : null;
       // EXACTLY ONE delivery. A pair with an out-of-band channel carries the block there and
       // is NOT also prefixed; a pair without one is prefixed and sends nothing out of band.
       // Both would have the agent read the same rule twice in its first turn, which for a
@@ -719,6 +727,7 @@ export class Dispatcher {
           extraDirs,
           standing,
           standingFallbackTurnOne,
+          residentMcp,
         );
         observeDispatchFinished({
           taskId,
@@ -1748,6 +1757,8 @@ export class Dispatcher {
     standing: StandingInstructionsDelivery,
     /** `intent` recomposed with the block in its ordered slot, if the channel proves unusable. */
     standingFallbackTurnOne: string,
+    /** A resident run's pinned MCP set, rendered beside Mission's descriptor. */
+    residentMcp: ResidentMcpLaunch | null = null,
   ): Promise<void> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -1828,6 +1839,7 @@ export class Dispatcher {
       effort,
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
+      residentMcp,
       extraDirs,
       // The WHOLE delivery, because the supervisor is the only place that learns what the
       // driver actually did with it - Codex can find its channel unusable at launch and fall

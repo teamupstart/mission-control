@@ -1,3 +1,9 @@
+import type {
+  CreateResidentMcpServer,
+  ResidentMcpCatalog,
+  ResidentMcpCustomServerView,
+  UpdateResidentMcpServer,
+} from "@shared/resident-mcp.ts";
 import type { ResidentSkillIndex, ResidentSkillSources } from "@shared/resident-skills.ts";
 import { actionFetch } from "../lib/experience.ts";
 import type { ResidentProfile, ResidentProfileRevision } from "@shared/residents.ts";
@@ -68,4 +74,23 @@ export function rescanResidentSkills(): Promise<ResidentSkillIndex> {
 }
 export function saveResidentSkillSources(config: ResidentSkillSources, expectedRevision: string): Promise<ResidentSkillIndex> {
   return residentRequest("/api/residents/skill-sources", { method: "PUT", body: JSON.stringify({ config, expectedRevision }) });
+}
+
+export function fetchResidentMcpCatalog(): Promise<ResidentMcpCatalog> {
+  return residentRequest("/api/residents/mcp-catalog", { method: "GET" });
+}
+export function refreshResidentMcpCatalog(): Promise<ResidentMcpCatalog> {
+  return residentRequest("/api/residents/mcp-catalog/refresh", { method: "POST", body: "{}" });
+}
+export function createResidentMcpServer(input: CreateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
+  return residentRequest("/api/residents/mcp-servers", { method: "POST", body: JSON.stringify(input) });
+}
+export function updateResidentMcpServer(id: string, input: UpdateResidentMcpServer): Promise<ResidentMcpCustomServerView> {
+  return residentRequest(`/api/residents/mcp-servers/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) });
+}
+export function deleteResidentMcpServer(id: string, expectedRevision: number): Promise<{ ok: true }> {
+  return residentRequest(`/api/residents/mcp-servers/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision }),
+  });
 }

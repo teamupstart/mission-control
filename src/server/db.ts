@@ -184,7 +184,8 @@ let db: DatabaseSync | undefined;
 // 11: resident loop state, generation delivery claims and durable pacing receipts.
 // 12: bind resident wake attribution to its recorded conversation and native turn.
 // 13: retain a resident SDK session's measured native compaction limit across resumes.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 13;
+// 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2083,6 +2084,43 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_resident_runs_open
       ON resident_runs(launch_state) WHERE ended_at IS NULL;
 
+    -- ---- resident MCP servers ----
+    --
+    -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
+    -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
+    -- a launch's snapshot, never returned by a route, published, logged or captured by a
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- server's id and the field ("env:NAME", "header:Name", "query:name").
+    CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
+      server_id   TEXT NOT NULL,
+      field       TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (server_id, field)
+    );
+
+    -- A run's MCP snapshot: its effective server set, resolved once at launch and read by
+    -- every start and resume, so no later edit to a profile, a custom server, a secret or the
+    -- harness's own configuration reaches a live run. Daemon-private like the secrets: a
+    -- global server's whole definition is here, because native configuration does not mark
+    -- which of its parts are credentials. Keyed by (source, name); removed when the run ends.
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_servers (
+      run_id           TEXT NOT NULL,
+      source           TEXT NOT NULL,  -- 'global' | 'custom'
+      name             TEXT NOT NULL,
+      position         INTEGER NOT NULL,
+      definition_json  TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, name)
+    );
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_secrets (
+      run_id  TEXT NOT NULL,
+      source  TEXT NOT NULL,
+      server  TEXT NOT NULL,
+      field   TEXT NOT NULL,
+      value   TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, server, field)
+    );
+
     -- ---- recurring missions ----
     --
     -- One row per schedule the operator created. The TEMPLATE is not here: it lives on
@@ -3274,6 +3312,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_runs", "control_conversation_id", "TEXT");
   addColumn(d, "resident_runs", "control_cwd", "TEXT");
   addColumn(d, "resident_runs", "control_episode_id", "TEXT");
+  // When the run's MCP snapshot was taken. NULL on a run launched before snapshots existed,
+  // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
+  // every run since, which starts exactly its snapshot.
+  addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");

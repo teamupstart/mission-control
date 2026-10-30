@@ -299,8 +299,10 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
 - Resident identifiers - the task kind `resident`, the launch-state vocabulary
   (`RESIDENT_LAUNCH_STATES` in `src/shared/residents.ts`, written into
   `resident_runs.launch_state`), the profile section keys (`RESIDENT_PROFILE_SECTIONS`, the JSON
-  keys every stored revision carries) and the `resident-profiles` settings-backup domain. Append,
-  never rename or reorder. See [Resident profiles](#resident-profiles)
+  keys every stored revision carries), the `resident-profiles` and `resident-mcp-servers`
+  settings-backup domains, the MCP server reference sources (`global`, `custom`) and the secret
+  field kinds (`env:`, `header:`, `query:`). Append, never rename or reorder. See
+  [Resident profiles](#resident-profiles)
 - Built-in workflow version ids (`builtinWorkflowVersionId`) - bindings and runs store
   `builtin-workflow:<slug>@<n>` durably. Improving a shipped workflow APPENDS a version;
   editing one rewrites the graph every existing binding pinned to it. The literal node and
@@ -1216,7 +1218,7 @@ them and never edits another phase's entry:
   instructions. Widen `ResidentLaunchContribution` with an optional field; never branch on a
   harness id.
 
-Four rules hold across phases:
+These rules hold across phases:
 
 1. **One launch path.** `ResidentManager.launch` behind `POST /api/residents/profiles/:id/launch`,
    and `launchResident()` (`src/web/residents/launch.ts`) for every browser affordance. Only the
@@ -1239,6 +1241,22 @@ Four rules hold across phases:
    create a resident grant through any other path, including Restart on new profile, which is a
    new launch and needs its own click. The rule is stated in
    [security](../security.md#resident-launch-grants).
+
+6. **A run's MCP servers come only from its snapshot.** The launch resolves the effective set once
+   (`resolveResidentMcpSet` in `src/server/residents/mcp-launch.ts`), keyed by (source, name),
+   before any secret is bound, and writes it to `resident_run_mcp_servers` and
+   `resident_run_mcp_secrets`; `resident_runs.mcp_snapshot_at` marks it, so a run from before
+   snapshots keeps native MCP behaviour. The `mcp` contributor renders it into
+   `SdkLaunchOptions.residentMcp` beside Mission's unchanged `mcp` descriptor, at launch and on
+   every resume (`SdkSupervisor.registerResidentMcp`). A driver calls `forStart()` once per
+   process start, including its own relaunches, because launcher credentials are single-use. No
+   entry carries a secret value; a global server, or a custom server with a secret, is always a
+   launcher entry. A driver honours it only through the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection`
+   records, and a harness whose value is `null` cannot save or launch an MCP selection.
+   Secret values are never returned by a route, published, logged, backed up or placed in an
+   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
+   a recovery point is scrubbed of, and a new secret table joins that list. See
+   [security](../security.md#resident-mcp-secrets).
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null

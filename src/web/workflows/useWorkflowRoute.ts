@@ -262,6 +262,8 @@ export type MissionRoute =
        */
       page: "residents";
       skillSources?: true;
+      /** The custom MCP servers panel. */
+      mcpServers?: true;
       /** The profile the editor has open. Absent shows the rail with nothing selected. */
       profileId?: string;
       /** A new profile is being authored. Never set together with `profileId`. */
@@ -480,6 +482,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
   if (path === "/shipped") return { page: "shipped" };
   if (path === "/residents") return { page: "residents" };
   if (path === "/residents/skill-sources") return { page: "residents", skillSources: true };
+  if (path === "/residents/mcp-servers") return { page: "residents", mcpServers: true };
   if (path === `/residents/${LIBRARY_NEW_SEGMENT}`) return { page: "residents", creating: true };
   const resident = /^\/residents\/([^/]+)$/.exec(path);
   if (resident) {
@@ -526,6 +529,7 @@ export function missionRouteHash(route: MissionRoute): string {
   if (route.page === "shipped") return "#/shipped";
   if (route.page === "residents") {
     if (route.skillSources) return "#/residents/skill-sources";
+    if (route.mcpServers) return "#/residents/mcp-servers";
     if (route.creating) return `#/residents/${LIBRARY_NEW_SEGMENT}`;
     return route.profileId ? `#/residents/${encodeURIComponent(route.profileId)}` : "#/residents";
   }

@@ -2,6 +2,8 @@ import { capabilitiesFor, standingInstructionsChannel } from "@shared/harness-ca
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
+import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { residentMcpLaunchForRun } from "./mcp-launch.ts";
 
 /**
  * The resident launch composer: what a resident run adds to the SDK launch the dispatcher
@@ -26,6 +28,8 @@ export interface ResidentLaunchContext {
 export interface ResidentLaunchContribution {
   /** A block appended to the resident section of the standing instructions. */
   standingInstructions?: string;
+  /** The run's pinned MCP set, for `SdkLaunchOptions.residentMcp`. */
+  residentMcp?: ResidentMcpLaunch | null;
   residentCompaction?: { threshold: number };
 }
 
@@ -56,17 +60,32 @@ export const personaInstructionsContributor: ResidentLaunchContributor = {
   },
 };
 
+/**
+ * The run's MCP servers, from the snapshot it took at launch and nothing else, whether its
+ * profile inherits the harness defaults or not. Read again at every launch and resume, so no
+ * later edit to a profile, a custom server, a secret or the native configuration reaches it.
+ */
+export const mcpContributor: ResidentLaunchContributor = {
+  id: "mcp",
+  contribute({ run }) {
+    return { residentMcp: residentMcpLaunchForRun(run.id) };
+  },
+};
+
 /** Ordered. Append; never reorder an existing entry, because order is delivery order. */
 export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] = [
   personaInstructionsContributor,
   { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
     ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
+  mcpContributor,
 ];
 
 /** The composed resident additions to one launch. */
 export interface ResidentLaunchPlan {
   /** The standing-instruction delivery to launch with: repository rules, then the resident section. */
   standing: StandingInstructionsDelivery;
+  /** The run's pinned MCP set, or null to keep the harness's native MCP behaviour. */
+  residentMcp: ResidentMcpLaunch | null;
   residentCompaction?: { threshold: number };
 }
 
@@ -85,13 +104,15 @@ export function composeResidentLaunch(
   contributors: readonly ResidentLaunchContributor[] = RESIDENT_LAUNCH_CONTRIBUTORS,
 ): ResidentLaunchPlan {
   const contributions = contributors.map((contributor) => contributor.contribute(context));
+  const residentMcp = contributions.find((contribution) => contribution.residentMcp)?.residentMcp ?? null;
   const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
   const sections = contributions
     .map((part) => part.standingInstructions?.trim() ?? "")
     .filter((text) => text.length > 0);
-  if (sections.length === 0) return { standing: repository, residentCompaction };
+  if (sections.length === 0) return { standing: repository, residentMcp, residentCompaction };
   const text = [repository.text, ...sections].filter((part) => part.length > 0).join("\n\n");
   return {
+    residentMcp,
     residentCompaction,
     standing: {
       text,

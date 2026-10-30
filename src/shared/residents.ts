@@ -171,6 +171,55 @@ export const ResidentAuthoritySectionSchema = z.object({
 });
 export type ResidentAuthoritySection = z.infer<typeof ResidentAuthoritySectionSchema>;
 
+/** How many MCP servers one profile may select. */
+export const RESIDENT_MCP_SELECTION_MAX = 32;
+
+/**
+ * One selected MCP server. A global server is named by the harness whose configuration holds
+ * it, so a profile that changes harness cannot silently keep another harness's server. A custom
+ * server is named by its Mission Control id, so renaming it does not break the selection.
+ */
+export const ResidentMcpServerRefSchema = z.discriminatedUnion("source", [
+  z.object({
+    source: z.literal("global"),
+    agent: z.enum(RESIDENT_AGENTS),
+    name: z.string().min(1).max(128),
+  }),
+  z.object({
+    source: z.literal("custom"),
+    id: z.string().uuid("a custom MCP server is named by its id"),
+  }),
+]);
+export type ResidentMcpServerRef = z.infer<typeof ResidentMcpServerRefSchema>;
+
+/** The stable identity of a selection, for de-duplication and comparison. */
+export function residentMcpRefKey(ref: ResidentMcpServerRef): string {
+  return ref.source === "global" ? `global:${ref.agent}:${ref.name}` : `custom:${ref.id}`;
+}
+
+/**
+ * Which MCP servers a run starts with, besides Mission Control's own, which is always attached.
+ *
+ * `inheritDefaults` adds every global server the harness configures at launch; the selection is
+ * added either way. A run snapshots the resulting set at launch and never reads the native
+ * configuration again, so a later edit there reaches the next launch only.
+ */
+export const ResidentMcpSectionSchema = z
+  .object({
+    inheritDefaults: z.boolean().default(true),
+    selected: z
+      .array(ResidentMcpServerRefSchema)
+      .max(RESIDENT_MCP_SELECTION_MAX, `a profile selects at most ${RESIDENT_MCP_SELECTION_MAX} MCP servers`)
+      .default([]),
+  })
+  .superRefine((value, ctx) => {
+    const keys = value.selected.map(residentMcpRefKey);
+    if (new Set(keys).size !== keys.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["selected"], message: "an MCP server is selected twice" });
+    }
+  });
+export type ResidentMcpSection = z.infer<typeof ResidentMcpSectionSchema>;
+
 /** A string's user-perceived characters, so an accented letter or an emoji counts once. */
 function graphemes(text: string): string[] {
   return [...new Intl.Segmenter("en-US", { granularity: "grapheme" }).segment(text)]
@@ -267,6 +316,7 @@ export const RESIDENT_PROFILE_SECTIONS = {
   board: ResidentBoardSectionSchema.default({}),
   authority: ResidentAuthoritySectionSchema.default({}),
   loop: ResidentLoopSectionSchema.default({}),
+  mcp: ResidentMcpSectionSchema.default({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -553,11 +603,24 @@ export type ResidentLaunchResult =
   | { state: "pending"; run: ResidentRun }
   | { state: "failed"; run: ResidentRun; error: string };
 
+/**
+ * The MCP part of the launch summary: whether the harness defaults ride along, and what is
+ * selected. `labels` names the selection in order when the caller can resolve it (a custom
+ * server's name lives in the custom-server catalog, not the profile); otherwise it is counted.
+ */
+export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
+  const count = mcp.selected.length;
+  const named = labels && labels.length === count ? labels.join(", ") : `${count} selected`;
+  if (mcp.inheritDefaults) return count === 0 ? "MCP: defaults" : `MCP: defaults + ${named}`;
+  return count === 0 ? "MCP: Mission only" : `MCP: only ${named}`;
+}
+
 /** A short, human summary of what a launch will carry, for Dispatch's read-only line. */
 export function residentLaunchSummary(
   settings: ResidentProfileRevision,
   personaName: string | null,
   agentLabel: string,
+  mcpLabels?: readonly string[],
 ): string {
   const parts = [
     personaName ? `persona ${personaName}` : "persona missing",
@@ -565,6 +628,7 @@ export function residentLaunchSummary(
     agentLabel,
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
+    residentMcpSummary(settings.mcp, mcpLabels),
     settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");

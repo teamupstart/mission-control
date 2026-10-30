@@ -1114,15 +1114,16 @@ test("workspace cleanup contains database read failures and retries without losi
     assert.ok(existsSync(run.workspaceDir!));
     assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, run.workspaceDir);
   }
-  assert.equal(errors.mock.callCount(), 1, "a continuous scan failure is reported once until a pass succeeds");
-  assert.match(String(errors.mock.calls[0]!.arguments[0]), /could not scan ended workspaces/);
+  // The MCP state scan reports its own failures independently; count the workspace scan's.
+  const workspaceReports = () => errors.mock.calls.filter((call) => /could not scan ended workspaces/.test(String(call.arguments[0]))).length;
+  assert.equal(workspaceReports(), 1, "a continuous scan failure is reported once until a pass succeeds");
   await setup.residents.cleanupEndedWorkspaces();
   assert.equal(existsSync(run.workspaceDir!), false);
   assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
   const laterFailure = t.mock.method(db, "prepare", () => { throw new Error("database is locked again"); });
   try {
     await setup.residents.cleanupEndedWorkspaces();
-    assert.equal(errors.mock.callCount(), 2, "a later failure after recovery is reported again");
+    assert.equal(workspaceReports(), 2, "a later failure after recovery is reported again");
   } finally {
     laterFailure.mock.restore();
   }

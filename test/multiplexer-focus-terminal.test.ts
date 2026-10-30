@@ -229,7 +229,7 @@ const DOMAINS_BEFORE = [
 test("the terminals backup domain is appended, and every id that existed stays where it was", () => {
   assert.deepEqual(
     // Resident domains were appended later still, at the end of the list.
-    SETTINGS_BACKUP_DOMAIN_IDS.filter((id) => id !== "terminals" && id !== "resident-profiles" && id !== "resident-skill-sources"),
+    SETTINGS_BACKUP_DOMAIN_IDS.filter((id) => id !== "terminals" && id !== "resident-profiles" && id !== "resident-skill-sources" && id !== "resident-mcp-servers"),
     [...DOMAINS_BEFORE],
     "removing the new id must reproduce the previous list exactly, in order",
   );

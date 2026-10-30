@@ -107,6 +107,10 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/residents/profiles/:id/launch", "resident.launch", "residents"],
   ["PUT", "/api/residents/skill-sources", "resident.skills_configure", "residents"],
   ["POST", "/api/residents/skills/rescan", "resident.skills_scan", "residents"],
+  ["POST", "/api/residents/mcp-servers", "resident.mcp_server_create", "residents"],
+  ["PUT", "/api/residents/mcp-servers/:id", "resident.mcp_server_edit", "residents"],
+  ["DELETE", "/api/residents/mcp-servers/:id", "resident.mcp_server_delete", "residents"],
+  ["POST", "/api/residents/mcp-catalog/refresh", "resident.mcp_catalog_refresh", "residents"],
   ["POST", "/api/ensembles/preview", "ensemble.preview", "ensembles"],
   ["POST", "/api/ensembles", "ensemble.create", "ensembles"],
   ["POST", "/api/ensembles/:id/actions", "ensemble.action", "ensembles"],
@@ -182,6 +186,7 @@ export const PRIMARY_NON_USE_ACTIONS: ReadonlySet<PrimaryAction> = new Set([
   "queue.wrapup_configure", "schedule.preview", "schedule.create", "schedule.edit", "schedule.enable", "schedule.archive",
   "resident.profile_create", "resident.profile_edit", "resident.profile_archive",
   "resident.skills_configure", "resident.skills_scan",
+  "resident.mcp_server_create", "resident.mcp_server_edit", "resident.mcp_server_delete", "resident.mcp_catalog_refresh",
   "ensemble.preview", "pipeline.configure", "pipeline.readiness", "foreman.configure", "foreman.instructions",
   "away.configure", "inspector.configure", "shipping.configure", "help.tour_preview",
 ]);

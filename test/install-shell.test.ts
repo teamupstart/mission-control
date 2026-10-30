@@ -59,7 +59,8 @@ appendFileSync(${JSON.stringify(log)}, tool+':'+JSON.stringify(args)+'\\n');
 if(tool==='gh') {
   const endpoint=args[3];
   if(fail==='transport') {console.error('error connecting to api.github.com');process.exit(1);}
-  if(fail.startsWith('missing-')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+  if((fail.startsWith('missing-')||fail==='no-access')&&endpoint.includes('/releases/tags/')) {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
+  if(fail==='no-access'&&endpoint==='repos/teamupstart/mission-control') {console.error('gh: Not Found (HTTP 404)');process.exit(1);}
   if(endpoint.endsWith('/assets/11')) process.stdout.write(fail==='oversize'?'x'.repeat(20000):fail==='malformed'?'invalid':${JSON.stringify(JSON.stringify(manifest))});
   else if(endpoint.endsWith('/assets/13')) process.stdout.write(fail==='truncated'?'short':${JSON.stringify(dmg.toString())});
   else if(endpoint.includes('/commits/')) console.log(JSON.stringify({sha:${JSON.stringify(commit)}}));
@@ -166,6 +167,14 @@ test('an unpublished stable tag is named as missing', t => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Release v9\.9\.9 is not published\. Select an existing vX\.Y\.Z tag/);
   assert.doesNotMatch(readFileSync(f.log, 'utf8'), /runtime:|forbidden:/);
+});
+
+test('a release 404 from a repository gh cannot see keeps the authentication guidance', t => {
+  const f = fixture(t, 'no-access'); const result = f.run(['--ref', 'v9.9.9']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Canonical download failed\. Check gh authentication and connectivity/);
+  assert.doesNotMatch(result.stderr, /is not published/);
+  assert.match(readFileSync(f.log, 'utf8'), /"repos\/teamupstart\/mission-control",/);
 });
 
 test('a transport failure keeps the authentication and connectivity guidance', t => {

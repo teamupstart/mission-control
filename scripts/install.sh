@@ -20,8 +20,13 @@ download() {
   wait "$pid" || result=$?
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
-  # An authenticated 404 is an answer, not a transport fault: name what is absent.
-  if [[ $result != 0 && -n $missing ]] && /usr/bin/grep -q '(HTTP 404)' "$mission_tmp/transport.log"; then fail "$missing"; fi
+  # A private repository also answers 404 to a token that cannot see it. Name the
+  # absent release only once the repository itself is readable; otherwise the
+  # probe fails with the authentication guidance below.
+  if [[ $result != 0 && -n $missing ]] && /usr/bin/grep -q '(HTTP 404)' "$mission_tmp/transport.log"; then
+    download 'repos/teamupstart/mission-control' "$mission_tmp/repository.json" 1048576
+    fail "$missing"
+  fi
   [[ $result == 0 ]] || fail "Canonical download failed. Check gh authentication and connectivity; no source build was attempted."
   [[ $(/usr/bin/stat -f %z "$output") -le $limit ]] || fail "Download exceeds its size limit."
 }

@@ -184,6 +184,24 @@ function residentTasks(registry: Registry): Task[] {
   return registry.listTasks().filter((task) => task.kind === "resident");
 }
 
+test("catalog storage failures cannot prevent resident reconciliation and run-end subscriptions", (t) => {
+  const h = harness({ start: false });
+  const calls: string[] = [];
+  t.mock.method(h.residents, "reconcilePendingRuns", () => { calls.push("pending"); });
+  t.mock.method(h.registry, "subscribe", () => { calls.push("subscribe"); return () => {}; });
+  t.mock.method(h.registry, "onSessionsObserved", () => { calls.push("observed"); return () => {}; });
+  t.mock.method(console, "error", (message: string) => { calls.push(message); });
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (sql === "SELECT value FROM app_config WHERE key = ?") throw new Error("catalog storage unavailable");
+    return prepare(sql);
+  });
+  assert.doesNotThrow(() => h.residents.start());
+  assert.deepEqual(calls.slice(0, 3), ["pending", "subscribe", "observed"]);
+  assert.match(calls[3]!, /could not index skill sources at startup/);
+});
+
 test("a launch reserves one run, creates its resident task with the profile's agent, model and effort, and settles launched on the session row", async () => {
   const h = harness();
   const profile = profileIn(h);
@@ -249,7 +267,9 @@ test("the restart route replays the same run and task without repeating completi
   const profile = profileIn(h);
   const original = await h.residents.launch(profile.id, { repoRoot: REPO, instructions: "Watch the release", requestId: "before-restart" });
   if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
-  assert.equal(h.residents.updateProfile(profile.id, 1, settings({ instructions: "Updated brief" })).ok, true);
+  assert.equal(h.residents.updateProfile(profile.id, 1, {
+    ...settings({ instructions: "Updated brief" }), authority: { controlOtherSessions: true },
+  }).ok, true);
   const restart = () => app.request(`/api/residents/runs/${original.result.run.id}/restart`, { method: "POST" });
 
   const response = await restart();
@@ -260,6 +280,8 @@ test("the restart route replays the same run and task without repeating completi
   assert.notEqual(first.taskId, original.result.taskId);
   assert.equal(first.run.profileRevision, 2);
   assert.equal(first.run.runInstructions, "Watch the release");
+  assert.equal(first.run.settings.authority.controlOtherSessions, true);
+  assert.equal(first.run.control.authorizedAt, null, "Restart does not substitute for a desktop Launch grant");
   assert.notEqual(store.getResidentRun(original.result.run.id)!.run.endedAt, null);
   assert.equal(h.registry.getTask(original.result.taskId)!.status, "done");
 
@@ -270,6 +292,7 @@ test("the restart route replays the same run and task without repeating completi
   assert.equal(replay.run.id, first.run.id);
   assert.equal(replay.taskId, first.taskId);
   assert.equal(replay.run.profileRevision, 2);
+  assert.deepEqual(replay.run.control, first.run.control, "replaying Restart never adds a session-control grant");
   assert.equal(runCount(), 2, "only the original and its replacement run exist");
   assert.equal(residentTasks(h.registry).length, 2);
   assert.deepEqual(h.dispatched, [original.result.taskId, first.taskId], "the replacement dispatch happens once");
@@ -1265,7 +1288,7 @@ test("a launch publishes its run while it is live, carrying the pinned settings,
   assert.equal(live?.personaName, PERSONA.name);
   assert.deepEqual(live?.settings.board, { colorId: "cyan", label: null, pin: true });
   // Only the sections the browser draws: never the profile instructions or the repository.
-  assert.deepEqual(Object.keys(live!.settings).sort(), ["board", "identity", "loop"]);
+  assert.deepEqual(Object.keys(live!.settings).sort(), ["authority", "board", "identity", "loop"]);
   // The wire summary leaves out what no board surface reads.
   assert.equal("persona" in (live as object), false);
   assert.equal("runInstructions" in (live as object), false);

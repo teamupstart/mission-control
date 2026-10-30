@@ -601,3 +601,37 @@ another review-only workflow validates the frozen approved text; explicit None u
 merge edges stay blocked until their normal publication condition. Missing tools never permit
 fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
 home separately to retain plan contents and their daemon ledger.
+
+## Resident skill catalog
+
+**Residents > Skill sources** indexes global skills and operator-registered folders, independently
+of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
+YAML frontmatter, including folded descriptions, and reports source problems in place. The index
+is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+Rescans share a one-second cooldown after completion across windows and local API clients;
+an early retry reports how long to wait without starting another scan.
+Concurrent source edits are compared against the list a window loaded. A stale add or removal
+is refused and refreshes the list so the operator can review it before retrying.
+If restored registrations have an invalid shape, the catalog still shows global skills and
+explains the problem. **Reset source list** explicitly replaces those invalid registrations
+with an empty list before new folders can be added. Reads and rescans leave the stored value
+intact, and a reset also refuses a stale revision.
+
+The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
+must be absolute or start with `~/`; broad roots and canonical duplicates are refused. Child
+directory links resolving to the home directory or an ancestor are also refused. Claude entries
+are omitted only when their resolved directory is already indexed by the Mission Control source;
+independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
+including the source root, each SKILL.md read, ordinary files and hidden entries. An over-limit source reports
+truncation; the retained subset follows filesystem enumeration order. The complete serialized
+catalog is capped at 4 MiB, including source metadata, escaped descriptions and scan problems.
+Scanning stops before retaining an entry that would exceed that total; the panel explicitly
+reports the partial catalog. Remove unneeded sources or shorten descriptions, then rescan.
+The
+`residents.skillSources` setting stores stable ids and paths, backed up under
+`resident-skill-sources`. Skill content is never included in settings backups.
+
+This catalog is read-only with respect to the skills themselves. It currently offers no profile
+selection because neither harness has a verified frozen-isolation mechanism. See
+[Residents](residents.md#skill-sources) for the launch policy and current limitation.

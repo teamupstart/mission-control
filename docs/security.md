@@ -142,8 +142,12 @@ takes its contents wherever it goes. Deletion is explicit and local.
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the
 current daemon run. Its identity includes the process, native conversation id, working
-directory, work episode and task. Neither dispatch defaults nor a session-control tool can
-create a grant. Resetting or replacing that identity revokes it.
+directory, work episode and task. Exactly two things create a grant, and both are a trusted
+click in the desktop dashboard: the session's own control menu, and the **Launch** click for a
+resident profile whose pinned revision turns **Control other sessions** on (see
+[Resident launch grants](#resident-launch-grants)). Dispatch defaults, a launch from any other
+surface and session-control tools cannot create one. Resetting or replacing that identity
+revokes it.
 
 The MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
@@ -167,6 +171,44 @@ the shared machine token and signed agent credentials cannot create a grant.
 The standalone browser dashboard cannot change this setting. A desktop app that adopted
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
+
+### Resident launch grants
+
+A resident profile's **Control other sessions** setting is off by default and grants nothing on
+its own. It lets one thing give a resident run the grant above: the operator's **Launch** click
+in the desktop app.
+
+- **The click.** Inside the click, before the launch request is sent, the dashboard arms a
+  single-use authorization bound to that launch's request id, the profile id and the profile
+  revision. It uses the same private preload capability and trusted-click check as the session
+  menu, through its own channel registered with `serveDashboardClick`. It expires after 15
+  seconds and is cleared when the daemon is replaced.
+- **The consumption.** Only the resident launch route asks the shell for it, over the private
+  utility-process channel. It asks once, for the request that reserved the run, when the run's
+  pinned revision turns control on, and for the revision the run pinned. A request carrying the
+  machine token, a signed agent credential, an agent actor header or a non-loopback origin never
+  consumes a click. A replay is answered from the run row and asks for nothing.
+- **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
+  then applies the existing Registry grant to the run's session once that session has a full
+  identity bound to the run's task, and records the conversation, working directory and work
+  episode it applied to before it writes the grant's audit event. If the grant cannot be
+  applied, or its identity cannot be recorded, the live grant is taken back and the run's record
+  is cleared, so the launch reports that it started without control. A launch that answers
+  before the session has a full identity reports the grant as not granted yet; if the daemon
+  restarts before it is applied, the consumed click is cleared and the run stays ungranted.
+- **After a restart.** This is the one grant that survives a daemon restart, and only for the
+  same conversation. After SDK restore it is applied again only when all four recorded fields are
+  set and the restored session's conversation, working directory, work episode and task all
+  match them. The process id is the only part of the identity a restart changes, and the only
+  part not compared. A clear, a new conversation, a changed working directory, a replacement work
+  episode or a launch on a new profile revision needs a new click. A grant that no longer matches
+  is forgotten, and runs from before these records existed stay ungranted.
+- **Revocation.** Turning control off from the session's menu revokes the grant and clears the
+  record, so a restart cannot restore it.
+
+A launch from the standalone browser, from a desktop app that adopted a standalone daemon, or
+from any caller other than that click starts without control. Dispatch, the Residents dock and
+the Console band say so, and the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
 are available without the grant; cross-session access requires **Control other sessions** on

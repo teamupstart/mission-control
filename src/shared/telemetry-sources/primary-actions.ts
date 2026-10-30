@@ -105,6 +105,8 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PATCH", "/api/residents/profiles/:id", "resident.profile_edit", "residents"],
   ["DELETE", "/api/residents/profiles/:id", "resident.profile_archive", "residents"],
   ["POST", "/api/residents/profiles/:id/launch", "resident.launch", "residents"],
+  ["PUT", "/api/residents/skill-sources", "resident.skills_configure", "residents"],
+  ["POST", "/api/residents/skills/rescan", "resident.skills_scan", "residents"],
   ["POST", "/api/ensembles/preview", "ensemble.preview", "ensembles"],
   ["POST", "/api/ensembles", "ensemble.create", "ensembles"],
   ["POST", "/api/ensembles/:id/actions", "ensemble.action", "ensembles"],
@@ -179,6 +181,7 @@ export const PRIMARY_NON_USE_ACTIONS: ReadonlySet<PrimaryAction> = new Set([
   "task.sources_configure", "task.source_check", "task.issue_preview", "file.comment_read",
   "queue.wrapup_configure", "schedule.preview", "schedule.create", "schedule.edit", "schedule.enable", "schedule.archive",
   "resident.profile_create", "resident.profile_edit", "resident.profile_archive",
+  "resident.skills_configure", "resident.skills_scan",
   "ensemble.preview", "pipeline.configure", "pipeline.readiness", "foreman.configure", "foreman.instructions",
   "away.configure", "inspector.configure", "shipping.configure", "help.tour_preview",
 ]);

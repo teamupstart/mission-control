@@ -277,6 +277,30 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
   );
 }
 
+function AuthoritySection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  return (
+    <div className="resident-fields">
+      <label className="alert-row resident-authority">
+        <Tooltip label="Let this resident's run read and steer your other live sessions, when you launch it with a click in the desktop app">
+          <input
+            type="checkbox"
+            checked={draft.authority.controlOtherSessions}
+            disabled={disabled}
+            onChange={(event) => update("authority", { controlOtherSessions: event.target.checked })}
+          />
+        </Tooltip>
+        <span>Control other sessions</span>
+      </label>
+      <p className="field-hint">
+        Off by default. Only your Launch click in the Mission Control desktop app grants it, to that
+        run: it lasts through a restart until the resident's conversation changes or you turn it off
+        from its session control menu. A launch from the browser, or from anywhere else, starts
+        without session control and says so.
+      </p>
+    </div>
+  );
+}
+
 /**
  * The editor's sections, in order. Phase 1 registers the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
@@ -344,6 +368,12 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     title: "Board presence",
     blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
     Body: BoardSection,
+  },
+  {
+    id: "authority",
+    title: "Authority",
+    blurb: "What this resident may do beyond its own session.",
+    Body: AuthoritySection,
   },
   { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
 ];

@@ -39,6 +39,8 @@ export interface ResidentSessionMark extends ResidentChipMark {
    * say "profile changed since launch"; nothing the run draws or does follows it.
    */
   changedTo: number | null;
+  /** The pinned revision's Control other sessions: whether this run asks for session control. */
+  controlOtherSessions: boolean;
 }
 
 /**
@@ -77,6 +79,7 @@ export function residentSessionMark(
     ...marker,
     revision: run.profileRevision,
     changedTo: profile && profile.revision > run.profileRevision ? profile.revision : null,
+    controlOtherSessions: run.settings.authority.controlOtherSessions,
   };
 }
 

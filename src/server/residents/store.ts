@@ -51,6 +51,10 @@ interface RunRow {
   run_instructions: string;
   created_at: number;
   ended_at: number | null;
+  control_authorized_at: number | null;
+  control_conversation_id: string | null;
+  control_cwd: string | null;
+  control_episode_id: string | null;
   settings_json: string | null;
   loop_state: ResidentRun["loopState"];
   iteration: number;
@@ -400,7 +404,8 @@ const RUN_SELECT = `
   SELECT u.id, u.profile_id, u.profile_revision, u.task_id, u.launch_request_id, u.launch_input,
          u.launch_state, u.launch_error, u.persona_snapshot, u.run_instructions, u.created_at,
          u.ended_at, u.workspace_dir, u.loop_state, u.iteration, u.last_seq, u.next_wake_at,
-         u.consumed_generation, u.pause_reason, u.wake_reason, r.settings_json
+         u.consumed_generation, u.pause_reason, u.wake_reason, u.control_authorized_at,
+         u.control_conversation_id, u.control_cwd, u.control_episode_id, r.settings_json
     FROM resident_runs u
     LEFT JOIN resident_profile_revisions r
       ON r.profile_id = u.profile_id AND r.revision = u.profile_revision`;
@@ -451,6 +456,12 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
       persona,
       runInstructions: row.run_instructions,
       settings,
+      control: {
+        authorizedAt: row.control_authorized_at,
+        conversationId: row.control_conversation_id,
+        cwd: row.control_cwd,
+        episodeId: row.control_episode_id,
+      },
       createdAt: row.created_at,
       endedAt: row.ended_at,
       loopState: row.loop_state, iteration: row.iteration, lastSeq: row.last_seq,
@@ -634,6 +645,58 @@ export function endResidentRun(id: string, at: number): boolean {
     }
     return info.changes > 0;
   });
+}
+
+// ---- the session-control grant a Launch click gave a run ----
+
+/**
+ * Record that the daemon consumed this run's desktop Launch click. Once per run, and only while it
+ * is still pending: the click is consumed between the reservation and the task.
+ */
+export function recordResidentRunControlAuthorized(id: string, at: number): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs SET control_authorized_at = ?
+        WHERE id = ? AND launch_state = 'pending' AND control_authorized_at IS NULL`,
+    )
+    .run(at, id);
+  return info.changes > 0;
+}
+
+/** The grant's identity as the Registry applied it, minus the process id a restart changes. */
+export interface ResidentRunControlIdentity {
+  conversationId: string;
+  cwd: string;
+  episodeId: string;
+}
+
+/**
+ * Record the identity the grant was applied to. Only on a run whose click was consumed: nothing
+ * else can turn a run into one that is regranted after a restart.
+ */
+export function recordResidentRunControlGrant(id: string, identity: ResidentRunControlIdentity): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs
+          SET control_conversation_id = ?, control_cwd = ?, control_episode_id = ?
+        WHERE id = ? AND control_authorized_at IS NOT NULL`,
+    )
+    .run(identity.conversationId, identity.cwd, identity.episodeId, id);
+  return info.changes > 0;
+}
+
+/** Forget a run's grant: it is never applied again, by this process or after a restart. */
+export function clearResidentRunControl(id: string): boolean {
+  const info = openDb()
+    .prepare(
+      `UPDATE resident_runs
+          SET control_authorized_at = NULL, control_conversation_id = NULL, control_cwd = NULL,
+              control_episode_id = NULL
+        WHERE id = ? AND (control_authorized_at IS NOT NULL OR control_conversation_id IS NOT NULL
+          OR control_cwd IS NOT NULL OR control_episode_id IS NOT NULL)`,
+    )
+    .run(id);
+  return info.changes > 0;
 }
 
 /**

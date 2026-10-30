@@ -6,7 +6,7 @@ launch it from **Dispatch > Resident**. It runs as an ordinary session in the Ag
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
 This page describes profiles, launch, the persistent wake loop, repository-free residents,
-and their dashboard controls. Skill and MCP selection and session control are later phases of
+skill sources, session control and their dashboard controls. Skill and MCP selection remain later phases of
 [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
@@ -23,6 +23,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Workspace | The repository Dispatch pre-fills | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
+| Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
 opened, so two windows cannot overwrite each other silently. **Archive** removes a profile from
@@ -87,7 +88,9 @@ never a resident that is already running.
 - **Console band.** Opening a resident shows a band under the Console header: the label chip,
   the profile name, the Persona, the revision it launched from and whether it is pinned. When the
   profile has been edited since the launch, the band says **Profile changed since launch** and
-  the new revision. **Profile** opens the profile on the Residents page.
+  the new revision. When the resident's revision turns **Control other sessions** on, the band
+  says **control granted** or **control not granted**, the latter beside the session control
+  menu. **Profile** opens the profile on the Residents page.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
@@ -99,7 +102,8 @@ many; with none running it shows no number. Click it, press **Shift+H**, or choo
 Residents dock** in the ⌘K palette.
 
 - **Live** lists each running resident with its chip, its session's state and **Open**, which
-  opens that session.
+  opens that session. A resident whose revision asks for session control also shows **control
+  granted** or **control not granted**, the latter with the session control menu.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
   launches straight away, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,
@@ -113,6 +117,39 @@ Residents dock** in the ⌘K palette.
 Escape or a click outside closes the dock. On a narrow window the button drops its word and keeps
 the ⌂, plus the live count when there is one, and **Settings → Display → Top bar** can keep it
 that way at every width.
+
+## Session control
+
+**Control other sessions**, under **Authority**, is off by default. Turned on, it lets a
+resident's run receive the same grant as the
+[session control menu](sessions.md#let-a-session-steer-other-sessions), so it can read and steer
+your other live sessions. Your **Launch** click in the Mission Control desktop app, on
+**Launch resident** in Dispatch or **Launch** in the Residents dock, is the only thing that gives
+it a grant that lasts for the run and through a restart. The session control menu can still grant
+control for one conversation, as it can for any session, and that grant ends at the next restart.
+
+- **For that run only.** The click authorizes exactly that launch of that profile revision. It
+  is consumed when the launch starts, cannot be replayed, and expires after 15 seconds. Editing
+  the profile afterwards changes the next launch, not this run.
+- **Through a restart, for the same conversation.** After Mission Control restarts, the grant
+  comes back only if the resident resumes the same conversation in the same working directory,
+  on the same work episode and task. A clear or a new conversation ends it, and a new launch of the profile
+  needs its own Launch click.
+- **Once the session is ready.** The grant is given when the resident's session has its
+  conversation. If the launch answers before that, Dispatch and the dock say session control is
+  not granted yet, and the Console band reads **control granted** once it is. If Mission Control
+  restarts first, that launch is not granted and needs a new Launch click.
+- **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
+  does not bring it back.
+- **Launched anywhere else, it starts without control.** Before you launch from the browser
+  dashboard, Dispatch says the launch will not carry control. A desktop app attached to a daemon
+  it did not start cannot pass the click on either: Dispatch stays open after that launch to say
+  the resident launched without session control. A Launch from the dock reports *Started without
+  session control*, and the Console band reads **control not granted**. The
+  session control menu in the desktop app can still grant it for that conversation, the way it
+  can for any session; that grant ends at the next restart.
+
+The exact rule, and what cannot create a grant, is in [security](security.md#resident-launch-grants).
 
 ## Lifecycle
 
@@ -163,6 +200,8 @@ After a profile edit, **Restart on new profile** ends the old task through its n
 and launches the latest revision in a new conversation. It preserves the repository choice and
 run instructions; a repository-free resident receives a fresh private workspace. New conversation
 creation ensures every changed launch option takes effect.
+The replacement conversation does not inherit a session-control grant from the old run;
+only the desktop Launch flow or the existing session-control menu can grant that authority.
 
 ### Compaction and guardrails
 
@@ -238,3 +277,28 @@ launch and recovery guarantees are maintained in
     `probe-claude-20.log`, artifact `txt_4606a312dc45c5b01382778be74b210d`.
     The retained probe did not auto-compact at the requested 20% setting; explicit manual
     compaction emitted a boundary with 54,678 tokens before and 494 after.
+## Skill sources
+
+Open **Residents > Skill sources** to browse Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and `$CODEX_HOME/skills` (or `~/.codex/skills` when unset). Claude entries
+that resolve to a skill already indexed by Mission Control are omitted; independent
+`mission-*` folders and links remain indexed.
+Register up to 16 additional absolute or home-relative folders. Removing a source only removes
+its registration; it never deletes skill files.
+
+The catalog is scanned at daemon startup and on **Rescan**. Adding or removing a source also
+rescans. Search matches names, descriptions and folders; the Source filter narrows the list.
+Malformed frontmatter, missing folders, unreadable files and bounded-scan limits appear beside
+the source. Grouped folders and symlinked skill folders are supported, but links to the home
+directory or an ancestor are refused. The 5,000-entry scan budget includes ordinary and hidden
+files as well as directories. A skill's stable identity
+is its source id plus relative folder, so editing its name does not change its identity.
+Registered directories are included in settings snapshots. Restoring an older snapshot without
+that domain leaves the current registrations intact.
+
+**Profile skill selection is currently unavailable for both Claude Code and Codex.** Neither
+proposed per-launch mechanism passed the exact frozen-set check. The catalog does not change a
+resident's launch or native skill discovery. Built-in source rows show the limitation instead
+of inventing a selectable inventory. The approved policy remains: inheritance captures defaults
+plus selections, selected-only captures selections, and both must resume from the same immutable
+set. See the [capability measurements](harnesses-and-terminals.md#resident-skill-isolation).

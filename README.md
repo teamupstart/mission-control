@@ -19,10 +19,12 @@ New binaries install **Agent Mission Control.app**. Existing managed installatio
 the same folder, preserving their state and receipt scope. Older saved installers must be
 replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
 
-Each eligible `main` commit publishes a signed, notarized alpha automatically; `--channel alpha`
-installs the current one. A stable release becomes installable once its tag's Signed
-distribution run publishes a ready manifest. A release without one is refused, and the
-installer never falls back to compilation. The explicit developer route
+The plain command installs the newest stable release whose tag's Signed distribution run has
+published a ready manifest, so a release still publishing never blocks an install. Until any
+stable release has one, it installs the newest alpha instead and the app offers stable releases
+as they publish. Each eligible `main` commit publishes a signed, notarized alpha automatically;
+`--channel alpha` installs `main`'s newest published one, and `--channel stable` never falls
+back. The installer never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
 See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
 for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
@@ -166,7 +168,9 @@ Mission Control supports five kinds of work:
 Persona, instructions, a harness, model and effort - on the Residents page, then launch it from
 **Dispatch > Resident**. It runs in the Agent SDK with its persona as standing instructions and ends
 only when you choose **Complete & close**. Choose a repository for a task worktree, or **No repository**
-for a private working directory removed when the run ends. Read more in [Residents](docs/residents.md).
+for a private working directory removed when the run ends. A profile can also let its resident
+control your other sessions; only a Launch click in the desktop app grants that, to that run. Read
+more in [Residents](docs/residents.md).
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 

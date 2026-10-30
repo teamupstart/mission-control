@@ -1967,6 +1967,10 @@ at any time; subsequent reads and actions refuse immediately. An action already 
 may finish. The grant lasts only for the current conversation, task and work episode in this
 daemon run. A reset, replacement conversation, different task, session removal or Mission
 Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+The one exception is a [resident](residents.md#session-control) whose profile turns
+**Control other sessions** on: launched with a click in the desktop app, its run gets the grant,
+and the grant survives a restart only when the conversation, task, working directory and work
+episode all still match.
 
 Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
 The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.

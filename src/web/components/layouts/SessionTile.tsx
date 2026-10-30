@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -549,14 +550,14 @@ export function SessionTile({
               NAME came from instead, so hiding "branch" hides the branch and does not empty
               the cell for a session that never had one. */}
           {shown("branch") && (
-            <span className="tile-branch">{workspaceBranch ?? session.nameSource}</span>
+            <span className="tile-branch">{taskHasRepository(session.task ?? {}) ? workspaceBranch ?? session.nameSource : "no repository"}</span>
           )}
           {/* Which checkout this is - the one fact on this card that the console detail used
               to be the only place to read. The LEAF, not the path: a pool worktree path is
               sixty characters of bookkeeping, and this row is two cells sharing one line's
               width. The whole path is on hover, which is the same bargain every other
               shortened path in the app makes. */}
-          {shown("worktree") && workspaceRoot && (
+          {shown("worktree") && workspaceRoot && taskHasRepository(session.task ?? {}) && (
             <Tooltip label={workspaceRoot}>
               <span className="tile-worktree">{repoLeaf(workspaceRoot)}</span>
             </Tooltip>

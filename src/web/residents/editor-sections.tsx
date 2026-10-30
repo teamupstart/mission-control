@@ -201,12 +201,16 @@ function WorkspaceSection({ draft, update, disabled }: ResidentEditorSectionProp
         Default repository <span className="field-hint">pre-filled at launch</span>
       </label>
       <RepoCombobox
+        placeholder="No repository"
         id="resident-default-repo"
         repos={repos}
         value={draft.workspace.defaultRepoRoot ?? ""}
         disabled={disabled}
         onChange={(value) => update("workspace", { defaultRepoRoot: value.trim() ? value : null })}
       />
+      <Tooltip label="Clear the default repository for this resident profile">
+        <button type="button" className="btn btn-ghost" disabled={disabled} onClick={() => update("workspace", { defaultRepoRoot: null })}>No repository</button>
+      </Tooltip>
     </div>
   );
 }
@@ -305,7 +309,7 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "workspace",
     title: "Workspace",
-    blurb: "The repository Dispatch suggests. Each launch runs in its own task worktree.",
+    blurb: "Choose a repository for a task worktree, or no repository for a private directory removed when the run ends.",
     Body: WorkspaceSection,
   },
   {

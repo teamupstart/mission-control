@@ -1234,6 +1234,31 @@ Four rules hold across phases:
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
 
+Repo-less residents use the existing workspace section and resident creation capability.
+`tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
+keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
+obligation before directory creation and is cleared only after successful removal of the workspace
+and its empty run directory. Removal is asynchronous, serialized per run, and drained during
+daemon shutdown. Creation and cleanup use the native descriptor-relative filesystem operations:
+each component is opened without following symlinks, and recursive removal runs on a worker
+against held directory descriptors so an ancestor swap cannot redirect deletion.
+Removal restores owner access on an already-open directory after a permission-denied unlink
+and retries once. A directory that cannot be opened stays owed until its access is restored;
+cleanup never changes permissions through a pathname.
+Workspace ownership records the reserved run path, not a persistent device/inode identity.
+Files opens the ordinary directory currently at that path for each request and holds its
+descriptor throughout traversal. Replacing the root after it opens cannot redirect that listing;
+an ordinary directory moved into the reserved path before the request becomes its current
+contents. This does not grant the resident permission to move or read directories elsewhere.
+Cleanup also owns paths, not lifetime inode identities: traversal keeps its opened directory,
+but the final directory unlink acts on the current entry in its held parent. An empty ordinary
+replacement can be removed; a populated replacement makes that attempt fail and keeps cleanup
+owed. Cleanup does not search for a directory another process moved out of the owned tree.
+These operations prevent traversal through symlinks; they do not isolate Mission's state from
+another process running as the same OS user.
+Repository consumers use the shared predicate or `taskRepoRefs`, never infer
+a repository from cwd.
+
 The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and
 creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a
 profile is authoring state, and a launched resident reaches the Line as its task and session.

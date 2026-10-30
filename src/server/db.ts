@@ -180,7 +180,8 @@ let db: DatabaseSync | undefined;
 // 7: claim-version retirement identities and immutable retirement sequence boundaries.
 // 8: repository-specific retirement of shared coverage claim versions.
 // 9: retain staged claim versions still applicable to sibling repositories.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
+// 10: repository-free resident task markers and durable workspace cleanup obligations.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 10;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -376,6 +377,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       external_id   TEXT,
       source_url    TEXT,
       repo_root     TEXT NOT NULL,
+      workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
       pipeline_provider TEXT,
@@ -2055,6 +2057,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- repository resolves (launch_input holds the real path); it is what lets an exact
       -- replay be recognized once the repository no longer resolves.
       launch_repo_spelling TEXT NOT NULL DEFAULT '',
+      workspace_dir      TEXT,
       launch_state       TEXT NOT NULL,
       launch_error       TEXT,
       persona_snapshot   TEXT NOT NULL,
@@ -3225,6 +3228,8 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "tasks", "workspace_kind", "TEXT");
+  addColumn(d, "resident_runs", "workspace_dir", "TEXT");
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
@@ -5324,6 +5329,7 @@ export function lastAgentBinding(sessionId: string): string | null {
 // ---- tasks ----
 
 interface TaskRow {
+  workspace_kind: string | null;
   id: string;
   title: string;
   intent: string;
@@ -5677,6 +5683,7 @@ function rowToTask(
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
     repoRoot: r.repo_root,
+    workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
         ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
@@ -5739,7 +5746,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root,
+         workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -5747,7 +5754,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5757,7 +5764,7 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
-         repo_root=excluded.repo_root,
+         repo_root=excluded.repo_root, workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
            WHEN ? THEN excluded.pipeline_commission_id
@@ -5791,7 +5798,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,

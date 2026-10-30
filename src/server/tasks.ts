@@ -50,6 +50,7 @@ import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
+  taskHasRepository,
   dispatchHasNoProvisionedResources,
   RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
@@ -318,7 +319,7 @@ export type InternalCreateOptions =
       id: string;
       schedule?: undefined;
       /** The run that owns this task. Identity only; the run row stays the source of truth. */
-      resident: { runId: string };
+      resident: { runId: string; workspaceDir?: string | null };
     };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
@@ -534,6 +535,7 @@ class TaskCleanupQueue {
 
 /** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function taskCleanupRepoKeys(task: Task): string[] {
+  if (!taskHasRepository(task)) return [];
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
@@ -2748,6 +2750,10 @@ export class TaskManager {
       if (manualDispatch !== RESIDENT_LAUNCH_TASK_CREATE || !internal?.resident) {
         throw new TaskKindBacklogError(refusal);
       }
+      if (internal.resident.workspaceDir &&
+          (input.repoRoot !== internal.resident.workspaceDir || input.extraRepoRoots?.length)) {
+        throw new TaskKindBacklogError("a resident workspace cannot attach repositories");
+      }
     } else if (internal?.resident) {
       throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
     } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
@@ -2798,6 +2804,7 @@ export class TaskManager {
           if (
             existing.kind !== "resident" ||
             existing.repoRoot !== input.repoRoot ||
+            (existing.workspaceKind ?? null) !== (internal.resident.workspaceDir ? "resident-workspace" : null) ||
             existing.intent !== input.intent ||
             existing.title !== explicitTitle ||
             existing.agent !== agent ||
@@ -2906,6 +2913,7 @@ export class TaskManager {
       // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
       repoRoot: input.repoRoot,
+      workspaceKind: internal?.resident?.workspaceDir ? "resident-workspace" : null,
       worktreePath: null,
       branch: null,
       provider: null,
@@ -4698,7 +4706,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if ((taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
+    if ((!taskHasRepository(t) || taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }
@@ -6128,7 +6136,10 @@ export class TaskManager {
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
     if (transferForTask(t.id)) return;
-    if (dispatchHasNoProvisionedResources(t)) {
+    // A repo-less resident can have a durable SDK row before dispatch binds its task,
+    // with no worktree milestone. The row is stronger evidence than empty resource fields.
+    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    if (dispatchHasNoProvisionedResources(t) && embedded !== true) {
       const current = this.registry.getTask(t.id);
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
@@ -6155,7 +6166,6 @@ export class TaskManager {
     // supervisor answers from the row: a row that says it was alive is a session this
     // daemon is about to pick back up, and reading the empty handle map would reclaim its
     // worktree out from under it.
-    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
     if (providerOwnsTaskCompletion(t.kind) && t.homeName === null && t.pipelineRun !== null) {
       const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
       if (embedded === true && session) {

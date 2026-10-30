@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import {
   deferredImperativeList,
@@ -146,10 +147,10 @@ export function withTaskKindContract(
   inputs: TaskContractInputs = {},
 ): string {
   const appendices = [
-    executionAuthorizationContract({
+    taskHasRepository(task) ? executionAuthorizationContract({
       workflowEvidence: false,
       workflowContinuation: false,
-    }),
+    }) : null,
     inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the

@@ -1,5 +1,6 @@
-import { after, beforeEach, test } from "node:test";
+import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +14,8 @@ import type { Session } from "../src/shared/types.ts";
 // the runtime (always the SDK), the agent, model and effort, turn one, and the standing
 // instructions - repository block first, resident section after - on the pair's out-of-band
 // channel, recorded once for resume replay.
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
 process.env.HARNESS_HOME = home;
@@ -115,6 +118,9 @@ function fakeSupervisor(registry: Registry) {
   return supervisor as typeof supervisor & SdkSupervisor;
 }
 
+const residentManagers: InstanceType<typeof ResidentManager>[] = [];
+afterEach(async () => { for (const manager of residentManagers.splice(0)) await manager.stop(); });
+
 function residentFixture(persona: { current: Persona }) {
   const registry = new Registry();
   const supervisor = fakeSupervisor(registry);
@@ -126,6 +132,7 @@ function residentFixture(persona: { current: Persona }) {
   });
   tasks.registerResidentLaunch((task, repository, runtime) => residents.composeLaunch(task, repository, runtime));
   residents.start();
+  residentManagers.push(residents);
   return { registry, supervisor, tasks, residents };
 }
 
@@ -258,6 +265,7 @@ test("a resident task dispatched without a composer fails rather than starting a
     persona: () => PERSONA,
   });
   residents.start();
+  residentManagers.push(residents);
   const created = residents.createProfile(profileSettings("claude", ""));
   assert.ok(created.ok);
   const outcome = await residents.launch(created.profile.id, { repoRoot: repo, requestId: "req-no-composer" });
@@ -265,3 +273,50 @@ test("a resident task dispatched without a composer fails rather than starting a
   assert.match(outcome.result.error, /no resident launch composer/);
   assert.equal(supervisor.starts.length, 0);
 });
+
+for (const agent of ["claude", "codex"] as const) {
+  test(`a repo-less ${agent} resident uses a run directory, no Git provisioning, and no repository observers`, async () => {
+    const { existsSync } = await import("node:fs");
+    const { taskHasRepository } = await import("../src/shared/task.ts");
+    const { taskRepoRefs, taskHasWorktrees } = await import("../src/shared/task-repos.ts");
+    const { isRetentionCandidate } = await import("../src/server/task-resource-generation.ts");
+    const { teardownWorktree } = await import("../src/server/dispatcher.ts");
+    const { getTask } = await import("../src/server/db.ts");
+    const { registry, supervisor, residents } = residentFixture({ current: PERSONA });
+    try {
+      const created = residents.createProfile(profileSettings(agent, "Keep watching."));
+      assert.ok(created.ok);
+      const outcome = await residents.launch(created.profile.id, { repoRoot: null, requestId: `no-repo-${agent}` });
+      if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+      const task = getTask(outcome.result.taskId)!;
+      const cwd = outcome.result.run.workspaceDir!;
+      assert.ok(existsSync(cwd));
+      assert.equal(task.repoRoot, cwd);
+      assert.equal(task.workspaceKind, "resident-workspace");
+      assert.equal(task.worktreePath, null);
+      assert.equal(task.provider, null);
+      assert.equal(task.branch, null);
+      assert.equal(task.baseSha, null);
+      assert.equal(taskHasRepository(task), false);
+      assert.deepEqual(taskRepoRefs(task), []);
+      assert.equal(taskHasWorktrees(task), false);
+      assert.equal(isRetentionCandidate({ ...task, status: "done" }), false);
+      assert.deepEqual(registry.driverGitTargets(), []);
+      assert.deepEqual(registry.prPollTargets(), []);
+      assert.deepEqual(registry.extraRepoPrPollTargets(), []);
+      const start = supervisor.starts[0]!;
+      assert.equal(start.cwd, cwd);
+      assert.equal(start.repoRoot, null);
+      assert.equal(start.gitRoot, null);
+      assert.match(start.standingInstructions!.delivery.text, /Resident role/);
+      assert.doesNotMatch(start.prompt, /Plan inputs and discovery|pull request|repository scope/);
+      await teardownWorktree(task);
+      assert.ok(existsSync(cwd), "the repository cleanup path must leave the directory alone");
+      const replay = await residents.launch(created.profile.id, { repoRoot: null, requestId: `no-repo-${agent}` });
+      assert.deepEqual(replay, outcome);
+      assert.equal(supervisor.starts.length, 1);
+    } finally {
+      await residents.stop();
+    }
+  });
+}

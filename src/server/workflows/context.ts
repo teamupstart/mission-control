@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { z } from "zod";
@@ -1034,8 +1035,9 @@ function compatibleSession(binding: WorkflowBinding, session: Session): boolean 
  */
 export function workflowCheckoutPath(
   binding: Pick<WorkflowBinding, "repoRoot" | "sessionCwd">,
-  session: Pick<Session, "cwd" | "workspace">,
+  session: Pick<Session, "cwd" | "workspace"> & Partial<Pick<Session, "task">>,
 ): string | null {
+  if (!taskHasRepository(session.task ?? {})) return null;
   if (!binding.repoRoot && session.workspace?.authority === "provider") {
     return session.workspace.availability === "available" &&
       session.workspace.capabilities.manualWorkflow

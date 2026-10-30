@@ -172,7 +172,7 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
 /** The launch and scheduling rules every surface must apply to a task kind. */
 export interface TaskKindBehavior {
   /** Which repository catalog may offer this kind. */
-  repoAvailability: "workspace" | "pipeline-enabled";
+  repoAvailability: "workspace" | "pipeline-enabled" | "optional";
   /**
    * Who owns the launched process and runtime choices.
    *
@@ -238,7 +238,7 @@ export const TASK_KIND_BEHAVIOR = {
     constraint: null,
   },
   resident: {
-    repoAvailability: "workspace",
+    repoAvailability: "optional",
     launch: "resident",
     autopilot: false,
     constraint:
@@ -682,4 +682,10 @@ export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
 /** Explicit None and workflow choices bypass this default at the caller. */
 export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null, storage: "repository" | "local" = "repository"): string | null {
   return kind === "plan" && storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
+}
+
+/** Missing markers on historical tasks still mean a repository. Only residents may opt out. */
+export function taskHasRepository(task: { kind?: TaskKind; workspaceKind?: "resident-workspace" | null }): boolean {
+  return !(task.kind && TASK_KIND_BEHAVIOR[task.kind].repoAvailability === "optional"
+    && task.workspaceKind === "resident-workspace");
 }

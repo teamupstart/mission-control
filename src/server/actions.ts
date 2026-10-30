@@ -1,4 +1,5 @@
 import { transferHold } from "./session-transfers/store.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { readInventory } from "./terminal/inventory.ts";
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
@@ -2422,6 +2423,7 @@ async function releaseBranch(root: string, branch: string | null, target: string
  * has to mean stop.
  */
 export async function resetWouldDestroyWork(session: Session): Promise<string | null> {
+  if (!taskHasRepository(session.task ?? {})) return "the session has no repository to reset";
   if (!session.cwd) return "the session has no working directory";
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return "it is not a git repository";
@@ -2458,6 +2460,7 @@ export async function resetWouldDestroyWork(session: Session): Promise<string | 
  * neither of them ends up anywhere else.
  */
 export async function branchReleasedByReset(session: Session): Promise<string | null> {
+  if (!taskHasRepository(session.task ?? {})) return null;
   if (!session.cwd) return null;
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) return null;
@@ -2491,6 +2494,7 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
     // checkbox would promise a keystroke that could never be sent.
     canClear: Boolean(bindSession(session)?.write && harnessFor(session.agent).clearContext),
   };
+  if (!taskHasRepository(session.task ?? {})) return { ...base, error: "the session has no repository to reset" };
   if (!session.cwd) return { ...base, error: "session has no working directory" };
   // Anchor every git op at the worktree top, not the pane's (possibly nested)
   // cwd - `clean` is relative to its cwd, so from a subdir it would miss
@@ -2560,6 +2564,9 @@ export async function resetToOrigin(
   lockOwner?: PaneLockToken,
   driverClear?: DriverClear,
 ): Promise<ResetResult> {
+  if (!taskHasRepository(session.task ?? {})) {
+    return { ok: false, error: "the session has no repository to reset", root: null, cleared: false, detached: false };
+  }
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
   }
@@ -2708,6 +2715,9 @@ export async function resetToCommit(
   lockOwner?: PaneLockToken,
   driverClear?: DriverClear,
 ): Promise<ResetResult> {
+  if (!taskHasRepository(session.task ?? {})) {
+    return { ok: false, error: "the session has no repository to reset", root: null, cleared: false, detached: false };
+  }
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     return { ok: false, error: "a snapshot restore needs a full commit id", root: null, cleared: false, detached: false };
   }

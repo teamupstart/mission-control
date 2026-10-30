@@ -25,10 +25,12 @@ export interface ResidentDispatchDraft {
    */
   requestId: string;
   /**
-   * A launch the daemon may have received but whose answer never arrived (a network error).
-   * Its resident may already be running, so it is never forgotten silently: an exact retry
-   * replays it, and a changed launch must first choose between retrying it and starting a
-   * separate resident. Cleared by any definitive outcome.
+   * A launch that is outstanding: sent, and with no definitive answer yet - still starting, or
+   * its answer lost to a network error. Its resident may already be running, so it is never
+   * forgotten silently: an exact retry replays it (its repository frozen as sent, see
+   * `residentDispatchRepo`), and a changed launch must first choose between retrying it and
+   * starting a separate resident. Recorded when the launch is sent; cleared by any definitive
+   * outcome.
    */
   uncertain: ResidentLaunchAttempt | null;
 }
@@ -79,14 +81,22 @@ export function retryResidentAttempt(
   };
 }
 
-/** The repository this draft would launch in, against the profile as it is now. */
+/**
+ * The repository this draft would launch in. A profile-sourced repository follows the profile's
+ * current default - except while this draft's own launch is outstanding: then it stays exactly
+ * what was sent, so a default edited in the meantime cannot turn the replay of that launch into
+ * a different request under the same id.
+ */
 export function residentDispatchRepo(
   draft: ResidentDispatchDraft,
   profile: ResidentProfile | null,
 ): string {
-  return draft.repoFromProfile
-    ? profile?.settings.workspace.defaultRepoRoot ?? ""
-    : draft.repoRoot;
+  if (!draft.repoFromProfile) return draft.repoRoot;
+  const outstanding = draft.uncertain;
+  if (outstanding && outstanding.requestId === draft.requestId && outstanding.profileId === draft.profileId) {
+    return outstanding.repoRoot;
+  }
+  return profile?.settings.workspace.defaultRepoRoot ?? "";
 }
 
 /**

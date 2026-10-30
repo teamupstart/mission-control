@@ -91,12 +91,24 @@ export function ResidentDispatch({
     if (!profile || blocked) return;
     setBusy(true);
     setError(null);
-    const submitted = from;
     const input = {
-      repoRoot: residentDispatchRepo(submitted, profile).trim(),
-      ...(submitted.instructions.trim() ? { instructions: submitted.instructions } : {}),
-      requestId: submitted.requestId,
+      repoRoot: residentDispatchRepo(from, profile).trim(),
+      ...(from.instructions.trim() ? { instructions: from.instructions } : {}),
+      requestId: from.requestId,
     };
+    // Recorded BEFORE it is sent: from here until a definitive answer, this launch is
+    // outstanding. Closing the form keeps it, and its profile-sourced repository is frozen as
+    // sent, so reopening after the default changes still replays exactly this request.
+    const submitted: ResidentDispatchDraft = {
+      ...from,
+      uncertain: {
+        requestId: input.requestId,
+        profileId: profile.id,
+        repoRoot: input.repoRoot,
+        instructions: from.instructions,
+      },
+    };
+    mode.onResidentChange(submitted);
     let answer = await launchResident(profile.id, input);
     // Still starting: keep the SAME request id and replay it until the launch settles. The
     // replay is idempotent - it reads the one run this id reserved and never starts another -
@@ -123,17 +135,8 @@ export function ResidentDispatch({
       case "refused":
         setError(answer.error);
         if (answer.code === "unavailable") {
-          // No answer: the daemon may have received it. Keep the id for an exact retry and
-          // remember exactly what was sent, so a changed launch cannot hide or collide with it.
-          mode.onResidentChange({
-            ...submitted,
-            uncertain: {
-              requestId: input.requestId,
-              profileId: profile.id,
-              repoRoot: input.repoRoot,
-              instructions: submitted.instructions,
-            },
-          });
+          // No answer: the daemon may have received it. The outstanding record stays, with the
+          // id, so an exact retry replays it and a changed launch cannot hide or collide with it.
           return;
         }
         // A refusal created nothing, and a reused id would be a conflict on the next try.

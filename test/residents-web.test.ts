@@ -115,3 +115,20 @@ test("an uncertain attempt matches only the exact input it sent, and retrying re
   const moved = { ...a, settings: { ...a.settings, workspace: { defaultRepoRoot: "/repos/a-moved" } } };
   assert.equal(residentDispatchRepo(retried, moved), "/repos/a");
 });
+
+test("while a draft's own launch is outstanding, its profile-sourced repository stays as sent", () => {
+  const a = profile("a", "/repos/a");
+  const draft = selectResidentProfile(freshResidentDispatchDraft(), a);
+  const outstanding = {
+    ...draft,
+    uncertain: { requestId: draft.requestId, profileId: "a", repoRoot: "/repos/a", instructions: "" },
+  };
+  const moved = { ...a, settings: { ...a.settings, workspace: { defaultRepoRoot: "/repos/a-moved" } } };
+  assert.equal(residentDispatchRepo(outstanding, moved), "/repos/a", "frozen while outstanding");
+  assert.equal(residentAttemptMatches(outstanding.uncertain, outstanding, moved), true, "so the replay is exact");
+  // Once settled (no outstanding launch), the default is followed again.
+  assert.equal(residentDispatchRepo({ ...outstanding, uncertain: null }, moved), "/repos/a-moved");
+  // A different profile is not frozen by another profile's launch.
+  const b = profile("b", "/repos/b");
+  assert.equal(residentDispatchRepo(selectResidentProfile(outstanding, b), b), "/repos/b");
+});

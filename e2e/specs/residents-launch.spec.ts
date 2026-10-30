@@ -445,6 +445,51 @@ test.describe("a launch that is still starting when the daemon answers", () => {
   });
 });
 
+test.describe("a pending launch closed while its profile's default changes", () => {
+  test.use({ daemonEnv: { MISSION_RESIDENT_LAUNCH_WAIT_MS: "0" } });
+
+  test("reopening replays the launch in the repository it was sent with - one resident, no conflict", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    const sent: Array<Record<string, unknown>> = [];
+    dashboard.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(request.url())) {
+        sent.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("status")).toContainText("Starting the resident");
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toBeHidden();
+
+    // The default changes while the launch is outstanding.
+    await writeElsewhere(daemon, "PATCH", (settings) => ({ ...settings, workspace: { defaultRepoRoot: `${daemon.repo}-moved` } }));
+    await expect(editor).toContainText("Revision 2");
+
+    // Reopening shows, and replays, the repository the launch was sent with.
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(sent.map((body) => JSON.stringify(body))).size, "every request identical").toBe(1);
+    expect(sent[0]).toMatchObject({ repoRoot: daemon.repo });
+    await expect.poll(async () =>
+      (await api<Array<{ kind: string; repoRoot: string }>>(daemon, "/api/tasks"))
+        .filter((task) => task.kind === "resident").map((task) => task.repoRoot),
+    { timeout: 30_000 }).toEqual([daemon.repo]);
+  });
+});
+
 test.describe("a changed launch after a lost response", () => {
   /** The first launch REACHES the daemon - it is accepted - but its response is lost. */
   async function dropFirstLaunchResponse(page: Page, sent: Array<Record<string, unknown>>): Promise<void> {

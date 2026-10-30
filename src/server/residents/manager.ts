@@ -728,7 +728,7 @@ export class ResidentManager {
     if (this.grantWatches.size === 0) return;
     // Deleting the entry being visited is safe while iterating a Map.
     for (const [runId, watch] of this.grantWatches) {
-      const sessionId = this.deps.registry.getTask(watch.taskId)?.sessionId;
+      const sessionId = this.watchedSession(watch);
       if (!sessionId) continue;
       const identity = this.grantIdentity(sessionId, watch.taskId);
       if (identity === "waiting") continue;
@@ -739,6 +739,19 @@ export class ResidentManager {
         console.error(`[residents] could not decide session control for resident run ${runId}:`, error);
       }
     }
+  }
+
+  /**
+   * The session a waiting grant is decided on: the one the run's task is bound to. After a restart
+   * the Registry may have bound that session to another task, which unbinds the run's; the run's
+   * own `sdk_sessions` row still names the session it launched, so the identity check sees the
+   * other task and the grant is forgotten rather than waited on for the rest of the run.
+   */
+  private watchedSession(watch: GrantWatch): string | null {
+    const bound = this.deps.registry.getTask(watch.taskId)?.sessionId ?? null;
+    if (bound || watch.kind === "launch") return bound;
+    const rows = this.sessionRowsForTask(watch.taskId);
+    return rows[rows.length - 1] ?? null;
   }
 
   private decideGrant(

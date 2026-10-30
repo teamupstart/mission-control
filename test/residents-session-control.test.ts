@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { ResidentLaunchAuthorization } from "../src/shared/session-control-authorization.ts";
+import type { Task } from "../src/shared/types.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 // Phase 6 of residents: a profile with Control other sessions on gives its run the existing
 // session-control grant only through the operator's desktop Launch click. The click is armed in
@@ -24,9 +26,9 @@ const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/tas
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
 const store = await import("../src/server/residents/store.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, upsertTask } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { ResidentProfileRevisionSchema } = await import("../src/shared/residents.ts");
+const { ResidentProfileRevisionSchema, residentRunControlRecorded } = await import("../src/shared/residents.ts");
 const {
   armResidentLaunchAuthorization,
   armSessionControlAuthorization,
@@ -221,6 +223,37 @@ test("only the dashboard's own contents can arm a resident Launch click", async 
 
 // ---- the daemon's half: consume at launch, grant, record ----
 
+/** A Registry whose grant refuses to apply, as it does for a session it no longer considers live. */
+class GrantRefusingRegistry extends Registry {
+  refusedGrants = 0;
+  override setSessionControlEnabled(id: string, enabled: boolean): boolean {
+    if (enabled) {
+      this.refusedGrants += 1;
+      return false;
+    }
+    return super.setSessionControlEnabled(id, enabled);
+  }
+}
+
+test("a Launch click whose grant the Registry refuses records nothing a restart could restore", async () => {
+  const registry = new GrantRefusingRegistry();
+  const h = harness(registry);
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  assert.equal(registry.refusedGrants, 1, "the grant was attempted once, and refused");
+  assert.equal(registry.sessionControlEnabled(sessionId), false);
+  const recorded = control(run.id);
+  assert.equal(typeof recorded.authorizedAt, "number", "the click itself was consumed");
+  assert.deepEqual({ conversationId: recorded.conversationId, cwd: recorded.cwd, episodeId: recorded.episodeId },
+    { conversationId: null, cwd: null, episodeId: null }, "no identity is recorded for a grant that never applied");
+  assert.equal(residentRunControlRecorded(recorded), false);
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
+});
+
 test("a desktop Launch click grants the run session control and records the identity it was applied to", async () => {
   const h = harness();
   const profile = profileIn(h, true);
@@ -349,8 +382,13 @@ test("turning control off with the session control toggle forgets the run's gran
  * Bring the run's session back the way SDK restore does - same session id and native
  * conversation, unless `conversation` says otherwise - into a fresh Registry and manager, then
  * complete the first sweep that follows restore.
+ *
+ * `claimedBy` is another active task, stored before the restart and created before the resident
+ * task, bound to that same session: the restarted Registry loads it first, so its grant identity
+ * names it as the session's task instead of the run's.
  */
-function restart(run: { taskId: string }, conversation = `native-${run.taskId}`) {
+function restart(run: { taskId: string }, conversation = `native-${run.taskId}`, claimedBy?: Task) {
+  if (claimedBy) upsertTask(claimedBy);
   const registry = new Registry();
   const h = harness(registry);
   const sessionId = `sdk:${run.taskId}`;
@@ -365,6 +403,7 @@ function restart(run: { taskId: string }, conversation = `native-${run.taskId}`)
   const durable = h.registry.getTask(run.taskId);
   assert.ok(durable, "the TaskManager hydrated the resident task");
   registry.upsertTask({ ...durable, status: "running", sessionId });
+  if (claimedBy) registry.upsertTask({ ...registry.getTask(claimedBy.id)!, status: "running", sessionId });
   registry.applyDiscovery([]);
   return { h, sessionId };
 }
@@ -404,6 +443,20 @@ for (const [field, value] of [
       "a grant that no longer matches is forgotten");
   });
 }
+
+test("a restart does not carry the grant to a session that now belongs to another task", async () => {
+  const { run } = await grantedRun();
+  const sessionId = `sdk:${run.taskId}`;
+  const other = mkTask({ id: "another-task", status: "running", sessionId, worktreePath: `/worktrees/${run.taskId}` });
+  const { h } = restart(run, `native-${run.taskId}`, other);
+  // The conversation, working directory and work episode all still match; only the task differs.
+  // The Registry binds a session to one task, so the run's own task no longer names it.
+  assert.equal(h.registry.taskForSession(sessionId, `/worktrees/${run.taskId}`)?.id, "another-task");
+  assert.equal(h.registry.getTask(run.taskId)?.sessionId, null);
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null },
+    "a grant whose task no longer matches is forgotten");
+});
 
 test("a restart into a new conversation does not carry the grant", async () => {
   const { run } = await grantedRun();

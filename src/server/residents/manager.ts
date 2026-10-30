@@ -797,14 +797,24 @@ export class ResidentManager {
 
   /**
    * After SDK restore, watch every open run that recorded a complete grant. A run missing any of
-   * the four recorded fields - including every run from before they existed, and one whose click
-   * was consumed but whose grant was never applied - stays ungranted.
+   * the four recorded fields - including every run from before they existed - stays ungranted.
+   *
+   * A run holding only a consumed click lost the in-memory watch that would have applied it when
+   * the previous daemon stopped, so nothing will ever apply it now. Its record is cleared, so a
+   * launch replay reads not granted rather than pending. Runs this daemon run launched or decided
+   * are its own watches' business and are left alone.
    */
   private watchRestoredGrants(): void {
     for (const { run } of listOpenResidentRuns()) {
-      if (run.launchState !== "launched" || !residentRunControlRecorded(run.control)) continue;
-      if (!run.settings.authority.controlOtherSessions) continue;
+      if (run.launchState !== "launched") continue;
       if (this.decidedGrants.has(run.id) || this.grantWatches.has(run.id)) continue;
+      if (!residentRunControlRecorded(run.control) || !run.settings.authority.controlOtherSessions) {
+        if (run.control.authorizedAt !== null) {
+          this.decidedGrants.add(run.id);
+          clearResidentRunControl(run.id);
+        }
+        continue;
+      }
       this.grantWatches.set(run.id, { taskId: run.taskId, kind: "restore", recorded: { ...run.control } });
     }
     this.applyWaitingGrants();

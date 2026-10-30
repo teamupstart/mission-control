@@ -137,7 +137,8 @@ control for one conversation, as it can for any session, and that grant ends at 
   needs its own Launch click.
 - **Once the session is ready.** The grant is given when the resident's session has its
   conversation. If the launch answers before that, Dispatch and the dock say session control is
-  not granted yet, and the Console band reads **control granted** once it is.
+  not granted yet, and the Console band reads **control granted** once it is. If Mission Control
+  restarts first, that launch is not granted and needs a new Launch click.
 - **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
   does not bring it back.
 - **Launched anywhere else, it starts without control.** Before you launch from the browser

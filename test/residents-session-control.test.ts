@@ -341,6 +341,10 @@ test("a launch that answers before its session has an identity reports the grant
   assert.equal(residentLaunchControlReport(run, true), "pending", "a pending grant is reported on every surface");
   assert.equal(typeof control(run.id).authorizedAt, "number");
   assert.equal(control(run.id).conversationId, null);
+  // The first sweep after restore arrives while this daemon run's own grant is still waiting: it is
+  // that watch's to decide, so the sweep leaves the consumed click in place.
+  h.registry.applyDiscovery([]);
+  assert.equal(typeof control(run.id).authorizedAt, "number", "a grant pending in this daemon run survives the sweep");
   // The driver binds the conversation: the waiting grant is applied and recorded.
   h.registry.applyDriverEvent(sessionId, {
     kind: "bound",
@@ -655,6 +659,26 @@ test("a recorded grant is restored once per daemon run, however often sessions a
   registry.applyDiscovery([]);
   assert.equal(h.registry.sessionControlEnabled(sessionId), true);
   assert.equal(grantEvents(sessionId), before + 1, "later sweeps neither re-apply nor log it again");
+});
+
+test("a consumed click a restart left unapplied is cleared, so a launch replay reads not granted rather than pending", async () => {
+  // The launch answers before its session has an identity: the click is consumed, the grant waits.
+  const h = harness(new Registry(), { waitMs: 50, unbound: true });
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run } = await launched(h, profile.id, requestId);
+  assert.equal(residentRunControlOutcome(run), "pending");
+  // The daemon stops before the session binds: the in-memory watch that would apply it is gone.
+  for (const manager of managers.splice(0)) manager.stop();
+  const after = restart(run);
+  assert.equal(after.h.registry.sessionControlEnabled(after.sessionId), false);
+  assert.deepEqual(control(run.id), { authorizedAt: null, conversationId: null, cwd: null, episodeId: null });
+  const replay = await after.h.residents.launch(profile.id, { repoRoot: REPO, requestId }, { mayConsumeControlClick: true });
+  if (!("result" in replay) || replay.result.state !== "launched") assert.fail(JSON.stringify(replay));
+  assert.equal(residentRunControlOutcome(replay.result.run), "not-granted");
+  assert.equal(residentLaunchControlReport(replay.result.run, false), "not-granted");
+  assert.equal(after.h.asked.length, 0, "a replay never consumes a click");
 });
 
 test("a run whose click was consumed but whose grant never applied stays ungranted after a restart", async () => {

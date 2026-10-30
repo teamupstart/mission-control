@@ -288,16 +288,20 @@ That inventory establishes publication availability, not the R1/R2 signed instal
 and recovery qualification. An alpha offer still names the current main commit exactly;
 an older available publication is not silently substituted for a failed or pending one.
 
-**Environment change pending administrator access:** GitHub still reported the
-`developer-platform` team as required reviewers on `desktop-distribution` during this
-investigation. Removing that requirement as `Jordan7265` returned HTTP 403, "Must have
-admin rights to Repository." The attempted update did not change the environment.
-A repository administrator must remove **Required reviewers** in
-**Settings > Environments > desktop-distribution**, retaining selected branch `main`,
-tag pattern `v*`, and all existing signing secrets and variables. Once saved, eligible
-jobs start without another approval. This operator instruction supersedes the earlier
-per-build reviewer policy recorded above; it does not relax CI, signer, notarization,
-source-identity, or manifest verification.
+**Environment change applied (2026-10-29 22:45 UTC):** an earlier attempt as `Jordan7265`
+returned HTTP 403, "Must have admin rights to Repository." A repository administrator then
+removed **Required reviewers** from `desktop-distribution`. Selected branch `main`, tag
+pattern `v*`, admin bypass and every signing secret and variable were retained. This operator
+instruction supersedes the earlier per-build reviewer policy recorded above; it does not relax
+CI, signer, notarization, source-identity, or manifest verification.
+
+GitHub failed the jobs that had been waiting for hours when the rule was removed, without
+running a step. A job that had entered `waiting` minutes earlier kept an empty reviewer list
+that nobody could approve, and it held the `distribution-alpha` concurrency group until it was
+cancelled. Check for such a job after any later environment change.
+[Run 40974755792](https://github.com/teamupstart/mission-control/actions/runs/40974755792)
+then started without approval and published `alpha-5d9ede07d199fc47949c2b9659dd03d502181890`,
+retiring the three older alphas. Later `main` commits have signed and published on their own.
 
 ## Ownership and prerequisites
 

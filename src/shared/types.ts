@@ -2538,6 +2538,15 @@ export interface PlanDecisionAnswer {
   selected: string[];
   /** What was typed into "Other", when the decision allowed it and the human used it. */
   other: string | null;
+  /**
+   * An optional note to the agent typed beside the selection, on a `plan-decisions` form.
+   *
+   * Separate from `other` because it qualifies a choice rather than replacing one: "Other"
+   * is an answer outside the options, a note is instructions that travel with whichever
+   * option was taken. It never answers a decision on its own. Optional because rows written
+   * before it, and every answer a form without the note box produces, simply lack it.
+   */
+  note?: string | null;
 }
 
 export interface ReviewItem {

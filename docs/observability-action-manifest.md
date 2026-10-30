@@ -241,12 +241,10 @@ The MCP `http` boundary supplies declared agent provenance and an operation ID. 
 
 | Tool | Owner / event or exclusion |
 | --- | --- |
-| `share_plan` | Review creation, `attention.request` |
 | `request_plan_decisions` | Review creation, `attention.request`; subsequent polling excluded |
 | `request_review` | Review creation, `attention.request`; subsequent polling excluded |
 | `create_task` | Task owner, `task.create`; dispatch remains Phase 3 |
 | `request_input` | Review creation, `attention.request`; subsequent polling excluded |
-| `report_product_feedback` | Product-issue preview/confirmation/submission owner, `task.issue_*` |
 | `report_product_issue` | Product-issue submission owner, `task.issue_submit` |
 | `report_status` | Explicitly excluded liveness/status update |
 | `respond_to_file_comments` | File-comment owner, `file.comment_reply` |

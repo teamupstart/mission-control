@@ -31178,15 +31178,26 @@ span.line-run-prov {
 .board-card-customizer + .board-card-customizer {
   margin-top: 24px;
 }
-.board-card-group-head {
+/* Areas are placed on DIRECT children only. `.board-card-checklist` and the preview's stage
+   are shared with Display > Top bar, whose two checklists sit in an ordinary two-column grid;
+   a bare `.board-card-checklist { grid-area: list }` put both of them in one cell, drawn on
+   top of each other. */
+.board-card-customizer > .board-card-group-head {
   grid-area: head;
+}
+.board-card-customizer > .board-card-checklist {
+  grid-area: list;
+}
+.board-card-customizer > .board-card-preview {
+  grid-area: preview;
+}
+.board-card-group-head {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
 }
 .board-card-checklist {
-  grid-area: list;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -31195,20 +31206,28 @@ span.line-run-prov {
 /* A group label INSIDE the section, so it has to read as subordinate to the section's own
    `h3` rather than as a peer of it. At 12px/620 against an `h3` of 13px/600 it was actually
    the heavier of the two, which reads as two competing titles rather than as a section with
-   several groups. The cap treatment is the one this panel already uses for `PREVIEW`. */
-.board-card-group-head .settings-subhead {
-  margin: 0;
+   several groups. The cap treatment is the one this panel already uses for `PREVIEW`. The
+   checklist form is Display > Top bar's, which heads each of its two lists inside the list;
+   the margin separates a later heading from the rows above it, and `:first-child` keeps a
+   heading that opens its block tight to the top. */
+.board-card-group-head .settings-subhead,
+.board-card-checklist .settings-subhead {
+  margin: 16px 0 0;
   font-size: 10px;
   font-weight: 620;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--dim);
 }
-.board-card-group-head .settings-blurb {
+.board-card-group-head .settings-subhead:first-child,
+.board-card-checklist .settings-subhead:first-child {
+  margin-top: 0;
+}
+.board-card-group-head .settings-blurb,
+.board-card-checklist .settings-blurb {
   margin: 0 0 2px;
 }
 .board-card-preview {
-  grid-area: preview;
   display: flex;
   flex-direction: column;
   gap: 6px;

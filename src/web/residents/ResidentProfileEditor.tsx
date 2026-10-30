@@ -70,6 +70,20 @@ export function ResidentProfileEditor({
     setDirtyState(next);
     onDirtyChange?.(next);
   };
+  /**
+   * The revision this draft was seeded from. Saves and archives compare-and-set against it, and
+   * the editor stays mounted when the catalog moves on: a revision saved elsewhere replaces a
+   * clean draft, and is held as a visible conflict over a dirty one rather than discarding it.
+   */
+  const [base, setBase] = useState<ResidentProfile | null>(profile);
+  const newer = profile && base && profile.id === base.id && profile.revision > base.revision
+    ? profile
+    : null;
+  if (newer && !dirty) {
+    setBase(newer);
+    setDraft(newer.settings);
+  }
+  const conflict = newer && dirty ? newer : null;
 
   const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void => {
     setDraft((current) => ({ ...current, [id]: value }));
@@ -79,15 +93,17 @@ export function ResidentProfileEditor({
 
   const problem = residentDraftProblem(draft);
 
-  async function save(): Promise<void> {
+  /** Save the draft, on top of `expectedRevision` - the base, or a newer one the operator chose to overwrite. */
+  async function save(expectedRevision = base?.revision ?? null): Promise<void> {
     if (problem || busy) return;
     setBusy(true);
     setError(null);
     try {
       const parsed = ResidentProfileRevisionRequestSchema.parse(draft);
-      const saved = profile
-        ? await updateResidentProfile(profile.id, profile.revision, parsed)
+      const saved = base && expectedRevision !== null
+        ? await updateResidentProfile(base.id, expectedRevision, parsed)
         : await createResidentProfile(parsed);
+      setBase(saved);
       setDraft(saved.settings);
       setDirty(false);
       onSaved(saved);
@@ -98,12 +114,21 @@ export function ResidentProfileEditor({
     }
   }
 
+  /** Discard the draft and adopt the revision saved elsewhere. */
+  function loadNewer(): void {
+    if (!conflict) return;
+    setBase(conflict);
+    setDraft(conflict.settings);
+    setDirty(false);
+    setError(null);
+  }
+
   async function archive(): Promise<void> {
-    if (!profile || busy) return;
+    if (!base || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const archived = await archiveResidentProfile(profile.id, profile.revision);
+      const archived = await archiveResidentProfile(base.id, base.revision);
       setDirty(false);
       onArchived(archived);
     } catch (cause) {
@@ -122,8 +147,8 @@ export function ResidentProfileEditor({
         <div>
           <h3>{title}</h3>
           <p className="resident-editor-meta">
-            {profile
-              ? `Revision ${profile.revision}${dirty ? " · unsaved changes" : ""}. Edits apply at the next launch.`
+            {base
+              ? `Revision ${base.revision}${dirty ? " · unsaved changes" : ""}. Edits apply at the next launch.`
               : "Not saved yet."}
           </p>
         </div>
@@ -135,11 +160,15 @@ export function ResidentProfileEditor({
               </button>
             </Tooltip>
           )}
-          <Tooltip label={problem ?? (dirty ? "Save these settings as a new revision" : "Nothing to save")}>
+          <Tooltip
+            label={conflict
+              ? "A newer revision was saved elsewhere; choose below whether to keep yours"
+              : problem ?? (dirty ? "Save these settings as a new revision" : "Nothing to save")}
+          >
             <button
               type="button"
               className="btn"
-              disabled={busy || !dirty || problem !== null}
+              disabled={busy || !dirty || problem !== null || conflict !== null}
               onClick={() => void save()}
             >
               {busy ? "Saving…" : "Save"}
@@ -163,6 +192,31 @@ export function ResidentProfileEditor({
           </Tooltip>
         </div>
       </header>
+      {conflict && (
+        <div className="resident-conflict" role="alert">
+          <p>
+            Revision {conflict.revision} of this profile was saved elsewhere while you were editing.
+            Your unsaved changes are still here.
+          </p>
+          <div className="resident-conflict-actions">
+            <Tooltip label={`Discard your changes and show revision ${conflict.revision}`}>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={loadNewer}>
+                Load revision {conflict.revision}
+              </button>
+            </Tooltip>
+            <Tooltip label={problem ?? `Save your changes as the revision after ${conflict.revision}`}>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || problem !== null}
+                onClick={() => void save(conflict.revision)}
+              >
+                Save mine over it
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
       {error && <p className="resident-error" role="alert">{error}</p>}
       {!error && dirty && problem && <p className="field-hint resident-problem">{problem}</p>}
       {RESIDENT_EDITOR_SECTIONS.map(({ id, title: heading, blurb, Body }) => (

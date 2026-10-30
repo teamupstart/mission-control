@@ -194,3 +194,56 @@ test("a profile saves a nondefault harness, model and effort, edits to a new rev
   await expect(dialog.getByRole("radio", { name: /Docs Gardener/ })).toHaveCount(0);
   await expect(dialog).toContainText("No resident profiles yet");
 });
+
+test("a revision saved in another window never discards unsaved edits: it is held as a conflict with an explicit choice", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  type Profile = { id: string; revision: number; settings: { instructions: { markdown: string } } & Record<string, unknown> };
+  const current = async () =>
+    (await api<Profile[]>(daemon, "/api/residents/profiles")).find((p) => p.settings.instructions !== undefined)!;
+  /** Another window's save: a PATCH straight to the daemon. */
+  const saveElsewhere = async (markdown: string) => {
+    const profile = await current();
+    const response = await fetch(`${daemon.baseURL}/api/residents/profiles/${profile.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: profile.revision,
+        settings: { ...profile.settings, instructions: { markdown } },
+      }),
+    });
+    expect(response.status).toBe(200);
+  };
+  const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  const instructions = editor.getByLabel("Profile instructions");
+
+  // A clean editor simply moves to the newer revision.
+  await saveElsewhere("Saved in another window.");
+  await expect(editor).toContainText("Revision 2");
+  await expect(instructions).toHaveValue("Saved in another window.");
+
+  // A dirty one keeps the operator's text and says what happened.
+  await instructions.fill("My unsaved edit.");
+  await saveElsewhere("Saved elsewhere again.");
+  const conflict = editor.getByRole("alert");
+  await expect(conflict).toContainText("Revision 3 of this profile was saved elsewhere");
+  await expect(instructions).toHaveValue("My unsaved edit.");
+  await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await capture(dashboard.locator("main.residents-page"), "residents-page-conflict");
+
+  // Keeping mine writes the revision after the newer one.
+  await conflict.getByRole("button", { name: "Save mine over it" }).click();
+  await expect(editor).toContainText("Revision 4");
+  await expect(conflict).toHaveCount(0);
+  await expect.poll(async () => (await current()).settings.instructions.markdown).toBe("My unsaved edit.");
+
+  // Or load theirs, discarding mine.
+  await instructions.fill("Edit I will discard.");
+  await saveElsewhere("Their latest.");
+  await editor.getByRole("button", { name: "Load revision 5" }).click();
+  await expect(instructions).toHaveValue("Their latest.");
+  await expect(editor).toContainText("Revision 5");
+  await expect(editor.getByRole("alert")).toHaveCount(0);
+});

@@ -44,10 +44,11 @@ export function ResidentsPage({
   // A profile saved or archived here may beat its SSE frame back; hold it until the frame lands.
   const [local, setLocal] = useState<ResidentProfile | null>(null);
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
-  const selected = selectedId
-    ? profiles.find((profile) => profile.id === selectedId)
-      ?? (local?.id === selectedId ? local : null)
-    : null;
+  // The newer of the catalog's copy and one saved here, whichever frame arrived first.
+  const fromCatalog = selectedId ? profiles.find((profile) => profile.id === selectedId) ?? null : null;
+  const selected = local && local.id === selectedId && (!fromCatalog || local.revision > fromCatalog.revision)
+    ? local
+    : fromCatalog;
 
   const leave = (next: () => void): void => {
     const go = (): void => {
@@ -142,8 +143,9 @@ export function ResidentsPage({
             />
           ) : selected ? (
             <ResidentProfileEditor
-              // Remounted per revision, so a save here or elsewhere reseeds a clean editor.
-              key={`${selected.id}:${selected.revision}`}
+              // Keyed by profile, not revision: a revision saved elsewhere must not remount the
+              // editor and drop unsaved edits. The editor reconciles a newer revision itself.
+              key={selected.id}
               profile={selected}
               personas={personas}
               onDirtyChange={setDirty}

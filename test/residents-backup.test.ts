@@ -20,7 +20,7 @@ const { SettingsBackupStore } = await import("../src/server/settings-backups/sto
 const { createSettingsBackupEnvelope, validateSettingsBackupDomains } =
   await import("../src/server/settings-backups/format.ts");
 const store = await import("../src/server/residents/store.ts");
-const { ResidentProfileRevisionSchema } = await import("../src/shared/residents.ts");
+const { RESIDENT_LIMITS, ResidentProfileRevisionSchema } = await import("../src/shared/residents.ts");
 
 const db = openDb();
 const workflowStore = new WorkflowStore(db);
@@ -134,4 +134,37 @@ test("a snapshot written before the resident domain existed validates and restor
   assert.equal(restored.status, "restored", JSON.stringify(restored));
   assert.equal(store.getResidentProfile("kept")?.archivedAt, null);
   assert.equal(store.getResidentProfile("kept")?.revision, 1);
+});
+
+test("a snapshot holding more live profiles than the catalog bound is blocked before anything is written", async () => {
+  const root = join(home, "over-limit");
+  const svc = service(root);
+  const captured = await svc.ensureDailySnapshot("2026-10-30");
+  if (captured.status !== "ready") assert.fail(captured.status);
+  const { digest: _digest, ...body } = structuredClone(captured.snapshot);
+  const rows = Array.from({ length: RESIDENT_LIMITS.liveProfiles + 1 }, (_, i) => ({
+    id: `bulk-${i}`,
+    name: `Bulk ${i}`,
+    normalizedName: `bulk ${i}`,
+    revision: 1,
+    archivedAt: null,
+    createdAt: 1,
+    updatedAt: 1,
+    settings: settings(`Bulk ${i}`, ""),
+  }));
+  body.domains = body.domains.map((entry) =>
+    entry.domain === "resident-profiles" ? { ...entry, payload: rows } : entry);
+  body.counts.residentProfiles = rows.length;
+  const over = createSettingsBackupEnvelope(body);
+  new SettingsBackupStore(root).write(over);
+
+  store.createResidentProfile({ id: "kept", settings: settings("Triage Bot", "kept"), at: 5 });
+  const preview = svc.previewRestore(over.id);
+  assert.equal(preview.status, "preflight_blocked", JSON.stringify(preview));
+  if (preview.status === "preflight_blocked") {
+    assert.ok(preview.preview.blockers.some((b) => /201 live resident profiles; at most 200/.test(b)), preview.preview.blockers.join());
+  }
+  const restored = await svc.restore(over.id, over.digest);
+  assert.equal(restored.status, "preflight_blocked");
+  assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id), ["kept"]);
 });

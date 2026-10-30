@@ -15929,6 +15929,27 @@ select.ensemble-judge-persona {
 .resident-problem {
   margin: 0;
 }
+/* A revision saved elsewhere over unsaved edits: said, with the choice beside it. */
+.resident-conflict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: color-mix(in oklab, var(--attention) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border));
+  border-radius: 8px;
+}
+.resident-conflict p {
+  margin: 0;
+}
+.resident-conflict-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
 .resident-empty {
   margin: 40px 24px;
 }

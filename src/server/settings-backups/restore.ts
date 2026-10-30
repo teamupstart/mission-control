@@ -38,7 +38,7 @@ import {
   type StagedSettingsConfigRestore,
 } from "./config-registry.ts";
 import { validateSettingsBackupDomains } from "./format.ts";
-import { canonicalResidentJson, type ResidentProfile } from "@shared/residents.ts";
+import { RESIDENT_LIMITS, canonicalResidentJson, type ResidentProfile } from "@shared/residents.ts";
 import { listAllResidentProfiles, normalizeResidentName } from "../residents/store.ts";
 
 export interface MigratedSettingsBackup {
@@ -202,6 +202,14 @@ function residentProfileRestore(staged: StagedSettingsBackup): {
       "live resident profile name",
     ),
   ];
+  // The live catalog is bounded so the SSE snapshot and the page can hold all of it; a restore
+  // must not write past that bound and leave profiles nothing can show.
+  const live = staged.residentProfiles.filter((row) => row.archivedAt === null).length;
+  if (live > RESIDENT_LIMITS.liveProfiles) {
+    blockers.push(
+      `Snapshot holds ${live} live resident profiles; at most ${RESIDENT_LIMITS.liveProfiles} are allowed`,
+    );
+  }
   for (const row of staged.residentProfiles) {
     if (row.normalizedName !== normalizeResidentName(row.name)) {
       blockers.push(`Resident profile ${row.id} has a normalized name that does not match its name`);

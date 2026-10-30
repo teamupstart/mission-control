@@ -31,16 +31,11 @@ There is no implementation concurrency between phases. Phase 2 consumes Phase 1'
 Task ids are execution receipts reported in the planning session and PR, not guessed in these documents. Do not create duplicate tasks to fill this table.
 
 ## Cross-phase contracts
-1. Wire kind remains check and existing persisted vocabularies are append-only.
-2. The catalog is the single execution-config authority; complete-state writes use CAS and legacy writes preserve new fields.
-3. Artifact ownership is attempt -> submission -> run -> repository. Short tails remain 4,000/2,000 bytes. Bodies never enter fleet SSE.
-4. Proposed limits are raw 2 MiB/attempt, normalized findings 4 MiB and 1,000 records, combined retained command bodies 64 MiB/run, and 64 KiB/read. Structured record cap is 256 KiB. Truncation and availability are explicit.
-5. Phase 1 provides generic timeout (nullable/default or 1 minute-2 hours), skip/block policies, artifact kinds stdout/stderr and attributed read_workflow_command_output. Phase 2 appends findings and CodeRabbit-specific configuration/interpretation.
-6. Existing slot defaults remain unchanged. CodeRabbit's fresh defaults are 45 minutes, major threshold, 21 executions and block-on-required-unavailability/exhaustion. No repository is opted in automatically.
-7. The runtime/supervisor remains the sole launch/teardown path. Incomplete reviews are not code-defect verdicts.
-8. CodeRabbit comparison identity is frozen per submission and reused for retry. New repair submissions refresh head/base; dirty submissions cannot be passed using an older commit.
-9. False positives are reasoned operator decisions using existing explicit controls, never silent verdict rewrites.
-10. Built-in versions/bindings are immutable; custom workflows are independent of No-Mistakes identity.
+The root plan owns requirements; the phase briefs own implementation detail:
+- Shared Command behavior: [requirements](plan.md#adopted-requirements) and [output, ownership and execution policy](plan.md#command-behavior-shared-by-all-slots).
+- CodeRabbit behavior: [configuration and comparison identity](plan.md#coderabbit-command), [results and repair](plan.md#structured-results-completeness-and-repair), and [workflow compatibility](plan.md#no-mistakes-and-workflow-compatibility).
+- Phase 1 implementation: [Command contracts, persistence, capture, readers and controls](phase-1-command-output-and-policy.md#implementation-sequence).
+- Phase 2 implementation: [CodeRabbit configuration, comparison, parsing and workflow integration](phase-2-coderabbit-workflow-integration.md#implementation-sequence).
 
 ## Coverage and compatibility audit
 R1: Phase 2 catalog and arbitrary-workflow E2E.

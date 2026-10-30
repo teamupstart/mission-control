@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,8 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // `ResidentManager.launch` against a real Registry, a real TaskManager and real `sdk_sessions`
 // rows. Only the dispatcher is a stand-in: it plays the SDK supervisor's part by writing the
 // session row (the evidence the run waits for) and binding the task, or by failing.
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-residents-launch-"));
 process.env.HARNESS_HOME = home;

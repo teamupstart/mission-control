@@ -1239,7 +1239,10 @@ Repo-less residents use the existing workspace section and resident creation cap
 keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
 obligation before directory creation and is cleared only after successful removal of the workspace
 and its empty run directory. Removal is asynchronous, serialized per run, and drained during
-daemon shutdown. Repository consumers use the shared predicate or `taskRepoRefs`, never infer
+daemon shutdown. Creation and cleanup use the native descriptor-relative filesystem operations:
+each component is opened without following symlinks, and recursive removal runs on a worker
+against held directory descriptors so an ancestor swap cannot redirect deletion.
+Repository consumers use the shared predicate or `taskRepoRefs`, never infer
 a repository from cwd.
 
 The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and

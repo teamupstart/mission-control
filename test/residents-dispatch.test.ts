@@ -1,5 +1,6 @@
 import { after, afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +14,8 @@ import type { Session } from "../src/shared/types.ts";
 // the runtime (always the SDK), the agent, model and effort, turn one, and the standing
 // instructions - repository block first, resident section after - on the pair's out-of-band
 // channel, recorded once for resume replay.
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
 process.env.HARNESS_HOME = home;

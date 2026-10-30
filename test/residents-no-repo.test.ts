@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { TASK_KINDS } from "../src/shared/types.ts";
@@ -9,6 +10,8 @@ import { taskRepoRefs, taskRepoPrSummaries, taskHasWorktrees } from "../src/shar
 import { mkTask, mkSession } from "./helpers/session-fixture.ts";
 import { orderSessions } from "../src/web/lib/fleet-order.ts";
 import { LaunchResidentSchema } from "../src/shared/residents.ts";
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "resident-owned-workspace-"));
 process.env.MISSION_HOME = home;
@@ -62,6 +65,40 @@ test("workspace creation and cleanup refuse every symlink boundary without modif
   }
 });
 
+test("workspace cleanup stays anchored when an ancestor is swapped for a symlink and can retry", async (t) => {
+  const parts = ["residents", "runs", "swap-run", "workspace"];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    await t.test(parts[index]!, async () => {
+      const directory = residentWorkspaceDir("swap-run");
+      createResidentWorkspace("swap-run", directory);
+      writeFileSync(join(directory, "owned.txt"), "temporary");
+      const boundary = join(home, ...parts.slice(0, index + 1));
+      const saved = `${boundary}-saved`;
+      const foreign = mkdtempSync(join(home, "foreign-swap-"));
+      const foreignWorkspace = join(foreign, ...parts.slice(index + 1));
+      mkdirSync(foreignWorkspace, { recursive: true });
+      const sentinel = join(foreignWorkspace, "keep.txt");
+      writeFileSync(sentinel, "foreign data");
+      // Removal has validated and opened its boundaries, but its asynchronous work
+      // has not returned to JavaScript. Replace an ancestor before that continuation.
+      const removing = removeResidentWorkspace("swap-run", directory).catch((error: unknown) => error);
+      renameSync(boundary, saved);
+      symlinkSync(foreign, boundary);
+      try {
+        await removing;
+        assert.equal(readFileSync(sentinel, "utf8"), "foreign data");
+        assert.ok(lstatSync(boundary).isSymbolicLink(), "the replacement boundary is not consumed");
+      } finally {
+        rmSync(boundary);
+        renameSync(saved, boundary);
+      }
+      await removeResidentWorkspace("swap-run", directory);
+      assert.equal(existsSync(dirname(directory)), false, "retry removes the owned run directory");
+      rmSync(join(home, "residents"), { recursive: true, force: true });
+    });
+  }
+});
+
 test("workspace cleanup is idempotent and refuses symlinks and foreign paths", async () => {
   const directory = residentWorkspaceDir("owned");
   createResidentWorkspace("owned", directory);
@@ -79,6 +116,21 @@ test("workspace cleanup is idempotent and refuses symlinks and foreign paths", a
   symlinkSync(foreign, directory);
   await assert.rejects(() => removeResidentWorkspace("owned", directory), /owned directory/);
   assert.ok(existsSync(join(foreign, "keep.txt")));
+});
+
+test("workspace cleanup removes nested files and link entries without following their targets", async () => {
+  const directory = residentWorkspaceDir("nested");
+  createResidentWorkspace("nested", directory);
+  const nested = join(directory, "a", "b");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, "notes.txt"), "temporary");
+  const foreign = mkdtempSync(join(home, "foreign-nested-"));
+  writeFileSync(join(foreign, "keep.txt"), "foreign data");
+  symlinkSync(foreign, join(nested, "link"));
+  symlinkSync(join(foreign, "missing"), join(nested, "dangling"));
+  await removeResidentWorkspace("nested", directory);
+  assert.equal(existsSync(dirname(directory)), false);
+  assert.equal(readFileSync(join(foreign, "keep.txt"), "utf8"), "foreign data");
 });
 
 test("workflow repository capture has no checkout for a repo-less resident", async () => {

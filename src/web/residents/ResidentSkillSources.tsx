@@ -55,16 +55,20 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
       <p className="resident-section-blurb">Browse the skills on this machine. Register a folder containing skill folders, each with a SKILL.md file.</p>
       {unavailable && <p className="resident-skill-notice">Resident skill selection is unavailable for {unavailable} until a launch control can keep the exact skill set frozen across resumes.</p>}
       {error && <p role="alert" className="resident-error">{error}</p>}
+      {index?.configurationProblem && <div className="resident-skill-notice">
+        <p role="alert">{index.configurationProblem}</p>
+        <Tooltip label="Replace invalid saved registrations with an empty source list; keep global sources and skill files"><button className="btn" disabled={busy} onClick={() => save({ directories: [] })}>Reset source list</button></Tooltip>
+      </div>}
       {index?.truncated && <p role="status" className="resident-skill-notice">The catalog reached its 4 MiB response limit. Some skills or problems were omitted. Remove unneeded sources or shorten skill descriptions, then rescan.</p>}
       <form className="resident-source-add" onSubmit={(event) => {
         event.preventDefault();
-        if (index && path.trim() && !busy) save({ directories: [...index.config.directories, { id: `custom-${crypto.randomUUID()}`, path }] }, true);
+        if (index && !index.configurationProblem && path.trim() && !busy) save({ directories: [...index.config.directories, { id: `custom-${crypto.randomUUID()}`, path }] }, true);
       }}>
         <label className="field">
           <span className="field-label">Skill folder</span>
-          <input className="field-input" value={path} disabled={busy || !index} onChange={(event) => setPath(event.target.value)} placeholder="~/my-skills" />
+          <input className="field-input" value={path} disabled={busy || !index || !!index.configurationProblem} onChange={(event) => setPath(event.target.value)} placeholder="~/my-skills" />
         </label>
-        <Tooltip label="Register this folder and index its skills"><button type="submit" className="btn" disabled={busy || !index || !path.trim()}>Add source</button></Tooltip>
+        <Tooltip label="Register this folder and index its skills"><button type="submit" className="btn" disabled={busy || !index || !!index.configurationProblem || !path.trim()}>Add source</button></Tooltip>
       </form>
       <ul className="resident-source-list" aria-label="Registered skill sources">
         {index?.sources.map((source) => (

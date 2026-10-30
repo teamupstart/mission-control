@@ -49,6 +49,8 @@ export interface ResidentSkillIndex {
   skills: IndexedResidentSkill[];
   config: ResidentSkillSources;
   configRevision: string;
+  /** Invalid stored registrations are preserved until an explicit repair. */
+  configurationProblem: string | null;
   /** The aggregate serialized response budget stopped this scan early. */
   truncated: boolean;
   scannedAt: number;

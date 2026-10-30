@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os, { homedir, tmpdir } from "node:os";
@@ -22,6 +22,22 @@ function skill(path: string, name: string, description = "A fixture") {
 }
 function source(path: string, id = "test") { return { id, path, label: id, custom: true, problems: [] }; }
 function directory(path: string) { return { id: `custom-${randomUUID()}`, path }; }
+
+/** Budget-boundary fixtures need a specified enumeration order, independent of the filesystem. */
+function alphabeticalEnumeration(t: TestContext, directory: string): void {
+  const open = fs.opendirSync;
+  const observe = t.mock.method(fs, "opendirSync", (...args: Parameters<typeof fs.opendirSync>) => {
+    const handle = open(...args);
+    if (String(args[0]) === directory) {
+      const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+      let next = 0;
+      t.mock.method(handle, "readSync", () => entries[next++] ?? null);
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observe.mock.restore(); syncBuiltinESMExports(); });
+}
 
 test("predefined ids and roots include daemon CODEX_HOME, with the standard fallback", () => {
   const before = process.env.CODEX_HOME;
@@ -107,7 +123,7 @@ test("scan refuses child links to home or its ancestors but follows narrow exter
     validateSkillDirectories({ directories: [directory(path)] });
     const result = scanSkillSources([source(path)], { directories: [] });
     assert.deepEqual(result.skills.map((entry) => entry.id), ["test:narrow-link", "test:safe"]);
-    assert.deepEqual(result.sources[0]!.problems, [
+    assert.deepEqual(result.sources[0]!.problems.sort(), [
       "group/home-link: This directory resolves at or above your home. Choose a narrower folder.",
       "group/parent-link: This directory resolves at or above your home. Choose a narrower folder.",
     ]);
@@ -136,6 +152,7 @@ test("scan accepts a 128 KiB document and rejects one additional byte", () => {
 
 test("scan accepts 5000 entries including skill documents and stops before reading entry 5001", (t) => {
   const path = join(root, "entry-limit");
+  alphabeticalEnumeration(t, path);
   // Root + 2499 folders + 2499 SKILL.md documents + one ordinary file = 5000.
   const folders = Array.from({ length: 2499 }, (_, i) => `skill-${String(i + 1).padStart(4, "0")}`);
   for (const folder of folders) skill(join(path, folder), folder);
@@ -162,8 +179,9 @@ test("scan accepts 5000 entries including skill documents and stops before readi
   } finally { observe.mock.restore(); syncBuiltinESMExports(); }
 });
 
-test("ordinary and hidden files consume the shared enumeration budget before grouped skills", () => {
+test("ordinary and hidden files consume the shared enumeration budget before grouped skills", (t) => {
   const path = join(root, "file-entry-limit");
+  alphabeticalEnumeration(t, path);
   skill(join(path, "group/skill"), "at-limit");
   // Root, group, skill and SKILL.md consume four entries; ignored files consume the rest.
   for (let i = 0; i < 4996; i++) writeFileSync(join(path, `${i % 2 ? "." : ""}file-${i}`), "");
@@ -171,7 +189,7 @@ test("ordinary and hidden files consume the shared enumeration budget before gro
   assert.deepEqual(accepted.skills.map((entry) => entry.id), ["test:group/skill"]);
   assert.deepEqual(accepted.sources[0]!.problems, []);
 
-  writeFileSync(join(path, "one-more-file"), "");
+  writeFileSync(join(path, ".one-more-file"), "");
   const capped = scanSkillSources([source(path)], { directories: [] });
   assert.deepEqual(capped.skills, []);
   assert.deepEqual(capped.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
@@ -198,6 +216,36 @@ test("enumeration stops reading after the limit probe and closes the directory h
     assert.deepEqual(result.skills, []);
     assert.deepEqual(result.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
     assert.equal(reads, 5000, "4999 entries plus one overflow probe, without draining the folder");
+    assert.equal(closes, 1);
+  } finally { observe.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("an overflowing root retains early skills without exceeding the shared scan budget", (t) => {
+  const path = join(root, "partial-overflow");
+  skill(join(path, "early"), "retained");
+  const open = fs.opendirSync;
+  let reads = 0;
+  let closes = 0;
+  const observe = t.mock.method(fs, "opendirSync", (...args: Parameters<typeof fs.opendirSync>) => {
+    const handle = open(...args);
+    const close = handle.closeSync.bind(handle);
+    if (String(args[0]) === path) {
+      // A concrete enumeration order: one real skill, then a very large file tail.
+      t.mock.method(handle, "readSync", () => {
+        reads++;
+        assert.ok(reads <= 4999, "the file tail is not drained or sorted");
+        return { name: reads === 1 ? "early" : `file-${reads}`, isDirectory: () => reads === 1, isSymbolicLink: () => false };
+      });
+      t.mock.method(handle, "closeSync", () => { closes++; close(); });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = scanSkillSources([source(path)], { directories: [] });
+    assert.deepEqual(result.skills.map(skill => skill.id), ["test:early"]);
+    assert.deepEqual(result.sources[0]!.problems, ["Source exceeds the 5000-entry scan limit."]);
+    assert.equal(reads, 4999, "root + document + 4998 accepted children, then one overflow probe");
     assert.equal(closes, 1);
   } finally { observe.mock.restore(); syncBuiltinESMExports(); }
 });
@@ -242,8 +290,9 @@ test("scan indexes skills at depth six but reports the group before depth seven"
   assert.deepEqual(rejected.sources[0]!.problems, [`${folder}: grouped folders exceed the depth limit of 6.`]);
 });
 
-test("scan retains all 100 problems, caps the 101st, and still indexes later valid skills", () => {
+test("scan retains all 100 problems, caps the 101st, and still indexes later valid skills", (t) => {
   const path = join(root, "problem-limit");
+  alphabeticalEnumeration(t, path);
   const folders = Array.from({ length: 100 }, (_, i) => `empty-${String(i + 1).padStart(3, "0")}`);
   for (const folder of folders) mkdirSync(join(path, folder), { recursive: true });
   const expected = folders.map((folder) => `${folder}: no SKILL.md.`);
@@ -275,7 +324,7 @@ test("scan accepts metadata at 128 and 16000 characters and reports each overlon
   skill(join(path, "description"), "n", description + "d");
   const rejected = scanSkillSources([source(path)], { directories: [] });
   assert.deepEqual(rejected.skills, []);
-  assert.deepEqual(rejected.sources[0]!.problems, [
+  assert.deepEqual(rejected.sources[0]!.problems.sort(), [
     "description: SKILL.md needs a description of at most 16000 characters.",
     "name: SKILL.md needs a name of at most 128 characters on one line.",
   ]);
@@ -332,7 +381,7 @@ test("the aggregate catalog accepts exactly 4 MiB and stops before retaining one
   skill(last, "large", "x".repeat(length + 1));
   const over = scanSkillSources(sources, { directories: [] });
   assert.equal(over.truncated, true);
-  assert.ok(!over.skills.some((row) => row.path === last));
+  assert.equal(over.skills.length, folders.length - 1, "exactly one skill is omitted in filesystem enumeration order");
   assert.ok(Buffer.byteLength(JSON.stringify(over)) <= 4 * 1024 * 1024);
 });
 

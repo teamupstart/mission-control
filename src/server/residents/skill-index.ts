@@ -24,8 +24,20 @@ const MAX_GROUP_DEPTH = 6;
 const MAX_PROBLEMS = 100;
 const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
 
-function configRevision(config: ResidentSkillSources): string {
+function configRevision(config: unknown): string {
   return createHash("sha256").update(JSON.stringify(config)).digest("hex");
+}
+
+function readSkillSources(): { config: ResidentSkillSources; revision: string; problem: string | null } {
+  const stored = getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources);
+  const parsed = ResidentSkillSourcesSchema.safeParse(stored === undefined ? {} : stored);
+  const config = parsed.success ? parsed.data : { directories: [] };
+  return {
+    config,
+    // Invalid values must not share the empty fallback's comparison token.
+    revision: configRevision(parsed.success ? config : stored),
+    problem: parsed.success ? null : "Stored skill-source settings are invalid. Global skills remain available. Reset the source list to replace the invalid registrations; skill files will not be changed.",
+  };
 }
 
 export class ResidentSkillSourcesConflictError extends Error {}
@@ -76,10 +88,10 @@ export function parseResidentSkill(text: string): { name: string; description: s
 }
 
 /** Bounded traversal also covers grouped skill folders and globally installed symlinked skills. */
-export function scanSkillSources(sources: readonly ResidentSkillSource[], config: ResidentSkillSources): ResidentSkillIndex {
+export function scanSkillSources(sources: readonly ResidentSkillSource[], config: ResidentSkillSources, configurationProblem: string | null = null): ResidentSkillIndex {
   const result: ResidentSkillIndex = {
     sources: sources.map((source) => ({ ...source, problems: [...source.problems] })),
-    skills: [], config, configRevision: configRevision(config), truncated: false, scannedAt: Date.now(),
+    skills: [], config, configRevision: configRevision(config), configurationProblem, truncated: false, scannedAt: Date.now(),
   };
   // Count actual UTF-8 JSON bytes, including escaping, source metadata and configuration.
   // Account before retaining each entry so neither the cache nor the response grows first.
@@ -103,8 +115,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
     // Count the source root and every enumerated entry, including files and hidden entries.
     // Read one extra entry to detect truncation, then close without draining the directory.
     let entries = 1;
-    const childrenOf = (directory: string): Dirent[] => {
-      const children: Dirent[] = [];
+    function* childrenOf(directory: string): Generator<Dirent> {
       const handle = opendirSync(directory);
       try {
         let child: Dirent | null;
@@ -113,11 +124,12 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
             problem("Source exceeds the 5000-entry scan limit.");
             break;
           }
-          children.push(child);
+          // Descend before enumerating the next sibling, preserving partial results
+          // and leaving budget for each collected folder's SKILL.md.
+          yield child;
         }
       } finally { handle.closeSync(); }
-      return children.sort((a, b) => a.name.localeCompare(b.name));
-    };
+    }
     const walk = (directory: string, folder: string, depth: number): void => {
       if (result.truncated || entries > MAX_ENTRIES_PER_SOURCE) return;
       try {
@@ -165,6 +177,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
             if (!child.isDirectory() && !child.isSymbolicLink()) continue;
             subfolders++;
             walk(join(directory, child.name), folder ? `${folder}/${child.name}` : child.name, depth + 1);
+            if (entries > MAX_ENTRIES_PER_SOURCE) break;
           }
           if (folder && !subfolders && entries <= MAX_ENTRIES_PER_SOURCE) problem(`${folder}: no SKILL.md.`);
         } finally { ancestors.delete(real); }
@@ -177,17 +190,18 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
   }
   // Only a resolved target actually indexed by Mission Control proves a duplicate.
   // Filter after all sources so their order cannot hide an independent Claude skill.
+  const sourceOrder = new Map(sources.map((source, i) => [source.id, i]));
   result.skills = result.skills.filter((skill) => {
     const target = claudeSkillTargets.get(skill.id);
     return target === undefined || !missionSkills.has(target);
-  });
+  }).sort((a, b) => sourceOrder.get(a.sourceId)! - sourceOrder.get(b.sourceId)! || a.folder.localeCompare(b.folder));
   return result;
 }
 
 let cached: { key: string; index: ResidentSkillIndex } | null = null;
 
 export function residentSkillIndex(rescan = false): ResidentSkillIndex {
-  const config = ResidentSkillSourcesSchema.parse(getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources) ?? {});
+  const { config, revision, problem } = readSkillSources();
   const seen = new Set<string>();
   const sources = [...defaultSkillSources(), ...config.directories.map((row) => {
     const path = canonicalize(row.path);
@@ -200,17 +214,18 @@ export function residentSkillIndex(rescan = false): ResidentSkillIndex {
     seen.add(path);
     return { ...row, label: row.path, path, custom: true, problems };
   })];
-  const key = JSON.stringify(sources);
+  const key = JSON.stringify({ sources, revision });
   if (!rescan && cached?.key === key) return cached.index;
-  const index = scanSkillSources(sources, config);
+  const index = scanSkillSources(sources, config, problem);
+  index.configRevision = revision; // Always a 64-byte hash, already included in the response budget.
   cached = { key, index };
   return index;
 }
 
 export function saveResidentSkillSources(config: ResidentSkillSources, expectedRevision?: string): ResidentSkillIndex {
-  const current = ResidentSkillSourcesSchema.parse(getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources) ?? {});
+  const current = readSkillSources();
   // The daemon is the sole writer; comparison and persistence are synchronous, with no await.
-  if (expectedRevision !== undefined && expectedRevision !== configRevision(current)) {
+  if (expectedRevision !== undefined && expectedRevision !== current.revision) {
     throw new ResidentSkillSourcesConflictError("Skill sources changed in another window. Review the refreshed list and try again.");
   }
   validateSkillDirectories(config);

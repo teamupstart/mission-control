@@ -610,6 +610,10 @@ YAML frontmatter, including folded descriptions, and reports source problems in 
 is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
 Concurrent source edits are compared against the list a window loaded. A stale add or removal
 is refused and refreshes the list so the operator can review it before retrying.
+If restored registrations have an invalid shape, the catalog still shows global skills and
+explains the problem. **Reset source list** explicitly replaces those invalid registrations
+with an empty list before new folders can be added. Reads and rescans leave the stored value
+intact, and a reset also refuses a stale revision.
 
 The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
 `~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders

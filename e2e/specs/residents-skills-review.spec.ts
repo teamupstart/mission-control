@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 async function capture(page: Page, panel: Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -16,6 +17,34 @@ async function capture(page: Page, panel: Locator, name: string): Promise<void> 
     panel.getByLabel("Skill folder"), panel.getByRole("combobox", { name: "Source", exact: true }),
   ] });
 }
+
+test("invalid restored registrations leave global skills available and can be explicitly reset", async ({ dashboard: page, daemon }) => {
+  const invalid = '{"directories":"invalid"}';
+  withDaemonDb(daemon, db => db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run("residents.skillSources", invalid));
+  const stored = () => withDaemonDb(daemon, db => (db.prepare("SELECT value FROM app_config WHERE key = ?").get("residents.skillSources") as { value: string }).value);
+  await page.goto(`${daemon.baseURL}/#/residents/skill-sources`);
+  const panel = page.getByRole("region", { name: "Skill sources" });
+  await expect(panel.getByRole("alert")).toContainText("Stored skill-source settings are invalid");
+  await expect(panel.getByRole("list", { name: "Indexed skills" }).getByRole("listitem").first()).toBeVisible();
+  await expect(panel.getByLabel("Skill folder")).toBeDisabled();
+  await panel.getByRole("button", { name: "Rescan" }).click();
+  await expect(panel.getByRole("button", { name: "Rescan" })).toBeEnabled();
+  expect(stored()).toBe(invalid);
+  const reset = panel.getByRole("button", { name: "Reset source list" });
+  await expect(reset).toHaveAccessibleDescription(/Replace invalid saved registrations/);
+  await capture(page, panel, "configuration-recovery");
+  await reset.click();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  await expect(reset).toHaveCount(0);
+  await expect(panel.getByLabel("Skill folder")).toBeEnabled();
+  expect(stored()).toBe('{"directories":[]}');
+  const root = join(daemon.home, "repaired-source");
+  mkdirSync(join(root, "fixture"), { recursive: true });
+  writeFileSync(join(root, "fixture/SKILL.md"), "---\nname: Repaired source skill\ndescription: fixture\n---\n");
+  await panel.getByLabel("Skill folder").fill(root);
+  await panel.getByRole("button", { name: "Add source" }).click();
+  await expect(panel.getByRole("list", { name: "Indexed skills" }).getByText("Repaired source skill", { exact: true })).toBeVisible();
+});
 
 test("stale windows refresh without overwriting another window's source additions or removals", async ({ dashboard: first, daemon }) => {
   const second = await first.context().newPage();

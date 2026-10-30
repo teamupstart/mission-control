@@ -356,3 +356,40 @@ test("skill-source validation returns 400 while storage failures stay server err
   assert.equal(response.status, 500);
   assert.ok(!(await response.text()).includes("private-storage-fault"));
 });
+
+test("malformed stored sources keep global skills readable and require the current revision to repair", async () => {
+  const db = openDb();
+  const key = "residents.skillSources";
+  const original = db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+  const codexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = join(home, "recovery-codex");
+  mkdirSync(join(process.env.CODEX_HOME, "skills/recovery"), { recursive: true });
+  writeFileSync(join(process.env.CODEX_HOME, "skills/recovery/SKILL.md"), "---\nname: recovery-global\ndescription: fixture\n---\n");
+  const seed = (value: unknown) => db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
+  const stored = () => (db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string }).value;
+  try {
+    seed({ directories: "invalid" });
+    const read = await request("GET", "/api/residents/skills");
+    assert.equal(read.status, 200);
+    assert.match(String(read.json.configurationProblem), /invalid/);
+    assert.deepEqual(read.json.config, { directories: [] });
+    assert.ok((read.json.skills as Array<{ name: string }>).some(skill => skill.name === "recovery-global"));
+    assert.equal((await request("POST", "/api/residents/skills/rescan", {})).status, 200);
+    assert.equal(stored(), '{"directories":"invalid"}', "reads and rescans preserve the stored value");
+    seed({ directories: ["also-invalid"] });
+    const changed = await request("GET", "/api/residents/skills");
+    assert.notEqual(changed.json.configRevision, read.json.configRevision, "invalid values have distinct revisions despite the same fallback");
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision: read.json.configRevision, config: { directories: [] } })).status, 409);
+    assert.equal(stored(), '{"directories":["also-invalid"]}');
+    const repaired = await request("PUT", "/api/residents/skill-sources", { expectedRevision: changed.json.configRevision, config: { directories: [] } });
+    assert.equal(repaired.status, 200);
+    assert.equal(repaired.json.configurationProblem, null);
+    assert.equal(stored(), '{"directories":[]}');
+    assert.equal((await request("GET", "/api/residents/skills")).json.configurationProblem, null);
+  } finally {
+    if (codexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = codexHome;
+    if (original) db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(key, original.value);
+    else db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
+  }
+});

@@ -23,7 +23,7 @@ import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts"
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
 import { ResidentProfileRevisionSchema } from "@shared/residents.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
-import { listAllResidentProfiles, normalizeResidentName } from "../residents/store.ts";
+import { listBackupResidentProfiles, normalizeResidentName } from "../residents/store.ts";
 
 const id = z.string().min(1).max(200);
 const name = z.string().min(1).max(200);
@@ -205,8 +205,9 @@ export const SETTINGS_BACKUP_CATALOGS = [
     schema: SettingsBackupResidentProfilesSchema,
     optional: true,
     // Resident profiles live in their own tables on the same connection, so the capture reads
-    // them directly rather than through the Library store it is handed.
-    capture: () => listAllResidentProfiles().map((profile) => ({
+    // them directly rather than through the Library store it is handed. Bounded to the catalog
+    // limit: every live profile, then the most recently archived (see the store function).
+    capture: () => listBackupResidentProfiles(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).map((profile) => ({
       id: profile.id,
       name: profile.name,
       normalizedName: normalizeResidentName(profile.name),

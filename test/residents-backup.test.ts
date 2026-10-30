@@ -21,6 +21,7 @@ const { createSettingsBackupEnvelope, validateSettingsBackupDomains } =
   await import("../src/server/settings-backups/format.ts");
 const store = await import("../src/server/residents/store.ts");
 const { RESIDENT_LIMITS, ResidentProfileRevisionSchema } = await import("../src/shared/residents.ts");
+const { SETTINGS_BACKUP_LIMITS } = await import("../src/shared/settings-backups.ts");
 
 const db = openDb();
 const workflowStore = new WorkflowStore(db);
@@ -219,4 +220,42 @@ test("restore is blocked when a resident it leaves live would name a Persona tha
   assert.ok(withResidents.snapshot.domains.some((entry) => entry.domain === "resident-profiles"));
   const own = svc.previewRestore(withResidents.snapshot.id);
   assert.equal(own.status, "preflight_blocked");
+});
+
+test("archived history beyond the catalog limit never stops snapshots, and restoring one changes no omitted profile", async () => {
+  const limit = SETTINGS_BACKUP_LIMITS.entriesPerCatalog;
+  const insertProfile = db.prepare(`INSERT INTO resident_profiles (id, name, normalized_name, revision, archived_at, created_at, updated_at) VALUES (?, ?, ?, 1, ?, 1, ?)`);
+  const insertRevision = db.prepare(`INSERT INTO resident_profile_revisions (profile_id, revision, settings_json, created_at) VALUES (?, 1, ?, 1)`);
+  const body = JSON.stringify(settings("Archived", ""));
+  db.exec("BEGIN");
+  // limit + 1 archived profiles: archived_at 1 is the oldest, so it is the one left out.
+  for (let i = 1; i <= limit + 1; i += 1) {
+    const id = `archived-${String(i).padStart(5, "0")}`;
+    insertProfile.run(id, `Archived ${i}`, `archived ${i}`, i, i);
+    insertRevision.run(id, body);
+  }
+  db.exec("COMMIT");
+  store.createResidentProfile({ id: "live-a", settings: settings("Live A", "a"), at: 10 });
+  store.createResidentProfile({ id: "live-b", settings: settings("Live B", "b"), at: 10 });
+
+  const root = join(home, "archived-history");
+  const svc = service(root);
+  const captured = await svc.ensureDailySnapshot("2026-10-30");
+  assert.equal(captured.status, "ready", JSON.stringify(captured).slice(0, 300));
+  if (captured.status !== "ready") return;
+  const rows = captured.snapshot.domains.find((entry) => entry.domain === "resident-profiles")?.payload as Array<{ id: string; archivedAt: number | null }>;
+  assert.equal(rows.length, limit);
+  assert.equal(captured.snapshot.counts.residentProfiles, limit);
+  const ids = new Set(rows.map((row) => row.id));
+  assert.ok(ids.has("live-a") && ids.has("live-b"), "every live profile is carried");
+  assert.ok(ids.has(`archived-${String(limit + 1).padStart(5, "0")}`), "the most recently archived is carried");
+  assert.ok(!ids.has("archived-00001") && !ids.has("archived-00002") && !ids.has("archived-00003"), "the oldest archived are left out");
+
+  const restored = await svc.restore(captured.snapshot.id, captured.snapshot.digest);
+  assert.equal(restored.status, "restored", JSON.stringify(restored));
+  assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id).sort(), ["live-a", "live-b"]);
+  const oldest = store.getResidentProfile("archived-00001");
+  assert.equal(oldest?.archivedAt, 1, "an omitted archived profile is untouched");
+  assert.equal(oldest?.revision, 1);
+  assert.equal(store.residentProfileRevision("archived-00001", 1)?.identity.name, "Archived", "its pinned revision is kept");
 });

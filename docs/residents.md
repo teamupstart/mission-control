@@ -73,7 +73,9 @@ reason and is never relaunched; launch the profile again.
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).
 Restoring a snapshot writes each changed profile as a new revision, reactivates profiles the
 snapshot holds and archives live profiles it does not. Revisions that running residents pinned are
-kept. A snapshot taken before residents existed restores without touching profiles.
+kept. A snapshot taken before residents existed restores without touching profiles. A snapshot
+carries every live profile and the most recently archived ones up to the backup catalog limit, so
+an ever-growing archive never stops automatic snapshots; an archived profile left out stays archived.
 
 ## How it is built
 

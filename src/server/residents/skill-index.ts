@@ -7,6 +7,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   ResidentSkillSourcesSchema,
   RESIDENT_SKILL_SOURCE_IDS,
+  RESIDENT_SKILL_RESCAN_COOLDOWN_MS,
   type ResidentSkillSourceId,
   type IndexedResidentSkill,
   type ResidentSkillIndex,
@@ -41,6 +42,18 @@ function readSkillSources(): { config: ResidentSkillSources; revision: string; p
 }
 
 export class ResidentSkillSourcesConflictError extends Error {}
+export class ResidentSkillScanCooldownError extends Error {
+  constructor() { super("Wait a second before updating or rescanning skill sources again."); }
+}
+
+let scanReadyAt = 0;
+function withSkillScanAdmission(operation: () => ResidentSkillIndex): ResidentSkillIndex {
+  if (performance.now() < scanReadyAt) throw new ResidentSkillScanCooldownError();
+  // Every explicit scan shares this gate, including saves. Work is synchronous, so
+  // it cannot overlap; start the cooldown after completion, even when work fails.
+  try { return operation(); }
+  finally { scanReadyAt = performance.now() + RESIDENT_SKILL_RESCAN_COOLDOWN_MS; }
+}
 
 /** Same path and canonical-duplicate checks as repository indexing, including deferred roots. */
 export function validateSkillDirectories(config: ResidentSkillSources): void {
@@ -219,7 +232,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
 
 let cached: { key: string; index: ResidentSkillIndex } | null = null;
 
-export function residentSkillIndex(rescan = false): ResidentSkillIndex {
+function buildResidentSkillIndex(rescan = false): ResidentSkillIndex {
   const { config, revision, problem } = readSkillSources();
   const seen = new Set<string>();
   const sources = [...defaultSkillSources(), ...config.directories.map((row) => {
@@ -241,6 +254,14 @@ export function residentSkillIndex(rescan = false): ResidentSkillIndex {
   return index;
 }
 
+export function residentSkillIndex(): ResidentSkillIndex {
+  return buildResidentSkillIndex();
+}
+
+export function rescanResidentSkillIndex(): ResidentSkillIndex {
+  return withSkillScanAdmission(() => buildResidentSkillIndex(true));
+}
+
 export function saveResidentSkillSources(config: ResidentSkillSources, expectedRevision?: string): ResidentSkillIndex {
   const current = readSkillSources();
   // The daemon is the sole writer; comparison and persistence are synchronous, with no await.
@@ -248,6 +269,9 @@ export function saveResidentSkillSources(config: ResidentSkillSources, expectedR
     throw new ResidentSkillSourcesConflictError("Skill sources changed in another window. Review the refreshed list and try again.");
   }
   validateSkillDirectories(config);
-  setAppConfig(APP_CONFIG_ENTRIES.residentSkillSources, config);
-  return residentSkillIndex(true);
+  // Refused saves must not mutate registrations or invalidate the cached catalog.
+  return withSkillScanAdmission(() => {
+    setAppConfig(APP_CONFIG_ENTRIES.residentSkillSources, config);
+    return buildResidentSkillIndex(true);
+  });
 }

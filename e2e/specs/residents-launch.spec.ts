@@ -579,4 +579,36 @@ test.describe("a changed launch after a lost response", () => {
     await expect.poll(async () => (await residentTasks(daemon)).map((task) => task.title).sort())
       .toEqual([PROFILE, "Release Watch"].sort());
   });
+
+  test("a profile archived in another window after a lost response can still retry that launch exactly - one resident, one id", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    const sent: Array<Record<string, unknown>> = [];
+    await dropFirstLaunchResponse(dashboard, sent);
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+
+    await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
+    await dialog.getByLabel("Instructions for this run").fill(RUN_BRIEF);
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+
+    // Another window archives the profile: its card leaves the live catalog, but the launch it
+    // sent may be running, and the daemon still answers that request id.
+    await writeElsewhere(daemon, "DELETE");
+    await expect(dialog.getByRole("radio", { name: new RegExp(PROFILE) })).toHaveCount(0);
+    const notice = dialog.getByRole("status").filter({ hasText: "was archived after this launch was sent" });
+    await expect(notice).toContainText(PROFILE);
+    const retry = dialog.getByRole("button", { name: "Launch resident" });
+    await expect(retry).toBeEnabled();
+    await capture(dialog, "resident-dispatch-archived-retry");
+    await retry.click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, instructions: RUN_BRIEF });
+    await expect.poll(async () => (await residentTasks(daemon)).map((task) => task.title)).toEqual([PROFILE]);
+  });
 });

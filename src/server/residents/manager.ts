@@ -54,8 +54,10 @@ export const RESIDENT_SESSION_DID_NOT_START = "the resident's session did not st
 
 /**
  * The repository a stored run resolved, when a replay spells it exactly as the original request
- * did, or null. Used only when the repository no longer resolves - removed, moved, or behind a
- * symlink that is gone - so an exact replay still answers with its run instead of a conflict.
+ * did, or null. It wins over resolving the spelling again: the repository may since have been
+ * removed or moved, or a symlink in the spelling retargeted, and an exact replay is the same
+ * request whatever the path names now, so it answers with its run instead of a conflict. Any
+ * other spelling gets null and is compared by the canonical path it resolves to.
  */
 function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: string): string | null {
   if (!known || !spelling || known.repoSpelling !== spelling) return null;
@@ -273,7 +275,7 @@ export class ResidentManager {
     // so reusing it for an unknown or archived profile is the typed conflict, not a 404.
     const known = residentRunIdentityByRequest(input.requestId);
     const request = residentLaunchInput(
-      resolved.ok ? resolved.repoRoot : knownRepoForSpelling(known, spelling) ?? spelling,
+      knownRepoForSpelling(known, spelling) ?? (resolved.ok ? resolved.repoRoot : spelling),
       input.instructions,
     );
     if (known) return this.replay(known, profileId, request);

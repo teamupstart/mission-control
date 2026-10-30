@@ -11,6 +11,7 @@ import {
   chooseResidentRepo,
   residentAttemptMatches,
   residentDispatchRepo,
+  residentRetryWithoutProfile,
   retryResidentAttempt,
   selectResidentProfile,
   type ResidentDispatchDraft,
@@ -79,16 +80,20 @@ export function ResidentDispatch({
   const uncertainProfile = draft.uncertain
     ? profiles.find((candidate) => candidate.id === draft.uncertain!.profileId) ?? null
     : null;
+  // The outstanding launch's profile was archived: the form keeps the exact retry of that
+  // launch, which the daemon still answers, and nothing else.
+  const archivedRetry = residentRetryWithoutProfile(draft, profile);
   const blocked = busy
     ? "Waiting for the launch to answer"
-    : !profile
+    : !profile && !archivedRetry
       ? "Choose a resident profile"
       : !repoRoot.trim()
         ? "Choose a repository"
         : null;
 
   async function launch(from: ResidentDispatchDraft = draft): Promise<void> {
-    if (!profile || blocked) return;
+    const profileId = profile?.id ?? (from === draft ? archivedRetry?.profileId : undefined);
+    if (!profileId || blocked) return;
     setBusy(true);
     setError(null);
     const input = {
@@ -103,13 +108,14 @@ export function ResidentDispatch({
       ...from,
       uncertain: {
         requestId: input.requestId,
-        profileId: profile.id,
+        profileId,
+        profileName: profile?.name ?? archivedRetry?.profileName ?? "",
         repoRoot: input.repoRoot,
         instructions: from.instructions,
       },
     };
     mode.onResidentChange(submitted);
-    let answer = await launchResident(profile.id, input);
+    let answer = await launchResident(profileId, input);
     // Still starting: keep the SAME request id and replay it until the launch settles. The
     // replay is idempotent - it reads the one run this id reserved and never starts another -
     // so closing the form here keeps the id in the draft, and Launch again resumes this launch.
@@ -118,7 +124,7 @@ export function ResidentDispatch({
       setStarting(true);
       await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
       if (!mounted.current) return;
-      answer = await launchResident(profile.id, input);
+      answer = await launchResident(profileId, input);
     }
     if (!mounted.current) return;
     setStarting(false);
@@ -253,7 +259,7 @@ export function ResidentDispatch({
         {changedAfterUncertain && draft.uncertain && (
           <div className="resident-conflict" role="alert">
             <p>
-              An earlier launch of {uncertainProfile?.name ?? "a resident"} in{" "}
+              An earlier launch of {uncertainProfile?.name ?? draft.uncertain.profileName} in{" "}
               <code>{draft.uncertain.repoRoot}</code> may already be running: its answer never
               arrived. Retry it exactly, or launch this changed request as a separate resident.
             </p>
@@ -287,6 +293,13 @@ export function ResidentDispatch({
               </Tooltip>
             </div>
           </div>
+        )}
+        {archivedRetry && !starting && (
+          <p className="field-hint resident-archived-retry" role="status">
+            {archivedRetry.profileName} was archived after this launch was sent, and its answer never
+            arrived, so its resident may already be running. Launch resident retries exactly that
+            launch; it never starts a second resident.
+          </p>
         )}
         {starting && (
           <p className="field-hint resident-starting" role="status">

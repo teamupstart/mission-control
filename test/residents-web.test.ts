@@ -12,6 +12,7 @@ import {
   freshResidentDispatchDraft,
   residentAttemptMatches,
   residentDispatchRepo,
+  residentRetryWithoutProfile,
   retryResidentAttempt,
   selectResidentProfile,
 } from "../src/web/residents/dispatch-draft.ts";
@@ -101,7 +102,7 @@ test("an uncertain attempt matches only the exact input it sent, and retrying re
   const a = profile("a", "/repos/a");
   const b = profile("b", "/repos/b");
   const draft = { ...selectResidentProfile(freshResidentDispatchDraft(), a), instructions: "Today" };
-  const attempt = { requestId: draft.requestId, profileId: "a", repoRoot: "/repos/a", instructions: "Today" };
+  const attempt = { requestId: draft.requestId, profileId: "a", profileName: "Profile a", repoRoot: "/repos/a", instructions: "Today" };
   assert.equal(residentAttemptMatches(attempt, draft, a), true);
   assert.equal(residentAttemptMatches(attempt, { ...draft, instructions: " Today " }, a), true, "whitespace alone is not a change");
   assert.equal(residentAttemptMatches(attempt, selectResidentProfile(draft, b), b), false, "another profile");
@@ -121,7 +122,7 @@ test("while a draft's own launch is outstanding, its profile-sourced repository 
   const draft = selectResidentProfile(freshResidentDispatchDraft(), a);
   const outstanding = {
     ...draft,
-    uncertain: { requestId: draft.requestId, profileId: "a", repoRoot: "/repos/a", instructions: "" },
+    uncertain: { requestId: draft.requestId, profileId: "a", profileName: "Profile a", repoRoot: "/repos/a", instructions: "" },
   };
   const moved = { ...a, settings: { ...a.settings, workspace: { defaultRepoRoot: "/repos/a-moved" } } };
   assert.equal(residentDispatchRepo(outstanding, moved), "/repos/a", "frozen while outstanding");
@@ -131,4 +132,23 @@ test("while a draft's own launch is outstanding, its profile-sourced repository 
   // A different profile is not frozen by another profile's launch.
   const b = profile("b", "/repos/b");
   assert.equal(residentDispatchRepo(selectResidentProfile(outstanding, b), b), "/repos/b");
+});
+
+test("an outstanding launch whose profile was archived stays retryable exactly, and nothing else does", () => {
+  const a = profile("a", "/repos/a");
+  const draft = { ...selectResidentProfile(freshResidentDispatchDraft(), a), instructions: "Today" };
+  const attempt = { requestId: draft.requestId, profileId: "a", profileName: "Profile a", repoRoot: "/repos/a", instructions: "Today" };
+  const outstanding = { ...draft, uncertain: attempt };
+  // Archived: the live catalog no longer has the profile, so the form resolves none.
+  assert.deepEqual(residentRetryWithoutProfile(outstanding, null), attempt);
+  // The repository it reads is still the one that was sent.
+  assert.equal(residentDispatchRepo(outstanding, null), "/repos/a");
+  // Still live: the ordinary launch path applies.
+  assert.equal(residentRetryWithoutProfile(outstanding, a), null);
+  // Nothing outstanding, or a form that no longer says exactly that launch, cannot send without a profile.
+  assert.equal(residentRetryWithoutProfile(draft, null), null);
+  assert.equal(residentRetryWithoutProfile({ ...outstanding, instructions: "Tomorrow" }, null), null);
+  assert.equal(residentRetryWithoutProfile(chooseResidentRepo(outstanding, "/elsewhere"), null), null);
+  assert.equal(residentRetryWithoutProfile({ ...outstanding, requestId: "new" }, null), null);
+  assert.equal(residentRetryWithoutProfile({ ...outstanding, profileId: null }, null), null);
 });

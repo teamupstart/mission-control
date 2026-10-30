@@ -39,6 +39,8 @@ export interface ResidentDispatchDraft {
 export interface ResidentLaunchAttempt {
   requestId: string;
   profileId: string;
+  /** The profile's name when it was sent, to name the launch after the profile is archived. */
+  profileName: string;
   /** The repository as it was sent, not as the profile's default reads now. */
   repoRoot: string;
   instructions: string;
@@ -64,6 +66,21 @@ export function residentAttemptMatches(
   return attempt.profileId === draft.profileId
     && attempt.repoRoot === residentDispatchRepo(draft, profile).trim()
     && attempt.instructions.trim() === draft.instructions.trim();
+}
+
+/**
+ * The outstanding launch the form can still retry although its profile has left the live
+ * catalog - archived, perhaps in another window - or null. The daemon answers a request id it
+ * already holds from that run alone, never from the profile as it is now, so an exact retry
+ * needs nothing the archived profile took away. Anything other than that exact retry does.
+ */
+export function residentRetryWithoutProfile(
+  draft: ResidentDispatchDraft,
+  profile: ResidentProfile | null,
+): ResidentLaunchAttempt | null {
+  const attempt = draft.uncertain;
+  if (profile || !attempt || attempt.requestId !== draft.requestId) return null;
+  return residentAttemptMatches(attempt, draft, null) ? attempt : null;
 }
 
 /** Put the form back on an uncertain attempt, with its id, so Launch replays it exactly. */

@@ -58,7 +58,10 @@ A launch is a task of kind `resident`:
 A launch is idempotent. Repeating a request - a second click, or a response lost on the way back
 - returns the same resident rather than starting a second one, including when two identical
 requests race. Reusing a launch for a different profile, repository or set of run instructions
-is refused.
+is refused. An exact repeat is recognized by the repository path as it was typed, even after that
+path stops resolving or a symlink in it is pointed elsewhere; any other spelling is compared by
+the repository it resolves to. If a profile is archived while one of its launches is still
+unanswered, Dispatch keeps that one launch available to retry exactly.
 
 ## Lifecycle
 

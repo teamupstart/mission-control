@@ -483,6 +483,41 @@ test("an exact replay is recognized after its repository stops resolving; anothe
   assert.equal(h.dispatched.length, 1);
 });
 
+test("an exact replay is recognized after its symlink is retargeted; alternate spellings still compare canonically", async () => {
+  // The original launch named a symlink to the repository; before the retry the link is
+  // pointed at another repository, so the same spelling now resolves somewhere else.
+  const LINK = "/work/link-to-repo";
+  const retargeted = { current: false };
+  const h = harness({
+    resolve: async (path) => {
+      if (path === LINK) return { ok: true as const, repoRoot: retargeted.current ? OTHER_REPO : REPO };
+      return resolveRepoRoot(path);
+    },
+  });
+  const profile = profileIn(h);
+  const first = await h.residents.launch(profile.id, { repoRoot: LINK, instructions: "Today", requestId: "req-link" });
+  if (!("result" in first) || first.result.state !== "launched") assert.fail(JSON.stringify(first));
+
+  retargeted.current = true;
+  const replay = await h.residents.launch(profile.id, { repoRoot: LINK, instructions: "Today", requestId: "req-link" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.status, 200);
+  assert.equal(replay.result.state, "launched");
+  assert.equal(replay.result.run.id, first.result.run.id);
+
+  // Another spelling of the ORIGINAL repository still compares by its canonical path.
+  const alternate = await h.residents.launch(profile.id, { repoRoot: "/work/./mission-control", instructions: "Today", requestId: "req-link" });
+  assert.ok("result" in alternate && alternate.result.run.id === first.result.run.id, JSON.stringify(alternate));
+  // A spelling that now resolves to the other repository is a different launch.
+  const elsewhere = await h.residents.launch(profile.id, { repoRoot: OTHER_REPO, instructions: "Today", requestId: "req-link" });
+  assert.ok("code" in elsewhere && elsewhere.code === "conflict", JSON.stringify(elsewhere));
+  // The exact spelling with changed instructions is still a different launch.
+  const changed = await h.residents.launch(profile.id, { repoRoot: LINK, instructions: "Tomorrow", requestId: "req-link" });
+  assert.ok("code" in changed && changed.code === "conflict", JSON.stringify(changed));
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
+});
+
 test("an uncertain settlement leaves the run pending and retries it, never declaring a live session failed", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

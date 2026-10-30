@@ -224,12 +224,14 @@ export function ReviewCard({
           besideSubmit={
             finalBundle && (
               <label className="decisions-standing-approval">
-                <input
-                  type="checkbox"
-                  checked={approveFuture}
-                  disabled={busy}
-                  onChange={(e) => setApproveFuture(e.target.checked)}
-                />
+                <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
+                  <input
+                    type="checkbox"
+                    checked={approveFuture}
+                    disabled={busy}
+                    onChange={(e) => setApproveFuture(e.target.checked)}
+                  />
+                </Tooltip>
                 <span>Approve all future bundles for this task</span>
               </label>
             )

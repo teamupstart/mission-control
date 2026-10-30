@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>102</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>104</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -675,12 +675,14 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Managed plans (durable ledger)</strong><span>6 tables</span></summary>
+              <summary><strong>Managed plans (durable ledger)</strong><span>8 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>managed_plans</code><p>Stable plan identity, canonical owning repository, pinned policy, retained store path, originating session/task/work episode and current ready revision. Retained independently of task and session deletion.</p></div>
                 <div class="table-row"><code>managed_plan_revisions</code><p>Immutable revision references, manifest digests, idempotency identities and recoverable checkout write intents. Staging is incomplete; ready means saved, never approved or published.</p></div>
                 <div class="table-row"><code>managed_plan_reservations</code><p>Reserved plan identity and pinned policy for each task and canonical repository, established before launch or assignment.</p></div>
                 <div class="table-row"><code>managed_plan_reviews</code><p>Exact revision, manifest, writer episode and workflow binding associated with a human final-bundle review.</p></div>
+                <div class="table-row"><code>managed_plan_standing_approvals</code><p>One row per task whose operator approved a final bundle with "Approve all future bundles for this task" checked, naming the review that granted it. Later final bundles for that task are approved at creation.</p></div>
+                <div class="table-row"><code>managed_plan_standing_follow_ups</code><p>Remaining questions of a request whose final bundle a standing approval settled, keyed to that approval so the agent's answer states the bundle is already approved.</p></div>
                 <div class="table-row"><code>managed_plan_validations</code><p>Approval and immutable plan revision bound to an exact workflow submission and version for validation.</p></div>
                 <div class="table-row"><code>managed_plan_publications</code><p>Durable local publication receipts per plan revision. Survive source-task pruning and satisfy only matching artifact prerequisites, never code merge edges.</p></div>
               </div>

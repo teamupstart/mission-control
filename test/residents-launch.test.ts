@@ -204,12 +204,12 @@ test("a launch reserves one run, creates its resident task with the profile's ag
 
 test("a Codex profile's agent reaches the task explicitly rather than falling back to a default", async () => {
   const h = harness();
-  const profile = profileIn(h, { name: "Docs Gardener", agent: "codex", model: null, effort: null });
+  const profile = profileIn(h, { name: "Docs Gardener", agent: "codex", model: "gpt-6-luna", effort: null });
   const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-codex" });
   if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
   const task = h.registry.getTask(outcome.result.taskId)!;
   assert.equal(task.agent, "codex");
-  assert.equal(task.model, null);
+  assert.equal(task.model, "gpt-6-luna");
   assert.equal(task.effort, null);
 });
 
@@ -901,7 +901,7 @@ test("a launch publishes its run while it is live, carrying the pinned settings,
   assert.equal(live?.personaName, PERSONA.name);
   assert.deepEqual(live?.settings.board, { colorId: "cyan", label: null, pin: true });
   // Only the sections the browser draws: never the profile instructions or the repository.
-  assert.deepEqual(Object.keys(live!.settings).sort(), ["board", "identity"]);
+  assert.deepEqual(Object.keys(live!.settings).sort(), ["board", "identity", "loop"]);
   // The wire summary leaves out what no board surface reads.
   assert.equal("persona" in (live as object), false);
   assert.equal("runInstructions" in (live as object), false);
@@ -972,4 +972,21 @@ test("editing a profile's color, label or pin leaves a live run's marker and pos
   );
   assert.equal(both.get("s-next")!.changedTo, null);
   assert.deepEqual([...pinnedResidentSessions(both)], ["s-live"], "only the run whose pinned revision pins it sorts first");
+});
+
+
+test("unpriced capped models are refused at save and at launch", async () => {
+  const h = harness();
+  for (const agent of ["claude", "codex"] as const) {
+    const unpriced = settings({ agent, name: `Unpriced ${agent}`, model: "unknown-new-model" });
+    const refused = h.residents.createProfile(unpriced);
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.match(refused.error, /cannot be priced/);
+    // An imported/old revision must pass the same check on launch, not just on save.
+    const profile = store.createResidentProfile({ id: `unpriced-${agent}`, settings: unpriced, at: Date.now() });
+    const launch = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: `unpriced-${agent}` });
+    assert.equal(launch.ok, false);
+    if ("error" in launch) assert.match(launch.error, /cannot be priced/);
+  }
+  assert.deepEqual(h.dispatched, []);
 });

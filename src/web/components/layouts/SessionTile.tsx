@@ -1,3 +1,5 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
+import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -393,6 +395,13 @@ export function SessionTile({
             and cannot come to look like a different kind of thing. */}
         {jump && <Keycap chord={jump} />}
       </span>
+
+      {resident?.loop && <span className="resident-card-loop" onClick={(event) => event.stopPropagation()}>
+        <ResidentLoopStatusLine loop={resident.loop} />
+        <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
+          {() => <ResidentLoopControls mark={resident} menu />}
+        </SessionToolbarMenu>
+      </span>}
 
       {shown("goal") && session.goal?.text && (
         <span className="tile-goal">{session.goal.text}</span>

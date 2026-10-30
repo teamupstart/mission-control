@@ -1,3 +1,5 @@
+import { registerResidentLoopRoutes } from "./residents/routes.ts";
+import type { ResidentLoop } from "./residents/loop.ts";
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
@@ -1138,6 +1140,7 @@ export interface RouteDeps {
    * it is absent rather than constructing a second manager here.
    */
   residents?: ResidentManager;
+  residentLoop?: ResidentLoop;
   ensembles?: EnsembleManager;
   /**
    * The owner of embedded (SDK-runtime) sessions.
@@ -1246,6 +1249,7 @@ export const ROUTE_DEP_NAMES = [
   "sessionTransfers",
   "schedules",
   "residents",
+  "residentLoop",
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
@@ -1538,6 +1542,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     workflows,
     schedules,
     residents,
+    residentLoop,
     ensembles,
     sdkSessions,
     authorizeSessionControl,
@@ -8122,6 +8127,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return c.json(task);
   });
+
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
 
   // --- resident profiles and their one launch path ---
   //

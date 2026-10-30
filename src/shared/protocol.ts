@@ -8126,3 +8126,5 @@ export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema
 
 /** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
 export const LaunchResidentRequestSchema = LaunchResidentSchema;
+
+export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";

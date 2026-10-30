@@ -1,5 +1,8 @@
+import { resolveTranscriptPath } from "./transcript.ts";
+import { CompactionCompletion } from "../compaction.ts";
+import { defaultWindowForModel } from "@shared/model.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -162,8 +165,7 @@ export function claudeSdkTranscriptPath(
   agentSessionId: string,
   projectsDir: string = PROJECTS_DIR,
 ): string | null {
-  const path = join(projectsDir, cwd.replace(/[/.]/g, "-"), `${agentSessionId}.jsonl`);
-  return existsSync(path) ? path : null;
+  return resolveTranscriptPath({ cwd, agentSessionId, transcriptPath: null }, projectsDir);
 }
 
 /**
@@ -418,6 +420,17 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.acceptTurn(turn);
     return steering ? "steered" : "started";
   }
+
+  private readonly compaction = new CompactionCompletion();
+  compact = async (focus: string) => {
+    if (this.turnActive) throw new Error("Cannot compact a busy session.");
+    const completed = this.compaction.begin();
+    try {
+      const accepted = await this.sendIfIdle({ text: `/compact ${focus}`.trim() });
+      if (!accepted) this.compaction.fail("The driver refused compaction while busy.");
+    } catch (error) { this.compaction.fail(String(error)); }
+    return completed;
+  };
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     if (this.stopped) throw new Error("this session's driver has stopped");
@@ -942,6 +955,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private finish(reason: string): void {
+    this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
     this.query = null;
@@ -961,6 +975,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      const metadata = message.compact_metadata as { post_tokens?: number } | undefined;
+      this.compaction.observe(metadata?.post_tokens ?? null, defaultWindowForModel(this.modelId));
+    }
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;
     }
@@ -1005,6 +1023,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
         this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
       }
       this.out.emit({ kind: "turn_done", usage });
+      this.compaction.finish();
       this.refreshRateLimits();
       return;
     }

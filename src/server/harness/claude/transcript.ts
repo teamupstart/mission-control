@@ -39,14 +39,18 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  * `projectsDir` is injectable for tests; production uses the default.
  */
 export function resolveTranscriptPath(
-  session: Session,
+  session: Pick<Session, "cwd" | "agentSessionId" | "transcriptPath">,
   projectsDir: string = PROJECTS_DIR,
 ): string | null {
   if (session.transcriptPath && existsSync(session.transcriptPath)) return session.transcriptPath;
   if (!session.agentSessionId || !session.cwd) return null;
-  const dir = join(projectsDir, session.cwd.replace(/[/.]/g, "-"));
-  const derived = join(dir, `${session.agentSessionId}.jsonl`);
-  return existsSync(derived) ? derived : null;
+  // Current Claude escapes underscores and spaces too. Retain the older spelling for
+  // conversations written by older installations.
+  for (const encoded of new Set([session.cwd.replace(/[^a-zA-Z0-9-]/g, "-"), session.cwd.replace(/[/.]/g, "-")])) {
+    const derived = join(projectsDir, encoded, `${session.agentSessionId}.jsonl`);
+    if (existsSync(derived)) return derived;
+  }
+  return null;
 }
 
 /**

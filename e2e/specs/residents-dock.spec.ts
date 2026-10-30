@@ -178,7 +178,7 @@ test("a resident launched from the dock glows, pins to the top of its column, ca
   // Polled, because Open starts the drill-in morph and the pane widens over a transition; a
   // single read can land mid-animation, on a pane no layout could fit a button into.
   await expect.poll(async () => band.evaluate((el) => {
-    const action = el.querySelector("button")!.getBoundingClientRect();
+    const action = el.querySelector(".resident-band-action")!.getBoundingClientRect();
     const host = (el.closest(".cdetail") ?? el.parentElement!).getBoundingClientRect();
     return action.width > 20 && action.right <= host.right + 0.5;
   }), { message: "the band's Profile button is drawn inside the detail pane once it settles" }).toBe(true);
@@ -229,7 +229,7 @@ test("a resident launched from the dock glows, pins to the top of its column, ca
   await capture(dashboard, "05-console-band");
 
   // The band's Profile button and the dock's Manage residents both reach #/residents.
-  await band.getByRole("button", { name: "Profile" }).click();
+  await band.getByRole("button", { name: "Profile", exact: true }).click();
   await expect(dashboard).toHaveURL(/#\/residents\/[^/]+$/);
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.getByRole("button", { name: "Residents - 1 live" }).click();

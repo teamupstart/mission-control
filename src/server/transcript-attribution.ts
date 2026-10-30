@@ -1,3 +1,4 @@
+import { residentWakeText } from "@shared/resident-turn.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
 import { originOf } from "./injections.ts";
@@ -47,6 +48,8 @@ export function attributeTranscript(
   let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
+    const residentText = residentWakeText(message.text);
+    if (residentText !== null) return { ...message, origin: "resident", presentation: { kind: "resident", displayText: residentText } };
     const originSession = delegated.sources.get(message.id);
     const live = originOf(sessionId, message.text);
     // A turn whose words this conversation delegated, but which no delivery claims, is the

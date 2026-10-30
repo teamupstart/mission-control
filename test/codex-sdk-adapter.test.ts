@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import {
   codexSdkSpec,
@@ -189,6 +190,19 @@ async function launch(
 
 /** Let queued microtasks and the event pump settle. */
 const settle = () => new Promise((r) => setTimeout(r, 5));
+
+test("resident compaction uses thread/compact/start and measured contextCompaction completion", async () => {
+  const server = new FakeServer(defaultReplies({ "thread/compact/start": {} }));
+  const { handle, drained } = await launch(server, { prompt: "" });
+  const operation = handle.compact!("focus");
+  await settle();
+  assert.deepEqual(server.calls("thread/compact/start")[0]?.params, { threadId: THREAD.id });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "fixture-compact", status: "inProgress" } });
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/codex-manual.json", import.meta.url), "utf8")) as Array<{ method: string; params: Record<string, unknown> }>;
+  for (const frame of fixture) server.notify(frame.method, { ...frame.params, threadId: THREAD.id });
+  assert.deepEqual(await operation, { contextTokens: 14385, contextWindow: 258400 });
+  await handle.stop(); await drained;
+});
 
 test("a launch initializes, starts a thread, binds it, and delivers turn one", async () => {
   const server = new FakeServer(defaultReplies());
@@ -1700,7 +1714,7 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
 test("an approval prompt leads with the reason and shows what is being run", () => {
   assert.equal(
     commandApprovalPrompt({
-      threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: "local",
+      kind: "command", threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: "local",
       reason: "Allow me to create the file?", command: "printf yes > f", cwd: "/work/repo",
     }),
     "Allow me to create the file?\n\nprintf yes > f\nin /work/repo",
@@ -1709,7 +1723,7 @@ test("an approval prompt leads with the reason and shows what is being run", () 
   // always a sentence even when the agent gave no reason.
   assert.equal(
     commandApprovalPrompt({
-      threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: null,
+      kind: "command", threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: null,
     }),
     "Codex wants to run a command.",
   );
@@ -1717,7 +1731,7 @@ test("an approval prompt leads with the reason and shows what is being run", () 
 
 test("a question with no options remains available for a custom answer", () => {
   const questions = userInputQuestions({
-    threadId: "t", turnId: "u", itemId: "i", autoResolutionMs: null,
+    threadId: "t", turnId: "u", itemId: "i", autoResolutionMs: null, isBlocking: true,
     questions: [
       { id: "a", header: "H", question: "Pick one", isOther: false, isSecret: false, options: [{ label: "x", description: "why x" }] },
       { id: "b", header: "", question: "Free text", isOther: true, isSecret: false, options: null },
@@ -1865,7 +1879,7 @@ test("the activity line says what the session is doing, on one line", () => {
     "npm test --watch",
   );
   assert.equal(
-    itemActivity({ type: "agentMessage", id: "m", text: "\nI'll run that.\nThen report.", phase: null, memoryCitation: null }),
+    itemActivity({ type: "agentMessage", id: "m", text: "\nI'll run that.\nThen report.", phase: null, memoryCitation: null, delivery: null, questions: null }),
     "I'll run that.",
   );
   assert.equal(itemActivity({ type: "reasoning", id: "r", summary: [], content: [] }), "Thinking");

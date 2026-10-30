@@ -1,3 +1,4 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "./marker.ts";
@@ -39,7 +40,9 @@ export function ResidentBand({
           </span>
         </Tooltip>
       )}
+      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} />}
       <span className="resident-band-spacer" />
+      <ResidentLoopControls mark={mark} />
       {onOpenProfile && (
         <Tooltip label={`Open ${mark.name} on the Residents page`}>
           <button type="button" className="btn btn-ghost resident-band-action" onClick={() => onOpenProfile(mark.profileId)}>

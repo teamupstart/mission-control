@@ -1,3 +1,4 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
@@ -247,6 +248,8 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           Open
                         </button>
                       </Tooltip>
+                      <ResidentLoopStatusLine loop={run} />
+                      <ResidentLoopControls mark={mark} />
                     </li>
                   );
                 })}

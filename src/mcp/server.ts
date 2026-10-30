@@ -1,3 +1,5 @@
+import { ScheduleNextIterationSchema } from "@shared/residents.ts";
+import { scheduleResidentIteration } from "./resident-pacing.ts";
 import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
@@ -1073,6 +1075,14 @@ server.registerTool("get_pull_request_policy", {
   } catch (error) {
     return textResult(`Could not read pull request policy: ${String(error)}`, true);
   }
+});
+server.registerTool("schedule_next_iteration", {
+  description: "Set the next resident wake delay within your pinned profile bounds. During a turn the delay starts at completion. Returns a callId; replay that id after any unknown outcome to read the original receipt safely. A new callId is a new intent.",
+  inputSchema: ScheduleNextIterationSchema.extend({ callId: z.string().min(1).max(200).optional() }).shape,
+}, async (input) => {
+  const result = await scheduleResidentIteration(input, (body, signal) =>
+    http("/mcp/residents/schedule-next-iteration", "POST", body, true, signal));
+  return textResult(JSON.stringify(result), "code" in result);
 });
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",

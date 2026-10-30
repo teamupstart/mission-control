@@ -1,3 +1,4 @@
+import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -18,7 +19,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-residents-dispatch-"));
 process.env.HARNESS_HOME = home;
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
-process.env.MISSION_MCP_SERVER = join(home, "no-such-mcp-bundle.mjs");
+process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp.mjs"), ["schedule_next_iteration", "request_input"]);
 
 const { Registry } = await import("../src/server/registry.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
@@ -135,8 +136,8 @@ function profileSettings(agent: "claude" | "codex", instructions: string) {
     persona: { personaId: PERSONA.id },
     instructions: { markdown: instructions },
     execution: agent === "claude"
-      ? { agent, model: "claude-sonnet-4-6", effort: "high" }
-      : { agent, model: null, effort: null },
+      ? { agent, model: "claude-haiku-4-5", effort: "high" }
+      : { agent, model: "gpt-6-luna", effort: null },
   });
 }
 
@@ -161,7 +162,7 @@ for (const [agent, mechanism] of [
     assert.equal(supervisor.starts.length, 1, "the SDK path was taken despite a terminal runtime setting");
     const start = supervisor.starts[0]!;
     assert.equal(start.agent, agent);
-    assert.equal(start.model, agent === "claude" ? "claude-sonnet-4-6" : null);
+    assert.equal(start.model, agent === "claude" ? "claude-haiku-4-5" : "gpt-6-luna");
     assert.equal(start.effort, agent === "claude" ? "high" : null);
     assert.equal(start.taskId, outcome.result.taskId);
     assert.equal(start.acceptedGoalPrompt, RESIDENT_OPENING_TURN);

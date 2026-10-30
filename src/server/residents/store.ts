@@ -51,6 +51,13 @@ interface RunRow {
   created_at: number;
   ended_at: number | null;
   settings_json: string | null;
+  loop_state: ResidentRun["loopState"];
+  iteration: number;
+  last_seq: number;
+  next_wake_at: number | null;
+  consumed_generation: number | null;
+  pause_reason: string | null;
+  wake_reason: string | null;
 }
 
 /** The same normalization Personas use, so two spellings of one name are one identity. */
@@ -391,7 +398,8 @@ export function inResidentTransaction<T>(fn: () => T): T {
 const RUN_SELECT = `
   SELECT u.id, u.profile_id, u.profile_revision, u.task_id, u.launch_request_id, u.launch_input,
          u.launch_state, u.launch_error, u.persona_snapshot, u.run_instructions, u.created_at,
-         u.ended_at, r.settings_json
+         u.ended_at, u.loop_state, u.iteration, u.last_seq, u.next_wake_at,
+         u.consumed_generation, u.pause_reason, u.wake_reason, r.settings_json
     FROM resident_runs u
     LEFT JOIN resident_profile_revisions r
       ON r.profile_id = u.profile_id AND r.revision = u.profile_revision`;
@@ -443,6 +451,9 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
       settings,
       createdAt: row.created_at,
       endedAt: row.ended_at,
+      loopState: row.loop_state, iteration: row.iteration, lastSeq: row.last_seq,
+      nextWakeAt: row.next_wake_at, consumedGeneration: row.consumed_generation,
+      pauseReason: row.pause_reason, wakeReason: row.wake_reason,
     },
     launchInput,
   };
@@ -573,21 +584,33 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
 }
 
 /** Pending -> launched, once. False when the run already settled. */
-export function markResidentRunLaunched(id: string, endedAt: number | null): boolean {
-  const info = openDb()
-    .prepare(
-      `UPDATE resident_runs SET launch_state = 'launched', launch_error = NULL, ended_at = ?
-        WHERE id = ? AND launch_state = 'pending'`,
-    )
-    .run(endedAt, id);
-  return info.changes > 0;
+export function markResidentRunLaunched(id: string, endedAt: number | null, at = Date.now()): boolean {
+  return inResidentTransaction(() => {
+    const info = openDb().prepare(`UPDATE resident_runs SET launch_state = 'launched', launch_error = NULL,
+      ended_at = ?, loop_state = CASE WHEN ? IS NULL THEN 'working' ELSE 'ended' END
+      WHERE id = ? AND launch_state = 'pending'`).run(endedAt, endedAt, id);
+    if (info.changes > 0) adoptResidentLaunch(id, at, true);
+    return info.changes > 0;
+  });
+}
+
+/** Adoption never backfills a pending, failed or historical ended run. */
+export function adoptResidentLaunch(id: string, at: number, justLaunched = false): void {
+  inResidentTransaction(() => {
+    const d = openDb();
+    const changed = d.prepare(`UPDATE resident_runs SET iteration = 1, last_seq = 1
+      WHERE id = ? AND launch_state = 'launched' AND iteration = 0 AND last_seq = 0
+      AND (ended_at IS NULL OR ? = 1)`).run(id, Number(justLaunched));
+    if (changed.changes) d.prepare(`INSERT INTO resident_iterations
+      (run_id, seq, trigger, delivery, claimed_at, sent_at) VALUES (?, 1, 'launch', 'sent', ?, ?)`).run(id, at, at);
+  });
 }
 
 /** Pending -> failed with its reason, stamping the end in the same write. */
 export function markResidentRunFailed(id: string, error: string, at: number): boolean {
   const info = openDb()
     .prepare(
-      `UPDATE resident_runs SET launch_state = 'failed', launch_error = ?, ended_at = ?
+      `UPDATE resident_runs SET launch_state = 'failed', launch_error = ?, ended_at = ?, loop_state = 'ended'
         WHERE id = ? AND launch_state = 'pending'`,
     )
     .run(error, at, id);
@@ -596,12 +619,17 @@ export function markResidentRunFailed(id: string, error: string, at: number): bo
 
 /** Stamp a launched run's end, once. */
 export function endResidentRun(id: string, at: number): boolean {
-  const info = openDb()
-    .prepare(
-      `UPDATE resident_runs SET ended_at = ? WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`,
-    )
-    .run(at, id);
-  return info.changes > 0;
+  return inResidentTransaction(() => {
+    const d = openDb();
+    const info = d.prepare(`UPDATE resident_runs SET ended_at = ?, loop_state = 'ended', next_wake_at = NULL,
+      wake_request_delay_s = NULL, wake_request_reason = NULL, wake_request_generation = NULL
+      WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(at, id);
+    if (info.changes) {
+      d.prepare("DELETE FROM resident_pacing_calls WHERE run_id = ?").run(id);
+      d.prepare("DELETE FROM resident_iterations WHERE run_id = ? AND delivery = 'unconfirmed'").run(id);
+    }
+    return info.changes > 0;
+  });
 }
 
 /**

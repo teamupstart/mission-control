@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
@@ -52,7 +53,7 @@ import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
-import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
 import { setLlmSpendSink } from "./llm/spend.ts";
@@ -394,6 +395,7 @@ const residents = new ResidentManager({
   persona: (id) => personas.store.getPersona(id),
   launchResponseWaitMs: residentLaunchWaitMs(),
 });
+const residentLoop = new ResidentLoop({ registry, sdk: sdkSessions, refreshSession: (session) => refreshRuntimeMeta(registry, session) });
 tasks.registerResidentLaunch((task, repository, runtime) =>
   residents.composeLaunch(task, repository, runtime));
 workflows.start();
@@ -700,6 +702,7 @@ const app = buildApp({
   workflows,
   schedules,
   residents,
+  residentLoop,
   ensembles,
   sdkSessions,
   sessionActions,
@@ -741,7 +744,11 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // so it cannot launch a driver.
   void startDiscoveryAfterSdkRestore(
     sdkSessions.restore(),
-    () => startPoller(registry),
+    () => {
+      // Every native session must be restored before claim reconciliation reads its transcript.
+      residentLoop.start();
+      return startPoller(registry);
+    },
     () => shutdownStarted,
     (err) => console.error("[sdk] could not restore embedded sessions:", err),
   ).then((stop) => {
@@ -918,6 +925,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
@@ -943,6 +951,7 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  await stoppingResidentLoop;
   residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of

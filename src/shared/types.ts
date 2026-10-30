@@ -3449,7 +3449,7 @@ export interface TranscriptMessage {
  * log rather than drawn as platform instructions or invented prose.
  */
 export type TranscriptPresentation = {
-  kind: "launch";
+  kind: "launch" | "resident";
   displayText: string | null;
 };
 
@@ -3461,7 +3461,7 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session" | "resident";
 
 /** The session that typed a delegated turn: its id, and its name when the turn was sent. */
 export interface TurnOriginSession {

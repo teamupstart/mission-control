@@ -111,9 +111,10 @@ test("a revision fills every later section with its defaults and round-trips unc
     execution: { agent: "claude", model: null, effort: null },
     workspace: { defaultRepoRoot: null },
     board: { colorId: "cyan", label: null, pin: true },
+    loop: { prompt: "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.", delaySeconds: 300, minDelaySeconds: 60, maxDelaySeconds: 3600, iterationCap: 200, spendCapUsd: 20, contextThreshold: 70, compactionFocus: "" },
   });
   assert.deepEqual(ResidentProfileRevisionSchema.parse(JSON.parse(JSON.stringify(parsed))), parsed);
-  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board"]);
+  assert.deepEqual(RESIDENT_PROFILE_SECTION_IDS, ["identity", "persona", "instructions", "execution", "workspace", "board", "loop"]);
   // A stored revision from a newer build, carrying a section this build does not know, still reads.
   assert.equal(ResidentProfileRevisionSchema.safeParse({ ...parsed, marker: { color: "cyan" } }).success, true);
   // A request body may not smuggle one in.
@@ -122,7 +123,7 @@ test("a revision fills every later section with its defaults and round-trips unc
 
 test("the execution section accepts only Claude Code and Codex, and only an effort the harness offers", () => {
   assert.equal(ResidentProfileRevisionSchema.safeParse(body("Pi", { execution: { agent: "pi" } })).success, false);
-  assert.equal(ResidentProfileRevisionSchema.safeParse(body("Codex", { execution: { agent: "codex" } })).success, true);
+  assert.equal(ResidentProfileRevisionSchema.safeParse(body("Codex", { execution: { agent: "codex", model: "gpt-6-luna" } })).success, true);
   const unsupported = ResidentProfileRevisionSchema.safeParse(body("Max", { execution: { agent: "codex", effort: "max" } }));
   assert.equal(unsupported.success, false);
   assert.equal(ResidentProfileRevisionSchema.safeParse(body("")).success, false, "a resident needs a name");
@@ -286,12 +287,12 @@ test("a section or field written by a newer build survives this build reading, e
   // Save: an edit through the route carries the unknown section and field forward.
   const saved = await request("PATCH", `/api/residents/profiles/${profile.id}`, {
     expectedRevision: 1,
-    settings: body("Forward Compat", { instructions: { markdown: "Edited here." }, execution: { agent: "codex" } }),
+    settings: body("Forward Compat", { instructions: { markdown: "Edited here." }, execution: { agent: "codex", model: "gpt-6-luna" } }),
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.json));
   const stored = store.storedResidentSettings(profile.id, 2)!;
   assert.deepEqual(stored.marker, { color: "cyan", label: "FWD" });
-  assert.deepEqual(stored.execution, { agent: "codex", model: null, effort: null, loopHint: 5 }, "known values from the request, unknown kept");
+  assert.deepEqual(stored.execution, { agent: "codex", model: "gpt-6-luna", effort: null, loopHint: 5 }, "known values from the request, unknown kept");
   assert.deepEqual(stored.instructions, { markdown: "Edited here." });
   // And the revision it replaced is untouched.
   assert.deepEqual(store.storedResidentSettings(profile.id, 1)!.marker, { color: "cyan", label: "FWD" });

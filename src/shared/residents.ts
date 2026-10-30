@@ -1,3 +1,4 @@
+import { HARNESS_CAPABILITIES } from "./harness-capabilities.ts";
 // Resident profiles: named, revisioned bundles of persona, instructions, harness, model,
 // effort and workspace that launch a long-running `resident` task in the Agent SDK.
 //
@@ -53,7 +54,8 @@ export const RESIDENT_LIMITS = {
   /**
    * Archived profiles a settings snapshot carries, most recently archived first. Archive never
    * deletes rows, so history is unbounded; this keeps the resident catalog to (200 + 200)
-   * profiles of at most ~9 KB each, well inside the snapshot file limit. See `docs/residents.md`.
+   * profiles. Large instruction and loop text is checked against the snapshot file limit
+   * in the backup tests. See `docs/residents.md`.
    */
   archivedInSnapshot: 200,
 } as const;
@@ -200,6 +202,47 @@ export function residentMarker(settings: Pick<ResidentProfileRevision, "identity
  * revision schema below picks it up. Never rename a key: it is the JSON key every stored
  * revision carries.
  */
+export const RESIDENT_LOOP_PROMPT = "Continue your standing task. Check what has changed since your last iteration, act on it, and end with a one-line status. Call `schedule_next_iteration` if you need to wake sooner or later than usual.";
+
+export const ResidentLoopSectionSchema = z.object({
+  prompt: z.string().trim().min(1).max(8_000).default(RESIDENT_LOOP_PROMPT),
+  delaySeconds: z.number().int().min(1).max(604_800).default(300),
+  minDelaySeconds: z.number().int().min(1).max(604_800).default(60),
+  maxDelaySeconds: z.number().int().min(1).max(604_800).default(3_600),
+  iterationCap: z.number().int().positive().max(100_000).nullable().default(200),
+  spendCapUsd: z.number().positive().max(100_000).nullable().default(20),
+  contextThreshold: z.number().min(1).max(95).default(70),
+  compactionFocus: z.string().max(2_000).default(""),
+}).refine((value) => value.minDelaySeconds <= value.maxDelaySeconds, {
+  message: "minimum delay must not exceed maximum delay", path: ["minDelaySeconds"],
+});
+export type ResidentLoopSettings = z.infer<typeof ResidentLoopSectionSchema>;
+
+export const ScheduleNextIterationSchema = z.object({
+  delaySeconds: z.number().finite().nonnegative().max(31_536_000),
+  reason: z.string().trim().max(500).default(""),
+  callId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
+}).strict();
+export type ResidentPacingRequest = z.infer<typeof ScheduleNextIterationSchema>;
+export interface ResidentPacingReceipt {
+  callId: string;
+  delaySeconds: number;
+  pending: boolean;
+  nextWakeAt: number | null;
+}
+
+/** Append-only persisted loop states. */
+export type ResidentLoopState = "working" | "waiting" | "compacting" | "paused" | "ended";
+export interface ResidentLoopStatus {
+  loopState: ResidentLoopState;
+  iteration: number;
+  lastSeq: number;
+  nextWakeAt: number | null;
+  consumedGeneration: number | null;
+  pauseReason: string | null;
+  wakeReason: string | null;
+}
+
 export const RESIDENT_PROFILE_SECTIONS = {
   identity: ResidentIdentitySectionSchema,
   persona: ResidentPersonaSectionSchema,
@@ -207,6 +250,7 @@ export const RESIDENT_PROFILE_SECTIONS = {
   execution: ResidentExecutionSectionSchema.default({}),
   workspace: ResidentWorkspaceSectionSchema.default({}),
   board: ResidentBoardSectionSchema.default({}),
+  loop: ResidentLoopSectionSchema.default({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -288,7 +332,7 @@ export const ResidentPersonaSnapshotSchema = z.object({
 export type ResidentPersonaSnapshot = z.infer<typeof ResidentPersonaSnapshotSchema>;
 
 /** A resident run: the durable identity of one launch. */
-export interface ResidentRun {
+export interface ResidentRun extends ResidentLoopStatus {
   id: string;
   profileId: string;
   /** The revision this run pinned. A live run reads its settings only from here. */
@@ -317,7 +361,7 @@ export interface ResidentRun {
  * and workspace choices, and every section a later phase adds for the daemon alone (skills, MCP
  * servers) off this event, which is re-sent on every launch-state change of every live run.
  */
-export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board"] as const satisfies readonly ResidentProfileSectionId[];
+export const RESIDENT_RUN_SUMMARY_SECTIONS = ["identity", "board", "loop"] as const satisfies readonly ResidentProfileSectionId[];
 export type ResidentRunSummarySectionId = (typeof RESIDENT_RUN_SUMMARY_SECTIONS)[number];
 
 /** The pinned revision as a run summary carries it: only `RESIDENT_RUN_SUMMARY_SECTIONS`. */
@@ -332,7 +376,8 @@ export type ResidentRunSummarySettings = Pick<ResidentProfileRevision, ResidentR
  * Only open runs (not ended, not failed) are in the collection, so it is bounded by the
  * residents actually running: each holds a live, non-terminal `resident` task.
  */
-export interface ResidentRunSummary {
+export interface ResidentRunSummary extends ResidentLoopStatus {
+  compaction: { betweenIterations: boolean; nativeBackstop: boolean };
   id: string;
   profileId: string;
   profileRevision: number;
@@ -361,6 +406,10 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     taskId: run.taskId,
     launchState: run.launchState,
     personaName: run.persona.name,
+    compaction: HARNESS_CAPABILITIES[run.settings.execution.agent].residentCompaction!,
+    loopState: run.loopState, iteration: run.iteration, lastSeq: run.lastSeq,
+    nextWakeAt: run.nextWakeAt, consumedGeneration: run.consumedGeneration,
+    pauseReason: run.pauseReason, wakeReason: run.wakeReason,
     settings: residentRunSummarySettings(run.settings),
     createdAt: run.createdAt,
   };

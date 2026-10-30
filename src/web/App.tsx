@@ -2237,12 +2237,13 @@ export function App(): React.JSX.Element {
       foldAttention({
         sessions,
         reviews: answerableReviews,
+        residentRuns,
         ensembles: ensembleSummaries,
         pipelineRuns,
         pipelineCommissions,
         tasks,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, residentRuns],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -4006,6 +4007,7 @@ export function App(): React.JSX.Element {
           )}
           residents={route.page === "residents" ? (
             <ResidentsPage
+              runs={residentRuns}
               profiles={residentProfiles}
               personas={personas}
               selectedId={route.profileId ?? null}

@@ -735,6 +735,7 @@ export interface ResumeSpec {
 }
 
 export interface SdkLaunchOptions {
+  residentCompaction?: { threshold: number };
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */
   stateHome: string;
@@ -855,6 +856,7 @@ export interface SdkSessionHandle {
   setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
+  compact?: (focus: string) => Promise<import("./compaction.ts").CompactionResult>;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */
   stop(): Promise<void>;
   /**

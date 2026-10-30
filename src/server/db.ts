@@ -3226,6 +3226,29 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
+  addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");
+  for (const column of ["next_wake_at", "consumed_generation", "wake_request_delay_s", "wake_request_generation"]) {
+    addColumn(d, "resident_runs", column, "INTEGER");
+  }
+  for (const column of ["pause_reason", "wake_reason", "wake_request_reason"]) {
+    addColumn(d, "resident_runs", column, "TEXT");
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_iterations (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+      trigger TEXT NOT NULL, delivery TEXT NOT NULL, transcript_offset INTEGER,
+      claimed_at INTEGER NOT NULL, sent_at INTEGER, PRIMARY KEY (run_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_iterations_window ON resident_iterations(run_id, claimed_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_iterations_claim ON resident_iterations(run_id) WHERE delivery = 'claimed';
+    CREATE TABLE IF NOT EXISTS resident_pacing_calls (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, call_id TEXT NOT NULL,
+      receipt TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY (run_id, call_id)
+    );
+  `);
+
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -11676,6 +11699,18 @@ export interface AutomationRoleSpend {
   costUsd: number | null;
   tokens: number;
   runs: number;
+}
+
+/** Session-ledger spend strictly inside a rolling window; any unpriced row makes the total unknown. */
+export function sessionSpendSince(noteKeys: readonly string[], tsMs: number): {
+  costUsd: number | null; entries: Array<{ at: number; costUsd: number | null }>;
+} {
+  if (noteKeys.length === 0) return { costUsd: 0, entries: [] };
+  const rows = openDb().prepare(`SELECT ts, cost_usd, cost_known FROM usage_ledger
+    WHERE spend_kind = 'session' AND note_key IN (${noteKeys.map(() => "?").join(",")}) AND ts > ?
+    ORDER BY ts`).all(...noteKeys, tsMs) as Array<{ ts: number; cost_usd: number; cost_known: number }>;
+  const entries = rows.map((r) => ({ at: r.ts, costUsd: r.cost_known === 1 ? r.cost_usd : null }));
+  return { costUsd: entries.some((r) => r.costUsd === null) ? null : entries.reduce((sum, r) => sum + r.costUsd!, 0), entries };
 }
 
 /**

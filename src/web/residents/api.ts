@@ -55,3 +55,7 @@ export function archiveResidentProfile(id: string, expectedRevision: number): Pr
     body: JSON.stringify({ expectedRevision }),
   });
 }
+
+export function controlResident(id: string, action: "pause" | "resume" | "run-now" | "restart"): Promise<unknown> {
+  return residentRequest(`/api/residents/runs/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+}

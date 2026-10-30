@@ -277,6 +277,33 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
  * The editor's sections, in order. Phase 1 registers the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
  */
+function ResidentLoopSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+  const loop = draft.loop;
+  const numeric = [
+    ["delaySeconds", "Wake cadence (seconds)"], ["minDelaySeconds", "Minimum requested delay (seconds)"],
+    ["maxDelaySeconds", "Maximum requested delay (seconds)"], ["iterationCap", "Iterations per 24 hours"],
+    ["spendCapUsd", "Spend per 24 hours (USD)"], ["contextThreshold", "Compact at context (%)"],
+  ] as const;
+  return <div className="resident-fields">
+    <label className="field"><span className="field-label">Loop prompt</span>
+      <textarea className="field-input" value={loop.prompt} disabled={disabled}
+        onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
+    </label>
+    {numeric.map(([key, label]) => <label className="field" key={key}>
+      <span className="field-label">{label}</span>
+      <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
+        value={loop[key] ?? ""} disabled={disabled}
+        onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
+    </label>)}
+    <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
+    <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
+    <label className="field"><span className="field-label">Compaction focus</span>
+      <input className="field-input" value={loop.compactionFocus} disabled={disabled}
+        onChange={(e) => update("loop", { ...loop, compactionFocus: e.target.value })} />
+    </label>
+  </div>;
+}
+
 export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "identity",
@@ -314,4 +341,5 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
     blurb: "How this resident is found: a glowing outline and label chip, and whether it sorts first in its column.",
     Body: BoardSection,
   },
+  { id: "loop", title: "Loop and guardrails", blurb: "Cadence, self-pacing and rolling 24-hour limits.", Body: ResidentLoopSection },
 ];

@@ -4650,8 +4650,14 @@ body {
 
    Foreman's word survives here and gives up its mode chip instead - the dot beside it
    already carries live/off, and the chip is the wider of the two. Dispatch has no
-   `.tb-label` at all and so never degrades: it is the one control you would hunt for. */
-.topbar[data-rung~="1"] .missions-btn .tb-label {
+   `.tb-label` at all and so never degrades: it is the one control you would hunt for.
+
+   The Residents button sheds here too, on Missions' terms: its ⌂ and its live count carry it,
+   and its `aria-label` names it. It is the newest control on the bar, so it gives up its word
+   before any control that predates it loses one - at rung 4 it took Library's word from a
+   slimmed bar that had fit before it arrived. */
+.topbar[data-rung~="1"] .missions-btn .tb-label,
+.topbar[data-rung~="1"] .residents-btn .tb-label {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -4767,7 +4773,6 @@ body {
    bundled, the two shed everything at once, and a rung that saves far more than it had to
    leaves the bar visibly half empty for the next several hundred px of window. */
 .topbar[data-rung~="4"] .foreman-btn .tb-label,
-.topbar[data-rung~="4"] .residents-btn .tb-label,
 .topbar[data-rung~="4"] .page-seg-btn .tb-label {
   position: absolute;
   width: 1px;

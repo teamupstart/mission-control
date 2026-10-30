@@ -2,6 +2,7 @@ import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";
 import {
   attachUtilityProcessOutput,
+  endUtilityProcessLog,
   openPrivateUtilityLog,
   utilityProcessStdio,
 } from "./utility-log.ts";
@@ -70,7 +71,9 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
           attachUtilityProcessOutput(spawned, log, opts.captureChildOutput);
           spawned.once("exit", (code) => {
             child = null;
-            log.end(
+            endUtilityProcessLog(
+              spawned,
+              log,
               stopped
                 ? `[mission-control] ${opts.serviceName} stopped\n`
                 : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,

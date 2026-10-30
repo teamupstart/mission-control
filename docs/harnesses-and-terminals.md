@@ -508,7 +508,7 @@ records `null`.
 
 | Harness | Mechanism | What it does |
 | --- | --- | --- |
-| Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. |
+| Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. So does a set Claude cannot confirm within 60 seconds: a status call that fails or goes unanswered, or a server still starting. The same check runs on the relaunch after an authentication failure. |
 | Codex | `codex-home-overlay` | A per-run `CODEX_HOME` that links every entry of the operator's Codex home except `config.toml`, which it generates on every start: the operator's file with every MCP statement removed byte for byte, `sqlite_home` pointed at the operator's home, and the snapshot under quoted keys. Before `thread/start` or `thread/resume`, `config/read` with layers is checked. |
 
 An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's

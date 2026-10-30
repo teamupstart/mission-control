@@ -281,6 +281,24 @@ test("a snapshot server Claude reports switched off, failed or waiting on a logi
   await ok.stop();
 });
 
+test("a start whose MCP servers cannot be confirmed is refused, naming why", async () => {
+  const snapshot = () => residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]);
+  const launchWith = (status: (() => Promise<Array<{ name: string; status: string }>>) | null) => claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    residentMcpSettleMs: 1_000,
+    query: async () => {
+      const { mcpServerStatus: _status, ...query } = idleQuery(() => []);
+      return (status ? { ...query, mcpServerStatus: status } : query) as never;
+    },
+  }).launch(sdkOptions({ residentMcp: snapshot() }));
+  const mission = { name: "mission-control", status: "connected" };
+  await assert.rejects(launchWith(async () => [mission, { name: "snap", status: "pending" }]), /was still starting its MCP server snap after 1 second$/);
+  await assert.rejects(launchWith(async () => { throw new Error("control channel closed"); }), /could not report its MCP servers, so their set cannot be confirmed/);
+  await assert.rejects(launchWith(() => new Promise(() => {})), /did not report its MCP servers within 1 second$/);
+  await assert.rejects(launchWith(null), /cannot report its MCP servers, so their set cannot be confirmed/);
+});
+
 test("a snapshot server still pending is asked about again until it settles", async () => {
   let asked = 0;
   const statuses = () => {

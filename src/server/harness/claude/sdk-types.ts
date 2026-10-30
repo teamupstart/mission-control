@@ -255,6 +255,8 @@ export interface ClaudeSdkDeps {
   executable(): Promise<string>;
   /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
+  /** How long a resident's start waits to confirm its MCP servers. Production uses the default. */
+  residentMcpSettleMs?: number;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */

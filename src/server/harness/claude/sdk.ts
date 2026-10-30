@@ -1305,8 +1305,11 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
   };
 }
 
-/** How long a resident's start waits for Claude to report its servers and for them to stop pending. */
-const RESIDENT_MCP_VERIFY_MS = 10_000;
+/**
+ * How long a resident's start waits for Claude to report its servers and for them to stop
+ * pending. Long enough for a server fetched on first use, such as an `npx` package, to come up.
+ */
+const RESIDENT_MCP_SETTLE_MS = 60_000;
 const RESIDENT_MCP_POLL_MS = 200;
 
 /**
@@ -1332,44 +1335,61 @@ function residentMcpStatusProblem(
   return null;
 }
 
-/** The query's server statuses, or null when it cannot answer before the deadline. */
-async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<Array<{ name: string; status: string }> | null> {
+type ResidentMcpStatuses = Array<{ name: string; status: string }>;
+
+/** The query's server statuses, or why it gave none before the deadline. */
+async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<ResidentMcpStatuses | "rejected" | "timeout"> {
   let timer: NodeJS.Timeout | undefined;
-  const statuses = await Promise.race([
-    query.mcpServerStatus!().catch(() => null),
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+  const answer = await Promise.race([
+    query.mcpServerStatus!().catch((): "rejected" => "rejected"),
+    new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), Math.max(0, deadline - Date.now()));
       timer.unref?.();
     }),
   ]);
   if (timer) clearTimeout(timer);
-  return statuses;
+  return answer;
+}
+
+/**
+ * Why Claude's report does not confirm a resident's set, or null when it does. A server still
+ * pending is asked about again until the deadline. Anything that leaves the set unconfirmed - no
+ * status call, a rejected or unanswered one, or a server still starting at the deadline - is a
+ * refusal: a resident never starts without knowing it has the servers its profile selected.
+ */
+async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySet<string>, settleMs: number): Promise<string | null> {
+  if (!query.mcpServerStatus) return "cannot report its MCP servers, so their set cannot be confirmed";
+  const whole = Math.max(1, Math.round(settleMs / 1000));
+  const seconds = `${whole} second${whole === 1 ? "" : "s"}`;
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const answer = await statusesBefore(query, deadline);
+    if (answer === "rejected") return "could not report its MCP servers, so their set cannot be confirmed";
+    if (answer === "timeout") return `did not report its MCP servers within ${seconds}`;
+    const problem = residentMcpStatusProblem(answer, allowed);
+    if (problem) return problem;
+    const pending = answer.find((status) => allowed.has(status.name) && status.status === "pending");
+    if (!pending) return null;
+    if (Date.now() + RESIDENT_MCP_POLL_MS >= deadline) return `was still starting its MCP server ${pending.name} after ${seconds}`;
+    await new Promise((resolve) => setTimeout(resolve, RESIDENT_MCP_POLL_MS));
+  }
 }
 
 /**
  * Confirm the CLI configured exactly Mission's server and the run's snapshot, and that each one
  * connected - the direct check behind `strictMcpConfig`, which also covers sources no fixture can
- * reach, such as managed configuration. A server still pending is asked about again until the
- * deadline. A query that cannot answer in time, or a server still pending at the deadline, is let
- * through: the flag already decided the set.
+ * reach, such as managed configuration. A start that cannot be confirmed is refused.
  */
-async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions): Promise<void> {
-  if (!query.mcpServerStatus) return;
+async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, settleMs: number): Promise<void> {
   const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
-  const deadline = Date.now() + RESIDENT_MCP_VERIFY_MS;
-  let statuses = await statusesBefore(query, deadline);
-  while (statuses?.some((status) => allowed.has(status.name) && status.status === "pending") && Date.now() + RESIDENT_MCP_POLL_MS < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, RESIDENT_MCP_POLL_MS));
-    statuses = await statusesBefore(query, deadline);
-  }
-  if (!statuses) return;
-  const problem = residentMcpStatusProblem(statuses, allowed);
+  const problem = await residentMcpUnconfirmed(query, allowed, settleMs);
   if (!problem) return;
   await query.return(undefined).catch(() => {});
   throw new Error(`this resident's Claude Code session ${problem}`);
 }
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
+  const settleMs = deps.residentMcpSettleMs ?? RESIDENT_MCP_SETTLE_MS;
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
@@ -1455,12 +1475,12 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         const fresh = await deps.query({ prompt, options: { ...base, ...claudeMcpOptions(opts), resume } });
         // The replacement starts its servers again, so it is held to the same check as the first
         // start; a refusal here ends the session with its reason.
-        if (opts.residentMcp) await verifyResidentMcp(fresh, opts);
+        if (opts.residentMcp) await verifyResidentMcp(fresh, opts, settleMs);
         return fresh;
       });
       const query = await deps.query({ prompt: session.input(), options });
       session.attach(query);
-      if (opts.residentMcp) await verifyResidentMcp(query, opts);
+      if (opts.residentMcp) await verifyResidentMcp(query, opts, settleMs);
       return session;
     },
   };

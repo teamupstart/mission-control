@@ -287,7 +287,8 @@ every resume after that reads only the copy:
   a selected server that no longer exists, a custom secret that is not set, or, on Codex, another
   configuration layer that changes one of the run's servers or forces a server on itself. On
   Claude Code a start is also refused when a server in the set does not connect, is switched off or
-  waits on a login once Claude has started it. That includes a remote server behind an OAuth login
+  waits on a login once Claude has started it, or when Claude cannot confirm the set within 60
+  seconds; this applies equally to the relaunch Claude makes to recover from a lost login. That includes a remote server behind an OAuth login
   Claude Code holds, which the launcher cannot present. Nothing is renamed or dropped silently.
 
 Each launcher credential is good for one start, so a server that exits during a session is not

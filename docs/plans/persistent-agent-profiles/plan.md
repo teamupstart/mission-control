@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 15, repaired after plan validation and review). Implementation is split into seven phases in
+Status: decisions recorded (revision 16, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome

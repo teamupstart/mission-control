@@ -89,9 +89,17 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
        a row to `sent` or `unconfirmed`. A `released` row never counts.
      - `iteration` is therefore at most `last_seq`. The difference is the number of released
        claims, plus one while a claim is in flight.
-   - Rows are pruned once their `claimed_at` is more than seven days old. They exist only to count
-     the rolling 24-hour window and to bind crash recovery, so pruning never changes either
-     counter or the 24-hour count.
+   - Rows exist only to count the rolling 24-hour window and to bind crash recovery. Pruning never
+     changes either counter or the 24-hour count:
+     - a `sent` or `released` row is pruned once its `claimed_at` is more than seven days old;
+     - a `claimed` row is never pruned, whatever its age. It is the only record crash
+       reconciliation uses to decide whether that wake landed, and the partial unique index on it
+       is what refuses a second claim;
+     - an `unconfirmed` row records an unknown outcome and is kept for the life of the run. It is
+       pruned only once the run has ended;
+     - at startup, pruning runs only after crash reconciliation (step 3) has resolved every
+       `claimed` row. A claim left by a daemon that was down for more than seven days is therefore
+       reconciled before anything can delete it.
    - A `resident_pacing_calls` table records every accepted `schedule_next_iteration` call:
      `run_id`, `call_id`, the receipt it returned, and `recorded_at`, unique on
      (`run_id`, `call_id`).
@@ -100,7 +108,8 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
        call therefore finds its receipt and can never overwrite a newer pending intent.
      - Receipts are kept for the whole life of the run and are never pruned by age, so a replay
        stays safe for as long as the run exists. They are removed when the run ends, together
-       with its other per-run state. The iteration rows keep their seven-day retention.
+       with its other per-run state. The `sent` and `released` iteration rows keep their
+       seven-day retention.
    - Upgrade test from a Phase 1 database.
 3. **ResidentLoop** in `src/server/residents/loop.ts`, constructed in `src/server/index.ts` after
    SDK restore settles. It reads the loop prompt, cadence, bounds, guardrails and compaction
@@ -152,7 +161,8 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
        delivery unconfirmed" and raises attention, as crash reconciliation does. The wake is
        never resent;
      - nothing else releases a claim, and no outcome leaves the row `claimed`.
-   - **Crash reconciliation** runs once SDK restore settles, for every run with a `claimed` row.
+   - **Crash reconciliation** runs once SDK restore settles, for every run with a `claimed` row,
+     and before the startup pruning pass.
      The only evidence that a wake landed is its own marker, naming this run and this `seq`, in a
      user turn written after `transcript_offset`. Nothing else proves anything about this wake: a
      human turn, a restart continuation, `turn_in_progress` or an advanced work-cycle generation
@@ -308,7 +318,8 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
     takes a new `seq`, so no `seq` is ever written twice;
   - compaction and human turns add none;
   - after rows older than seven days are pruned, `iteration`, `last_seq` and the 24-hour count are
-    all unchanged, including when a pruned row was `released` or `unconfirmed`.
+    all unchanged, including when a pruned row was `sent` or `released`. A `claimed` row of any
+    age is never pruned, and an `unconfirmed` row is kept until its run has ended.
 - Self-pacing sequence tests, driven through the real completion handler with an injected clock:
   - the agent calls `schedule_next_iteration` with 20 minutes during a wake turn, then the turn
     completes: `next_wake_at` is the completion time plus 20 minutes, not the 5-minute default.
@@ -340,7 +351,16 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
   - after an `unconfirmed` reconciliation, repeated restarts change nothing. A following
     **Resume**, and separately **Run now**, claims `seq` `last_seq + 1` while the `unconfirmed` row
     is kept, and the run again has exactly one `claimed` row;
-  - writing a second `claimed` row for one run is refused by the partial unique index.
+  - writing a second `claimed` row for one run is refused by the partial unique index;
+  - an outage longer than the retention window, with an advancing clock. The clock is advanced
+    more than seven days while the daemon is down and a wake is still `claimed`.
+    - At restart, reconciliation runs before pruning and resolves the row, as `sent` from its
+      marker or as `unconfirmed` without one.
+    - An `unconfirmed` outcome pauses the run with "wake delivery unconfirmed", resends nothing
+      and claims no new wake.
+    - The pruning pass that follows removes only `sent` and `released` rows older than seven
+      days. The `unconfirmed` row, `last_seq`, `iteration` and the pause all survive it, and a
+      further restart, until the operator resumes.
 - Guardrail boundary tests:
   - a counted row claimed exactly 24 hours before a wake no longer counts, and one claimed 1 ms
     later does;
@@ -423,3 +443,8 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   pins it.
 - Pull request review (Inspector, round 7): the launch iteration follows Phase 1's
   session-start evidence, so a task that never started its session records none.
+- Pull request review (Inspector, round 8): startup reconciliation resolves every claim before
+  pruning runs. A `claimed` row is never pruned, and an `unconfirmed` row is kept for the run's
+  life. A wake whose delivery is unknown is therefore never replayed after any outage, and its
+  run stays paused until the operator resumes it. Only `sent` and `released` rows keep the
+  seven-day retention, and pruning never changes `last_seq` or `iteration`.

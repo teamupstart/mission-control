@@ -45,12 +45,24 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
    - Codex, selected only: a per-server disable override through `-c` for each unselected global
      server. Fallback: Phase 4's launch-scoped `CODEX_HOME` overlay, whose generated
      `config.toml` lists only the selected servers.
-   - Codex secrets: `env_vars` and `bearer_token_env_var` (both present in Codex 0.160.0).
+   - Codex secrets, all present in Codex 0.160.0: `env_vars` forwards stdio environment values,
+     `bearer_token_env_var` carries a bearer token, and `env_http_headers` carries any other
+     secret header from an environment variable. Literal `http_headers` carry only non-secret
+     headers. A secret field with no environment-backed mapping is refused at save, and no
+     secret value is ever placed in `-c` or another process argument.
+   - Claude secrets: MCP server environment and header values written as `${VAR}` references
+     and expanded from the child environment, so the MCP configuration the SDK serializes for
+     the CLI never carries a value.
    Record an `McpSelectionSpec` in `HARNESS_CAPABILITIES`. **If both fail for a cell, stop before
    building it** and ask the operator with `request_input`, as in Phase 4.
 2. **Global catalog** in `src/server/residents/mcp-catalog.ts`: Claude user-scope `mcpServers`
    from `~/.claude.json`, Codex `codex mcp list --json` through `ExecutableLocator`; hide
-   `mission-control`; cached with an explicit refresh; `GET /api/residents/mcp-catalog`.
+   `mission-control`; cached with an explicit refresh; `GET /api/residents/mcp-catalog`. The
+   catalog projects each global server to allowlisted metadata only: name, transport, the
+   command's basename or the URL's origin, and the names, never the values, of its environment
+   variables and headers. At launch the daemon reads kept global values from the harness's own
+   configuration straight into the child environment; they never reach a browser payload, a
+   log or a process argument.
 3. **Custom servers**: tables with a revision counter; transports `stdio` (command, args, env)
    and `http` (url, headers); applicable harnesses; name unique and never `mission-control`.
    Fields marked secret are stored only in `resident_mcp_secrets`, accepted on write, never
@@ -60,7 +72,8 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
    inherit switch offered exactly where step 1 recorded a working mechanism, harness mismatch
    refused at save.
 5. **Rendering**: an `mcp` contributor and an optional `mcp` field on `SdkLaunchOptions`:
-   Claude adds entries to `options.mcpServers` with secrets in memory, and with inherit off sets
+   Claude adds entries to `options.mcpServers` whose secret values are `${VAR}` references, with
+   the values in the child environment, and with inherit off sets
    `strictMcpConfig` and copies kept global servers in; Codex renders `-c mcp_servers.<name>.*`
    with secrets supplied as child environment variables referenced by name, and with inherit
    off disables unselected global servers (or uses the overlay). Mission's own server is always
@@ -71,7 +84,10 @@ Writing to `~/.claude.json` or Codex configuration; Pi (no MCP client).
 
 ## Tests and verification
 
-- Unit: catalog parsing for both harnesses, custom server validation, secret write-only reads,
+- Unit: catalog parsing for both harnesses, a catalog payload containing no environment or
+  header value from either harness's fixture configuration, custom server validation, secret
+  write-only reads, a secret header rendered through `env_http_headers` for Codex and a `${VAR}`
+  reference for Claude, a secret field without an environment-backed mapping refused at save,
   backup excludes secrets, rendering per harness, and a test that inspects the composed argv and
   fails if any secret value appears in it.
 - Harness tests against real installations for every capability recorded as supported.
@@ -95,3 +111,5 @@ The catalog, custom-server store and secret rules are stable for any later consu
 - Phase 3's Codex compaction override and this phase's MCP overrides are separate contributors.
 - Repair round 1: selected-only uses a probed primary or fallback mechanism with an operator gate,
   and rendering on resume reads the pinned revision.
+- Pull request review (CodeRabbit): the global catalog is redacted to allowlisted metadata, and
+  secret headers use `env_http_headers` for Codex and `${VAR}` references for Claude.

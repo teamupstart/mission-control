@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 6). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 8). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 
@@ -21,10 +21,11 @@ requirements.
 ## Findings that change the route
 
 - **Every task requires a repository today.** `tasks.repo_root` is `NOT NULL`
-  (`src/server/db.ts`), every `TASK_KIND_BEHAVIOR` entry declares
-  `repoAvailability: "workspace"` (`src/shared/task.ts`), and `DispatchSchema.repoRoot` is
-  required. "Repository optional" therefore needs a deliberate repo-less task path. Phase 1
-  ships residents that require a repository; Phase 7 adds the repo-less workspace behind a new
+  (`src/server/db.ts`) and `DispatchSchema.repoRoot` is required. In `TASK_KIND_BEHAVIOR`
+  (`src/shared/task.ts`) every kind declares `repoAvailability: "workspace"` except `pipeline`,
+  which declares `"pipeline-enabled"`; neither value allows a task without a repository.
+  "Repository optional" therefore needs a deliberate repo-less task path. Phase 1 ships
+  residents that require a repository; Phase 7 adds the repo-less workspace behind a new
   `repoAvailability` value, so the riskiest change to a core task invariant gets its own review.
 - **No persona seam exists at launch.** Personas are only workflow judges. The resident section
   of standing instructions (Phase 1) is the first launch-time consumer, and it snapshots the
@@ -49,10 +50,11 @@ requirements.
   registered in `src/main/index.ts` for session control and product issues). Phase 6 adds the
   resident Launch click through the same registrar.
 - **Isolation mechanisms exist in the installed binaries.** Claude Code 2.1.310 carries
-  `--setting-sources`, `--plugin-dir`, `--strict-mcp-config` and
-  `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`. Codex 0.160.0 carries `skills.config`, `env_vars` and
-  `bearer_token_env_var`. `node_modules` is absent in this checkout, so the pinned Claude Agent
-  SDK's typed options are unverified. Phases 4 and 5 probe each primary mechanism and its named
+  `--settings`, the `skillOverrides` and `disableBundledSkills` settings, `--setting-sources`,
+  `--plugin-dir`, `--strict-mcp-config` and `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`. Codex 0.160.0
+  carries `skills.config`, `env_vars`, `bearer_token_env_var` and `env_http_headers`.
+  `node_modules` is absent in this checkout, so the pinned Claude Agent SDK's typed options are
+  unverified. Phases 4 and 5 probe each primary mechanism and its named
   fallback, build whichever passes, and stop to ask the operator only if both fail.
 - **A live run must not drift with its profile.** The approved plan applies profile edits at the
   next launch, so every runtime reader (Phases 2, 3, 4, 5 and 6) reads the run's pinned revision.

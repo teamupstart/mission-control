@@ -33,7 +33,10 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 
 - `Registry.applyDriverEvent` normalizes `turn_done` into `turn_completed` and persists the
   work-cycle generation (`session_work_cycles`). `SdkSupervisor.sendWhenIdle()`
-  (`src/server/sdk/supervisor.ts`) delivers only at an idle driver boundary.
+  (`src/server/sdk/supervisor.ts`) delivers only at an idle driver boundary. It resolves to
+  `"started"`, resolves to null when the driver is not idle, and throws either from its own
+  gate (a transfer hold or the `beforeSend` callback) before the driver sees the turn, or from
+  the driver's `sendIfIdle`.
   `PendingTurnManager` (`src/server/pending-turns.ts`) is the subscriber shape to copy.
 - Restart order: SDK restore settles before discovery; a loop must re-arm only after it.
   `RESTART_CONTINUATION_PROMPT` already resumes a turn that was in flight.
@@ -61,8 +64,15 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    launch, naming the reason. The operator either chooses a priced model or clears the cap.
 2. **Persistence**:
    - `addColumn` on `resident_runs` for `loop_state` (`working`, `waiting`, `compacting`,
-     `paused`), `iteration`, `last_seq`, `next_wake_at`, `consumed_generation`, `pause_reason`
-     and `wake_reason`.
+     `paused`, `ended`), `iteration`, `last_seq`, `next_wake_at`, `consumed_generation`,
+     `pause_reason`, `wake_reason`, and the pending pacing request: `wake_request_delay_s`,
+     `wake_request_reason` and `wake_request_generation` (all null when there is none).
+   - **Migration defaults**, so every Phase 1 row opens safely: `loop_state` is
+     `TEXT NOT NULL DEFAULT 'waiting'`; `iteration` and `last_seq` are
+     `INTEGER NOT NULL DEFAULT 0`; `consumed_generation`, `next_wake_at`, `pause_reason`,
+     `wake_reason` and the request columns are nullable with no default. `iteration` 0 marks a
+     run the loop has not adopted yet. The migration itself backfills nothing; adoption in step 3
+     does, once per live run. Ended runs keep the defaults and are never adopted.
    - A new `resident_iterations` table with one row per wake claim: `run_id`, `seq`, `trigger`
      (`launch`, `loop` or `run_now`), `delivery` (`claimed`, `sent`, `released` or
      `unconfirmed`), `transcript_offset`, `claimed_at` and `sent_at`. It is indexed by
@@ -88,11 +98,19 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    - **The launch turn is iteration 1.** When `ResidentManager.launch` records a run, the loop
      initializes its state with `iteration` 1 and `last_seq` 1, and appends a
      `resident_iterations` row with `seq` 1, trigger `launch`, delivery `sent`, and `claimed_at`
-     and `sent_at` equal to the launch time, in the same write. A run already live when this
-     phase deploys is adopted the same way, at adoption time.
+     and `sent_at` equal to the launch time, in the same write. A live run still at `iteration`
+     0 when this phase deploys is adopted the same way on first start, in one write per run.
+     Its `consumed_generation` stays null, so its latest completed generation schedules its
+     first wake.
    - Subscribes to Registry session upserts. When a resident session's work-cycle generation
      advances past `consumed_generation` and the driver is idle, it consumes that generation and
-     schedules `next_wake_at` in one write.
+     schedules `next_wake_at` in one write. That write chooses the delay:
+     - if a pacing request is pending whose `wake_request_generation` is after
+       `consumed_generation` and no later than the generation being consumed, it uses the
+       request's clamped delay and reason, measured from the completion, and clears the request;
+     - otherwise it uses the default cadence and clears `wake_reason`.
+     The completion handler therefore never overwrites a request made during the turn it is
+     completing. A request applies to one wake only.
    - At wake: if the session is `needs-you`, pause with that reason; if a guardrail is reached,
      pause with that reason; if `contextPct` is at or above the threshold, compact first. Then
      deliver the loop prompt through the claim below. Compaction turns and human turns are not
@@ -110,10 +128,15 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    - **Outcome.** Each outcome is one write that moves the row out of `claimed`:
      - the driver's positive acceptance sets it to `sent`, sets `sent_at` and increments
        `iteration`;
-     - a positive refusal (the driver was not idle, or rejected the turn before accepting it)
-       sets it to `released`. Nothing landed, so neither counter changes, the row never counts,
-       and the next claim takes a new `seq`;
-     - nothing else releases a claim.
+     - a positive refusal sets it to `released`: `sendWhenIdle` resolved to null because the
+       driver was not idle, or threw from its own gate before the driver saw the turn. Nothing
+       landed, so neither counter changes, the row never counts, and the next claim takes a new
+       `seq`;
+     - any other throw, including one from the driver's `sendIfIdle`, is an unknown outcome. One
+       write sets the row to `unconfirmed`, increments `iteration`, pauses the run with "wake
+       delivery unconfirmed" and raises attention, as crash reconciliation does. The wake is
+       never resent;
+     - nothing else releases a claim, and no outcome leaves the row `claimed`.
    - **Crash reconciliation** runs once SDK restore settles, for every run with a `claimed` row.
      The only evidence that a wake landed is its own marker, naming this run and this `seq`, in a
      user turn written after `transcript_offset`. Nothing else proves anything about this wake: a
@@ -131,12 +154,35 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
    - A human turn (pending-turn delivery) cancels a wake that is scheduled but not yet claimed;
      the next completed generation reschedules. A wake already claimed follows the outcome rules
      above.
-   - Restart: wakes that came due while the daemon was down fire once; paused runs stay paused.
+   - **Run end.** The write that stamps Phase 1's `ended_at` also sets `loop_state` to `ended`,
+     clears `next_wake_at` and any pacing request, and cancels the run's timer. A claim is
+     refused for an ended run, and so are the run controls. A wake that was already claimed
+     still takes its outcome write. If none arrives, the next startup's reconciliation sets the
+     row to `unconfirmed` without pausing the run or raising attention.
+   - Restart: wakes that came due while the daemon was down fire once; paused runs stay paused;
+     ended runs are never re-armed.
    - Timers are `unref`'d and the service stops cleanly on shutdown.
 4. **Turn origin**: append `resident` to `TurnOrigin` and label loop turns in the transcript.
 5. **MCP tool** `schedule_next_iteration({ delaySeconds, reason })`: validated twice, added to
-   both tool lists for kind `resident`, routed to the loop over HTTP with the signed session
-   credential; clamps to the profile bounds and records `wake_reason`.
+   both tool lists for kind `resident`, and routed to the loop over HTTP with the signed session
+   credential and a finite request timeout, following the `AbortSignal.timeout` calls already in
+   `src/mcp/server.ts`. A timeout, a refused connection or an error status returns a typed tool
+   error naming the failure. Nothing is recorded then, so the default cadence applies. It clamps
+   the delay to the pinned revision's bounds and returns the clamped value.
+   - **During a turn**, which is how an agent normally calls it, it records the pending request
+     with the work-cycle generation in flight, and leaves `next_wake_at` alone. A later call in
+     the same turn replaces the request, so the last call wins. The completion write in step 3
+     applies it. A request survives a daemon restart, and when a restart continuation finishes
+     the interrupted turn under a later generation, that completion still applies it.
+   - **When its turn's completion was already consumed**, because the call landed late and the
+     run is already waiting, it replaces `next_wake_at` with now plus the clamped delay and
+     records `wake_reason`, in one write. If a wake is already claimed by then, the request
+     instead waits for that wake's turn to complete, like a call made during it.
+   - **While the run is paused** it changes nothing and returns the pause reason. A write that
+     pauses the run, including a `needs-you` pause at the end of the turn, clears any pending
+     request.
+   - A human message cancels the scheduled wake as before. When the human turn completes, the
+     default cadence applies unless the agent called the tool again during that turn.
 6. **Compaction**:
    - Native backstop contributor in `RESIDENT_LAUNCH_CONTRIBUTORS`: Claude child environment
      `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; Codex `-c model_auto_compact_token_limit=<n>` computed
@@ -194,6 +240,15 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
 - Unit (`test/residents-loop.test.ts`) with injected clock and fake supervisor: one wake per
   generation, duplicate turn ends, human precedence, `needs-you` pause, compaction ordering,
   clamp of `schedule_next_iteration`, restart re-arm firing a missed wake once, and shutdown.
+- Lifecycle and transport tests:
+  - upgrade from a Phase 1 database applies the defaults, adopts each live run at `iteration` 1
+    and `last_seq` 1 exactly once, and leaves ended runs alone;
+  - a `sendWhenIdle` gate throw releases the claim, and a driver throw makes the row
+    `unconfirmed` and pauses the run without a resend;
+  - ending a run cancels its timer, refuses a later claim and control, survives a restart
+    without re-arming, and reconciles a still-claimed row without pausing;
+  - `schedule_next_iteration` against a loop that does not answer returns the typed timeout
+    error within the timeout, and the turn's completion uses the default cadence.
 - Iteration tests:
   - a launch records `iteration` 1 and `last_seq` 1 with a `launch` row of `seq` 1;
   - each wake and **Run now** claims exactly one row with `seq` `last_seq + 1`, and adds one to
@@ -203,6 +258,23 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
   - compaction and human turns add none;
   - after rows older than seven days are pruned, `iteration`, `last_seq` and the 24-hour count are
     all unchanged, including when a pruned row was `released` or `unconfirmed`.
+- Self-pacing sequence tests, driven through the real completion handler with an injected clock:
+  - the agent calls `schedule_next_iteration` with 20 minutes during a wake turn, then the turn
+    completes: `next_wake_at` is the completion time plus 20 minutes, not the 5-minute default.
+    `wake_reason` is the agent's reason, and the request is cleared in that same write;
+  - the turn after that completes without a call and uses the default cadence, so a request
+    never carries over;
+  - two calls in one turn leave the last one in effect, and a delay outside the bounds is
+    clamped;
+  - a duplicate turn-end event applies the request once;
+  - a daemon restart after the call and before completion keeps the request, and the completion
+    of the continued turn applies it;
+  - a call that lands after its turn's completion was consumed moves the waiting wake to now
+    plus the delay;
+  - a turn that ends in `needs-you` pauses the run and clears the request, and a call while
+    paused changes nothing;
+  - a human message cancels the scheduled wake, and the human turn's completion uses the
+    default cadence unless the agent called the tool during it.
 - Delivery crash tests with injected failures at each boundary:
   - a crash after the claim commits and before the send is not resent: reconciliation finds no
     marker, the row becomes `unconfirmed`, `iteration` goes up by one, and the run pauses with
@@ -281,3 +353,12 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   - reconciliation moves an unresolved claim to `unconfirmed` before any new claim, and a partial
     unique index keeps one in-flight wake per run;
   - only the wake's own marker after the recorded offset proves delivery.
+- Pull request review (Inspector, round 1): a pacing request made during a turn is stored with
+  that turn's generation, and the completion write applies it instead of the default cadence,
+  so completing the turn can no longer overwrite the agent's requested wake. Self-pacing
+  sequence tests pin the order of events.
+- Pull request review (CodeRabbit):
+  - migration defaults and one-time adoption of Phase 1 rows;
+  - `sendWhenIdle` throws are classified, so no outcome leaves a claim open;
+  - ended runs stop the loop and are never re-armed;
+  - the MCP call has a finite timeout and a typed error.

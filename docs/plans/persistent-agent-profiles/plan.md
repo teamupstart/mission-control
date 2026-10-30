@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 6, repaired after plan validation). Implementation is split into seven phases in
+Status: decisions recorded (revision 8, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -104,7 +104,7 @@ a write-only table. They never reach the browser or backups, and never appear on
 | Profile setting | Claude Code (Agent SDK) | Codex (app-server) |
 |---|---|---|
 | Extra skills | Per-run bundle loaded as a local plugin (`--plugin-dir`) | `skills.config` path entries; fallback: a launch-scoped `CODEX_HOME` overlay whose `skills/` holds the bundle |
-| Use only selected skills | Setting sources without `user` (`--setting-sources`) plus `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `skills.config` disable entries for every unselected default; fallback: the same overlay |
+| Use only selected skills | Every setting source kept; a launch-scoped `--settings` turns unselected skills off through `skillOverrides`, plus `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS` | `skills.config` disable entries for every unselected default; fallback: the same overlay |
 | Extra MCP servers | `options.mcpServers` | `-c mcp_servers.<name>.*`, secrets by env name |
 | Use only selected MCPs | `--strict-mcp-config`, kept globals copied in | Unselected globals disabled per server; fallback: the overlay's generated `config.toml` |
 | Compaction backstop | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | `model_auto_compact_token_limit` |
@@ -112,11 +112,11 @@ a write-only table. They never reach the browser or backups, and never appear on
 The installed Claude Code 2.1.310 carries every Claude flag named above, and the installed Codex
 0.160.0 carries `skills.config`, `env_vars` and `bearer_token_env_var`.
 
-Isolation never drops repository instructions, authentication, Mission's MCP server, or the
-session files Mission Control reads. Each mechanism is probed against a real installation before
-it is built. Where the primary mechanism fails, the named fallback is built instead. The Codex
-overlay links `auth.json` and `sessions/` back to the operator's `CODEX_HOME` and generates
-`config.toml` from the operator's configuration.
+Isolation never drops user settings, repository instructions, authentication, Mission's MCP
+server, or the session files Mission Control reads. Each mechanism is probed against a real
+installation before it is built. Where the primary mechanism fails, the named fallback is built
+instead. The Codex overlay links `auth.json` and `sessions/` back to the operator's `CODEX_HOME`
+and generates `config.toml` from the operator's configuration.
 
 If both the primary and the fallback fail for a cell, the phase stops before building that cell.
 It asks the operator to choose between shipping that harness without selected-only, or approving
@@ -168,7 +168,9 @@ stateDiagram-v2
 1. **One wake per completed generation**, consumed in the same write that schedules it.
 2. **The human always wins**: a human message cancels the pending wake, and `needs-you` pauses.
 3. **Self-pacing within bounds**: `schedule_next_iteration({ delaySeconds, reason })` sets the
-   next wake, clamped to the profile, with the reason shown on the card.
+   next wake, clamped to the profile, with the reason shown on the card. A request made during a
+   turn takes effect when that turn completes, in place of the default cadence for that one
+   wake.
 4. **Guardrails pause, never stop.** The launch turn is iteration 1, and every wake or **Run now**
    that is delivered, or whose delivery cannot be confirmed, is the next. A wake the session
    refuses before accepting it is not an iteration. Before each wake the loop counts the
@@ -346,5 +348,5 @@ The existing grant machinery is reused unchanged.
   contracts.
 - **Verification**: each phase carries focused `node:test` suites and Playwright specs that use
   the fake agents, so no model tokens are spent.
-- **Commands**: `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and
-  `npm run test:e2e`.
+- **Commands**: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`,
+  `npm run smoke` and `npm run test:e2e`.

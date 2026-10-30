@@ -25,10 +25,11 @@ Repo-less tasks of any other kind; changing the `tasks.repo_root NOT NULL` colum
 
 ## Repository findings and inherited contracts
 
-- `tasks.repo_root` is `NOT NULL` (`src/server/db.ts`), every kind declares
-  `repoAvailability: "workspace"` (`src/shared/task.ts`), and `DispatchSchema.repoRoot` is
-  required. Worktree provisioning (`provisionAll` in `src/server/dispatcher.ts`), the retention
-  observer and the cleanup queue all assume a Git checkout.
+- `tasks.repo_root` is `NOT NULL` (`src/server/db.ts`) and `DispatchSchema.repoRoot` is
+  required. Every kind declares `repoAvailability: "workspace"` (`src/shared/task.ts`) except
+  `pipeline`, which declares `"pipeline-enabled"`; neither allows a task without a repository.
+  Worktree provisioning (`provisionAll` in `src/server/dispatcher.ts`), the retention observer
+  and the cleanup queue all assume a Git checkout.
 - `TaskRepoEntry` and task cards read `repoRoot` for grouping and links.
 - Inherited: `ResidentManager.launch`, the workspace section from Phase 1, the run row.
 
@@ -75,3 +76,5 @@ workspace.
 
 - Concurrent with Phases 2 to 6; touches the workspace section and launch path only through
   Phase 1's documented seams.
+- Pull request review (CodeRabbit): the finding about existing `repoAvailability` values now
+  names `pipeline-enabled`.

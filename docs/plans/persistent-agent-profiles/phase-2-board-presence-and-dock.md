@@ -50,8 +50,10 @@ than border glow: rejected by the operator.
    and **Pin to top of column**. Palette colors are CSS tokens in `src/web/styles.css`, never
    arbitrary hex values.
 2. **Runs on the wire**: `resident_run_upsert` and `resident_run_remove` events and a
-   `residentRuns` collection bounded by live runs, with snapshot, `useEventStream` cases, an
-   explicit `LINE_INPUT_EVENTS` decision and a bound test. The daemon publishes from
+   `residentRuns` collection bounded by live runs, with snapshot, `useEventStream` cases and a
+   bound test. Both events are deliberately excluded from `LINE_INPUT_EVENTS`: `residentRuns`
+   joins sessions to live runs and is not an input to the Line fold. A test asserts the
+   exclusion. The daemon publishes from
    `ResidentManager` on launch and run end, with the run's pinned `settings`. No field is added
    to `Session`.
 3. **Client join**: a `useResidentFor(session)` selector joining session, task and run. Marker,
@@ -73,7 +75,8 @@ than border glow: rejected by the operator.
 ## Tests and verification
 
 - Unit: pinned partition ordering (pinned first within each column, stable otherwise), board
-  section defaults and old-revision parsing, run event bound, `DISPLAY_ITEMS` registration, and
+  section defaults and old-revision parsing, run event bound, `resident_run_upsert` and
+  `resident_run_remove` absent from `LINE_INPUT_EVENTS`, `DISPLAY_ITEMS` registration, and
   that editing a profile's color, label or pin leaves a live run's marker and position unchanged
   while a new launch uses the edit.
 - `test/layout-parity.test.ts`, `test/session-leaf-parity.test.ts`,
@@ -102,3 +105,5 @@ the `residentRuns` collection; it must not change the marker, palette ids or par
   and dock row built here; marker and pin read the run's pinned revision.
 - The dock's **Launch** uses `launchResident()`, so Phase 6's trusted click applies here without
   edits.
+- Pull request review (CodeRabbit): the run events' exclusion from `LINE_INPUT_EVENTS` is stated
+  and tested.

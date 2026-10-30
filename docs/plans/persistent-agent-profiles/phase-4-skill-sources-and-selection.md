@@ -33,8 +33,10 @@ Pi.
   `src/server/skills/reconcile.ts`). Nothing reads other global skills or selects per session.
 - Claude SDK sessions hard-code `settingSources: ["user","project","local"]`
   (`src/server/harness/claude/sdk.ts`); background jobs isolate with `settingSources: []`
-  (`src/server/llm/claude-sdk.ts`). Dropping `user` also drops user settings, so it is not an
-  acceptable skill switch on its own.
+  (`src/server/llm/claude-sdk.ts`). Dropping `user` also drops user settings, so selected-only
+  never drops it. Claude Code 2.1.310 instead offers the `skillOverrides` setting, where an
+  entry set to off disables a skill, beside `disableBundledSkills`, and accepts launch-scoped
+  settings through `--settings`.
 - `validateIndexedDirectories` (`src/server/repo-index-config.ts`) is the validation pattern.
 - `SessionActionSkillControl` (`src/web/workflows/SessionActionEditor.tsx`) is the picker
   precedent. `SdkLaunchOptions` (`src/server/harness/types.ts`) has no skill field.
@@ -49,9 +51,12 @@ Pi.
    Control reads all survive.
    - Claude, extra skills: the per-run bundle as a local plugin via the SDK's plugin option.
      Fallback: `--plugin-dir` through the SDK's extra-arguments option.
-   - Claude, selected only: setting sources without `user` (`--setting-sources`), plus
-     `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`, plus the bundle. Mission Control supplies its permission
-     mode and tool allowlist explicitly. Fallback: the same through extra arguments.
+   - Claude, selected only: every setting source stays loaded, including `user`, so user
+     settings are never dropped. A launch-scoped `--settings` JSON sets a `skillOverrides` entry
+     to off for every unselected skill the index found, and bundled skills are turned off with
+     `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`; the snapshot is added as in the extra-skills cell.
+     Fallback: the same settings through the SDK's extra-arguments option. The probe also
+     confirms the effective user settings match a launch without the overrides.
    - Codex, extra skills: `skills.config` path entries for the bundle. Fallback: a launch-scoped
      `CODEX_HOME` overlay with `auth.json` and `sessions/` linked to the operator's `CODEX_HOME`, a
      generated `config.toml`, and `skills/` holding the bundle.
@@ -71,11 +76,16 @@ Pi.
 4. **Profile section** `skills` and `ResidentSkillsSection`: inherit switch (offered exactly where
    step 1 recorded a working mechanism), a picker filtered by search and source, duplicate-name
    conflict refused at save.
-5. **Bundle and seam**: a `skills` contributor that materializes a per-run bundle under
-   `$MISSION_HOME/residents/runs/<runId>/skills/` as links to the selected skill folders, and an
-   optional `skills` field on `SdkLaunchOptions` that each driver renders with the mechanism step 1
-   recorded. The bundle is built from the run's pinned revision, at launch and again on resume
-   after a daemon restart, and removed with the run.
+5. **Snapshot and seam**: a `skills` contributor that materializes a per-run snapshot under
+   `$MISSION_HOME/residents/runs/<runId>/skills/`, and an optional `skills` field on
+   `SdkLaunchOptions` that each driver renders with the mechanism step 1 recorded.
+   - The snapshot is an immutable copy of each selected skill folder, taken from the run's pinned
+     revision at launch, with a content hash recorded per skill.
+   - Resume after a daemon restart reuses the snapshot and never rereads the source folders, so
+     a later edit or deletion of a source cannot change or break a live run.
+   - A skill folder over a fixed size cap, or one containing a link that leaves the folder, is
+     refused at launch with the reason.
+   - The snapshot is removed with the run.
 6. **Rail**: a **Skill sources** entry on the `#/residents` rail to add, remove and rescan
    directories, with problems shown per source.
 7. **Documentation**: skill sources in `docs/skills-and-settings.md` and `docs/residents.md`;
@@ -84,9 +94,11 @@ Pi.
 ## Tests and verification
 
 - Unit: source validation, index parsing and problems, `mission-*` skipping, identity
-  stability, section defaults, bundle creation and cleanup, per-driver option rendering for both
-  primary and fallback mechanisms, and resume rendering from the pinned revision after the
-  profile is edited.
+  stability, section defaults, snapshot creation, hashes and cleanup, per-driver option rendering
+  for both primary and fallback mechanisms, and resume rendering from the pinned revision after
+  the profile is edited. Snapshot isolation: editing a source skill, and separately deleting
+  it, after launch leaves the run's skills byte-identical across a daemon restart and resume.
+  Claude selected-only leaves the effective user settings unchanged.
 - Harness tests against real installations for every capability recorded as supported.
 - Playwright `e2e/specs/residents-skills.spec.ts`: add a source folder from a fixture, rescan,
   select a skill, launch, and see the selection in the launch summary.
@@ -109,3 +121,5 @@ Phase 5 reuses the measured-capability pattern and the optional-field approach o
   of the driver renderers.
 - Repair round 1: selected-only is delivered through a probed primary or fallback mechanism, with
   an operator decision gate if both fail; the Codex overlay introduced here is reused by Phase 5.
+- Pull request review (CodeRabbit): Claude selected-only keeps user settings and turns skills
+  off through `skillOverrides`, and runs use immutable skill snapshots instead of links.

@@ -59,7 +59,8 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
      `workspace` (`defaultRepoRoot` or null). Later sections are optional with defaults.
    - `ResidentProfile` (id, name, revision, archivedAt, current revision body), `ResidentRun`
      (including `profileRevision` and `settings`, the pinned revision's body), and
-     `LaunchResidentSchema` (`repoRoot`, optional `instructions`, optional `requestId`).
+     `LaunchResidentSchema` (`repoRoot`, optional `instructions`, and a required `requestId` that
+     makes a launch idempotent).
    - The pinned-revision rule: a live run's settings come only from its pinned revision. The
      current revision is used for new launches and to flag "profile changed since launch".
    - Request schemas in `src/shared/protocol.ts` for create, update (with `expectedRevision`),
@@ -72,16 +73,42 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
    sources: residents are created only by the resident launch route.
 3. **Persistence** in `src/server/db.ts`: create the three tables in the fresh schema and in
    `migrate()`; `resident_runs` base columns are `id`, `profile_id`, `profile_revision`,
-   `task_id`, `persona_snapshot` (JSON: persona id, name, guidance at launch), `run_instructions`,
-   `created_at`, `ended_at`. No `REFERENCES`; indexes after columns exist.
+   `task_id`, `launch_request_id`, `launch_state` (`pending`, `launched` or `failed`, an
+   append-only vocabulary), `launch_error`, `persona_snapshot` (JSON: persona id, name,
+   guidance at launch), `run_instructions`, `created_at`, `ended_at`. A unique index on
+   `launch_request_id`. No `REFERENCES`; indexes after columns exist.
 4. **Store and manager** in `src/server/residents/`:
    - `store.ts`: CAS create, update, archive, read by id, list live, and
      `revision(profileId, revision)` for any pinned revision; revisions immutable.
-   - `manager.ts`: `ResidentManager.launch(profileId, input)` validates the profile, repository
-     and harness SDK support, snapshots the persona, writes the run, then creates the task
-     through `TaskManager.create` with kind `resident`, runtime forced to SDK, model and effort
-     from the profile, and intent equal to the opening turn (Phase 1: "Begin your standing task.").
-     It returns task and run. A failed task creation leaves no live run.
+   - `manager.ts`: `ResidentManager.launch(profileId, input)` is idempotent and crash-safe, and
+     returns the task and run:
+     - **Idempotent.** It first looks up a run by `launch_request_id`. A replay is compared with
+       the profile id and launch input recorded on that run, never with the profile's current
+       revision, and a different profile or input is refused as a conflict. A matching replay
+       creates nothing and answers by the run's `launch_state`:
+       - `launched` returns the original run, with the revision it pinned, and its task, even
+         after the profile has been edited;
+       - `pending` returns an in-progress result naming the run, so the caller can retry later;
+       - `failed` returns the recorded `launch_error`, and a new launch needs a new
+         `requestId`.
+       A repeated click or a lost response therefore never creates a second run, and a replay
+       never reads a task that does not exist.
+     - **Reserve.** It validates the profile, repository and harness SDK support, snapshots the
+       persona, and writes the run with `launch_state` `pending` and a reserved `task_id`, in
+       one write.
+     - **Create the task** through `TaskManager.create` with that reserved id, kind `resident`,
+       runtime forced to SDK, and the profile's `agent`, `model` and `effort` all passed
+       explicitly, so a Codex profile never falls back to a default agent. The intent is the
+       opening turn (Phase 1: "Begin your standing task."). `TaskManager.create` already returns
+       the existing task for a reserved id whose inputs match, for schedule and ensemble
+       producers; Phase 1 adds the resident producer to that recovery contract with its own
+       identity check, and lets it dispatch immediately instead of filing to the backlog.
+     - **Finish.** One write sets `launch_state` to `launched`. A task creation that fails sets
+       `failed` and stamps `ended_at`, so it leaves no live run.
+     - **Startup reconciliation** runs for every `pending` run before SDK restore: if its
+       reserved task exists, the run becomes `launched`; otherwise it becomes `failed` with
+       `ended_at` stamped. A crash between the writes therefore never leaves a live run without
+       its task.
    - Run end: subscribe to the existing durable task completion and `session_remove` paths to
      stamp `ended_at`; add the startup twin required by the architecture guide.
 5. **Launch composer** in `src/server/residents/launch.ts`: `RESIDENT_LAUNCH_CONTRIBUTORS`, an
@@ -122,11 +149,18 @@ so a downgraded build reads a resident task as `ship`; this matches the existing
 ## Tests and verification
 
 - `node --test --import ./test/setup-state.mjs --import tsx` on new `test/residents-*.test.ts`:
-  schema round-trips and section defaults, CAS conflicts, archive, launch validation
-  (unsupported harness, missing repository, Pi refused), persona snapshot, standing-instruction
-  composition and resume replay from the pinned revision after the profile is edited, kind
-  registry answers, refusal of `resident` on other creation
-  paths, upgrade from a pre-feature database, backup capture and restore.
+  - schema round-trips and section defaults, CAS conflicts, archive;
+  - launch validation (unsupported harness, missing repository, Pi refused);
+  - launch idempotency: a repeated `requestId` returns the same run and task; a replay after the
+    profile is edited returns the original run and its pinned revision; a replay of a `pending`
+    launch returns in progress, and of a `failed` launch its error, each creating nothing; a
+    conflicting reuse is refused;
+  - crash reconciliation: a crash after the run write and before task creation ends the run as
+    `failed`, and a crash after task creation and before `launched` adopts the task;
+  - the profile's agent reaching the task, for both a Claude Code and a Codex profile;
+  - persona snapshot, standing-instruction composition and resume replay from the pinned
+    revision after the profile is edited, kind registry answers, refusal of `resident` on other
+    creation paths, upgrade from a pre-feature database, backup capture and restore.
 - `test/task-kinds.test.ts`, `test/keybindings.test.ts`, `test/tooltip-coverage.test.ts` stay green.
 - Playwright `e2e/specs/residents-launch.spec.ts` with the fake agents: create a profile on
   `#/residents`, launch it from Dispatch > Resident, see the session with its persona section,
@@ -155,3 +189,6 @@ run row as the durable identity, and the standing-instructions placement.
   the index's decision table; Phases 2 to 7 extend only the registries named here.
 - Repair round 1: the pinned-revision rule and `ResidentStore.revision` are owned here, so
   every later runtime reader inherits one source of live settings.
+- Pull request review (CodeRabbit): launch is idempotent on a required `requestId`, crash-safe
+  through a `pending` run with a reserved task id and startup reconciliation, and passes the
+  profile's agent explicitly.

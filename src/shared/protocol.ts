@@ -8129,5 +8129,5 @@ export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema
 export const LaunchResidentRequestSchema = LaunchResidentSchema;
 
 /** Skill-source mutations share one validated config contract. */
-export { ResidentSkillSourcesSchema as UpdateResidentSkillSourcesSchema } from "./resident-skills.ts";
+export { UpdateResidentSkillSourcesSchema } from "./resident-skills.ts";
 export const RescanResidentSkillsSchema = z.object({}).strict();

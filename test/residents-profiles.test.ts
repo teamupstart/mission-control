@@ -305,8 +305,9 @@ test("skill source routes validate registrations, rescan on demand, and keep the
   const events: ServerEvent[] = [];
   const off = registry.subscribe((event) => events.push(event));
   try {
-    assert.equal((await request("PUT", "/api/residents/skill-sources", { directories: [{ ...config.directories[0], path: "relative" }] })).status, 400);
-    assert.equal((await request("PUT", "/api/residents/skill-sources", config)).status, 200);
+    const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision, config: { directories: [{ ...config.directories[0], path: "relative" }] } })).status, 400);
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision, config })).status, 200);
     const read = await request("GET", "/api/residents/skills");
     assert.equal(read.status, 200);
     assert.ok((read.json.skills as Array<{ name: string }>).some((skill) => skill.name === "route-fixture"));
@@ -314,4 +315,44 @@ test("skill source routes validate registrations, rescan on demand, and keep the
     assert.equal((await request("POST", "/api/residents/skills/rescan", {})).status, 200);
     assert.deepEqual(events, []);
   } finally { off(); }
+});
+
+test("skill source writes reject stale adds and removals without losing another window's changes", async () => {
+  const endpoint = "/api/residents/skill-sources";
+  const first = (await request("GET", "/api/residents/skills")).json;
+  const original = first.config as { directories: Array<{ id: string; path: string }> };
+  const added = { id: "custom-00000000-0000-0000-0000-000000000002", path: join(home, "another-window") };
+  const config = { directories: [...original.directories, added] };
+  const saved = await request("PUT", endpoint, { config, expectedRevision: first.configRevision });
+  assert.equal(saved.status, 200);
+  for (const stale of [original, { directories: [] }]) {
+    const refused = await request("PUT", endpoint, { config: stale, expectedRevision: first.configRevision });
+    assert.equal(refused.status, 409);
+    assert.match(String(refused.json.error), /another window/);
+    assert.deepEqual((await request("GET", "/api/residents/skills")).json.config, config);
+  }
+  assert.equal((await request("PUT", endpoint, { config: original })).status, 400, "writes require a comparison token");
+  assert.equal((await request("PUT", endpoint, { config: original, expectedRevision: saved.json.configRevision })).status, 200);
+});
+
+test("skill-source validation returns 400 while storage failures stay server errors", async (t) => {
+  const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
+  const { homedir } = await import("node:os");
+  const predefined = await request("PUT", "/api/residents/skill-sources", { expectedRevision, config: {
+    directories: [{ id: "custom-00000000-0000-0000-0000-000000000003", path: join(homedir(), ".agents/skills") }],
+  } });
+  assert.equal(predefined.status, 400);
+  assert.match(String(predefined.json.error), /predefined/);
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (/INSERT INTO app_config/.test(sql)) throw new Error("private-storage-fault");
+    return prepare(sql);
+  });
+  t.mock.method(console, "error", () => {});
+  const response = await app.request("/api/residents/skill-sources", { method: "PUT", headers,
+    body: JSON.stringify({ expectedRevision, config: { directories: [] } }),
+  });
+  assert.equal(response.status, 500);
+  assert.ok(!(await response.text()).includes("private-storage-fault"));
 });

@@ -161,12 +161,13 @@ export class ResidentManager {
    * so it is the same whichever order the two finish in; the run-end arm follows the task.
    */
   start(): void {
-    residentSkillIndex();
     this.reconcilePendingRuns();
     this.subscriptions.push(this.deps.registry.subscribe((event) => this.observe(event)));
     // The startup twin of the `session_remove` arm: once sessions have been observed, end
     // every launched run whose task already settled while this daemon was down.
     this.subscriptions.push(this.deps.registry.onSessionsObserved(() => this.reconcileRunEnds()));
+    try { residentSkillIndex(); }
+    catch (error) { console.error("[residents] could not index skill sources at startup:", error); }
   }
 
   stop(): void {

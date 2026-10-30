@@ -608,6 +608,8 @@ home separately to retain plan contents and their daemon ledger.
 of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
 YAML frontmatter, including folded descriptions, and reports source problems in place. The index
 is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+Concurrent source edits are compared against the list a window loaded. A stale add or removal
+is refused and refreshes the list so the operator can review it before retrying.
 
 The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
 `~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
@@ -616,7 +618,11 @@ directory links resolving to the home directory or an ancestor are also refused.
 are omitted only when their resolved directory is already indexed by the Mission Control source;
 independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
 including the source root, ordinary files and hidden entries. An over-limit source reports
-truncation; the retained subset follows filesystem enumeration order. The
+truncation; the retained subset follows filesystem enumeration order. The complete serialized
+catalog is capped at 4 MiB, including source metadata, escaped descriptions and scan problems.
+Scanning stops before retaining an entry that would exceed that total; the panel explicitly
+reports the partial catalog. Remove unneeded sources or shorten descriptions, then rescan.
+The
 `residents.skillSources` setting stores stable ids and paths, backed up under
 `resident-skill-sources`. Skill content is never included in settings backups.
 

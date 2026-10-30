@@ -20,6 +20,11 @@ export const ResidentSkillSourcesSchema = z.object({
 });
 export type ResidentSkillSources = z.infer<typeof ResidentSkillSourcesSchema>;
 
+export const UpdateResidentSkillSourcesSchema = z.object({
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  config: ResidentSkillSourcesSchema,
+}).strict();
+
 export interface ResidentSkillSource {
   id: string;
   label: string;
@@ -43,5 +48,8 @@ export interface ResidentSkillIndex {
   sources: ResidentSkillSource[];
   skills: IndexedResidentSkill[];
   config: ResidentSkillSources;
+  configRevision: string;
+  /** The aggregate serialized response budget stopped this scan early. */
+  truncated: boolean;
   scannedAt: number;
 }

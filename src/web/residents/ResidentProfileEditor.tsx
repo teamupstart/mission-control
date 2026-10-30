@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   RESIDENT_PROFILE_SECTIONS,
   RESIDENT_PROFILE_SECTION_IDS,
@@ -78,6 +78,7 @@ export function ResidentProfileEditor({
     setDirtyState(next);
     onDirtyChange?.(next);
   };
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   /**
    * The revision this draft was seeded from. Saves and archives compare-and-set against it, and
    * the editor stays mounted when the catalog moves on: a revision saved elsewhere replaces a

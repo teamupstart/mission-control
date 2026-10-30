@@ -1,5 +1,6 @@
 import { opendirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -14,20 +15,27 @@ import {
 } from "@shared/resident-skills.ts";
 import { skillsDir } from "../config.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
-import { canonicalize, resolvesAtOrAboveHome, validateIndexedDirectories } from "../repo-index-config.ts";
+import { canonicalize, RepoIndexConfigError, resolvesAtOrAboveHome, validateIndexedDirectories } from "../repo-index-config.ts";
 import { frontmatterBlock } from "../skills/catalog.ts";
 
 const MAX_DOCUMENT_BYTES = 128 * 1024;
 const MAX_ENTRIES_PER_SOURCE = 5000;
 const MAX_GROUP_DEPTH = 6;
 const MAX_PROBLEMS = 100;
+const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
+
+function configRevision(config: ResidentSkillSources): string {
+  return createHash("sha256").update(JSON.stringify(config)).digest("hex");
+}
+
+export class ResidentSkillSourcesConflictError extends Error {}
 
 /** Same path and canonical-duplicate checks as repository indexing, including deferred roots. */
 export function validateSkillDirectories(config: ResidentSkillSources): void {
   validateIndexedDirectories(config.directories);
   const predefined = new Set(defaultSkillSources().flatMap((source) => source.path ? [canonicalize(source.path)] : []));
   for (const row of config.directories) {
-    if (predefined.has(canonicalize(row.path))) throw new Error("This directory is already a predefined skill source.");
+    if (predefined.has(canonicalize(row.path))) throw new RepoIndexConfigError("This directory is already a predefined skill source.");
   }
 }
 
@@ -69,15 +77,27 @@ export function parseResidentSkill(text: string): { name: string; description: s
 
 /** Bounded traversal also covers grouped skill folders and globally installed symlinked skills. */
 export function scanSkillSources(sources: readonly ResidentSkillSource[], config: ResidentSkillSources): ResidentSkillIndex {
-  const result: ResidentSkillIndex = { sources: [], skills: [], config, scannedAt: Date.now() };
+  const result: ResidentSkillIndex = {
+    sources: sources.map((source) => ({ ...source, problems: [...source.problems] })),
+    skills: [], config, configRevision: configRevision(config), truncated: false, scannedAt: Date.now(),
+  };
+  // Count actual UTF-8 JSON bytes, including escaping, source metadata and configuration.
+  // Account before retaining each entry so neither the cache nor the response grows first.
+  let bytes = Buffer.byteLength(JSON.stringify(result));
+  if (bytes > MAX_CATALOG_BYTES) throw new Error("Skill source metadata exceeds the 4 MiB catalog limit.");
+  const retain = <T>(list: T[], value: T): void => {
+    const added = Buffer.byteLength(JSON.stringify(value)) + (list.length ? 1 : 0);
+    if (bytes + added > MAX_CATALOG_BYTES) { result.truncated = true; return; }
+    bytes += added;
+    list.push(value);
+  };
   const missionSkills = new Set<string>();
   const claudeSkillTargets = new Map<string, string>();
-  for (const original of sources) {
-    const source = { ...original, problems: [...original.problems] };
-    result.sources.push(source);
+  for (const source of result.sources) {
+    if (result.truncated) break;
     if (!source.path || source.problems.length) continue;
     const problem = (message: string): void => {
-      if (source.problems.length < MAX_PROBLEMS) source.problems.push(message);
+      if (!result.truncated && source.problems.length < MAX_PROBLEMS) retain(source.problems, message);
     };
     const ancestors = new Set<string>();
     // Count the source root and every enumerated entry, including files and hidden entries.
@@ -99,6 +119,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
       return children.sort((a, b) => a.name.localeCompare(b.name));
     };
     const walk = (directory: string, folder: string, depth: number): void => {
+      if (result.truncated) return;
       try {
         const real = realpathSync(directory);
         // Recheck every resolved directory: a child link can be just as broad as a root.
@@ -119,7 +140,8 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
             if (!stat.isFile() || stat.size > MAX_DOCUMENT_BYTES) throw new Error("SKILL.md must be a file no larger than 128 KiB.");
             const parsed = parseResidentSkill(readFileSync(document, "utf8"));
             const skill: IndexedResidentSkill = { id: `${source.id}:${folder}`, sourceId: source.id, folder, path: directory, ...parsed };
-            result.skills.push(skill);
+            retain(result.skills, skill);
+            if (result.truncated) return;
             if (source.id === "mission") missionSkills.add(real);
             if (source.id === "claude-global") claudeSkillTargets.set(skill.id, real);
           } catch (error) { problem(`${folder}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -132,6 +154,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
           const children = childrenOf(directory);
           let subfolders = 0;
           for (const child of children) {
+            if (result.truncated) break;
             if (child.name.startsWith(".")) continue;
             if (!child.isDirectory() && !child.isSymbolicLink()) continue;
             subfolders++;
@@ -178,7 +201,12 @@ export function residentSkillIndex(rescan = false): ResidentSkillIndex {
   return index;
 }
 
-export function saveResidentSkillSources(config: ResidentSkillSources): ResidentSkillIndex {
+export function saveResidentSkillSources(config: ResidentSkillSources, expectedRevision?: string): ResidentSkillIndex {
+  const current = ResidentSkillSourcesSchema.parse(getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources) ?? {});
+  // The daemon is the sole writer; comparison and persistence are synchronous, with no await.
+  if (expectedRevision !== undefined && expectedRevision !== configRevision(current)) {
+    throw new ResidentSkillSourcesConflictError("Skill sources changed in another window. Review the refreshed list and try again.");
+  }
   validateSkillDirectories(config);
   setAppConfig(APP_CONFIG_ENTRIES.residentSkillSources, config);
   return residentSkillIndex(true);

@@ -3,7 +3,7 @@ import { RESIDENT_AGENTS } from "@shared/residents.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { useEffect, useState } from "react";
 import type { ResidentSkillIndex, ResidentSkillSources } from "@shared/resident-skills.ts";
-import { fetchResidentSkills, rescanResidentSkills, saveResidentSkillSources } from "./api.ts";
+import { fetchResidentSkills, rescanResidentSkills, ResidentRequestError, saveResidentSkillSources } from "./api.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 
 /** A fetched catalog: rescanning is an explicit action, never a browser polling loop. */
@@ -25,11 +25,17 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
     setBusy(true);
     setError(null);
     try { setIndex(await operation()); if (added) setPath(""); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ResidentRequestError && err.status === 409) {
+        try { setIndex(await fetchResidentSkills()); }
+        catch { setError("Skill sources changed, but the refreshed list could not be loaded. Rescan before retrying."); }
+      }
+    }
     finally { setBusy(false); }
   };
   const save = (config: ResidentSkillSources, added = false): void => {
-    void apply(() => saveResidentSkillSources(config), added);
+    if (index) void apply(() => saveResidentSkillSources(config, index.configRevision), added);
   };
   const unavailable = RESIDENT_AGENTS.filter((agent) => capabilitiesFor(agent).skillSelection === null)
     .map((agent) => AGENT_IDENTITY[agent].label).join(" and ");
@@ -49,6 +55,7 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
       <p className="resident-section-blurb">Browse the skills on this machine. Register a folder containing skill folders, each with a SKILL.md file.</p>
       {unavailable && <p className="resident-skill-notice">Resident skill selection is unavailable for {unavailable} until a launch control can keep the exact skill set frozen across resumes.</p>}
       {error && <p role="alert" className="resident-error">{error}</p>}
+      {index?.truncated && <p role="status" className="resident-skill-notice">The catalog reached its 4 MiB response limit. Some skills or problems were omitted. Remove unneeded sources or shorten skill descriptions, then rescan.</p>}
       <form className="resident-source-add" onSubmit={(event) => {
         event.preventDefault();
         if (index && path.trim() && !busy) save({ directories: [...index.config.directories, { id: `custom-${crypto.randomUUID()}`, path }] }, true);

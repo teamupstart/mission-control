@@ -63,6 +63,6 @@ export function fetchResidentSkills(): Promise<ResidentSkillIndex> {
 export function rescanResidentSkills(): Promise<ResidentSkillIndex> {
   return residentRequest("/api/residents/skills/rescan", { method: "POST", body: "{}" });
 }
-export function saveResidentSkillSources(config: ResidentSkillSources): Promise<ResidentSkillIndex> {
-  return residentRequest("/api/residents/skill-sources", { method: "PUT", body: JSON.stringify(config) });
+export function saveResidentSkillSources(config: ResidentSkillSources, expectedRevision: string): Promise<ResidentSkillIndex> {
+  return residentRequest("/api/residents/skill-sources", { method: "PUT", body: JSON.stringify({ config, expectedRevision }) });
 }

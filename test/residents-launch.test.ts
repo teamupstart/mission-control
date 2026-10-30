@@ -172,6 +172,21 @@ function residentTasks(registry: Registry): Task[] {
   return registry.listTasks().filter((task) => task.kind === "resident");
 }
 
+test("invalid catalog settings cannot prevent resident reconciliation and run-end subscriptions", (t) => {
+  const h = harness({ start: false });
+  const calls: string[] = [];
+  t.mock.method(h.residents, "reconcilePendingRuns", () => { calls.push("pending"); });
+  t.mock.method(h.registry, "subscribe", () => { calls.push("subscribe"); return () => {}; });
+  t.mock.method(h.registry, "onSessionsObserved", () => { calls.push("observed"); return () => {}; });
+  t.mock.method(console, "error", (message: string) => { calls.push(message); });
+  openDb().prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run("residents.skillSources", '{"directories":"invalid"}');
+  try {
+    assert.doesNotThrow(() => h.residents.start());
+    assert.deepEqual(calls.slice(0, 3), ["pending", "subscribe", "observed"]);
+    assert.match(calls[3]!, /could not index skill sources at startup/);
+  } finally { openDb().prepare("DELETE FROM app_config WHERE key = ?").run("residents.skillSources"); }
+});
+
 test("a launch reserves one run, creates its resident task with the profile's agent, model and effort, and settles launched on the session row", async () => {
   const h = harness();
   const profile = profileIn(h);

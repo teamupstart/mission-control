@@ -302,6 +302,46 @@ test("registration rejects broad, relative, duplicate, predefined and duplicate-
   validateSkillDirectories({ directories: [same] });
 });
 
+test("the aggregate catalog accepts exactly 4 MiB and stops before retaining one more byte across sources", () => {
+  const paths = [join(root, "budget-a"), join(root, "budget-b")];
+  const sources = paths.map((path, i) => source(path, `budget-${i}`));
+  const folders = paths.flatMap((path) => Array.from({ length: 130 }, (_, i) => join(path, `skill-${String(i).padStart(3, "0")}`)));
+  for (const folder of folders) skill(folder, "large", "x");
+  const before = scanSkillSources(sources, { directories: [] });
+  assert.equal(before.truncated, false);
+  const remaining = 4 * 1024 * 1024 - Buffer.byteLength(JSON.stringify(before));
+  const length = 1 + Math.floor(remaining / folders.length);
+  const extra = remaining % folders.length;
+  assert.ok(length > 1 && length + 1 <= 16000);
+  folders.forEach((folder, i) => skill(folder, "large", "x".repeat(length + (i < extra ? 1 : 0))));
+  const last = folders.at(-1)!;
+  const exact = scanSkillSources(sources, { directories: [] });
+  assert.equal(exact.truncated, false);
+  assert.equal(Buffer.byteLength(JSON.stringify(exact)), 4 * 1024 * 1024);
+  assert.ok(exact.skills.some((row) => row.path === last));
+  skill(last, "large", "x".repeat(length + 1));
+  const over = scanSkillSources(sources, { directories: [] });
+  assert.equal(over.truncated, true);
+  assert.ok(!over.skills.some((row) => row.path === last));
+  assert.ok(Buffer.byteLength(JSON.stringify(over)) <= 4 * 1024 * 1024);
+});
+
+test("the response budget counts escaped and multibyte descriptions and scan problems", () => {
+  const path = join(root, "encoded-budget");
+  const description = "\u0001é".repeat(8000);
+  for (let i = 0; i < 100; i++) {
+    const dir = join(path, `skill-${String(i).padStart(3, "0")}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), `---\nname: encoded\ndescription: ${JSON.stringify(description)}\n---\n`);
+  }
+  const problemSource = { ...source(join(root, "budget-problems")), problems: ["é".repeat(8000)] };
+  const catalog = scanSkillSources([problemSource, source(path)], { directories: [] });
+  assert.equal(catalog.truncated, true);
+  assert.ok(catalog.skills.length > 0 && catalog.skills.length < 100);
+  assert.equal(catalog.skills[0]!.description, description);
+  assert.ok(Buffer.byteLength(JSON.stringify(catalog)) <= 4 * 1024 * 1024);
+});
+
 test("saved catalogs remain stable until rescan, and source removal preserves files", () => {
   const path = join(root, "cached");
   skill(join(path, "one"), "one");

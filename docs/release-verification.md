@@ -255,6 +255,50 @@ qualification contract. Registered workflow evidence contains the focused runtim
 logs, inspected UI images, package inspection, exact legacy-validator compatibility check,
 publication observation and complete plan Markdown. These gitignored artifacts do not enter Git.
 
+## Automatic distribution policy (2026-10-29 UTC)
+
+The operator requested automatic signing without per-build human approval and chose to
+retain full successful push CI as a prerequisite. Newer main pushes may still cancel older
+CI candidates, and alpha publication retains its existing latest-complete-build policy.
+Release Please merges continue through stable tag CI; ordinary eligible main commits
+continue through alpha signing. No workflow trigger or concurrency change is needed.
+
+The reported `57d2bcf` offer had no signed binary because its
+[main CI run](https://github.com/teamupstart/mission-control/actions/runs/40806860980)
+failed the development-dashboard telemetry scenario in E2E shard 13. The failed trace
+shows cold Vite module loading consuming the assertion's 20-second budget; on retry,
+React started about 18 seconds after the dev connection opened, leaving almost no time
+for settings hydration. The spec now waits for the dashboard's initial SSE snapshot before
+asserting telemetry behavior. The same shard's plaintext-endpoint scenario saved its
+checkbox change successfully but failed the immediate checkbox assertion; it now clicks
+once and asserts the settled checked and enabled states.
+
+The local shard verification exposed another intermittent failure in product analytics
+enrollment: a configuration refresh could erase a newly typed endpoint before saving.
+That form now uses the same synchronous dirty guard and edit generation as the personal
+destination form. A deterministic browser regression also reproduced a save response
+discarding edits made while the request was pending; those later endpoint, temporality
+and export-shape edits now remain in the draft while storage retains the submitted values.
+
+The subsequent [manual distribution run](https://github.com/teamupstart/mission-control/actions/runs/40808719475)
+refused that exact commit at input validation. This was the CI gate, not a signing failure.
+The [successful alpha run](https://github.com/teamupstart/mission-control/actions/runs/40794864493)
+published `alpha-01749ab64862aa442ee7b76d6ded102b03561cce` with ZIP, DMG, and ready manifest.
+That inventory establishes publication availability, not the R1/R2 signed installation
+and recovery qualification. An alpha offer still names the current main commit exactly;
+an older available publication is not silently substituted for a failed or pending one.
+
+**Environment change pending administrator access:** GitHub still reported the
+`developer-platform` team as required reviewers on `desktop-distribution` during this
+investigation. Removing that requirement as `Jordan7265` returned HTTP 403, "Must have
+admin rights to Repository." The attempted update did not change the environment.
+A repository administrator must remove **Required reviewers** in
+**Settings > Environments > desktop-distribution**, retaining selected branch `main`,
+tag pattern `v*`, and all existing signing secrets and variables. Once saved, eligible
+jobs start without another approval. This operator instruction supersedes the earlier
+per-build reviewer policy recorded above; it does not relax CI, signer, notarization,
+source-identity, or manifest verification.
+
 ## Ownership and prerequisites
 
 Release Please still owns stable versions, tags, changelogs and GitHub Releases.
@@ -276,9 +320,10 @@ Their main CI run skips packaging; their stable tag CI owns binary production.
 A matching stable version tag on the exact commit also suppresses alpha packaging, including
 retries after a PR label has been removed.
 
-The protected `desktop-distribution` environment must be created and restricted to trusted
-release operators/default-branch workflow execution, with approval controls appropriate to
-the repository. Provision credentials in GitHub's encrypted secrets, never in a checkout,
+The `desktop-distribution` environment must be restricted to branch `main` and tags `v*`,
+with no required reviewers or approval wait timer under the automatic distribution policy.
+The administrator must apply this policy in GitHub; workflow YAML cannot remove an
+environment's reviewer rule. Provision credentials in GitHub's encrypted secrets, never in a checkout,
 task comment, evidence, or a manifest:
 
 | Setting | Storage | Meaning |
@@ -325,9 +370,9 @@ GitHub destroys the hosted job's virtual machine afterward. See
    the checkout. This team key is not limited to one app; do not reuse a personal key or
    share its contents in chat. See [Apple's key management guide](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api).
 4. A repository **admin** creates **Settings > Environments > desktop-distribution** and
-   configures its protections before adding secrets. Require approval by a designated
-   release reviewer. Enable **Prevent self-review** only when another reviewer
-   is available. Select deployment branches/tags explicitly: branch `main` and tags `v*`.
+   configures its protections before adding secrets. Leave **Required reviewers** and
+   **Wait timer** disabled so eligible builds can sign automatically. Select deployment
+   branches/tags explicitly: branch `main` and tags `v*`.
    The workflow's input checks still enforce the exact source identity; the environment
    alone does not validate the commit checked out by a `workflow_run` job. Maintain access
    does not permit configuring this environment. See [GitHub's environment requirements](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
@@ -377,6 +422,13 @@ arm64 executable, version, full commit, helper inventory and fuse state. A separ
 DMG is made with `--prepackaged`, notarized and stapled. The app ZIP is generated by `ditto`
 with its framework links and resources preserved. Both archives are opened read-only or
 extracted privately, and their app digests and signatures must match the original app.
+The mounted DMG's root must also hold exactly what the standalone installer accepts: the app
+bundle plus only the names in `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs) (the Read Me, the
+`.background`/`.background.tiff` window background, `.VolumeIcon.icns`, and the `.DS_Store`,
+`.fseventsd` and `.Trashes` macOS adds). The installer's root check is rendered from that same
+list, so a layout change in `electron-builder.yml` fails this qualification, and the Signed
+distribution job, instead of every user's install. Names are exact; no pattern widens the set.
 Archive hashes are computed afterward and never inserted back into signed metadata.
 
 The signed-runtime probe copies the complete final app, preserves quarantine, starts its
@@ -408,8 +460,8 @@ node scripts/publish-distribution.mjs /absolute/path/to/retained-distribution
 ```
 
 The CLI verifies `build-metadata.json` and `qualification.json` against the final local
-archive bytes and the pinned team, then rechecks DMG signing/notarization and both archived
-apps with Apple tools, validates their signed metadata/fuses and matching bundle digests,
+archive bytes and the pinned team, then rechecks DMG signing/notarization, the DMG root
+inventory and both archived apps with Apple tools, validates their signed metadata/fuses and matching bundle digests,
 and reruns the copied-runtime probe. Recovery therefore runs on macOS with the same
 verification tools as production. Editing the local JSON and hashes cannot bypass these
 checks. These local files are producer evidence, not client trust roots. It resolves the
@@ -447,7 +499,9 @@ Stable recovery releases remain available indefinitely. Alpha publication keeps 
 newest complete ready build by Git ancestry, not release creation time. After verifying the
 replacement's actual archive bytes, the publisher marks each older ancestor release retired,
 removes its ready manifest, confirms readiness is gone, deletes its ZIP/DMG, and removes
-the empty release record. The tag remains as the retirement marker; a tag without a release
+the empty release record. The ZIP/DMG names come from the distribution contract and cover
+every app name it has shipped, so an alpha published before or after the app rename
+(`Mission-Control-` or `Agent-Mission-Control-`) is equally retirable. The tag remains as the retirement marker; a tag without a release
 refuses republication so an old retry cannot recreate a different asset identity.
 Unrelated assets, stable releases, divergent commits, and unverified newer
 builds are never deletion targets. Interrupted cleanup is resumable; it can temporarily retain

@@ -2,9 +2,10 @@
 //
 // Trust is a VIEW over four existing `repoAllowlist`s (Foreman sends live, Workflows act,
 // Inspector posts reviews, YOLO merges) plus the panel's staged list (`UiConfig.trustStaged`,
-// the home for a repo added but granted nothing). Turning those five lists into one sorted
-// table of repos, and spotting the dangerous combinations, is arithmetic - no React,
-// no fetch - so it lives here where a render test can drive it without stubbing anything.
+// the home for a repo in the matrix that holds no grant: one added while none of its default
+// grants could be written, or one an older build added ungranted). Turning those five lists
+// into one sorted table of repos, and spotting the dangerous combinations, is arithmetic -
+// no React, no fetch - so it lives here where a render test can drive it without stubbing anything.
 
 /**
  * The four allowlists a row is read from, by the grant each one confers.
@@ -153,6 +154,100 @@ export function candidateRepos(repos: readonly string[], present: readonly strin
 
 /** Which matrix column a cell belongs to, keyed by the grant it toggles. */
 export type GrantColumn = "foreman" | "workflows" | "inspector" | "merge";
+
+/**
+ * The grants a repository receives the moment it is added to Trust.
+ *
+ * Everything except YOLO merges. Foreman, Workflows and the Inspector each act on a repo's
+ * sessions or its pull requests, and an operator adding a checkout to Trust is asking for
+ * exactly that; a merge is the one grant that lands code on the base branch without a person
+ * in the loop, so it stays a deliberate cell click. Every default is still one click to
+ * revoke, and the cells say which way each one stands.
+ */
+export const DEFAULT_ADD_GRANTS = ["foreman", "workflows", "inspector"] as const satisfies
+  readonly GrantColumn[];
+
+/** One default-granted column's owning allowlist after an add: the full new list. */
+export type AddPatch = Record<(typeof DEFAULT_ADD_GRANTS)[number], string[]>;
+
+/**
+ * The writes one batch add produces: each default-granted allowlist with every new repo
+ * appended once, in the order given. Full lists rather than deltas, because every config
+ * route takes the whole list, and a repo the list already names is not appended twice.
+ */
+export function addRepositoriesPatch(repos: readonly string[], lists: TrustLists): AddPatch {
+  const extend = (current: readonly string[]): string[] => [
+    ...current,
+    ...repos.filter((r, i) => !current.includes(r) && repos.indexOf(r) === i),
+  ];
+  return {
+    foreman: extend(lists.foreman),
+    workflows: extend(lists.workflows),
+    inspector: extend(lists.inspector),
+  };
+}
+
+/** What `/api/repos/resolve` said about one requested path, reduced to what an add needs. */
+export type ResolvedRepo = { ok: true; repoRoot: string } | { ok: false; error: string };
+
+/** How one batch add sorts its requests before anything is written. */
+export interface BatchAddPlan {
+  /** The canonical roots to grant, de-duplicated, in request order. */
+  roots: string[];
+  /** Indexes into the request list that were refused, so they stay in the form to fix. */
+  refused: number[];
+  /** One sentence per refusal, in request order. */
+  errors: string[];
+}
+
+/**
+ * Sort a batch's resolved requests into what will be written and what was refused.
+ *
+ * A request is refused when it did not resolve, or when its canonical root is already in the
+ * matrix (`present`). Two requests that resolve to the same root are one repository: the
+ * second adds nothing and is not an error, since it names a repo that is being added.
+ */
+export function planBatchAdd(
+  asked: readonly string[],
+  resolved: readonly ResolvedRepo[],
+  present: ReadonlySet<string>,
+): BatchAddPlan {
+  const plan: BatchAddPlan = { roots: [], refused: [], errors: [] };
+  resolved.forEach((res, i) => {
+    if (!res.ok) {
+      plan.errors.push(`${asked[i]}: ${res.error}`);
+      plan.refused.push(i);
+    } else if (present.has(res.repoRoot)) {
+      plan.errors.push(`${res.repoRoot} is already in the matrix.`);
+      plan.refused.push(i);
+    } else if (!plan.roots.includes(res.repoRoot)) {
+      plan.roots.push(res.repoRoot);
+    }
+  });
+  return plan;
+}
+
+/**
+ * The sentence an add reports about its grant writes, or null when every one landed.
+ *
+ * `failed` names the subsystems whose write did not land. Some failing leaves the new rows
+ * in the matrix through the grants that did land, so the fix is a cell click. All failing
+ * leaves them in no allowlist, so they survive only if staging them worked - and when that
+ * failed too, no row exists and the only honest instruction is to add them again.
+ */
+export function grantFailureMessage(
+  failed: readonly string[],
+  added: number,
+  stagingFailed: boolean,
+): string | null {
+  const noun = added === 1 ? "repository" : "repositories";
+  if (stagingFailed) {
+    return `Couldn't add the new ${noun}: the ${failed.join(", ")} grants and the fallback `
+      + "row could not be saved. Add again once the daemon answers.";
+  }
+  if (failed.length === 0) return null;
+  return `Couldn't grant ${failed.join(", ")} for the new ${noun} - click a cell to try again.`;
+}
 
 /**
  * The write one cell click produces. Kept as data - which subsystem's config route the

@@ -165,7 +165,7 @@ main() {
   local entry
   shopt -s dotglob nullglob
   for entry in "$mission_tmp/image/"*; do
-    case "${entry##*/}" in "$app_bundle"|'Read Me.txt'|'.DS_Store'|'.background'|'.VolumeIcon.icns'|'.fseventsd'|'.Trashes') ;; *) fail 'Unexpected DMG root.';; esac
+    case "${entry##*/}" in "$app_bundle"|@DMG_ROOT_EXTRAS@) ;; *) fail 'Unexpected DMG root.';; esac
   done
   verify_app "$mission_tmp/image/$app_bundle"
   /usr/bin/ditto "$mission_tmp/image/$app_bundle" "$mission_tmp/$app_bundle"

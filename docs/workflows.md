@@ -399,6 +399,19 @@ ordinary workflow with its own name, editable, publishable, archivable, and neve
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
 bindable.
 
+The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
+settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
+it changes the round budget for that built-in on this installation and leaves its graph,
+policies, trigger and delivery as they were. The new value is shown on the workflow and on
+every one of its versions. Every new binding starts from it, including the bindings Foreman
+creates for dispatched tasks. A binding or run that already exists keeps the budget it copied
+when it was created; use the binding dialog or **Grant rounds** on a blocked run to change
+those. **Reset to** returns to the value this build ships, and a later build's new default is
+then followed again. The value is stored in the daemon's database through
+`PUT /api/workflows/:id/round-limit`, which accepts only `{ "maxRepairRounds": 1-20 | null }`
+and refuses a workflow you own (edit and publish its draft instead). Settings backups do not
+carry it yet.
+
 Because it always exists, its name is reserved: creating or renaming a workflow to
 `No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
 historical - a workflow you authored under that name before it shipped built-in keeps the name

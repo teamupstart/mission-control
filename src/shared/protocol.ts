@@ -877,6 +877,12 @@ export const ResolveReviewSchema = z.object({
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
   by: AnswerActorSchema,
+  /**
+   * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
+   * Only a submitted answer grants it: a dismissal decided nothing, so the route reads it
+   * only beside `action: "answer"`.
+   */
+  approveFutureBundles: z.boolean().optional(),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -2422,6 +2428,8 @@ export interface ResolveFindingsResult {
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
+  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
+  codeRabbitAutoResolve: z.boolean().default(false),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -3485,6 +3493,13 @@ export const UI_CONFIG_DEFAULTS = {
   showEmptyColumnStash: true,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /**
+   * Empty, both of them: the bar ships the way its predecessor drew it - every item present
+   * and every control at full size, with the measured ladder still shedding labels when the
+   * window narrows. See `src/web/lib/topbar-items.ts` for which ids each list may hold.
+   */
+  hiddenTopbarItems: [] as readonly string[],
+  compactTopbarItems: [] as readonly string[],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3637,6 +3652,26 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).default([]),
+  /**
+   * The topbar's optional items the operator has hidden - the session counts, search, the cost
+   * estimate, product feedback, and alerts and away mode.
+   *
+   * A list of HIDDEN ids for the reasons `hiddenDisplayItems` gives: an item a later build
+   * adds is drawn for everyone until they say otherwise, and a retired or unknown id is inert
+   * rather than a parse error. Not validated against the id set, which is a web-only concept
+   * owned by `src/web/lib/topbar-items.ts`.
+   *
+   * Its own key rather than more entries in `hiddenDisplayItems`, because that array carries
+   * a seed ladder whose marker counts its builds, and none of these ids ever ships hidden.
+   */
+  hiddenTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
+  /**
+   * The topbar controls the operator wants ALWAYS drawn minimized - glyph only, as the ladder
+   * draws them when the bar runs out of room. These controls cannot be hidden; the page
+   * segments, Recurring missions and Foreman are how anyone gets anywhere. Absent means
+   * expanded, with the ladder still free to minimize it on a narrow window.
+   */
+  compactTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4725,6 +4760,7 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
+  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -6158,6 +6194,22 @@ export const UpdateWorkflowSchema = z
   });
 export type UpdateWorkflow = z.infer<typeof UpdateWorkflowSchema>;
 export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
+
+/**
+ * The whole of what an operator may change on a built-in workflow without duplicating it.
+ *
+ * Strict, so a body that also names a graph, policy or any other binding default is refused
+ * rather than having the rest silently dropped. `null` returns to the shipped value.
+ */
+export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax)
+    .nullable(),
+}).strict();
+export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
 
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
 export const PublishWorkflowSchema = ValidateWorkflowSchema;

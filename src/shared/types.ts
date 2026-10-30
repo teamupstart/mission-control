@@ -2482,8 +2482,12 @@ export type ReviewStatus =
  * reads as null for the same reason - it may well have been a human, but the record does
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
+ *
+ * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
+ * operator's behalf, because they ticked "approve all future bundles for this task" on an
+ * earlier one. It is logged in the conversation as what it is, never as the human's answer.
  */
-export type ReviewActor = "human" | "foreman" | `session:${string}`;
+export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -2561,6 +2565,11 @@ export interface ReviewItem {
   selections?: PlanDecisionAnswer[] | null;
   /** Who settled it, or null when nobody did (`orphaned`) and on pre-column rows. */
   resolvedBy?: ReviewActor | null;
+  /**
+   * A managed plan's final-bundle approval bound to a task, so answering it may grant
+   * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
+   */
+  standingApprovalEligible?: boolean;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }
@@ -2805,6 +2814,7 @@ export interface InspectorComment {
  * PR itself is where you look.
  */
 export interface InspectorSummary {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -2859,6 +2869,7 @@ export interface RetroSummary {
 
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;

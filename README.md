@@ -94,6 +94,9 @@ answers what is working, what is idle, and what needs a decision. Cards group by
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
 context. The signals that need a person can never be hidden.
 
+The [model badge](docs/sessions.md#status-line-optional) follows the latest observed turn;
+large Codex logs do not substitute an older model from the start of the conversation.
+
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
 
@@ -299,6 +302,11 @@ Read more in [Workflows and Personas](docs/workflows.md) and
 The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
 answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
 code fixes them. Dry run records what it would say without publishing anything.
+
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
+attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
+invitation and repository trust, and waits while a workflow owns the session.
 
 Optional shipping automation can merge only after the current head has a clean published review,
 CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,

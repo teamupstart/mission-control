@@ -105,6 +105,9 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
  * the fake decides who a `pr list` is answering for. See the fake's header.
  */
 export interface FakePullRequest {
+  headRefName?: string;
+  reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  reviewError?: boolean;
   /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
   cwd: string;
   url: string;
@@ -707,6 +710,16 @@ if (argv[0] === "--version") {
   const parts = requested.split("/");
   const host = parts.length === 3 ? parts.shift() : "github.com";
   process.stdout.write("https://" + host + "/" + parts.join("/") + "/issues/123\\n");
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("reviewThreads"))) {
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => p.cwd === process.cwd() && String(p.number) === numberArg?.slice(7));
+  if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
+  else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
+    state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
+    reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+  } : null } } }));
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);

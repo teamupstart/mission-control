@@ -609,9 +609,19 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
   const [temporality, setTemporality] = useState<"cumulative" | "delta">("cumulative");
   const [shape, setShape] = useState<TelemetryExportShapeId>("full");
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const editVersionRef = useRef(0);
+
+  const markDirty = (): void => {
+    editVersionRef.current += 1;
+    dirtyRef.current = true;
+    setDirty(true);
+  };
 
   useEffect(() => {
-    if (dirty || !config) return;
+    // Match the personal destination: a queued config effect must see edits that
+    // happened after its render, before React has committed the dirty state.
+    if (dirtyRef.current || !config) return;
     setEndpoint(config.product.endpoint);
     setTemporality(config.product.temporality);
     setShape(config.product.exportShape);
@@ -648,7 +658,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
             disabled={!config}
             aria-label="Product analytics endpoint"
             onChange={(e) => {
-              setDirty(true);
+              markDirty();
               setEndpoint(e.target.value);
             }}
           />
@@ -658,7 +668,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
           destination="product analytics"
           value={temporality}
           onChange={(value) => {
-            setDirty(true);
+            markDirty();
             setTemporality(value);
           }}
         />
@@ -668,7 +678,7 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
           value={shape}
           stored={config?.product.exportShape ?? null}
           onChange={(value) => {
-            setDirty(true);
+            markDirty();
             setShape(value);
           }}
         />
@@ -683,10 +693,14 @@ function ProductDestination({ state }: { state: TelemetryState }): React.JSX.Ele
               disabled={!config || busy !== null || (check !== null && !check.ok)}
               aria-label="Save the product analytics destination"
               onClick={() => {
+                const submittedVersion = editVersionRef.current;
                 void update({
                   product: { endpoint: endpoint.trim(), temporality, exportShape: shape },
                 }).then((ok) => {
-                  if (ok) setDirty(false);
+                  if (ok && editVersionRef.current === submittedVersion) {
+                    dirtyRef.current = false;
+                    setDirty(false);
+                  }
                 });
               }}
             >

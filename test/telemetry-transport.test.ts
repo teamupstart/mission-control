@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { MetricsBatchPayload } from "../src/server/telemetry/projection.ts";
 
 // The transport half: what an endpoint may be, where a credential may travel, and every branch
@@ -966,9 +967,12 @@ test("shutdown tears an in-flight export down rather than only stopping waiting 
   // Let the pass reach the socket it is never going to get an answer from.
   await delay(50);
 
-  const startedAt = Date.now();
+  // The clock shutdown's own timers run on. A wall clock also counts time the host spends
+  // asleep, which those timers do not - a laptop that slept through this await once
+  // measured a 519-second nap here and reported it as shutdown waiting on the request.
+  const startedAt = performance.now();
   await service.stop();
-  const elapsed = Date.now() - startedAt;
+  const elapsed = Math.round(performance.now() - startedAt);
 
   // Read the instant shutdown returns, deliberately before joining the cycle: the whole defect
   // is work that outlives the shutdown, and a snapshot taken after joining cannot see it.
@@ -1015,9 +1019,9 @@ test("shutdown can still cancel a cycle a caller supplied its own abort signal t
   const cycling = service.cycle();
   await delay(50);
 
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   await service.stop();
-  const elapsed = Date.now() - startedAt;
+  const elapsed = Math.round(performance.now() - startedAt);
 
   assert.equal(caller.signal.aborted, false, "the caller never cancelled anything itself");
   assert.equal(aborted, true, "and shutdown still reached the in-flight request");

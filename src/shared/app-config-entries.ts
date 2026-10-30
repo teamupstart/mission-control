@@ -229,6 +229,7 @@ const inspectorFields = {
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 
 const shippingFields = {
+  codeRabbitAutoResolve: "setting",
   autoMerge: "setting",
   soakMinutes: "setting",
   method: "setting",
@@ -262,6 +263,8 @@ const uiFields = {
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
   collapsedBoardColumns: "setting",
+  hiddenTopbarItems: "setting",
+  compactTopbarItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {

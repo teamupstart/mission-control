@@ -29,22 +29,23 @@ test("deep bare and ordinary clones appear in Settings and can be added to Trust
   }
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
-  const input = dashboard.getByRole("combobox", { name: /search repos or type a path/i });
-  await input.fill("unknown-container");
-  await expect(dashboard.getByRole("option", { name: /unknown-container/ })).toHaveCount(0);
+  const search = dashboard.getByRole("searchbox", { name: "Search repositories to add" });
+  await search.fill("unknown-container");
+  await expect(dashboard.getByRole("checkbox", { name: /unknown-container/ })).toHaveCount(0);
+  // Both clones picked across two searches and added in one batch.
+  for (const path of [bare, ordinary]) {
+    await search.fill(path.split("/").pop()!);
+    await dashboard.getByRole("checkbox", { name: `Select ${path}` }).check();
+  }
+  await dashboard.getByRole("button", { name: "Add 2 repositories" }).click();
   for (const name of ["bare-project.git", "deep-project"]) {
-    await input.fill(name);
-    await dashboard.getByRole("option", { name: new RegExp(name.replaceAll(".", "\\.")) }).click();
-    await dashboard.getByRole("button", { name: "Add" }).click();
     await expect(dashboard.locator(".trust-repo-path").filter({ hasText: name })).toBeVisible();
   }
-  const staged = await fetch(`${daemon.baseURL}/api/ui/config`).then(r => r.json()) as { config: { trustStaged: string[] } };
-  expect(staged.config.trustStaged).toEqual(expect.arrayContaining([bare, ordinary]));
-  await dashboard.getByRole("button", { name: `Grant: Foreman sends live for ${bare}` }).click();
+  // An add grants the defaults, so both owners land in Foreman's own allowlist.
   await expect.poll(async () => {
     const config = await fetch(`${daemon.baseURL}/api/foreman/config`).then(r => r.json()) as { repoAllowlist: string[] };
     return config.repoAllowlist;
-  }).toContain(bare);
+  }).toEqual(expect.arrayContaining([bare, ordinary]));
   await dashboard.reload();
   await expect(dashboard.locator(".trust-repo-path").filter({ hasText: "bare-project.git" })).toBeVisible();
   await expect(dashboard.getByRole("button", { name: `Revoke: Foreman sends live for ${bare}` })).toBeVisible();

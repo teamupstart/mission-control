@@ -419,6 +419,7 @@ export const WORKFLOW_TABLES = [
   "session_actions",
   "workflow_commands",
   "workflow_command_overrides",
+  "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
@@ -2516,7 +2517,9 @@ export type WorkflowStoreWrite =
         | "archived"
         | "not_archived"
         | "active_binding"
-        | "builtin";
+        | "builtin"
+        /** A round limit can be set in place only on a built-in; a copy edits its own draft. */
+        | "not_builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -2925,6 +2928,49 @@ function coverageSchemaReason(error: unknown): string {
  * verification it was captured for. So an unknown episode leaves provenance alone; only a known
  * one moves it.
  */
+/** One `workflow_builtin_round_limits` row, read. A null count is a reset to the shipped value. */
+interface BuiltinRoundLimit {
+  maxRepairRounds: number | null;
+  updatedAt: number;
+}
+
+/**
+ * The built-in with the operator's round limit applied to its definition and to every version.
+ *
+ * Every version, not only the current one, because the setting answers "how many repair
+ * rounds does this workflow get" and a new binding may pin any of them. The versions'
+ * graphs, policies and other binding defaults are untouched. A limit equal to what this
+ * build ships is no change at all, so the built-in comes back exactly as shipped.
+ */
+function withBuiltinRoundLimit(
+  builtin: BuiltinWorkflow,
+  limit: BuiltinRoundLimit | undefined,
+): BuiltinWorkflow {
+  const shippedMaxRepairRounds = builtin.definition.bindingDefaults.maxRepairRounds;
+  if (!limit) return builtin;
+  // A reset, or a value a later build now ships: the shipped built-in, still dated by the
+  // change, so an editor that refetches after a reset sees a newer definition than it holds.
+  if (limit.maxRepairRounds === null || limit.maxRepairRounds === shippedMaxRepairRounds) {
+    return {
+      ...builtin,
+      definition: { ...builtin.definition, updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt) },
+    };
+  }
+  const rounds = limit.maxRepairRounds;
+  const withRounds = <T extends { bindingDefaults: WorkflowDefinition["bindingDefaults"] }>(item: T): T => ({
+    ...item,
+    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: rounds },
+  });
+  return {
+    definition: {
+      ...withRounds(builtin.definition),
+      updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt),
+      shippedMaxRepairRounds,
+    },
+    versions: builtin.versions.map(withRounds),
+  };
+}
+
 function restampsEpisode(stamped: string | null, episodeKey: string | null): boolean {
   return episodeKey !== null && stamped !== episodeKey;
 }
@@ -4149,7 +4195,67 @@ export class WorkflowStore {
    * definition of a version list it did not also consult.
    */
   private builtinWorkflowDefinitions(): WorkflowDefinition[] {
-    return this.builtinWorkflows.map((builtin) => builtin.definition);
+    const limits = this.builtinRoundLimits();
+    return this.builtinWorkflows.map((builtin) =>
+      withBuiltinRoundLimit(builtin, limits.get(builtin.definition.id)).definition);
+  }
+
+  /** Every operator round limit, by built-in id. Rows naming no shipped built-in are ignored. */
+  private builtinRoundLimits(workflowId?: string): Map<string, BuiltinRoundLimit> {
+    const rows = (workflowId === undefined
+      ? this.db.prepare(`SELECT * FROM workflow_builtin_round_limits`).all()
+      : this.db.prepare(`SELECT * FROM workflow_builtin_round_limits WHERE workflow_id = ?`)
+        .all(workflowId)) as Array<Record<string, unknown>>;
+    const out = new Map<string, BuiltinRoundLimit>();
+    for (const row of rows) {
+      const rounds = row.max_repair_rounds === null ? null : Number(row.max_repair_rounds);
+      const updatedAt = Number(row.updated_at);
+      // An unreadable row is the shipped value, never a budget outside the binding schema.
+      if (typeof row.workflow_id !== "string"
+        || !Number.isSafeInteger(updatedAt)
+        || (rounds !== null && (!Number.isInteger(rounds)
+          || rounds < WORKFLOW_LIMITS.repairRoundsMin
+          || rounds > WORKFLOW_LIMITS.repairRoundsMax))) continue;
+      out.set(row.workflow_id, { maxRepairRounds: rounds, updatedAt });
+    }
+    return out;
+  }
+
+  /**
+   * Change the one setting a built-in workflow lets an operator change in place.
+   *
+   * Everything else about a built-in stays read-only, and nothing here can reach it: the only
+   * input is a round count. `null`, or the value this build ships, stores a NULL count so the
+   * built-in follows the shipped value again, including when a later build changes it, while
+   * the row keeps dating the definition with the time of the reset. The new
+   * value is what every NEW binding of any of its versions starts from; a binding or run that
+   * already exists keeps the budget it copied when it was created.
+   */
+  setBuiltinRoundLimit(
+    id: string,
+    maxRepairRounds: number | null,
+    updatedAt = Date.now(),
+  ): WorkflowStoreWrite {
+    return this.mutate((): WorkflowStoreWrite => {
+      const shipped = this.builtinWorkflows.find((builtin) => builtin.definition.id === id);
+      if (!shipped) {
+        const current = this.getWorkflowInTransaction(id);
+        return current
+          ? { ok: false, reason: "not_builtin", current }
+          : { ok: false, reason: "not_found", current: null };
+      }
+      const stored = maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds
+        ? null
+        : maxRepairRounds;
+      this.db.prepare(
+        `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(workflow_id) DO UPDATE SET
+           max_repair_rounds = excluded.max_repair_rounds,
+           updated_at = excluded.updated_at`,
+      ).run(id, stored, updatedAt);
+      return { ok: true, workflow: this.builtinWorkflowById(id)!.definition };
+    }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 
   private sortWorkflows(workflows: WorkflowDefinition[]): WorkflowDefinition[] {
@@ -4157,21 +4263,29 @@ export class WorkflowStore {
       a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
   }
 
+  /**
+   * A shipped workflow as this installation runs it: the catalog entry with the operator's
+   * round limit, if any, applied. Every built-in read goes through here or
+   * `builtinWorkflowDefinitions`, so no reader can see the shipped budget while another sees
+   * the operator's.
+   */
   private builtinWorkflowById(id: string): BuiltinWorkflow | null {
-    return this.builtinWorkflows.find((builtin) => builtin.definition.id === id) ?? null;
+    const builtin = this.builtinWorkflows.find((candidate) => candidate.definition.id === id);
+    return builtin ? withBuiltinRoundLimit(builtin, this.builtinRoundLimits(id).get(id)) : null;
   }
 
   private builtinWorkflowNamed(normalizedName: string): WorkflowDefinition | null {
-    return this.builtinWorkflows
-      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition ?? null;
+    const id = this.builtinWorkflows
+      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition.id;
+    return id === undefined ? null : this.builtinWorkflowById(id)?.definition ?? null;
   }
 
   private builtinWorkflowVersion(id: string): WorkflowVersion | null {
-    for (const builtin of this.builtinWorkflows) {
-      const version = builtin.versions.find((candidate) => candidate.id === id);
-      if (version) return version;
-    }
-    return null;
+    const builtin = this.builtinWorkflows.find((candidate) =>
+      candidate.versions.some((version) => version.id === id));
+    if (!builtin) return null;
+    return this.builtinWorkflowById(builtin.definition.id)!.versions
+      .find((candidate) => candidate.id === id) ?? null;
   }
 
   listWorkflows(includeArchived = false): WorkflowDefinition[] {

@@ -174,16 +174,14 @@ test("task-local trust notices explain every backlog surface and retire after a 
   await expect(dashboard.locator('[data-anchor="trust/matrix"]')).toHaveClass(/settings-flash/);
   await expect(dashboard.getByRole("table", { name: "Repository trust grants" })).toBeVisible();
 
-  // Grant through the existing matrix. App stays mounted, and the ordinary Foreman config
-  // update removes every task notice without a reload or notice-local dismissal state.
+  // Grant through the existing matrix. Adding a repository grants Foreman by default, so
+  // the add itself is the grant. App stays mounted, and the ordinary Foreman config update
+  // removes every task notice without a reload or notice-local dismissal state.
   await renewForeman(daemon);
-  await dashboard.getByRole("combobox", { name: /search repos or type a path/i }).fill(daemon.repo);
-  await dashboard.getByRole("button", { name: "Add", exact: true }).click();
-  const grant = dashboard.getByRole("button", {
-    name: `Grant: Foreman sends live for ${daemon.repo}`,
-  });
-  await expect(grant).toBeVisible();
-  await grant.click();
+  await dashboard
+    .getByRole("checkbox", { name: `Select ${daemon.repo}` })
+    .check();
+  await dashboard.getByRole("button", { name: "Add 1 repository" }).click();
   await expect(dashboard.getByRole("button", {
     name: `Revoke: Foreman sends live for ${daemon.repo}`,
   })).toBeVisible();

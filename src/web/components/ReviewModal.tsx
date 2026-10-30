@@ -5,6 +5,7 @@ import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { decisionLead } from "@shared/review-item.ts";
+import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -97,8 +98,12 @@ export function ReviewCard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
+  const [approveFuture, setApproveFuture] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
+  const finalBundle = review.standingApprovalEligible === true
+    && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
   const foremanNote = foremanNoteForReview(review, sessionNote);
   const recommendationChoices: RecommendationChoice[] =
     decisions?.flatMap((decision) =>
@@ -131,7 +136,14 @@ export function ReviewCard({
   ) {
     setBusy(true);
     setErr(null);
-    const r = await api.resolveReview(review.id, action, response, selections);
+    const r = await api.resolveReview(
+      review.id,
+      action,
+      response,
+      selections,
+      // Granted only alongside an approval of this bundle, never with "Needs revision".
+      action === "answer" && finalBundle && approveFuture && approvesFinalBundle(selections),
+    );
     setBusy(false);
     if (!r.ok) setErr(r.error ?? "failed");
   }
@@ -209,6 +221,21 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
+          besideSubmit={
+            finalBundle && (
+              <label className="decisions-standing-approval">
+                <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
+                  <input
+                    type="checkbox"
+                    checked={approveFuture}
+                    disabled={busy}
+                    onChange={(e) => setApproveFuture(e.target.checked)}
+                  />
+                </Tooltip>
+                <span>Approve all future bundles for this task</span>
+              </label>
+            )
+          }
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />

@@ -123,7 +123,7 @@ test("verified restore reloads its window and invalidates other windows without 
   });
   await request(daemon, "/api/shipping/config", {
     method: "PUT",
-    body: { repoAllowlist: [desiredTrustRepo] },
+    body: { repoAllowlist: [desiredTrustRepo], codeRabbitAutoResolve: true },
   });
 
   // Reboot after removing only today's disposable fixture snapshot. The production startup
@@ -168,7 +168,7 @@ test("verified restore reloads its window and invalidates other windows without 
   });
   await request(daemon, "/api/shipping/config", {
     method: "PUT",
-    body: { repoAllowlist: [currentTrustRepo] },
+    body: { repoAllowlist: [currentTrustRepo], codeRabbitAutoResolve: false },
   });
   await request(daemon, `/api/personas/${desiredPersona.id}`, {
     method: "PATCH",
@@ -302,6 +302,7 @@ test("verified restore reloads its window and invalidates other windows without 
     request<{ repoAllowlist: string[] }>(daemon, "/api/shipping/config"),
   ]);
   for (const config of restoredTrust) expect(config.repoAllowlist).toEqual([desiredTrustRepo]);
+  expect(await request(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true });
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
   const trustTable = dashboard.getByRole("table", { name: "Repository trust grants" });

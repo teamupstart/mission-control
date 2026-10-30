@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>101</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>104</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -592,10 +592,11 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>25 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>26 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
+                <div class="table-row"><code>workflow_builtin_round_limits</code><p>The operator's maximum repair rounds for one built-in workflow, keyed by its stable id, the one setting a built-in takes without Duplicate. A NULL count is a reset to the shipped value; the row stays so its time still dates the definition.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
@@ -674,12 +675,14 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Managed plans (durable ledger)</strong><span>6 tables</span></summary>
+              <summary><strong>Managed plans (durable ledger)</strong><span>8 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>managed_plans</code><p>Stable plan identity, canonical owning repository, pinned policy, retained store path, originating session/task/work episode and current ready revision. Retained independently of task and session deletion.</p></div>
                 <div class="table-row"><code>managed_plan_revisions</code><p>Immutable revision references, manifest digests, idempotency identities and recoverable checkout write intents. Staging is incomplete; ready means saved, never approved or published.</p></div>
                 <div class="table-row"><code>managed_plan_reservations</code><p>Reserved plan identity and pinned policy for each task and canonical repository, established before launch or assignment.</p></div>
                 <div class="table-row"><code>managed_plan_reviews</code><p>Exact revision, manifest, writer episode and workflow binding associated with a human final-bundle review.</p></div>
+                <div class="table-row"><code>managed_plan_standing_approvals</code><p>One row per task whose operator approved a final bundle with "Approve all future bundles for this task" checked, naming the review that granted it. Later final bundles for that task are approved at creation.</p></div>
+                <div class="table-row"><code>managed_plan_standing_follow_ups</code><p>Remaining questions of a request whose final bundle a standing approval settled, keyed to that approval so the agent's answer states the bundle is already approved.</p></div>
                 <div class="table-row"><code>managed_plan_validations</code><p>Approval and immutable plan revision bound to an exact workflow submission and version for validation.</p></div>
                 <div class="table-row"><code>managed_plan_publications</code><p>Durable local publication receipts per plan revision. Survive source-task pruning and satisfy only matching artifact prerequisites, never code merge edges.</p></div>
               </div>

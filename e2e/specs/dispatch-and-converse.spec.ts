@@ -236,6 +236,9 @@ test("the dispatch shortcut works after focus leaves the task description", asyn
   // Reproduce the reported boundary: the task textarea no longer owns DOM focus. The
   // shortcut belongs to the dialog, so moving into another field must not disable it.
   const kind = dialog.getByLabel("Kind");
+  // The select is disabled while the dialog settles, and focusing a disabled control is a
+  // no-op that `toBeFocused` cannot recover from. Wait for it to take focus first.
+  await expect(kind).toBeEnabled();
   await kind.focus();
   await expect(kind).toBeFocused();
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();

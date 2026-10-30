@@ -174,6 +174,14 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)
       ? raw.collapsedBoardColumns.filter((id): id is string => typeof id === "string")
       : [],
+    // Fresh arrays, for the reason above: the Top bar panel builds its next patch from what
+    // it reads here, and a miss means the shipped bar - nothing hidden, nothing minimized.
+    hiddenTopbarItems: Array.isArray(raw?.hiddenTopbarItems)
+      ? raw.hiddenTopbarItems.filter((id): id is string => typeof id === "string")
+      : [],
+    compactTopbarItems: Array.isArray(raw?.compactTopbarItems)
+      ? raw.compactTopbarItems.filter((id): id is string => typeof id === "string")
+      : [],
   };
 }
 

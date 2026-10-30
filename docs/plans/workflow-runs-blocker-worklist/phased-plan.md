@@ -4,7 +4,7 @@
 
 - Approved plan: [`plan.md`](plan.md)
 - Design comparison the selection came from:
-  [`docs/reports/workflow-runs-triage-mockups/report.html`](../../reports/workflow-runs-triage-mockups/report.html)
+  `docs/reports/workflow-runs-triage-mockups/report.html` (removed from the repository in #1213)
 
 ## Incorporated human decisions
 

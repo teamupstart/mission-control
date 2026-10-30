@@ -105,6 +105,7 @@ test("a row written before the columns existed reads as UNOBSERVED, never as unc
   // waits when it cannot name a remote head, so an unobserved legacy row makes it wait for the
   // next tick rather than complete against a head nobody looked at.
   const row = getInspectorPr(KEY)!;
+  assert.equal(openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(KEY)?.code_rabbit_state, null);
   assert.equal(row.observedHeadSha, null);
   assert.equal(row.observedState, null);
   assert.equal(row.observedAt, null);

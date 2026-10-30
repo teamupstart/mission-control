@@ -268,6 +268,38 @@ only those.
 
 It ships **off**, trusting **no repositories**, with a **10 minute** soak.
 
+### CodeRabbit follow-up
+
+**Follow up on CodeRabbit comments** is a separate Shipping setting, off by default and
+included in settings snapshots. It works while Inspector reviews and YOLO are off. The existing
+daemon poll observes only adopted PRs, including attached repositories, normally every 90 seconds.
+It reads GitHub but neither calls a review model nor replies to or resolves threads itself.
+
+A finding must be an unresolved review thread whose first comment belongs to the exact
+CodeRabbit Bot account. Human threads with bot replies, top-level summaries and issue comments
+are excluded. An outdated unresolved thread still counts. Shipping shows the unresolved count,
+unknown/provider errors, and delivery status beside the existing merge status.
+
+Foreman must be enabled and Live, invited into the owning session, and trusted for both the
+session and the PR's repository. A busy session, human input, queued work, unknown ownership,
+draft/closed PR or active or parked workflow holds delivery. No absent session is restarted.
+The session is asked to assess findings, fix valid in-scope defects, explain invalid findings,
+run focused checks and push to the same PR branch under its task and repository instructions.
+This setting grants no merge permission and changes none of the merge gates below.
+
+Each root finding has a durable generation. New roots, root edits and observed reopening can
+prompt again; replies, pushes, reordered results, fewer unresolved threads, toggles and restarts
+cannot replay handled findings. The daemon claims before sending. Only confirmed non-delivery
+releases a claim; a lost response or interrupted send remains **Delivery uncertain**. Manual
+messaging remains available. This is conservative delivery, not an exactly-once transport promise.
+
+Observations must complete within 20 pages, 8 MiB total and 60 seconds, with an 8 MiB cap per
+provider response. Missing identities, malformed connections, cursor loops and exceeded limits
+are unknown, never zero. A newer error immediately disables the prior success for delivery.
+A new daemon requires a successful fresh observation. Freshness lasts three poll intervals
+(with a one-second minimum for test/development cadences). At most 12 thread links appear in
+the prompt, which always asks the session to load the complete list.
+
 ### What has to be true
 
 Every one of these, on the same read of the pull request:

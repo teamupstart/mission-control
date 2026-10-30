@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
+import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
 import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
@@ -14,7 +17,7 @@ import {
   type AppConfigInput,
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
-import { DB_PATH } from "./config.ts";
+import { DB_PATH, envVar } from "./config.ts";
 import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
@@ -824,6 +827,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, manifest_hash TEXT NOT NULL,
       binding_id TEXT, workflow_version_id TEXT
     );
+    -- One row per task whose operator ticked "approve all future bundles for this task".
+    -- review_id is the human answer that granted it, kept as provenance.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_approvals (
+      task_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, granted_at INTEGER NOT NULL
+    );
+    -- The remaining questions of a request whose final bundle a standing approval settled,
+    -- keyed to that approval so the agent's answer can say the bundle is already approved.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_follow_ups (
+      review_id TEXT PRIMARY KEY, approval_review_id TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS managed_plan_validations (
       submission_id TEXT NOT NULL, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
       review_id TEXT NOT NULL, binding_id TEXT NOT NULL, workflow_version_id TEXT NOT NULL,
@@ -999,6 +1012,19 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (slot, repo_root)
+    );
+
+    -- The operator's maximum repair rounds for one built-in workflow.
+    --
+    -- A built-in is not a row: its definition and versions ship with the build and stay
+    -- read-only. The round budget is the one setting an operator may change on one without
+    -- duplicating it, so it lives beside the catalog rather than in it, keyed by the
+    -- built-in's stable id. No row, or a NULL count, means the shipped value; a reset keeps
+    -- its row with a NULL count so the time of the reset still dates the definition.
+    CREATE TABLE IF NOT EXISTS workflow_builtin_round_limits (
+      workflow_id       TEXT PRIMARY KEY,
+      max_repair_rounds INTEGER,
+      updated_at        INTEGER NOT NULL
     );
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
@@ -1913,6 +1939,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- outlive the session that did (a PR is not done when its session exits).
     CREATE TABLE IF NOT EXISTS inspector_prs (
       key              TEXT PRIMARY KEY,  -- "owner/repo#123"
+      code_rabbit_state TEXT,
       url              TEXT NOT NULL,
       owner            TEXT NOT NULL,
       repo             TEXT NOT NULL,
@@ -3927,6 +3954,7 @@ function migrate(d: DatabaseSync): void {
   // No index. The table gains single-digit rows a day and nothing selects on the title;
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
+  addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -4568,18 +4596,25 @@ export function transferPendingReviews(sourceId: string, successorId: string, no
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
     WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
+}
+
+/** Re-derive which pending reviews can grant a standing plan-bundle approval: bound to a task. */
+function withStandingApprovalEligibility(reviews: ReviewItem[]): ReviewItem[] {
+  const eligible = openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ? AND task_id IS NOT NULL");
+  return reviews.map((review) => (eligible.get(review.id) ? { ...review, standingApprovalEligible: true } : review));
 }
 
 /**
- * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ * The reviews a session's conversation replays: the ones a HUMAN settled, directly or through
+ * a standing approval for its task, oldest first.
  *
  * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
  * two ask different questions of the same table. That one gathers evidence of intent, so it
@@ -4603,6 +4638,8 @@ export function loadPendingReviews(): ReviewItem[] {
  * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  // A standing approval is the operator's own earlier, explicit grant for this task, so the
+  // final-bundle gate counts it. A delegated session's answer never does.
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
@@ -4617,7 +4654,7 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by = 'human'${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
@@ -13854,6 +13891,7 @@ type InspectionTallyRow = InspectorPrRow & {
 function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   return {
     ...rowToInspectorPr(r),
+    codeRabbit: codeRabbitSummary(r.key),
     openFindings: Number(r.open_findings),
     postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),
@@ -15079,4 +15117,103 @@ export function setFileCommentReviewState(
     )
     .run(sessionId, state, pauseReason, state === "running" ? now : null, now);
   return loadFileCommentReview(sessionId);
+}
+
+
+// CodeRabbit extends the adoption row, so it cannot discover PRs or outlive deletion of
+// its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
+// per PR; exceeding either holds observation/delivery instead of evicting replay protection.
+const codeRabbitProcessId = randomUUID();
+export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
+  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+  try {
+    const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+function writeCodeRabbit(prKey: string, record: CodeRabbitRecord): void {
+  openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey);
+}
+
+export function recordCodeRabbit(prKey: string, input: {
+  headSha: string; state: "OPEN" | "CLOSED" | "MERGED"; draft: boolean;
+  findings: Omit<CodeRabbitFinding, "generation">[];
+}, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  // Corrupt history is unknown, never a fresh empty receipt ledger.
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  const findings = new Map((previous?.findings ?? []).map((f) => [f.id, { ...f, present: false }]));
+  for (const finding of input.findings) {
+    const old = findings.get(finding.id);
+    const changed = !finding.resolved && (!old || old.resolved || old.identity !== finding.identity);
+    findings.set(finding.id, { ...finding, present: true, generation: (old?.generation ?? 0) + Number(changed) });
+  }
+  if (findings.size > 2000) { failCodeRabbit(prKey, "CodeRabbit root history limit reached", now); return; }
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: codeRabbitProcessId,
+    observedAt: now, headSha: input.headSha, state: input.state, draft: input.draft,
+    error: null, findings: [...findings.values()], receipts: previous?.receipts ?? [],
+  });
+}
+
+export function failCodeRabbit(prKey: string, error: string, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: "", observedAt: now,
+    headSha: "", state: "OPEN", draft: true, findings: [], receipts: [],
+    ...previous, error: error.slice(0, 400),
+  });
+}
+
+export function codeRabbitSummary(prKey: string, owner?: { noteKey: string; episodeKey: string }, now = Date.now(), freshnessMs = Math.max(1_000, 3 * Number(envVar("INSPECTOR_POLL_MS") ?? 90_000))): CodeRabbitSummary {
+  const record = readCodeRabbit(prKey);
+  const threads = record?.findings.filter((f) => f.present && !f.resolved) ?? [];
+  const fresh = !!record && record.processId === codeRabbitProcessId && !record.error
+    && record.observedAt <= now && now - record.observedAt <= freshnessMs;
+  const receipts = record?.receipts.filter((r) => r.noteKey === owner?.noteKey && r.episodeKey === owner?.episodeKey) ?? [];
+  const pending = threads.filter((f) => !receipts.some((r) => r.threadId === f.id && r.generation === f.generation)).length;
+  const uncertain = receipts.some((r) => r.outcome === "uncertain" && threads.some((f) => f.id === r.threadId && f.generation === r.generation));
+  return {
+    status: record?.error ? "error" : fresh ? "complete" : "unknown",
+    observationId: record?.observationId ?? null, headSha: record?.headSha || null,
+    observedAt: record?.headSha ? record.observedAt : null,
+    freshUntil: fresh ? record!.observedAt + freshnessMs : null,
+    unresolved: record?.headSha ? threads.length : null, error: record?.error ?? null,
+    threads: threads.slice(0, 12).map(({ id, url, path }) => ({ id, url, path })),
+    pending: fresh && owner && record?.state === "OPEN" && !record.draft ? pending : 0,
+    delivery: uncertain ? "Delivery uncertain; manual messaging remains available"
+      : !fresh ? "Waiting for a complete fresh observation"
+      : record?.state !== "OPEN" || record.draft ? "PR is closed or draft"
+      : !threads.length ? "No unresolved CodeRabbit threads"
+      : !owner ? "Waiting for an eligible owning session"
+      : pending ? "Waiting for an eligible session" : "Feedback delivered",
+  };
+}
+
+export function claimCodeRabbit(prKey: string, owner: { noteKey: string; episodeKey: string }, observationId: string, now = Date.now()): string | null {
+  // All reads and the compare-and-set run synchronously in the sole daemon writer.
+  const record = readCodeRabbit(prKey);
+  if (!record || record.observationId !== observationId || codeRabbitSummary(prKey, owner, now).pending === 0) return null;
+  const pending = record.findings.filter((f) => f.present && !f.resolved && !record.receipts.some((r) =>
+    r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && r.threadId === f.id && r.generation === f.generation));
+  if (!pending.length) return null;
+  const claimId = randomUUID();
+  const previous = JSON.stringify(record);
+  record.receipts = record.receipts.filter((r) => !(r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && pending.some((f) => f.id === r.threadId)));
+  for (const f of pending) record.receipts.push({ ...owner, threadId: f.id, generation: f.generation, observationId, headSha: record.headSha, claimId, at: now, outcome: "uncertain" });
+  if (record.receipts.length > 10000) return null;
+  const result = openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ? AND code_rabbit_state = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey, previous);
+  return result.changes === 1 ? claimId : null;
+}
+
+export function finishCodeRabbit(prKey: string, claimId: string, outcome: "delivered" | "refused"): void {
+  const record = readCodeRabbit(prKey);
+  if (!record) return;
+  if (outcome === "refused") record.receipts = record.receipts.filter((r) => r.claimId !== claimId);
+  else for (const receipt of record.receipts) if (receipt.claimId === claimId) receipt.outcome = "delivered";
+  writeCodeRabbit(prKey, record);
 }

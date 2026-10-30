@@ -597,3 +597,25 @@ another review-only workflow validates the frozen approved text; explicit None u
 merge edges stay blocked until their normal publication condition. Missing tools never permit
 fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
 home separately to retain plan contents and their daemon ledger.
+
+## Resident skill catalog
+
+**Residents > Skill sources** indexes global skills and operator-registered folders, independently
+of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
+YAML frontmatter, including folded descriptions, and reports source problems in place. The index
+is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+
+The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
+must be absolute or start with `~/`; broad roots and canonical duplicates are refused. Child
+directory links resolving to the home directory or an ancestor are also refused. Claude entries
+are omitted only when their resolved directory is already indexed by the Mission Control source;
+independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
+including the source root, ordinary files and hidden entries. An over-limit source reports
+truncation; the retained subset follows filesystem enumeration order. The
+`residents.skillSources` setting stores stable ids and paths, backed up under
+`resident-skill-sources`. Skill content is never included in settings backups.
+
+This catalog is read-only with respect to the skills themselves. It currently offers no profile
+selection because neither harness has a verified frozen-isolation mechanism. See
+[Residents](residents.md#skill-sources) for the launch policy and current limitation.

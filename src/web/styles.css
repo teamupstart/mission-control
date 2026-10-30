@@ -36355,3 +36355,16 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-note { margin: 0; padding: 4px 8px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .session-toolbar-foot { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
 .session-toolbar-error { margin: 6px 8px; font-size: 12px; color: var(--danger); }
+
+/* Resident skill sources share the profile editor's typography and spacing. */
+.resident-source-add, .resident-skill-filters { display: flex; gap: 12px; align-items: end; }
+.resident-source-add .field, .resident-skill-filters .field { flex: 1; min-width: 0; }
+.resident-source-list, .resident-skill-list { list-style: none; padding: 0; margin: 0; }
+.resident-source-list > li, .resident-skill-list > li { padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.resident-source-heading { display: flex; gap: 10px; align-items: center; }
+.resident-source-heading strong { flex: 1; overflow-wrap: anywhere; }
+.resident-source-list code, .resident-skill-list code { display: block; font: 11px var(--mono); color: var(--dim); overflow-wrap: anywhere; margin-top: 5px; }
+.resident-source-list details { margin-top: 6px; font-size: 12px; color: var(--attention); }
+.resident-source-list details li { overflow-wrap: anywhere; }
+.resident-skill-list p { font-size: 12px; color: var(--muted); margin-top: 5px; white-space: pre-line; }
+.resident-skill-notice { padding: 12px; border-left: 2px solid var(--attention); background: var(--panel-2); font-size: 12px; line-height: 1.6; }

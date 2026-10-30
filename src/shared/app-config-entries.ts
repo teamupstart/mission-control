@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import {
   AwayConfigSchema,
   BacklogPlanSchema,
@@ -54,6 +55,8 @@ interface AppConfigEntryBase<Key extends string, Schema extends z.ZodTypeAny> {
   schema: Schema;
   /** Version of this entry's logical snapshot meaning, independent from SQLite. */
   snapshotVersion: 1;
+  /** New domains may be absent in older snapshots; absence leaves current settings alone. */
+  optionalInSnapshot?: boolean;
   capture: AppConfigCaptureKind;
 }
 
@@ -291,6 +294,7 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
+  residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
   harnesses: fieldsEntry(
     "harnesses", HarnessesConfigSchema, "harnesses", harnessesFields, "harnesses",
   ),

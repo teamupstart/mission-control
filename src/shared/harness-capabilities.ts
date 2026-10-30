@@ -100,6 +100,11 @@ export interface PermissionModeSpec {
   launchArgs: ((mode: PermissionMode) => readonly string[]) | null;
 }
 
+/** A measured launch control that loads exactly an immutable skill snapshot on every start. */
+export interface SkillSelectionSpec {
+  mechanism: "config-overlay" | "native-discovery-disabled";
+}
+
 /**
  * Installing skills for a harness and invoking them in a live session.
  *
@@ -531,6 +536,8 @@ interface HarnessCapabilitiesBase {
   resumes: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
+  /** Null until exact isolation, including native additions on resume, has passed a real probe. */
+  skillSelection: SkillSelectionSpec | null;
   extensions: ExtensionsSpec | null;
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
@@ -620,6 +627,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     },
     extensions: null,
     skills: CLAUDE_SKILLS,
+    skillSelection: null, // 2.1.310: overlay and launch settings still expose project skills.
     workQueue: {
       uninstrumentedWhy:
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
@@ -753,6 +761,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // typed at a running session. `skillsAgents()` therefore excludes it from the pane
     // broadcast.
     extensions: null,
+    skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -885,6 +894,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
     // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
     // makes its transcript an attributable idle source for the verified command.
+    skillSelection: null,
     skills: {
       reloadCommand: "/reload",
       reloadIdleSource: "transcript",

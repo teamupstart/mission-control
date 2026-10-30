@@ -1,3 +1,4 @@
+import type { ResidentSkillIndex, ResidentSkillSources } from "@shared/resident-skills.ts";
 import { actionFetch } from "../lib/experience.ts";
 import type { ResidentProfile, ResidentProfileRevision } from "@shared/residents.ts";
 
@@ -54,4 +55,14 @@ export function archiveResidentProfile(id: string, expectedRevision: number): Pr
     method: "DELETE",
     body: JSON.stringify({ expectedRevision }),
   });
+}
+
+export function fetchResidentSkills(): Promise<ResidentSkillIndex> {
+  return residentRequest("/api/residents/skills", { method: "GET" });
+}
+export function rescanResidentSkills(): Promise<ResidentSkillIndex> {
+  return residentRequest("/api/residents/skills/rescan", { method: "POST", body: "{}" });
+}
+export function saveResidentSkillSources(config: ResidentSkillSources): Promise<ResidentSkillIndex> {
+  return residentRequest("/api/residents/skill-sources", { method: "PUT", body: JSON.stringify(config) });
 }

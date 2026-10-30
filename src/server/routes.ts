@@ -1,3 +1,5 @@
+import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
+import { residentSkillIndex, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
@@ -8121,6 +8123,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     return c.json(task);
+  });
+
+  app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
+  app.put("/api/residents/skill-sources", async (c) => {
+    const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
+    if (!parsed.ok) return parsed.res;
+    try { return c.json(saveResidentSkillSources(parsed.data)); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : String(error) }, 400); }
+  });
+  app.post("/api/residents/skills/rescan", async (c) => {
+    const parsed = await parseBody(c, RescanResidentSkillsSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(residentSkillIndex(true));
   });
 
   // --- resident profiles and their one launch path ---

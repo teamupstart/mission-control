@@ -261,6 +261,7 @@ export type MissionRoute =
        * shortcut, so the title bar keeps its four pages.
        */
       page: "residents";
+      skillSources?: true;
       /** The profile the editor has open. Absent shows the rail with nothing selected. */
       profileId?: string;
       /** A new profile is being authored. Never set together with `profileId`. */
@@ -478,6 +479,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
   // which is where every unrecognized legacy sub-path goes.
   if (path === "/shipped") return { page: "shipped" };
   if (path === "/residents") return { page: "residents" };
+  if (path === "/residents/skill-sources") return { page: "residents", skillSources: true };
   if (path === `/residents/${LIBRARY_NEW_SEGMENT}`) return { page: "residents", creating: true };
   const resident = /^\/residents\/([^/]+)$/.exec(path);
   if (resident) {
@@ -523,6 +525,7 @@ export function missionRouteHash(route: MissionRoute): string {
   // lands on the wrong page with no error anywhere.
   if (route.page === "shipped") return "#/shipped";
   if (route.page === "residents") {
+    if (route.skillSources) return "#/residents/skill-sources";
     if (route.creating) return `#/residents/${LIBRARY_NEW_SEGMENT}`;
     return route.profileId ? `#/residents/${encodeURIComponent(route.profileId)}` : "#/residents";
   }

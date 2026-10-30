@@ -79,6 +79,7 @@ export function migrateSettingsBackupSnapshot(
   for (const descriptor of SETTINGS_CONFIG_BACKUP_ENTRIES) {
     if (descriptor.backupDomain === null) throw new TypeError(`${descriptor.key} has no backup domain`);
     const entry = byDomain.get(descriptor.backupDomain);
+    if (!entry && descriptor.optionalInSnapshot) continue;
     if (!entry) throw new TypeError(`Snapshot is missing domain ${descriptor.backupDomain}`);
     if (entry.version !== descriptor.snapshotVersion) {
       throw new TypeError(

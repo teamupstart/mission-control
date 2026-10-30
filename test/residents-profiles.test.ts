@@ -1,6 +1,6 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -294,4 +294,23 @@ test("a section or field written by a newer build survives this build reading, e
   assert.deepEqual(stored.instructions, { markdown: "Edited here." });
   // And the revision it replaced is untouched.
   assert.deepEqual(store.storedResidentSettings(profile.id, 1)!.marker, { color: "cyan", label: "FWD" });
+});
+
+test("skill source routes validate registrations, rescan on demand, and keep the index out of SSE", async () => {
+  const path = join(home, "http-skills");
+  mkdirSync(join(path, "fixture"), { recursive: true });
+  writeFileSync(join(path, "fixture/SKILL.md"), "---\nname: route-fixture\ndescription: fixture\n---\n");
+  const config = { directories: [{ id: "custom-00000000-0000-0000-0000-000000000001", path }] };
+  const events: ServerEvent[] = [];
+  const off = registry.subscribe((event) => events.push(event));
+  try {
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { directories: [{ ...config.directories[0], path: "relative" }] })).status, 400);
+    assert.equal((await request("PUT", "/api/residents/skill-sources", config)).status, 200);
+    const read = await request("GET", "/api/residents/skills");
+    assert.equal(read.status, 200);
+    assert.ok((read.json.skills as Array<{ name: string }>).some((skill) => skill.name === "route-fixture"));
+    assert.equal((await request("POST", "/api/residents/skills/rescan", { unexpected: true })).status, 400);
+    assert.equal((await request("POST", "/api/residents/skills/rescan", {})).status, 200);
+    assert.deepEqual(events, []);
+  } finally { off(); }
 });

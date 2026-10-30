@@ -1,3 +1,4 @@
+import { residentSkillIndex } from "./skill-index.ts";
 import { randomUUID } from "node:crypto";
 import { harnessOffersRuntime } from "@shared/harness-capabilities.ts";
 import {
@@ -156,6 +157,7 @@ export class ResidentManager {
    * so it is the same whichever order the two finish in; the run-end arm follows the task.
    */
   start(): void {
+    residentSkillIndex();
     this.reconcilePendingRuns();
     this.subscriptions.push(this.deps.registry.subscribe((event) => this.observe(event)));
     // The startup twin of the `session_remove` arm: once sessions have been observed, end

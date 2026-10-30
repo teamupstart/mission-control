@@ -97,3 +97,29 @@ the largest profile sizes, 200 live and 200 archived profiles fit in about 7 MB.
 The registries later phases extend, the single launch path, the pinned-revision rule and the
 launch and recovery guarantees are maintained in
 [change contracts](agent-guides/change-contracts.md#resident-profiles).
+
+## Skill sources
+
+Open **Residents > Skill sources** to browse Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and `$CODEX_HOME/skills` (or `~/.codex/skills` when unset). Claude entries
+that resolve to a skill already indexed by Mission Control are omitted; independent
+`mission-*` folders and links remain indexed.
+Register up to 16 additional absolute or home-relative folders. Removing a source only removes
+its registration; it never deletes skill files.
+
+The catalog is scanned at daemon startup and on **Rescan**. Adding or removing a source also
+rescans. Search matches names, descriptions and folders; the Source filter narrows the list.
+Malformed frontmatter, missing folders, unreadable files and bounded-scan limits appear beside
+the source. Grouped folders and symlinked skill folders are supported, but links to the home
+directory or an ancestor are refused. The 5,000-entry scan budget includes ordinary and hidden
+files as well as directories. A skill's stable identity
+is its source id plus relative folder, so editing its name does not change its identity.
+Registered directories are included in settings snapshots. Restoring an older snapshot without
+that domain leaves the current registrations intact.
+
+**Profile skill selection is currently unavailable for both Claude Code and Codex.** Neither
+proposed per-launch mechanism passed the exact frozen-set check. The catalog does not change a
+resident's launch or native skill discovery. Built-in source rows show the limitation instead
+of inventing a selectable inventory. The approved policy remains: inheritance captures defaults
+plus selections, selected-only captures selections, and both must resume from the same immutable
+set. See the [capability measurements](harnesses-and-terminals.md#resident-skill-isolation).

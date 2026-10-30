@@ -8126,3 +8126,7 @@ export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema
 
 /** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
 export const LaunchResidentRequestSchema = LaunchResidentSchema;
+
+/** Skill-source mutations share one validated config contract. */
+export { ResidentSkillSourcesSchema as UpdateResidentSkillSourcesSchema } from "./resident-skills.ts";
+export const RescanResidentSkillsSchema = z.object({}).strict();

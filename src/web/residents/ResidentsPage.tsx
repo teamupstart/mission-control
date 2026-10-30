@@ -1,3 +1,4 @@
+import { ResidentSkillSourcesPanel } from "./ResidentSkillSources.tsx";
 import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
@@ -35,6 +36,8 @@ export function ResidentsPage({
   personas,
   selectedId,
   creating,
+  skillSources = false,
+  onSkillSources,
   onSelect,
   onCreate,
   onSettle,
@@ -47,6 +50,8 @@ export function ResidentsPage({
   selectedId: string | null;
   /** From the route: a new profile is being authored. */
   creating: boolean;
+  skillSources?: boolean;
+  onSkillSources?: () => void;
   /** An operator choice of profile: gated by the router while a draft is unsaved. */
   onSelect: (profileId: string | null) => void;
   /** Open a blank editor: gated the same way. */
@@ -123,10 +128,13 @@ export function ResidentsPage({
                 </p>
               )}
             </LibraryRailGroup>
+            <LibraryRailGroup label="Resources" count={1}>
+              <LibraryRailRow className="resident-list-item" name="Skill sources" detail="Global and registered folders" selected={skillSources} tooltip="Browse and rescan skill sources" onSelect={() => onSkillSources?.()} />
+            </LibraryRailGroup>
           </div>
         </aside>
         <div className="residents-workspace">
-          {creating ? (
+          {skillSources ? <ResidentSkillSourcesPanel /> : creating ? (
             <ResidentProfileEditor
               key="new"
               profile={null}

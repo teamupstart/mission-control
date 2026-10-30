@@ -2,7 +2,7 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { RESIDENT_AGENTS } from "@shared/residents.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { useEffect, useState } from "react";
-import type { ResidentSkillIndex, ResidentSkillSources } from "@shared/resident-skills.ts";
+import { RESIDENT_SKILL_RESCAN_COOLDOWN_MS, type ResidentSkillIndex, type ResidentSkillSources } from "@shared/resident-skills.ts";
 import { fetchResidentSkills, rescanResidentSkills, ResidentRequestError, saveResidentSkillSources } from "./api.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 
@@ -13,6 +13,13 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
   const [query, setQuery] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cooling, setCooling] = useState(false);
+  const locked = busy || cooling;
+  useEffect(() => {
+    if (!cooling) return;
+    const timer = setTimeout(() => setCooling(false), RESIDENT_SKILL_RESCAN_COOLDOWN_MS);
+    return () => clearTimeout(timer);
+  }, [cooling]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -32,7 +39,7 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
         catch { setError("Skill sources changed, but the refreshed list could not be loaded. Rescan before retrying."); }
       }
     }
-    finally { setBusy(false); }
+    finally { setCooling(true); setBusy(false); }
   };
   const save = (config: ResidentSkillSources, added = false): void => {
     if (index) void apply(() => saveResidentSkillSources(config, index.configRevision), added);
@@ -50,25 +57,25 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
           <h3>Skill sources</h3>
           <p className="resident-editor-meta">{index ? `${index.skills.length} indexed skills across ${index.sources.length} sources` : "Loading skill sources…"}</p>
         </div>
-        <Tooltip label="Refresh the catalog from every skill source"><button className="btn" disabled={busy || !index} onClick={() => { void apply(rescanResidentSkills); }}>Rescan</button></Tooltip>
+        <Tooltip label="Refresh the catalog from every skill source"><button className="btn" disabled={locked || !index} onClick={() => { void apply(rescanResidentSkills); }}>Rescan</button></Tooltip>
       </header>
       <p className="resident-section-blurb">Browse the skills on this machine. Register a folder containing skill folders, each with a SKILL.md file.</p>
       {unavailable && <p className="resident-skill-notice">Resident skill selection is unavailable for {unavailable} until a launch control can keep the exact skill set frozen across resumes.</p>}
       {error && <p role="alert" className="resident-error">{error}</p>}
       {index?.configurationProblem && <div className="resident-skill-notice">
         <p role="alert">{index.configurationProblem}</p>
-        <Tooltip label="Replace invalid saved registrations with an empty source list; keep global sources and skill files"><button className="btn" disabled={busy} onClick={() => save({ directories: [] })}>Reset source list</button></Tooltip>
+        <Tooltip label="Replace invalid saved registrations with an empty source list; keep global sources and skill files"><button className="btn" disabled={locked} onClick={() => save({ directories: [] })}>Reset source list</button></Tooltip>
       </div>}
       {index?.truncated && <p role="status" className="resident-skill-notice">The catalog reached its 4 MiB response limit. Some skills or problems were omitted. Remove unneeded sources or shorten skill descriptions, then rescan.</p>}
       <form className="resident-source-add" onSubmit={(event) => {
         event.preventDefault();
-        if (index && !index.configurationProblem && path.trim() && !busy) save({ directories: [...index.config.directories, { id: `custom-${crypto.randomUUID()}`, path }] }, true);
+        if (index && !index.configurationProblem && path.trim() && !locked) save({ directories: [...index.config.directories, { id: `custom-${crypto.randomUUID()}`, path }] }, true);
       }}>
         <label className="field">
           <span className="field-label">Skill folder</span>
-          <input className="field-input" value={path} disabled={busy || !index || !!index.configurationProblem} onChange={(event) => setPath(event.target.value)} placeholder="~/my-skills" />
+          <input className="field-input" value={path} disabled={locked || !index || !!index.configurationProblem} onChange={(event) => setPath(event.target.value)} placeholder="~/my-skills" />
         </label>
-        <Tooltip label="Register this folder and index its skills"><button type="submit" className="btn" disabled={busy || !index || !!index.configurationProblem || !path.trim()}>Add source</button></Tooltip>
+        <Tooltip label="Register this folder and index its skills"><button type="submit" className="btn" disabled={locked || !index || !!index.configurationProblem || !path.trim()}>Add source</button></Tooltip>
       </form>
       <ul className="resident-source-list" aria-label="Registered skill sources">
         {index?.sources.map((source) => (
@@ -76,7 +83,7 @@ export function ResidentSkillSourcesPanel(): React.JSX.Element {
             <div className="resident-source-heading">
               <strong>{source.label}</strong>
               <span className="resident-editor-meta">{index.skills.filter((skill) => skill.sourceId === source.id).length} skills</span>
-              {source.custom && <Tooltip label="Remove this source from the catalog without deleting its files"><button className="btn btn-quiet" disabled={busy} aria-label={`Remove source ${source.label}`} onClick={() => {
+              {source.custom && <Tooltip label="Remove this source from the catalog without deleting its files"><button className="btn btn-quiet" disabled={locked} aria-label={`Remove source ${source.label}`} onClick={() => {
                 save({ directories: index.config.directories.filter((row) => row.id !== source.id) });
                 if (sourceId === source.id) setSourceId("");
               }}>Remove</button></Tooltip>}

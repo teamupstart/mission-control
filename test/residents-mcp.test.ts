@@ -943,7 +943,7 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
   class ScriptedQuery {
     private queue: Message[] = [];
     private waiting: ((value: IteratorResult<Message>) => void) | null = null;
-    private done = false;
+    done = false;
     emit(message: Message) {
       const waiter = this.waiting;
       if (waiter) { this.waiting = null; waiter({ value: message, done: false }); } else this.queue.push(message);
@@ -969,8 +969,8 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
     async applyFlagSettings() {}
     async setModel() {}
     async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() { return {} as never; }
-    constructor(readonly servers: string[]) {}
-    async mcpServerStatus() { return this.servers.map((name) => ({ name, status: "connected" })); }
+    constructor(readonly servers: string[], readonly failing: string | null = null) {}
+    async mcpServerStatus() { return this.servers.map((name) => ({ name, status: name === this.failing ? "failed" : "connected" })); }
   }
   const starts: Array<{ query: ScriptedQuery; options: { mcpServers?: Record<string, { command: string; args: string[]; env: Record<string, string> }>; resume?: string } }> = [];
   const spec = claudeSdkSpec({
@@ -978,7 +978,8 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
     env: () => ({ PATH: "/usr/bin" }),
     query: async ({ prompt, options }) => {
       const servers = Object.keys((options as { mcpServers?: Record<string, unknown> }).mcpServers ?? {});
-      const query = new ScriptedQuery(servers);
+      // The third process start finds the snapshot server unable to connect.
+      const query = new ScriptedQuery(servers, starts.length === 2 ? "relaunch-server" : null);
       starts.push({ query, options: options as never });
       void (async () => { for await (const _turn of prompt) { /* accepted */ } query.end(); })();
       return query as never;
@@ -1020,6 +1021,16 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
     assert.equal(secondStart.code, 0, secondStart.stderr);
     const records = readFileSync(started, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { token: string });
     assert.deepEqual(records.map((record) => record.token), [secret, secret], "both starts received the secret; the spent ticket started nothing");
+
+    // A relaunch is held to the same status check as the first start: a replacement whose
+    // snapshot server cannot connect ends the session with that reason, not without the server.
+    await collect(handle.events, (event) => event.kind === "state" && event.state === "working");
+    starts[1]!.query.emit({ type: "assistant", session_id: "relaunch-conversation", error: "authentication_failed", message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] } } as Message);
+    starts[1]!.query.emit({ type: "result", subtype: "error_during_execution", session_id: "relaunch-conversation", errors: ["Not logged in"], uuid: "auth-failure-2" } as Message);
+    await collect(handle.events, (event) => event.kind === "turn_done");
+    await assert.rejects(handle.sendIfIdle({ text: "continue again" }), /could not connect to its MCP server relaunch-server/);
+    assert.equal(starts.length, 3, "the replacement was started and checked");
+    assert.equal(starts[2]!.query.done, true, "the refused replacement was closed");
     await handle.stop();
   } finally {
     daemon.close();

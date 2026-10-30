@@ -1448,11 +1448,15 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // kills it). A turn ceiling here would end one mid-work with no way to say so.
         includePartialMessages: false,
       };
-      session.configureRelaunch((prompt, resume) => {
+      session.configureRelaunch(async (prompt, resume) => {
         const { resume: _previousResume, ...base } = options;
         // A resident's launcher credentials are single-use and were spent by the process being
         // replaced, so the replacement mints its own.
-        return deps.query({ prompt, options: { ...base, ...claudeMcpOptions(opts), resume } });
+        const fresh = await deps.query({ prompt, options: { ...base, ...claudeMcpOptions(opts), resume } });
+        // The replacement starts its servers again, so it is held to the same check as the first
+        // start; a refusal here ends the session with its reason.
+        if (opts.residentMcp) await verifyResidentMcp(fresh, opts);
+        return fresh;
       });
       const query = await deps.query({ prompt: session.input(), options });
       session.attach(query);

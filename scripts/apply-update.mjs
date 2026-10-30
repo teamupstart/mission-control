@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { BUNDLE_COPY_ARGUMENTS } from "./app-bundle-swap.mjs";
 import { readMigrationJson, validateMigrationPlan, updateMigrationReceipt, runMigration, recoverMigration, readMigrationJournal } from "./install-migration.mjs";
 import { migrationRuntimePorts } from "./migration-runtime.mjs";
 import { fileURLToPath } from "node:url";
@@ -248,7 +249,7 @@ export function realApplyOperations(
     // Keep stderr in a thrown error. The caller sanitizes it before it reaches the outcome,
     // and "Operation not permitted" is the difference between a diagnosable rollback and the
     // old generic "Command failed: cp" report.
-    copy: (from, to) => execFileSync("cp", ["-R", from, to], {
+    copy: (from, to) => execFileSync("cp", [...BUNDLE_COPY_ARGUMENTS, from, to], {
       encoding: "utf8",
       stdio: ["ignore", "ignore", "pipe"],
     }),

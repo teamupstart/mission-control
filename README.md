@@ -19,8 +19,10 @@ New binaries install **Agent Mission Control.app**. Existing managed installatio
 the same folder, preserving their state and receipt scope. Older saved installers must be
 replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
 
-**Release qualification is still pending.** Until a signed ready manifest is published, this
-command refuses installation. It never falls back to compilation. The explicit developer route
+Each eligible `main` commit publishes a signed, notarized alpha automatically; `--channel alpha`
+installs the current one. A stable release becomes installable once its tag's Signed
+distribution run publishes a ready manifest. A release without one is refused, and the
+installer never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
 See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
 for manually copied DMGs, enrollment, legacy replacement and current qualification limits.

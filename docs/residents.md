@@ -5,14 +5,14 @@ once - a Persona, instructions, a harness, model and effort, and a default repos
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes the first release: profiles, launch and lifecycle. The board marker, the
-Residents dock, the wake loop, skill and MCP selection, session control and repository-free
+This page describes profiles, launch, lifecycle, and how you find a resident on the board and
+from the top bar. The wake loop, skill and MCP selection, session control and repository-free
 residents are later phases of [the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
 
-Open **Residents** from the ⌘K palette, with **Shift+A**, or from **Edit profile** in Dispatch's
-Resident mode. The page lists your live profiles beside an editor.
+Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage residents** in the
+[Residents dock](#the-residents-dock), or from **Edit profile** in Dispatch's Resident mode. The page lists your live profiles beside an editor.
 
 | Section | What it decides | Default |
 |---|---|---|
@@ -21,6 +21,7 @@ Resident mode. The page lists your live profiles beside an editor.
 | Instructions | Markdown added after the Persona's guidance | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
+| Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
 opened, so two windows cannot overwrite each other silently. **Archive** removes a profile from
@@ -62,6 +63,50 @@ is refused. An exact repeat is recognized by the repository path as it was typed
 path stops resolving or a symlink in it is pointed elsewhere; any other spelling is compared by
 the repository it resolves to. If a profile is archived while one of its launches is still
 unanswered, Dispatch keeps that one launch available to retry exactly.
+
+## Finding a resident
+
+A running resident is marked wherever its session appears, and every mark comes from the
+revision the run launched with: editing the profile's color, label or pin changes the next launch,
+never a resident that is already running.
+
+- **Border glow.** Its Board card has a glowing outline in the profile's color, and a label
+  chip beside its name - the label you set, up to four characters, or initials from the profile's
+  name. `⤒` on the chip means it is pinned. The colored spine on the card's left edge is still
+  the session's state, so a resident that needs you still reads amber there. In the Console rail
+  the same chip sits before the name, with the color as an edge on the row's right side.
+- **Pinned to the top of its column.** A pinned resident sorts first in whichever Board column
+  its state puts it in, ahead of free and held sessions, and leads the Console rail the same
+  way, whether or not the column is grouped by repository. The arrow keys and the
+  <kbd>⌘</kbd>-number shortcuts follow that order. Turn the pin off under **Board presence** and
+  a resident takes its place in the column's ordinary order like any other session: by name,
+  within its repository's group when **Group by repository** is on.
+- **Console band.** Opening a resident shows a band under the Console header: the label chip,
+  the profile name, the Persona, the revision it launched from and whether it is pinned. When the
+  profile has been edited since the launch, the band says **Profile changed since launch** and
+  the new revision. **Profile** opens the profile on the Residents page.
+- **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
+  glow and chip off cards and rail rows. The pin still applies, and the Console band and the
+  dock still name the resident.
+
+### The Residents dock
+
+**Residents** sits beside **Foreman** in the top bar. While any resident is running it shows how
+many; with none running it shows no number. Click it, press **Shift+H**, or choose **Open the
+Residents dock** in the ⌘K palette.
+
+- **Live** lists each running resident with its chip, its session's state and **Open**, which
+  opens that session.
+- **Profiles** lists every live profile with **Launch**. A profile with a default repository
+  launches straight away, through the same launch call as Dispatch; while it starts the row reads
+  *starting…*, and closing the dock does not lose it - launching again resumes that same launch.
+  A profile without a default repository shows **Launch…**, which opens **Dispatch > Resident**
+  on it so you can choose one.
+- **Manage residents** opens the Residents page.
+
+Escape or a click outside closes the dock. On a narrow window the button drops its word and keeps
+the ⌂, plus the live count when there is one, and **Settings → Display → Top bar** can keep it
+that way at every width.
 
 ## Lifecycle
 

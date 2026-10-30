@@ -109,6 +109,7 @@ const COMPACT_MARKERS: Record<string, RegExp> = {
   ),
   missions: /<button class="ghost-btn missions-btn[^"]*"/,
   foreman: /<button class="ghost-btn foreman-btn[^"]*"/,
+  residents: /<button class="ghost-btn residents-btn[^"]*"/,
 };
 
 test("the registry is the two lists the request names, and nothing else", () => {
@@ -118,7 +119,7 @@ test("the registry is the two lists the request names, and nothing else", () => 
   );
   assert.deepEqual(
     TOPBAR_ITEMS.filter((item) => item.kind === "compactable").map((item) => item.id),
-    ["fleet", "library", "runs", "scouts", "missions", "foreman"],
+    ["fleet", "library", "runs", "scouts", "missions", "foreman", "residents"],
   );
   // Every id is unique, so one stored id can only ever mean one item.
   assert.equal(new Set(TOPBAR_ITEMS.map((item) => item.id)).size, TOPBAR_ITEMS.length);

@@ -100,6 +100,90 @@ export const ResidentWorkspaceSectionSchema = z.object({
 });
 
 /**
+ * The marker palette: the colors a resident's border glow may take, in swatch order.
+ *
+ * Persisted by id in `board.colorId`, so the list is APPEND-ONLY: never rename, reorder or
+ * remove an id. Each id names a CSS token, `--resident-<id>` in `src/web/styles.css`, so a color
+ * is always a themed token and never an arbitrary value a profile could carry. The first entry
+ * is the default.
+ */
+export const RESIDENT_MARKER_COLORS = [
+  { id: "cyan", label: "Cyan" },
+  { id: "violet", label: "Violet" },
+  { id: "amber", label: "Amber" },
+  { id: "rose", label: "Rose" },
+  { id: "lime", label: "Lime" },
+  { id: "blue", label: "Blue" },
+  { id: "orange", label: "Orange" },
+  { id: "teal", label: "Teal" },
+] as const;
+export type ResidentMarkerColorId = (typeof RESIDENT_MARKER_COLORS)[number]["id"];
+export const RESIDENT_MARKER_COLOR_IDS = RESIDENT_MARKER_COLORS.map((color) => color.id);
+export const RESIDENT_MARKER_LABEL_MAX = 4;
+
+/**
+ * The color a stored id draws as. An id this build does not know - one a newer build appended -
+ * draws as the first color rather than failing the whole revision, which is why the schema
+ * below accepts any token-shaped id and only the editor restricts the choice.
+ */
+export function residentMarkerColor(id: string): ResidentMarkerColorId {
+  return (RESIDENT_MARKER_COLOR_IDS as readonly string[]).includes(id)
+    ? (id as ResidentMarkerColorId)
+    : RESIDENT_MARKER_COLORS[0].id;
+}
+
+/**
+ * How the resident is found on the board: its border-glow color, the label on its chip, and
+ * whether its sessions sort first in their column. A live run reads these from its pinned
+ * revision, so editing them reaches the next launch, never a running resident.
+ */
+export const ResidentBoardSectionSchema = z.object({
+  colorId: z
+    .string()
+    .regex(/^[a-z][a-z0-9-]{0,39}$/, "marker color must be a palette id")
+    .default(RESIDENT_MARKER_COLORS[0].id),
+  /** The chip's text. `null` derives it from the name (`residentMarkerLabel`). */
+  label: z
+    .string()
+    .trim()
+    .min(1, "a marker label needs at least one character")
+    .max(RESIDENT_MARKER_LABEL_MAX, `a marker label is at most ${RESIDENT_MARKER_LABEL_MAX} characters`)
+    .nullable()
+    .default(null),
+  pin: z.boolean().default(true),
+});
+export type ResidentBoardSection = z.infer<typeof ResidentBoardSectionSchema>;
+
+/**
+ * The label a name gives when the profile sets none: the initials of a multi-word name
+ * ("Triage Bot" is TB, "Docs Gardener Weekly" is DGW), or the first three letters of a single
+ * word ("Triage" is TRI), upper-cased.
+ */
+export function defaultResidentMarkerLabel(name: string): string {
+  const words = name.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (words.length === 0) return "RES";
+  const label = words.length === 1
+    ? [...words[0]!].slice(0, 3).join("")
+    : words.slice(0, RESIDENT_MARKER_LABEL_MAX).map((word) => [...word][0]).join("");
+  return label.toLocaleUpperCase("en-US");
+}
+
+/** What a revision draws on the board: the resolved color, chip label and pin. */
+export interface ResidentMarker {
+  colorId: ResidentMarkerColorId;
+  label: string;
+  pin: boolean;
+}
+
+export function residentMarker(settings: Pick<ResidentProfileRevision, "identity" | "board">): ResidentMarker {
+  return {
+    colorId: residentMarkerColor(settings.board.colorId),
+    label: settings.board.label ?? defaultResidentMarkerLabel(settings.identity.name),
+    pin: settings.board.pin,
+  };
+}
+
+/**
  * The named sections a profile revision is composed of, in editor order.
  *
  * Append a section here, with `.default({})` when its own fields all have defaults, and the
@@ -112,6 +196,7 @@ export const RESIDENT_PROFILE_SECTIONS = {
   instructions: ResidentInstructionsSectionSchema.default({}),
   execution: ResidentExecutionSectionSchema.default({}),
   workspace: ResidentWorkspaceSectionSchema.default({}),
+  board: ResidentBoardSectionSchema.default({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
@@ -209,6 +294,40 @@ export interface ResidentRun {
   settings: ResidentProfileRevision;
   createdAt: number;
   endedAt: number | null;
+}
+
+/**
+ * A live run as the `residentRuns` SSE collection carries it: what the browser needs to join a
+ * session to its run and draw it - the pinned revision's settings above all - without the
+ * persona text, run instructions or launch input, which no board surface reads.
+ *
+ * Only open runs (not ended, not failed) are in the collection, so it is bounded by the
+ * residents actually running: each holds a live, non-terminal `resident` task.
+ */
+export interface ResidentRunSummary {
+  id: string;
+  profileId: string;
+  profileRevision: number;
+  taskId: string;
+  launchState: Exclude<ResidentLaunchState, "failed">;
+  personaName: string;
+  settings: ResidentProfileRevision;
+  createdAt: number;
+}
+
+/** The wire summary of a run, or null when the run is not live and leaves the collection. */
+export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null {
+  if (run.endedAt !== null || run.launchState === "failed") return null;
+  return {
+    id: run.id,
+    profileId: run.profileId,
+    profileRevision: run.profileRevision,
+    taskId: run.taskId,
+    launchState: run.launchState,
+    personaName: run.persona.name,
+    settings: run.settings,
+    createdAt: run.createdAt,
+  };
 }
 
 /**

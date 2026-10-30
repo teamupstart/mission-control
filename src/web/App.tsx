@@ -138,6 +138,7 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { pinnedResidentSessions, residentMarksBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -323,6 +324,7 @@ export function App(): React.JSX.Element {
     settingsRestoreNotice,
     schedules,
     residentProfiles,
+    residentRuns,
     connected,
     hasSnapshot,
     sessionTransfers,
@@ -508,6 +510,9 @@ export function App(): React.JSX.Element {
   // A one-shot request rather than lifted popover state: ForemanBar still owns its ordinary
   // toggle/close lifecycle, while the System profile can ask that existing control to open.
   const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
+  // The same one-shot shape for the Residents dock beside it: its chord and its palette row.
+  const [residentsDockRequest, setResidentsDockRequest] = useState(0);
+  const openResidentsDock = useCallback(() => setResidentsDockRequest((n) => n + 1), []);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -1621,6 +1626,9 @@ export function App(): React.JSX.Element {
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
+        case "residents-dock":
+          openResidentsDock();
+          return;
         default: {
           // Exhaustiveness: a new target kind fails to compile here rather than silently
           // doing nothing when its row is pressed.
@@ -1633,6 +1641,7 @@ export function App(): React.JSX.Element {
       navigate,
       openDispatch,
       openFeedback,
+      openResidentsDock,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -2129,11 +2138,19 @@ export function App(): React.JSX.Element {
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
   const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
+    [sessions, residentRuns, residentProfiles],
+  );
+  const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey);
-  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey]);
+    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
+  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
   const visible = fleet.sessions;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
@@ -2771,6 +2788,8 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    residentBySession,
+    onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
   // Drop selection / collapse / close the diff if the session disappears
@@ -3033,6 +3052,14 @@ export function App(): React.JSX.Element {
       ) {
         e.preventDefault();
         navigate({ page: "residents" });
+        return;
+      }
+      // The dock lives in the top bar on every page, so its chord works from every page too.
+      if (
+        chord === bindings.residentsDock && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        openResidentsDock();
         return;
       }
 
@@ -3775,6 +3802,15 @@ export function App(): React.JSX.Element {
           foremanOpenRequest={foremanOpenRequest}
           onOpenModels={() => navigate({ page: "settings", category: "models" })}
           onOpenForemanSettings={() => navigate({ page: "settings", category: "foreman" })}
+          residents={{
+            runs: residentRuns,
+            profiles: residentProfiles,
+            sessions,
+            openRequest: residentsDockRequest,
+            onOpenSession: openSessionOnFleet,
+            onOpenLaunch: openResidentLaunch,
+            onManage: () => navigate({ page: "residents" }),
+          }}
           onOpenDispatch={openDispatch}
           dispatchRef={dispatchTourRef}
           onOpenFeedback={openFeedback}

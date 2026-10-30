@@ -608,8 +608,10 @@ home separately to retain plan contents and their daemon ledger.
 of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
 YAML frontmatter, including folded descriptions, and reports source problems in place. The index
 is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
-Rescans share a one-second cooldown after completion across windows and local API clients;
-an early retry reports how long to wait without starting another scan.
+Rescans and source saves share a one-second cooldown after completion across windows and local
+API clients. An early retry reports how long to wait without starting another scan or changing
+registrations. The panel briefly disables its source controls after a request before allowing
+another action.
 Concurrent source edits are compared against the list a window loaded. A stale add or removal
 is refused and refreshes the list so the operator can review it before retrying.
 If restored registrations have an invalid shape, the catalog still shows global skills and

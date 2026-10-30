@@ -131,3 +131,33 @@ test("upgrading current main captures a recovery point before adding resident lo
   assert.equal(run.iteration, 0);
   assert.equal(run.loopState, "waiting");
 });
+
+test("schema 11 wakes upgrade without inventing authorship and native bindings survive reopen", async () => {
+  const { closeDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/db.ts");
+  openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, claimed_at)
+    VALUES ('phase1-run', 2, 'loop', 'sent', 100)`).run();
+  closeDb();
+  const previous = new DatabaseSync(join(home, "harness.db"));
+  previous.exec(`ALTER TABLE resident_iterations DROP COLUMN conversation_key;
+    ALTER TABLE resident_iterations DROP COLUMN message_id;
+    ALTER TABLE resident_iterations DROP COLUMN message_ts;
+    PRAGMA user_version = 11;`);
+  previous.close();
+  const backupRoot = join(home, "backups", "database");
+  const before = new Set(readdirSync(backupRoot));
+  const db = openDb();
+  const backups = readdirSync(backupRoot).filter(name => !before.has(name) && name.startsWith("pre-migration-"));
+  assert.equal(backups.length, 1);
+  const recovery = new DatabaseSync(join(backupRoot, backups[0]!), { readOnly: true });
+  try {
+    assert.equal((recovery.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 11);
+    assert.equal(recovery.prepare("PRAGMA table_info(resident_iterations)").all().some(c => c.name === "conversation_key"), false);
+    assert.equal(recovery.prepare("SELECT delivery FROM resident_iterations WHERE seq = 2").get()!.delivery, "sent");
+  } finally { recovery.close(); }
+  const query = "SELECT conversation_key, message_id, message_ts FROM resident_iterations WHERE run_id = 'phase1-run' AND seq = 2";
+  assert.deepEqual({ ...db.prepare(query).get() }, { conversation_key: null, message_id: null, message_ts: null });
+  db.prepare("UPDATE resident_iterations SET conversation_key = 'native', message_id = 'turn', message_ts = 100 WHERE seq = 2").run();
+  closeDb();
+  assert.deepEqual({ ...openDb().prepare(query).get() }, { conversation_key: "native", message_id: "turn", message_ts: 100 });
+  assert.equal(openDb().prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION);
+});

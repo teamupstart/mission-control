@@ -11,6 +11,9 @@ import type { ResidentLoop } from "./loop.ts";
 import { ResidentLoopRefusal, liveRun } from "./loop-store.ts";
 import { getResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
 
+const RESTART_PAUSE = "Restarting on new profile";
+const RESTART_OUTCOME = "Restarted on new resident profile";
+
 export function registerResidentLoopRoutes(app: Hono, deps: {
   registry: Registry; loop: ResidentLoop; residents: ResidentManager; tasks: TaskManager;
 }): void {
@@ -43,14 +46,18 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
             const replay = await deps.residents.launch(stored.run.profileId, request);
             return "result" in replay ? c.json(replay.result, replay.status) : c.json({ error: replay.error }, replay.status);
           }
-          liveRun(id);
+          // Completion and launch cannot share a transaction. The persisted pause and
+          // task outcome prove this ended run was closed by this restart request, so a
+          // retry can finish the gap before the replacement reserved its request id.
+          const completedRestart = task.status === "done" && task.outcome === RESTART_OUTCOME && stored.run.pauseReason === RESTART_PAUSE;
+          if (!completedRestart) liveRun(id);
           const profile = getResidentProfile(stored.run.profileId);
           if (!profile || profile.archivedAt !== null || profile.revision <= stored.run.profileRevision) throw new ResidentLoopRefusal("No newer live profile revision is available.");
           const problem = deps.residents.settingsProblem(profile.settings);
           if (problem) throw new ResidentLoopRefusal(problem);
-          if (stored.run.endedAt === null) {
-            deps.loop.pause(id, "Restarting on new profile");
-            if (!await deps.tasks.complete(task.id, "Restarted on new resident profile")) throw new ResidentLoopRefusal("The original task could not be completed.");
+          if (!completedRestart) {
+            deps.loop.pause(id, RESTART_PAUSE);
+            if (!await deps.tasks.complete(task.id, RESTART_OUTCOME)) throw new ResidentLoopRefusal("The original task could not be completed.");
           }
           const result = await deps.residents.launch(profile.id, request);
           return "result" in result ? c.json(result.result, result.status) : c.json({ error: result.error }, result.status);

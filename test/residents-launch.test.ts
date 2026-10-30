@@ -1377,3 +1377,47 @@ test("unpriced capped models are refused at save and at launch", async () => {
   }
   assert.deepEqual(h.dispatched, []);
 });
+
+test("Restart recovers after old-task completion before replacement reservation, but ordinary completion cannot restart", async t => {
+  let h = harness();
+  let loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
+  t.after(() => loop.stop());
+  const profile = profileIn(h);
+  const original = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "interrupted-restart" });
+  if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
+  assert.equal(h.residents.updateProfile(profile.id, 1, settings({ instructions: "New brief" })).ok, true);
+  const complete = t.mock.method(h.tasks, "complete");
+  const createApp = () => {
+    const app = new Hono(); app.onError(() => new Response("interrupted", { status: 500 }));
+    registerResidentLoopRoutes(app, { registry: h.registry, loop, tasks: h.tasks, residents: h.residents });
+    return app;
+  };
+  const launch = t.mock.method(h.residents, "launch", async () => { throw new Error("crash before reservation"); });
+  const path = `/api/residents/runs/${original.result.run.id}/restart`;
+  assert.equal((await createApp().request(path, { method: "POST" })).status, 500);
+  assert.notEqual(store.getResidentRun(original.result.run.id)!.run.endedAt, null);
+  assert.equal(runCount(), 1, "no replacement was reserved before the interruption");
+  launch.mock.restore();
+  assert.equal(h.dispatched.length, 1);
+  await h.residents.stop(); await loop.stop();
+  // Fresh owners rehydrate from SQLite; no in-flight promise or live run remains.
+  h = harness();
+  loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
+  const repeatedComplete = t.mock.method(h.tasks, "complete");
+  const retry = await createApp().request(path, { method: "POST" });
+  assert.equal(retry.status, 200);
+  const replacement = await retry.json() as ResidentLaunchResult;
+  assert.equal(replacement.state, "launched");
+  if (replacement.state !== "launched") assert.fail("expected replacement to launch");
+  assert.equal(replacement.run.profileRevision, 2);
+  assert.equal(complete.mock.callCount(), 1, "completion is not repeated");
+  const replay = await (await createApp().request(path, { method: "POST" })).json() as ResidentLaunchResult;
+  if (replay.state !== "launched") assert.fail("expected launched replay");
+  assert.equal(replay.run.id, replacement.run.id); assert.equal(replay.taskId, replacement.taskId);
+  assert.equal(repeatedComplete.mock.callCount(), 0, "the restored task is not completed again");
+  assert.equal(h.dispatched.length, 1);
+  await h.tasks.complete(replacement.taskId, "Closed by operator");
+  assert.equal(h.residents.updateProfile(profile.id, 2, settings({ instructions: "Third brief" })).ok, true);
+  assert.equal((await createApp().request(`/api/residents/runs/${replacement.run.id}/restart`, { method: "POST" })).status, 409);
+  assert.equal(h.dispatched.length, 1);
+});

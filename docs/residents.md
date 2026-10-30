@@ -199,7 +199,8 @@ Run now asks for an immediate idle wake, subject to the same human, compaction a
 After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
 and launches the latest revision in a new conversation. It preserves the repository choice and
 run instructions; a repository-free resident receives a fresh private workspace. New conversation
-creation ensures every changed launch option takes effect.
+creation ensures every changed launch option takes effect. Retrying an interrupted Restart
+finishes the same replacement request, including an interruption after the old task completed.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 
@@ -207,7 +208,9 @@ only the desktop Launch flow or the existing session-control menu can grant that
 
 Before a wake at or above the context threshold, the daemon asks the harness to compact and
 waits for a measured result below that threshold. Compaction and human turns do not count as
-iterations. An interrupted or unconfirmed compaction pauses instead of sending a loop prompt.
+iterations. Missing or invalid context readings pause before a wake until a fresh measurement
+is available and you resume. An interrupted or unconfirmed compaction also pauses instead of
+sending a loop prompt.
 
 The editor and every live-run surface name the active compaction layers:
 

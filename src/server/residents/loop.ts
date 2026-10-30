@@ -5,6 +5,7 @@ import type { Session } from "@shared/types.ts";
 import { sessionMessages, type SessionMessages } from "../harness/index.ts";
 import { recordInjection, reserveInjection, releaseInjection } from "../injections.ts";
 import type { Registry } from "../registry.ts";
+import { noteKeyFor } from "../registry.ts";
 import type { SdkSupervisor } from "../sdk/supervisor.ts";
 import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunForTask } from "./store.ts";
 import {
@@ -209,7 +210,11 @@ export class ResidentLoop {
     if (!session || this.blocker(run, session)) return;
     const cap = residentGuardrail(run, this.now());
     if (cap) { this.pause(id, cap); return; }
-    if ((session.meta?.contextPct ?? 0) >= run.settings.loop.contextThreshold) {
+    const contextPct = session.meta?.contextPct;
+    if (contextPct == null || !Number.isFinite(contextPct) || contextPct < 0) {
+      this.pause(id, "Context cannot be measured. Resume after the context reading is available."); return;
+    }
+    if (contextPct >= run.settings.loop.contextThreshold) {
       beginResidentCompaction(id);
       this.publish(id);
       const compactedPct = await this.deps.sdk.compact(session.id, run.settings.loop.compactionFocus, () => this.blocker(run, session));
@@ -230,7 +235,7 @@ export class ResidentLoop {
     if (afterCompaction) { this.pause(id, afterCompaction); return; }
     let offset: number | null = null;
     try { const transcript = this.messages(session); offset = transcript?.read.size(transcript.path) ?? null; } catch { /* unknown evidence is explicit */ }
-    const claim = claimResidentWake(id, trigger, offset, this.now());
+    const claim = claimResidentWake(id, trigger, offset, this.now(), noteKeyFor(session));
     if (!claim) return;
     const text = `${residentWakeMarker(id, claim.seq)}\n${run.settings.loop.prompt}`;
     let crossed = false;

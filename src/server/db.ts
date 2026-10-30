@@ -182,7 +182,8 @@ let db: DatabaseSync | undefined;
 // 9: retain staged claim versions still applicable to sibling repositories.
 // 10: repository-free resident task markers and durable workspace cleanup obligations.
 // 11: resident loop state, generation delivery claims and durable pacing receipts.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 11;
+// 12: bind resident wake attribution to its recorded conversation and native turn.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 12;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3263,6 +3264,9 @@ function migrate(d: DatabaseSync): void {
       receipt TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY (run_id, call_id)
     );
   `);
+  addColumn(d, "resident_iterations", "conversation_key", "TEXT");
+  addColumn(d, "resident_iterations", "message_id", "TEXT");
+  addColumn(d, "resident_iterations", "message_ts", "INTEGER");
 
   // Nullable with no default: a run launched before these existed reads as never granted.
   addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");

@@ -42,7 +42,14 @@ The loop uses the supervisor's serialized idle-send boundary, rechecking human p
 crossing it. Maintenance compaction uses that same boundary and completes only from native
 harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
 conservatively. Startup restores native sessions before reconciling claims and prunes only after
-reconciliation. Shutdown disarms the loop before stopping SDK drivers.
+reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
+before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
+completion of the old task cannot strand a replacement that has not yet reserved its request.
+
+Resident transcript attribution requires a sent iteration in the same native conversation.
+The store binds its first matching turn after the recorded transcript offset to a native message
+id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
+without conversation evidence are not attributed from their marker syntax.
 
 `schedule_next_iteration` uses the existing signed session/episode credential, without granting
 session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores

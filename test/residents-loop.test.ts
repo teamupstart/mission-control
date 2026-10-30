@@ -319,3 +319,17 @@ test("a non-answering transport or body has a bounded unknown result; typed refu
   }
   assert.equal(openDb().prepare("SELECT * FROM resident_pacing_calls").all().length, 0); await alive;
 });
+
+for (const contextPct of [null, NaN, Infinity, -1]) test(`unmeasured context (${contextPct}) pauses before any wake claim, then measured context can resume`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ meta: meta({ contextPct }) });
+  await loop.runNow("run");
+  assert.equal(f.run().loopState, "paused");
+  assert.match(f.run().pauseReason!, /context.*measur/i);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.rows().length, 1, "no wake was claimed");
+  f.refreshContext(5);
+  await loop.runNow("run");
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.run().iteration, 2);
+});

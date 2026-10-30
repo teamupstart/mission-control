@@ -1,4 +1,7 @@
 import type { ResidentPacingReceipt, ResidentPacingRequest, ResidentRun } from "@shared/residents.ts";
+import type { TranscriptMessage } from "@shared/types.ts";
+import { residentWakeMarker } from "@shared/resident-turn.ts";
+import type { DelegatedConversation } from "../delegated-turns.ts";
 import { openDb, sessionSpendSince } from "../db.ts";
 import { getResidentRun, inResidentTransaction } from "./store.ts";
 
@@ -8,6 +11,7 @@ export interface ResidentIteration {
   run_id: string; seq: number; trigger: "launch" | "loop" | "run_now";
   delivery: "claimed" | "sent" | "released" | "unconfirmed";
   transcript_offset: number | null; claimed_at: number; sent_at: number | null;
+  conversation_key: string | null; message_id: string | null; message_ts: number | null;
 }
 export class ResidentLoopRefusal extends Error {}
 export function liveRun(id: string): ResidentRun {
@@ -88,16 +92,47 @@ export function paceResident(id: string, request: ResidentPacingRequest, generat
     return receipt;
   });
 }
-export function claimResidentWake(id: string, trigger: "loop" | "run_now", offset: number | null, at: number): ResidentIteration | null {
+export function claimResidentWake(id: string, trigger: "loop" | "run_now", offset: number | null, at: number, conversationKey: string | null = null): ResidentIteration | null {
   return inResidentTransaction(() => {
     const run = liveRun(id);
     if (run.loopState === "paused" || claimedIteration(id)) return null;
     const seq = run.lastSeq + 1;
     openDb().prepare("UPDATE resident_runs SET last_seq = ?, loop_state = 'working', next_wake_at = NULL WHERE id = ?").run(seq, id);
-    openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, transcript_offset, claimed_at)
-      VALUES (?, ?, ?, 'claimed', ?, ?)`).run(id, seq, trigger, offset, at);
+    openDb().prepare(`INSERT INTO resident_iterations (run_id, seq, trigger, delivery, transcript_offset, claimed_at, conversation_key)
+      VALUES (?, ?, ?, 'claimed', ?, ?, ?)`).run(id, seq, trigger, offset, at, conversationKey);
     return claimedIteration(id)!;
   });
+}
+/** Syntax is never authorship: bind a confirmed delivery to one native turn in its conversation. */
+export function residentWakePresentation(message: TranscriptMessage, conversation?: DelegatedConversation | null): string | null {
+  const marker = /^\[mission-resident:([A-Za-z0-9-]+):(\d+)\]\n/.exec(message.text ?? "");
+  if (!marker || !conversation || message.role !== "user") return null;
+  const row = openDb().prepare("SELECT * FROM resident_iterations WHERE run_id = ? AND seq = ? AND delivery = 'sent' AND conversation_key = ?")
+    .get(marker[1]!, Number(marker[2]), conversation.key) as unknown as ResidentIteration | undefined;
+  const run = row && getResidentRun(row.run_id)?.run;
+  if (!row || !run) return null;
+  const expected = `${residentWakeMarker(row.run_id, row.seq)}\n${run.settings.loop.prompt}`;
+  if (message.text !== expected) return null;
+  if (row.message_id === null) {
+    const transcript = conversation.transcript;
+    if (!transcript || row.transcript_offset === null) return null;
+    let offset = row.transcript_offset;
+    try {
+      for (;;) {
+        const page = transcript.read.after(transcript.path, offset, 50);
+        const turn = page.messages.find(m => m.role === "user" && m.text === expected && m.ts >= row.claimed_at - 5_000 && m.ts <= row.claimed_at + RESIDENT_DAY_MS);
+        if (turn) {
+          openDb().prepare("UPDATE resident_iterations SET message_id = ?, message_ts = ? WHERE run_id = ? AND seq = ? AND message_id IS NULL")
+            .run(turn.id, turn.ts, row.run_id, row.seq);
+          row.message_id = turn.id; row.message_ts = turn.ts;
+          break;
+        }
+        if (page.atEnd || page.end <= offset) return null;
+        offset = page.end;
+      }
+    } catch { return null; }
+  }
+  return row.message_id === message.id && row.message_ts === message.ts ? run.settings.loop.prompt : null;
 }
 export function settleResidentClaim(row: ResidentIteration, delivery: "sent" | "released" | "unconfirmed", at: number): void {
   inResidentTransaction(() => {

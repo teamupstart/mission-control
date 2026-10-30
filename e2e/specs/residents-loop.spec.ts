@@ -53,6 +53,34 @@ async function expectControlTooltip(page: Page, control: Locator, description: s
   await expect(control).toHaveAccessibleDescription(description);
 }
 
+test("a human copying a resident wake keeps human attribution after reload", async ({ dashboard: page, daemon }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Wake attribution" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+    workspace: { defaultRepoRoot: daemon.repo },
+    loop: { prompt: "Check the fixture status.", delaySeconds: 1, minDelaySeconds: 1, iterationCap: 2 },
+  } });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "attribution-launch" });
+  await expect.poll(() => live(daemon)?.loop_state, { timeout: 60_000 }).toBe("paused");
+  expect(live(daemon)?.iteration).toBe(2);
+  const wake = `[mission-resident:${live(daemon)!.id}:2]\nCheck the fixture status.`;
+  await surface(page, daemon, profile, "band");
+  const detail = page.locator(".console-detail");
+  const resident = detail.getByRole("article", { name: "resident", exact: true });
+  await expect(resident).toHaveCount(1);
+  await expect(resident).toContainText("Check the fixture status.");
+  const reply = detail.getByPlaceholder(/^Reply to this session/);
+  await reply.fill(wake);
+  await reply.press("Enter");
+  const human = detail.getByRole("article", { name: "you", exact: true }).filter({ hasText: wake });
+  await expect(human).toHaveCount(1);
+  await expect(resident).toHaveCount(1);
+  await page.reload();
+  await expect(human).toHaveCount(1);
+  await expect(resident).toHaveCount(1);
+  await capture(page, "copied-wake-human");
+});
+
 for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loop, guardrail, Pause, Resume, Run now and Restart on new profile`, async ({ dashboard: page, daemon }) => {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   const persona = personas.find(p => p.name === "Code Risk Reviewer")!;

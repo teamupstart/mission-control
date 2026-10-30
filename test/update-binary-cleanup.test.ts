@@ -110,6 +110,28 @@ for (const scenario of ["parent-live", "worker-live", "worker-unknown", "helper-
   });
 }
 
+test("the running app that completed recovery does not block cleanup of its own finished update", async t => {
+  // recoverMigration and repairMigration record the lock holder - the newly launched
+  // app - as the journal owner. It stays alive for the whole session, so treating it
+  // as a pending helper failed every later update until the app restarted.
+  const f = fixture(t);
+  const runningApp = {pid: process.pid, identity: processIdentity(process.pid)};
+  atomicMigrationJson(join(f.root, MIGRATION_JOURNAL), {...f.journal, owner: runningApp, ownerRole: "recovery"});
+  await cleanupSettledBinaryDownloads(f.root);
+  assert.equal(existsSync(f.directory), false);
+  assert.ok(existsSync(join(f.runtime, "finished.json")), "the helper's completion record is preserved");
+});
+
+test("a live recovery owner still waits for the exact helper to exit", t => {
+  const f = fixture(t);
+  const live = {pid: process.pid, identity: processIdentity(process.pid)};
+  atomicMigrationJson(join(f.root, MIGRATION_JOURNAL), {...f.journal, owner: live, ownerRole: "recovery"});
+  atomicMigrationJson(join(f.runtime, "owner.json"), {...f.helperOwner, helper: live});
+  atomicMigrationJson(join(f.runtime, "finished.json"), {nonce: f.plan.nonce, ...live});
+  assert.equal(cleanupBinaryDownloads(f.root), true);
+  assert.ok(existsSync(f.candidate));
+});
+
 test("startup retains pending repairs and reclaims the candidate after they settle", async t => {
   const f = fixture(t);
   atomicMigrationJson(join(f.root, MIGRATION_JOURNAL), {...f.journal, stage: "repair-required"});

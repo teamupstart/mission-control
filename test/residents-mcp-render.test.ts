@@ -426,6 +426,27 @@ test("the launcher redeems its ticket once, removes the file, and starts its std
   }
 });
 
+test("a server that fails to start is reported without its private command", async () => {
+  // A disposable sentinel inside a command that cannot be spawned, standing in for a global
+  // server's private definition.
+  const sentinel = `private-command-${crypto.randomUUID()}`;
+  const daemon = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ definition: { transport: "stdio", command: join(root, sentinel, "server"), args: [`--root=${sentinel}`], env: { TOKEN: sentinel }, cwd: null } }));
+  });
+  const port = await listen(daemon);
+  try {
+    const credential = join(root, "cred-spawn-failure.json");
+    writeFileSync(credential, JSON.stringify({ ticket: "f".repeat(43), expiresAt: Date.now() + 30_000, redeemUrl: `http://127.0.0.1:${port}/api/residents/mcp/redeem` }));
+    const result = await runLauncher(credential);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /could not start this server's command/);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes(sentinel), result.stderr);
+  } finally {
+    daemon.close();
+  }
+});
+
 test("a missing or expired ticket starts nothing", async () => {
   const missing = await runLauncher(join(root, "no-such-credential.json"));
   assert.equal(missing.code, 1);

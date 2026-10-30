@@ -82,7 +82,9 @@ function runStdio(runtime: Extract<ResidentMcpLauncherDefinition, { transport: "
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => child.kill(signal));
   }
-  child.on("error", () => fail(`could not start ${runtime.command}`));
+  // Never the command: a global server's definition is private as a whole, and this stderr
+  // reaches the harness's logs.
+  child.on("error", () => fail("could not start this server's command"));
   child.on("exit", (code, signal) => {
     if (signal) process.kill(process.pid, signal);
     process.exit(code ?? 1);

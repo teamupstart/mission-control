@@ -193,7 +193,8 @@ in the desktop app.
   identity bound to the run's task, and records the conversation, working directory and work
   episode it applied to before it writes the grant's audit event. If the grant cannot be
   applied, or its identity cannot be recorded, the live grant is taken back and the run's record
-  is cleared, so the launch reports that it started without control.
+  is cleared, so the launch reports that it started without control. A launch that answers
+  before the session has a full identity reports the grant as not granted yet.
 - **After a restart.** This is the one grant that survives a daemon restart, and only for the
   same conversation. After SDK restore it is applied again only when all four recorded fields are
   set and the restored session's conversation, working directory, work episode and task all

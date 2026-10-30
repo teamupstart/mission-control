@@ -29,7 +29,7 @@ const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { openDb, upsertTask } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ResidentProfileRevisionSchema, residentRunControlRecorded } = await import("../src/shared/residents.ts");
-const { residentRunControlOutcome } = await import("../src/web/residents/launch.ts");
+const { residentLaunchControlReport, residentRunControlOutcome } = await import("../src/web/residents/launch.ts");
 const {
   armResidentLaunchAuthorization,
   armSessionControlAuthorization,
@@ -77,15 +77,19 @@ beforeEach(() => {
   openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles; DELETE FROM sdk_sessions; DELETE FROM tasks;");
 });
 
-/** The supervisor's part: write the session row, register the conversation, bind the task. */
-function startSession(registry: Registry, taskId: string): void {
+/**
+ * The supervisor's part: write the session row, register the conversation, bind the task. An
+ * `unbound` session has not learned its native conversation yet - a fresh launch learns it from the
+ * driver's `bound` event - so the Registry has no full grant identity for it.
+ */
+function startSession(registry: Registry, taskId: string, unbound = false): void {
   const task = registry.getTask(taskId)!;
   const sessionId = `sdk:${taskId}`;
   const cwd = `/worktrees/${taskId}`;
   upsertSdkSession({
     id: sessionId,
     agent: task.agent,
-    agentSessionId: `native-${taskId}`,
+    agentSessionId: unbound ? null : `native-${taskId}`,
     cwd,
     taskId,
     model: task.model,
@@ -94,7 +98,13 @@ function startSession(registry: Registry, taskId: string): void {
     status: "starting",
     turnInProgress: true,
   });
-  registry.registerSdkSession({ id: sessionId, name: task.title, agent: task.agent, cwd, agentSessionId: `native-${taskId}` });
+  registry.registerSdkSession({
+    id: sessionId,
+    name: task.title,
+    agent: task.agent,
+    cwd,
+    agentSessionId: unbound ? null : `native-${taskId}`,
+  });
   registry.upsertTask({ ...task, status: "running", sessionId });
 }
 
@@ -106,12 +116,15 @@ interface Harness {
   clicks: Map<string, ResidentLaunchAuthorization>;
 }
 
-function harness(registry: Registry = new Registry()): Harness {
+function harness(
+  registry: Registry = new Registry(),
+  options: { waitMs?: number; unbound?: boolean } = {},
+): Harness {
   const tasks = new TaskManager(registry);
   (tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher = {
     async dispatch(id) {
       await Promise.resolve();
-      startSession(registry, id);
+      startSession(registry, id, options.unbound);
     },
   };
   const asked: ResidentLaunchAuthorization[] = [];
@@ -121,7 +134,7 @@ function harness(registry: Registry = new Registry()): Harness {
     createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
     persona: (id) => (id === PERSONA.id ? PERSONA : null),
     resolveRepoRoot: async () => ({ ok: true as const, repoRoot: REPO }),
-    launchResponseWaitMs: 5_000,
+    launchResponseWaitMs: options.waitMs ?? 5_000,
     authorizeLaunch: async (input) => {
       asked.push(input);
       const click = clicks.get(input.requestId);
@@ -314,6 +327,31 @@ test("a desktop Launch click grants the run session control and records the iden
     cwd: `/worktrees/${run.taskId}`,
     episodeId: h.registry.workEpisodeForSession(sessionId)!.episodeId,
   });
+});
+
+test("a launch that answers before its session has an identity reports the grant as pending, and applies it once bound", async () => {
+  const h = harness(new Registry(), { waitMs: 50, unbound: true });
+  const profile = profileIn(h, true);
+  const requestId = randomUUID();
+  h.clicks.set(requestId, { requestId, profileId: profile.id, revision: profile.revision });
+  const { run, sessionId } = await launched(h, profile.id, requestId);
+  // The click was consumed, but the session has no native conversation, so no grant yet.
+  assert.equal(h.registry.sessionControlEnabled(sessionId), false);
+  assert.equal(residentRunControlOutcome(run), "pending");
+  assert.equal(residentLaunchControlReport(run, true), "pending", "a pending grant is reported on every surface");
+  assert.equal(typeof control(run.id).authorizedAt, "number");
+  assert.equal(control(run.id).conversationId, null);
+  // The driver binds the conversation: the waiting grant is applied and recorded.
+  h.registry.applyDriverEvent(sessionId, {
+    kind: "bound",
+    agentSessionId: `native-${run.taskId}`,
+    transcriptPath: null,
+    modelId: null,
+    pid: null,
+  });
+  assert.equal(h.registry.sessionControlEnabled(sessionId), true);
+  assert.equal(control(run.id).conversationId, `native-${run.taskId}`);
+  assert.equal(residentRunControlOutcome(store.getResidentRun(run.id)!.run), "granted");
 });
 
 test("a launch without the click, or with one for another revision, starts ungranted", async () => {

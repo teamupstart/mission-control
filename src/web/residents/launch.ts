@@ -39,6 +39,24 @@ export function residentRunControlOutcome(run: ResidentRun): "granted" | "pendin
 }
 
 /**
+ * What a launch surface reports about a launched run's session control, or null for nothing.
+ *
+ * A pending grant is always reported: the click was consumed but the session had no full identity
+ * when the launch answered, so control is not granted yet and the operator would otherwise not
+ * know. An ungranted run is reported unless the surface already said, before launch, that its
+ * click could not grant control - the standalone browser's Dispatch does.
+ */
+export function residentLaunchControlReport(
+  run: ResidentRun,
+  saidBeforeLaunch: boolean,
+): "pending" | "not-granted" | null {
+  const outcome = residentRunControlOutcome(run);
+  if (outcome === "pending") return "pending";
+  if (outcome === "not-granted" && !saidBeforeLaunch) return "not-granted";
+  return null;
+}
+
+/**
  * Launch a resident from a profile. THE ONE browser launch call: every Launch affordance -
  * Dispatch > Resident and the Residents dock - goes through here, so the request id, the route,
  * the reading of its answer and the session-control click exist once.

@@ -134,6 +134,9 @@ dock.
   comes back only if the resident resumes the same conversation in the same working directory,
   on the same work episode and task. A clear or a new conversation ends it, and a new launch of the profile
   needs its own Launch click.
+- **Once the session is ready.** The grant is given when the resident's session has its
+  conversation. If the launch answers before that, Dispatch and the dock say session control is
+  not granted yet, and the Console band reads **control granted** once it is.
 - **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
   does not bring it back.
 - **Launched anywhere else, it starts without control.** Before you launch from the browser

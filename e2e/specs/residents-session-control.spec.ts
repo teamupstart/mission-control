@@ -165,6 +165,41 @@ test("a resident launched from the standalone browser starts without session con
   for (const session of await residentSessions(daemon)) expect(session.sessionControlEnabled).toBe(false);
 });
 
+test("a launch whose session control is still pending says so in Dispatch and in the dock", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+  const profile = await createControlProfile(daemon);
+  // A launch that answered before its session had a full identity: the daemon consumed the click
+  // and the grant still waits. Only a desktop click can be consumed, so the launch's real answer is
+  // amended here into that state; the daemon producing it, then applying the grant once the session
+  // binds, is covered in test/residents-session-control.test.ts.
+  await dashboard.route("**/api/residents/profiles/*/launch", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as { state: string; run?: { control: Record<string, unknown> } };
+    if (body.state === "launched" && body.run) body.run.control = { ...body.run.control, authorizedAt: Date.now() };
+    await route.fulfill({ response, json: body });
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/residents/${encodeURIComponent(profile.id)}`);
+  await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  const pending = dialog.getByRole("status").filter({ hasText: `${PROFILE} launched, but its session control is not granted yet` });
+  await expect(pending).toBeVisible({ timeout: 60_000 });
+  await expect(pending).toContainText("Its Console band reads control granted when it is");
+  await expect(dialog.getByRole("button", { name: "Launch resident" })).toHaveCount(0);
+  await capture(dialog, "09-dispatch-control-pending");
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await expect(dialog).toBeHidden();
+  await idleResident(daemon);
+
+  // The dock's Launch reports the same pending state.
+  await dashboard.getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+  const dock = dashboard.getByRole("dialog", { name: "Residents" });
+  await dock.getByRole("button", { name: `Launch ${PROFILE}` }).click();
+  await expect(dock.getByRole("status").filter({ hasText: "session control is not granted yet" })).toBeVisible({ timeout: 60_000 });
+  await capture(dashboard, "10-dock-control-pending");
+});
+
 test("a desktop Launch click grants the resident session control, and a daemon restart keeps it for the same conversation", async ({ daemon }) => {
   test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
   // Hand this fixture's isolated state to a real Electron-owned utility process, so the daemon

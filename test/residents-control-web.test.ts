@@ -7,7 +7,7 @@ import { ResidentProfileRevisionSchema, residentLaunchSummary, type ResidentRunS
 import { ResidentBand } from "../src/web/residents/ResidentBand.tsx";
 import { ResidentsDock } from "../src/web/residents/ResidentsDock.tsx";
 import { RESIDENT_EDITOR_SECTIONS } from "../src/web/residents/editor-sections.tsx";
-import { residentRunControlOutcome } from "../src/web/residents/launch.ts";
+import { residentLaunchControlReport, residentRunControlOutcome } from "../src/web/residents/launch.ts";
 import { residentSessionMark } from "../src/web/residents/marker.ts";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -77,6 +77,29 @@ test("a launched run says whether its grant applied, only when its pinned revisi
     settings: revision(true),
     control: { authorizedAt: 5, conversationId: "native-1", cwd: "/worktrees/t", episodeId: "episode-1" },
   }), "granted");
+});
+
+test("a launch surface reports a pending grant always, and an ungranted run unless it said so before launch", () => {
+  const base = {
+    id: "r", profileId: "p", profileRevision: 1, taskId: "t", launchRequestId: "q", workspaceDir: null,
+    launchState: "launched" as const, launchError: null, persona: { personaId: "x", name: "X", guidanceMarkdown: "" },
+    runInstructions: "", createdAt: 1, endedAt: null,
+  };
+  const none = { authorizedAt: null, conversationId: null, cwd: null, episodeId: null };
+  const pending = { ...base, settings: revision(true), control: { ...none, authorizedAt: 5 } };
+  const ungranted = { ...base, settings: revision(true), control: none };
+  const granted = {
+    ...base,
+    settings: revision(true),
+    control: { authorizedAt: 5, conversationId: "native-1", cwd: "/worktrees/t", episodeId: "episode-1" },
+  };
+  for (const saidBeforeLaunch of [false, true]) {
+    assert.equal(residentLaunchControlReport(pending, saidBeforeLaunch), "pending");
+    assert.equal(residentLaunchControlReport(granted, saidBeforeLaunch), null);
+    assert.equal(residentLaunchControlReport({ ...base, settings: revision(false), control: none }, saidBeforeLaunch), null);
+  }
+  assert.equal(residentLaunchControlReport(ungranted, false), "not-granted", "the desktop Dispatch and the dock report it");
+  assert.equal(residentLaunchControlReport(ungranted, true), null, "the browser Dispatch already said so");
 });
 
 test("the band says control granted, or control not granted beside the existing menu", () => {

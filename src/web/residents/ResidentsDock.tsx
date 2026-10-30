@@ -5,7 +5,7 @@ import { stateDisplay } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
-import { launchResident, residentRunControlOutcome } from "./launch.ts";
+import { launchResident, residentLaunchControlReport } from "./launch.ts";
 import { residentMarkTitle, residentProfileMark, residentSessionMark } from "./marker.ts";
 
 /** How often a still-starting launch is replayed - the same request id - to read its outcome. */
@@ -62,8 +62,11 @@ interface DockLaunch {
    * is kept, so Launch checks this same launch again rather than starting another.
    */
   stillStarting: boolean;
-  /** The launch reached its session without the session control its profile asks for. */
-  controlNotGranted: boolean;
+  /**
+   * The launch reached its session without the session control its profile asks for, or with it
+   * still pending, or null when there is nothing to say.
+   */
+  controlReport: "pending" | "not-granted" | null;
 }
 
 /**
@@ -167,7 +170,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
       error: null,
       launched: false,
       stillStarting: false,
-      controlNotGranted: false,
+      controlReport: null,
     });
     const input = { repoRoot, requestId };
     const startedAt = Date.now();
@@ -192,7 +195,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
         patchLaunch(profile.id, {
           ...freshLaunch(),
           launched: true,
-          controlNotGranted: residentRunControlOutcome(answer.run) === "not-granted",
+          controlReport: residentLaunchControlReport(answer.run, false),
         });
         return;
       case "failed":
@@ -317,10 +320,16 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           never starts a second resident.
                         </p>
                       )}
-                      {state?.controlNotGranted && (
+                      {state?.controlReport === "not-granted" && (
                         <p className="residents-pop-note" role="status">
                           Started without session control: only a Launch click in the Mission
                           Control desktop app grants it.
+                        </p>
+                      )}
+                      {state?.controlReport === "pending" && (
+                        <p className="residents-pop-note" role="status">
+                          Started; session control is not granted yet. It is given once the
+                          session is ready, and its live row reads control granted when it is.
                         </p>
                       )}
                     </li>
@@ -355,6 +364,6 @@ function freshLaunch(): DockLaunch {
     error: null,
     launched: false,
     stillStarting: false,
-    controlNotGranted: false,
+    controlReport: null,
   };
 }

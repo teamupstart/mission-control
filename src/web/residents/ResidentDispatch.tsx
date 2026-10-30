@@ -16,7 +16,7 @@ import {
   selectResidentProfile,
   type ResidentDispatchDraft,
 } from "./dispatch-draft.ts";
-import { launchResident, residentLaunchCanGrantControl, residentRunControlOutcome } from "./launch.ts";
+import { launchResident, residentLaunchCanGrantControl, residentLaunchControlReport } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
@@ -47,11 +47,12 @@ export function ResidentDispatch({
   /** The launch was accepted and is still starting; the form replays it until it settles. */
   const [starting, setStarting] = useState(false);
   /**
-   * The resident that just launched from the desktop app without the session control its profile
-   * asked for. The form stays open to say so: a desktop app attached to a daemon it did not start
-   * has no channel to consume the click over, and only the run's answer knows that happened.
+   * The resident that just launched without the session control its profile asked for, or with it
+   * still pending. The form stays open to say so: a desktop app attached to a daemon it did not
+   * start has no channel to consume the click over, and a session that has no full identity yet
+   * has not received the grant - only the run's answer knows either happened.
    */
-  const [launchedWithoutControl, setLaunchedWithoutControl] = useState<string | null>(null);
+  const [controlReport, setControlReport] = useState<{ name: string; outcome: "pending" | "not-granted" } | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -75,7 +76,7 @@ export function ResidentDispatch({
     : null;
   const choose = (next: ResidentProfile): void => {
     setError(null);
-    setLaunchedWithoutControl(null);
+    setControlReport(null);
     mode.onResidentChange(selectResidentProfile(draft, next));
   };
   const repoRoot = residentDispatchRepo(draft, profile);
@@ -101,7 +102,7 @@ export function ResidentDispatch({
     if (!profileId || blocked) return;
     setBusy(true);
     setError(null);
-    setLaunchedWithoutControl(null);
+    setControlReport(null);
     const input = {
       repoRoot: residentDispatchRepo(from, profile).trim(),
       ...(from.instructions.trim() ? { instructions: from.instructions } : {}),
@@ -138,12 +139,14 @@ export function ResidentDispatch({
     setBusy(false);
     switch (answer.state) {
       case "launched":
-        // The browser already said, before launch, that this click cannot grant control. Here
-        // the click could have, so whether it did is news the form reports before closing.
-        if (residentLaunchCanGrantControl() && residentRunControlOutcome(answer.run) === "not-granted") {
-          setLaunchedWithoutControl(answer.run.settings.identity.name);
-          mode.onResidentLaunched(submitted, { keepOpen: true });
-          return;
+        {
+          // The browser already said, before launch, that its click cannot grant control.
+          const report = residentLaunchControlReport(answer.run, !residentLaunchCanGrantControl());
+          if (report) {
+            setControlReport({ name: answer.run.settings.identity.name, outcome: report });
+            mode.onResidentLaunched(submitted, { keepOpen: true });
+            return;
+          }
         }
         mode.onResidentLaunched(submitted);
         return;
@@ -333,19 +336,28 @@ export function ResidentDispatch({
             it; launching again resumes this same launch rather than starting another.
           </p>
         )}
-        {launchedWithoutControl && (
+        {controlReport?.outcome === "not-granted" && (
           <p className="resident-control-outcome" role="alert">
-            {launchedWithoutControl} launched without session control. Only a Launch click in the
+            {controlReport.name} launched without session control. Only a Launch click in the
             Mission Control desktop app, running its own daemon, grants it; its Console band reads
             control not granted.
+          </p>
+        )}
+        {controlReport?.outcome === "pending" && (
+          <p className="resident-control-outcome" role="status">
+            {controlReport.name} launched, but its session control is not granted yet: it is given
+            once the resident's session is ready. Its Console band reads control granted when it
+            is, and control not granted until then.
           </p>
         )}
         {error && <p className="resident-error" role="alert">{error}</p>}
       </div>
       <footer className="modal-foot">
         <span className="actions-spacer" />
-        {launchedWithoutControl ? (
-          <Tooltip label="Close; the resident keeps running without session control">
+        {controlReport ? (
+          <Tooltip label={controlReport.outcome === "pending"
+            ? "Close; the Console band shows when session control is granted"
+            : "Close; the resident keeps running without session control"}>
             <button className="btn btn-primary" onClick={onClose}>
               Done
             </button>

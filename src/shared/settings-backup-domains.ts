@@ -35,6 +35,7 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // the first published format, so a snapshot written before it carries no such domain and
   // restores without touching profiles (see `SETTINGS_BACKUP_CATALOGS`).
   { id: "resident-profiles", surface: "residents" },
+  { id: "resident-skill-sources", surface: "residents" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

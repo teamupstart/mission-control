@@ -1,6 +1,6 @@
-import { after, beforeEach, test } from "node:test";
+import { after, beforeEach, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,7 +80,12 @@ const app = buildApp({
 });
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
-beforeEach(() => {
+let scanClock = 0;
+beforeEach((t) => {
+  // Route fixtures start outside the preceding test's rescan cooldown.
+  scanClock += 10_000;
+  assert.ok("mock" in t);
+  t.mock.method(performance, "now", () => scanClock);
   openDb().exec("DELETE FROM resident_runs; DELETE FROM resident_profile_revisions; DELETE FROM resident_profiles;");
   for (const profile of registry.listResidentProfiles()) registry.removeResidentProfile(profile.id);
 });
@@ -296,4 +301,161 @@ test("a section or field written by a newer build survives this build reading, e
   assert.deepEqual(stored.instructions, { markdown: "Edited here." });
   // And the revision it replaced is untouched.
   assert.deepEqual(store.storedResidentSettings(profile.id, 1)!.marker, { color: "cyan", label: "FWD" });
+});
+
+test("skill source routes validate registrations, rescan on demand, and keep the index out of SSE", async () => {
+  const path = join(home, "http-skills");
+  mkdirSync(join(path, "fixture"), { recursive: true });
+  writeFileSync(join(path, "fixture/SKILL.md"), "---\nname: route-fixture\ndescription: fixture\n---\n");
+  const config = { directories: [{ id: "custom-00000000-0000-0000-0000-000000000001", path }] };
+  const events: ServerEvent[] = [];
+  const off = registry.subscribe((event) => events.push(event));
+  try {
+    const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision, config: { directories: [{ ...config.directories[0], path: "relative" }] } })).status, 400);
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision, config })).status, 200);
+    const read = await request("GET", "/api/residents/skills");
+    assert.equal(read.status, 200);
+    assert.ok((read.json.skills as Array<{ name: string }>).some((skill) => skill.name === "route-fixture"));
+    assert.equal((await request("POST", "/api/residents/skills/rescan", { unexpected: true })).status, 400);
+    assert.equal((await request("POST", "/api/residents/skills/rescan", {})).status, 200);
+    assert.deepEqual(events, []);
+  } finally { off(); }
+});
+
+test("skill source writes reject stale adds and removals without losing another window's changes", async () => {
+  const endpoint = "/api/residents/skill-sources";
+  const first = (await request("GET", "/api/residents/skills")).json;
+  const original = first.config as { directories: Array<{ id: string; path: string }> };
+  const added = { id: "custom-00000000-0000-0000-0000-000000000002", path: join(home, "another-window") };
+  const config = { directories: [...original.directories, added] };
+  const saved = await request("PUT", endpoint, { config, expectedRevision: first.configRevision });
+  assert.equal(saved.status, 200);
+  for (const stale of [original, { directories: [] }]) {
+    const refused = await request("PUT", endpoint, { config: stale, expectedRevision: first.configRevision });
+    assert.equal(refused.status, 409);
+    assert.match(String(refused.json.error), /another window/);
+    assert.deepEqual((await request("GET", "/api/residents/skills")).json.config, config);
+  }
+  assert.equal((await request("PUT", endpoint, { config: original })).status, 400, "writes require a comparison token");
+  assert.equal((await request("PUT", endpoint, { config: original, expectedRevision: saved.json.configRevision })).status, 200);
+});
+
+function countSkillConfigReads(t: TestContext): () => number {
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  let configReads = 0;
+  t.mock.method(db, "prepare", (sql: string) => {
+    const statement = prepare(sql);
+    if (sql === "SELECT value FROM app_config WHERE key = ?") {
+      const get = statement.get.bind(statement);
+      t.mock.method(statement, "get", (key: string) => {
+        if (key === "residents.skillSources") configReads++;
+        return get(key);
+      });
+    }
+    return statement;
+  });
+  return () => configReads;
+}
+
+test("skill rescans refuse browser simple requests and untrusted origins before reading the catalog", async (t) => {
+  const configReads = countSkillConfigReads(t);
+  for (const overrides of [
+    { "content-type": "text/plain", origin: "http://127.0.0.1:9999" },
+    { "content-type": "application/x-www-form-urlencoded", origin: "https://example.com" },
+    { "content-type": "application/json", origin: "https://example.com" },
+    { "content-type": "application/json", origin: "null" },
+  ]) {
+    const response = await app.request("/api/residents/skills/rescan", { method: "POST", headers: { ...headers, ...overrides }, body: "{}" });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "forbidden" });
+  }
+  assert.equal(configReads(), 0, "refused requests never reach the catalog");
+  const preflight = await app.request("/api/residents/skills/rescan", { method: "OPTIONS", headers: {
+    host: headers.host, origin: "http://127.0.0.1:9999", "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+  } });
+  assert.equal(preflight.headers.get("access-control-allow-origin"), null, "another loopback website cannot preflight a JSON scan");
+  const validOrigins: Array<Record<string, string>> = [{}, { origin: "http://127.0.0.1:7317" }, { origin: "http://localhost:5173" }];
+  for (const extra of validOrigins) {
+    scanClock += 1_000;
+    const response = await app.request("/api/residents/skills/rescan", { method: "POST", headers: { ...headers, ...extra }, body: "{}" });
+    assert.equal(response.status, 200, "dashboard, dev proxy and local API JSON requests remain supported");
+  }
+});
+
+test("all local clients share the rescan cooldown and can retry at its boundary", async (t) => {
+  const reads = countSkillConfigReads(t);
+  const rescan = () => app.request("/api/residents/skills/rescan", { method: "POST", headers, body: "{}" });
+  assert.equal((await rescan()).status, 200);
+  const afterScan = reads();
+  scanClock += 999;
+  for (const response of await Promise.all([rescan(), rescan()])) {
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "1");
+    assert.match((await response.json() as { error: string }).error, /Wait a second/);
+  }
+  assert.equal(reads(), afterScan, "rejected requests do not reach the catalog");
+  scanClock += 1;
+  assert.equal((await rescan()).status, 200);
+  assert.equal(reads(), afterScan + 1);
+});
+
+test("skill-source validation returns 400 while storage failures stay server errors", async (t) => {
+  const expectedRevision = (await request("GET", "/api/residents/skills")).json.configRevision;
+  const { homedir } = await import("node:os");
+  const predefined = await request("PUT", "/api/residents/skill-sources", { expectedRevision, config: {
+    directories: [{ id: "custom-00000000-0000-0000-0000-000000000003", path: join(homedir(), ".agents/skills") }],
+  } });
+  assert.equal(predefined.status, 400);
+  assert.match(String(predefined.json.error), /predefined/);
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (/INSERT INTO app_config/.test(sql)) throw new Error("private-storage-fault");
+    return prepare(sql);
+  });
+  t.mock.method(console, "error", () => {});
+  const response = await app.request("/api/residents/skill-sources", { method: "PUT", headers,
+    body: JSON.stringify({ expectedRevision, config: { directories: [] } }),
+  });
+  assert.equal(response.status, 500);
+  assert.ok(!(await response.text()).includes("private-storage-fault"));
+});
+
+test("malformed stored sources keep global skills readable and require the current revision to repair", async () => {
+  const db = openDb();
+  const key = "residents.skillSources";
+  const original = db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+  const codexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = join(home, "recovery-codex");
+  mkdirSync(join(process.env.CODEX_HOME, "skills/recovery"), { recursive: true });
+  writeFileSync(join(process.env.CODEX_HOME, "skills/recovery/SKILL.md"), "---\nname: recovery-global\ndescription: fixture\n---\n");
+  const seed = (value: unknown) => db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
+  const stored = () => (db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string }).value;
+  try {
+    seed({ directories: "invalid" });
+    const read = await request("GET", "/api/residents/skills");
+    assert.equal(read.status, 200);
+    assert.match(String(read.json.configurationProblem), /invalid/);
+    assert.deepEqual(read.json.config, { directories: [] });
+    assert.ok((read.json.skills as Array<{ name: string }>).some(skill => skill.name === "recovery-global"));
+    assert.equal((await request("POST", "/api/residents/skills/rescan", {})).status, 200);
+    assert.equal(stored(), '{"directories":"invalid"}', "reads and rescans preserve the stored value");
+    seed({ directories: ["also-invalid"] });
+    const changed = await request("GET", "/api/residents/skills");
+    assert.notEqual(changed.json.configRevision, read.json.configRevision, "invalid values have distinct revisions despite the same fallback");
+    assert.equal((await request("PUT", "/api/residents/skill-sources", { expectedRevision: read.json.configRevision, config: { directories: [] } })).status, 409);
+    assert.equal(stored(), '{"directories":["also-invalid"]}');
+    const repaired = await request("PUT", "/api/residents/skill-sources", { expectedRevision: changed.json.configRevision, config: { directories: [] } });
+    assert.equal(repaired.status, 200);
+    assert.equal(repaired.json.configurationProblem, null);
+    assert.equal(stored(), '{"directories":[]}');
+    assert.equal((await request("GET", "/api/residents/skills")).json.configurationProblem, null);
+  } finally {
+    if (codexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = codexHome;
+    if (original) db.prepare("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)").run(key, original.value);
+    else db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
+  }
 });

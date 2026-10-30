@@ -592,3 +592,9 @@ test("the runs page links to its settings category rather than hosting a drawer"
   assert.match(runsSlot, /navigate\(\{ page: "settings", category: "workflows" \}\)/);
   assert.doesNotMatch(app, /WorkflowConfigPanel/, "the drawer is gone, not merely hidden");
 });
+
+test("resident skill sources have their own route and return to the profile rail", () => {
+  assert.deepEqual(parseMissionRoute("#/residents/skill-sources"), { page: "residents", skillSources: true });
+  assert.equal(missionRouteHash({ page: "residents", skillSources: true }), "#/residents/skill-sources");
+  assert.deepEqual(parseMissionRoute("#/residents"), { page: "residents" });
+});

@@ -179,6 +179,24 @@ function residentTasks(registry: Registry): Task[] {
   return registry.listTasks().filter((task) => task.kind === "resident");
 }
 
+test("catalog storage failures cannot prevent resident reconciliation and run-end subscriptions", (t) => {
+  const h = harness({ start: false });
+  const calls: string[] = [];
+  t.mock.method(h.residents, "reconcilePendingRuns", () => { calls.push("pending"); });
+  t.mock.method(h.registry, "subscribe", () => { calls.push("subscribe"); return () => {}; });
+  t.mock.method(h.registry, "onSessionsObserved", () => { calls.push("observed"); return () => {}; });
+  t.mock.method(console, "error", (message: string) => { calls.push(message); });
+  const db = openDb();
+  const prepare = db.prepare.bind(db);
+  t.mock.method(db, "prepare", (sql: string) => {
+    if (sql === "SELECT value FROM app_config WHERE key = ?") throw new Error("catalog storage unavailable");
+    return prepare(sql);
+  });
+  assert.doesNotThrow(() => h.residents.start());
+  assert.deepEqual(calls.slice(0, 3), ["pending", "subscribe", "observed"]);
+  assert.match(calls[3]!, /could not index skill sources at startup/);
+});
+
 test("a launch reserves one run, creates its resident task with the profile's agent, model and effort, and settles launched on the session row", async () => {
   const h = harness();
   const profile = profileIn(h);

@@ -300,3 +300,21 @@ test("a newer build's sections travel through a snapshot, onto a fresh installat
   assert.deepEqual(stored.marker, { color: "cyan" });
   assert.deepEqual(stored.loop, { cadence: 300 });
 });
+
+test("a snapshot predating skill sources validates and restores without clearing registrations", async () => {
+  const { saveResidentSkillSources } = await import("../src/server/residents/skill-index.ts");
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  const config = { directories: [{ id: "custom-00000000-0000-0000-0000-000000000001", path: join(home, "skills") }] };
+  saveResidentSkillSources(config);
+  const captured = await service(join(home, "before-skill-sources")).ensureDailySnapshot("2026-10-30");
+  assert.equal(captured.status, "ready");
+  if (captured.status !== "ready") return;
+  const { digest: _digest, ...body } = captured.snapshot;
+  const old = createSettingsBackupEnvelope({ ...body, domains: body.domains.filter((entry) => entry.domain !== "resident-skill-sources") });
+  validateSettingsBackupDomains(old);
+  const { migrateSettingsBackupSnapshot } = await import("../src/server/settings-backups/restore.ts");
+  const { stageSettingsConfigRestore, restoreSettingsConfigInTransaction } = await import("../src/server/settings-backups/config-registry.ts");
+  restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(migrateSettingsBackupSnapshot(old).settings));
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.residentSkillSources), config);
+});

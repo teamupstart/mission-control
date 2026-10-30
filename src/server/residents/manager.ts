@@ -1,3 +1,4 @@
+import { residentSkillIndex } from "./skill-index.ts";
 import { randomUUID } from "node:crypto";
 import { harnessOffersRuntime } from "@shared/harness-capabilities.ts";
 import {
@@ -236,6 +237,8 @@ export class ResidentManager {
       this.reconcileRunEnds();
       this.watchRestoredGrants();
     }));
+    try { residentSkillIndex(); }
+    catch (error) { console.error("[residents] could not index skill sources at startup:", error); }
   }
 
   async stop(): Promise<void> {

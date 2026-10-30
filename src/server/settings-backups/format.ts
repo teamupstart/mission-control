@@ -52,7 +52,7 @@ export function validateSettingsBackupDomains(snapshot: SettingsBackupEnvelopeV1
     else parseSettingsCatalogPayload(entry.domain, entry.payload);
   }
   for (const domain of [...expectedDomains]) {
-    if (domain !== null && settingsCatalogIsOptional(domain)) expectedDomains.delete(domain);
+    if (domain !== null && (settingsCatalogIsOptional(domain) || configByDomain.get(domain)?.optionalInSnapshot)) expectedDomains.delete(domain);
   }
   if (expectedDomains.size > 0) {
     throw new TypeError(`Snapshot is missing domains: ${[...expectedDomains].join(", ")}`);

@@ -1,3 +1,5 @@
+import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
+import { residentSkillIndex, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
@@ -8127,6 +8129,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       throw error;
     }
     return c.json(task);
+  });
+
+  // All windows and local API callers share this daemon's rescan admission gate.
+  let residentSkillRescanReadyAt = 0;
+  app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
+  app.put("/api/residents/skill-sources", async (c) => {
+    const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
+    if (!parsed.ok) return parsed.res;
+    try { return c.json(saveResidentSkillSources(parsed.data.config, parsed.data.expectedRevision)); }
+    catch (error) {
+      if (error instanceof ResidentSkillSourcesConflictError) return c.json({ error: error.message }, 409);
+      if (error instanceof RepoIndexConfigError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  });
+  app.post("/api/residents/skills/rescan", async (c) => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const parsed = await parseBody(c, RescanResidentSkillsSchema);
+    if (!parsed.ok) return parsed.res;
+    if (performance.now() < residentSkillRescanReadyAt) {
+      c.header("Retry-After", "1");
+      return c.json({ error: "Wait a second before rescanning skill sources again." }, 429);
+    }
+    // Scanning is synchronous, so requests cannot overlap. Start the cooldown after
+    // completion (including failure), so a slow scan cannot consume its own cooldown.
+    try { return c.json(residentSkillIndex(true)); }
+    finally { residentSkillRescanReadyAt = performance.now() + 1_000; }
   });
 
   // --- resident profiles and their one launch path ---

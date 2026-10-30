@@ -647,7 +647,7 @@ export function ConsoleDetail({
           loop's state and controls join later. Not gated on the marker item - it is where a
           resident is named, not decoration on top of it. */}
       {resident && (
-        <ResidentBand mark={resident} onOpenProfile={view.onOpenResidentProfile} />
+        <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
       )}
 
       {pipelineCommission && (

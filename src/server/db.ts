@@ -2060,7 +2060,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       persona_snapshot   TEXT NOT NULL,
       run_instructions   TEXT NOT NULL DEFAULT '',
       created_at         INTEGER NOT NULL,
-      ended_at           INTEGER
+      ended_at           INTEGER,
+      -- The session-control grant a desktop Launch click gave this run, all NULL when it has
+      -- none. control_authorized_at is when the daemon consumed the click; the other three
+      -- are the Registry grant's identity when it was applied. A restart re-applies the grant
+      -- only when all four are set and the restored session still matches them, so every run
+      -- from before these columns existed stays ungranted. Mirrored in migrate().
+      control_authorized_at   INTEGER,
+      control_conversation_id TEXT,
+      control_cwd             TEXT,
+      control_episode_id      TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_runs_request
       ON resident_runs(launch_request_id);
@@ -3226,6 +3235,11 @@ function outstandingFileCommentIndexSql(): string {
  */
 function migrate(d: DatabaseSync): void {
   addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  // Nullable with no default: a run launched before these existed reads as never granted.
+  addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
+  addColumn(d, "resident_runs", "control_conversation_id", "TEXT");
+  addColumn(d, "resident_runs", "control_cwd", "TEXT");
+  addColumn(d, "resident_runs", "control_episode_id", "TEXT");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");

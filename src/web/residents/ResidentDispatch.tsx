@@ -16,7 +16,7 @@ import {
   selectResidentProfile,
   type ResidentDispatchDraft,
 } from "./dispatch-draft.ts";
-import { launchResident } from "./launch.ts";
+import { launchResident, residentLaunchCanGrantControl } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
@@ -115,7 +115,8 @@ export function ResidentDispatch({
       },
     };
     mode.onResidentChange(submitted);
-    let answer = await launchResident(profileId, input);
+    // Still inside the Launch click: the one call that may arm session control for this run.
+    let answer = await launchResident(profileId, input, { profile });
     // Still starting: keep the SAME request id and replay it until the launch settles. The
     // replay is idempotent - it reads the one run this id reserved and never starts another -
     // so closing the form here keeps the id in the draft, and Launch again resumes this launch.
@@ -253,6 +254,13 @@ export function ResidentDispatch({
                   </button>
                 </Tooltip>
               </div>
+            )}
+            {profile?.settings.authority.controlOtherSessions && (
+              <p className="field-hint resident-control-note" role="note">
+                {residentLaunchCanGrantControl()
+                  ? "Control other sessions is on: this Launch click gives this run session control, kept through a restart until its conversation changes or you turn it off."
+                  : "Control other sessions is on, but only a Launch click in the Mission Control desktop app grants it. Launched from here, this resident starts without session control."}
+              </p>
             )}
           </>
         )}

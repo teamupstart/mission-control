@@ -1,5 +1,5 @@
 import { isActiveTask } from "@shared/task-status.ts";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import {
   SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
   type SessionControlAction,
@@ -69,22 +69,36 @@ export function controlRequest(target: string, command: SessionControlAction): {
   }
 }
 
+/**
+ * Why this request cannot carry the operator's session-control authority, or null when it can.
+ * A tool, an attributed agent request or a page from another origin never can: the shared
+ * machine token and a signed agent credential identify an agent, not the operator. Both doors
+ * that consume a desktop click - this route and a resident launch - ask this first.
+ */
+export function sessionControlCallerRefusal(c: Context): string | null {
+  if (c.req.header("x-harness-token") || c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER)
+    || c.req.header("x-mission-operation-actor") === "agent") {
+    return "Only the operator can change session control";
+  }
+  const origin = c.req.header("origin");
+  if (origin) {
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return "forbidden";
+    } catch { return "forbidden"; }
+  }
+  return null;
+}
+
 export function registerSessionControlRoutes(
   app: Hono, registry: Registry, authorize: AuthorizeSessionControl = sessionControlAuthorization(),
+  /** Told after the operator's setting is applied, so a durable record can follow a revoke. */
+  onChanged: (sessionId: string, enabled: boolean) => void = () => {},
 ): void {
   app.put("/api/sessions/:id/session-control", async (c) => {
     // This is an operator setting. Neither a tool nor an attributed agent request can grant it.
-    if (c.req.header("x-harness-token") || c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER)
-      || c.req.header("x-mission-operation-actor") === "agent") {
-      return c.json({ error: "Only the operator can change session control" }, 403);
-    }
-    const origin = c.req.header("origin");
-    if (origin) {
-      try {
-        const url = new URL(origin);
-        if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return c.json({ error: "forbidden" }, 403);
-      } catch { return c.json({ error: "forbidden" }, 403); }
-    }
+    const refusal = sessionControlCallerRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 403);
     const parsed = await parseBody(c, SessionControlGrantSchema);
     if (!parsed.ok) return parsed.res;
     const { enabled, requestId } = parsed.data;
@@ -99,6 +113,7 @@ export function registerSessionControlRoutes(
       return c.json({ error: "Session control requires a live, registered conversation" }, 409);
     }
     logEvent(c.req.param("id"), Date.now(), "session_control_grant", { enabled: parsed.data.enabled });
+    onChanged(sessionId, enabled);
     return c.json({ ok: true });
   });
 

@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, utilityProcess } = require("electron");
 const path = require("node:path");
-const { armSessionControlAuthorization, serveDashboardClick, serveSessionControlAuthorization } = require(process.argv[2]);
+const { armResidentLaunchAuthorization, armSessionControlAuthorization, serveDashboardClick, serveSessionControlAuthorization } = require(process.argv[2]);
 
 app.whenReady().then(() => {
   ipcMain.handle("mission:card-jump-keys", () => undefined);
@@ -10,6 +10,7 @@ app.whenReady().then(() => {
     webPreferences: { preload: path.join(process.cwd(), "dist/preload/index.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   serveDashboardClick(ipcMain, "mission:session-control-click", () => window.webContents, armSessionControlAuthorization);
+  serveDashboardClick(ipcMain, "mission:resident-launch-click", () => window.webContents, armResidentLaunchAuthorization);
   let child;
   globalThis.startControlDaemon = async ({ entry, env }) => {
     child = utilityProcess.fork(entry, [], { env, stdio: "pipe" });

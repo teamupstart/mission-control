@@ -4697,6 +4697,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         }
         const review = reviews.create(session.id, kind, title, fullBody, allDecisions);
         bindPlanReview(authority, input, review.id, manager);
+        // Offer "approve all future bundles" only where the resolve route can keep it.
+        if (authority.taskId && !review.standingApprovalEligible) registry.upsertReview({ ...review, standingApprovalEligible: true });
         return c.json({ id: review.id, sessionId: session.id });
       }
       const review = reviews.create(session.id, kind, title, body, decisions ?? null);

@@ -101,7 +101,9 @@ export function ReviewCard({
   const [approveFuture, setApproveFuture] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
-  const finalBundle = decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false;
+  // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
+  const finalBundle = review.standingApprovalEligible === true
+    && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
   const foremanNote = foremanNoteForReview(review, sessionNote);
   const recommendationChoices: RecommendationChoice[] =
     decisions?.flatMap((decision) =>

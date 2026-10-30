@@ -4596,14 +4596,20 @@ export function transferPendingReviews(sourceId: string, successorId: string, no
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
     WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
+}
+
+/** Re-derive which pending reviews can grant a standing plan-bundle approval: bound to a task. */
+function withStandingApprovalEligibility(reviews: ReviewItem[]): ReviewItem[] {
+  const eligible = openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ? AND task_id IS NOT NULL");
+  return reviews.map((review) => (eligible.get(review.id) ? { ...review, standingApprovalEligible: true } : review));
 }
 
 /**

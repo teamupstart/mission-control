@@ -21,7 +21,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
-const { closeDb, openDb, loadConversationResolvedReviews } = await import("../src/server/db.ts");
+const { closeDb, openDb, loadConversationResolvedReviews, loadPendingReviews } = await import("../src/server/db.ts");
 const { savePlan } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { STANDING_FOLLOW_UP_NOTE } = await import("../src/server/plans/publication.ts");
@@ -70,6 +70,8 @@ test("ticking approve all future bundles approves later final bundles without pr
   const f = await fixture();
   const first = await f.ask();
   assert.equal(first.status, "pending", "the first bundle still asks the operator");
+  assert.equal(first.standingApprovalEligible, true, "a task's bound final-bundle approval offers the checkbox");
+  assert.equal(loadPendingReviews().find((r) => r.id === first.id)?.standingApprovalEligible, true, "and still does after a restart");
 
   const res = await f.resolve(first.id, { ...f.approve, approveFutureBundles: true });
   assert.equal(res.status, 200, await res.clone().text());
@@ -158,6 +160,8 @@ test("only the operator's submitted final-bundle answer can grant a standing app
 
   // A review that is not a managed plan's bound final-bundle approval is refused even when its answer looks like one.
   const unbound = f.reviews.create(f.id, "plan-decisions", "Not a managed plan", "Pick", [{ id: "approve-final-bundle", question: "Approve?", options: [{ id: "approve", label: "Approve" }] }]);
+  assert.notEqual(unbound.standingApprovalEligible, true, "so the dashboard does not offer the checkbox on it");
+  assert.notEqual(loadPendingReviews().find((r) => r.id === unbound.id)?.standingApprovalEligible, true);
   const refused = await f.resolve(unbound.id, { ...f.approve, approveFutureBundles: true });
   assert.equal(refused.status, 400);
   assert.equal(f.registry.getReview(unbound.id)?.status, "pending");

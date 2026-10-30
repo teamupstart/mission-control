@@ -40,12 +40,22 @@ test("approve all future bundles for this task approves later bundles without pr
 
   // The first bundle asks, and offers the standing approval beside Submit.
   const first = await save(0, "Documentation plan");
+  // A form carrying the same question but bound to no managed plan cannot keep the grant.
+  const unboundResponse = await post("/mcp/reviews", { kind: "plan-decisions", title: "Unbound bundle question", body: "Not a managed plan.",
+    decisions: [{ id: "approve-final-bundle", question: "Approve this bundle?", options: [{ id: "approve", label: "Approve" }] }] });
+  expect(unboundResponse.status).toBe(200);
   await ask(1);
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = dashboard.locator(".console-detail");
   await detail.getByRole("button", { name: "to review" }).click();
   const form = dashboard.locator(".review-modal");
   await expectContentClearsBorder(form);
+  const unbound = form.locator("section.review", { hasText: "Unbound bundle question" });
+  await expect(unbound.getByRole("radio", { name: "Approve", exact: true })).toBeVisible();
+  await expect(unbound.getByRole("checkbox", { name: "Approve all future bundles for this task" })).toHaveCount(0);
+  await expect(form.getByRole("checkbox", { name: "Approve all future bundles for this task" })).toHaveCount(1);
+  await unbound.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(unbound).toHaveCount(0);
   const standing = form.getByRole("checkbox", { name: "Approve all future bundles for this task" });
   await expect(standing).toBeVisible();
   await expect(standing).not.toBeChecked();

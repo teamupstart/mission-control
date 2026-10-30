@@ -2565,6 +2565,11 @@ export interface ReviewItem {
   selections?: PlanDecisionAnswer[] | null;
   /** Who settled it, or null when nobody did (`orphaned`) and on pre-column rows. */
   resolvedBy?: ReviewActor | null;
+  /**
+   * A managed plan's final-bundle approval bound to a task, so answering it may grant
+   * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
+   */
+  standingApprovalEligible?: boolean;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }

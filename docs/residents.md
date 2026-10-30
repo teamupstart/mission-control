@@ -5,8 +5,9 @@ once - a Persona, instructions, a harness, model and effort, and a default repos
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
-This page describes profiles, launch, the persistent wake loop, and its dashboard controls.
-Skill and MCP selection, session control and repository-free residents are later phases of [the residents plan](plans/persistent-agent-profiles/plan.md).
+This page describes profiles, launch, the persistent wake loop, repository-free residents,
+and their dashboard controls. Skill and MCP selection and session control are later phases of
+[the residents plan](plans/persistent-agent-profiles/plan.md).
 
 ## Resident profiles
 
@@ -43,7 +44,9 @@ form on that profile.
 
 A launch is a task of kind `resident`:
 
-- It runs in a task worktree of the chosen repository, always in the **Agent SDK**, whatever the
+- With a repository it runs in a task worktree. **No repository** creates a private working
+  directory for this run under `$MISSION_HOME/residents/runs/<runId>/workspace/`. Both run
+  in the **Agent SDK**, whatever the
   harness's configured runtime is. **Continue in terminal** is unavailable for it.
 - It uses the profile's harness, model and effort. Per-kind defaults in **Settings > Models** do
   not apply, because the profile already answers them.
@@ -119,6 +122,18 @@ or when its session goes away, which settles its task through the ordinary task 
 failed launch, or one interrupted by a restart before its session started, is recorded with its
 reason and is never relaunched; launch the profile again.
 
+A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
+The Files panel browses its working directory directly, without Git or managed repository plans.
+Listing is capped at 10,000 files and refuses trees exceeding 10,000 directories or 64 nested
+levels. Traversal checks a 15-second budget between filesystem operations.
+Directory scans run asynchronously against open directory handles and refuse symlinked
+boundaries, including directories replaced while a listing is in progress.
+
+The workspace survives daemon restarts while the run is active. When the run ends, Mission removes
+that workspace after its session is gone and its SDK runtime has stopped. Failed launches also
+remove their directories. Cleanup failures remain recorded and retry, including after restart;
+the repository retention clock never applies to these directories. Files saved there are temporary.
+
 ## The persistent loop
 
 The daemon owns every loop turn. After a completed turn it waits the pinned profile's cadence,
@@ -145,8 +160,9 @@ you resume it. Pausing does not interrupt an already running turn.
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
 After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
-and launches the latest revision in a new conversation. It preserves the repository and run
-instructions. New conversation creation ensures every changed launch option takes effect.
+and launches the latest revision in a new conversation. It preserves the repository choice and
+run instructions; a repository-free resident receives a fresh private workspace. New conversation
+creation ensures every changed launch option takes effect.
 
 ### Compaction and guardrails
 

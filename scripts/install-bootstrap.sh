@@ -8,7 +8,7 @@ field() { /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null || fail "Missi
 digest() { local value; value=$(/usr/bin/openssl dgst -sha256 "$1"); echo "${value##* }"; }
 
 download() {
-  local endpoint=$1 output=$2 limit=$3 accept=${4:-application/vnd.github+json} pid watchdog result=0 seconds=120
+  local endpoint=$1 output=$2 limit=$3 accept=${4:-application/vnd.github+json} missing=${5:-} pid watchdog result=0 seconds=120
   [[ $limit -le 16777216 ]] || seconds=900
   # Bound disk consumption as well as elapsed time. Transport diagnostics stay private.
   (ulimit -f $((limit / 1024 + 1)); exec "$mission_gh" api --hostname github.com "$endpoint" -H "Accept: $accept") >"$output" 2>"$mission_tmp/transport.log" &
@@ -20,6 +20,13 @@ download() {
   wait "$pid" || result=$?
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
+  # A private repository also answers 404 to a token that cannot see it. Name the
+  # absent release only once the repository itself is readable; otherwise the
+  # probe fails with the authentication guidance below.
+  if [[ $result != 0 && -n $missing ]] && /usr/bin/grep -q '(HTTP 404)' "$mission_tmp/transport.log"; then
+    download 'repos/@REPO@' "$mission_tmp/repository.json" 1048576
+    fail "$missing"
+  fi
   [[ $result == 0 ]] || fail "Canonical download failed. Check gh authentication and connectivity; no source build was attempted."
   [[ $(/usr/bin/stat -f %z "$output") -le $limit ]] || fail "Download exceeds its size limit."
 }
@@ -106,10 +113,18 @@ main() {
     ref=$(field "$mission_tmp/commit.json" sha)
     [[ "$ref" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid main identity.'
   fi
-  local tag endpoint release="$mission_tmp/release.json" manifest="$mission_tmp/manifest.json"
-  if [[ "$channel" == alpha ]]; then tag="alpha-$ref"; else tag=$ref; fi
+  local tag endpoint missing='' release="$mission_tmp/release.json" manifest="$mission_tmp/manifest.json"
+  if [[ "$channel" == alpha ]]; then
+    tag="alpha-$ref"
+    # The exact commit is the contract; an older alpha is never substituted silently.
+    missing="Commit $ref has no published alpha. Its Signed distribution run may still be pending or may have failed, or the alpha was retired. Retry after it publishes, or pin a published alpha with --ref FULL_SHA (gh release list --repo @REPO@)."
+  else
+    tag=$ref
+    if [[ -n "$tag" ]]; then missing="Release $tag is not published. Select an existing vX.Y.Z tag (gh release list --repo @REPO@)."
+    else missing="No stable release is published. Pin one with --ref vX.Y.Z once it publishes, or follow main with --channel alpha (gh release list --repo @REPO@)."; fi
+  fi
   endpoint="repos/@REPO@/releases/tags/$tag"; [[ -n "$tag" ]] || endpoint='repos/@REPO@/releases/latest'
-  download "$endpoint" "$release" 1048576
+  download "$endpoint" "$release" 1048576 application/vnd.github+json "$missing"
   [[ $(field "$release" draft) == false ]] || fail 'Draft releases cannot be installed.'
   tag=$(field "$release" tag_name)
   if [[ "$channel" == stable ]]; then

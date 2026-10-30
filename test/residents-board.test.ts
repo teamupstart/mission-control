@@ -134,6 +134,7 @@ test("only a live run has a wire summary", () => {
     launchState: "launched" as const,
     launchError: null,
     loopState: "waiting" as const, iteration: 1, lastSeq: 1, nextWakeAt: null, consumedGeneration: null, pauseReason: null, wakeReason: null,
+    workspaceDir: null,
     persona: { personaId: "x", name: "Fleet Triage", guidanceMarkdown: "long text" },
     runInstructions: "today",
     settings: revision(),

@@ -215,6 +215,10 @@ export function ReviewCard({
           busy={busy}
           lead={decisionLead(review.kind)}
           hideQuestions={review.kind === "input"}
+          // Only `request_plan_decisions` returns the formatted answer to the agent for every
+          // form it draws. An option-carrying `input` also serves the product-issue
+          // confirmation, which acts on the selection alone and would drop a note.
+          allowNote={review.kind === "plan-decisions"}
           // Review ids are unique, and every pending review of a session - or, in the
           // attention inbox, of the WHOLE FLEET - is drawn into one document. Without
           // `namePrefix` two option-carrying `input` reviews share a radio group and answering

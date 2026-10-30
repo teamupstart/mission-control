@@ -2079,10 +2079,12 @@ review request.
 
 The MCP tools are:
 
-- `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer
+  dismisses that decision set without an answer. Every decision also has an optional note
+  box, so the human can pick an option and send instructions with it; a note returns to the
+  agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
+  an empty `decisions` list to show a plan for approval with no open choices
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2121,14 +2123,6 @@ The MCP tools are:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
   can be dismissed without sending an answer
-- `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
-  the session to report Mission Control feedback, publishes a public GitHub issue automatically
-  and returns its URL without a second dashboard approval. The tool prepares the daemon preview
-  and submits the same bounded draft, with the daemon choosing the destination and labels.
-  Both MCP tools inherit the dashboard report schema and use its `ProductIssueService` for
-  issue formatting, destination, labels, attachments, and publication. Only caller attribution
-  and approval differ. Include only public-safe content. Screenshot limits and retry guidance
-  match the tool below.
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -2225,9 +2219,9 @@ how you were asked:
 
 | You answered | The entry shows |
 |---|---|
-| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** and any **Note** you added |
 | **A direct-text question** (`request_input` with no options) | the text you submitted |
-| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A diff** (`request_review`) | what you did - approved, or requested changes - and the note you left, if any |
 | **A dismissal** | that you closed it without choosing, and nothing more |
 
 It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be

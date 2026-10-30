@@ -6,6 +6,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
+import type { Task } from "../../src/shared/types.ts";
 
 async function request<T>(daemon: DaemonHandle, path: string, body?: unknown, method = "POST"): Promise<T> {
   const response = await fetch(daemon.baseURL + path, body === undefined && method === "GET" ? {} : {
@@ -40,7 +41,7 @@ async function surface(page: Page, daemon: DaemonHandle, profile: ResidentProfil
 }
 async function capture(page: Page, name: string) {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
-  const dir = artifactsDir("residents-loop"); mkdirSync(dir, { recursive: true });
+  const dir = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ?? "residents-loop"); mkdirSync(dir, { recursive: true });
   await page.screenshot({ path: `${dir}${name}.png` });
 }
 
@@ -148,4 +149,37 @@ test("a daemon crash rearms one overdue wake and a second restart preserves the 
   await expect(page.getByRole("region", { name: "Live run of Restart watcher" })).toContainText("paused · iteration 2");
   expect(live(daemon)!.iteration).toBe(2);
   await capture(page, "daemon-restart-paused");
+});
+
+test("Restart on new profile preserves a resident's no-repository workspace mode", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Workspace watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  } });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "workspace-restart" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const old = live(daemon)!.id;
+  await request(daemon, `/api/residents/runs/${old}/pause`);
+  const oldTask = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident")!;
+  expect(oldTask.workspaceKind).toBe("resident-workspace");
+  await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+  const editor = page.getByRole("region", { name: "Resident profile Workspace watcher", exact: true });
+  await editor.getByLabel("Wake cadence (seconds)").fill("600");
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(editor).toContainText("Revision 2");
+  const host = page.getByRole("region", { name: "Live run of Workspace watcher" });
+  const [response] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === "POST" && response.url().endsWith(`/runs/${old}/restart`)),
+    host.getByRole("button", { name: "Restart on new profile", exact: true }).click(),
+  ]);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  await expect.poll(() => live(daemon)?.profile_revision).toBe(2);
+  const tasks = await request<Task[]>(daemon, "/api/tasks", undefined, "GET");
+  const fresh = tasks.find(task => task.kind === "resident" && task.status === "running")!;
+  expect(fresh.workspaceKind).toBe("resident-workspace");
+  expect(fresh.repoRoot).not.toBe(oldTask.repoRoot);
+  expect(fresh.branch).toBeNull();
+  expect(tasks.find(task => task.id === oldTask.id)?.status).toBe("done");
+  await expect(host).toContainText("iteration 1");
+  await capture(page, "workspace-restarted");
 });

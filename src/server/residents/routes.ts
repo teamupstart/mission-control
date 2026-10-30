@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { ScheduleNextIterationRequestSchema } from "@shared/protocol.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { checkToken } from "../auth.ts";
 import { sessionControlCaller } from "../session-control.ts";
@@ -37,7 +38,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           if (!stored) throw new ResidentLoopRefusal("No such resident.");
           const task = deps.registry.getTask(stored.run.taskId);
           if (!task) throw new ResidentLoopRefusal("The original task is unavailable.");
-          const request = { repoRoot: task.repoRoot, instructions: stored.run.runInstructions, requestId: `resident-restart:${id}` };
+          const request = { repoRoot: taskHasRepository(task) ? task.repoRoot : null, instructions: stored.run.runInstructions, requestId: `resident-restart:${id}` };
           if (residentRunIdentityByRequest(request.requestId)) {
             const replay = await deps.residents.launch(stored.run.profileId, request);
             return "result" in replay ? c.json(replay.result, replay.status) : c.json({ error: replay.error }, replay.status);
@@ -51,9 +52,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
             deps.loop.pause(id, "Restarting on new profile");
             if (!await deps.tasks.complete(task.id, "Restarted on new resident profile")) throw new ResidentLoopRefusal("The original task could not be completed.");
           }
-          const result = await deps.residents.launch(profile.id, {
-            repoRoot: task.repoRoot, instructions: stored.run.runInstructions, requestId: `resident-restart:${id}`,
-          });
+          const result = await deps.residents.launch(profile.id, request);
           return "result" in result ? c.json(result.result, result.status) : c.json({ error: result.error }, result.status);
         }
         liveRun(id);

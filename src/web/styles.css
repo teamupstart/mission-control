@@ -7506,7 +7506,8 @@ a.btn {
   color: var(--muted);
   line-height: 1.4;
 }
-.decision-other {
+.decision-other,
+.decision-note {
   font: inherit;
   font-size: 13px;
   color: var(--fg);
@@ -7516,7 +7517,14 @@ a.btn {
   padding: 7px 10px;
   outline: none;
 }
-.decision-other:focus {
+/* Several lines tall and resizable: a note carries instructions, not a one-word answer. */
+.decision-note {
+  min-height: 64px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.decision-other:focus,
+.decision-note:focus {
   border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
 }
 .decisions-actions {
@@ -31150,22 +31158,52 @@ span.line-run-prov {
    A checklist beside a live card. The card is the real `SessionTile` against a fixture,
    so this file styles only the frame around it - everything inside is the tile's own CSS,
    which is what stops the preview and the board from drifting. */
+/* The query container for the customizers' narrow layout. Measured on the panel rather than
+   the viewport, because the Settings rail and the page's own cap decide how much room the
+   panel has: a viewport query fires at the wrong width on every window that is not exactly
+   the one it was tuned on. */
+.board-card-customizers {
+  container: display-customizers / inline-size;
+}
+/* Three areas rather than two columns, so the preview has somewhere to go when it does not
+   fit beside the checklist: under the group's heading (see the container query below). */
 .board-card-customizer {
   display: grid;
   /* The preview is pinned to a board column's own width rather than sharing the space
      proportionally: a card narrower or wider than a real one would misreport the thing it
      exists to report - which items still fit on the branch line, where the goal wraps. */
   grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 20px;
+  grid-template-areas:
+    "head preview"
+    "list preview";
+  /* The row gap is the checklist's own 8px, so the heading and blurb sit above the first
+     control exactly as they did when they were the checklist's first children. */
+  gap: 8px 20px;
   align-items: start;
 }
-/* The Working indicator group is a customizer of its own, so its heading is the FIRST child
-   of its checklist and `:first-child` below takes its margin away. This puts back exactly
-   what separates the Conversation header group from the Board card rows above it - the
-   checklist's 8px gap plus the subhead's 16px - so all three groups sit the same distance
-   from the last row before them, instead of the third one crowding the Git branch row. */
+/* Every group after the first clears the last row of the one before it by the checklist's
+   8px gap plus the subhead's 16px, so all groups sit the same distance from the row above. */
 .board-card-customizer + .board-card-customizer {
   margin-top: 24px;
+}
+/* Areas are placed on DIRECT children only. `.board-card-checklist` and the preview's stage
+   are shared with Display > Top bar, whose two checklists sit in an ordinary two-column grid;
+   a bare `.board-card-checklist { grid-area: list }` put both of them in one cell, drawn on
+   top of each other. */
+.board-card-customizer > .board-card-group-head {
+  grid-area: head;
+}
+.board-card-customizer > .board-card-checklist {
+  grid-area: list;
+}
+.board-card-customizer > .board-card-preview {
+  grid-area: preview;
+}
+.board-card-group-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 .board-card-checklist {
   display: flex;
@@ -31176,10 +31214,11 @@ span.line-run-prov {
 /* A group label INSIDE the section, so it has to read as subordinate to the section's own
    `h3` rather than as a peer of it. At 12px/620 against an `h3` of 13px/600 it was actually
    the heavier of the two, which reads as two competing titles rather than as a section with
-   two groups - and this rule never rendered before the conversation group had entries, so
-   that was never on screen to see. The cap treatment is the one this panel already uses for
-   `PREVIEW`, and the margin is what separates the second group from the last row of the
-   first; `:first-child` keeps the top group tight under the section head. */
+   several groups. The cap treatment is the one this panel already uses for `PREVIEW`. The
+   checklist form is Display > Top bar's, which heads each of its two lists inside the list;
+   the margin separates a later heading from the rows above it, and `:first-child` keeps a
+   heading that opens its block tight to the top. */
+.board-card-group-head .settings-subhead,
 .board-card-checklist .settings-subhead {
   margin: 16px 0 0;
   font-size: 10px;
@@ -31188,9 +31227,11 @@ span.line-run-prov {
   text-transform: uppercase;
   color: var(--dim);
 }
+.board-card-group-head .settings-subhead:first-child,
 .board-card-checklist .settings-subhead:first-child {
   margin-top: 0;
 }
+.board-card-group-head .settings-blurb,
 .board-card-checklist .settings-blurb {
   margin: 0 0 2px;
 }
@@ -31267,6 +31308,34 @@ span.line-run-prov {
   flex-direction: column;
   gap: 6px;
 }
+/* Display > Conversation header's preview: the console header's three rows in their own
+   classes, so every rule here only fits a full-width pane into a 300px stage. The pane's
+   22px gutters become the stage's, and the tab strip keeps to one row and runs off the edge
+   rather than wrapping, because its first item is the one a style can put there. */
+.conversation-header-preview {
+  margin: -10px;
+  overflow: hidden;
+  border-radius: 11px;
+}
+.conversation-header-preview .detail-head,
+.conversation-header-preview .detail-sub {
+  padding-inline: 12px;
+}
+.conversation-header-preview .detail-tabs {
+  flex-wrap: nowrap;
+  padding: 0 8px;
+  border-bottom: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, #000 85%, transparent);
+}
+.conversation-header-preview .detail-tab {
+  padding: 9px 8px;
+  cursor: default;
+}
+.conversation-header-preview .detail-tab.on::after {
+  left: 4px;
+  right: 4px;
+}
 /* Display > Working indicator's preview: two short logs and a reply box, drawn with the
    conversation's own classes. The logs are fixed-height and unscrollable, because the
    second one's whole point is a scroll position - the top - that the stage holds still. */
@@ -31298,13 +31367,25 @@ span.line-run-prov {
   margin-top: 4px;
 }
 @media (max-width: 900px) {
-  .board-card-customizer,
   .topbar-customizer {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Too narrow for a 300px preview beside a readable checklist: one column, with the preview
+   under the group's heading, so it is still read before the controls it answers rather than
+   after the last of them. */
+@container display-customizers (max-width: 640px) {
+  .board-card-customizer {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "preview"
+      "list";
   }
   .board-card-preview {
     position: static;
     max-width: 300px;
+    margin-bottom: 6px;
   }
 }
 
@@ -32333,6 +32414,10 @@ body.foreman-sidecar-open .modal-backdrop {
   font: 13px/1.45 var(--sans);
   color: var(--fg);
   overflow-wrap: anywhere;
+}
+/* A note is instructions, so its line breaks are kept as typed. */
+.review-answer-note {
+  white-space: pre-wrap;
 }
 .review-answer-other-tag {
   flex: none;

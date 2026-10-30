@@ -38,6 +38,7 @@ interface ProfileRow {
 }
 
 interface RunRow {
+  workspace_dir: string | null;
   id: string;
   profile_id: string;
   profile_revision: number;
@@ -398,7 +399,7 @@ export function inResidentTransaction<T>(fn: () => T): T {
 const RUN_SELECT = `
   SELECT u.id, u.profile_id, u.profile_revision, u.task_id, u.launch_request_id, u.launch_input,
          u.launch_state, u.launch_error, u.persona_snapshot, u.run_instructions, u.created_at,
-         u.ended_at, u.loop_state, u.iteration, u.last_seq, u.next_wake_at,
+         u.ended_at, u.workspace_dir, u.loop_state, u.iteration, u.last_seq, u.next_wake_at,
          u.consumed_generation, u.pause_reason, u.wake_reason, r.settings_json
     FROM resident_runs u
     LEFT JOIN resident_profile_revisions r
@@ -444,6 +445,7 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
       profileRevision: row.profile_revision,
       taskId: row.task_id,
       launchRequestId: row.launch_request_id,
+      workspaceDir: row.workspace_dir,
       launchState,
       launchError: row.launch_error,
       persona,
@@ -538,6 +540,7 @@ export function listOpenResidentRuns(): StoredResidentRun[] {
 }
 
 export interface ReserveResidentRunInput {
+  workspaceDir?: string | null;
   id: string;
   profileId: string;
   profileRevision: number;
@@ -564,8 +567,8 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       `INSERT INTO resident_runs (
          id, profile_id, profile_revision, task_id, launch_request_id, launch_input,
          launch_repo_spelling, launch_state, launch_error, persona_snapshot, run_instructions,
-         created_at, ended_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL)
+         created_at, ended_at, workspace_dir
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?)
        ON CONFLICT(launch_request_id) DO NOTHING`,
     )
     .run(
@@ -579,6 +582,7 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       canonicalResidentJson(input.persona),
       input.runInstructions,
       input.at,
+      input.workspaceDir ?? null,
     );
   return { reserved: info.changes > 0 };
 }
@@ -643,3 +647,13 @@ export const ResidentStore = {
   run: getResidentRun,
   runForTask: residentRunForTask,
 } as const;
+
+/** Durable cleanup obligations, independent of whether the task is still on the board. */
+export function endedResidentWorkspaces(): Array<{ id: string; taskId: string; workspaceDir: string }> {
+  return openDb().prepare(`SELECT id, task_id AS taskId, workspace_dir AS workspaceDir
+    FROM resident_runs WHERE ended_at IS NOT NULL AND workspace_dir IS NOT NULL`).all() as unknown as Array<{ id: string; taskId: string; workspaceDir: string }>;
+}
+
+export function clearResidentWorkspace(id: string): void {
+  openDb().prepare("UPDATE resident_runs SET workspace_dir = NULL WHERE id = ? AND ended_at IS NOT NULL").run(id);
+}

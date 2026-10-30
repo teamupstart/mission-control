@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import type { Registry } from "../registry.ts";
 import type { Session, Task } from "@shared/types.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -5,6 +6,7 @@ import { scoutRepoSlots } from "../scouts/repos.ts";
 import { planPolicyForTask, PlanStoreError, type PlanAuthority } from "./store.ts";
 
 function taskRepository(task: Task, slot: string, fallbackRoot: string | null = null) {
+  if (!taskHasRepository(task)) throw new PlanStoreError("This resident has no repository", 403);
   const repos = scoutRepoSlots(task, fallbackRoot);
   const index = repos.findIndex((repo) => repo.slot === slot);
   const checkout = repos[index]?.root;

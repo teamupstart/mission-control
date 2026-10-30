@@ -170,10 +170,14 @@ export function formatResponse(
     const answer = byId.get(d.id);
     const labels = selectedOptions(d, answer).map((o) => o.label);
     const other = answer?.other?.trim() ?? "";
+    const note = answer?.note?.trim() ?? "";
     const lines = [`• ${d.question}`];
     if (labels.length) lines.push(`  → ${labels.join(", ")}`);
     if (d.allowOther && other) lines.push(`  Other: ${other}`);
     if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    // Not gated on `allowOther`: the note box is drawn on every decision of the forms that
+    // offer it, so dropping a typed note here would discard what the human sent.
+    if (note) lines.push(`  Note: ${note}`);
     return lines.join("\n");
   });
   return `${lead}\n\n${blocks.join("\n\n")}`;

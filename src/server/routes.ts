@@ -5458,12 +5458,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         response,
         by,
         parsed.data.selections,
+        // Committed with the answer, so a failed grant leaves the review pending to retry.
+        grant ? () => grantStandingBundleApproval(c.req.param("id")) : undefined,
       );
       if (!updated) return c.json({ error: "no such review" }, 404);
-      if (grant) grantStandingBundleApproval(updated.id);
       return c.json(updated);
     } catch (error) {
       if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
+      if (error instanceof PlanStoreError) return planFailure(c, error);
       throw error;
     }
   });

@@ -406,6 +406,12 @@ export class ReviewManager {
     response: string | null,
     by: ReviewActor = "human",
     selections: PlanDecisionAnswer[] | null = null,
+    /**
+     * Durable state that must commit with this resolution or not at all - the standing plan
+     * bundle grant. Runs in the same transaction as the status write, before anything is
+     * published or any waiter is woken, so a failure leaves the review pending to retry.
+     */
+    persistWith?: () => void,
   ): ReviewItem | null {
     const cur = this.registry.getReview(id);
     if (!cur) return null;
@@ -424,7 +430,7 @@ export class ReviewManager {
     // The schema already clears them on a dismiss; this covers the approve/reject actions
     // it does not, and holds whether or not the request came through that schema.
     const storedSelections = action === "answer" ? selections : null;
-    return this.settle(cur, status, storedResponse, by, storedSelections);
+    return this.settle(cur, status, storedResponse, by, storedSelections, persistWith);
   }
 
   /**
@@ -478,9 +484,12 @@ export class ReviewManager {
      */
     resolvedBy: ReviewActor | null = null,
     selections: PlanDecisionAnswer[] | null = null,
+    persistWith?: () => void,
   ): ReviewItem {
     const resolvedAt = Date.now();
-    updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
+    const write = () => updateReviewStatus(cur.id, status, response, resolvedAt, selections, resolvedBy);
+    if (persistWith) inTransaction(() => { write(); persistWith(); });
+    else write();
     const updated: ReviewItem = { ...cur, status, response, resolvedAt, resolvedBy, selections };
     this.registry.upsertReview(updated);
 

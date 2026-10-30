@@ -190,3 +190,22 @@ test("a standing approval stays with the task that granted it", async () => {
   assert.deepEqual(b.grants(), []);
   assert.equal(b.service.readiness(b.input).state, "blocked");
 });
+
+test("a grant that fails to persist leaves the review pending so the checked approval can be retried", async () => {
+  const f = await fixture();
+  const bundle = await f.ask();
+  const ddl = (openDb().prepare("SELECT sql FROM sqlite_master WHERE name = 'managed_plan_standing_approvals'").get() as { sql: string }).sql;
+  openDb().exec("DROP TABLE managed_plan_standing_approvals");
+  try {
+    const failed = await f.resolve(bundle.id, { ...f.approve, approveFutureBundles: true });
+    assert.ok(failed.status >= 400, `expected a failure, got ${failed.status}`);
+    assert.equal(f.registry.getReview(bundle.id)?.status, "pending", "nothing was published as settled");
+    assert.ok(loadPendingReviews().some((r) => r.id === bundle.id), "the status write rolled back with the grant");
+  } finally {
+    openDb().exec(ddl);
+  }
+  const retried = await f.resolve(bundle.id, { ...f.approve, approveFutureBundles: true });
+  assert.equal(retried.status, 200, await retried.clone().text());
+  assert.equal(f.registry.getReview(bundle.id)?.status, "answered");
+  assert.equal(f.grants().length, 1);
+});

@@ -7,7 +7,7 @@ import { DispatchModeToggle } from "../components/DispatchModeToggle.tsx";
 import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { RepoCombobox } from "../components/RepoCombobox.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { selectResidentProfile } from "./dispatch-draft.ts";
+import { chooseResidentRepo, residentDispatchRepo, selectResidentProfile } from "./dispatch-draft.ts";
 import { launchResident } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 
@@ -49,13 +49,14 @@ export function ResidentDispatch({
     : null;
   const choose = (next: ResidentProfile): void => {
     setError(null);
-    mode.onResidentChange(selectResidentProfile(draft, next, profile));
+    mode.onResidentChange(selectResidentProfile(draft, next));
   };
+  const repoRoot = residentDispatchRepo(draft, profile);
   const blocked = busy
     ? "Waiting for the launch to answer"
     : !profile
       ? "Choose a resident profile"
-      : !draft.repoRoot.trim()
+      : !repoRoot.trim()
         ? "Choose a repository"
         : null;
 
@@ -65,7 +66,7 @@ export function ResidentDispatch({
     setError(null);
     const submitted = draft;
     const answer = await launchResident(profile.id, {
-      repoRoot: submitted.repoRoot.trim(),
+      repoRoot: repoRoot.trim(),
       ...(submitted.instructions.trim() ? { instructions: submitted.instructions } : {}),
       requestId: submitted.requestId,
     });
@@ -148,11 +149,11 @@ export function ResidentDispatch({
               <RepoCombobox
                 id="resident-dispatch-repo"
                 repos={repos}
-                value={draft.repoRoot}
+                value={repoRoot}
                 disabled={busy}
-                onChange={(repoRoot) => {
+                onChange={(value) => {
                   setError(null);
-                  mode.onResidentChange({ ...draft, repoRoot });
+                  mode.onResidentChange(chooseResidentRepo(draft, value));
                 }}
               />
             </div>

@@ -49,6 +49,17 @@ export function ResidentsPage({
   const selected = local && local.id === selectedId && (!fromCatalog || local.revision > fromCatalog.revision)
     ? local
     : fromCatalog;
+  // Once the catalog has caught up with a save made here, the local copy has done its job; left
+  // standing it would keep showing a profile another window has since archived.
+  if (local && fromCatalog && local.id === fromCatalog.id && fromCatalog.revision >= local.revision) {
+    setLocal(null);
+  }
+  // The profile last shown in the editor. When another window archives it, a dirty editor stays
+  // mounted on this copy - same key, same branch - so the unsaved draft is not discarded unseen.
+  const [held, setHeld] = useState<ResidentProfile | null>(null);
+  if (selected && (held?.id !== selected.id || held.revision !== selected.revision)) setHeld(selected);
+  const archivedElsewhere = !selected && !creating && dirty && held !== null && held.id === selectedId;
+  const shown = selected ?? (archivedElsewhere ? held : null);
 
   const leave = (next: () => void): void => {
     const go = (): void => {
@@ -141,12 +152,13 @@ export function ResidentsPage({
               onArchived={() => {}}
               onLaunch={onLaunch}
             />
-          ) : selected ? (
+          ) : shown ? (
             <ResidentProfileEditor
               // Keyed by profile, not revision: a revision saved elsewhere must not remount the
               // editor and drop unsaved edits. The editor reconciles a newer revision itself.
-              key={selected.id}
-              profile={selected}
+              key={shown.id}
+              profile={shown}
+              archivedElsewhere={archivedElsewhere}
               personas={personas}
               onDirtyChange={setDirty}
               onSaved={(profile) => setLocal(profile)}

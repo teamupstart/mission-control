@@ -694,8 +694,7 @@ export function DispatchLayer({
       endPassForEnsemble();
       if (requested.profileId) {
         const next = residentProfiles.find((profile) => profile.id === requested.profileId) ?? null;
-        const previous = residentProfiles.find((profile) => profile.id === residentDraft.profileId) ?? null;
-        if (next) setResidentDraft(selectResidentProfile(residentDraft, next, previous));
+        if (next) setResidentDraft(selectResidentProfile(residentDraft, next));
       }
     } else if (!askedStrategy) {
       setLaunchMode(operatorMode.current);
@@ -902,8 +901,14 @@ export function DispatchLayer({
                 // launch was in flight is newer input, and is kept with a fresh request id.
                 setResidentDraft((current) =>
                   current.requestId === submitted.requestId && current.profileId === submitted.profileId
-                    && current.repoRoot === submitted.repoRoot && current.instructions === submitted.instructions
-                    ? { ...freshResidentDispatchDraft(), profileId: submitted.profileId, repoRoot: submitted.repoRoot }
+                    && current.repoRoot === submitted.repoRoot && current.repoFromProfile === submitted.repoFromProfile
+                    && current.instructions === submitted.instructions
+                    ? {
+                        ...freshResidentDispatchDraft(),
+                        profileId: submitted.profileId,
+                        repoRoot: submitted.repoRoot,
+                        repoFromProfile: submitted.repoFromProfile,
+                      }
                     : { ...current, requestId: crypto.randomUUID() });
                 onClose();
               },

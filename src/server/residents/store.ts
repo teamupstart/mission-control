@@ -312,6 +312,16 @@ export function restoreResidentProfilesInTransaction(
           WHERE id = ?`,
       ).run(row.name, normalized, revision, row.archivedAt, unchanged ? current.updatedAt : at, row.id);
     }
+    // The write boundary's own guard on the live bound, behind the restore preflight that
+    // already refuses it: throwing here rolls back the whole restore transaction, every domain.
+    const restoredLive = d
+      .prepare(`SELECT COUNT(*) AS n FROM resident_profiles WHERE archived_at IS NULL`)
+      .get() as { n: number };
+    if (restoredLive.n > RESIDENT_LIMITS.liveProfiles) {
+      throw new ResidentProfileLimitError(
+        `restoring would leave ${restoredLive.n} live resident profiles; at most ${RESIDENT_LIMITS.liveProfiles} are allowed`,
+      );
+    }
   });
 }
 

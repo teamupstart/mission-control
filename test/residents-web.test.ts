@@ -7,7 +7,12 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
 import { dispatchOpeningProblem, resolveDispatchOpening } from "../src/web/lib/dispatch-mode.ts";
 import { blankResidentDraft, residentDraftProblem } from "../src/web/residents/ResidentProfileEditor.tsx";
-import { freshResidentDispatchDraft, selectResidentProfile } from "../src/web/residents/dispatch-draft.ts";
+import {
+  chooseResidentRepo,
+  freshResidentDispatchDraft,
+  residentDispatchRepo,
+  selectResidentProfile,
+} from "../src/web/residents/dispatch-draft.ts";
 import { parseMissionRoute, missionRouteHash } from "../src/web/workflows/useWorkflowRoute.ts";
 import { RESIDENT_PROFILE_SECTION_IDS, ResidentProfileRevisionSchema, type ResidentProfile } from "../src/shared/residents.ts";
 
@@ -44,17 +49,25 @@ test("a Resident request opens Resident mode, and is refused while the tour hold
   assert.match(refused.problem ?? "", /Resident request while the See the work tour/);
 });
 
-test("choosing a profile pre-fills its repository unless the operator typed their own", () => {
+test("a profile-sourced repository follows the profile's current default; an operator's choice is kept", () => {
   const a = profile("a", "/repos/a");
   const b = profile("b", "/repos/b");
   const none = profile("c", null);
-  const first = selectResidentProfile(freshResidentDispatchDraft(), a, null);
-  assert.equal(first.repoRoot, "/repos/a");
-  assert.equal(selectResidentProfile(first, b, a).repoRoot, "/repos/b", "a previous default is replaced");
-  const typed = { ...first, repoRoot: "/elsewhere" };
-  assert.equal(selectResidentProfile(typed, b, a).repoRoot, "/elsewhere", "the operator's own choice is kept");
-  assert.equal(selectResidentProfile(first, none, a).repoRoot, "", "a profile with no default clears the old one");
-  assert.equal(selectResidentProfile(first, b, a).requestId, first.requestId);
+  const first = selectResidentProfile(freshResidentDispatchDraft(), a);
+  assert.equal(residentDispatchRepo(first, a), "/repos/a");
+  // The default changed after the form was prefilled: the launch reads the new one.
+  const moved = { ...a, revision: 2, settings: { ...a.settings, workspace: { defaultRepoRoot: "/repos/a-moved" } } };
+  assert.equal(residentDispatchRepo(first, moved), "/repos/a-moved");
+  // Switching profile follows the next profile's default, and one with none leaves it empty.
+  assert.equal(residentDispatchRepo(selectResidentProfile(first, b), b), "/repos/b");
+  assert.equal(residentDispatchRepo(selectResidentProfile(first, none), none), "");
+  // A typed repository is the operator's and survives both a profile switch and a default edit.
+  const typed = chooseResidentRepo(first, "/elsewhere");
+  assert.equal(residentDispatchRepo(selectResidentProfile(typed, b), b), "/elsewhere");
+  assert.equal(residentDispatchRepo(typed, moved), "/elsewhere");
+  // Clearing it hands the repository back to the profile on the next selection.
+  assert.equal(residentDispatchRepo(selectResidentProfile(chooseResidentRepo(first, ""), b), b), "/repos/b");
+  assert.equal(selectResidentProfile(first, b).requestId, first.requestId);
 });
 
 test("a blank draft carries every registered section and is not yet saveable", () => {

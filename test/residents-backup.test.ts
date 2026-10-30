@@ -168,3 +168,21 @@ test("a snapshot holding more live profiles than the catalog bound is blocked be
   assert.equal(restored.status, "preflight_blocked");
   assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id), ["kept"]);
 });
+
+test("the restore write boundary refuses a catalog past the live bound and rolls the whole restore back", async () => {
+  const at = Date.now();
+  const rows = Array.from({ length: RESIDENT_LIMITS.liveProfiles + 1 }, (_, i) => ({
+    id: `guard-${i}`,
+    name: `Guard ${i}`,
+    archivedAt: null,
+    createdAt: 1,
+    settings: settings(`Guard ${i}`, ""),
+  }));
+  store.createResidentProfile({ id: "kept", settings: settings("Triage Bot", "kept"), at });
+  db.exec("BEGIN IMMEDIATE");
+  db.prepare("INSERT INTO app_config (key, value) VALUES ('residents-guard-probe', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  assert.throws(() => store.restoreResidentProfilesInTransaction(rows, at), /at most 200/);
+  db.exec("ROLLBACK");
+  assert.equal(db.prepare("SELECT value FROM app_config WHERE key = 'residents-guard-probe'").get(), undefined, "another domain's write in the same transaction is rolled back");
+  assert.deepEqual(store.listLiveResidentProfiles().map((profile) => profile.id), ["kept"]);
+});

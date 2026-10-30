@@ -203,7 +203,8 @@ function residentProfileRestore(staged: StagedSettingsBackup): {
     ),
   ];
   // The live catalog is bounded so the SSE snapshot and the page can hold all of it; a restore
-  // must not write past that bound and leave profiles nothing can show.
+  // must not write past that bound and leave profiles nothing can show. Restore archives every
+  // live profile the snapshot omits, so the snapshot's live rows ARE the post-restore catalog.
   const live = staged.residentProfiles.filter((row) => row.archivedAt === null).length;
   if (live > RESIDENT_LIMITS.liveProfiles) {
     blockers.push(

@@ -247,3 +247,78 @@ test("a revision saved in another window never discards unsaved edits: it is hel
   await expect(editor).toContainText("Revision 5");
   await expect(editor.getByRole("alert")).toHaveCount(0);
 });
+
+type StoredProfile = { id: string; revision: number; settings: Record<string, unknown> };
+
+/** Another window's write: straight to the daemon, against the profile's current revision. */
+async function writeElsewhere(
+  daemon: DaemonHandle,
+  method: "PATCH" | "DELETE",
+  settings?: (current: StoredProfile["settings"]) => StoredProfile["settings"],
+): Promise<void> {
+  const [profile] = await api<StoredProfile[]>(daemon, "/api/residents/profiles");
+  if (!profile) throw new Error("no live profile");
+  const response = await fetch(`${daemon.baseURL}/api/residents/profiles/${profile.id}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      expectedRevision: profile.revision,
+      ...(settings ? { settings: settings(profile.settings) } : {}),
+    }),
+  });
+  expect(response.status).toBe(200);
+}
+
+test("Dispatch launches in the profile's current default repository, and keeps a repository the operator typed", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const repository = dialog.getByLabel("Repository");
+  const moved = `${daemon.repo}-moved`;
+
+  await editor.getByRole("button", { name: "Launch" }).click();
+  await expect(repository).toHaveValue(daemon.repo);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  // The profile's default changes after the form was prefilled: reopening follows it.
+  await writeElsewhere(daemon, "PATCH", (settings) => ({ ...settings, workspace: { defaultRepoRoot: moved } }));
+  await expect(editor).toContainText("Revision 2");
+  await editor.getByRole("button", { name: "Launch" }).click();
+  await expect(repository).toHaveValue(moved);
+  await expect(dialog).toContainText("revision 2");
+
+  // A repository the operator chose is theirs, through a later default change.
+  await repository.fill("/typed/by/operator");
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await writeElsewhere(daemon, "PATCH", (settings) => ({ ...settings, workspace: { defaultRepoRoot: daemon.repo } }));
+  await expect(editor).toContainText("Revision 3");
+  await editor.getByRole("button", { name: "Launch" }).click();
+  await expect(repository).toHaveValue("/typed/by/operator");
+});
+
+test("a profile archived in another window keeps this window's unsaved draft until the operator discards it", async ({
+  dashboard,
+  daemon,
+}) => {
+  await authorProfile(dashboard, daemon);
+  const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+  const instructions = editor.getByLabel("Profile instructions");
+  await instructions.fill("A draft worth copying.");
+
+  await writeElsewhere(daemon, "DELETE");
+  const notice = editor.getByRole("alert");
+  await expect(notice).toContainText("This profile was archived elsewhere");
+  await expect(instructions).toHaveValue("A draft worth copying.");
+  await expect(editor.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(editor.getByRole("button", { name: "Launch" })).toBeDisabled();
+  await capture(dashboard.locator("main.residents-page"), "residents-page-archived-elsewhere");
+
+  await notice.getByRole("button", { name: "Discard changes" }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(dashboard.getByRole("heading", { name: "This resident profile is not available" })).toBeVisible();
+  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
+});

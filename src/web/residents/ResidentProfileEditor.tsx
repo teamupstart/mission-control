@@ -53,9 +53,15 @@ export function ResidentProfileEditor({
   onArchived,
   onLaunch,
   onDirtyChange,
+  archivedElsewhere = false,
 }: {
   /** The profile being edited, or null for a new one. The parent keys this per profile. */
   profile: ResidentProfile | null;
+  /**
+   * Another window archived this profile while the draft here had unsaved edits. The editor
+   * stays mounted to say so: the draft can be read and copied, then discarded, but not saved.
+   */
+  archivedElsewhere?: boolean;
   personas: readonly PersonaView[];
   onSaved: (profile: ResidentProfile) => void;
   onArchived: (profile: ResidentProfile) => void;
@@ -83,7 +89,7 @@ export function ResidentProfileEditor({
     setBase(newer);
     setDraft(newer.settings);
   }
-  const conflict = newer && dirty ? newer : null;
+  const conflict = newer && dirty && !archivedElsewhere ? newer : null;
 
   const update = <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]): void => {
     setDraft((current) => ({ ...current, [id]: value }));
@@ -155,20 +161,22 @@ export function ResidentProfileEditor({
         <div className="resident-editor-actions">
           {profile && (
             <Tooltip label="Move this profile to the archive; running residents keep their revision">
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void archive()}>
+              <button type="button" className="btn btn-ghost" disabled={busy || archivedElsewhere} onClick={() => void archive()}>
                 Archive
               </button>
             </Tooltip>
           )}
           <Tooltip
-            label={conflict
+            label={archivedElsewhere
+              ? "This profile was archived elsewhere, so there is nothing to save to"
+              : conflict
               ? "A newer revision was saved elsewhere; choose below whether to keep yours"
               : problem ?? (dirty ? "Save these settings as a new revision" : "Nothing to save")}
           >
             <button
               type="button"
               className="btn"
-              disabled={busy || !dirty || problem !== null || conflict !== null}
+              disabled={busy || !dirty || problem !== null || conflict !== null || archivedElsewhere}
               onClick={() => void save()}
             >
               {busy ? "Saving…" : "Save"}
@@ -184,7 +192,7 @@ export function ResidentProfileEditor({
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!profile || dirty || busy}
+              disabled={!profile || dirty || busy || archivedElsewhere}
               onClick={() => profile && onLaunch(profile)}
             >
               Launch
@@ -192,6 +200,21 @@ export function ResidentProfileEditor({
           </Tooltip>
         </div>
       </header>
+      {archivedElsewhere && (
+        <div className="resident-conflict" role="alert">
+          <p>
+            This profile was archived elsewhere while you were editing. Your unsaved changes are
+            still here to copy; they can no longer be saved to it.
+          </p>
+          <div className="resident-conflict-actions">
+            <Tooltip label="Discard your changes and close this profile">
+              <button type="button" className="btn btn-ghost" onClick={() => setDirty(false)}>
+                Discard changes
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
       {conflict && (
         <div className="resident-conflict" role="alert">
           <p>

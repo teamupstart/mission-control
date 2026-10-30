@@ -22,7 +22,18 @@ function bundleModes(bundle: string) {
   return modes;
 }
 
-/** Ordinary distributed modes: 0755 directories, 0644 files. A umask of 077 cannot produce them. */
+/** The bundle executable, which is the one file a bundle ships at 0755. */
+const EXECUTABLE = 'Contents/MacOS/Mission Control';
+
+/** Write the executable every fixture bundle needs, before modes are normalized. */
+function writeExecutable(bundle: string) {
+  mkdirSync(join(bundle, 'Contents/MacOS'), {recursive: true});
+  writeFileSync(join(bundle, EXECUTABLE), '#!/bin/sh\nexit 0\n');
+}
+
+/** Ordinary distributed modes: 0755 directories and executable, 0644 everything else. A umask of
+ * 077 cannot produce them, and a copy that recreated files at default modes would drop the
+ * executable's 0755 to 0644 while leaving every directory looking correct. */
 function normalizeModes(bundle: string) {
   const visit = (path: string) => {
     const stat = lstatSync(path);
@@ -31,6 +42,7 @@ function normalizeModes(bundle: string) {
     if (stat.isDirectory()) for (const entry of readdirSync(path)) visit(join(path, entry));
   };
   visit(bundle);
+  chmodSync(join(bundle, EXECUTABLE), 0o755);
 }
 
 function underInstallerUmask(t: test.TestContext) {
@@ -50,6 +62,7 @@ function fixture(t: test.TestContext, rename = false) {
     writeFileSync(join(path, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.26.0</string>');
     writeFileSync(join(path, 'Contents/Resources/app/package.json'), JSON.stringify({missionCommit: commit,
       missionInstallMigration: {protocol: 1, automatic: true}, missionInstallTransaction: {protocol: 1, appNaming: 1, receiptSchemas: [1, 2]}}));
+    writeExecutable(path);
     normalizeModes(path);
   }
   const oldReceipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.26.0', installedVersion: '1.26.0',
@@ -133,6 +146,7 @@ test('the helper runtime snapshot copy keeps the source runtime modes under the 
   const runtimeBundle = join(root, 'Runtime source.app');
   mkdirSync(join(runtimeBundle, 'Contents/Resources/app/scripts'), {recursive: true});
   writeFileSync(join(runtimeBundle, 'Contents/Resources/app/scripts/apply-update.mjs'), 'export {};\n');
+  writeExecutable(runtimeBundle);
   normalizeModes(runtimeBundle);
   const elsewhere = join(root, 'elsewhere.mjs');
   writeFileSync(elsewhere, 'export {};\n');
@@ -152,6 +166,7 @@ test('the update helper backup and restore copies keep the app at its own modes 
   mkdirSync(join(app, 'Contents/Resources/app'), {recursive: true});
   writeFileSync(join(app, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.26.0</string>');
   writeFileSync(join(app, 'Contents/Resources/app/package.json'), JSON.stringify({missionCommit: 'a'.repeat(40)}));
+  writeExecutable(app);
   normalizeModes(app);
   const expected = bundleModes(app);
   const digest = inspectBundle(app).digest;

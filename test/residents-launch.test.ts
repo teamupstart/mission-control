@@ -943,6 +943,39 @@ test("workspace removal failure keeps cleanup owed until a later manager retries
   assert.equal(errors.mock.callCount(), 1, "the retry completed without another removal error");
 });
 
+test("cleanup retries an owed per-run directory after the workspace was already removed", async (t) => {
+  const { existsSync, unlinkSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { setSdkSessionStatus } = await import("../src/server/sdk/store.ts");
+  const setup = harness();
+  const profile = profileIn(setup);
+  const outcome = await setup.residents.launch(profile.id, { repoRoot: null, requestId: "run-directory-retry" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const run = outcome.result.run;
+  const directory = run.workspaceDir!;
+  const runDirectory = dirname(directory);
+  const obstacle = join(runDirectory, "keep-until-released.txt");
+  writeFileSync(obstacle, "an unexpected sibling must not be recursively deleted");
+  const task = setup.registry.getTask(run.taskId)!;
+  setup.registry.upsertTask({ ...task, status: "done" });
+  setSdkSessionStatus(task.sessionId!, "exited");
+  const errors = t.mock.method(console, "error", () => {});
+  assert.doesNotThrow(() => setup.residents.cleanupEndedWorkspaces());
+  assert.equal(errors.mock.callCount(), 1);
+  assert.equal(existsSync(directory), false, "workspace removal succeeded before parent removal failed");
+  assert.ok(existsSync(obstacle));
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, directory);
+  assert.deepEqual(store.endedResidentWorkspaces().map(({ id }) => id), [run.id]);
+  setup.residents.stop();
+
+  unlinkSync(obstacle);
+  harness({ registry: setup.registry });
+  assert.equal(existsSync(runDirectory), false, "startup retries removal even with no workspace left");
+  assert.equal(store.getResidentRun(run.id)!.run.workspaceDir, null);
+  assert.deepEqual(store.endedResidentWorkspaces(), []);
+  assert.equal(errors.mock.callCount(), 1);
+});
+
 test("a failed repo-less launch removes its workspace and a replay does not recreate it", async () => {
   const { existsSync } = await import("node:fs");
   const setup = harness({ mode: "fail" });

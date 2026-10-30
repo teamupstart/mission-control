@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { TASK_KINDS } from "../src/shared/types.ts";
 import { taskHasRepository, TASK_KIND_BEHAVIOR } from "../src/shared/task.ts";
@@ -37,6 +37,31 @@ test("repository grouping leaves a repo-less resident loose even with stale repo
   assert.equal(order.sessions.length, 1);
 });
 
+test("workspace creation and cleanup refuse every symlink boundary without modifying its target", async (t) => {
+  const parts = ["residents", "runs", "boundary-run", "workspace"];
+  for (let index = 0; index < parts.length; index += 1) {
+    for (const dangling of [false, true]) {
+      await t.test(`${parts[index]} boundary, ${dangling ? "dangling" : "existing"} target`, () => {
+        const boundary = join(home, ...parts.slice(0, index + 1));
+        const foreign = mkdtempSync(join(home, "foreign-boundary-"));
+        writeFileSync(join(foreign, "keep.txt"), "untouched");
+        mkdirSync(dirname(boundary), { recursive: true });
+        symlinkSync(dangling ? join(foreign, "missing") : foreign, boundary);
+        try {
+          const directory = residentWorkspaceDir("boundary-run");
+          assert.throws(() => createResidentWorkspace("boundary-run", directory), /owned directory/);
+          assert.throws(() => removeResidentWorkspace("boundary-run", directory), /owned directory/);
+          assert.ok(lstatSync(boundary).isSymbolicLink());
+          assert.deepEqual(readdirSync(foreign), ["keep.txt"], "no descendants were created through the link");
+          assert.equal(readFileSync(join(foreign, "keep.txt"), "utf8"), "untouched");
+        } finally {
+          rmSync(join(home, "residents"), { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
 test("workspace cleanup is idempotent and refuses symlinks and foreign paths", () => {
   const directory = residentWorkspaceDir("owned");
   createResidentWorkspace("owned", directory);
@@ -44,10 +69,13 @@ test("workspace cleanup is idempotent and refuses symlinks and foreign paths", (
   removeResidentWorkspace("owned", directory);
   removeResidentWorkspace("owned", directory);
   assert.equal(existsSync(directory), false);
+  assert.equal(existsSync(dirname(directory)), false, "cleanup removes the empty per-run directory");
+  assert.ok(existsSync(dirname(dirname(directory))), "the shared runs directory remains");
   const foreign = join(home, "foreign");
   mkdirSync(foreign);
   writeFileSync(join(foreign, "keep.txt"), "operator data");
   assert.throws(() => removeResidentWorkspace("owned", foreign), /ownership/);
+  mkdirSync(dirname(directory), { recursive: true });
   symlinkSync(foreign, directory);
   assert.throws(() => removeResidentWorkspace("owned", directory), /owned directory/);
   assert.ok(existsSync(join(foreign, "keep.txt")));

@@ -1,5 +1,5 @@
-import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, realpathSync, rmdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { STATE_DIR } from "../config.ts";
 
 /** The run id comes from the daemon, never from a submitted path. */
@@ -14,13 +14,15 @@ function ownedWorkspace(runId: string, directory: string, create: boolean): bool
   let parent = realpathSync(STATE_DIR);
   for (const part of ["residents", "runs", runId, "workspace"]) {
     parent = join(parent, part);
-    if (create) mkdirSync(parent, { recursive: true });
     try {
       const stat = lstatSync(parent);
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("resident workspace must be an owned directory");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !create) return false;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!create) return false;
+      // Ancestors have already been checked. Never create recursively through an
+      // unchecked component; an entry appearing since lstat must fail with EEXIST.
+      mkdirSync(parent);
     }
   }
   return true;
@@ -32,4 +34,11 @@ export function createResidentWorkspace(runId: string, directory: string): void 
 
 export function removeResidentWorkspace(runId: string, directory: string): void {
   if (ownedWorkspace(runId, directory, false)) rmSync(directory, { recursive: true, force: true });
+  // Retry the parent even if an earlier attempt already removed the workspace. An
+  // unexpected sibling keeps cleanup owed rather than being recursively discarded.
+  try {
+    rmdirSync(dirname(directory));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }

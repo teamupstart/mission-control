@@ -14,7 +14,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
-| Resident loop | `src/server/residents/loop.ts` | Sole owner of resident loop turns, durable wake claims and pacing |
+| Resident loop | `src/server/residents/loop.ts` | Sole coordinator of resident loop turns, timers and driver calls |
+| Resident loop store | `src/server/residents/loop-store.ts` | Durable loop transitions, wake claims and pacing transactions |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |

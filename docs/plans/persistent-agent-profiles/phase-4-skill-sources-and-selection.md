@@ -79,9 +79,23 @@ Pi.
        it holds: its name with a content hash where the harness exposes the content, and
        otherwise the harness's version with the hash of its executable.
      - The check must show that the chosen identity covers the built-in content, so that any
-       change to a built-in skill changes the identity. If it cannot, built-in skills are
-       unverifiable for that harness: inherit on is not offered, and a selected built-in skill
-       is refused at launch, until the operator gate below decides.
+       change to a built-in skill changes the identity.
+     - **Loading an identity-pinned built-in skill.** Its content source is the harness's own
+       built-in copy, in the installation whose identity the daemon has just verified.
+       - The daemon recomputes the identity immediately before every start, at launch and on
+         each resume, and starts nothing on a mismatch.
+       - The recorded mechanism then turns on, by name, exactly the pinned built-in skills, and
+         keeps every other built-in skill off.
+       - This is deliberate use of a positively verified artifact, not unchecked native
+         discovery. Nothing is read from a skill folder, and no built-in skill loads unless its
+         identity was checked for that start.
+       - The check must show the exact set holding: each pinned built-in skill is invoked
+         successfully after launch and after an unchanged resume, and every unpinned one is
+         unavailable.
+     - Built-in skills are unverifiable for a harness when the identity cannot be shown to cover
+       their content, or when no mechanism passes that check. Inherit on is then not offered,
+       and a selected built-in skill that cannot be copied is refused at launch, until the
+       operator gate below decides.
      - Neither mode ever loads a built-in skill from mutable native state;
    - after launch, one fixture is added, one edited and one deleted;
    - the check passes only if, at launch and after a restart and resume, the session offers
@@ -102,7 +116,9 @@ Pi.
    - `mission`;
    - `claude-global` (`~/.claude/skills`, skipping `mission-*`);
    - `agents-global` (`~/.agents/skills`);
-   - `codex-global` (`~/.codex/skills`);
+   - `codex-global`: `skills/` under the Codex home, resolved from the daemon's own
+     environment as `process.env.CODEX_HOME || ~/.codex`, the rule `codexSessionsDir` in
+     `src/server/harness/codex/rollout.ts` already uses, and never from a run's overlay;
    - `claude-builtin` and `codex-builtin`, for the skills built into each harness.
    Operator directories validated like indexed repository directories.
 3. **Index** in `src/server/residents/skill-index.ts`: reads `<dir>/<skill>/SKILL.md`
@@ -122,12 +138,15 @@ Pi.
      snapshot directory, and one entry per skill with its identity (source and folder), its
      effective name, its folder within the snapshot and its content hash. The run's snapshot
      is its only input, at launch and on every resume. A built-in skill recorded by identity
-     also has an entry, with its name and the recorded identity and no folder, so the driver
-     can confirm it without a snapshot copy.
+     also has an entry, with its name and the recorded identity and no folder. The daemon
+     checks that identity before the driver starts, and the driver then turns the skill on by
+     name from the verified installation, as step 1 defines.
    - **Mapping.** Each driver renders the payload through the `SkillSelectionSpec` that step 1
      recorded for its harness. For Claude that is the `CLAUDE_CONFIG_DIR` overlay's `skills/`,
      or the fallback's `--plugin-dir`. For Codex it is the `CODEX_HOME` overlay's `skills/`, or
-     the fallback's `skills.config` path entries. No driver reads a native skill source.
+     the fallback's `skills.config` path entries. No driver reads a native skill source. The
+     only built-in skills that load without a snapshot copy are the identity-pinned ones,
+     through step 1's verified mechanism.
    - **What is captured.** The pinned revision's `inheritDefaults` decides. With inherit on, the
      snapshot holds every default skill the harness would load for the run at launch, from
      every source step 1's check covers, plus the selected skills. With inherit off, it holds
@@ -178,6 +197,8 @@ Pi.
   stability, section defaults, snapshot creation, hashes and cleanup, per-driver option rendering
   for both primary and fallback mechanisms, and resume rendering from the pinned revision after
   the profile is edited. Claude's mechanism leaves the effective user settings unchanged.
+  `codex-global` indexes `$CODEX_HOME/skills` when `CODEX_HOME` names a custom home, and
+  `~/.codex/skills` when it is unset.
 - Effective-set tests, for each harness, with inherit on and with inherit off:
   - with fixture skills in every source step 1 covers, the snapshot holds exactly the inherited
     defaults present at launch plus the selections with inherit on, and exactly the selections
@@ -193,6 +214,11 @@ Pi.
     launch leaves the run's copies in effect, and the run resumes normally;
   - built-in skills verified by identity:
     - a resume on an unchanged harness resumes normally;
+    - each pinned built-in skill is invoked successfully after launch and after an unchanged
+      resume, and an unpinned built-in skill is unavailable at both points;
+    - where no mechanism turns on exactly the pinned built-in skills, identity-only support is
+      not offered. Inherit on is not offered, and a selected built-in skill that cannot be
+      copied is refused at launch;
     - each of these holds the resume with the recovery reason: a built-in skill that changes
       content under the same name, one that disappears, one newly added, and an identity that
       cannot be computed;
@@ -201,7 +227,8 @@ Pi.
   - with inherit off and a selected built-in skill:
     - the launch holds exactly the selected skills, the built-in one included, with every
       unselected built-in skill off;
-    - an unchanged harness resumes normally;
+    - an unchanged harness resumes normally. The selected built-in skill, whether copied or
+      identity-pinned, is invoked successfully after launch and after that resume;
     - a change to the selected built-in skill's content, or its removal, leaves the copy in
       effect where it was copied, and holds the resume where it is verified by identity;
     - a built-in skill that an upgrade adds and that was not selected stays off. The run
@@ -255,3 +282,9 @@ Phase 5 reuses the measured-capability pattern and the optional-field approach o
   skills. Selected built-in skills are indexed, and are snapshotted or identity-pinned in both
   modes. With inherit off every unselected built-in skill stays off, and an unverifiable
   selected built-in skill is refused at launch, never loaded from native state.
+- Pull request review (CodeRabbit, sixth batch):
+  - an identity-pinned built-in skill loads from the harness's own copy, in the installation
+    whose identity the daemon verified just before that start. The probed mechanism turns it
+    on by name, and invocation is tested after launch and after resume. Where no mechanism
+    passes, identity-only support is refused. Copied built-in skills are unchanged;
+  - the `codex-global` source resolves `CODEX_HOME` with the `codexSessionsDir` rule.

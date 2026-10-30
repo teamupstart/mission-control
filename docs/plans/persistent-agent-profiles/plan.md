@@ -1,6 +1,6 @@
 # Residents: long-running, profile-driven agents
 
-Status: decisions recorded (revision 14, repaired after plan validation and review). Implementation is split into seven phases in
+Status: decisions recorded (revision 15, repaired after plan validation and review). Implementation is split into seven phases in
 [phased-plan.md](phased-plan.md), which also holds the detailed repository findings.
 
 ## Outcome
@@ -92,7 +92,8 @@ profile**.
 - Mission Control's `skills/`;
 - `~/.claude/skills`, skipping Mission's own `mission-*` links;
 - `~/.agents/skills`;
-- `~/.codex/skills`;
+- the Codex home's `skills/`: `$CODEX_HOME/skills`, or `~/.codex/skills` when `CODEX_HOME` is
+  unset;
 - the skills built into each harness.
 
 Operators add folders of `<skill>/SKILL.md`, validated like indexed repository directories. The

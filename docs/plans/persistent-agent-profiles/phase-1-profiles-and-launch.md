@@ -48,6 +48,17 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
 - Profile storage follows `mission_schedules` and `mission_schedule_revisions`; editor layout
   follows `PersonaLibrary` and `PersonaEditor` (`src/web/workflows/`), with `ModelField` and the
   agent and effort selects from `ScheduleEditor`.
+- Dispatch and session start (`src/server/tasks.ts`, `src/server/dispatcher.ts`,
+  `src/server/sdk/supervisor.ts`):
+  - `TaskManager.create` files a dispatchable task as `dispatching` and starts
+    `Dispatcher.dispatch` without waiting for it, so a created task is not a started session.
+  - `SdkSupervisor.start` writes the `sdk_sessions` row, with `task_id` and status `starting`,
+    only after the driver has accepted turn one. Only then does `dispatchEmbedded` set the task
+    to `running` with that row's id as `sessionId`.
+  - `TaskManager.reconcileOnStartup` already handles an interrupted `dispatching` task. It binds
+    the task to the live row that `SdkSupervisor.liveSessionForTask` names, and otherwise fails
+    it: "dispatch interrupted by a restart" or, before any resource existed, the
+    interrupted-before-provision error for a kind without a backlog.
 
 ## Implementation steps
 
@@ -113,12 +124,31 @@ MCP (Phases 4 and 5); session control (Phase 6); repo-less launch (Phase 7).
        the existing task for a reserved id whose inputs match, for schedule and ensemble
        producers; Phase 1 adds the resident producer to that recovery contract with its own
        identity check, and lets it dispatch immediately instead of filing to the backlog.
-     - **Finish.** One write sets `launch_state` to `launched`. A task creation that fails sets
-       `failed` and stamps `ended_at`, so it leaves no live run.
-     - **Startup reconciliation** runs for every `pending` run before SDK restore: if its
-       reserved task exists, the run becomes `launched`; otherwise it becomes `failed` with
-       `ended_at` stamped. A crash between the writes therefore never leaves a live run without
-       its task.
+     - **Session-start evidence.** A run becomes `launched` only on durable evidence that its
+       session started: an `sdk_sessions` row whose `task_id` is the reserved task id, which
+       `SdkSupervisor.start` writes only after the driver accepted turn one. The task's existence
+       alone is never evidence. When the task records a `sessionId`, it must name that row.
+     - **Finish.** The manager waits for the reserved task's dispatch to settle, then makes one
+       write:
+       - with the evidence, `launch_state` becomes `launched`;
+       - otherwise `launch_state` becomes `failed`, with the task's error as `launch_error`, and
+         `ended_at` is stamped, so no live run is left. This covers a failed dispatch, a task
+         that settles without a session, and a task creation that fails.
+     - **Startup reconciliation** runs for every `pending` run once `TaskManager`'s own startup
+       reconciliation has settled the reserved task. It applies the same evidence rule, one
+       write per run:
+       - the reserved task is missing: the run becomes `failed`;
+       - the task exists but no row carries its id, because the crash fell after the task was
+         created and before the driver accepted turn one: the run becomes `failed`, with
+         `launch_error` "interrupted before its session started". The task settles through the
+         existing path, and nothing relaunches it, so a new launch needs a new `requestId`;
+       - the row exists: the driver accepted turn one, so the run becomes `launched`. This holds
+         whether the crash fell before `dispatchEmbedded` bound the task, which `TaskManager`'s
+         reconciliation then binds, or after the binding and before the `launched` write. When
+         the task has already ended, the same write stamps `ended_at`. Whether a live session
+         survives restore is left to the ordinary run-end path.
+       A `failed` outcome stamps `ended_at`, so a crash between writes never leaves a live run
+       without a started session.
    - Run end: subscribe to the existing durable task completion and `session_remove` paths to
      stamp `ended_at`; add the startup twin required by the architecture guide.
 5. **Launch composer** in `src/server/residents/launch.ts`: `RESIDENT_LAUNCH_CONTRIBUTORS`, an
@@ -172,8 +202,19 @@ so a downgraded build reads a resident task as `ship`; this matches the existing
     progress, or the recorded failure;
   - two spellings of the same repository path normalize to the same `launch_input`, and an
     input stored at an older `version` compares equal to the same request after an upgrade;
-  - crash reconciliation: a crash after the run write and before task creation ends the run as
-    `failed`, and a crash after task creation and before `launched` adopts the task;
+  - crash reconciliation at each boundary, each followed by a daemon restart:
+    - a crash after the run write and before task creation ends the run as `failed`;
+    - a crash after `TaskManager.create` and before the driver accepted turn one leaves a task
+      with no `sdk_sessions` row. The run ends as `failed`, with "interrupted before its session
+      started", and the task is not relaunched. A replay with the same `requestId` returns that
+      failure;
+    - a crash after the driver accepted turn one, once `SdkSupervisor.start` has written the
+      row and before the task was bound `running`, is adopted as `launched`. This happens only
+      after `TaskManager`'s reconciliation binds the task to that row;
+    - a crash after the task was bound and before the `launched` write is adopted as
+      `launched`;
+  - on the live path, `launched` is never written before the row exists, and a dispatch that
+    fails before the session starts sets `failed` with the task's error;
   - the profile's agent reaching the task, for both a Claude Code and a Codex profile;
   - persona snapshot, standing-instruction composition and resume replay from the pinned
     revision after the profile is edited, kind registry answers, refusal of `resident` on other
@@ -213,3 +254,8 @@ run row as the durable identity, and the standing-instructions placement.
 - Pull request review (Inspector, round 5): the reservation write stores the normalized
   `launch_input`, so a conflicting replay is refused from the run row alone, even when a crash
   left no task.
+- Pull request review (Inspector, round 7): a run becomes `launched` only on durable
+  session-start evidence, both live and at startup. That evidence is the `sdk_sessions` row
+  `SdkSupervisor.start` writes after the driver accepted turn one, carrying the reserved task
+  id. A task created without a started session fails the run with its reason, and Phase 3
+  records no launch iteration for it.

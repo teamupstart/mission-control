@@ -1,7 +1,7 @@
 # Residents: phased implementation plan
 
 Source plan: [`docs/plans/persistent-agent-profiles/plan.md`](plan.md) (managed plan
-`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 14). Every phase file beside this index is the
+`38fb418e-19ab-4515-946a-a1afcd16524c`, revision 15). Every phase file beside this index is the
 proposed route for one pull request; the source plan's outcome and recorded decisions are the
 requirements.
 

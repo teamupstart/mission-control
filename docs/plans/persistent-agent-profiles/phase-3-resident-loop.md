@@ -110,9 +110,10 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
      `iteration` 1 and `last_seq` 1, and appends a `resident_iterations` row with `seq` 1,
      trigger `launch`, delivery `sent`, and `claimed_at` and `sent_at` equal to that moment.
      - This covers a normal launch and a `pending` run that startup reconciliation adopts as
-       `launched`.
+       `launched` on Phase 1's session-start evidence.
      - A `pending` or `failed` run has no iteration row and stays at `iteration` 0. A launch that
-       never created its task therefore never counts as a turn, or toward the caps.
+       never created its task, or whose task never started its session, therefore never counts
+       as a turn, or toward the caps.
      - A `launched` run still at `iteration` 0 when this phase deploys is adopted the same way
        on first start, in one write per run. Its `consumed_generation` stays null, so its latest
        completed generation schedules its first wake.
@@ -299,7 +300,8 @@ Changing Foreman, recurring missions or work queues; Pi; terminal-runtime loops.
     write that sets `launch_state` to `launched`, including when startup reconciliation adopts a
     pending run's task;
   - a `pending` run, and a `failed` one whose task creation failed or crashed before the task
-    existed, has no iteration row, stays at `iteration` 0 and counts toward no cap;
+    existed, has no iteration row, stays at `iteration` 0 and counts toward no cap. The same
+    holds for a run whose task was created but crashed before its session started;
   - each wake and **Run now** claims exactly one row with `seq` `last_seq + 1`, and adds one to
     `iteration` when the row reaches `sent`;
   - a positive refusal marks the row `released` and leaves `iteration` unchanged; the next claim
@@ -419,3 +421,5 @@ but must not send turns to a resident outside `ResidentLoop` or the existing hum
   Only a typed pre-commit refusal, or a connection refused before sending, proves nothing was
   recorded; every other failure may still apply. An advancing-clock commit-after-timeout test
   pins it.
+- Pull request review (Inspector, round 7): the launch iteration follows Phase 1's
+  session-start evidence, so a task that never started its session records none.

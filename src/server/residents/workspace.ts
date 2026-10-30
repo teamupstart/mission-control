@@ -1,4 +1,5 @@
-import { lstatSync, mkdirSync, realpathSync, rmdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { rmdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { STATE_DIR } from "../config.ts";
 
@@ -32,12 +33,12 @@ export function createResidentWorkspace(runId: string, directory: string): void 
   ownedWorkspace(runId, directory, true);
 }
 
-export function removeResidentWorkspace(runId: string, directory: string): void {
-  if (ownedWorkspace(runId, directory, false)) rmSync(directory, { recursive: true, force: true });
+export async function removeResidentWorkspace(runId: string, directory: string): Promise<void> {
+  if (ownedWorkspace(runId, directory, false)) await rm(directory, { recursive: true, force: true });
   // Retry the parent even if an earlier attempt already removed the workspace. An
   // unexpected sibling keeps cleanup owed rather than being recursively discarded.
   try {
-    rmdirSync(dirname(directory));
+    await rmdir(dirname(directory));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }

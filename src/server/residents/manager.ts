@@ -100,6 +100,8 @@ export interface ResidentManagerDeps {
   sessionRowsForTask?: (taskId: string) => string[];
   /** The supervisor may still own a handle after an exited row or forced Registry retirement. */
   hasLiveDriver?: (sessionId: string) => boolean;
+  /** Owned filesystem removal, injectable to exercise in-flight cleanup and shutdown. */
+  removeWorkspace?: typeof removeResidentWorkspace;
   /** A task as SQLite holds it, for startup reconciliation of rows the board did not load. */
   durableTask?: (taskId: string) => Task | undefined;
   now?: () => number;
@@ -145,6 +147,7 @@ export class ResidentManager {
   private readonly retryTimers = new Map<NodeJS.Timeout, (proceed: boolean) => void>();
   private stopped = false;
   private cleanupTimer?: NodeJS.Timeout;
+  private readonly cleaningWorkspaces = new Map<string, Promise<void>>();
   private subscriptions: Array<() => void> = [];
 
   constructor(private readonly deps: ResidentManagerDeps) {
@@ -174,7 +177,7 @@ export class ResidentManager {
     this.subscriptions.push(this.deps.registry.onSessionsObserved(() => this.reconcileRunEnds()));
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     clearInterval(this.cleanupTimer);
     for (const [timer, resolve] of this.retryTimers) {
@@ -183,6 +186,7 @@ export class ResidentManager {
     }
     this.retryTimers.clear();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    await Promise.all(this.cleaningWorkspaces.values());
   }
 
   // ---- profiles ----
@@ -585,31 +589,36 @@ export class ResidentManager {
   }
 
   /** End every launched run whose task has settled or gone. */
-  reconcileRunEnds(): void {
+  reconcileRunEnds(): Promise<void> {
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched") continue;
       const task = this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId);
       if (!task || isTerminalTask(task.status)) endResidentRun(run.id, this.now());
     }
-    this.cleanupEndedWorkspaces();
+    return this.cleanupEndedWorkspaces();
   }
 
   /** Completion may precede eviction. Preserve cwd until every owned SDK runtime has stopped. */
-  cleanupEndedWorkspaces(): void {
+  cleanupEndedWorkspaces(): Promise<void> {
+    if (this.stopped) return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
     for (const run of endedResidentWorkspaces()) {
-      if (this.settling.has(run.id)) continue;
+      if (this.settling.has(run.id) || this.cleaningWorkspaces.has(run.id)) continue;
       const sessions = this.sessionRowsForTask(run.taskId);
       if (sessions.some((id) => {
         if (this.deps.registry.getSession(id) || this.deps.hasLiveDriver?.(id)) return true;
         const row = getSdkSession(id);
         return row && row.status !== "exited" && row.status !== "failed";
       })) continue;
-      try {
-        removeResidentWorkspace(run.id, run.workspaceDir);
-        clearResidentWorkspace(run.id);
-      } catch (error) {
-        console.error(`[residents] workspace cleanup remains owed for ${run.id}:`, error);
-      }
+      const cleanup = (async () => {
+        try {
+          await (this.deps.removeWorkspace ?? removeResidentWorkspace)(run.id, run.workspaceDir);
+          clearResidentWorkspace(run.id);
+        } catch (error) {
+          console.error(`[residents] workspace cleanup remains owed for ${run.id}:`, error);
+        }
+      })().finally(() => this.cleaningWorkspaces.delete(run.id));
+      this.cleaningWorkspaces.set(run.id, cleanup);
     }
+    return Promise.all(this.cleaningWorkspaces.values()).then(() => {});
   }
 }

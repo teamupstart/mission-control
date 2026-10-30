@@ -116,7 +116,7 @@ function fakeSupervisor(registry: Registry) {
 }
 
 const residentManagers: InstanceType<typeof ResidentManager>[] = [];
-afterEach(() => { for (const manager of residentManagers.splice(0)) manager.stop(); });
+afterEach(async () => { for (const manager of residentManagers.splice(0)) await manager.stop(); });
 
 function residentFixture(persona: { current: Persona }) {
   const registry = new Registry();
@@ -313,7 +313,7 @@ for (const agent of ["claude", "codex"] as const) {
       assert.deepEqual(replay, outcome);
       assert.equal(supervisor.starts.length, 1);
     } finally {
-      residents.stop();
+      await residents.stop();
     }
   });
 }

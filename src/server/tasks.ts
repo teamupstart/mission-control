@@ -4706,7 +4706,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if ((taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
+    if ((!taskHasRepository(t) || taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }

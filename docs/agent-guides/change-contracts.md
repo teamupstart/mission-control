@@ -1237,8 +1237,10 @@ Four rules hold across phases:
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
 keeps historical repository behavior. `resident_runs.workspace_dir` records the cleanup
-obligation before directory creation and is cleared only after successful removal. Repository
-consumers use the shared predicate or `taskRepoRefs`, never infer a repository from cwd.
+obligation before directory creation and is cleared only after successful removal of the workspace
+and its empty run directory. Removal is asynchronous, serialized per run, and drained during
+daemon shutdown. Repository consumers use the shared predicate or `taskRepoRefs`, never infer
+a repository from cwd.
 
 The `residentProfiles` SSE collection is bounded by `RESIDENT_LIMITS.liveProfiles` (200), and
 creation past it is refused rather than truncated. Its frames are not `LINE_INPUT_EVENTS`: a

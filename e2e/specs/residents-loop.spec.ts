@@ -44,6 +44,14 @@ async function capture(page: Page, name: string) {
   const dir = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ?? "residents-loop"); mkdirSync(dir, { recursive: true });
   await page.screenshot({ path: `${dir}${name}.png` });
 }
+async function expectControlTooltip(page: Page, control: Locator, description: string) {
+  await control.hover();
+  // A focused menu item can also have a tooltip while another item is hovered.
+  const tooltip = page.locator(".tooltip").filter({ hasText: description });
+  await expect(tooltip).toHaveText(description);
+  await expect(tooltip).toBeVisible();
+  await expect(control).toHaveAccessibleDescription(description);
+}
 
 for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loop, guardrail, Pause, Resume, Run now and Restart on new profile`, async ({ dashboard: page, daemon }) => {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
@@ -68,6 +76,8 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   let host = await surface(page, daemon, profile, kind);
   const role = kind === "card" ? "menuitem" as const : "button" as const;
   if (kind !== "card") await expect(host).toContainText("Iteration guardrail");
+  await expectControlTooltip(page, host.getByRole(role, { name: "Resume", exact: true }), "Resume automatic resident iterations when guardrails allow");
+  await capture(page, `${kind}-resume-tooltip`);
   await host.getByRole(role, { name: "Resume", exact: true }).click();
   await expect(host.getByRole("alert")).toContainText("Resume after");
   if (kind === "dock") {
@@ -84,9 +94,11 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   withDaemonDb(daemon, db => db.prepare("UPDATE resident_iterations SET claimed_at = ?").run(Date.now() - 86_400_001));
   await host.getByRole(role, { name: "Resume", exact: true }).click();
   await expect(host.getByRole(role, { name: "Pause", exact: true })).toBeEnabled();
+  await expectControlTooltip(page, host.getByRole(role, { name: "Pause", exact: true }), "Pause automatic resident iterations after the current turn");
   await host.getByRole(role, { name: "Pause", exact: true }).click();
   await expect.poll(() => live(daemon)?.loop_state).toBe("paused");
   const before = live(daemon)!.iteration;
+  await expectControlTooltip(page, host.getByRole(role, { name: "Run now", exact: true }), "Request the next resident iteration now, subject to guardrails");
   await host.getByRole(role, { name: "Run now", exact: true }).click();
   await expect.poll(() => live(daemon)?.iteration).toBe(before + 1);
   if (kind === "card") host = await surface(page, daemon, profile, kind);
@@ -111,6 +123,7 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   }
   host = await surface(page, daemon, profile, kind);
   const old = live(daemon)!.id;
+  await expectControlTooltip(page, host.getByRole(role, { name: "Restart on new profile", exact: true }), "Start a fresh resident run using the latest profile revision");
   await host.getByRole(role, { name: "Restart on new profile", exact: true }).click();
   await expect.poll(() => live(daemon)?.profile_revision, { timeout: 60_000 }).toBe(2);
   expect(live(daemon)!.id).not.toBe(old);

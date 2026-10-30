@@ -199,8 +199,8 @@ conflicting resolutions at the same timestamp also block. Renewed approval needs
 workflow validation when a workflow is bound.
 
 The final-bundle form also offers **Approve all future bundles for this task** beside
-Submit. When the operator submits with it checked, the daemon records a standing approval
-for the task. Every later final-bundle request for that task is then approved at creation,
+Submit. When the operator approves the bundle with it checked, the daemon records a standing
+approval for the task. Choosing **Needs revision** with it checked records nothing. Every later final-bundle request for that task is then approved at creation,
 without a prompt, and logged in the session's conversation as auto-approved rather than as the
 operator's answer. The agent's tool result says it was approved automatically. When a request
 also carries other open choices, the bundle is still auto-approved and logged, and only those

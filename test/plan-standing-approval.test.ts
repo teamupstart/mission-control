@@ -127,6 +127,18 @@ test("without the checkbox, a later bundle is still asked", async () => {
   assert.equal((await f.ask()).status, "pending");
 });
 
+test("needs revision with the checkbox ticked does not grant a standing approval", async () => {
+  const f = await fixture();
+  const first = await f.ask();
+  const revise = { action: "answer", response: "Needs revision", selections: [{ decisionId: "approve-final-bundle", selected: ["revise"], other: null }], approveFutureBundles: true };
+  assert.equal((await f.resolve(first.id, revise)).status, 200);
+  assert.equal(f.registry.getReview(first.id)?.status, "answered", "the revision answer itself still reaches the agent");
+  assert.deepEqual(f.grants(), []);
+  const next = await f.ask();
+  assert.equal(next.status, "pending", "the next bundle still asks the operator");
+  assert.equal(f.service.readiness(f.input).state, "blocked");
+});
+
 test("only the operator's submitted final-bundle answer can grant a standing approval", async () => {
   const f = await fixture();
   const bundle = await f.ask();
@@ -138,10 +150,17 @@ test("only the operator's submitted final-bundle answer can grant a standing app
   assert.equal((await f.resolve(bundle.id, { action: "dismiss", approveFutureBundles: true })).status, 200);
   assert.deepEqual(f.grants(), [], "a dismissal decided nothing");
 
+  // A form that approves nothing ignores the flag; it never grants.
   const plain = f.reviews.create(f.id, "input", "Question", "Pick one", [{ id: "q", question: "Pick one", options: [{ id: "a", label: "A" }] }]);
-  const refused = await f.resolve(plain.id, { action: "answer", response: "A", selections: [{ decisionId: "q", selected: ["a"], other: null }], approveFutureBundles: true });
+  const ignored = await f.resolve(plain.id, { action: "answer", response: "A", selections: [{ decisionId: "q", selected: ["a"], other: null }], approveFutureBundles: true });
+  assert.equal(ignored.status, 200);
+  assert.deepEqual(f.grants(), []);
+
+  // A review that is not a managed plan's bound final-bundle approval is refused even when its answer looks like one.
+  const unbound = f.reviews.create(f.id, "plan-decisions", "Not a managed plan", "Pick", [{ id: "approve-final-bundle", question: "Approve?", options: [{ id: "approve", label: "Approve" }] }]);
+  const refused = await f.resolve(unbound.id, { ...f.approve, approveFutureBundles: true });
   assert.equal(refused.status, 400);
-  assert.equal(f.registry.getReview(plain.id)?.status, "pending");
+  assert.equal(f.registry.getReview(unbound.id)?.status, "pending");
   assert.deepEqual(f.grants(), []);
 });
 

@@ -21,7 +21,7 @@ import {
   STANDING_FOLLOW_UP_NOTE,
 } from "./plans/publication.ts";
 import { validatePlanInputs } from "./plans/inputs.ts";
-import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
@@ -5428,7 +5428,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     // "Approve all future bundles for this task" is the operator's standing grant. Checked
     // before resolving, so a grant that cannot be kept leaves the question open to retry.
-    const grant = parsed.data.action === "answer" && parsed.data.approveFutureBundles === true;
+    // Only an answer that approves this bundle grants it: "Needs revision" with the box ticked
+    // must not approve the next one.
+    const grant = parsed.data.action === "answer" && parsed.data.approveFutureBundles === true
+      && approvesFinalBundle(parsed.data.selections);
     if (grant) {
       if (by !== "human") return c.json({ error: "Only the operator can approve future plan bundles" }, 403);
       if (registry.getReview(c.req.param("id"))?.status !== "pending") return c.json({ error: "This review is already settled" }, 409);

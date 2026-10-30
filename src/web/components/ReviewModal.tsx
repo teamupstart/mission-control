@@ -5,7 +5,7 @@ import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { decisionLead } from "@shared/review-item.ts";
-import { PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
+import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -139,7 +139,8 @@ export function ReviewCard({
       action,
       response,
       selections,
-      action === "answer" && finalBundle && approveFuture,
+      // Granted only alongside an approval of this bundle, never with "Needs revision".
+      action === "answer" && finalBundle && approveFuture && approvesFinalBundle(selections),
     );
     setBusy(false);
     if (!r.ok) setErr(r.error ?? "failed");

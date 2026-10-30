@@ -49,11 +49,27 @@ test("approve all future bundles for this task approves later bundles without pr
   const standing = form.getByRole("checkbox", { name: "Approve all future bundles for this task" });
   await expect(standing).toBeVisible();
   await expect(standing).not.toBeChecked();
+  const resolveResponse = () => dashboard.waitForResponse((response) => /\/api\/reviews\/[^/]+\/resolve$/.test(response.url()));
+
+  // "Needs revision" with the box ticked sends the revision and grants nothing.
+  await form.getByRole("radio", { name: "Needs revision", exact: true }).check();
+  await standing.check();
+  const revised = resolveResponse();
+  await form.getByRole("button", { name: "Submit", exact: true }).click();
+  const revision = await revised;
+  expect(revision.ok()).toBe(true);
+  expect(revision.request().postDataJSON().approveFutureBundles).toBe(false);
+  await expect(form).toBeHidden();
+
+  // So when the agent asks again, the operator is prompted again.
+  await ask(1);
+  await expect(form.getByRole("radio", { name: "Approve final bundle", exact: true })).toBeVisible();
+  await expect(standing).not.toBeChecked();
   await form.getByRole("radio", { name: "Approve final bundle", exact: true }).check();
   await standing.check();
   mkdirSync(evidence, { recursive: true }); await dashboard.setViewportSize({ width: 1440, height: 1000 });
   await dashboard.screenshot({ path: `${evidence}standing-approval-checkbox.png` });
-  const resolved = dashboard.waitForResponse((response) => /\/api\/reviews\/[^/]+\/resolve$/.test(response.url()));
+  const resolved = resolveResponse();
   await form.getByRole("button", { name: "Submit", exact: true }).click();
   const resolution = await resolved;
   expect(resolution.ok()).toBe(true);

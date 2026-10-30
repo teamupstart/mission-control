@@ -57,7 +57,8 @@ export type ActionId =
   | "lineDensity"
   | "composerEditor"
   | "requeue"
-  | "residents";
+  | "residents"
+  | "residentsDock";
 
 export interface ActionDef {
   id: ActionId;
@@ -155,6 +156,15 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Open Residents",
     description: "Author resident profiles and launch long-running agents from them.",
     defaultBinding: "shift+a",
+    group: "global",
+  },
+  {
+    // `shift+h`: the dock's glyph is ⌂, home, and the residents page already holds
+    // `shift+a`. Every bare letter near it is a session action.
+    id: "residentsDock",
+    label: "Open the Residents dock",
+    description: "Show the live residents and the profiles you can launch, beside Foreman in the top bar.",
+    defaultBinding: "shift+h",
     group: "global",
   },
   {

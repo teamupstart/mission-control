@@ -6,6 +6,8 @@ import {
   launchInputsMatch,
   normalizeRunInstructions,
   residentLaunchInput,
+  residentRunSummary,
+  type ResidentRunSummary,
   type LaunchResident,
   type ResidentLaunchInput,
   type ResidentLaunchResult,
@@ -82,6 +84,8 @@ export interface ResidentRegistry {
   onSessionsObserved(fn: () => void): () => void;
   upsertResidentProfile(profile: ResidentProfile): void;
   removeResidentProfile(id: string): void;
+  upsertResidentRun(summary: ResidentRunSummary): void;
+  removeResidentRun(id: string): void;
 }
 
 export interface ResidentManagerDeps {
@@ -321,6 +325,7 @@ export class ResidentManager {
     }
     const stored = getResidentRun(runId);
     if (!stored) throw new Error(`resident run ${runId} vanished after its reservation`);
+    this.publishRun(runId);
 
     const settlement = this.createAndSettle(stored.run, request);
     this.settling.set(runId, settlement);
@@ -389,6 +394,7 @@ export class ResidentManager {
       );
     } catch (error) {
       markResidentRunFailed(run.id, error instanceof Error ? error.message : String(error), this.now());
+      this.publishRun(run.id);
       return;
     }
     await this.dispatchSettled(run.taskId);
@@ -404,9 +410,23 @@ export class ResidentManager {
     const at = this.now();
     if (this.startedSession(run.taskId, task)) {
       markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null);
-      return;
+    } else {
+      markResidentRunFailed(run.id, task?.error ?? RESIDENT_SESSION_DID_NOT_START, at);
     }
-    markResidentRunFailed(run.id, task?.error ?? RESIDENT_SESSION_DID_NOT_START, at);
+    this.publishRun(run.id);
+  }
+
+  /**
+   * Announce a run as it now stands, after the write that changed it: its live summary, or
+   * its departure from the `residentRuns` collection once it ended or failed. Read back from
+   * the row rather than assembled from what the caller wrote, so the frame is the durable
+   * state whichever write won.
+   */
+  private publishRun(runId: string): void {
+    const stored = getResidentRun(runId);
+    const summary = stored ? residentRunSummary(stored.run) : null;
+    if (summary) this.deps.registry.upsertResidentRun(summary);
+    else this.deps.registry.removeResidentRun(runId);
   }
 
   private startedSession(taskId: string, task: Task | undefined): string | null {
@@ -530,13 +550,14 @@ export class ResidentManager {
       // The driver accepted turn one before the crash. TaskManager's reconciliation binds the
       // task to that row; whether the session survives restore is the run-end path's question.
       markResidentRunLaunched(run.id, !task || isTerminalTask(task.status) ? at : null);
-      return;
+    } else {
+      markResidentRunFailed(
+        run.id,
+        task ? RESIDENT_INTERRUPTED_BEFORE_SESSION : RESIDENT_INTERRUPTED_BEFORE_TASK,
+        at,
+      );
     }
-    markResidentRunFailed(
-      run.id,
-      task ? RESIDENT_INTERRUPTED_BEFORE_SESSION : RESIDENT_INTERRUPTED_BEFORE_TASK,
-      at,
-    );
+    this.publishRun(run.id);
   }
 
   private observe(event: ServerEvent): void {
@@ -560,7 +581,7 @@ export class ResidentManager {
   private endRunForTask(taskId: string): void {
     const stored = residentRunForTask(taskId);
     if (stored && stored.run.launchState === "launched" && stored.run.endedAt === null) {
-      endResidentRun(stored.run.id, this.now());
+      if (endResidentRun(stored.run.id, this.now())) this.publishRun(stored.run.id);
     }
   }
 
@@ -569,7 +590,9 @@ export class ResidentManager {
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched") continue;
       const task = this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId);
-      if (!task || isTerminalTask(task.status)) endResidentRun(run.id, this.now());
+      if ((!task || isTerminalTask(task.status)) && endResidentRun(run.id, this.now())) {
+        this.publishRun(run.id);
+      }
     }
   }
 }

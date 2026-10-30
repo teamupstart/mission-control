@@ -57,7 +57,7 @@ test("a custom MCP server's secret is write-only, its selection reaches the laun
   await editor.getByRole("textbox", { name: "Command", exact: true }).fill("srv");
   await editor.getByLabel(/^Arguments/).fill("--api-key=abc");
   await editor.getByRole("button", { name: "Save server" }).click();
-  await expect(panel.getByRole("alert")).toContainText("argument 1 (--api-key=…) looks like a credential-named value");
+  await expect(panel.getByRole("alert")).toContainText("argument 1 (--api-key) looks like a credential-named value");
   await editor.getByRole("button", { name: "Cancel" }).click();
 
   // A stdio server with one secret and one plain variable.
@@ -127,7 +127,7 @@ test("a custom MCP server's secret is write-only, its selection reaches the laun
   // With inherit on, a global server residents cannot represent refuses the launch, naming why.
   await dialog.getByRole("button", { name: "Launch resident" }).click();
   await expect(dialog.getByRole("alert")).toContainText(
-    "Claude Code's global MCP server leaky is inherited but residents cannot use it: argument 1 (--token=…) looks like a credential-named value",
+    "Claude Code's global MCP server leaky is inherited but residents cannot use it: argument 1 (--token) looks like a credential-named value",
     { timeout: 60_000 },
   );
   expect(await page.content()).not.toContain(GLOBAL_SECRET);

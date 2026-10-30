@@ -331,10 +331,20 @@ export function credentialFormArgs(args: readonly string[]): { index: number; ar
   return null;
 }
 
-/** The refusal an editor or launch shows for a credential-form argument. */
+/**
+ * The refusal an editor or launch shows for a credential-form argument: its position and form,
+ * and for a credential-named flag or pair the flag's name, which is never part of a value. No
+ * other part of the argument is echoed, because the refusal reaches the browser and the log.
+ */
 export function credentialArgumentProblem(found: { index: number; arg: string; reason: string }): string {
-  const shown = found.arg.length > 40 ? `${found.arg.slice(0, 12)}…` : found.arg.replace(/=.*/s, "=…");
-  return `argument ${found.index + 1} (${shown}) looks like ${found.reason}; put the credential in a secret environment variable instead`;
+  const pair = /^(-{0,2}[A-Za-z0-9][A-Za-z0-9_.-]*)=/s.exec(found.arg.trim());
+  const name = found.reason === "a credential-named value" && pair
+    ? pair[1]
+    : found.reason === "a credential-named flag"
+      ? found.arg.trim()
+      : null;
+  const shown = name ? ` (${name})` : "";
+  return `argument ${found.index + 1}${shown} looks like ${found.reason}; put the credential in a secret environment variable instead`;
 }
 
 export function residentMcpEnvNameProblem(name: string): string | null {

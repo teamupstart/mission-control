@@ -121,6 +121,25 @@ test("credentials outside secret fields are refused at save, naming the argument
       arg,
     );
   }
+  // The refusal names the position and form, and never echoes any part of a value.
+  for (const [arg, named] of [
+    ["Bearer sk-short", null],
+    ["Authorization: Basic dXNlcjpwYXNz", null],
+    ["https://user:hunter2@example.com/mcp", null],
+    ["https://example.com/mcp?key=hunter2", null],
+    ["--api-key=hunter2", "--api-key"],
+    ["GITHUB_TOKEN=hunter2", "GITHUB_TOKEN"],
+    ["--token", "--token"],
+  ] as const) {
+    let message = "";
+    try {
+      create({ name: `e${Math.random().toString(36).slice(2, 8)}`, harnesses: ["claude"], transport: { type: "stdio", command: "srv", args: [arg] } });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assert.match(message, named ? new RegExp(`^argument 1 \\(${named}\\) looks like`) : /^argument 1 looks like/, arg);
+    for (const secret of ["sk-short", "dXNlcjpwYXNz", "hunter2", "user:"]) assert.ok(!message.includes(secret), `${arg}: ${message}`);
+  }
   for (const arg of ["--port", "8080", "--verbose", "https://example.com/mcp", "--keyboard-layout=us"]) {
     assert.equal(credentialFormArgument(arg), null, arg);
   }

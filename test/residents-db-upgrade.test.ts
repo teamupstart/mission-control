@@ -29,7 +29,7 @@ test("an upgraded database gains the resident tables empty, with the idempotency
     .all() as Array<{ name: string }>).map((row) => row.name).sort();
   assert.deepEqual(tables, ["resident_profile_revisions", "resident_profiles", "resident_runs"]);
   const runColumns = db.prepare(`PRAGMA table_info(resident_runs)`).all() as Array<{ name: string; notnull: number }>;
-  for (const column of ["launch_request_id", "launch_input", "launch_state", "task_id", "persona_snapshot"]) {
+  for (const column of ["launch_request_id", "launch_input", "launch_repo_spelling", "launch_state", "task_id", "persona_snapshot"]) {
     assert.equal(runColumns.find((c) => c.name === column)?.notnull, 1, `${column} must be NOT NULL`);
   }
   const indexes = db.prepare(`PRAGMA index_list(resident_runs)`).all() as Array<{ name: string; unique: number }>;

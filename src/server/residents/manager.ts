@@ -53,6 +53,17 @@ export const RESIDENT_INTERRUPTED_BEFORE_SESSION =
 export const RESIDENT_SESSION_DID_NOT_START = "the resident's session did not start";
 
 /**
+ * The repository a stored run resolved, when a replay spells it exactly as the original request
+ * did, or null. Used only when the repository no longer resolves - removed, moved, or behind a
+ * symlink that is gone - so an exact replay still answers with its run instead of a conflict.
+ */
+function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: string): string | null {
+  if (!known || !spelling || known.repoSpelling !== spelling) return null;
+  const stored = known.launchInput as { repoRoot?: unknown } | null;
+  return typeof stored?.repoRoot === "string" ? stored.repoRoot : null;
+}
+
+/**
  * How long a launch request waits for its dispatch to settle before answering "in progress".
  * The dispatch keeps going; a replay with the same request id reads its outcome.
  */
@@ -236,17 +247,18 @@ export class ResidentManager {
    * across a crash at every boundary; see the class comment.
    */
   async launch(profileId: string, input: LaunchResident): Promise<ResidentLaunchOutcome> {
+    const spelling = input.repoRoot.trim();
     const resolved = await this.resolveRepoRoot(input.repoRoot);
-    const request = residentLaunchInput(
-      resolved.ok ? resolved.repoRoot : input.repoRoot.trim(),
-      input.instructions,
-    );
     // A replay first, from the run row alone, read AFTER the await: a racing request with the
     // same id may have reserved while this one resolved its repository, and its run - not this
     // request's view of the profile - decides the answer. A known request id never re-validates
     // against the profile as it is now, because what it is compared with is what it recorded,
     // so reusing it for an unknown or archived profile is the typed conflict, not a 404.
     const known = residentRunIdentityByRequest(input.requestId);
+    const request = residentLaunchInput(
+      resolved.ok ? resolved.repoRoot : knownRepoForSpelling(known, spelling) ?? spelling,
+      input.instructions,
+    );
     if (known) return this.replay(known, profileId, request);
     if (!resolved.ok) return { ok: false, status: 400, code: "invalid", error: resolved.error };
 
@@ -273,6 +285,7 @@ export class ResidentManager {
       taskId,
       launchRequestId: input.requestId,
       launchInput: request,
+      repoSpelling: spelling,
       persona: snapshot,
       runInstructions: normalizeRunInstructions(input.instructions),
       at: this.now(),

@@ -2051,6 +2051,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       task_id            TEXT NOT NULL,
       launch_request_id  TEXT NOT NULL,
       launch_input       TEXT NOT NULL,
+      -- The repository exactly as the request spelled it, trimmed. Not compared while the
+      -- repository resolves (launch_input holds the real path); it is what lets an exact
+      -- replay be recognized once the repository no longer resolves.
+      launch_repo_spelling TEXT NOT NULL DEFAULT '',
       launch_state       TEXT NOT NULL,
       launch_error       TEXT,
       persona_snapshot   TEXT NOT NULL,
@@ -3221,6 +3225,7 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");

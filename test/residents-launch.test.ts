@@ -421,6 +421,7 @@ test("a reservation that lands between the re-read and the insert is answered fr
             taskId: `task-${winnerRun}`,
             launchRequestId: requestId,
             launchInput: residentLaunchInput(REPO, "same"),
+            repoSpelling: REPO,
             persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
             runInstructions: "same",
             at: 1,
@@ -445,6 +446,41 @@ test("a reservation that lands between the re-read and the insert is answered fr
       1,
     );
   }
+});
+
+test("an exact replay is recognized after its repository stops resolving; another spelling is not", async () => {
+  // The original launch named a noncanonical spelling (a symlink, a `..` path); later the
+  // repository is removed, so nothing resolves any more.
+  const gone = { current: false };
+  const h = harness({
+    resolve: async (path) => (gone.current
+      ? { ok: false as const, error: `not a git repository: ${path}` }
+      : resolveRepoRoot(path)),
+  });
+  const profile = profileIn(h);
+  const spelling = "/work/other/../mission-control";
+  const first = await h.residents.launch(profile.id, { repoRoot: spelling, instructions: "Today", requestId: "req-gone" });
+  if (!("result" in first) || first.result.state !== "launched") assert.fail(JSON.stringify(first));
+
+  gone.current = true;
+  const replay = await h.residents.launch(profile.id, { repoRoot: ` ${spelling} `, instructions: "Today", requestId: "req-gone" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.status, 200);
+  assert.equal(replay.result.state, "launched");
+  assert.equal(replay.result.run.id, first.result.run.id);
+
+  // The resolved path itself still matches what was stored.
+  const resolvedSpelling = await h.residents.launch(profile.id, { repoRoot: REPO, instructions: "Today", requestId: "req-gone" });
+  assert.ok("result" in resolvedSpelling && resolvedSpelling.result.run.id === first.result.run.id, JSON.stringify(resolvedSpelling));
+
+  // A spelling the original request never used cannot be proven to be the same repository.
+  const other = await h.residents.launch(profile.id, { repoRoot: "/work/./mission-control", instructions: "Today", requestId: "req-gone" });
+  assert.ok("code" in other && other.code === "conflict", JSON.stringify(other));
+  // And the instructions still have to match.
+  const changed = await h.residents.launch(profile.id, { repoRoot: spelling, instructions: "Tomorrow", requestId: "req-gone" });
+  assert.ok("code" in changed && changed.code === "conflict", JSON.stringify(changed));
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
 });
 
 test("two spellings of one repository normalize to the same launch input", async () => {
@@ -484,6 +520,7 @@ function reserveOnly(profileId: string, requestId: string, taskId: string, input
     taskId,
     launchRequestId: requestId,
     launchInput: input,
+    repoSpelling: input.repoRoot,
     persona: { personaId: PERSONA.id, name: PERSONA.name, guidanceMarkdown: PERSONA.guidanceMarkdown },
     runInstructions: input.instructions,
     at: 1,

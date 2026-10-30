@@ -403,12 +403,14 @@ export interface ResidentRunIdentity {
   launchState: string;
   launchError: string | null;
   launchInput: unknown;
+  /** The repository exactly as the original request spelled it. */
+  repoSpelling: string;
 }
 
 export function residentRunIdentityByRequest(requestId: string): ResidentRunIdentity | null {
   const row = openDb()
     .prepare(
-      `SELECT id, profile_id, task_id, launch_state, launch_error, launch_input
+      `SELECT id, profile_id, task_id, launch_state, launch_error, launch_input, launch_repo_spelling
          FROM resident_runs WHERE launch_request_id = ?`,
     )
     .get(requestId) as
@@ -419,6 +421,7 @@ export function residentRunIdentityByRequest(requestId: string): ResidentRunIden
         launch_state: string;
         launch_error: string | null;
         launch_input: string;
+        launch_repo_spelling: string;
       }
     | undefined;
   if (!row) return null;
@@ -435,6 +438,7 @@ export function residentRunIdentityByRequest(requestId: string): ResidentRunIden
     launchState: row.launch_state,
     launchError: row.launch_error,
     launchInput,
+    repoSpelling: row.launch_repo_spelling,
   };
 }
 
@@ -473,6 +477,8 @@ export interface ReserveResidentRunInput {
   taskId: string;
   launchRequestId: string;
   launchInput: ResidentLaunchInput;
+  /** The repository exactly as the request spelled it, trimmed. */
+  repoSpelling: string;
   persona: ResidentPersonaSnapshot;
   runInstructions: string;
   at: number;
@@ -490,8 +496,9 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
     .prepare(
       `INSERT INTO resident_runs (
          id, profile_id, profile_revision, task_id, launch_request_id, launch_input,
-         launch_state, launch_error, persona_snapshot, run_instructions, created_at, ended_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL)
+         launch_repo_spelling, launch_state, launch_error, persona_snapshot, run_instructions,
+         created_at, ended_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL)
        ON CONFLICT(launch_request_id) DO NOTHING`,
     )
     .run(
@@ -501,6 +508,7 @@ export function reserveResidentRun(input: ReserveResidentRunInput): { reserved: 
       input.taskId,
       input.launchRequestId,
       canonicalResidentJson(input.launchInput),
+      input.repoSpelling,
       canonicalResidentJson(input.persona),
       input.runInstructions,
       input.at,

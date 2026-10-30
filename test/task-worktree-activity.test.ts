@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   mkdirSync,
@@ -206,18 +207,34 @@ test("a real git read suspended past its budget still answers, instead of report
   // finished during the suspension.
   const dir = mkRepo("suspended-read");
   const head = git(dir, "rev-parse", "HEAD").trim();
-  // Warm the executable locator first. A process's FIRST git read awaits a login-shell PATH probe
-  // before it spawns anything, so without this the suspension below lands BEFORE the read is in
-  // flight, and the test would pass on the very wall-clock timer it exists to reject.
+  // Warm the executable locator first: a process's first lookup spawns a login-shell PATH probe,
+  // and the suspension below must land on git's spawn, not that one.
   assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 300)).code, 0);
+
+  // Suspend INSIDE git's spawn: the child exists, the read's budget is already armed, and no
+  // output can have been processed, because nothing returns to the event loop until spawn does.
+  // That holds however fast git is. Suspending at a later event-loop phase instead raced git:
+  // on a fast Linux runner the read had already been answered by then.
+  const realSpawn = childProcess.spawn;
+  let suspendedSpawns = 0;
+  childProcess.spawn = ((command: string, ...rest: unknown[]) => {
+    const child = (realSpawn as (...args: unknown[]) => ReturnType<typeof realSpawn>)(command, ...rest);
+    if (/(^|\/)git$/.test(command)) {
+      suspendedSpawns += 1;
+      suspendFor(900);
+    }
+    return child;
+  }) as typeof childProcess.spawn;
+  syncBuiltinESMExports();
   const chunks: Buffer[] = [];
-  const pending = gitStream(dir, ["rev-parse", "HEAD"], (chunk) => chunks.push(chunk), 300);
-  // With the locator warm the read spawns within microtasks, so by the check phase it is in
-  // flight. Then stop running for three times its budget.
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(chunks.length, 0, "the read is still in flight when the suspension starts");
-  suspendFor(900);
-  const result = await pending;
+  let result;
+  try {
+    result = await gitStream(dir, ["rev-parse", "HEAD"], (chunk) => chunks.push(chunk), 300);
+  } finally {
+    childProcess.spawn = realSpawn;
+    syncBuiltinESMExports();
+  }
+  assert.equal(suspendedSpawns, 1, "the process was suspended while this read was in flight");
   assert.deepEqual(result, { code: 0, overflowed: false, died: false });
   assert.equal(Buffer.concat(chunks).toString("utf8").trim(), head, "and its answer is the real one");
 });

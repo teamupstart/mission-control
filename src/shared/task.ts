@@ -157,14 +157,31 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     accent: "#b4c0cf",
     icon: [{ shape: "path", d: "M2.5 3.2h11v7.2H7.6l-3.2 2.6v-2.6H2.5z" }],
   },
+  resident: {
+    label: "resident",
+    blurb: "Hold a standing role from a resident profile until Complete & close. No after-work.",
+    purpose: "hold a standing role from a profile",
+    accent: "#b5d462",
+    icon: [
+      { shape: "path", d: "M2.5 7.4 8 2.8l5.5 4.6M4 6.3V13.2h8V6.3" },
+      { shape: "rect", x: 6.6, y: 9.2, width: 2.8, height: 4, rx: 0.6 },
+    ],
+  },
 };
 
 /** The launch and scheduling rules every surface must apply to a task kind. */
 export interface TaskKindBehavior {
   /** Which repository catalog may offer this kind. */
   repoAvailability: "workspace" | "pipeline-enabled";
-  /** Who owns the launched process and runtime choices. */
-  launch: "harness" | "pipeline";
+  /**
+   * Who owns the launched process and runtime choices.
+   *
+   * `resident` is Mission Control's own harness launch with every choice taken from a
+   * resident profile: the profile names the harness, model and effort, and the run is always
+   * the Agent SDK. That is why it is not `harness` - per-kind defaults would be a second
+   * source for answers the profile already gives.
+   */
+  launch: "harness" | "pipeline" | "resident";
   /** Whether Foreman's backlog loop may pick this kind unattended. */
   autopilot: boolean;
   /** A short, operator-facing explanation of non-default launch constraints. */
@@ -220,6 +237,13 @@ export const TASK_KIND_BEHAVIOR = {
     autopilot: false,
     constraint: null,
   },
+  resident: {
+    repoAvailability: "workspace",
+    launch: "resident",
+    autopilot: false,
+    constraint:
+      "Resident tasks launch only from a resident profile, in the Agent SDK, with the profile's harness, model and effort.",
+  },
   // `as const satisfies` rather than a plain annotation: `satisfies` keeps the
   // exhaustiveness gate exactly as it was - a new kind still does not compile until it has
   // answered all four questions - while `as const` keeps each answer's LITERAL type, which
@@ -254,6 +278,28 @@ export function providerOwnsTaskCompletion(kind: TaskKind): boolean {
   return TASK_KIND_BEHAVIOR[kind].launch === "pipeline";
 }
 
+/**
+ * The runtime a kind always launches on, or null when the harness's configured runtime decides.
+ *
+ * A resident is an Agent SDK session by definition: its persona travels as standing
+ * instructions on the SDK channel and its lifetime is the embedded session's. Derived from
+ * `launch` so the answer cannot disagree with who owns the launch.
+ */
+export function taskKindForcedRuntime(kind: TaskKind): "sdk" | null {
+  return TASK_KIND_BEHAVIOR[kind].launch === "resident" ? "sdk" : null;
+}
+
+/**
+ * Why a session running a task of this kind cannot Continue in terminal, or null. A kind that
+ * forces the Agent SDK keeps its session there: its role is delivered on the SDK channel, and a
+ * terminal handoff would leave the kind's one runtime.
+ */
+export function taskKindTerminalHandoffRefusal(kind: TaskKind): string | null {
+  return taskKindForcedRuntime(kind) === "sdk"
+    ? `A ${TASK_KIND_INFO[kind].label} runs only in the Agent SDK, so it cannot continue in a terminal.`
+    : null;
+}
+
 /** Whether Foreman's unattended backlog loop may schedule this kind. */
 export function allowsBacklogAutopilot(kind: TaskKind): boolean {
   return TASK_KIND_BEHAVIOR[kind].autopilot;
@@ -279,6 +325,7 @@ const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: false,
   chat: false,
+  resident: false,
 };
 
 /**
@@ -301,14 +348,69 @@ const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
   plan: true,
   pipeline: true,
   chat: false,
+  resident: false,
 };
 
 export const TASK_KIND_BACKLOG_REFUSAL =
   "Chat tasks must be launched immediately from Dispatch.";
 
+/** The refusal a resident task meets on any surface but its profile's Launch. */
+export const RESIDENT_TASK_REFUSAL =
+  "Resident tasks are launched from a resident profile. Launch a new resident instead.";
+
+/**
+ * Why a kind with no backlog cannot be stored, retried or edited into one. One sentence per
+ * kind, so a refusal names the surface that does launch it.
+ */
+const KIND_BACKLOG_REFUSALS: Record<TaskKind, string | null> = {
+  document: null,
+  ship: null,
+  bugfix: null,
+  scout: null,
+  plan: null,
+  pipeline: null,
+  chat: TASK_KIND_BACKLOG_REFUSAL,
+  resident: RESIDENT_TASK_REFUSAL,
+};
+
 export function taskKindAllowsBacklog(kind: TaskKind): boolean {
   return KIND_ALLOWS_BACKLOG[kind];
 }
+
+/** The sentence a backlog-only operation refuses this kind with. */
+export function taskKindBacklogRefusal(kind: TaskKind): string {
+  return KIND_BACKLOG_REFUSALS[kind] ?? TASK_KIND_BACKLOG_REFUSAL;
+}
+
+/**
+ * Which creation surface may file a task of this kind.
+ *
+ * - `any`: every creator, durable producers included.
+ * - `dispatch`: only the manual Dispatch capability (`chat`).
+ * - `resident-launch`: only `ResidentManager.launch`, which reserves the run first. The
+ *   Dispatch form does not offer it as a kind and `DispatchSchema` refuses it.
+ */
+export type TaskKindCreator = "any" | "dispatch" | "resident-launch";
+
+const KIND_CREATOR: Record<TaskKind, TaskKindCreator> = {
+  document: "any",
+  ship: "any",
+  bugfix: "any",
+  scout: "any",
+  plan: "any",
+  pipeline: "any",
+  chat: "dispatch",
+  resident: "resident-launch",
+};
+
+export function taskKindCreator(kind: TaskKind): TaskKindCreator {
+  return KIND_CREATOR[kind];
+}
+
+/** Kinds the Single agent Dispatch form may offer: everything a profile does not launch. */
+export const DISPATCH_TASK_KINDS = TASK_KINDS.filter(
+  (kind) => taskKindCreator(kind) !== "resident-launch",
+);
 
 /** The fields `taskRequeueRefusal` reads, so a `TaskSummary` answers as well as a `Task`. */
 export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
@@ -325,7 +427,7 @@ export type RequeueCandidate = Pick<Task, "kind" | "status"> & {
  * the backlog cannot restart.
  */
 export function taskRequeueRefusal(task: RequeueCandidate): string | null {
-  if (!taskKindAllowsBacklog(task.kind)) return TASK_KIND_BACKLOG_REFUSAL;
+  if (!taskKindAllowsBacklog(task.kind)) return taskKindBacklogRefusal(task.kind);
   if (task.kind === "pipeline" && task.pipelineCommissionId) {
     return "a Pipeline commission cannot return to the backlog; create a new Pipeline task";
   }
@@ -570,6 +672,7 @@ const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
   pipeline: undefined,
   chat: undefined,
   bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
+  resident: undefined,
 };
 
 export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {

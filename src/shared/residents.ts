@@ -1,0 +1,290 @@
+// Resident profiles: named, revisioned bundles of persona, instructions, harness, model,
+// effort and workspace that launch a long-running `resident` task in the Agent SDK.
+//
+// Browser-safe and free of `node:` imports. The daemon validates request bodies and stored
+// revisions with these schemas; the dashboard renders the same section registry, so the
+// editor, the store and the launch read one definition of a profile.
+//
+// Three registries live in this feature and later phases extend them by appending:
+//
+// - `RESIDENT_PROFILE_SECTIONS` (here): the named section schemas a revision is made of.
+// - `RESIDENT_EDITOR_SECTIONS` (`src/web/residents/editor-sections.tsx`): how each section is
+//   edited.
+// - `RESIDENT_LAUNCH_CONTRIBUTORS` (`src/server/residents/launch.ts`): what each section adds
+//   to an SDK launch.
+//
+// A section added later is optional with a default, so a revision saved before it existed
+// parses unchanged. Revisions are immutable; a live run reads only the revision it pinned.
+
+import { z } from "zod";
+import { supportsEffort } from "./harness-capabilities.ts";
+import { ModelIdSchema } from "./model-id.ts";
+import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";
+import { THINKING_LEVELS } from "./types.ts";
+import type { AgentType } from "./types.ts";
+
+/**
+ * The harnesses a resident may run on, in picker order.
+ *
+ * A product decision rather than a capability inference: Pi also has an SDK runtime, and the
+ * first release deliberately ships Claude Code and Codex only. The daemon additionally
+ * requires the harness to declare an SDK driver before it saves or launches a profile.
+ */
+export const RESIDENT_AGENTS = ["claude", "codex"] as const satisfies readonly AgentType[];
+export type ResidentAgent = (typeof RESIDENT_AGENTS)[number];
+
+export function isResidentAgent(agent: AgentType): agent is ResidentAgent {
+  return (RESIDENT_AGENTS as readonly AgentType[]).includes(agent);
+}
+
+export const RESIDENT_LIMITS = {
+  nameLength: 80,
+  descriptionLength: 500,
+  instructionsLength: STANDING_INSTRUCTIONS_MAX_LENGTH,
+  runInstructionsLength: 4_000,
+  pathLength: 4_096,
+  requestIdLength: 200,
+  /**
+   * Live profiles one machine may hold, and therefore the bound on the `residentProfiles`
+   * SSE collection. Creation past it is refused rather than truncated, so the snapshot never
+   * silently drops a profile an operator can see on the page.
+   */
+  liveProfiles: 200,
+} as const;
+
+/** Who the profile is. The name is unique among live profiles. */
+export const ResidentIdentitySectionSchema = z.object({
+  name: z.string().trim().min(1, "a resident needs a name").max(RESIDENT_LIMITS.nameLength),
+  description: z.string().max(RESIDENT_LIMITS.descriptionLength).default(""),
+});
+
+/** The Library Persona whose guidance becomes the resident's standing role. */
+export const ResidentPersonaSectionSchema = z.object({
+  personaId: z.string().min(1, "choose a Persona").max(200),
+});
+
+/** Markdown added after the persona, in the resident's standing instructions. */
+export const ResidentInstructionsSectionSchema = z.object({
+  markdown: z.string().max(RESIDENT_LIMITS.instructionsLength).default(""),
+});
+
+/**
+ * Which harness runs the resident, and with what model and effort. `null` follows the
+ * harness's own default at launch.
+ */
+export const ResidentExecutionSectionSchema = z
+  .object({
+    agent: z.enum(RESIDENT_AGENTS).default("claude"),
+    model: ModelIdSchema.nullable().default(null),
+    effort: z.enum(THINKING_LEVELS).nullable().default(null),
+  })
+  .superRefine((value, ctx) => {
+    if (value.effort !== null && !supportsEffort(value.agent, value.effort)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["effort"],
+        message: `reasoning effort ${value.effort} is not supported by ${value.agent}`,
+      });
+    }
+  });
+
+/** The repository Dispatch pre-fills. Phase 1 still requires one at launch. */
+export const ResidentWorkspaceSectionSchema = z.object({
+  defaultRepoRoot: z.string().trim().min(1).max(RESIDENT_LIMITS.pathLength).nullable().default(null),
+});
+
+/**
+ * The named sections a profile revision is composed of, in editor order.
+ *
+ * Append a section here, with `.default({})` when its own fields all have defaults, and the
+ * revision schema below picks it up. Never rename a key: it is the JSON key every stored
+ * revision carries.
+ */
+export const RESIDENT_PROFILE_SECTIONS = {
+  identity: ResidentIdentitySectionSchema,
+  persona: ResidentPersonaSectionSchema,
+  instructions: ResidentInstructionsSectionSchema.default({}),
+  execution: ResidentExecutionSectionSchema.default({}),
+  workspace: ResidentWorkspaceSectionSchema.default({}),
+} as const;
+
+export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;
+export const RESIDENT_PROFILE_SECTION_IDS = Object.keys(
+  RESIDENT_PROFILE_SECTIONS,
+) as ResidentProfileSectionId[];
+
+/**
+ * One immutable profile revision, as stored and as read back.
+ *
+ * Not `.strict()`: a revision written by a newer build may carry a section this build does
+ * not know, and reading it must still succeed. Request bodies use the strict variant.
+ */
+export const ResidentProfileRevisionSchema = z.object(RESIDENT_PROFILE_SECTIONS);
+export type ResidentProfileRevision = z.infer<typeof ResidentProfileRevisionSchema>;
+/** What an editor may submit before defaults apply. */
+export type ResidentProfileRevisionInput = z.input<typeof ResidentProfileRevisionSchema>;
+
+/** The request-body form: unknown top-level sections are refused rather than dropped. */
+export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict();
+
+/** A profile as the catalog and the browser see it: the identity plus its current revision. */
+export interface ResidentProfile {
+  id: string;
+  name: string;
+  /** The current revision number; every save writes revision + 1. */
+  revision: number;
+  archivedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  /** The current revision's body. New launches pin this revision. */
+  settings: ResidentProfileRevision;
+}
+
+/**
+ * The launch-state vocabulary of a resident run. Persisted in `resident_runs.launch_state`
+ * and read back by exact value: append, never rename or reorder.
+ */
+export const RESIDENT_LAUNCH_STATES = ["pending", "launched", "failed"] as const;
+export type ResidentLaunchState = (typeof RESIDENT_LAUNCH_STATES)[number];
+
+/** The persona text a run launched with, so a later Persona edit never reaches it. */
+export const ResidentPersonaSnapshotSchema = z.object({
+  personaId: z.string(),
+  name: z.string(),
+  guidanceMarkdown: z.string(),
+});
+export type ResidentPersonaSnapshot = z.infer<typeof ResidentPersonaSnapshotSchema>;
+
+/** A resident run: the durable identity of one launch. */
+export interface ResidentRun {
+  id: string;
+  profileId: string;
+  /** The revision this run pinned. A live run reads its settings only from here. */
+  profileRevision: number;
+  /** Reserved before the task exists, so a crash between the two is recoverable. */
+  taskId: string;
+  launchRequestId: string;
+  launchState: ResidentLaunchState;
+  launchError: string | null;
+  persona: ResidentPersonaSnapshot;
+  runInstructions: string;
+  /** The pinned revision's body. */
+  settings: ResidentProfileRevision;
+  createdAt: number;
+  endedAt: number | null;
+}
+
+/**
+ * A launch request. `requestId` makes it idempotent: a repeated click, a lost response or two
+ * racing requests with the same id produce one run, one task and one SDK dispatch.
+ */
+export const LaunchResidentSchema = z
+  .object({
+    repoRoot: z.string().trim().min(1, "choose a repository").max(RESIDENT_LIMITS.pathLength),
+    instructions: z.string().max(RESIDENT_LIMITS.runInstructionsLength).optional(),
+    requestId: z
+      .string()
+      .min(1)
+      .max(RESIDENT_LIMITS.requestIdLength)
+      .regex(/^[A-Za-z0-9._:-]+$/, "request id must be a token"),
+  })
+  .strict();
+export type LaunchResident = z.infer<typeof LaunchResidentSchema>;
+
+/**
+ * The version of the normalized launch input stored on a run. A later phase that adds a
+ * launch field bumps this and gives the field a default in `ResidentLaunchInputSchema`, so a
+ * run recorded at an older version still compares correctly.
+ */
+export const RESIDENT_LAUNCH_INPUT_VERSION = 1;
+
+/**
+ * The normalized launch input, as stored in `resident_runs.launch_input`: the parsed request
+ * without `requestId`, with the repository resolved to its real path and the run
+ * instructions as stored. Every field a later version adds carries a default.
+ */
+export const ResidentLaunchInputSchema = z.object({
+  version: z.number().int().positive(),
+  repoRoot: z.string(),
+  instructions: z.string().default(""),
+});
+export type ResidentLaunchInput = z.infer<typeof ResidentLaunchInputSchema>;
+
+/** Run instructions as stored: trimmed, so whitespace alone never makes two requests differ. */
+export function normalizeRunInstructions(instructions: string | undefined): string {
+  return instructions?.trim() ?? "";
+}
+
+/** Build the current-version normalized input from a request whose repository is resolved. */
+export function residentLaunchInput(resolvedRepoRoot: string, instructions: string | undefined): ResidentLaunchInput {
+  return {
+    version: RESIDENT_LAUNCH_INPUT_VERSION,
+    repoRoot: resolvedRepoRoot,
+    instructions: normalizeRunInstructions(instructions),
+  };
+}
+
+/** Canonical JSON: sorted keys at every level, so equal inputs serialize to equal bytes. */
+export function canonicalResidentJson(value: unknown): string {
+  const sort = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(sort);
+    if (input && typeof input === "object") {
+      return Object.fromEntries(
+        Object.keys(input as Record<string, unknown>)
+          .sort()
+          .map((key) => [key, sort((input as Record<string, unknown>)[key])]),
+      );
+    }
+    return input;
+  };
+  return JSON.stringify(sort(value));
+}
+
+/**
+ * Re-read a stored input through the current schema and restate it at the current version,
+ * or null when it cannot be read. The comparison is then over meaning, not over the version
+ * that happened to write it.
+ */
+export function normalizeStoredLaunchInput(raw: unknown): ResidentLaunchInput | null {
+  const parsed = ResidentLaunchInputSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  return { ...parsed.data, version: RESIDENT_LAUNCH_INPUT_VERSION };
+}
+
+/** Whether a replayed request asks for exactly what the stored run recorded. */
+export function launchInputsMatch(stored: unknown, request: ResidentLaunchInput): boolean {
+  const normalized = normalizeStoredLaunchInput(stored);
+  if (!normalized) return false;
+  return canonicalResidentJson(normalized) === canonicalResidentJson({
+    ...request,
+    version: RESIDENT_LAUNCH_INPUT_VERSION,
+  });
+}
+
+/** The opening turn of a Phase 1 resident: its role arrives as standing instructions. */
+export const RESIDENT_OPENING_TURN = "Begin your standing task.";
+
+/**
+ * What a launch answered. One union for the route, the browser helper and the tests, so a
+ * replay and a first launch are read the same way.
+ */
+export type ResidentLaunchResult =
+  | { state: "launched"; run: ResidentRun; taskId: string }
+  | { state: "pending"; run: ResidentRun }
+  | { state: "failed"; run: ResidentRun; error: string };
+
+/** A short, human summary of what a launch will carry, for Dispatch's read-only line. */
+export function residentLaunchSummary(
+  settings: ResidentProfileRevision,
+  personaName: string | null,
+  agentLabel: string,
+): string {
+  const parts = [
+    personaName ? `persona ${personaName}` : "persona missing",
+    settings.instructions.markdown.trim() ? "profile instructions" : "no profile instructions",
+    agentLabel,
+    settings.execution.model ?? "default model",
+    settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
+  ];
+  return parts.join(" · ");
+}

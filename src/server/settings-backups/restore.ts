@@ -18,12 +18,14 @@ import type { WorkflowStore } from "../workflows/store.ts";
 import {
   SETTINGS_BACKUP_CATALOGS,
   SettingsBackupPersonaSchema,
+  SettingsBackupResidentProfileSchema,
   SettingsBackupSessionActionSchema,
   SettingsBackupWorkflowCommandSchema,
   SettingsBackupWorkflowDefinitionSchema,
   SettingsBackupWorkflowVersionSchema,
   parseSettingsCatalogPayload,
   type SettingsBackupPersona,
+  type SettingsBackupResidentProfile,
   type SettingsBackupSessionAction,
   type SettingsBackupWorkflowCommand,
   type SettingsBackupWorkflowDefinition,
@@ -36,6 +38,8 @@ import {
   type StagedSettingsConfigRestore,
 } from "./config-registry.ts";
 import { validateSettingsBackupDomains } from "./format.ts";
+import { canonicalResidentJson, type ResidentProfile } from "@shared/residents.ts";
+import { listAllResidentProfiles, normalizeResidentName } from "../residents/store.ts";
 
 export interface MigratedSettingsBackup {
   snapshot: SettingsBackupEnvelopeV1;
@@ -45,6 +49,11 @@ export interface MigratedSettingsBackup {
   workflowCommands: SettingsBackupWorkflowCommand[];
   workflows: SettingsBackupWorkflowDefinition[];
   workflowVersions: SettingsBackupWorkflowVersion[];
+  /**
+   * Resident profiles, or null when the snapshot predates their domain. Null is not "none":
+   * it means this snapshot says nothing about residents, so restore leaves them as they are.
+   */
+  residentProfiles: SettingsBackupResidentProfile[] | null;
 }
 
 export interface StagedSettingsBackup extends MigratedSettingsBackup {
@@ -75,6 +84,7 @@ export function migrateSettingsBackupSnapshot(
   }
   for (const descriptor of SETTINGS_BACKUP_CATALOGS) {
     const entry = byDomain.get(descriptor.domain);
+    if (!entry && "optional" in descriptor && descriptor.optional) continue;
     if (!entry) throw new TypeError(`Snapshot is missing domain ${descriptor.domain}`);
     if (entry.version !== descriptor.version) {
       throw new TypeError(
@@ -92,6 +102,9 @@ export function migrateSettingsBackupSnapshot(
     workflowCommands: SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
     workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
     workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
+    residentProfiles: byDomain.has("resident-profiles")
+      ? SettingsBackupResidentProfileSchema.array().parse(payload("resident-profiles"))
+      : null,
   };
 }
 
@@ -167,6 +180,37 @@ function workflowContent(value: WorkflowDefinition | SettingsBackupWorkflowDefin
     createdAt: _createdAt, updatedAt: _updatedAt, builtin: _builtin, ...content
   } = value;
   return content;
+}
+
+function residentContent(value: ResidentProfile | SettingsBackupResidentProfile): unknown {
+  return { name: value.name, settings: JSON.parse(canonicalResidentJson(value.settings)) as unknown };
+}
+
+/** Blockers and preview counts for the resident catalog, or zeros when the snapshot predates it. */
+function residentProfileRestore(staged: StagedSettingsBackup): {
+  blockers: string[];
+  changes: SettingsRestorePreview["residentProfiles"];
+} {
+  if (staged.residentProfiles === null) {
+    return { blockers: [], changes: { added: 0, changed: 0, archived: 0, reactivated: 0 } };
+  }
+  const blockers = [
+    ...keyedDuplicates(staged.residentProfiles, (row) => row.id, "resident profile id"),
+    ...keyedDuplicates(
+      staged.residentProfiles.filter((row) => row.archivedAt === null),
+      (row) => normalizeResidentName(row.name),
+      "live resident profile name",
+    ),
+  ];
+  for (const row of staged.residentProfiles) {
+    if (row.normalizedName !== normalizeResidentName(row.name)) {
+      blockers.push(`Resident profile ${row.id} has a normalized name that does not match its name`);
+    }
+  }
+  return {
+    blockers,
+    changes: catalogChanges(listAllResidentProfiles(), staged.residentProfiles, residentContent),
+  };
 }
 
 function catalogChanges<
@@ -402,6 +446,8 @@ export function preflightSettingsRestore(
     const current = commandBySlot.get(row.slot);
     return !current || canonical(commandContent(current)) !== canonical(commandContent(row));
   }).length;
+  const residents = residentProfileRestore(staged);
+  blockers.push(...residents.blockers);
   const changedDomains = staged.config.filter((item) => item.changed).map((item) => item.domain);
   const externalEffects = ["skills", "cost"] as const;
 
@@ -414,6 +460,7 @@ export function preflightSettingsRestore(
     workflowCommandsChanged,
     workflows: catalogChanges(operatorWorkflows, staged.workflows, workflowContent),
     workflowVersions: { inserted, retained },
+    residentProfiles: residents.changes,
     externalEffects,
     exclusions: [
       "Tasks, sessions, schedules, worktrees, and goals remain current",

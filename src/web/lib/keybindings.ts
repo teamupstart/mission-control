@@ -56,7 +56,8 @@ export type ActionId =
   | "delete"
   | "lineDensity"
   | "composerEditor"
-  | "requeue";
+  | "requeue"
+  | "residents";
 
 export interface ActionDef {
   id: ActionId;
@@ -145,6 +146,15 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus filter",
     description: "Jump to the filter box to narrow the grid.",
     defaultBinding: "/",
+    group: "global",
+  },
+  {
+    // `shift+a` for the resident Agents: `r` is Runs and `shift+r` is taken, and the shifted
+    // letter keeps the bare `a` (switch agent) free for the selected card.
+    id: "residents",
+    label: "Open Residents",
+    description: "Author resident profiles and launch long-running agents from them.",
+    defaultBinding: "shift+a",
     group: "global",
   },
   {

@@ -101,6 +101,10 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/api/schedules/:id/set-enabled", "schedule.enable", "schedules"],
   ["POST", "/api/schedules/:id/run-now", "schedule.run_now", "schedules"],
   ["POST", "/api/schedules/:id/archive", "schedule.archive", "schedules"],
+  ["POST", "/api/residents/profiles", "resident.profile_create", "residents"],
+  ["PATCH", "/api/residents/profiles/:id", "resident.profile_edit", "residents"],
+  ["DELETE", "/api/residents/profiles/:id", "resident.profile_archive", "residents"],
+  ["POST", "/api/residents/profiles/:id/launch", "resident.launch", "residents"],
   ["POST", "/api/ensembles/preview", "ensemble.preview", "ensembles"],
   ["POST", "/api/ensembles", "ensemble.create", "ensembles"],
   ["POST", "/api/ensembles/:id/actions", "ensemble.action", "ensembles"],
@@ -174,6 +178,7 @@ export const PRIMARY_ACTION_IDS = [...new Set([...PRIMARY_ACTION_ROUTES.map((r) 
 export const PRIMARY_NON_USE_ACTIONS: ReadonlySet<PrimaryAction> = new Set([
   "task.sources_configure", "task.source_check", "task.issue_preview", "file.comment_read",
   "queue.wrapup_configure", "schedule.preview", "schedule.create", "schedule.edit", "schedule.enable", "schedule.archive",
+  "resident.profile_create", "resident.profile_edit", "resident.profile_archive",
   "ensemble.preview", "pipeline.configure", "pipeline.readiness", "foreman.configure", "foreman.instructions",
   "away.configure", "inspector.configure", "shipping.configure", "help.tour_preview",
 ]);

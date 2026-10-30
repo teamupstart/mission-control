@@ -31,7 +31,9 @@ import {
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   dispatchHasNoProvisionedResources,
+  TASK_KIND_BEHAVIOR,
   taskKindAllowsBacklog,
+  taskKindForcedRuntime,
 } from "@shared/task.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
@@ -318,6 +320,16 @@ export class Dispatcher {
        */
       standingInstructions?: typeof standingInstructionsForLaunch;
       /**
+       * The resident launch composer, asked once per resident task for its standing
+       * instructions. Supplied by `ResidentManager`; a daemon without one refuses resident
+       * launches instead of starting an agent with no role.
+       */
+      residentLaunch?: (
+        task: Task,
+        repository: StandingInstructionsDelivery,
+        runtime: SessionRuntime,
+      ) => StandingInstructionsDelivery;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -403,7 +415,10 @@ export class Dispatcher {
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.
-      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // A kind that fixes its runtime (a resident is always the Agent SDK) takes that answer;
+      // every other kind asks the harness's configured runtime.
+      const runtime = taskKindForcedRuntime(task.kind)
+        ?? (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
       const configured = resolveAgentBin(task.agent);
@@ -599,11 +614,16 @@ export class Dispatcher {
       // Every attached repository contributes, in the manifest's order, because this
       // dispatch hands the agent write access to all of them - sending only the primary's
       // rules would be the same laundering `taskReposAllowlisted` refuses for consent.
-      const standing = await (this.deps.standingInstructions ?? standingInstructionsForLaunch)(
+      const repositoryStanding = await (this.deps.standingInstructions ?? standingInstructionsForLaunch)(
         [wt.path, ...extras.map((entry) => entry.worktreePath).filter((p): p is string => !!p)],
         task.agent,
         runtime,
       );
+      // The one resident call site: the composer appends the run's resident section after the
+      // repository block. Asked by launch owner, never by harness id.
+      const standing = TASK_KIND_BEHAVIOR[task.kind].launch === "resident"
+        ? this.residentStanding(task, repositoryStanding, runtime)
+        : repositoryStanding;
       // EXACTLY ONE delivery. A pair with an out-of-band channel carries the block there and
       // is NOT also prefixed; a pair without one is prefixed and sends nothing out of band.
       // Both would have the agent read the same rule twice in its first turn, which for a
@@ -1676,6 +1696,19 @@ export class Dispatcher {
     } finally {
       this.registry.endPipelineEngineerReservation(taskId);
     }
+  }
+
+  /** The resident composer's standing instructions for this task, or a refusal. */
+  private residentStanding(
+    task: Task,
+    repository: StandingInstructionsDelivery,
+    runtime: SessionRuntime,
+  ): StandingInstructionsDelivery {
+    const compose = this.deps.residentLaunch;
+    if (!compose) {
+      throw new Error("this daemon has no resident launch composer, so it cannot launch a resident");
+    }
+    return compose(task, repository, runtime);
   }
 
   /**
@@ -2989,3 +3022,6 @@ async function currentBranch(dir: string): Promise<string | null> {
 export async function agentBinPresent(agent: AgentType): Promise<boolean> {
   return hasBin(resolveAgentBin(agent));
 }
+
+/** The Dispatcher's dependency seams, named so an owner can late-bind one of them. */
+export type DispatcherDeps = NonNullable<ConstructorParameters<typeof Dispatcher>[2]>;

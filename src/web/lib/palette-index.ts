@@ -258,6 +258,17 @@ const pageProvider: PaletteProvider = {
       // answer a keystroke. Archive search stays inside the page that owns the catalog.
       target: { kind: "route", route: { page: "scouts" } },
     },
+    {
+      id: "page:residents",
+      kind: "page",
+      title: "Residents",
+      detail: "Author resident profiles and launch long-running agents from them.",
+      // The words an operator reaches for when they want an agent that stays: none of them is
+      // the product's name for it.
+      keywords: ["resident", "profile", "persona", "long-running", "standing", "agent", "launch", "loop"],
+      glyph: "⌂",
+      target: { kind: "route", route: { page: "residents" } },
+    },
   ],
 };
 
@@ -683,6 +694,8 @@ function routeDestination(route: MissionRoute): string {
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":
       return "the Fleet";
+    case "residents":
+      return "Residents";
   }
 }
 

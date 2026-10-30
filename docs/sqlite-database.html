@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>104</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>107</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -655,6 +655,15 @@ LIMIT 20;
                 <div class="table-row"><code>mission_schedules</code><p>The current schedule catalog and durable next-run cursor, pointing at the active immutable revision.</p></div>
                 <div class="table-row"><code>mission_schedule_revisions</code><p>Immutable copies of the task template, cadence, timezone, and execution policies for historical explanation.</p></div>
                 <div class="table-row"><code>mission_schedule_occurrences</code><p>One claim for each schedule and instant, recording overlap or missed-run decisions, task identity, recovery status, and terminal result.</p></div>
+              </div>
+            </details>
+
+            <details class="family">
+              <summary><strong>Resident profiles</strong><span>3 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>resident_profiles</code><p>Each resident profile's name, live-name uniqueness, archive state, and the current immutable revision new launches pin.</p></div>
+                <div class="table-row"><code>resident_profile_revisions</code><p>Immutable profile bodies: persona, instructions, harness, model, effort, and workspace. A live run reads only the revision it pinned.</p></div>
+                <div class="table-row"><code>resident_runs</code><p>One row per launch, written before its task: the pinned revision, reserved task id, unique launch request id, normalized launch input, persona snapshot, launch state, and end time.</p></div>
               </div>
             </details>
 

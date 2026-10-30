@@ -60,6 +60,7 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -143,6 +144,7 @@ import { claimInjectionEcho } from "./injections.ts";
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
+import { listLiveResidentProfiles } from "./residents/store.ts";
 // The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
 // store with it: everything it reads is gathered by `lineSummaryNow` below.
 import type { LineSummary } from "@shared/line.ts";
@@ -569,6 +571,9 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "ensemble_remove",
   "schedule_upsert",
   "schedule_remove",
+  // `resident_profile_upsert` / `resident_profile_remove` are DELIBERATELY absent: a profile is
+  // authoring state, like a Persona. A launched resident reaches the Line as its task and its
+  // session, through the frames above.
   // Moves the Shipped stage's per-PR figure.
   "cost_fleet",
   // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
@@ -850,6 +855,12 @@ export class Registry extends EventEmitter {
    * and fetched on demand, not live catalog state.
    */
   private schedules = new Map<string, MissionSchedule>();
+  /**
+   * Live resident profiles. A cache and a notifier, like `schedules`: `ResidentManager` is the
+   * only writer of the resident tables and announces each change here after its write.
+   * Bounded by `RESIDENT_LIMITS.liveProfiles`.
+   */
+  private residentProfiles = new Map<string, ResidentProfile>();
   /**
    * The pipeline projection, keyed `provider repoRoot slug` (see `pipelineRunKey`).
    *
@@ -1140,6 +1151,7 @@ export class Registry extends EventEmitter {
     // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
     // tick. Empty on every machine that has never saved a schedule.
     for (const s of loadActiveSchedules()) this.schedules.set(s.id, s);
+    for (const profile of listLiveResidentProfiles()) this.residentProfiles.set(profile.id, profile);
     // Every non-orphaned thread, so a dashboard reconnecting after a daemon restart is
     // handed the same queue it was looking at. Threads whose session went away while the
     // daemon was down are still here at this point and are settled by the
@@ -1177,6 +1189,7 @@ export class Registry extends EventEmitter {
     workflowBindingSummaries: WorkflowBindingSummary[];
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
+    residentProfiles: ResidentProfile[];
     pipelineRuns: PipelineRun[];
     pipelineCommissions: PipelineCommission[];
     fileCommentThreads: FileCommentThread[];
@@ -1201,6 +1214,7 @@ export class Registry extends EventEmitter {
       workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
+      residentProfiles: [...this.residentProfiles.values()],
       // Seeded from the projection at boot, so a dashboard connecting before the watcher's
       // first pass is already right rather than blank for one tick. Empty on every fleet
       // that has enabled no pipeline repository.
@@ -2046,6 +2060,46 @@ export class Registry extends EventEmitter {
 
   removeSchedule(id: string): void {
     if (this.schedules.delete(id)) this.emitEvent({ type: "schedule_remove", id });
+  }
+
+  // ---- resident profiles (live catalog) ----
+  //
+  // The same notifier shape as the schedule catalog above: `ResidentManager` writes the tables,
+  // then calls these, so every frame follows the durable write it reflects.
+
+  getResidentProfile(id: string): ResidentProfile | undefined {
+    return this.residentProfiles.get(id);
+  }
+
+  listResidentProfiles(): ResidentProfile[] {
+    return [...this.residentProfiles.values()];
+  }
+
+  upsertResidentProfile(profile: ResidentProfile): void {
+    if (profile.archivedAt !== null) {
+      this.removeResidentProfile(profile.id);
+      return;
+    }
+    this.residentProfiles.set(profile.id, profile);
+    this.emitEvent({ type: "resident_profile_upsert", profile });
+  }
+
+  removeResidentProfile(id: string): void {
+    if (this.residentProfiles.delete(id)) this.emitEvent({ type: "resident_profile_remove", id });
+  }
+
+  /** Replace the live catalog after a settings restore, emitting only what changed. */
+  replaceResidentProfiles(profiles: readonly ResidentProfile[]): void {
+    const next = new Map(profiles.filter((profile) => profile.archivedAt === null)
+      .map((profile) => [profile.id, profile]));
+    for (const id of [...this.residentProfiles.keys()]) {
+      if (!next.has(id)) this.removeResidentProfile(id);
+    }
+    for (const profile of next.values()) {
+      const current = this.residentProfiles.get(profile.id);
+      if (current && current.revision === profile.revision && current.updatedAt === profile.updatedAt) continue;
+      this.upsertResidentProfile(profile);
+    }
   }
 
   // ---- line comments in the Files workspace ----

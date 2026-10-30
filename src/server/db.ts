@@ -2007,6 +2007,63 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
       ON inspector_comments(pr_key, fingerprint);
 
+    -- ---- resident profiles ----
+    --
+    -- A profile is a name over an immutable revision chain, like a recurring mission: the
+    -- body lives on the revision so a run can say exactly what it launched with. Created on
+    -- every open, so an upgrading database gains the three tables empty. No REFERENCES
+    -- clauses: these relate by convention, like every non-ensemble family.
+    CREATE TABLE IF NOT EXISTS resident_profiles (
+      id               TEXT PRIMARY KEY NOT NULL,
+      name             TEXT NOT NULL,
+      normalized_name  TEXT NOT NULL,
+      revision         INTEGER NOT NULL,  -- -> resident_profile_revisions.revision
+      archived_at      INTEGER,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    -- A name is unique among LIVE profiles only, so archiving one frees its name.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_profiles_live_name
+      ON resident_profiles(normalized_name) WHERE archived_at IS NULL;
+
+    -- Immutable. An edit inserts revision n+1 and repoints the profile; nothing here is
+    -- ever updated, because a live run reads only the revision it pinned.
+    CREATE TABLE IF NOT EXISTS resident_profile_revisions (
+      profile_id     TEXT NOT NULL,
+      revision       INTEGER NOT NULL,
+      settings_json  TEXT NOT NULL,
+      created_at     INTEGER NOT NULL,
+      PRIMARY KEY (profile_id, revision)
+    );
+
+    -- One row per launch: the resident's durable identity. The row is written BEFORE the
+    -- task, with the task id reserved, so a crash between the two leaves a pending run that
+    -- startup reconciliation settles from evidence rather than a task nothing owns.
+    --
+    -- launch_request_id is NOT NULL so its unique index is the idempotency key itself: two
+    -- requests with one id collide here and exactly one reservation wins. launch_input is
+    -- the normalized request as canonical JSON, so a replay is compared from this row alone.
+    -- launch_state is an append-only vocabulary (RESIDENT_LAUNCH_STATES).
+    CREATE TABLE IF NOT EXISTS resident_runs (
+      id                 TEXT PRIMARY KEY NOT NULL,
+      profile_id         TEXT NOT NULL,
+      profile_revision   INTEGER NOT NULL,
+      task_id            TEXT NOT NULL,
+      launch_request_id  TEXT NOT NULL,
+      launch_input       TEXT NOT NULL,
+      launch_state       TEXT NOT NULL,
+      launch_error       TEXT,
+      persona_snapshot   TEXT NOT NULL,
+      run_instructions   TEXT NOT NULL DEFAULT '',
+      created_at         INTEGER NOT NULL,
+      ended_at           INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_runs_request
+      ON resident_runs(launch_request_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_task ON resident_runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_open
+      ON resident_runs(launch_state) WHERE ended_at IS NULL;
+
     -- ---- recurring missions ----
     --
     -- One row per schedule the operator created. The TEMPLATE is not here: it lives on

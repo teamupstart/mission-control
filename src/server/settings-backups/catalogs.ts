@@ -21,7 +21,9 @@ import {
 } from "@shared/settings-backups.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import { ResidentProfileRevisionSchema } from "@shared/residents.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
+import { listAllResidentProfiles, normalizeResidentName } from "../residents/store.ts";
 
 const id = z.string().min(1).max(200);
 const name = z.string().min(1).max(200);
@@ -105,7 +107,24 @@ export const SettingsBackupWorkflowVersionSchema = z.object({
   publishedAt: timestamp,
 }).strict();
 
+/**
+ * One resident profile with its CURRENT revision. Earlier revisions stay on this machine:
+ * they are what live runs pinned, and a restore writes a new revision rather than replaying
+ * history.
+ */
+export const SettingsBackupResidentProfileSchema = z.object({
+  id,
+  name,
+  normalizedName,
+  revision: z.number().int().positive(),
+  archivedAt,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  settings: ResidentProfileRevisionSchema,
+}).strict();
+
 export type SettingsBackupPersona = z.infer<typeof SettingsBackupPersonaSchema>;
+export type SettingsBackupResidentProfile = z.infer<typeof SettingsBackupResidentProfileSchema>;
 export type SettingsBackupSessionAction = z.infer<typeof SettingsBackupSessionActionSchema>;
 export type SettingsBackupWorkflowCommand = z.infer<typeof SettingsBackupWorkflowCommandSchema>;
 export type SettingsBackupWorkflowDefinition = z.infer<typeof SettingsBackupWorkflowDefinitionSchema>;
@@ -116,6 +135,7 @@ const SettingsBackupSessionActionsSchema = catalog(SettingsBackupSessionActionSc
 const SettingsBackupWorkflowCommandsSchema = catalog(SettingsBackupWorkflowCommandSchema);
 const SettingsBackupWorkflowDefinitionsSchema = catalog(SettingsBackupWorkflowDefinitionSchema);
 const SettingsBackupWorkflowVersionsSchema = catalog(SettingsBackupWorkflowVersionSchema);
+const SettingsBackupResidentProfilesSchema = catalog(SettingsBackupResidentProfileSchema);
 
 export interface SettingsCatalogBackupEntry {
   domain: SettingsBackupDomainId;
@@ -128,6 +148,12 @@ interface CatalogDescriptor {
   version: 1;
   schema: z.ZodTypeAny;
   capture(store: WorkflowStore): unknown;
+  /**
+   * Added after the first published snapshot format. A snapshot written before it carries no
+   * such domain, and that absence means "this snapshot does not describe it": validation
+   * accepts it and restore leaves the catalog untouched. Every later catalog sets this.
+   */
+  optional?: true;
 }
 
 export const SETTINGS_BACKUP_CATALOGS = [
@@ -173,7 +199,32 @@ export const SETTINGS_BACKUP_CATALOGS = [
         || left.version - right.version
         || left.id.localeCompare(right.id)),
   },
+  {
+    domain: "resident-profiles",
+    version: 1,
+    schema: SettingsBackupResidentProfilesSchema,
+    optional: true,
+    // Resident profiles live in their own tables on the same connection, so the capture reads
+    // them directly rather than through the Library store it is handed.
+    capture: () => listAllResidentProfiles().map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      normalizedName: normalizeResidentName(profile.name),
+      revision: profile.revision,
+      archivedAt: profile.archivedAt,
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+      settings: profile.settings,
+    })),
+  },
 ] as const satisfies readonly CatalogDescriptor[];
+
+/** Whether a snapshot may omit this catalog domain. */
+export function settingsCatalogIsOptional(domain: SettingsBackupDomainId): boolean {
+  const descriptor: CatalogDescriptor | undefined =
+    SETTINGS_BACKUP_CATALOGS.find((candidate) => candidate.domain === domain);
+  return descriptor?.optional === true;
+}
 
 export function parseSettingsCatalogPayload(
   domain: SettingsBackupDomainId,
@@ -199,11 +250,14 @@ export function settingsCatalogCounts(entries: readonly SettingsCatalogBackupEnt
     const payload = entries.find((entry) => entry.domain === domain)?.payload;
     return Array.isArray(payload) ? payload.length : 0;
   };
+  const present = (domain: SettingsBackupDomainId): boolean =>
+    entries.some((entry) => entry.domain === domain);
   return {
     personas: count("personas"),
     sessionActions: count("session-actions"),
     workflowCommands: count("workflow-commands"),
     workflowDefinitions: count("workflow-definitions"),
     workflowVersions: count("workflow-versions"),
+    ...(present("resident-profiles") ? { residentProfiles: count("resident-profiles") } : {}),
   };
 }

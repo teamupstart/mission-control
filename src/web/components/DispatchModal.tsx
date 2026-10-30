@@ -27,6 +27,7 @@ import {
 import { withAttachments } from "@shared/attachments.ts";
 import {
   BACKLOG_TASK_KINDS,
+  DISPATCH_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
@@ -87,6 +88,14 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
+import type { ResidentProfile } from "@shared/residents.ts";
+import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
+import {
+  freshResidentDispatchDraft,
+  selectResidentProfile,
+  type ResidentDispatchDraft,
+} from "../residents/dispatch-draft.ts";
 import {
   GuidedPicker,
   GuidedRail,
@@ -484,6 +493,8 @@ export function DispatchLayer({
   onOpenSchedule,
   onOpenLaunchFix,
   onEnsembleLaunched,
+  residentProfiles = [],
+  onEditResidentProfile,
 }: {
   /**
    * What this opening is FOR, or `null` for a closed form.
@@ -528,6 +539,13 @@ export function DispatchLayer({
   onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
+  /** Live resident profiles, for the Resident mode's profile cards. */
+  residentProfiles?: ResidentProfile[];
+  /**
+   * Leave Dispatch for the Residents page, on one profile or on its rail. The form closes
+   * first, for `onOpenLaunchFix`'s reason: the destination is a page under this dialog.
+   */
+  onEditResidentProfile?: (profileId: string | null) => void;
 }): React.JSX.Element | null {
   /**
    * An opening that means more than one thing is refused here, before it can seed anything.
@@ -582,6 +600,9 @@ export function DispatchLayer({
   // existing backlog Task cannot be turned into an Ensemble.
   const [launchMode, setLaunchMode] = useState<DispatchLaunchMode>("single");
   const [ensembleDraft, setEnsembleDraft] = useState<EnsembleDispatchDraft>(freshEnsembleDraft);
+  // Resident mode's draft, beside the other two for the same reason: switching mode or closing
+  // the form loses none of it.
+  const [residentDraft, setResidentDraft] = useState<ResidentDispatchDraft>(freshResidentDispatchDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
@@ -637,7 +658,8 @@ export function DispatchLayer({
   const chooseLaunchMode = useCallback((mode: DispatchLaunchMode) => {
     operatorMode.current = mode;
     setLaunchMode(mode);
-    if (mode === "ensemble") endPassForEnsemble();
+    // A guided pass belongs to Single; Ensemble and Resident replace the controls it asks about.
+    if (mode !== "single") endPassForEnsemble();
   }, [endPassForEnsemble]);
 
   // A launch intent is applied the way the edit slot above is - during render, once per
@@ -657,6 +679,25 @@ export function DispatchLayer({
         setEnsembleDraft(freshEnsembleDraft(askedStrategy));
       }
     } else {
+      setLaunchMode(operatorMode.current);
+    }
+  }
+  // A Resident opening - the Residents page's Launch - is applied the same way: once per
+  // opening, during render, arming Resident mode on the profile it names. The repository is
+  // pre-filled from that profile unless the operator already typed one of their own.
+  const [armedResident, setArmedResident] = useState<string | null>(null);
+  const askedResident = requested?.kind === "resident" ? `resident:${requested.profileId ?? ""}` : null;
+  if (askedResident !== armedResident) {
+    setArmedResident(askedResident);
+    if (requested?.kind === "resident") {
+      setLaunchMode("resident");
+      endPassForEnsemble();
+      if (requested.profileId) {
+        const next = residentProfiles.find((profile) => profile.id === requested.profileId) ?? null;
+        const previous = residentProfiles.find((profile) => profile.id === residentDraft.profileId) ?? null;
+        if (next) setResidentDraft(selectResidentProfile(residentDraft, next, previous));
+      }
+    } else if (!askedStrategy) {
       setLaunchMode(operatorMode.current);
     }
   }
@@ -850,6 +891,29 @@ export function DispatchLayer({
       ? { kind: "edit", task: requested.task, onDeleted: onEditDeleted, onOpenSchedule }
       : requested.kind === "tour"
         ? { kind: "tour", demo: requested.demo }
+        : launchMode === "resident"
+          ? {
+              kind: "resident",
+              onLaunchModeChange: chooseLaunchMode,
+              resident: residentDraft,
+              onResidentChange: setResidentDraft,
+              onResidentLaunched: (submitted) => {
+                // The same reconciliation a Single dispatch gets: a draft edited while the
+                // launch was in flight is newer input, and is kept with a fresh request id.
+                setResidentDraft((current) =>
+                  current.requestId === submitted.requestId && current.profileId === submitted.profileId
+                    && current.repoRoot === submitted.repoRoot && current.instructions === submitted.instructions
+                    ? { ...freshResidentDispatchDraft(), profileId: submitted.profileId, repoRoot: submitted.repoRoot }
+                    : { ...current, requestId: crypto.randomUUID() });
+                onClose();
+              },
+              profiles: residentProfiles,
+              personas,
+              onEditProfile: (profileId) => {
+                onClose();
+                onEditResidentProfile?.(profileId);
+              },
+            }
         : launchMode === "ensemble"
           ? {
               kind: "ensemble",
@@ -892,6 +956,9 @@ export function DispatchLayer({
         pipelinesRevision={pipelinesRevision}
       />
     );
+  }
+  if (mode.kind === "resident") {
+    return <ResidentDispatch mode={mode} onClose={onClose} />;
   }
   if (mode.kind === "tour") {
     // The slot is seeded during render above, so this is unreachable in practice; refusing to
@@ -1047,10 +1114,11 @@ function DispatchModal({
   // Ensemble mode IS a mode now, rather than three conditions that had to agree: an Ensemble
   // draft without the launch mode, or either without a fresh dispatch, cannot be spelled.
   const ensembleMode = mode.kind === "ensemble";
-  // Every kind, for the two modes that launch something new. An edit is confined to the kinds
-  // a backlog row can hold, and Ensemble to the kinds its members can be.
-  const availableTaskKinds =
-    mode.kind === "single" || mode.kind === "tour" ? TASK_KINDS : BACKLOG_TASK_KINDS;
+  // Every kind Dispatch launches, for the two modes that launch something new - `resident` is
+  // launched from a profile in Resident mode, never picked as a kind. An edit is confined to
+  // the kinds a backlog row can hold, and Ensemble to the kinds its members can be.
+  const availableTaskKinds: readonly TaskKind[] =
+    mode.kind === "single" || mode.kind === "tour" ? DISPATCH_TASK_KINDS : BACKLOG_TASK_KINDS;
   const backlogCompatible = taskKindAllowsBacklog(draft.kind);
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
@@ -2597,30 +2665,7 @@ function DispatchModal({
             fixed form - so the toggle rides with the callback that moves between the two
             halves of one, and is absent wherever there is nowhere to move to. */}
         {onLaunchModeChange && (
-          <div className="dispatch-mode-toggle" role="radiogroup" aria-label="Launch mode">
-            <Tooltip label="Dispatch one agent to this task">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={launchMode === "single"}
-                className={launchMode === "single" ? "active" : ""}
-                onClick={() => onLaunchModeChange("single")}
-              >
-                Single agent
-              </button>
-            </Tooltip>
-            <Tooltip label="Launch several agents on the same task and compare them">
-              <button
-                type="button"
-                role="radio"
-                aria-checked={launchMode === "ensemble"}
-                className={launchMode === "ensemble" ? "active" : ""}
-                onClick={() => onLaunchModeChange("ensemble")}
-              >
-                Ensemble
-              </button>
-            </Tooltip>
-          </div>
+          <DispatchModeToggle mode={launchMode} onChange={onLaunchModeChange} />
         )}
         {/* The preference, beside the launch mode and for its reason: both are properties of
             the dialog rather than fields in it. Turning it ON starts a pass here and now -

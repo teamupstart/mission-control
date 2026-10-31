@@ -68,12 +68,16 @@ export const ResidentIdentitySectionSchema = z.object({
   description: z.string().max(RESIDENT_LIMITS.descriptionLength).default(""),
 });
 
-/** The Library Persona whose guidance becomes the resident's standing role. */
+/**
+ * The Library Persona whose guidance becomes the resident's standing role, or `""` for none: a
+ * resident may run on its profile instructions alone. `residentRoleProblem` refuses a profile
+ * with neither.
+ */
 export const ResidentPersonaSectionSchema = z.object({
-  personaId: z.string().min(1, "choose a Persona").max(200),
+  personaId: z.string().max(200).default(""),
 });
 
-/** Markdown added after the persona, in the resident's standing instructions. */
+/** Markdown added after the persona, if any, in the resident's standing instructions. */
 export const ResidentInstructionsSectionSchema = z.object({
   markdown: z.string().max(RESIDENT_LIMITS.instructionsLength).default(""),
 });
@@ -309,7 +313,7 @@ export interface ResidentLoopStatus {
 
 export const RESIDENT_PROFILE_SECTIONS = {
   identity: ResidentIdentitySectionSchema,
-  persona: ResidentPersonaSectionSchema,
+  persona: ResidentPersonaSectionSchema.default({}),
   instructions: ResidentInstructionsSectionSchema.default({}),
   execution: ResidentExecutionSectionSchema.default({}),
   workspace: ResidentWorkspaceSectionSchema.default({}),
@@ -366,8 +370,22 @@ export function preserveUnknownResidentSettings(
   return out;
 }
 
+/**
+ * Why a profile gives its resident no role: no Persona and no profile instructions. Checked on
+ * save through the request schema and again at launch, never on read, so a stored revision is
+ * always readable.
+ */
+export function residentRoleProblem(settings: Pick<ResidentProfileRevision, "persona" | "instructions">): string | null {
+  return settings.persona.personaId === "" && settings.instructions.markdown.trim() === ""
+    ? "choose a Persona or write profile instructions"
+    : null;
+}
+
 /** The request-body form: unknown top-level sections are refused rather than dropped. */
-export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict();
+export const ResidentProfileRevisionRequestSchema = ResidentProfileRevisionSchema.strict().superRefine((settings, ctx) => {
+  const problem = residentRoleProblem(settings);
+  if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["instructions", "markdown"], message: problem });
+});
 
 /** A profile as the catalog and the browser see it: the identity plus its current revision. */
 export interface ResidentProfile {
@@ -389,7 +407,10 @@ export interface ResidentProfile {
 export const RESIDENT_LAUNCH_STATES = ["pending", "launched", "failed"] as const;
 export type ResidentLaunchState = (typeof RESIDENT_LAUNCH_STATES)[number];
 
-/** The persona text a run launched with, so a later Persona edit never reaches it. */
+/**
+ * The persona text a run launched with, so a later Persona edit never reaches it. A run whose
+ * profile names no Persona stores `null` in its place.
+ */
 export const ResidentPersonaSnapshotSchema = z.object({
   personaId: z.string(),
   name: z.string(),
@@ -428,7 +449,7 @@ export interface ResidentRun extends ResidentLoopStatus {
   launchRequestId: string;
   launchState: ResidentLaunchState;
   launchError: string | null;
-  persona: ResidentPersonaSnapshot;
+  persona: ResidentPersonaSnapshot | null;
   runInstructions: string;
   /** The pinned revision's body. */
   settings: ResidentProfileRevision;
@@ -472,7 +493,8 @@ export interface ResidentRunSummary extends ResidentLoopStatus {
   profileRevision: number;
   taskId: string;
   launchState: Exclude<ResidentLaunchState, "failed">;
-  personaName: string;
+  /** Null when the run launched without a Persona. */
+  personaName: string | null;
   /** The pinned revision's `RESIDENT_RUN_SUMMARY_SECTIONS`, never the profile's current one. */
   settings: ResidentRunSummarySettings;
   createdAt: number;
@@ -494,7 +516,7 @@ export function residentRunSummary(run: ResidentRun): ResidentRunSummary | null 
     profileRevision: run.profileRevision,
     taskId: run.taskId,
     launchState: run.launchState,
-    personaName: run.persona.name,
+    personaName: run.persona?.name ?? null,
     compaction: HARNESS_CAPABILITIES[run.settings.execution.agent].residentCompaction!,
     loopState: run.loopState, iteration: run.iteration, lastSeq: run.lastSeq,
     nextWakeAt: run.nextWakeAt, consumedGeneration: run.consumedGeneration,
@@ -615,7 +637,10 @@ export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly st
   return count === 0 ? "MCP: Mission only" : `MCP: only ${named}`;
 }
 
-/** A short, human summary of what a launch will carry, for Dispatch's read-only line. */
+/**
+ * A short, human summary of what a launch will carry, for Dispatch's read-only line.
+ * `personaName` is null when the profile's Persona cannot be found; a profile naming none says so.
+ */
 export function residentLaunchSummary(
   settings: ResidentProfileRevision,
   personaName: string | null,
@@ -623,7 +648,7 @@ export function residentLaunchSummary(
   mcpLabels?: readonly string[],
 ): string {
   const parts = [
-    personaName ? `persona ${personaName}` : "persona missing",
+    settings.persona.personaId === "" ? "no persona" : personaName ? `persona ${personaName}` : "persona missing",
     settings.instructions.markdown.trim() ? "profile instructions" : "no profile instructions",
     agentLabel,
     settings.execution.model ?? "default model",

@@ -33,7 +33,8 @@ export interface ResidentSessionMark extends ResidentChipMark {
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction">;
   runId: string;
   profileId: string;
-  personaName: string;
+  /** Null when the run launched without a Persona. */
+  personaName: string | null;
   /**
    * The profile's current revision when it is newer than the pinned one, else null. Read only to
    * say "profile changed since launch"; nothing the run draws or does follows it.

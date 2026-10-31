@@ -33,6 +33,7 @@ import {
   launchInputsMatch,
   normalizeRunInstructions,
   residentLaunchInput,
+  residentRoleProblem,
   residentRunControlRecorded,
   residentRunSummary,
   type ResidentRunControl,
@@ -296,9 +297,13 @@ export class ResidentManager {
 
   /** Why these settings cannot be saved or launched, or null. */
   settingsProblem(settings: ResidentProfileRevision): string | null {
-    const persona = this.deps.persona(settings.persona.personaId);
-    if (!persona) return "the selected Persona no longer exists";
-    if (persona.archivedAt !== null) return `the Persona ${persona.name} is archived`;
+    const role = residentRoleProblem(settings);
+    if (role) return role;
+    if (settings.persona.personaId !== "") {
+      const persona = this.deps.persona(settings.persona.personaId);
+      if (!persona) return "the selected Persona no longer exists";
+      if (persona.archivedAt !== null) return `the Persona ${persona.name} is archived`;
+    }
     if (!isResidentAgent(settings.execution.agent)) {
       return `${settings.execution.agent} cannot run a resident`;
     }
@@ -456,8 +461,10 @@ export class ResidentManager {
     }
     const problem = this.settingsProblem(profile.settings);
     if (problem) return { ok: false, status: 400, code: "invalid", error: problem };
-    const persona = this.deps.persona(profile.settings.persona.personaId)!;
-    const snapshot: ResidentPersonaSnapshot = {
+    const persona = profile.settings.persona.personaId === ""
+      ? null
+      : this.deps.persona(profile.settings.persona.personaId)!;
+    const snapshot: ResidentPersonaSnapshot | null = persona && {
       personaId: persona.id,
       name: persona.name,
       guidanceMarkdown: persona.guidanceMarkdown,

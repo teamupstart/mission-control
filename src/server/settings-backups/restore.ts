@@ -197,11 +197,11 @@ function residentContent(value: ResidentProfile | SettingsBackupResidentProfile)
 }
 
 /**
- * Every live resident after this restore must still name a live Persona, or it could no longer
- * be launched. The post-restore residents are the snapshot's live rows, or - for a snapshot that
- * predates the domain - the live residents kept as they are. The post-restore Personas are the
- * built-ins plus the snapshot's live operator Personas: restore archives operator Personas it
- * does not name.
+ * Every live resident that names a Persona must still name a live one after this restore, or it
+ * could no longer be launched. A resident without a Persona depends on none. The post-restore
+ * residents are the snapshot's live rows, or - for a snapshot that predates the domain - the
+ * live residents kept as they are. The post-restore Personas are the built-ins plus the
+ * snapshot's live operator Personas: restore archives operator Personas it does not name.
  */
 function residentPersonaBlockers(
   staged: StagedSettingsBackup,
@@ -217,7 +217,7 @@ function residentPersonaBlockers(
     : staged.residentProfiles.filter((row) => row.archivedAt === null)
       .map((row) => ({ name: row.name, personaId: ResidentProfileRevisionSchema.parse(row.settings).persona.personaId }));
   return residents
-    .filter((row) => !livePersonas.has(row.personaId))
+    .filter((row) => row.personaId !== "" && !livePersonas.has(row.personaId))
     .map((row) =>
       `Resident profile ${row.name} uses Persona ${row.personaId}, which would not be live after this restore`);
 }

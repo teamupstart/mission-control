@@ -203,6 +203,8 @@ test("restore is blocked when a resident it leaves live would name a Persona tha
   new SettingsBackupStore(root).write(older);
 
   store.createResidentProfile({ id: "on-builtin", settings: settings("On builtin", ""), at: 5 });
+  // A resident without a Persona depends on none, so no restore can strand it.
+  store.createResidentProfile({ id: "no-persona", settings: settings("No persona", "Watch the fleet.", ""), at: 5 });
   const fine = svc.previewRestore(older.id);
   assert.equal(fine.status, "ready", JSON.stringify(fine));
 

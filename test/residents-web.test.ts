@@ -7,6 +7,7 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
 import { dispatchOpeningProblem, resolveDispatchOpening } from "../src/web/lib/dispatch-mode.ts";
 import { blankResidentDraft, residentDraftProblem } from "../src/web/residents/ResidentProfileEditor.tsx";
+import { residentProfileFact } from "../src/web/residents/ResidentsPage.tsx";
 import {
   chooseResidentRepo,
   freshResidentDispatchDraft,
@@ -17,7 +18,12 @@ import {
   selectResidentProfile,
 } from "../src/web/residents/dispatch-draft.ts";
 import { parseMissionRoute, missionRouteHash } from "../src/web/workflows/useWorkflowRoute.ts";
-import { RESIDENT_PROFILE_SECTION_IDS, ResidentProfileRevisionSchema, type ResidentProfile } from "../src/shared/residents.ts";
+import {
+  RESIDENT_PROFILE_SECTION_IDS,
+  ResidentProfileRevisionSchema,
+  residentLaunchSummary,
+  type ResidentProfile,
+} from "../src/shared/residents.ts";
 
 function profile(id: string, repo: string | null): ResidentProfile {
   return {
@@ -80,6 +86,22 @@ test("a blank draft carries every registered section and is not yet saveable", (
   assert.deepEqual(Object.keys(draft).sort(), [...RESIDENT_PROFILE_SECTION_IDS].sort());
   assert.match(residentDraftProblem(draft) ?? "", /name/);
   assert.equal(residentDraftProblem({ ...draft, identity: { name: "Bot", description: "" }, persona: { personaId: "p" } }), null);
+});
+
+test("a draft without a Persona saves once its profile instructions give the role", () => {
+  const draft = { ...blankResidentDraft(), identity: { name: "Bot", description: "" } };
+  assert.equal(residentDraftProblem(draft), "choose a Persona or write profile instructions");
+  assert.equal(residentDraftProblem({ ...draft, instructions: { markdown: "Watch the fleet." } }), null);
+});
+
+test("a profile without a Persona says so in the rail and the launch summary, not that one is missing", () => {
+  const none = profile("solo", null);
+  none.settings = { ...none.settings, persona: { personaId: "" } };
+  assert.match(residentProfileFact(none, []), /^no Persona · /);
+  assert.match(residentLaunchSummary(none.settings, null, "Claude Code"), /^no persona · /);
+  const missing = profile("gone", null);
+  assert.match(residentProfileFact(missing, []), /^missing Persona · /);
+  assert.match(residentLaunchSummary(missing.settings, null, "Claude Code"), /^persona missing · /);
 });
 
 test("the Dispatch layer renders Resident mode with the shared three-way toggle and the profile cards", () => {

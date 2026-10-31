@@ -416,12 +416,13 @@ function readLaunchState(raw: string): ResidentLaunchState | null {
     : null;
 }
 
-function parsePersona(raw: string): ResidentPersonaSnapshot | null {
+/** The snapshot, `null` for a run launched without a Persona, or undefined when unreadable. */
+function parsePersona(raw: string): ResidentPersonaSnapshot | null | undefined {
   try {
-    const parsed = ResidentPersonaSnapshotSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : null;
+    const parsed = ResidentPersonaSnapshotSchema.nullable().safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -436,7 +437,7 @@ function rowToRun(row: RunRow): StoredResidentRun | null {
   const launchState = readLaunchState(row.launch_state);
   const persona = parsePersona(row.persona_snapshot);
   const settings = row.settings_json ? parseSettings(row.settings_json) : null;
-  if (!launchState || !persona || !settings) return null;
+  if (!launchState || persona === undefined || !settings) return null;
   let launchInput: unknown = null;
   try {
     launchInput = JSON.parse(row.launch_input);
@@ -560,7 +561,7 @@ export interface ReserveResidentRunInput {
   launchInput: ResidentLaunchInput;
   /** The repository exactly as the request spelled it, trimmed. */
   repoSpelling: string;
-  persona: ResidentPersonaSnapshot;
+  persona: ResidentPersonaSnapshot | null;
   runInstructions: string;
   at: number;
 }

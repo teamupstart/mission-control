@@ -45,13 +45,14 @@ export const RESIDENT_STANDING_HEADING = "## Resident role";
 /**
  * Persona guidance, then profile instructions, then this run's instructions: who the agent is,
  * how this profile wants it to work, and what this launch is about. Snapshotted text only, so
- * a Persona or profile edit after launch never reaches the run.
+ * a Persona or profile edit after launch never reaches the run. A run without a Persona heads
+ * the section with the profile's name and starts at its profile instructions.
  */
 export const personaInstructionsContributor: ResidentLaunchContributor = {
   id: "personaInstructions",
   contribute({ run }) {
-    const parts = [`${RESIDENT_STANDING_HEADING}: ${run.persona.name}`];
-    const guidance = run.persona.guidanceMarkdown.trim();
+    const parts = [`${RESIDENT_STANDING_HEADING}: ${run.persona?.name ?? run.settings.identity.name}`];
+    const guidance = run.persona?.guidanceMarkdown.trim();
     if (guidance) parts.push(guidance);
     const profile = run.settings.instructions.markdown.trim();
     if (profile) parts.push(`### Profile instructions\n\n${profile}`);

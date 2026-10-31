@@ -12,9 +12,10 @@ import { ResidentProfileEditor } from "./ResidentProfileEditor.tsx";
 
 /** The rail row's distinguishing facts: whose role it is, and on which harness. */
 export function residentProfileFact(profile: ResidentProfile, personas: readonly PersonaView[]): string {
-  const persona = personas.find((candidate) => candidate.id === profile.settings.persona.personaId);
+  const { personaId } = profile.settings.persona;
+  const persona = personas.find((candidate) => candidate.id === personaId);
   return [
-    persona?.name ?? "missing Persona",
+    personaId === "" ? "no Persona" : persona?.name ?? "missing Persona",
     AGENT_IDENTITY[profile.settings.execution.agent].label,
     profile.settings.execution.model ?? "default model",
   ].join(" · ");
@@ -49,6 +50,7 @@ export function ResidentsPage({
   onSettle,
   onDirtyChange,
   onLaunch,
+  onCreatePersona,
 }: {
   profiles: readonly ResidentProfile[];
   runs?: readonly ResidentRunSummary[];
@@ -70,6 +72,8 @@ export function ResidentsPage({
   /** Report unsaved edits to the router's dirty-draft gate. */
   onDirtyChange: (dirty: boolean) => void;
   onLaunch: (profile: ResidentProfile) => void;
+  /** Open the Library's blank Persona editor: gated by the router like every other move. */
+  onCreatePersona?: () => void;
 }): React.JSX.Element {
   const [dirty, setDirty] = useState(false);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
@@ -164,6 +168,7 @@ export function ResidentsPage({
               }}
               onArchived={() => {}}
               onLaunch={onLaunch}
+              onCreatePersona={onCreatePersona}
             />
           ) : shown ? (
             <ResidentProfileEditor
@@ -181,6 +186,7 @@ export function ResidentsPage({
                 onSettle(null);
               }}
               onLaunch={onLaunch}
+              onCreatePersona={onCreatePersona}
             />
           ) : (
             <section className="workflow-empty resident-empty">

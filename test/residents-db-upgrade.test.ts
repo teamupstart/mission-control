@@ -108,7 +108,7 @@ test("Phase 1 rows upgrade with null workspace markers and keep their pinned rev
   assert.equal(run.run.workspaceDir, null);
   assert.equal(run.run.launchState, "launched");
   assert.equal(run.run.profileRevision, 1);
-  assert.equal(run.run.persona.guidanceMarkdown, "Keep watching");
+  assert.equal(run.run.persona?.guidanceMarkdown, "Keep watching");
   assert.ok(launchInputsMatch(run.launchInput, residentLaunchInput("/existing/repo", "")));
   const columns = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string; notnull: number }>;
   assert.equal(columns.find((column) => column.name === "repo_root")!.notnull, 1);

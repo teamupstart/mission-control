@@ -2436,7 +2436,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Global Command catalog: what each portable workflow slot runs on this machine ---
   //
-  // Four fixed slots, so this family has no create and no delete: only a list, a read, and
+  // Fixed slots, so this family has no create and no delete: only a list, a read, and
   // one compare-and-swap replacement of a slot's whole state. The legacy config route above
   // writes through the same manager, so there is exactly one durable authority and one live
   // event whichever surface an operator used.
@@ -2445,7 +2445,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     result: Exclude<WorkflowCommandMutation, { ok: true }>,
   ) => {
     const code = `workflow_command_${result.reason}`;
-    if (result.reason === "invalid_recipe") return c.json({ error: "CodeRabbit requires typed repository-root tuning and no arbitrary argv", code, current: result.current }, 400);
+    if (result.reason === "invalid_recipe") return c.json({ error: c.req.param("slot") === "coderabbit"
+      ? "CodeRabbit requires typed repository-root tuning and no arbitrary argv"
+      : `${c.req.param("slot")} requires nonempty argv overrides without review tuning`, code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);
     }

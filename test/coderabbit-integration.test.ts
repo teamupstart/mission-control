@@ -178,6 +178,18 @@ test("a runtime refusal proven before process start returns its allowance",async
  const r=await runCheck(i,{...deps(),execute:async()=>({kind:"infrastructure",started:false,reason:"no lease could be acquired"})});
  assert.equal(r.kind,"action_required");assert.equal(releases,1);
 });
+test("unexpected comparison and executor failures log classified secret-free diagnostics",async(t)=>{
+ const logs:string[]=[];t.mock.method(console,"error",(...args:unknown[])=>logs.push(args.join(" ")));
+ for(const stage of ["comparison","execution"]){
+  const i=input(),d=deps();const fail=async()=>{throw new SyntaxError("credential=fixture-secret corrupt metadata");};
+  if(stage==="comparison")i.coderabbit!.comparison=fail;else d.execute=fail;
+  const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
+  if(r.kind==="action_required")assert.doesNotMatch(r.reason,/fixture-secret/);
+  assert.match(logs.at(-1)??"",new RegExp(`event=coderabbit_exception.*state=${stage}.*error=SyntaxError`));
+ }
+ assert.ok(logs.every(line=>line.length<=200&&!line.includes("fixture-secret")));
+});
+
 test("an executor exception cannot refund a review that may already have started",async()=>{
  const i=input();let releases=0;i.reserveRun=()=>({granted:true,spent:0,release:()=>{releases++;}});
  const r=await runCheck(i,{...deps(),execute:async()=>{throw new Error("metadata persistence failed after the child exited");}});

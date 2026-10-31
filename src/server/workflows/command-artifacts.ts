@@ -468,8 +468,10 @@ export class WorkflowCommandArtifactService {
       if (temp) { this.releaseTempPath(temp); try { rmSync(temp, { force: true }); } catch { /* reconciled later */ } }
     }
     const now = Date.now();
-    this.db.exec("BEGIN IMMEDIATE");
+    let transactionOpen = false;
     try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transactionOpen = true;
       this.db.prepare(`INSERT INTO workflow_command_artifacts
         (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes, dropped_bytes,
          sha256, capture_state, availability, unavailable_reason, storage_key, created_at, finalized_at)
@@ -480,7 +482,25 @@ export class WorkflowCommandArtifactService {
       this.db.prepare("UPDATE workflow_command_artifact_reservations SET retained_bytes = ?, state = 'finalized', updated_at = ? WHERE attempt_id = ?")
         .run(raw + (available ? body.length : 0), now, input.attemptId);
       this.db.exec("COMMIT");
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+      transactionOpen = false;
+    } catch (error) {
+      if (transactionOpen) this.db.exec("ROLLBACK");
+      if (available) { try { rmSync(this.bodyPath(key), { force: true }); } catch { /* startup reconciles unreferenced bodies */ } }
+      try {
+        this.db.prepare(`INSERT OR IGNORE INTO workflow_command_artifacts
+          (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes, dropped_bytes,
+           sha256, capture_state, availability, unavailable_reason, storage_key, created_at, finalized_at)
+          VALUES (?, ?, ?, ?, 'findings', 0, ?, ?, NULL, 'partial', 'unavailable', ?, NULL, ?, ?)`)
+          .run(id, input.runId, input.submissionId, input.attemptId, body.length, body.length,
+            "Findings publication was interrupted", now, now);
+      } finally {
+        // Release only this attempt's unused capacity, even if its unavailable descriptor
+        // cannot be inserted. Other reviews may still be collecting their semantic output.
+        this.db.prepare("UPDATE workflow_command_artifact_reservations SET retained_bytes = ?, state = 'interrupted', updated_at = ? WHERE attempt_id = ? AND state = 'reserved'")
+          .run(raw, now, input.attemptId);
+      }
+      throw error;
+    }
     return this.listForAttempt(input.attemptId).find((a) => a.kind === "findings")!;
   }
 

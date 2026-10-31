@@ -7,6 +7,7 @@ import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { scrubCheckEnv } from "./check-env.ts";
 import { resolveCapturedCommit, FULL_SHA } from "./commit-id.ts";
 import type { CheckResult, CheckRunDeps, CheckRunReservation, RunCheckInput } from "./checks.ts";
+import { workflowLog } from "./log.ts";
 
 export const CODERABBIT_SETUP = "Settings > Setup";
 export const CODERABBIT_MANAGED_ENV = { CODERABBIT_CLI_DISABLE_AUTO_UPDATE: "true", CR_CLI_AUTH_TIMEOUT: "5000" };
@@ -80,6 +81,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   let comparison: CodeRabbitComparison | null = null;
   let reservation: CheckRunReservation | undefined;
   let started = false;
+  let failureStage = "preflight";
   const summary = (status: "skipped" | "incomplete", diagnostic: string): import("@shared/workflow.ts").CodeRabbitReviewSummary => ({
     comparison: comparison ?? { interpreterVersion: 1,
       yaml: yaml ?? { source: ".coderabbit.yaml", digest: null, enabled: false, state: "missing", diagnostic: "No captured YAML" },
@@ -102,19 +104,23 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     if (denied) return block(denied);
     if (!input.repoRoot || !deps.execute) return block("CodeRabbit execution runtime or repository is unavailable");
     if (input.coderabbit?.dirty || yaml.committed === false) return block("Submission contains uncommitted changes. Commit all reviewed content and create a new submission");
+    failureStage = "comparison";
     comparison = await input.coderabbit!.comparison();
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");
+    failureStage = "readiness";
     const ready = await (deps.codeRabbitProbe ?? probeCodeRabbit)();
     if (ready.error || !("command" in ready)) return block(ready.error ?? "CodeRabbit is unavailable");
     const command = [ready.command, "review", "--agent", "--gate", comparison.severity, "--committed", "--base-commit", comparison.mergeBase];
     // An executor that throws cannot prove that the review never started. Keep its claim
     // unless a completed runtime result explicitly reports a pre-start refusal.
     started = true;
+    failureStage = "execution";
     const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
     started = execution.kind !== "unavailable" && (execution.kind !== "infrastructure" || execution.started !== false);
     if (execution.kind === "unavailable") return block(execution.note);
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
+    failureStage = "result";
     const review = execution.review;
     if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts);
     const skipped = review.status === "skipped";
@@ -123,6 +129,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
       exitCode: execution.exitCode, output: execution.output, truncatedBytes: execution.truncatedBytes, artifacts: execution.artifacts ?? [], timeoutMs: comparison.timeoutMs,
       note, review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) }, ...(skipped ? { warning: review.diagnostic } : {}),
     } };
-  } catch { return block("CodeRabbit execution could not establish a complete review. Inspect retained diagnostics before retrying");
+  } catch (error) {
+    // Raw exception messages and names can contain credentials, paths or vendor output.
+    workflowLog("error", { event: "coderabbit_exception", state: failureStage,
+      error: error instanceof SyntaxError ? "SyntaxError" : error instanceof TypeError ? "TypeError" : error instanceof Error ? "Error" : "unknown" });
+    return block("CodeRabbit execution could not establish a complete review. Inspect daemon diagnostics and any retained output before retrying");
   } finally { if (!started) reservation?.release?.(); }
 }

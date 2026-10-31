@@ -30,6 +30,35 @@ function capture(attemptId: string, runId = "run-1") {
   return service.beginCapture({ runId, submissionId: "submission-1", attemptId });
 }
 
+for (const failure of ["begin", "insert", "commit"] as const) test(`failed findings ${failure} settles only its reservation immediately`, (t) => {
+  const input = { runId: `publication-${failure}`, submissionId: "publication-sub", attemptId: `publication-${failure}` };
+  const output = service.beginCapture({ ...input, semanticBytes: 4 * 1024 * 1024 });
+  output.push("stdout", Buffer.from("retained raw review\n"));
+  const stdout = output.finalize(true).find(a => a.kind === "stdout")!;
+  const other = service.beginCapture({ ...input, attemptId: `${input.attemptId}-live` });
+  const exec = db.exec.bind(db);let injected = false;
+  if (failure === "insert") exec(`CREATE TEMP TRIGGER fail_findings_insert BEFORE INSERT ON workflow_command_artifacts
+    WHEN NEW.kind = 'findings' AND NEW.availability = 'retained' BEGIN SELECT RAISE(ABORT, 'fixture publication failure'); END`);
+  else t.mock.method(db, "exec", (sql: string) => {
+    if (!injected && sql === (failure === "begin" ? "BEGIN IMMEDIATE" : "COMMIT")) { injected = true; throw new Error("fixture publication failure"); }
+    return exec(sql);
+  });
+  try {
+    assert.throws(() => service.publishFindings(input, Buffer.from("finding\n"), true), /fixture publication failure/);
+    const row = db.prepare("SELECT state, retained_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?").get(input.attemptId) as {state:string;retained_bytes:number};
+    assert.equal(row.state, "interrupted");
+    assert.equal(row.retained_bytes, stdout.retainedBytes);
+    assert.equal((db.prepare("SELECT state FROM workflow_command_artifact_reservations WHERE attempt_id = ?").get(`${input.attemptId}-live`) as {state:string}).state, "reserved");
+    assert.equal(service.read({ runId: input.runId, attemptId: input.attemptId, artifactId: stdout.id }).text, "retained raw review\n");
+    const findings = service.listForAttempt(input.attemptId).find(a => a.kind === "findings")!;
+    assert.equal(findings.availability, "unavailable");
+    assert.equal(findings.captureState, "partial");
+  } finally {
+    if (failure === "insert") exec("DROP TRIGGER fail_findings_insert");
+    other.finalize(false);
+  }
+});
+
 test("retains stdout and stderr separately and pages on UTF-8 boundaries", () => {
   const output = capture("attempt-mixed");
   output.push("stdout", Buffer.from("\u001b[31m🙂\u001b[0mX", "utf8"));

@@ -259,10 +259,15 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     'legacy helper did not check the candidate', {timeout: 120_000});
     assert.deepEqual(inspectBundle(current), priorBundle, 'edited legacy candidate must never replace the accepted installation');
     assert.match(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).message, /accepted staged app bytes changed/);
-    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
-    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
+    // The refusal is recorded BEFORE the helper relaunches the prior app, and that relaunch is real
+    // work: `prepareAppLaunch`, then a full launchd preflight sweep, then `open`. So wait for the
+    // relaunch first, with the budget every other mode here gives a relaunch, and only then for
+    // the helper to exit - which by then is teardown, as it is in every other mode. Waiting for
+    // exit first would make a teardown budget cover a sweep.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 120_000});
     const restored = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
     await boundedMigrationWait(() => !processIsAlive(restored.pid), 'prior app did not exit', {timeout: 10_000});
+    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
     assert.equal(restored.receipt.installedCommit, 'a'.repeat(40));
     assert.equal(restored.nodeFlag, null, 'prior GUI relaunch must clear run-as-node');
     assert.deepEqual(readFileSync(join(state, 'install-receipt.json')), receiptBytes);

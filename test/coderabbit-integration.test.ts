@@ -144,6 +144,27 @@ test("observed default base and full head resolve in correct repo; retries freez
   const refreshed=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:c.head,yaml:enabled,command});assert.equal(refreshed.empty,true);
  }
 });
+test("missing origin/HEAD requires explicit base tuning and resolves its tip and merge-base",async()=>{
+ const f=repo("explicit-base"),head=f.git("rev-parse","HEAD");
+ f.git("symbolic-ref","--delete","refs/remotes/origin/HEAD");
+ // Diverge the configured base so its tip cannot be mistaken for the merge-base
+ // or the still-present origin/main. No remote access is needed to resolve it.
+ f.git("checkout","-qb","review-base",f.base);
+ writeFileSync(join(f.root,"base-only"),"advance the configured base\n");
+ f.git("add",".");f.git("commit","-qm","advance review base");
+ const baseTip=f.git("rev-parse","HEAD");f.git("checkout","-q","feature");
+ assert.notEqual(baseTip,f.base);
+ const command=emptyWorkflowCommandView("coderabbit");
+ const unresolved=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:head,yaml:enabled,command});
+ assert.equal(unresolved.head,head);
+ assert.match(unresolved.error!,/explicit baseRef/);
+ assert.equal(unresolved.baseTip,null);assert.equal(unresolved.mergeBase,null);
+ command.overrides=[{repoRoot:f.root,command:[],review:{kind:"coderabbit",baseRef:"review-base",severity:"minor"}}];
+ const resolved=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:head,yaml:enabled,command});
+ assert.equal(resolved.error,null);assert.equal(resolved.baseRef,"review-base");
+ assert.equal(resolved.baseTip,baseTip);assert.equal(resolved.mergeBase,f.base);
+ assert.equal(resolved.head,head);assert.equal(resolved.severity,"minor");assert.equal(resolved.empty,false);
+});
 test("typed CAS tuning survives reload and legacy writes, removal returns to defaults; reject argv/subdirectory",()=>{
  const f=repo("catalog");const manager=new WorkflowCommandManager(new Registry());let view=manager.get("coderabbit")!;
  const saved=manager.replace("coderabbit",{expectedRevision:view.revision,defaultCommand:null,overrides:[{repoRoot:f.root,command:[],review:{kind:"coderabbit",baseRef:"main",severity:"minor"}}],maxRuns:10,timeoutMs:null,onUnavailable:"skip",onBudgetExhausted:"block"});assert.ok(saved.ok);

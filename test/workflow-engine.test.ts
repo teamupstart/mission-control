@@ -1451,6 +1451,7 @@ test("a downstream Persona receives frozen Check evidence in its prompt and inpu
     exitCode: 0,
     outputTail: "TAP version 13\nok 13 - regression retained\n",
     omittedBytes: 1_393,
+    artifacts: [],
     headSha: "abc",
     note: "`npm test` passed.",
   }]);

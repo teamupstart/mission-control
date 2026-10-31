@@ -866,19 +866,21 @@ export function CommandLibrary({
                     timeoutMs: Math.min(120, Math.max(1, Number(event.target.value))) * 60_000,
                   }))}
                 />
-                <label className="wf-command-timeout-default">
-                  <input
-                    type="checkbox"
-                    checked={draft.timeoutMs === null}
-                    onChange={(event) => setDraft((current) => ({
-                      ...current,
-                      timeoutMs: event.target.checked
-                        ? null
-                        : WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot],
-                    }))}
-                  />
-                  Use slot default
-                </label>
+                <Tooltip label="Use the default timeout for this Command">
+                  <label className="wf-command-timeout-default">
+                    <input
+                      type="checkbox"
+                      checked={draft.timeoutMs === null}
+                      onChange={(event) => setDraft((current) => ({
+                        ...current,
+                        timeoutMs: event.target.checked
+                          ? null
+                          : WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot],
+                      }))}
+                    />
+                    Use slot default
+                  </label>
+                </Tooltip>
               </div>
               <p className="wf-command-hint">
                 The default is {WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot] / 60_000}
@@ -889,34 +891,38 @@ export function CommandLibrary({
 
             <div className="wf-command-budget">
               <label htmlFor="workflow-command-unavailable">If the command is unavailable</label>
-              <select
-                id="workflow-command-unavailable"
-                className="field-input"
-                value={draft.onUnavailable}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  onUnavailable: event.target.value as WorkflowCommandFailurePolicy,
-                }))}
-              >
-                <option value="skip">Skip with a note</option>
-                <option value="block">Block for operator action</option>
-              </select>
+              <Tooltip label="Choose whether unavailable execution skips or waits for operator action">
+                <select
+                  id="workflow-command-unavailable"
+                  className="field-input"
+                  value={draft.onUnavailable}
+                  onChange={(event) => setDraft((current) => ({
+                    ...current,
+                    onUnavailable: event.target.value as WorkflowCommandFailurePolicy,
+                  }))}
+                >
+                  <option value="skip">Skip with a note</option>
+                  <option value="block">Block for operator action</option>
+                </select>
+              </Tooltip>
             </div>
 
             <div className="wf-command-budget">
               <label htmlFor="workflow-command-budget-exhausted">When the run budget is exhausted</label>
-              <select
-                id="workflow-command-budget-exhausted"
-                className="field-input"
-                value={draft.onBudgetExhausted}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  onBudgetExhausted: event.target.value as WorkflowCommandFailurePolicy,
-                }))}
-              >
-                <option value="skip">Skip with a note</option>
-                <option value="block">Block for operator action</option>
-              </select>
+              <Tooltip label="Choose whether an exhausted run allowance skips or waits for operator action">
+                <select
+                  id="workflow-command-budget-exhausted"
+                  className="field-input"
+                  value={draft.onBudgetExhausted}
+                  onChange={(event) => setDraft((current) => ({
+                    ...current,
+                    onBudgetExhausted: event.target.value as WorkflowCommandFailurePolicy,
+                  }))}
+                >
+                  <option value="skip">Skip with a note</option>
+                  <option value="block">Block for operator action</option>
+                </select>
+              </Tooltip>
             </div>
           </div>
 

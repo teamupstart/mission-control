@@ -242,10 +242,22 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
     await route.continue();
   });
 
-  await card.getByRole("button", { name: "Load stdout" }).click();
+  const loadStdout = card.getByRole("button", { name: "Load stdout" });
+  await expect(loadStdout).toHaveAccessibleDescription("Read the next page of retained stdout");
+  await loadStdout.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText("Read the next page of retained stdout");
+  await expect(dashboard.locator(".tooltip")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}retained-output-tooltip.png`, fullPage: true });
+  }
+  await loadStdout.click();
   const retryFirstPage = card.getByRole("button", { name: "Retry stdout" });
   await expect(card.getByRole("alert")).toContainText("temporary retained-output failure");
   await expect(retryFirstPage).toBeEnabled();
+  await expect(retryFirstPage).toHaveAccessibleDescription(
+    "Retry reading retained output from the last cursor",
+  );
   await retryFirstPage.click();
   await expect(card).toContainText("E2E EARLY MARKER");
   await expect(card.getByRole("button", { name: "Load more" })).toBeEnabled();

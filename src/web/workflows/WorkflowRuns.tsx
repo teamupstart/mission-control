@@ -413,13 +413,19 @@ function RetainedCommandOutput({
           <div className="wf-run-command-artifact" key={artifact.id}>
             <div className="wf-run-command-artifact-head">
               <strong>{label}</strong>
-              <button
-                className="btn btn-ghost"
-                disabled={page?.loading || finished}
-                onClick={() => void load(artifact)}
-              >
-                {actionLabel}
-              </button>
+              <Tooltip label={finished
+                ? "All retained output has been loaded"
+                : page?.error
+                  ? "Retry reading retained output from the last cursor"
+                  : `Read the next page of retained ${artifact.kind}`}>
+                <button
+                  className="btn btn-ghost"
+                  disabled={page?.loading || finished}
+                  onClick={() => void load(artifact)}
+                >
+                  {actionLabel}
+                </button>
+              </Tooltip>
             </div>
             {page?.text && <pre className="wf-run-check-output">{page.text}</pre>}
             {page?.error && <p className="wf-error" role="alert">{page.error}</p>}

@@ -301,6 +301,20 @@ test("timeout and skip-or-block policies save, stream, and survive reload", asyn
 
   const useDefault = dashboard.getByLabel("Use slot default");
   const timeout = dashboard.getByLabel("Timeout in minutes");
+  await expect(useDefault).toHaveAccessibleDescription("Use the default timeout for this Command");
+  await expect(dashboard.getByLabel("If the command is unavailable")).toHaveAccessibleDescription(
+    "Choose whether unavailable execution skips or waits for operator action",
+  );
+  await expect(dashboard.getByLabel("When the run budget is exhausted")).toHaveAccessibleDescription(
+    "Choose whether an exhausted run allowance skips or waits for operator action",
+  );
+  await useDefault.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText("Use the default timeout for this Command");
+  await expect(dashboard.locator(".tooltip")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}command-policy-tooltip.png`, fullPage: true });
+  }
   await expect(useDefault).toBeChecked();
   await expect(timeout).toBeDisabled();
   await useDefault.uncheck();

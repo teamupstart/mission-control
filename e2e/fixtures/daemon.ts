@@ -479,6 +479,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // an unfaked binary would file a real issue on every run of the push spec. `ghBin()` is the
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
+    MISSION_CODERABBIT_BIN: fileURLToPath(new URL("./fake-coderabbit.mjs", import.meta.url)),
+    MC_E2E_CODERABBIT_SCRIPT: join(home, "coderabbit-script.json"),
     MISSION_GH_BIN: ghStartsMissing ? ghInstallBin : bins.gh,
     // The same door, on the source that can do worse. A Jira write-back MOVES an issue -
     // `jira issue move MC-431 "Done"` transitions a ticket on somebody's board - and on a

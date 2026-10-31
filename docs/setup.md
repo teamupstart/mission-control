@@ -248,3 +248,13 @@ viewport, and local scenario players, so it does not use agent models or alter y
 The current binary is Agent Mission Control.app. Use the current installer for an old-name
 installation; it preserves the existing folder, scope and state. Saved old bootstraps refuse
 the new layout. See [migration and compatibility](app-name-migration.md).
+
+## Optional CodeRabbit workflow reviews
+
+Settings > Setup reports the optional CodeRabbit CLI path/source, minimum version 0.9.1 and
+stored authentication readiness without installing, signing in or reviewing. Follow the
+[official installation guide](https://docs.coderabbit.ai/cli), then run `coderabbit auth login`
+under the same effective HOME as the daemon and press Re-check. Managed invocations disable
+auto-update and never authorize usage credits. YAML must explicitly enable each repository;
+installation and login alone do not enable review. YAML-enabled blocks link directly back to
+Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

@@ -8,6 +8,7 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  defaultWorkflowCommandMaxRuns,
   WORKFLOW_LIMITS,
   checkOutcomePasses,
   checkRunBudgetSpent,
@@ -475,7 +476,7 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
 
   // Every slot the catalog projects carries a budget, including the ones nobody has written.
   for (const slot of WORKFLOW_CHECK_SLOTS) {
-    assert.equal(store.getWorkflowCommand(slot)?.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
+    assert.equal(store.getWorkflowCommand(slot)?.maxRuns, defaultWorkflowCommandMaxRuns(slot));
   }
 });
 

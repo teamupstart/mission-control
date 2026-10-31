@@ -17,7 +17,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
@@ -1006,6 +1006,7 @@ function seedCheckRun(
   id: string,
   repoRoot: string,
   headSha: string,
+  slot: WorkflowCheckSlot = "test",
 ): InstanceType<typeof WorkflowStore> {
   const context = contextAt(headSha);
   const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
@@ -1020,7 +1021,10 @@ function seedCheckRun(
        id, workflow_id, version, source_draft_revision, graph_json,
        completion_policy_json, binding_defaults_json, published_at
      ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
-  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(checkGraph), defaults);
+  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify({
+    ...checkGraph,
+    nodes: checkGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot } : node),
+  }), defaults);
   const store = new WorkflowStore();
   const binding = store.insertBinding({
     id: `binding-${id}`,
@@ -1048,6 +1052,78 @@ function seedCheckRun(
   }, 3);
   return store;
 }
+
+test("restart during CodeRabbit findings publication preserves raw output without completing the review", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const id = "coderabbit-publication-interrupted";
+  const store = seedCheckRun(id, repoRoot, headSha, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}` };
+  store.setRunState(ref.runId, "running", "persona_review");
+  store.insertAttempt({
+    id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4,
+  });
+  assert.deepEqual(store.reserveCheckRun(ref.runId, ref.attemptId, "coderabbit", 10, null),
+    { granted: true, spent: 0 });
+
+  const root = join(home, id);
+  const artifacts = new WorkflowCommandArtifactService(db, root);
+  const capture = artifacts.beginCapture({ ...ref, semanticBytes: 4 * 1024 * 1024 });
+  const finding = { type: "finding", severity: "minor", fileName: "root.txt", title: "Verify advisory",
+    comment: "This finding must survive in raw output when semantic publication is interrupted" };
+  const stdout = [finding, { type: "complete", status: "review_completed", outcome: "completed",
+    unreviewedFileCount: 0, findings: 1, gate: { threshold: "major", status: "passed", blockingFindings: 0 } }]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  const stderr = "review process exited before findings were published\n";
+  capture.push("stdout", Buffer.from(stdout));
+  capture.push("stderr", Buffer.from(stderr));
+  const raw = capture.finalize(true);
+  const reservation = () => db.prepare(
+    "SELECT state, retained_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?",
+  ).get(ref.attemptId);
+  assert.equal((reservation() as { state: string }).state, "reserved");
+  assert.deepEqual(raw.map((artifact) => [artifact.kind, artifact.availability, artifact.captureState]),
+    [["stdout", "retained", "complete"], ["stderr", "retained", "complete"]]);
+
+  // Crash after raw finalization, before publishFindings: startup must preserve those
+  // bodies and publish an explicit missing-findings descriptor rather than trust stdout.
+  const restarted = new WorkflowCommandArtifactService(db, root);
+  const recovered = restarted.listForAttempt(ref.attemptId);
+  assert.deepEqual(recovered.filter((artifact) => artifact.kind !== "findings"), raw);
+  for (const [kind, text] of [["stdout", stdout], ["stderr", stderr]]) {
+    const artifact = recovered.find((item) => item.kind === kind)!;
+    assert.equal(restarted.read({ ...ref, artifactId: artifact.id }).text, text);
+  }
+  const findings = recovered.find((artifact) => artifact.kind === "findings");
+  assert.ok(findings, "CodeRabbit recovery must describe unpublished findings explicitly");
+  assert.equal(findings.availability, "unavailable");
+  assert.equal(findings.captureState, "partial");
+  assert.match(findings.unavailableReason!, /interrupted/);
+  assert.throws(() => restarted.read({ ...ref, artifactId: findings.id }),
+    { code: "command_output_unavailable", status: 409 });
+  assert.deepEqual({ ...reservation() }, {
+    state: "interrupted", retained_bytes: Buffer.byteLength(stdout) + Buffer.byteLength(stderr),
+  });
+  restarted.recoverInterrupted();
+  assert.deepEqual(restarted.listForAttempt(ref.attemptId), recovered);
+  assert.deepEqual(restarted.publishFindings(ref, Buffer.from(JSON.stringify(finding) + "\n"), true), findings,
+    "late publication must not turn interrupted findings into a complete review");
+
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("startup recovery must not call a model"); },
+    checkDeps: () => { throw new Error("a fresh review is outside this recovery test"); },
+  });
+  engine.start();
+  // Startup recovery is synchronous. Stop before the queued pump executes a fresh attempt.
+  await engine.stop();
+  const interrupted = store.getAttempt(ref.attemptId)!;
+  assert.equal(interrupted.state, "error");
+  assert.match(interrupted.error!, /Interrupted by daemon restart/);
+  assert.equal(interrupted.verdict, null);
+  assert.equal(interrupted.output, null);
+  assert.notEqual(store.getRun(ref.runId)!.status, "completed");
+  assert.equal(store.latestAttemptForNode(ref.submissionId, "gate")!.state, "retry_wait");
+});
 
 async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {
   const started = Date.now();

@@ -363,16 +363,16 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   const shipped = dashboard.locator(".wf-pipeline-strip");
   await expect(shipped).toBeVisible();
   const stages = shipped.locator("section.wf-pipeline-stage");
-  await expect(stages).toHaveCount(5);
-  const codeReview = stages.nth(2);
-  const evidenceAndDocs = stages.nth(3);
-  await expect(codeReview.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
+  await expect(stages).toHaveCount(6);
+  const codeReview = stages.nth(3);
+  const evidenceAndDocs = stages.nth(4);
+  await expect(codeReview.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
   await expect(codeReview.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Code Risk Reviewer",
     "Code Quality Judge",
     "Code Design Reviewer",
   ]);
-  await expect(evidenceAndDocs.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
+  await expect(evidenceAndDocs.locator(".wf-pipeline-stage-name")).toHaveText("Stage 5");
   await expect(evidenceAndDocs.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Test Evidence Auditor",
     "Documentation Steward",

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 /**
  * The Command run budget, driven through the ENGINE rather than through `runCheck` alone.
  *
@@ -15,7 +16,7 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
@@ -689,4 +690,60 @@ test("installing a missing executable lets an action-required Command retry unde
 
   assert.equal(executions, 2, "the corrected retry never reached the executor");
   assert.equal(gateOutcome(store, "submission-missing-executable").status, "passed");
+});
+
+
+test("CodeRabbit freezes comparison across an incomplete retry, counts that execution, and reviews repairs at a new head until the tenth execution", async () => {
+  const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
+  writeFileSync(join(root, "file"), "base"); git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", base); git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git("checkout", "-qb", "feature"); writeFileSync(join(root, "file"), "changed"); git("commit", "-qam", "change");
+  const graph: PublishedWorkflowGraph = { ...budgetGraph, nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
+  const id = "coderabbit-ten";
+  const store = seedSubmission(id, 20, graph);
+  openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
+  const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
+  const capture = (submissionId: string) => {
+    const next = { ...context, evidence: { ...context.evidence, headSha: git("rev-parse", "HEAD"), coderabbit: yaml } };
+    store.updateSubmissionCapture(submissionId, { context: workflowJson(next), evidence: workflowJson(next.evidence), fingerprint: submissionId, status: "running" }, Date.now());
+  };
+  capture(`submission-${id}`);
+  let executions = 0, probes = 0;
+  const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
+  const manager = new WorkflowManager(new Registry(), store, { engine: {
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }), workflowCommand: (slot) => emptyWorkflowCommandView(slot),
+    runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
+    checkDeps: () => ({
+      codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
+      execute: async (request) => {
+        executions++; comparisons.push(request.coderabbit!);
+        return { kind: "exited", exitCode: executions === 1 ? 1 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: executions === 1 ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: executions === 1 ? "Incomplete coverage" : "Complete findings" } };
+      },
+    }),
+  } });
+  manager.engine.start(); manager.engine.activateSubmission(`submission-${id}`);
+  try {
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1, "an incomplete vendor execution still spends allowance");
+    const first = store.listAttempts(`submission-${id}`).find(a => a.nodeId === "gate")!;
+    assert.equal(first.verdict, null); assert.equal(store.getRun(`run-${id}`)!.currentPhase, "command_action_required");
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    assert.ok(manager.retry(`run-${id}`, { requestId: "retry-incomplete", nodeAttemptId: first.id }).ok);
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+    assert.equal(comparisons[1]!.baseTip, base, "retry must ignore moved base ref");
+    assert.equal(comparisons[1]!.head, comparisons[0]!.head);
+    for (let round = 2; round <= 10; round++) {
+      writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
+      const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
+      await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+      assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
+    }
+    assert.equal(executions, 10); assert.equal(probes, 10);
+    assert.notEqual(comparisons.at(-1)!.head, comparisons[0]!.head, "new repairs capture their new committed head");
+    assert.equal(comparisons.at(-1)!.baseTip, comparisons[0]!.head, "new submission resolves the moved local ref");
+    assert.ok(String(gateOutcome(store, `submission-${id}-r10`).warning).includes("allowance exhausted"));
+  } finally { await manager.stop(); }
 });

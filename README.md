@@ -535,3 +535,8 @@ Mission Control is licensed under the [Apache License 2.0](LICENSE). See [NOTICE
 attribution information. Third-party dependencies remain subject to their own license terms,
 including the `@anthropic-ai/claude-agent-sdk` dependency and
 [Anthropic's applicable commercial terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+Local CodeRabbit reviews are available as a reusable Library Command and in the optional
+No-Mistakes review stage. Root YAML enables review without a Library override; the default
+allowance is ten executions, with warning skips on exhaustion. See
+[CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).

@@ -1,3 +1,4 @@
+import { emptyWorkflowCommandView } from "@shared/workflow.ts";
 import type { CostConfig, SkillsConfig } from "@shared/protocol.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
 import {
@@ -369,6 +370,9 @@ export function preflightSettingsRestore(
   ));
 
   blockers.push(...keyedDuplicates(staged.workflowCommands, (row) => row.slot, "Command slot"));
+  if (!staged.workflowCommands.some((row) => row.slot === "coderabbit")) {
+    staged.workflowCommands.push(emptyWorkflowCommandView("coderabbit"));
+  }
   const expectedSlots = new Set<string>(WORKFLOW_CHECK_SLOTS);
   for (const command of staged.workflowCommands) {
     expectedSlots.delete(command.slot);

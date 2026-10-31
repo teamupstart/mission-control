@@ -2445,6 +2445,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     result: Exclude<WorkflowCommandMutation, { ok: true }>,
   ) => {
     const code = `workflow_command_${result.reason}`;
+    if (result.reason === "invalid_recipe") return c.json({ error: "CodeRabbit requires typed repository-root tuning and no arbitrary argv", code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);
     }

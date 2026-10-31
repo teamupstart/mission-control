@@ -102,7 +102,7 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 21 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -308,7 +308,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its six stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -327,10 +327,12 @@ pass while preserving the deterministic stage in the graph. The
 slots.
 
 Behind it are the eight built-in Personas wired the way they were written to compose. From version
-15 onward, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+15 through 21, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
+Version 22 inserts optional YAML-enabled CodeRabbit at stage 2, moving these Persona groups to
+stages 3, 4 and 5. Earlier versions retain their original numbering.
 Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
 repair, and the Pull Request action does not run until all three Persona stages pass.
 
@@ -2708,3 +2710,60 @@ on hover and focus, failure paths are dashed and text-labelled, state changes us
 focus returns after dialogs, and reduced-motion preferences disable canvas and panel animation.
 At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
 drawers.
+
+## Local CodeRabbit Command
+
+The `coderabbit` Library Command works in any custom workflow evaluation stage, including
+stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and before Personas.
+Bindings keep their published version until explicitly upgraded. Earlier versions and other
+built-ins are unchanged.
+
+Enable it in the reviewed repository's root `.coderabbit.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  auto_review:
+    enabled: true
+```
+
+Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
+Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
+Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
+skipping. Submission capture freezes this decision; retries reuse it and new submissions refresh it.
+
+No Library override is needed. Optional repository-root tuning selects a base ref and severity
+(default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
+the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
+these defaults. The command previews its owned argv, never an editable shell recipe.
+
+The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes,
+and the default hard timeout is 45 minutes. Exhaustion always skips with a visible warning,
+even if the tool is unavailable. It does not mean a clean review. YAML-enabled reviews with
+remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
+and stored authentication under the daemon's effective `HOME`. Unavailability or incomplete
+review blocks with an error and a **Settings > Setup** link, without spending a repair round or
+sending code-fix instructions. Correct the problem and explicitly retry. No install, login,
+CLI update, remote-ref fetch or paid-credit continuation happens automatically.
+
+Only committed content is reviewed. Dirty submissions must be committed and submitted again.
+The stored comparison records the full captured head, configured base, resolved base tip and
+merge-base. Later ref movement cannot rewrite an existing submission's comparison. Reviews run
+in the existing commit-pinned supervised lease with `review --agent --gate <severity>
+--committed --base-commit <merge-base>`.
+
+A complete gate, an explicit zero unreviewed-file count and matching exit code pass or return
+findings for repair. Missing completion or coverage count, reused review, incomplete coverage,
+contradictory output, semantic limits or lost findings
+storage block. Raw-log truncation alone does not invalidate independently retained findings.
+Run detail shows comparison provenance, severity counts, remaining allowance and diagnostics.
+**Load findings** pages the complete retained normalized findings, including advisory severities;
+the attributed `read_workflow_command_output` tool uses the same bounded authorized reader.
+Personas receive compact upstream evidence, not an assertion that they read the whole artifact.
+
+Repair instructions require the owning session to read all retained findings and verify each
+claim before changing code. Valid repairs are committed for a new submission. A false positive
+requires an explicit operator decision through the existing node-disable/recovery controls;
+clearing vendor findings or silently lowering severity does not earn approval. This local CLI
+review is independent of GitHub CodeRabbit comment/thread follow-up.

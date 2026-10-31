@@ -270,7 +270,8 @@ const STEPS: readonly Step[] = [
       target: "workflows:run-pipeline",
       side: "bottom",
       resolve: (context) => stripPart(context, (strip) =>
-        strip.querySelectorAll(".wf-pipeline-slot")[1]),
+        [...strip.querySelectorAll(".wf-pipeline-slot")]
+          .find((slot) => slot.querySelector(".is-persona"))),
     }],
   }),
   runStop("worklist", {

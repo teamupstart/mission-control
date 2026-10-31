@@ -5899,6 +5899,10 @@ const WorkflowSteeringContextSchema = z.union([
   }),
 ]);
 
+export const CodeRabbitConfigSnapshotSchema = z.object({
+  source: z.literal(".coderabbit.yaml"), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
+  state: z.enum(["enabled", "disabled", "missing", "invalid", "unreadable"]), diagnostic: z.string().max(1000),
+});
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -5950,6 +5954,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     branch: z.string().max(1_000).nullable(),
   }),
   evidence: z.object({
+    coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
@@ -6402,12 +6407,22 @@ export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: WorkflowCommandArgvSchema,
-});
+}).refine((entry) => entry.slot !== "coderabbit", { message: "CodeRabbit uses typed repository-root tuning, not legacy argv" });
 
 /** One repository or subdirectory exception, inside the slot that owns it. */
+export const CodeRabbitTuningSchema = z.object({
+  kind: z.literal("coderabbit"),
+  baseRef: z.string().min(1).max(500).regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/).nullable(),
+  severity: z.enum(["critical", "major", "minor", "trivial", "info"]),
+}).strict();
+
 export const WorkflowCommandOverrideSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
-  command: WorkflowCommandArgvSchema,
+  command: z.array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg)).max(WORKFLOW_LIMITS.checkCommandArgs),
+  review: CodeRabbitTuningSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.review ? value.command.length !== 0 : value.command.length === 0)
+    ctx.addIssue({ code: "custom", message: "Use either typed review tuning or a nonempty argv" });
 });
 
 /**
@@ -6541,8 +6556,23 @@ export const WorkflowConfigSchema = WorkflowPolicySchema.extend({
  */
 export const StoredWorkflowPolicySchema = WorkflowPolicySchema.catch(DEFAULT_WORKFLOW_POLICY);
 
+export const CodeRabbitComparisonSchema = z.object({
+  interpreterVersion: z.literal(1), yaml: CodeRabbitConfigSnapshotSchema,
+  baseRef: z.string().max(500).nullable(), baseTip: CommitOidSchema.nullable(), mergeBase: CommitOidSchema.nullable(), head: CommitOidSchema.nullable(),
+  empty: z.boolean(), severity: z.enum(["critical", "major", "minor", "trivial", "info"]), ruleRevision: z.number().int(),
+  timeoutMs: z.number().int(), maxRuns: z.number().int(), error: z.string().max(2000).nullable(),
+});
+export const CodeRabbitReviewSummarySchema = z.object({
+  comparison: CodeRabbitComparisonSchema, status: z.enum(["complete", "incomplete", "skipped"]),
+  counts: z.object({critical: z.number(), major: z.number(), minor: z.number(), trivial: z.number(), info: z.number(), none: z.number()}),
+  diagnostic: z.string().max(2000), titles: z.array(z.string().max(250)).max(8), remainingRuns: z.number().int().nonnegative().optional(), retryAt: z.number().nonnegative().optional(), expectedDuration: z.string().max(250).optional(),
+});
+
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
+  review: CodeRabbitReviewSummarySchema.optional(),
+  warning: z.string().max(2000).optional(),
+  diagnosticError: z.string().max(2000).optional(),
   status: z.enum(WORKFLOW_CHECK_STATUSES),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: z.array(z.string()).nullable(),

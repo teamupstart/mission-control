@@ -1,3 +1,5 @@
+import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
+import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
 import { createLimiter } from "../llm/structured.ts";
 import { resolveRepoPath } from "../repos.ts";
 import {
@@ -68,6 +70,8 @@ export interface CheckInfrastructureFailure {
 export interface CheckActionRequiredFailure {
   kind: "action_required";
   reason: string;
+  setup?: boolean;
+  review?: CodeRabbitReviewSummary;
   artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
@@ -101,16 +105,18 @@ export interface CheckExecutionRequest {
   headSha: string | null;
   /** Frozen from the catalog before the attempt starts. */
   timeoutMs?: number;
+  coderabbit?: CodeRabbitComparison;
+  env?: NodeJS.ProcessEnv;
 }
 
 export type CheckExecutionResult =
   /** The command ran to completion and reported this. */
   | { kind: "exited"; exitCode: number; output: string; truncatedBytes: number;
-      artifacts?: WorkflowCommandArtifactDescriptor[] }
+      artifacts?: WorkflowCommandArtifactDescriptor[]; review?: CodeRabbitReviewSummary }
   /** The configured executable is not there. A settings problem, not a defect. */
   | { kind: "unavailable"; note: string }
   /** It could not be run, or died without answering. Never a fail. */
-  | { kind: "infrastructure"; reason: string; artifacts?: WorkflowCommandArtifactDescriptor[] };
+  | { kind: "infrastructure"; reason: string; started?: boolean; artifacts?: WorkflowCommandArtifactDescriptor[]; review?: CodeRabbitReviewSummary };
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
@@ -127,6 +133,7 @@ export type CheckoutSubpathResolver = (
 ) => Promise<string | null>;
 
 export interface CheckRunDeps {
+  codeRabbitProbe?: typeof probeCodeRabbit;
   /** Defaults to asking git. Null is a legitimate answer and declines nested matching. */
   checkoutSubpath?: CheckoutSubpathResolver;
   /**
@@ -262,9 +269,9 @@ function runCount(runs: number): string {
  * `cwd` and `repoRoot` are both taken because a binding records both and they answer
  * different halves of the same question - see `resolveWorkflowCommand`.
  */
-export async function runCheck(
-  input: {
+export interface RunCheckInput {
     slot: WorkflowCheckSlot;
+    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; comparison: () => Promise<CodeRabbitComparison> };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *
@@ -296,10 +303,14 @@ export async function runCheck(
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
-  },
+}
+
+export async function runCheck(
+  input: RunCheckInput,
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
   const { slot, policy } = input;
+  if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "coderabbit") return runCodeRabbit(input, deps);
 
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is
   // not a repository the operator failed to authorize, and telling them to switch checks on

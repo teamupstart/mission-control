@@ -43,7 +43,7 @@ export const test = base.extend<{
   startupPicker: [false, { option: true }],
   setupReminder: [false, { option: true }],
 
-  daemon: async ({ daemonEnv, startupPicker, setupReminder }, use) => {
+  daemon: async ({ daemonEnv, startupPicker, setupReminder }, use, info) => {
     const daemon = await startDaemon(daemonEnv);
     try {
       if (!startupPicker) {
@@ -75,6 +75,9 @@ export const test = base.extend<{
       }
       await use(daemon);
     } finally {
+      if (info.status !== info.expectedStatus) {
+        await info.attach("daemon.log", { body: daemon.readLog(), contentType: "text/plain" });
+      }
       await daemon.stop();
     }
   },
@@ -142,7 +145,9 @@ export const test = base.extend<{
         }),
       });
       expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
-      await page.goto(`${daemon.baseURL}/#/fleet`);
+      // Establish the origin without booting the application. A dashboard followed by a
+      // reload left its uncancelled Setup/catalog probes competing with the next boot.
+      await page.goto(`${daemon.baseURL}/api/health`);
       await page.evaluate(() => window.localStorage.clear());
       await page.evaluate(() =>
         window.localStorage.setItem(
@@ -155,7 +160,7 @@ export const test = base.extend<{
           }),
         ),
       );
-      await page.reload();
+      await page.goto(`${daemon.baseURL}/#/fleet`);
       // Exact: a spec that switches discovery on (`session-driven-by-engine.spec.ts`) adopts
       // whatever agents the machine is running, and a rail row whose title merely mentions
       // "dispatch" would otherwise make this ready check a strict-mode violation.

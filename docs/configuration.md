@@ -371,3 +371,19 @@ Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existi
 Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+
+### CodeRabbit workflow reviews
+
+`MISSION_CODERABBIT_BIN` (with the existing `FLEET_`/`HARNESS_` compatibility prefixes) selects
+the CodeRabbit executable through the shared locator. Supported locations include
+`~/.local/bin/coderabbit` and `~/.coderabbit/bin/coderabbit`. Setup reports selected path/source,
+version and stored-auth readiness. Managed probes and reviews disable CLI auto-update with
+`CODERABBIT_CLI_DISABLE_AUTO_UPDATE=true`. Credentials are never accepted in visible Command argv;
+use stored CLI authentication in the daemon's effective HOME. Check environment credential
+stripping remains in force, while proxy and locale settings are preserved.
+
+Root `.coderabbit.yaml` explicit boolean enablement is frozen with each submission. Optional
+Library repository-root base/severity tuning shares the normal CAS catalog, settings backups
+and legacy-write preservation. Defaults are major, observed origin/HEAD, 45 minutes and ten
+executions. Enabled unavailable reviews block with Setup diagnostics; exhausted allowance
+always warns and skips. See [workflow behavior](workflows.md#local-coderabbit-command).

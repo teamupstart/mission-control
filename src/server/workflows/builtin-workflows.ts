@@ -295,6 +295,18 @@ function appendGpt6Version(
   }];
 }
 
+/** Append after all existing transformations so historical hashes/guidance stay intact. */
+function appendCodeRabbitVersion(versions: BuiltinWorkflowSource["versions"]): BuiltinWorkflowSource["versions"] {
+  const previous = versions.at(-1)!;
+  return [...versions, { ...previous, sourceDraftRevision: previous.sourceDraftRevision + 1,
+    pipeline: { ...previous.pipeline, stages: [
+      previous.pipeline.stages[0]!,
+      { kind: "evaluation", joinId: null, members: [check("nmr-check-coderabbit", "coderabbit")] },
+      ...previous.pipeline.stages.slice(1),
+    ] },
+  }];
+}
+
 /** New guidance is opt-in through a new version; pinned reviewers keep their exact text. */
 function appendDocumentationGuidanceVersion(
   versions: BuiltinWorkflowSource["versions"],
@@ -1103,7 +1115,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review (High Rigor)",
     description:
-      "Typecheck, test, and lint, then eight review roles: Intent Conformance and Test Coverage; Code "
+      "Typecheck, test, lint, optional YAML-enabled CodeRabbit review, then eight review roles: Intent Conformance and Test Coverage; Code "
       + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
       + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
@@ -1116,7 +1128,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     // 6 makes Foreman Complete the default trigger without rewriting any prior binding posture.
     // Version 7 turns on engine-owned resumption, so a parked repair round no longer waits on
     // a human click; versions 1-6 keep the `manual` posture they were published with.
-    versions: appendDocumentationGuidanceVersion(appendGpt6Version([
+    versions: appendCodeRabbitVersion(appendDocumentationGuidanceVersion(appendGpt6Version([
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
         personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
@@ -1408,7 +1420,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 18,
       },
-    ])),
+    ]))),
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,

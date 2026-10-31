@@ -244,7 +244,7 @@ test("resetting, replacing the Persona, and a second occurrence each behave inde
   // both from one click - and inside a single stage those two keys are literally equal.
   //
   // `has:` rather than `hasText:` below, because every stage's Add picker lists every Persona
-  // as an option, so a text filter matches all four stages instead of the one holding the row.
+  // as an option, so a text filter matches every stage instead of the one holding the row.
   const stage = dashboard.locator(".wf-pipeline-strip section.wf-pipeline-stage")
     .filter({ has: dashboard.locator("li.wf-pipeline-reviewer").filter({ hasText: intent }) });
   await stage.getByLabel(/^Add a reviewer or Command to /).selectOption({ label: intent });
@@ -256,8 +256,8 @@ test("resetting, replacing the Persona, and a second occurrence each behave inde
   // by accessible name rather than only by DOM order. That is the difference between a
   // screen-reader user being able to route the second reviewer and not, and the reason this
   // selects by name here instead of reaching for `rows.nth(1)`. Raised by GitHub Inspector.
-  const firstRouting = `Model routing for ${intent}, reviewer 1 of 3 in Stage 2`;
-  const secondRouting = `Model routing for ${intent}, reviewer 3 of 3 in Stage 2`;
+  const firstRouting = `Model routing for ${intent}, reviewer 1 of 3 in Stage 3`;
+  const secondRouting = `Model routing for ${intent}, reviewer 3 of 3 in Stage 3`;
   await expect(dashboard.getByRole("button", { name: firstRouting })).toHaveCount(1);
   await expect(dashboard.getByRole("button", { name: secondRouting })).toHaveCount(1);
 

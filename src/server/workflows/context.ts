@@ -1,3 +1,4 @@
+import { captureCodeRabbitConfig } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -898,15 +899,24 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   standards: ReturnType<typeof readStandards>;
   contentTreeOid: string;
   repositoryFingerprint: string;
+  coderabbit: ReturnType<typeof captureCodeRabbitConfig>;
 }> {
   const work = await readRepositoryWorkEvidence(cwd);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
   const { treeOid: contentTreeOid } = await captureWorktreeTree(cwd);
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
+  const root = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
+  const coderabbit = captureCodeRabbitConfig(root.code === 0 ? root.stdout.trim() : null);
+  if (coderabbit.enabled) {
+    const committedYaml = await run("git", ["-C", cwd, "show", "HEAD:.coderabbit.yaml"], { maxBuffer: 64 * 1024 });
+    coderabbit.committed = committedYaml.code === 0 && !committedYaml.overflowed
+      && !committedYaml.outcomeUnknown && sha(committedYaml.stdout) === coderabbit.digest;
+  }
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
     contentTreeOid,
+    coderabbit,
     patch: diff.patch,
     patchTruncated: diff.truncated,
     statusFingerprint,
@@ -917,7 +927,7 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
       truncated: doc.truncated,
     })),
   }));
-  return { ...work, standards, contentTreeOid, repositoryFingerprint };
+  return { ...work, standards, contentTreeOid, coderabbit, repositoryFingerprint };
 }
 
 function sourceFingerprintFields(
@@ -934,6 +944,7 @@ function sourceFingerprintFields(
     })),
     headSha: context.evidence.headSha,
     contentTreeOid: context.evidence.contentTreeOid ?? null,
+    ...(context.evidence.coderabbit ? { coderabbit: context.evidence.coderabbit } : {}),
     diffFingerprint: context.evidence.diffFingerprint,
     transcriptAnchor,
     standards: context.evidence.standards.map((doc) => ({
@@ -1231,6 +1242,7 @@ export async function readWorkflowContextRaw(
     standards,
     contentTreeOid,
     repositoryFingerprint,
+    coderabbit,
   } = await readRepositoryEvidence(checkout);
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
@@ -1267,6 +1279,7 @@ export async function readWorkflowContextRaw(
       branch: diff.branch ?? session.gitBranch,
     },
     evidence: {
+      coderabbit,
       headSha: diff.headSha,
       contentTreeOid,
       diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),

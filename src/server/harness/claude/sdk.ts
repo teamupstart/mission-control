@@ -339,6 +339,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private relaunch: (
     prompt: AsyncIterable<ClaudeSdkUserMessage>,
     resume: string,
+    modelOverride: string | null,
   ) => Promise<ClaudeSdkQuery> = async () => {
     throw new Error("this Claude SDK session cannot be relaunched");
   };
@@ -351,6 +352,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private agentSessionId: string | null = null;
   /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
   private modelId: string | null = null;
+  /** An accepted live selection must outlive the query, independently of init metadata. */
+  private modelOverride: string | null = null;
   /**
    * The preceding query-to-date usage snapshot, used to recover one turn's delta.
    *
@@ -489,7 +492,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     // native conversation. The replacement therefore starts a new accounting window.
     this.cumulativeUsage = null;
     try {
-      const fresh = await this.relaunch(this.turns, this.agentSessionId);
+      const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
       if (this.stopped) {
         await fresh.return(undefined);
         throw new Error("this session's driver has stopped");
@@ -646,6 +649,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   setModel = async (model: string): Promise<void> => {
     await this.requireQuery().setModel(model);
+    this.modelOverride = model;
     this.modelId = model;
   };
 
@@ -751,6 +755,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     relaunch: (
       prompt: AsyncIterable<ClaudeSdkUserMessage>,
       resume: string,
+      modelOverride: string | null,
     ) => Promise<ClaudeSdkQuery>,
   ): void {
     this.relaunch = relaunch;
@@ -1468,11 +1473,17 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // kills it). A turn ceiling here would end one mid-work with no way to say so.
         includePartialMessages: false,
       };
-      session.configureRelaunch(async (prompt, resume) => {
+      session.configureRelaunch(async (prompt, resume, modelOverride) => {
         const { resume: _previousResume, ...base } = options;
         // A resident's launcher credentials are single-use and were spent by the process being
         // replaced, so the replacement mints its own.
-        const fresh = await deps.query({ prompt, options: { ...base, ...claudeMcpOptions(opts), resume } });
+        const fresh = await deps.query({ prompt, options: {
+          ...base,
+          ...claudeMcpOptions(opts),
+          // The original options predate any accepted live model change.
+          ...(modelOverride ? { model: modelOverride } : {}),
+          resume,
+        } });
         // The replacement starts its servers again, so it is held to the same check as the first
         // start; a refusal here ends the session with its reason.
         if (opts.residentMcp) await verifyResidentMcp(fresh, opts, settleMs);

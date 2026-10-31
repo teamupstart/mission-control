@@ -1,7 +1,7 @@
 # Residents
 
 A **resident** is a long-running agent with a standing role. You author a **resident profile**
-once - a Persona, instructions, a harness, model and effort, and a default repository - and
+once - an optional Persona, instructions, a harness, model and effort, and a default repository - and
 launch it from **Dispatch > Resident**. It runs as an ordinary session in the Agent SDK, keeps its
 role through compaction and restarts, and ends only when you choose **Complete & close**.
 
@@ -17,14 +17,19 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 | Section | What it decides | Default |
 |---|---|---|
 | Identity | The name (unique among live profiles) and an optional description | required |
-| Persona | The Library Persona whose guidance becomes the resident's standing role | required |
-| Instructions | Markdown added after the Persona's guidance | empty |
+| Persona | The Library Persona whose guidance becomes the resident's standing role | none |
+| Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
 | Harness, model and effort | Claude Code or Codex; the model and effort the harness offers | Claude Code, harness defaults |
 | Workspace | The repository Dispatch pre-fills | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Loop and guardrails | Loop prompt, cadence, requested-delay bounds, rolling caps and compaction | 5 minutes; 1 to 60 minute requests; 200 iterations and $20 per 24 hours; compact at 70% |
 | Authority | **Control other sessions**: whether a desktop Launch click gives the run [session control](#session-control) | off |
 | MCP servers | Whether the harness's global servers ride along, and which global or [custom](#custom-mcp-servers) servers are added; see [MCP servers](#mcp-servers) | inherit on, none selected |
+
+A profile needs a Persona, profile instructions, or both: one with neither has no role and is
+refused on save and at launch. Leave the Persona at **No Persona** to run a resident on its
+profile instructions alone. The Persona dropdown also ends in **Create a new Persona**, which
+opens a blank Persona in the Library.
 
 Every save writes a new, immutable **revision**, compare-and-set on the revision the editor
 opened, so two windows cannot overwrite each other silently. **Archive** removes a profile from
@@ -52,8 +57,8 @@ A launch is a task of kind `resident`:
   harness's configured runtime is. **Continue in terminal** is unavailable for it.
 - It uses the profile's harness, model and effort. Per-kind defaults in **Settings > Models** do
   not apply, because the profile already answers them.
-- Its opening turn is "Begin your standing task." The Persona's guidance, the profile
-  instructions and the run instructions travel as **standing instructions**, appended after any
+- Its opening turn is "Begin your standing task." The Persona's guidance (when the profile names
+  one), the profile instructions and the run instructions travel as **standing instructions**, appended after any
   [repository standing instructions](skills-and-settings.md), on the harness's own channel:
   `systemPrompt.append` for Claude Code and developer instructions for Codex. They are recorded
   once at launch, shown under the session's **See standing instructions** control, and replayed on
@@ -87,7 +92,7 @@ never a resident that is already running.
   a resident takes its place in the column's ordinary order like any other session: by name,
   within its repository's group when **Group by repository** is on.
 - **Console band.** Opening a resident shows a band under the Console header: the label chip,
-  the profile name, the Persona, the revision it launched from and whether it is pinned. When the
+  the profile name, the Persona if it has one, the revision it launched from and whether it is pinned. When the
   profile has been edited since the launch, the band says **Profile changed since launch** and
   the new revision. When the resident's revision turns **Control other sessions** on, the band
   says **control granted** or **control not granted**, the latter beside the session control

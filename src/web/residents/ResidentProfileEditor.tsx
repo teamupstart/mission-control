@@ -54,6 +54,7 @@ export function ResidentProfileEditor({
   onArchived,
   onLaunch,
   onDirtyChange,
+  onCreatePersona,
   archivedElsewhere = false,
 }: {
   /** The profile being edited, or null for a new one. The parent keys this per profile. */
@@ -68,6 +69,8 @@ export function ResidentProfileEditor({
   onArchived: (profile: ResidentProfile) => void;
   onLaunch: (profile: ResidentProfile) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  /** Open the Library's blank Persona editor, offered at the end of the Persona picker. */
+  onCreatePersona?: () => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState<ResidentProfileRevision>(() => profile?.settings ?? blankResidentDraft());
   const [dirty, setDirtyState] = useState(profile === null);
@@ -272,7 +275,7 @@ export function ResidentProfileEditor({
         <section key={id} className="resident-section" aria-labelledby={`resident-section-${id}`}>
           <h4 id={`resident-section-${id}`}>{heading}</h4>
           <p className="resident-section-blurb">{blurb}</p>
-          <Body draft={draft} update={update} personas={personas} disabled={busy} />
+          <Body draft={draft} update={update} personas={personas} disabled={busy} onCreatePersona={onCreatePersona} />
         </section>
       ))}
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}

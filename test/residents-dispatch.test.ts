@@ -32,7 +32,8 @@ const { openDb, getStandingInstructions } = await import("../src/server/db.ts");
 const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { standingInstructionsView, updateStandingInstructions } = await import("../src/server/instructions/config.ts");
 const { STANDING_INSTRUCTIONS_HEADING } = await import("../src/server/instructions/compose.ts");
-const { ResidentProfileRevisionSchema, RESIDENT_OPENING_TURN } = await import("../src/shared/residents.ts");
+const { ResidentProfileRevisionSchema, RESIDENT_OPENING_TURN, residentRunSummary } = await import("../src/shared/residents.ts");
+const { getResidentRun } = await import("../src/server/residents/store.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Registry = InstanceType<typeof Registry>;
@@ -190,6 +191,28 @@ for (const [agent, mechanism] of [
     assert.equal(task.sessionId, start.sessionId ?? `sdk:resident-${seq}`);
   });
 }
+
+test("a resident without a Persona launches on its profile instructions, and its run reads back without one", async () => {
+  const repo = seedRepo("resident-no-persona");
+  repos.push(repo);
+  const { supervisor, residents } = residentFixture({ current: PERSONA });
+  const settings = { ...profileSettings("claude", "Summarize blockers first."), persona: { personaId: "" } };
+  const created = residents.createProfile(settings);
+  assert.ok(created.ok, created.ok ? "" : created.error);
+  const outcome = await residents.launch(created.profile.id, { repoRoot: repo, requestId: "req-no-persona" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+
+  assert.equal(
+    supervisor.starts[0]!.standingInstructions!.delivery.text,
+    `${RESIDENT_STANDING_HEADING}: ${settings.identity.name}\n\n### Profile instructions\n\nSummarize blockers first.`,
+  );
+  const stored = getResidentRun(outcome.result.run.id)!;
+  assert.equal(stored.run.persona, null);
+  assert.equal(residentRunSummary(stored.run)!.personaName, null);
+
+  // Neither a Persona nor instructions gives no role, so it is refused at launch as on save.
+  assert.equal(residents.settingsProblem({ ...settings, instructions: { markdown: "" } }), "choose a Persona or write profile instructions");
+});
 
 test("the resident section follows the repository standing instructions in one delivery", async () => {
   const repo = seedRepo("resident-with-rules");

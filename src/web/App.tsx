@@ -4023,6 +4023,7 @@ export function App(): React.JSX.Element {
               onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
               onDirtyChange={setWorkflowDirty}
               onLaunch={(profile) => openResidentLaunch(profile.id)}
+              onCreatePersona={() => navigate({ page: "library", shelf: "personas", creating: true })}
             />
           ) : null}
           scouts={

@@ -202,6 +202,21 @@ test("saving refuses a missing or archived Persona, and the routes refuse malfor
   assert.equal((await request("POST", "/api/residents/profiles/missing/launch", { repoRoot: "/r", requestId: "a" })).status, 400, "an unresolvable repository is refused before the profile is read");
 });
 
+test("a profile may name no Persona when its instructions give the role, and never neither", async () => {
+  const bare = { identity: { name: "Solo" }, instructions: { markdown: "Watch the fleet." } };
+  assert.deepEqual(ResidentProfileRevisionSchema.parse(bare).persona, { personaId: "" });
+  const created = await request("POST", "/api/residents/profiles", { settings: bare });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+
+  const empty = await request("POST", "/api/residents/profiles", {
+    settings: { identity: { name: "Nobody" }, persona: { personaId: "" }, instructions: { markdown: "  " } },
+  });
+  assert.equal(empty.status, 400);
+  assert.match(JSON.stringify(empty.json), /choose a Persona or write profile instructions/);
+  // A stored revision is read without the rule, so nothing already saved becomes unreadable.
+  assert.equal(ResidentProfileRevisionSchema.safeParse({ identity: { name: "Old" } }).success, true);
+});
+
 test("the live profile collection is bounded: creation past the limit is refused, never truncated", () => {
   const at = Date.now();
   const db = openDb();

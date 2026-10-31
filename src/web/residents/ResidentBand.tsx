@@ -38,7 +38,7 @@ export function ResidentBand({
       <span className="resident-band-word">Resident</span>
       <span className="resident-band-name">{mark.name}</span>
       <span className="resident-band-fact">
-        {mark.personaName} · revision {mark.revision}
+        {mark.personaName ? `${mark.personaName} · ` : ""}revision {mark.revision}
         {mark.pin ? " · pinned" : ""}
       </span>
       {mark.changedTo !== null && (

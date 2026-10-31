@@ -29,7 +29,15 @@ export interface ResidentEditorSectionProps {
   update: <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]) => void;
   personas: readonly PersonaView[];
   disabled: boolean;
+  /** Open the Library's blank Persona editor. Absent where the editor cannot navigate. */
+  onCreatePersona?: () => void;
 }
+
+/**
+ * The Persona picker's last option. A `<select>` cannot hold a link, so choosing this option
+ * navigates instead of writing the draft; the draft keeps the Persona it already had.
+ */
+const CREATE_PERSONA_OPTION = "__create-persona__";
 
 /**
  * One section of the resident profile editor.
@@ -77,22 +85,27 @@ function IdentitySection({ draft, update, disabled }: ResidentEditorSectionProps
   );
 }
 
-function PersonaSection({ draft, update, personas, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+function PersonaSection({ draft, update, personas, disabled, onCreatePersona }: ResidentEditorSectionProps): React.JSX.Element {
   const live = personasForDisplay(personas).filter((persona) => persona.archivedAt === null);
   const selected = personas.find((persona) => persona.id === draft.persona.personaId) ?? null;
   const stranded = draft.persona.personaId && !live.some((persona) => persona.id === draft.persona.personaId);
   return (
     <div className="resident-fields">
       <label className="field">
-        <span className="field-label">Persona</span>
-        <Tooltip label="The Library Persona whose guidance becomes this resident's standing role">
+        <span className="field-label">
+          Persona <span className="field-hint">optional</span>
+        </span>
+        <Tooltip label="The Library Persona whose guidance becomes this resident's standing role, or none to run on the profile instructions alone">
           <select
             className="field-input"
             value={draft.persona.personaId}
             disabled={disabled}
-            onChange={(event) => update("persona", { personaId: event.target.value })}
+            onChange={(event) => {
+              if (event.target.value === CREATE_PERSONA_OPTION) onCreatePersona?.();
+              else update("persona", { personaId: event.target.value });
+            }}
           >
-            <option value="">Choose a Persona…</option>
+            <option value="">No Persona</option>
             {stranded && (
               <option value={draft.persona.personaId} disabled>
                 {selected ? `${selected.name} (archived)` : "A Persona that no longer exists"}
@@ -103,6 +116,7 @@ function PersonaSection({ draft, update, personas, disabled }: ResidentEditorSec
                 {persona.name}{persona.builtin ? " · built-in" : ""}
               </option>
             ))}
+            {onCreatePersona && <option value={CREATE_PERSONA_OPTION}>＋ Create a new Persona…</option>}
           </select>
         </Tooltip>
       </label>
@@ -115,7 +129,7 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   return (
     <label className="field">
       <span className="field-label">
-        Profile instructions <span className="field-hint">Markdown, after the persona</span>
+        Profile instructions <span className="field-hint">Markdown, after any Persona</span>
       </span>
       <textarea
         className="field-input field-textarea resident-instructions"
@@ -465,13 +479,13 @@ export const RESIDENT_EDITOR_SECTIONS: readonly ResidentEditorSection[] = [
   {
     id: "persona",
     title: "Persona",
-    blurb: "Who the agent is. Its guidance arrives as standing instructions, never as a message.",
+    blurb: "Who the agent is, if a Library Persona says it. Its guidance arrives as standing instructions, never as a message.",
     Body: PersonaSection,
   },
   {
     id: "instructions",
     title: "Instructions",
-    blurb: "How this profile wants the persona to work, added after its guidance.",
+    blurb: "How this profile wants the resident to work, added after any Persona's guidance. Without a Persona, these are its whole role.",
     Body: InstructionsSection,
   },
   {

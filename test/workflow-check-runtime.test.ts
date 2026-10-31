@@ -1015,3 +1015,31 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   );
   store.cancelRun("run-gate-block", "test_cleanup", 99);
 });
+
+
+test("checks require the reviewed publication tree and cannot depend on a local report", { skip: !SUPPORTED }, async () => {
+  const { captureWorkflowPublication } = await import("../src/server/workflows/publication.ts");
+  const f = fixture();
+  mkdirSync(join(f.repoRoot, "docs/reports/result"), { recursive: true });
+  writeFileSync(join(f.repoRoot, "docs/reports/result/report.html"), "<!doctype html><title>Result</title><p>Local evidence</p>");
+  const captured = await captureWorkflowPublication(f.repoRoot);
+  const request = {
+    slot: "test" as const, repoRoot: f.repoRoot, headSha: f.headSha, workingSubpath: "",
+    publicationTreeOid: captured.publication.treeOid,
+    command: [process.execPath, "-e", "require('node:fs').accessSync('docs/reports/result/report.html')"],
+  };
+  const dependent = await f.runtime.executorFor(attemptRef())(request);
+  assert.equal(dependent.kind, "exited");
+  assert.notEqual(dependent.kind === "exited" && dependent.exitCode, 0,
+    "a check cannot pass by reading an excluded local fixture");
+  const success = await f.runtime.executorFor(attemptRef())({ ...request, command: PASSES });
+  assert.equal(success.kind, "exited");
+  assert.equal(success.kind === "exited" && success.exitCode, 0);
+  writeFileSync(join(f.repoRoot, "required-source.ts"), "export {};\n");
+  const changed = await captureWorkflowPublication(f.repoRoot);
+  const mismatch = await f.runtime.executorFor(attemptRef())({
+    ...request, command: PASSES, publicationTreeOid: changed.publication.treeOid,
+  });
+  assert.equal(mismatch.kind, "infrastructure");
+  assert.match(mismatch.kind === "infrastructure" ? mismatch.reason : "", /Commit the required deliverables/);
+});

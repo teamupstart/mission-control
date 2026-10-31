@@ -118,6 +118,8 @@ interface SeedOptions {
   adopted?: boolean;
   withHint?: boolean;
   dirty?: boolean;
+  evidence?: Partial<WorkflowContextSnapshot["evidence"]>;
+  resolveCommitTree?: (root: string, commit: string) => Promise<string>;
   enabled?: boolean;
   head?: string;
   skillAvailable?: boolean;
@@ -264,6 +266,7 @@ async function seed(over: SeedOptions = {}) {
     },
   );
   const captured = context(head, over.dirty ?? false, agent);
+  Object.assign(captured.evidence, over.evidence);
   store.updateSubmissionCapture(ids.submission, {
     context: workflowJson(captured),
     evidence: workflowJson(captured.evidence),
@@ -277,6 +280,7 @@ async function seed(over: SeedOptions = {}) {
   }
   const manager = new WorkflowManager(registry, store, {
     resolveCommit: over.resolveCommit ?? (async (_root, head) => head),
+    resolveCommitTree: over.resolveCommitTree,
     inject: async (_session, payload) => {
       injected.push(payload);
       return { ok: true, pasted: true, submitVerified: true };
@@ -1778,4 +1782,48 @@ test("restart recovery skips packets after the current submission advances past 
   assert.equal(seeded.store.getDelivery(handoff.delivery.id)?.state, "prepared");
   assert.deepEqual(injected, []);
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: ["/repo"] });
+});
+
+
+test("Inspector completes with retained local artifacts but refuses missing or extra publication", async () => {
+  const treeOid = "a".repeat(40);
+  const path = "docs/reports/result/report.html";
+  const sha256 = "b".repeat(64);
+  for (const scenario of ["retained", "missing-receipt", "uncommitted-source", "extra-published", "unreadable-tree"] as const) {
+    const seeded = await seed({
+      dirty: true,
+      evidence: {
+        contentTreeOid: "c".repeat(40),
+        publication: {
+          version: 1, treeOid, pathsTruncated: false,
+          unpublishedPaths: scenario === "uncommitted-source" ? ["src/required.ts"] : [],
+          localArtifacts: [{ path, sha256, bytes: 6 }],
+        },
+        artifacts: scenario === "missing-receipt" ? [] : [{
+          id: "report", ordinal: 0, displayName: path, caption: "Local report",
+          repositoryScope: "all", mimeType: "text/plain", bytes: 6, sha256,
+          content: "report", availability: "retained", prunedAt: null, createdAt: Date.now(),
+        }],
+      },
+      resolveCommitTree: async () => {
+        if (scenario === "unreadable-tree") throw new Error("missing commit");
+        return scenario === "extra-published" ? "d".repeat(40) : treeOid;
+      },
+    });
+    try {
+      updateInspectorPr(seeded.key, {
+        headSha: seeded.head, cleanReviewHeadSha: seeded.head, lastAttemptSha: seeded.head,
+        reviewPosture: "live", round: 1, lastReviewedAt: Date.now(),
+      }, Date.now());
+      signal(seeded, seeded.head);
+      await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status ===
+        (scenario === "retained" ? "completed" : "waiting_for_session"), scenario);
+      if (scenario !== "retained") assert.equal(
+        (seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState | undefined)?.waitReason,
+        "working_tree_not_pushed",
+      );
+    } finally {
+      await seeded.manager.stop();
+    }
+  }
 });

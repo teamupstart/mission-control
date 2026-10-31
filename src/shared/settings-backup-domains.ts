@@ -36,6 +36,8 @@ export const SETTINGS_BACKUP_DOMAINS = [
   // restores without touching profiles (see `SETTINGS_BACKUP_CATALOGS`).
   { id: "resident-profiles", surface: "residents" },
   { id: "resident-skill-sources", surface: "residents" },
+  // Custom MCP server definitions, without their secret values.
+  { id: "resident-mcp-servers", surface: "residents" },
 ] as const;
 
 export type SettingsBackupDomainId = (typeof SETTINGS_BACKUP_DOMAINS)[number]["id"];

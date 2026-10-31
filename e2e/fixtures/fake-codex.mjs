@@ -750,6 +750,42 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       respond(id, { data: CATALOG_ROWS, nextCursor: null });
       return;
     }
+    case "config/read": {
+      // The layered read a resident launch verifies its MCP set against. Answered the way the
+      // real server does: the launch flags' servers, and the user layer from `CODEX_HOME`'s
+      // `config.toml` - which for a resident is its generated overlay. Only the server NAMES are
+      // read, from the quoted table headers the overlay writes. A plain read stays `{}`, as it
+      // always has.
+      if (!params?.includeLayers) {
+        respond(id, {});
+        return;
+      }
+      const file = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "config.toml") : null;
+      let text = "";
+      try {
+        if (file) text = readFileSync(file, "utf8");
+      } catch {
+        // No configuration file: an empty user layer.
+      }
+      const user = {};
+      for (const match of text.matchAll(/^\[mcp_servers\.("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\]\s*$/gm)) {
+        user[match[1].startsWith('"') ? JSON.parse(match[1]) : match[1]] = {};
+      }
+      const flags = {};
+      for (const arg of process.argv) {
+        const flag = /^mcp_servers\.([A-Za-z0-9_-]+)\.command=/.exec(arg);
+        if (flag) flags[flag[1]] = {};
+      }
+      respond(id, {
+        config: { mcp_servers: { ...user, ...flags } },
+        origins: {},
+        layers: [
+          { name: { type: "sessionFlags" }, config: { mcp_servers: flags } },
+          { name: { type: "user", file, profile: null }, config: { mcp_servers: user } },
+        ],
+      });
+      return;
+    }
     case "thread/start":
       respond(id, {
         thread: thread({ type: "idle" }),

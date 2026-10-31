@@ -189,6 +189,17 @@ export function resumeGuardPath(): string {
   return envVar("RESUME_GUARD") ?? fileURLToPath(new URL("../../dist/satellites/resume-guard.mjs", import.meta.url));
 }
 
+/**
+ * The resident MCP scoped launcher (`dist/satellites/resident-mcp-launcher.mjs`): the one process
+ * that receives a secret-bearing or global server's definition, by redeeming a single-use
+ * ticket, and starts that server with it. Resolved here for the bundle reason `mcpServerPath()`
+ * documents.
+ */
+export function residentMcpLauncherPath(): string {
+  return envVar("RESIDENT_MCP_LAUNCHER")
+    ?? fileURLToPath(new URL("../../dist/satellites/resident-mcp-launcher.mjs", import.meta.url));
+}
+
 /** Legacy output suffix is retained solely to recognize a dangling pre-generation link.
  * The current app ships a deployable directory, resolved by the literal URL below so
  * smokeSatellitePaths can verify its location in the collapsed daemon bundle. */

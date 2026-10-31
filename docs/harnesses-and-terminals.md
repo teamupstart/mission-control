@@ -498,3 +498,63 @@ Control's structured decision form. Phase 4 therefore ships source registration,
 browsing for both harnesses. Profile skill selection, effective-set snapshots and launch/resume
 integration are deferred. This is an explicit scope reduction; it does not relax the frozen-set
 policy or establish support for any unverified mechanism.
+
+## Resident MCP isolation
+
+`HARNESS_CAPABILITIES.mcpSelection` records how a resident run starts exactly its MCP snapshot
+plus Mission Control's own server, at launch and on every resume. Unlike skill selection, both
+harnesses passed a real-installation check, so both carry a value; Pi has no MCP client and
+records `null`.
+
+| Harness | Mechanism | What it does |
+| --- | --- | --- |
+| Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. So does a set Claude cannot confirm within 60 seconds: a status call that fails or goes unanswered, or a server still starting. The same check runs on the relaunch after an authentication failure. |
+| Codex | `codex-home-overlay` | A per-run `CODEX_HOME` that links every entry of the operator's Codex home except `config.toml`, which it generates on every start: the operator's file with every MCP statement removed byte for byte, `sqlite_home` pointed at the operator's home, and the snapshot under quoted keys. Before `thread/start` or `thread/resume`, `config/read` with layers is checked. |
+
+An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's
+`.codex/config.toml` both adds servers and merges fields into a server of the same name, and
+thread-level `config` overrides split keys on every dot, so they cannot address a server named
+`foo.bar`. The Codex check therefore:
+
+- switches off, from the overlay, a server that only another layer defines (written as
+  `[mcp_servers."name"] enabled = false`), then reads the layers again;
+- refuses the start when another layer adds a field to one of the run's servers, or sets
+  `enabled = true` on a server the overlay switched off, naming the file;
+- stops the session if Codex reports starting any server outside the set
+  (`mcpServer/startupStatus/updated`).
+
+MCP servers start only at `thread/start`, never at `initialize`, so the check runs before any
+server loads. A layer edited between the check and the thread start (a few milliseconds) is the
+remaining window; the startup-status watch catches any server it would add.
+
+Reproduce with `npm run build:resident-mcp-launcher && node --import tsx scripts/probe-resident-mcp.ts`.
+It drives the production drivers against the real binaries, with every home disposable, both model
+APIs answered by loopback mocks and every agent environment built from scratch, so it spends no
+tokens and reads no operator configuration. Measured on 2026-10-30 on Claude Code 2.1.310 and
+Codex 0.160.0, at launch and on resume, 75 of 75 checks passing; the output is
+[retained on pull request #1269](https://github.com/teamupstart/mission-control/pull/1269#issuecomment-6532974173).
+A later harness release is not covered until the probe is run against it:
+
+- Fixture servers that record their own start, placed in every native source a fixture can reach
+  (Claude: user, local, project and plugin; Codex: user and a trusted project, including a dotted
+  name), never started. A server added natively after launch, and an argument, environment variable
+  and timeout added to a snapshot server's native entry, did not reach the resume. Exactly Mission's
+  server and the snapshot started, each with its snapshot definition.
+- A project layer that adds a field to a snapshot server, or forces a foreign server on, refused the
+  Codex launch before any server started.
+- A global remote server whose endpoint answers 401 with a Bearer challenge, as an OAuth-protected
+  server does, was reached through the launcher's bridge and reported as not connected by Claude
+  Code, and the start was refused, naming it.
+- Sentinel secrets on a stdio server and an HTTP server, both through the scoped launcher, reached
+  only their own server; the HTTP fixture received its header and query through the bridge. Neither
+  they nor the launch tickets appeared in any process argument of the probe's own descendants, the
+  agent's environment, the output of a shell command the agent ran (`env`, driven by the mock
+  model), another server's environment, the generated configuration, the transcript or the logs.
+  Every credential file was owner-only and gone after the start.
+- The Codex overlay kept authentication, user instructions (`AGENTS.md`) and the session files
+  linked to the operator's home, and created no database inside the overlay.
+
+The probe definitions are source code; captured output belongs in workflow evidence, never Git.
+Not measured: system and managed Codex configuration, which a fixture cannot place without
+administrator rights, and Claude Code's managed MCP file. The layer check and the startup watch
+cover both at runtime by refusing a start rather than trusting them.

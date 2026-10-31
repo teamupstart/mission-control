@@ -598,3 +598,8 @@ test("resident skill sources have their own route and return to the profile rail
   assert.equal(missionRouteHash({ page: "residents", skillSources: true }), "#/residents/skill-sources");
   assert.deepEqual(parseMissionRoute("#/residents"), { page: "residents" });
 });
+
+test("resident custom MCP servers have their own route beside skill sources", () => {
+  assert.deepEqual(parseMissionRoute("#/residents/mcp-servers"), { page: "residents", mcpServers: true });
+  assert.equal(missionRouteHash({ page: "residents", mcpServers: true }), "#/residents/mcp-servers");
+});

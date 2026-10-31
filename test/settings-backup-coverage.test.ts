@@ -52,7 +52,7 @@ test("Settings, runtime config, and Library domains have exactly one registered 
   assert.deepEqual(
     [...configDomains].sort(),
     SETTINGS_BACKUP_DOMAINS
-      .filter((domain) => domain.surface === "settings" || domain.surface === "runtime" || domain.id === "resident-skill-sources")
+      .filter((domain) => domain.surface === "settings" || domain.surface === "runtime" || domain.id === "resident-skill-sources" || domain.id === "resident-mcp-servers")
       .map((domain) => domain.id)
       .sort(),
   );
@@ -108,6 +108,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "llm",
       "pipelines",
       "repoIndex",
+      "residents.mcpServers",
       "residents.skillSources",
       "setup.banner",
       "shipping",
@@ -143,6 +144,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     APP_CONFIG_ENTRIES.pipelines,
     APP_CONFIG_ENTRIES.repoIndex,
     APP_CONFIG_ENTRIES.residentSkillSources,
+    APP_CONFIG_ENTRIES.residentMcpServers,
     APP_CONFIG_ENTRIES.terminals,
     APP_CONFIG_ENTRIES.ui,
   ]) {

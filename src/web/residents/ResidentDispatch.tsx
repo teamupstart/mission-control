@@ -18,6 +18,7 @@ import {
 } from "./dispatch-draft.ts";
 import { launchResident, residentLaunchCanGrantControl, residentLaunchControlReport } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
+import { residentMcpRefLabel, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
 
@@ -41,6 +42,7 @@ export function ResidentDispatch({
   onClose: () => void;
 }): React.JSX.Element {
   const { resident: draft, profiles, personas } = mode;
+  const { catalog: mcpCatalog } = useResidentMcpCatalog();
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -265,6 +267,7 @@ export function ResidentDispatch({
                       profile.settings,
                       persona?.name ?? null,
                       AGENT_IDENTITY[profile.settings.execution.agent].label,
+                      mcpCatalog ? profile.settings.mcp.selected.map((ref) => residentMcpRefLabel(mcpCatalog, ref)) : undefined,
                     )}{" "}
                     · revision {profile.revision}
                   </span>

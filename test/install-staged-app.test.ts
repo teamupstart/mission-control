@@ -91,11 +91,14 @@ test('detached migration waits for its identified parent before checking launch 
   // Foreground registration and mistake its own parent for a restart conflict.
   const quit = setTimeout(() => parent.stdin.end(), 250);
   t.after(() => clearTimeout(quit));
-  const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+  // The parent-exit checkpoint asks about the source and the target from ONE launchd sweep, so
+  // it arrives here as a single call carrying both bundles - in source-then-target order, which
+  // is the order its refusal is reported in.
+  const ops = {...realApplyOperations(logPath), preflightAll: async (bundles: string[]) => {
     if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
-    events.push(bundle);
+    events.push(...bundles);
     // Stop at the real conflict boundary without staging or launching an app.
-    if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
+    if (bundles.includes(plan.target)) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
   }};
   await assert.rejects(runApplyUpdate({sourceClone: plan.oldReceipt.sourceClone!, targetTag: 'v1.26.0',
     appPath: plan.source, sourceApp: plan.source, targetApp: plan.target, parentPid: pid,
@@ -122,12 +125,12 @@ test('detached migration treats an exited but unreaped parent as gone', async t 
   const deadline = Date.now() + 10_000;
   while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
   const events: string[] = [];
-  const ops = {...realApplyOperations(logPath), preflight: async (bundle: string) => {
+  const ops = {...realApplyOperations(logPath), preflightAll: async (bundles: string[]) => {
     // The first check must still see the zombie: the helper proceeded on it, not after a later poll reaped it.
     if (events.length === 0) assert.equal(processState(pid), 'Z');
     if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
-    events.push(bundle);
-    if (bundle === plan.target) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
+    events.push(...bundles);
+    if (bundles.includes(plan.target)) throw Object.assign(new Error('checked target after parent exit'), {migrationCrash: true});
   }};
   await assert.rejects(runApplyUpdate({sourceClone: plan.oldReceipt.sourceClone!, targetTag: 'v1.26.0',
     appPath: plan.source, sourceApp: plan.source, targetApp: plan.target, parentPid: pid,

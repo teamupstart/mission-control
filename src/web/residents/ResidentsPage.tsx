@@ -1,6 +1,7 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { residentSessionMark } from "./marker.ts";
 import { ResidentSkillSourcesPanel } from "./ResidentSkillSources.tsx";
+import { ResidentMcpServersPanel } from "./ResidentMcpServers.tsx";
 import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
@@ -41,6 +42,8 @@ export function ResidentsPage({
   creating,
   skillSources = false,
   onSkillSources,
+  mcpServers = false,
+  onMcpServers,
   onSelect,
   onCreate,
   onSettle,
@@ -56,6 +59,8 @@ export function ResidentsPage({
   creating: boolean;
   skillSources?: boolean;
   onSkillSources?: () => void;
+  mcpServers?: boolean;
+  onMcpServers?: () => void;
   /** An operator choice of profile: gated by the router while a draft is unsaved. */
   onSelect: (profileId: string | null) => void;
   /** Open a blank editor: gated the same way. */
@@ -132,20 +137,21 @@ export function ResidentsPage({
                 </p>
               )}
             </LibraryRailGroup>
-            <LibraryRailGroup label="Resources" count={1}>
+            <LibraryRailGroup label="Resources" count={2}>
               <LibraryRailRow className="resident-list-item" name="Skill sources" detail="Global and registered folders" selected={skillSources} tooltip="Browse and rescan skill sources" onSelect={() => onSkillSources?.()} />
+              <LibraryRailRow className="resident-list-item" name="Custom MCP servers" detail="Custom servers and each harness's global servers" selected={mcpServers} tooltip="Define custom MCP servers and browse global ones" onSelect={() => onMcpServers?.()} />
             </LibraryRailGroup>
           </div>
         </aside>
         <div className="residents-workspace">
-          {selected && !skillSources && runs.filter((run) => run.profileId === selected.id).map((run) =>
+          {selected && !skillSources && !mcpServers && runs.filter((run) => run.profileId === selected.id).map((run) =>
             <section className="resident-live-run" aria-label={`Live run of ${selected.name}`} key={run.id}>
               <strong>Revision {run.profileRevision}</strong>
               <ResidentLoopStatusLine loop={run} />
               <ResidentLoopControls mark={residentSessionMark(run, selected)} />
             </section>
           )}
-          {skillSources ? <ResidentSkillSourcesPanel /> : creating ? (
+          {skillSources ? <ResidentSkillSourcesPanel /> : mcpServers ? <ResidentMcpServersPanel /> : creating ? (
             <ResidentProfileEditor
               key="new"
               profile={null}

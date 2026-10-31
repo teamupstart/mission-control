@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { processIdentity } from '../scripts/update-lock.mjs';
-import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, type MigrationJournal } from '../scripts/install-migration.mjs';
+import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, MIGRATION_TIMEOUT_MS, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { COMMAND_TIMEOUT_MS, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { boundedMigrationWait, migrationRuntimePorts, migrationStartupGate, sameMigrationProcess, verifyMigrationAssets } from '../scripts/migration-runtime.mjs';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
@@ -75,6 +75,42 @@ test('migration open gets COMMAND_TIMEOUT_MS, so an open slower than the former 
       assert.deepEqual(budgets, [COMMAND_TIMEOUT_MS]);
     });
   }
+});
+
+test('the migration launchd sweep gets the migration budget, not the former 15s inspection cap', async (t) => {
+  // A step that runs out of time rejects rather than retrying, so the launchd sweep must be
+  // handed the budget the migration actually has, not `inspectAppLaunch`'s fixed default.
+  const f = launchFixture(t);
+  const budgets = new Map<string, number[]>();
+  const run = f.mac.run;
+  f.mac.run = async (command, args, timeout) => {
+    const name = command.split('/').at(-1) ?? command;
+    budgets.set(name, [...(budgets.get(name) ?? []), timeout ?? -1]);
+    if (command === '/usr/bin/open') atomicMigrationJson(join(f.stateDirectory, MIGRATION_LAUNCH), f.ack);
+    return run(command, args, timeout);
+  };
+  await f.ports.launchTarget(f.journal.plan);
+  // `inspectAppLaunch` turns its timeout into a deadline and hands each probe what REMAINS, and
+  // this fixture runs on the real clock, so a probe is offered 120000ms or a millisecond or two
+  // less depending on scheduling. An exact equality would make this test load-sensitive, so it
+  // asserts what the fix guarantees: the migration's budget rather than the fixed cap.
+  const sweep = (name: string): number => {
+    const seen = budgets.get(name) ?? [];
+    assert.ok(seen.length >= 1, `the sweep makes a ${name} read`);
+    return Math.max(...seen);
+  };
+  for (const name of ['ps', 'launchctl', 'lsappinfo']) {
+    const offered = sweep(name);
+    assert.ok(offered > COMMAND_TIMEOUT_MS,
+      `${name} clears the former fixed cap: ${offered}ms must exceed ${COMMAND_TIMEOUT_MS}ms`);
+    assert.ok(offered <= MIGRATION_TIMEOUT_MS,
+      `${name} never exceeds the migration budget: ${offered}ms`);
+    assert.ok(MIGRATION_TIMEOUT_MS - offered < 1_000,
+      `${name} is offered essentially the whole migration budget: ${offered}ms`);
+  }
+  // The ports' `timeout` bounds waiting for a state change and the fixture sets it to 5ms.
+  // It must never become the budget for one OS command.
+  assert.ok(!budgets.get('ps')?.includes(5), 'a short wait deadline must not shrink a command budget');
 });
 
 test('migration launch reports open failure even if a matching launch journal exists', async (t) => {

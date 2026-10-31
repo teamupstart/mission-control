@@ -224,3 +224,77 @@ which already has access to other local dashboard actions and operator-owned fil
 private click boundary specifically prevents local HTTP from self-granting this capability;
 it does not protect against OS-level UI automation or a compromised desktop process. Revocation
 refuses new requests; it does not undo an action already accepted by a runtime.
+
+## Resident MCP secrets
+
+A custom MCP server's secret values - environment variables and headers marked **Secret**, and
+every URL query value - are write-only. They are accepted on a save and never returned: every
+dashboard route answers with the field's name and whether it is set. They are kept apart from the
+definition, which lives in `app_config` (`residents.mcpServers`) and travels with settings
+snapshots, in the `resident_mcp_secrets` table, which no dashboard route, SSE frame, settings
+snapshot or log reads.
+
+The one exception is the scoped launcher's redemption route, `POST /api/residents/mcp/redeem`
+(below). It answers only a holder of a valid single-use ticket, and only with that ticket's one
+server's definition and values, read from the run's snapshot rather than from this table.
+
+A global server's configuration does not say which of its parts are credentials, so all of it is
+treated as private: the catalog the dashboard sees carries only its name, transport, command
+basename or URL origin, and the names of its environment variables and headers.
+
+At launch a run copies its servers' definitions and values once, into `resident_run_mcp_servers`
+and `resident_run_mcp_secrets`. Both are daemon-private like the secrets table, read again only by
+that run's starts, and removed when the run ends.
+
+**No secret on a command line, in a configuration file or in the agent's environment.** Each
+harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
+written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
+environment is inherited by every shell and tool it runs. So a global server, and a custom server
+with any secret, is rendered as an entry for Mission's scoped launcher, whose arguments name only
+the run, the server's name and a credential file:
+
+- For each process start the daemon writes one credential file per launcher entry in the run's
+  private directory: owner-only, created exclusively, holding a single-use ticket bound to that
+  run, that server and that start, which expires 30 seconds later. The daemon removes any file left
+  unredeemed once its ticket expires, and every such file at startup.
+- The launcher reads its file, removes it, and redeems the ticket over the loopback API
+  (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
+  presentation, whatever the outcome. The answer is that one server's definition and values.
+- A stdio server is started with its values in its own environment only. For an HTTP server the
+  launcher is a stdio bridge that adds the headers and query values to every request itself,
+  an SSE server's message endpoint included, only to the configured origin: a redirect within it is
+  followed, one to another origin is refused.
+- Secret headers and query values travel only over `https`, or over plain `http` to this machine's
+  loopback. A custom server that would send them elsewhere in the clear is refused at save, a
+  global one is unavailable to residents, and the launcher refuses either before any request.
+- A missing, spent or expired ticket, or a run that has ended, starts nothing.
+
+Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
+`env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
+the agent itself inherits, so a global server that uses one is not available to residents: its
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
+authentication the harness holds (an OAuth login). Claude Code's configuration does not mark such a
+server, so it cannot connect through the launcher, and the start is refused, naming it. A custom server's argument in a credential
+form is refused when it is saved; detection is a guard rather than a proof, which is why the
+editor says arguments are stored and backed up as written.
+
+**A value belongs to its connection.** An edit that changes a custom server's command, arguments,
+URL, or a plain environment variable or header refuses to keep a secret left blank, naming each
+one to enter again, so a value never reaches a destination it was not entered for.
+
+**Backups.** Settings snapshots carry custom server definitions without their values. Restoring
+one keeps a value only when it was set before the snapshot was taken and the restore leaves its
+server's connection unchanged; every other value is cleared in the same transaction, so a later
+value is never passed off as the snapshot's and no value reaches a connection it was not entered
+for. A full-database recovery point is scrubbed of both secret tables before it is published, and every
+global server's definition in a run snapshot is redacted in place, with the freed pages
+overwritten. A restored database shows those secrets as not set, and a restored run whose snapshot
+lost a secret or a definition refuses to start that server rather than start it without it.
+
+This boundary is what the agent is handed - its environment, arguments, configuration and
+transcript - and it was measured on real Claude Code and Codex installations
+(`scripts/probe-resident-mcp.ts`). The date, harness versions, result and retained output, and
+what that measurement does not cover, are in
+[resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
+Control does not claim an operating-system sandbox against a process running as the same user as
+the daemon, which could read an owner-only file before the launcher does.

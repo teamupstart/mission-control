@@ -189,6 +189,7 @@ interface Probe {
   headSha: string | null;
   workingTreeStatus: string[];
   diffFingerprint: string;
+  retainedArtifacts?: Array<{ path: string; sha256: string; bytes: number }>;
 }
 
 interface Harness {
@@ -199,6 +200,7 @@ interface Harness {
   injected: string[];
   head: { sha: string };
   probe: Probe;
+  probedArtifacts: Array<readonly { path: string }[] | undefined>;
   duringProbe: { fn: (() => void) | null };
   /**
    * The transcript anchor a CAPTURE would read. Deliberately not on `Probe`: the observer's
@@ -237,6 +239,7 @@ function harness(
   const injected: string[] = [];
   const head = { sha: "head-1" };
   const probe: Probe = { headSha: "head-1", workingTreeStatus: [], diffFingerprint: "content-1" };
+  const probedArtifacts: Harness["probedArtifacts"] = [];
   /** Run once inside the next repository read. See `readEvidenceProbe` below. */
   const duringProbe: { fn: (() => void) | null } = { fn: null };
   const transcript = { anchor: 0 };
@@ -257,7 +260,8 @@ function harness(
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
     recordInjection: (() => {}) as never,
-    readEvidenceProbe: async () => {
+    readEvidenceProbe: async (_registry, _binding, retainedArtifacts) => {
+      probedArtifacts.push(retainedArtifacts);
       // Fired INSIDE the read, which is the only place a test can stand in the window the
       // reminder's rechecks exist to cover: two git commands take long enough for a session
       // to pick up its turn, and every gate after this await is asked because of it.
@@ -266,6 +270,7 @@ function harness(
         ...probe,
         headSha: head.sha,
         diffFingerprint: `${head.sha}:${probe.diffFingerprint}`,
+        localArtifactHashes: probe.retainedArtifacts,
       };
     },
     readContextRaw: async (_registry, binding) => {
@@ -287,6 +292,15 @@ function harness(
           transcriptTruncated: false,
           standards: [],
           standardsTruncated: false,
+          ...(probe.retainedArtifacts ? {
+            publication: {
+              version: 1 as const,
+              treeOid: "1".repeat(40),
+              unpublishedPaths: [],
+              pathsTruncated: false,
+              localArtifacts: probe.retainedArtifacts.map((artifact) => ({ ...artifact })),
+            },
+          } : {}),
         },
       };
       return {
@@ -322,7 +336,7 @@ function harness(
     personas,
     workflows: manager,
   });
-  return { registry, store, manager, app, injected, head, probe, transcript, duringProbe };
+  return { registry, store, manager, app, injected, head, probe, probedArtifacts, transcript, duringProbe };
 }
 
 /**
@@ -543,6 +557,29 @@ test("unchanged evidence leaves the run WAITING, and never blocks or re-captures
   await h.manager.sweepResumptions(SETTLED());
   assert.equal(h.store.listSubmissions(h.runId).length, 2);
   await h.manager.stop();
+});
+
+test("retained raw report changes resume a repair even when Git identity is unchanged", async () => {
+  const retained = { path: "docs/reports/probe/report.html", sha256: "1".repeat(64), bytes: 80 };
+  const h = await personaFeedbackRun("raw-report", "v-raw-report", "auto", undefined, {
+    workingTreeStatus: ["?? docs/"],
+    retainedArtifacts: [retained],
+  });
+  try {
+    reportIdle(h, "raw-report", h.agentSessionId, h.paneId);
+    await h.manager.sweepResumptions(SETTLED());
+    assert.equal(h.store.listSubmissions(h.runId).length, 1);
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "probe must receive the judged snapshot's receipts");
+    h.probe.retainedArtifacts = [{ ...retained, sha256: "2".repeat(64) }];
+    await h.manager.sweepResumptions(SETTLED());
+    assert.deepEqual(h.probedArtifacts.at(-1), [retained], "comparison must use the prior receipts");
+    const submissions = h.store.listSubmissions(h.runId);
+    assert.equal(submissions.length, 2);
+    assert.equal(submissions[1]!.round, 2);
+    assert.notEqual(submissions[1]!.evidenceFingerprint, submissions[0]!.evidenceFingerprint);
+  } finally {
+    await h.manager.stop();
+  }
 });
 
 test("content changes inside the same dirty paths resume the next repair round", async () => {

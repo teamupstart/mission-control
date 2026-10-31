@@ -1,3 +1,4 @@
+import { workflowHasUnpublishedChanges, workflowPublicationTree } from "@shared/workflow-publication.ts";
 import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
@@ -2268,7 +2269,7 @@ export class WorkflowManager {
      * entirely rather than getting a flag of its own to keep in step.
      */
     if (!input.resubmitUnchanged) {
-      const probe = await this.probeRepository(binding).catch(() => null);
+      const probe = await this.probeRepository(binding, latest).catch(() => null);
       const unchanged = probe && this.repositoryUnchangedSince(probe, binding, latest);
       if (unchanged) {
         this.store.setRunState(
@@ -4579,7 +4580,7 @@ export class WorkflowManager {
       );
       return;
     }
-    if (fullContext?.success && fullContext.data.evidence.workingTreeDirty) {
+    if (fullContext?.success && workflowHasUnpublishedChanges(fullContext.data.evidence)) {
       this.transitionInspectorGate(
         run,
         state,
@@ -4622,6 +4623,28 @@ export class WorkflowManager {
         now,
       );
       return;
+    }
+    // Compare the complete published commit tree, never a filtered remote view. This
+    // refuses both missing deliverables and unexpected committed artifacts.
+    if (fullContext?.success && fullContext.data.evidence.publication && repositoryRoot) {
+      const publishedTree = await (this.options.resolveCommitTree ?? resolveCommitTree)(
+        repositoryRoot, submittedHead,
+      ).catch(() => null);
+      // A shipping-only continuation has captured the author's packaging result, not a
+      // new semantic review. Keep the parent's accepted content as a second obligation.
+      const parent = submission.refinementReason === "session_action"
+        && submission.parentSubmissionId && submission.continuationNodeId
+        && sessionActionContinuationReachesOnlyEnd(version.graph, submission.continuationNodeId)
+        ? this.store.getSubmission(submission.parentSubmissionId) : null;
+      const accepted = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+      const acceptedTree = accepted?.success
+        ? workflowPublicationTree(accepted.data.evidence) : null;
+      if (!publishedTree || publishedTree !== workflowPublicationTree(fullContext.data.evidence)
+        || (parent !== null && publishedTree !== acceptedTree)) {
+        this.transitionInspectorGate(run, state, { ...state, waitReason: "working_tree_not_pushed" },
+          "waiting_for_session", "inspector_working_tree_not_pushed", null, null, now);
+        return;
+      }
     }
     if (state.targetHeadSha && state.targetHeadSha !== state.observedHeadSha) {
       this.transitionInspectorGate(
@@ -5782,7 +5805,7 @@ export class WorkflowManager {
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
       capturedHeadOid,
       acceptedContentTreeOid: parentContext.success
-        ? parentContext.data.evidence.contentTreeOid ?? null
+        ? workflowPublicationTree(parentContext.data.evidence)
         : null,
     });
     if (decision.kind === "blocked") {
@@ -6663,6 +6686,7 @@ export class WorkflowManager {
             binding.noteKey,
           ),
           frozenIntent,
+          this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
@@ -6719,7 +6743,8 @@ export class WorkflowManager {
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
       await captureSubmissionImages(this.store, submission.id);
-      await captureSubmissionTextArtifacts(this.store, submission.id);
+      await captureSubmissionTextArtifacts(this.store, submission.id, Date.now(),
+        recovered ? [] : captured.context.evidence.artifacts ?? []);
       /*
        * Then carry forward what the previous submission proved and this one did not re-stage.
        *
@@ -7868,9 +7893,9 @@ export class WorkflowManager {
    * the cheap pre-filter and the whole reason there is no "capture then discard" mode: an
    * idle repair session with unchanged work must leave the run exactly where it is.
    * Re-reading the diff, the transcript window and the standards on every tick to discover
-   * unchanged repair work is not free. `readWorkflowEvidenceProbe` costs two git commands and
-   * reads the repository only. Every field it reads is a fingerprint input, so a differing
-   * probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
+   * unchanged repair work is not free. `readWorkflowEvidenceProbe` reads Git identity and the
+   * prior snapshot's retained artifact bytes only. Every field it reads is a fingerprint input,
+   * so a differing probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
    * detects edits inside a path that was already dirty in the failed round. The converse is
    * deliberately not true: a transcript-only change leaves the probe matching while the full
    * fingerprint has moved, and a repair that changed no code is not a repair.
@@ -7885,8 +7910,10 @@ export class WorkflowManager {
    * opened. Returning the read's own promise keeps the caller to the single turn the git call
    * itself needs, which is what it has always cost.
    */
-  private probeRepository(binding: WorkflowBinding): Promise<WorkflowEvidenceProbe> {
-    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding);
+  private probeRepository(binding: WorkflowBinding, submission: WorkflowSubmission): Promise<WorkflowEvidenceProbe> {
+    const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    const retained = parsed.success ? parsed.data.evidence.publication?.localArtifacts : undefined;
+    return (this.options.readEvidenceProbe ?? readWorkflowEvidenceProbe)(this.registry, binding, retained);
   }
 
   /**
@@ -8010,7 +8037,8 @@ export class WorkflowManager {
   ): Promise<void> {
     const scheduled = this.store.getRun(runId);
     const scheduledBinding = scheduled ? this.store.getBinding(scheduled.bindingId) : null;
-    if (!scheduled || !scheduledBinding) return;
+    const scheduledSubmission = this.store.getSubmission(submissionId);
+    if (!scheduled || !scheduledBinding || !scheduledSubmission) return;
 
     /*
      * The repository read comes FIRST, and every other gate is asked after it.
@@ -8020,7 +8048,7 @@ export class WorkflowManager {
      * had the chance to change yet, which is the same as not rechecking at all. Two git reads
      * take long enough for a session to pick up its turn.
      */
-    const probe = await this.probeRepository(scheduledBinding).catch(() => null);
+    const probe = await this.probeRepository(scheduledBinding, scheduledSubmission).catch(() => null);
     if (!probe) return;
 
     const eligible = this.resumableRun(runId, this.registry.snapshot().sessions, now);
@@ -8100,7 +8128,7 @@ export class WorkflowManager {
     }
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
-    const probe = await this.probeRepository(binding);
+    const probe = await this.probeRepository(binding, latest);
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
     if (unchanged) {

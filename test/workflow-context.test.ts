@@ -528,7 +528,7 @@ test("stable capture retries one changed boundary and blocks a second change", a
   assert.equal(reads, 2);
 });
 
-test("repository capture fails closed and detects worktree evidence changes", async () => {
+test("repository capture fails closed and detects worktree evidence changes", async (t) => {
   const repo = join(home, "evidence-repo");
   mkdirSync(repo);
   const git = (...args: string[]): void => {
@@ -582,6 +582,64 @@ test("repository capture fails closed and detects worktree evidence changes", as
   assert.equal(repairedProbe.headSha, dirtyProbe.headSha);
   assert.notEqual(repairedProbe.diffFingerprint, dirtyProbe.diffFingerprint);
   assert.equal(probeMatchesEvidence(repairedProbe, dirtyCapture.context.evidence), false);
+
+  const reportPath = join(repo, "docs/reports/probe/report.html");
+  mkdirSync(join(repo, "docs/reports/probe"), { recursive: true });
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>First proof.</p>");
+  const reportCapture = await readWorkflowContextRaw(registry, binding);
+  const reportProbe = await readWorkflowEvidenceProbe(registry, binding, reportCapture.context.evidence.publication?.localArtifacts);
+  assert.equal(probeMatchesEvidence(reportProbe, reportCapture.context.evidence), true);
+  assert.equal(reportProbe.publicationVersion, 1);
+  assert.notEqual(reportProbe.contentTreeOid, reportCapture.context.evidence.publication?.treeOid,
+    "the probe must include reports in full content identity");
+  writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>Other proof.</p>");
+  assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding), reportCapture.context.evidence), false);
+  for (const filter of ["CRLF normalization", "clean filter"]) {
+    await t.test(`raw retained report edits remain visible through ${filter}`, async () => {
+      git("config", "core.autocrlf", filter === "CRLF normalization" ? "true" : "false");
+      git("config", "filter.report.clean", "sed -e s/First/Normalized/g -e s/Other/Normalized/g");
+      writeFileSync(join(repo, ".gitattributes"), filter === "CRLF normalization"
+        ? "*.html text\n" : "*.html filter=report\n");
+      git("add", ".gitattributes");
+      git("commit", "-m", filter);
+      const original = "<!doctype html><title>Probe</title><p>First proof.</p>\r\n";
+      writeFileSync(reportPath, original);
+      const baseline = (await readWorkflowContextRaw(registry, binding)).context.evidence;
+      const receipts = baseline.publication!.localArtifacts;
+      assert.equal(receipts.length, 1);
+      const unchanged = await readWorkflowEvidenceProbe(registry, binding, receipts);
+      assert.equal(probeMatchesEvidence(unchanged, baseline), true, filter);
+      assert.equal(probeMatchesEvidence({ ...unchanged, localArtifactHashes: undefined }, baseline), false,
+        "retained reports cannot be declared unchanged without reading their raw bytes");
+      writeFileSync(reportPath, filter === "CRLF normalization"
+        ? original.replace(/\r\n/g, "\n") : original.replace("First", "Other"));
+      const changed = await readWorkflowEvidenceProbe(registry, binding, receipts);
+      assert.equal(changed.contentTreeOid, unchanged.contentTreeOid, filter);
+      assert.equal(changed.diffFingerprint, unchanged.diffFingerprint, filter);
+      assert.deepEqual(changed.workingTreeStatus, unchanged.workingTreeStatus, filter);
+      assert.equal(probeMatchesEvidence(changed, baseline), false,
+        `${filter} must not hide changes to retained report bytes`);
+      rmSync(reportPath);
+      assert.equal(probeMatchesEvidence(await readWorkflowEvidenceProbe(registry, binding, receipts), baseline), false,
+        "a missing receipt source must count as changed rather than aborting the probe");
+      writeFileSync(reportPath, original);
+    });
+  }
+  for (const extension of ["txt", "log", "csv", "json"]) {
+    const companion = `docs/reports/probe/empty.${extension}`;
+    writeFileSync(join(repo, companion), "");
+    const emptyCompanion = await readWorkflowContextRaw(registry, binding);
+    // Empty text is rejected before selecting the report group for retention. The entire
+    // group stays required, and the real snapshot still parses rather than failing capture.
+    const parsed = WorkflowContextSnapshotSchema.parse(emptyCompanion.context);
+    assert.equal(parsed.evidence.publication?.localArtifacts.length, 0);
+    assert.equal(parsed.evidence.artifacts?.length, 0);
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes(companion));
+    assert.ok(parsed.evidence.publication?.unpublishedPaths.includes("docs/reports/probe/report.html"));
+    assert.match(parsed.evidence.publication?.artifactProblems.join("\n") ?? "", /between 1 and/);
+    rmSync(join(repo, companion));
+  }
+  rmSync(join(repo, "docs"), { recursive: true });
 
   writeFileSync(join(repo, "file.txt"), "one\n");
   for (let index = 0; index <= 500; index++) {

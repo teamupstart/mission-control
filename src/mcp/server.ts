@@ -1,3 +1,5 @@
+import { ScheduleNextIterationSchema } from "@shared/residents.ts";
+import { scheduleResidentIteration } from "./resident-pacing.ts";
 import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
@@ -33,7 +35,7 @@ import {
   productIssueClientFromEnvironment,
   type ProductIssueRequest,
 } from "@shared/product-issues.ts";
-import { reportProductFeedback, reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
@@ -42,7 +44,12 @@ import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
+import {
+  GetWorkflowRunSchema,
+  ListWorkflowRunsSchema,
+  ReadWorkflowCommandOutputMcpSchema,
+  WorkflowMcpActionSchema,
+} from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -255,6 +262,18 @@ server.registerTool("get_workflow_run", {
   }
 });
 
+server.registerTool("read_workflow_command_output", {
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  inputSchema: ReadWorkflowCommandOutputMcpSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
 server.registerTool("trigger_workflow_action", {
   description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
   inputSchema: WorkflowMcpActionSchema,
@@ -289,27 +308,6 @@ server.registerTool(
   async (args) => {
     const res = await http("/mcp/session-control/act", "POST", args, true);
     return { content: [{ type: "text" as const, text: await res.text() }], isError: !res.ok };
-  },
-);
-
-server.registerTool(
-  "share_plan",
-  {
-    title: "Share a plan with the human",
-    description:
-      "Display a readable markdown plan in the Mission Control dashboard for the human to skim. Returns immediately without waiting.",
-    inputSchema: {
-      title: z.string().describe("Short title for the plan"),
-      plan: z.string().describe("The plan as GitHub-flavored markdown"),
-    },
-  },
-  async ({ title, plan }) => {
-    try {
-      await createReview("plan", title, plan);
-      return textResult("Plan shared to the Mission Control dashboard.");
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
   },
 );
 
@@ -700,7 +698,7 @@ server.registerTool(
   },
 );
 
-// Both MCP entry points use the dashboard's report contract and daemon service.
+// The MCP entry point uses the dashboard's report contract and daemon service.
 const productIssueTransport = {
   requestId: randomUUID,
   preview: async (request: ProductIssueRequest) => responseResult(await http(
@@ -712,28 +710,6 @@ const productIssueTransport = {
     { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
   )),
 };
-
-server.registerTool(
-  "report_product_feedback",
-  {
-    title: "Report product feedback",
-    description:
-      "Report product feedback about Mission Control as a public GitHub issue only after the user " +
-      "explicitly asks you to report it. Publishes automatically without a second dashboard approval " +
-      "and returns the issue URL. Choose the report type from the user's request. " +
-      "Include only public-safe details, never secrets, private repository content, or personal data. " +
-      "Optional attachmentUploadIds must be daemon-issued screenshot ids, never filesystem paths.",
-    inputSchema: ProductIssueDraftSchema.shape,
-  },
-  async (draft) => {
-    try {
-      const result = await reportProductFeedback(draft, PRODUCT_ISSUE_CLIENT, productIssueTransport);
-      return textResult(result.text, result.isError);
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
-  },
-);
 
 server.registerTool(
   "report_product_issue",
@@ -784,7 +760,7 @@ server.registerTool(
 
 // Answer one line comment a human left on a file, in the thread it was written in.
 //
-// Non-blocking and `share_plan`-shaped: no `extra`, no long poll. The agent posts its answer
+// Non-blocking: no `extra`, no long poll. The agent posts its answer
 // and carries on with the work the comment asked for - waiting on a human here would stall the
 // very turn the comment exists to steer.
 server.registerTool(
@@ -1073,6 +1049,14 @@ server.registerTool("get_pull_request_policy", {
   } catch (error) {
     return textResult(`Could not read pull request policy: ${String(error)}`, true);
   }
+});
+server.registerTool("schedule_next_iteration", {
+  description: "Set the next resident wake delay within your pinned profile bounds. During a turn the delay starts at completion. Returns a callId; replay that id after any unknown outcome to read the original receipt safely. A new callId is a new intent.",
+  inputSchema: ScheduleNextIterationSchema.extend({ callId: z.string().min(1).max(200).optional() }).shape,
+}, async (input) => {
+  const result = await scheduleResidentIteration(input, (body, signal) =>
+    http("/mcp/residents/schedule-next-iteration", "POST", body, true, signal));
+  return textResult(JSON.stringify(result), "code" in result);
 });
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",

@@ -29,7 +29,7 @@
     "dev:foreman": "tsx watch src/server/foreman/worker.ts",
     "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:start": "concurrently -n server,web,shell,foreman -c blue,magenta,green,cyan \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\" \"npm:dev:foreman\"",
-    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard",
+    "build": "npm run build:installer && npm run build:native && npm run build:web && npm run build:server && npm run build:foreman && npm run build:main && npm run build:mcp && npm run build:hook && npm run build:codex-hook && npm run build:pi-extension && npm run build:pi-installer && npm run build:resume-guard && npm run build:resident-mcp-launcher",
     "build:installer": "node scripts/render-install-bootstrap.mjs",
     "build:pi-extension": "node --import tsx scripts/build-pi-extension.ts",
     "build:native": "node scripts/build-native.mjs",
@@ -89,7 +89,8 @@
     "observability:integration": "node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/telemetry-dashboards-stack.integration.ts test/telemetry-analytics-stack.integration.ts",
     "observability:benchmark": "node --expose-gc --import tsx scripts/observability/benchmark.ts",
     "build:pi-installer": "esbuild scripts/install-pi-extension.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/pi-installer/index.mjs",
-    "build:resume-guard": "esbuild src/server/terminal/resume-guard.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resume-guard.mjs"
+    "build:resume-guard": "esbuild src/server/terminal/resume-guard.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resume-guard.mjs",
+    "build:resident-mcp-launcher": "esbuild src/server/residents/mcp-launcher.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resident-mcp-launcher.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.310",
@@ -122,7 +123,8 @@
     "remark-gfm": "^4.0.1",
     "zod": "^3.24.1",
     "zod-to-json-schema": "3.25.2",
-    "yauzl": "3.4.0"
+    "yauzl": "3.4.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@electron/fuses": "1.8.0",

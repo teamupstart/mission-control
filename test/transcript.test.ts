@@ -735,3 +735,14 @@ test("computeSessionActivity's local_command marker disqualifies only the record
   assert.equal(a?.state, "working");
   assert.equal(a?.lastActivity, Date.parse("2026-07-11T02:08:00.000Z"));
 });
+
+
+test("Claude native transcript paths escape underscores and spaces, with legacy fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const cwd = "/private/tmp/watch_team/my repo";
+  for (const encoded of [cwd.replace(/[/.]/g, "-"), cwd.replace(/[^a-zA-Z0-9-]/g, "-")]) {
+    const dir = join(root, encoded); mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${UUID}.jsonl`); writeFileSync(file, "{}\n");
+    assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
+  }
+});

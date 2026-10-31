@@ -305,6 +305,13 @@ that the agent has answered, but it does not offer or send an automatic completi
 session stays live for later turns until you choose **Complete**. If you explicitly select a
 Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
+**resident** is not a choice in the Kind picker. A resident task is launched only from a
+[resident profile](residents.md), through **Dispatch > Resident**, and every other creation path -
+Single agent Dispatch, MCP `create_task`, a Recurring Mission, a task source, the backlog editors -
+refuses it. It always runs in the Agent SDK with its profile's harness, model and effort, receives
+its Persona and instructions as standing instructions, and, like chat, ends only when you choose
+**Complete & close**.
+
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write self-contained static reports at `docs/reports/<slug>/report.html`, one
 directory per report, and submit them. Normal completion requires at least one complete report
@@ -476,8 +483,10 @@ until you enable or manually launch it. **Dispatch now** still launches immediat
 Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
-The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog. It is offered only on a new dispatch: editing a backlog task and the See the
+The **Single agent / Ensemble / Resident** toggle sits in the modal header, since it reshapes the
+whole dialog. **Resident** replaces the brief with profile cards, an optional repository, optional
+instructions for this run, a read-only summary of what the launch carries, and **Edit profile**;
+see [Residents](residents.md#launching-a-resident). It is offered only on a new dispatch: editing a backlog task and the See the
 work tour's dispatch preview show neither it nor the **Guided** switch, because neither form
 can become another kind of dispatch. Chat calls the fold **Task details** and omits dependencies because they would
 turn an immediate conversation into backlog work.

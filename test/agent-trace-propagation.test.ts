@@ -273,8 +273,8 @@ test("Claude's SDK launch carries the context in env and no telemetry routing ke
 test("Codex's app-server gets the context in env and no -c otel override", async () => {
   const seen: Array<{ args: readonly string[]; traceContext: unknown }> = [];
   const spec = codexSdkSpec({
-    connect: async (args, _cwd, _stateHome, traceContext) => {
-      seen.push({ args, traceContext });
+    connect: async (args, _cwd, _stateHome, options) => {
+      seen.push({ args, traceContext: options?.traceContext ?? null });
       // Refuse the handshake: what matters here is what the connection was opened with.
       throw new Error("scripted: no server");
     },

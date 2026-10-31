@@ -44,6 +44,9 @@ function RestorePreview({ preview }: { preview: SettingsRestorePreview }): React
     ["Workflow commands", preview.workflowCommandsChanged],
     ["Workflows", preview.workflows.added + preview.workflows.changed + preview.workflows.archived + preview.workflows.reactivated],
     ["Workflow versions inserted", preview.workflowVersions.inserted],
+    // `?.` for a daemon that predates resident profiles and sends no such count.
+    ["Resident profiles", (preview.residentProfiles?.added ?? 0) + (preview.residentProfiles?.changed ?? 0)
+      + (preview.residentProfiles?.archived ?? 0) + (preview.residentProfiles?.reactivated ?? 0)],
   ] as const;
   return (
     <section className="restore-preview" aria-labelledby="restore-preview-title">

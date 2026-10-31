@@ -1,6 +1,7 @@
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { z } from "zod";
+import { ModelIdSchema } from "./model-id.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { WORKTREE_INVENTORY_LIMITS } from "./worktrees.ts";
@@ -8,11 +9,14 @@ import {
   HARNESS_LAUNCHED_TASK_KINDS,
   MAX_LABELS,
   MAX_TASK_DEPENDENCIES,
-  TASK_KIND_BACKLOG_REFUSAL,
+  RESIDENT_TASK_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
+  taskKindCreator,
 } from "./task.ts";
+import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { HarnessLaunchedTaskKind } from "./task.ts";
 import {
   PipelineActionRequestSchema,
@@ -95,6 +99,12 @@ import {
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_CHECK_STATUSES,
+  WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY,
+  WORKFLOW_COMMAND_ARTIFACT_KINDS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_OUTPUT_LIMITS,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
@@ -855,6 +865,7 @@ export const PlanDecisionAnswerSchema = z.object({
   decisionId: z.string().min(1),
   selected: z.array(z.string().min(1)),
   other: z.string().nullable().optional().default(null),
+  note: z.string().nullable().optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 
@@ -877,6 +888,12 @@ export const ResolveReviewSchema = z.object({
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).nullable().optional().default(null),
   by: AnswerActorSchema,
+  /**
+   * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
+   * Only a submitted answer grants it: a dismissal decided nothing, so the route reads it
+   * only beside `action: "answer"`.
+   */
+  approveFutureBundles: z.boolean().optional(),
 }).transform((resolution) => ({
   ...resolution,
   response: resolution.action === "dismiss" ? null : resolution.response,
@@ -936,34 +953,11 @@ const TaskDependenciesSchema = z
   });
 
 /**
- * A model id, in the only shape that is safe to hand to a harness CLI.
- *
- * Terminal backends preserve argv boundaries, but the value still passes through each
- * harness's option parser. Requiring an alphanumeric first character rejects flag- and
- * path-shaped inputs, while the restricted remainder excludes whitespace and control
- * characters before the id is stored. Real Claude and Codex ids fit that alphabet
- * (`claude-opus-4-8`, `gpt-5.6-sol`). Note this deliberately excludes Claude's `[1m]`
- * long-context marker: the CLI takes the bare id and picks the window itself.
+ * The model id vocabulary. Defined in `model-id.ts`, a leaf module, so browser-safe shared
+ * modules that `protocol.ts` itself imports (the resident profile schema) can use it without
+ * an import cycle; re-exported here for every existing reader.
  */
-export const ModelIdSchema = z
-  .string()
-  .max(80)
-  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
-  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
-  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
-  // the leading-char class.
-  //
-  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
-  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
-  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
-  // the edge, it dropped a third of that provider's catalog silently: the row never reached
-  // the picker, so the model simply did not exist as far as an operator could tell. It is
-  // no weaker than the rest of the class - not whitespace, not a control character, not a
-  // path separator, and not able to start the string.
-  //
-  // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
-  // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
+export { ModelIdSchema };
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -1101,19 +1095,28 @@ export const DispatchSchema = z
     message: "reasoning effort is not supported by this harness",
   })
   .superRefine((o, ctx) => {
+    // A resident is created only by its profile's launch, which reserves the run first.
+    if (taskKindCreator(o.kind) === "resident-launch") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["kind"],
+        message: RESIDENT_TASK_REFUSAL,
+      });
+      return;
+    }
     if (taskKindAllowsBacklog(o.kind)) return;
     if (o.backlog) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["backlog"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
     if (o.dependencies.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["dependencies"],
-        message: TASK_KIND_BACKLOG_REFUSAL,
+        message: taskKindBacklogRefusal(o.kind),
       });
     }
   });
@@ -1329,7 +1332,7 @@ const UpdateTaskFieldsSchema = z
     title: z.string().optional(),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .optional(),
     agent: z.enum(AGENT_TYPES).optional(),
     enabled: z.boolean().optional(),
@@ -1421,7 +1424,7 @@ export const BulkUpdateTasksSchema = z
       .object({
         kind: z
           .enum(TASK_KINDS)
-          .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+          .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
           .optional(),
         agent: z.enum(AGENT_TYPES).optional(),
         enabled: z.boolean().optional(),
@@ -2422,6 +2425,8 @@ export interface ResolveFindingsResult {
  * nothing is reviewed, so nothing qualifies and nothing merges.
  */
 export const ShippingConfigSchema = z.object({
+  /** Prompt the eligible owner about CodeRabbit threads, independently of merge consent. */
+  codeRabbitAutoResolve: z.boolean().default(false),
   /** The master switch. Off means the gate is never even evaluated as passable. */
   autoMerge: z.boolean().default(false),
   /**
@@ -3485,6 +3490,13 @@ export const UI_CONFIG_DEFAULTS = {
   showEmptyColumnStash: true,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
+  /**
+   * Empty, both of them: the bar ships the way its predecessor drew it - every item present
+   * and every control at full size, with the measured ladder still shedding labels when the
+   * window narrows. See `src/web/lib/topbar-items.ts` for which ids each list may hold.
+   */
+  hiddenTopbarItems: [] as readonly string[],
+  compactTopbarItems: [] as readonly string[],
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -3637,6 +3649,26 @@ export const UiConfigSchema = z.object({
    * failing the whole config. An unknown id simply matches no column.
    */
   collapsedBoardColumns: z.array(z.string().min(1)).default([]),
+  /**
+   * The topbar's optional items the operator has hidden - the session counts, search, the cost
+   * estimate, product feedback, and alerts and away mode.
+   *
+   * A list of HIDDEN ids for the reasons `hiddenDisplayItems` gives: an item a later build
+   * adds is drawn for everyone until they say otherwise, and a retired or unknown id is inert
+   * rather than a parse error. Not validated against the id set, which is a web-only concept
+   * owned by `src/web/lib/topbar-items.ts`.
+   *
+   * Its own key rather than more entries in `hiddenDisplayItems`, because that array carries
+   * a seed ladder whose marker counts its builds, and none of these ids ever ships hidden.
+   */
+  hiddenTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.hiddenTopbarItems]),
+  /**
+   * The topbar controls the operator wants ALWAYS drawn minimized - glyph only, as the ladder
+   * draws them when the bar runs out of room. These controls cannot be hidden; the page
+   * segments, Recurring missions and Foreman are how anyone gets anywhere. Absent means
+   * expanded, with the ladder still free to minimize it on a narrow window.
+   */
+  compactTopbarItems: z.array(z.string().min(1)).default([...UI_CONFIG_DEFAULTS.compactTopbarItems]),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 
@@ -4725,6 +4757,7 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  * multi-line intent or a bulleted gap list at all.
  */
 export const InjectPromptSchema = z.object({
+  codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -5827,6 +5860,17 @@ export const WorkflowCheckEvidenceSchema = z.object({
   omittedBytes: z.number().int().nonnegative(),
   headSha: z.string().max(100).nullable(),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional(),
 });
 
 const WorkflowIntentSourceSchema = z.object({
@@ -6159,6 +6203,22 @@ export const UpdateWorkflowSchema = z
 export type UpdateWorkflow = z.infer<typeof UpdateWorkflowSchema>;
 export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
 
+/**
+ * The whole of what an operator may change on a built-in workflow without duplicating it.
+ *
+ * Strict, so a body that also names a graph, policy or any other binding default is refused
+ * rather than having the rest silently dropped. `null` returns to the shipped value.
+ */
+export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax)
+    .nullable(),
+}).strict();
+export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
+
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
 export const PublishWorkflowSchema = ValidateWorkflowSchema;
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
@@ -6375,6 +6435,12 @@ export const UpdateWorkflowCommandSchema = z.object({
     .int()
     .min(WORKFLOW_LIMITS.commandMaxRunsMin)
     .max(WORKFLOW_LIMITS.commandMaxRunsMax),
+  timeoutMs: z.number().int()
+    .min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS)
+    .nullable(),
+  onUnavailable: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
+  onBudgetExhausted: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
   overrides: z
     .array(WorkflowCommandOverrideSchema)
     .max(WORKFLOW_LIMITS.commandOverrides)
@@ -6483,8 +6549,32 @@ export const WorkflowCheckOutcomeSchema = z.object({
   exitCode: z.number().int().nullable(),
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional().default([]),
+  timeoutMs: z.number().int().min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS).nullable().optional().default(null),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
 });
+
+export const ReadWorkflowCommandOutputSchema = z.object({
+  runId: z.string().min(1).max(500),
+  attemptId: z.string().min(1).max(500),
+  artifactId: z.string().min(1).max(500),
+  cursor: z.string().max(WORKFLOW_COMMAND_OUTPUT_LIMITS.cursorChars).nullable().optional(),
+  limit: z.number().int()
+    .min(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMin)
+    .max(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMax)
+    .optional(),
+}).strict();
 
 /**
  * Foreman's proof that a completion episode is verified, offered to whatever workflow is
@@ -7464,7 +7554,7 @@ const ScheduleTemplateSchema = z
     repoRoot: z.string().min(1),
     kind: z
       .enum(TASK_KINDS)
-      .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+      .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
       .default("ship"),
     /**
      * `null` means INHERIT - the kind's row on Settings -> Models decides, at the moment
@@ -8058,3 +8148,34 @@ export const SessionControlRequestSchema = z.object({
   command: SessionControlActionSchema,
 }).strict();
 export type SessionControlAction = z.infer<typeof SessionControlActionSchema>;
+
+// ---- resident profiles ----
+
+/** `POST /api/residents/profiles`: revision 1 of a new profile. */
+export const CreateResidentProfileSchema = z
+  .object({ settings: ResidentProfileRevisionRequestSchema })
+  .strict();
+export type CreateResidentProfile = z.infer<typeof CreateResidentProfileSchema>;
+
+/** `PATCH /api/residents/profiles/:id`: a new revision, refused unless it follows `expectedRevision`. */
+export const UpdateResidentProfileSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    settings: ResidentProfileRevisionRequestSchema,
+  })
+  .strict();
+export type UpdateResidentProfile = z.infer<typeof UpdateResidentProfileSchema>;
+
+/** `DELETE /api/residents/profiles/:id`: archive, compare-and-set on the revision the editor read. */
+export const ArchiveResidentProfileSchema = z
+  .object({ expectedRevision: z.number().int().positive() })
+  .strict();
+export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
+
+/** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema;
+
+export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";
+/** Skill-source mutations share one validated config contract. */
+export { UpdateResidentSkillSourcesSchema } from "./resident-skills.ts";
+export const RescanResidentSkillsSchema = z.object({}).strict();

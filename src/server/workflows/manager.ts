@@ -225,6 +225,7 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
+import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -387,6 +388,7 @@ export interface WorkflowManagerOptions {
    * single spender, so it is passed straight through rather than held here.
    */
   checkScheduler?: CheckScheduler;
+  commandArtifacts?: WorkflowCommandArtifactService;
   /**
    * The execution runtime a Check node reaches, bound per attempt.
    *
@@ -681,6 +683,7 @@ export class WorkflowManager {
     this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
@@ -967,6 +970,11 @@ export class WorkflowManager {
     return this.finish(result);
   }
 
+  /** A built-in's maximum repair rounds, the one setting it lets an operator change in place. */
+  setBuiltinRoundLimit(id: string, maxRepairRounds: number | null, now = Date.now()): WorkflowMutation {
+    return this.finish(this.store.setBuiltinRoundLimit(id, maxRepairRounds, now));
+  }
+
   archive(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowMutation {
     return this.finish(this.store.archiveWorkflowCas(id, expectedDraftRevision, now));
   }
@@ -1140,6 +1148,13 @@ export class WorkflowManager {
     return result.kind === "found"
       ? { kind: "found", detail: this.decorateRun(result.detail) }
       : result;
+  }
+
+  readCommandOutput(input: {
+    runId: string; attemptId: string; artifactId: string;
+    cursor?: string | null; limit?: number;
+  }) {
+    return this.options.commandArtifacts?.read(input) ?? null;
   }
 
   /** Add current recovery facts at the response boundary, never to persisted run rows. */
@@ -2573,7 +2588,7 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const existingEvent = this.store.listEvents(run.id).find((event) =>
-      event.kind === "manual_infrastructure_retry" &&
+      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry") &&
       event.payload &&
       !Array.isArray(event.payload) &&
       typeof event.payload === "object" &&
@@ -7521,6 +7536,7 @@ export class WorkflowManager {
         this.store,
         getWorkflowPolicy().retention,
       );
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       this.lastRetentionAt = Date.now();

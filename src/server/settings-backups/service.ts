@@ -32,6 +32,12 @@ import {
   type StagedSettingsBackup,
 } from "./restore.ts";
 import { SettingsBackupStore, type SettingsBackupRead } from "./store.ts";
+import {
+  listLiveResidentProfiles,
+  restoreResidentProfilesInTransaction,
+} from "../residents/store.ts";
+import { restoreResidentMcpSecretsInTransaction } from "../residents/mcp-store.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 
 export interface SettingsBackupErrorStatus {
   at: string;
@@ -41,6 +47,7 @@ export interface SettingsBackupErrorStatus {
 interface RestoreRegistry extends Pick<
   Registry,
   | "replaceSettingsCatalogs"
+  | "replaceResidentProfiles"
   | "emitHarnessesConfigChanged"
   | "emitWorktreesChanged"
   | "emitSettingsStatus"
@@ -264,9 +271,18 @@ export class SettingsBackupService {
 
     try {
       this.workflowStore.transact((db) => {
+        // Before the document is replaced: which secret values survive depends on it. Run even
+        // when the definitions are unchanged, because a value set since the snapshot is not its.
+        const mcpServers = stage.staged.config.find((item) => item.entry.key === APP_CONFIG_ENTRIES.residentMcpServers.key);
+        if (mcpServers) {
+          restoreResidentMcpSecretsInTransaction(db, mcpServers.mergedValue, Date.parse(stage.staged.snapshot.createdAt));
+        }
         restoreSettingsConfigInTransaction(db, stage.staged.config);
         this.runtime.afterConfigRestore?.();
         this.workflowStore.restoreSettingsCatalogsInTransaction(stage.staged, this.now().getTime());
+        if (stage.staged.residentProfiles !== null) {
+          restoreResidentProfilesInTransaction(stage.staged.residentProfiles, this.now().getTime());
+        }
         this.runtime.beforeCommit?.();
       });
     } catch (error) {
@@ -304,6 +320,8 @@ export class SettingsBackupService {
         workflowCommands: this.workflowStore.workflowCommandCatalog(),
         workflows: this.workflowStore.workflowCatalog().map((row) => this.workflowStore.summary(row)),
       }));
+      attempt("Resident profile reconciliation failed", () =>
+        registry.replaceResidentProfiles(listLiveResidentProfiles()));
       attempt("Harness projection reconciliation failed", () => registry.emitHarnessesConfigChanged());
       attempt("Worktree projection reconciliation failed", () => registry.emitWorktreesChanged());
       attempt("Settings status reconciliation failed", () => publishSettingsStatus(registry));

@@ -1,3 +1,6 @@
+import { codexResidentCompactionLimit } from "./compaction.ts";
+import { CompactionCompletion } from "../compaction.ts";
+import type { ThreadCompactStartParams, ThreadCompactStartResponse } from "./app-server/protocol.ts";
 import { randomUUID } from "node:crypto";
 import type {
   PaneOption,
@@ -57,6 +60,11 @@ import type {
   UserInput,
 } from "./app-server/protocol.ts";
 import { defaultCodexSdkDeps, type CodexSdkDeps } from "./sdk-deps.ts";
+import {
+  codexResidentMcpVerdict,
+  operatorRolloutPath,
+  prepareResidentCodexHome,
+} from "./resident-home.ts";
 
 // Codex, driven EMBEDDED - `codex app-server` JSON-RPC behind `SdkSpec` (C10).
 //
@@ -329,6 +337,7 @@ interface Pending {
 
 /** What a launch was configured with, kept so `clearContext` can start an identical thread. */
 interface LaunchConfig {
+  residentCompactionTokenLimit?: number;
   cwd: string;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -348,6 +357,11 @@ class CodexSdkSession implements SdkSessionHandle {
    * what was asked for. Set once, during launch, before the handle is returned.
    */
   standingInstructionsMechanism?: StandingInstructionsMechanism;
+  /**
+   * Maps a rollout path Codex reports through a resident's overlay home back to the operator's
+   * home, where the file really is and outlives the overlay. Identity for every other launch.
+   */
+  rolloutPath: (path: string) => string = (path) => path;
   private readonly out = new EventStream();
   private readonly pending = new Map<string, Pending>();
   private readonly fileChanges = new Map<
@@ -411,6 +425,10 @@ class CodexSdkSession implements SdkSessionHandle {
     return this.out;
   }
 
+  get residentCompactionTokenLimit(): number | undefined {
+    return this.config.residentCompactionTokenLimit;
+  }
+
   get recoveryProcessId(): number | null {
     return this.client.pid;
   }
@@ -438,6 +456,21 @@ class CodexSdkSession implements SdkSessionHandle {
     await this.startTurn(threadId, input);
     return "started";
   }
+
+  private readonly compaction = new CompactionCompletion();
+  private compactContext: { tokens: number; window: number | null } | null = null;
+  compact = async (_focus: string) => {
+    this.requireLive();
+    if (this.activeTurnId !== null) throw new Error("Cannot compact a busy session.");
+    const completed = this.compaction.begin();
+    this.compactContext = null;
+    try {
+      await this.client.request<ThreadCompactStartResponse>("thread/compact/start", {
+        threadId: this.requireThread(),
+      } satisfies ThreadCompactStartParams);
+    } catch (error) { this.compaction.fail(String(error)); }
+    return completed;
+  };
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     const threadId = this.requireThread();
@@ -602,6 +635,7 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   async stop(): Promise<void> {
+    this.compaction.fail("Session stopped during compaction.");
     if (this.stopped) return;
     this.stopped = true;
     try {
@@ -743,7 +777,7 @@ class CodexSdkSession implements SdkSessionHandle {
       // The rollout, reported rather than derived: `thread/start` hands back the exact path
       // it is about to write, which is what keeps `codexTranscript` and `codexUsage`
       // working on an embedded session with no arm of their own.
-      transcriptPath: thread.thread.path,
+      transcriptPath: thread.thread.path ? this.rolloutPath(thread.thread.path) : thread.thread.path,
       modelId: this.modelId,
       pid: this.client.pid,
       ...(cleared ? { cleared: true as const } : {}),
@@ -917,6 +951,9 @@ class CodexSdkSession implements SdkSessionHandle {
       case "item/started":
       case "item/completed": {
         const item = (params as ItemStartedNotification | ItemCompletedNotification).item;
+        if (method === "item/completed" && item.type === "contextCompaction" && this.isCurrentThread(params)) {
+          this.compaction.observe(this.compactContext?.tokens ?? null, this.compactContext?.window ?? null);
+        }
         if (item.type === "fileChange") {
           if (method === "item/started") {
             this.fileChanges.set(item.id, { threadId, changes: item.changes });
@@ -949,7 +986,9 @@ class CodexSdkSession implements SdkSessionHandle {
       }
       case "thread/tokenUsage/updated": {
         if (!this.isCurrentThread(params)) return;
-        const usage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage.last;
+        const tokenUsage = (params as ThreadTokenUsageUpdatedNotification).tokenUsage;
+        const usage = tokenUsage.last;
+        this.compactContext = { tokens: usage.totalTokens, window: tokenUsage.modelContextWindow };
         this.lastUsage = {
           input: usage.inputTokens,
           output: usage.outputTokens,
@@ -1122,6 +1161,7 @@ class CodexSdkSession implements SdkSessionHandle {
     if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
     this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    this.compaction.finish();
     return true;
   }
 
@@ -1177,6 +1217,7 @@ class CodexSdkSession implements SdkSessionHandle {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
+      this.compaction.fail(reason);
       this.stopped = true;
       for (const [key, held] of this.pending) {
         this.forgetPending(key, held);
@@ -1433,13 +1474,33 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
           ? multiRepo.launchArgs(opts.extraDirs)
           : [];
+      const compactLimit = opts.residentCompaction
+        ? opts.residentCompaction.tokenLimit ?? codexResidentCompactionLimit(opts.model, opts.residentCompaction.threshold)
+        : undefined;
+      if (compactLimit !== undefined && (!Number.isSafeInteger(compactLimit) || compactLimit <= 0)) throw new Error("Invalid native resident compaction limit.");
+      const compactArgs = compactLimit === undefined ? [] : ["-c", `model_auto_compact_token_limit=${compactLimit}`];
+      // A resident run starts exactly its MCP snapshot plus Mission's server: a private
+      // `CODEX_HOME` whose generated `config.toml` holds only the snapshot, verified against
+      // every other configuration layer below before any thread loads a server.
+      const resident = opts.residentMcp ?? null;
+      const overlay = resident ? `${resident.privateDir}/codex-home` : null;
+      // Verified on credential-free entries first: this start's tickets are minted only once the
+      // layers check out, immediately before the thread loads its servers, so a slow startup or
+      // check cannot outlive them.
+      const previewEntries = resident ? resident.preview() : [];
+      let overlayConfig: string | null = null;
+      if (overlay) overlayConfig = prepareResidentCodexHome({ overlay, entries: previewEntries });
       const transport = await deps.connect(
-        [...args, ...extraDirArgs],
+        [...args, ...extraDirArgs, ...compactArgs],
         opts.cwd,
         opts.stateHome,
-        opts.traceContext ?? null,
+        {
+          ...(overlay ? { codexHome: overlay } : {}),
+          traceContext: opts.traceContext ?? null,
+        },
       );
       const config: LaunchConfig = {
+        residentCompactionTokenLimit: compactLimit,
         cwd: opts.cwd,
         model: opts.model,
         effort: opts.effort,
@@ -1447,11 +1508,28 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         developerInstructions: null,
       };
       let session: CodexSdkSession | null = null;
+      // Every server Codex reports starting is checked against the run's set: the direct
+      // observation of loading, behind the configuration check. One outside it ends the
+      // launch, or the session if the launch has already returned.
+      const allowed = resident ? new Set([...resident.names, opts.mcp?.serverName ?? ""]) : null;
+      let unexpectedServer: string | null = null;
+      let launched = false;
       const client = new AppServerClient(transport, {
         request: (method, id, params) => session?.onRequest(method, id, params),
-        notification: (method, params) => session?.onNotification(method, params),
+        notification: (method, params) => {
+          if (allowed && method === "mcpServer/startupStatus/updated") {
+            const name = (params as { name?: unknown } | undefined)?.name;
+            if (typeof name === "string" && !allowed.has(name) && unexpectedServer === null) {
+              unexpectedServer = name;
+              console.error(`[sdk] codex resident started the MCP server ${name}, which is not in its snapshot; stopping it`);
+              if (launched) void session?.stop().catch(() => {});
+            }
+          }
+          session?.onNotification(method, params);
+        },
       });
       session = new CodexSdkSession(client, config);
+      if (overlay) session.rolloutPath = (path) => operatorRolloutPath(path, overlay) ?? path;
       // Pumped BEFORE the handshake, because the handshake's own response arrives on it.
       const pump = session.pump();
       try {
@@ -1527,6 +1605,32 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         // rule is still installed on this process or has to be repeated in turn one, and a
         // prefix does not govern later turns.
         if (standingFellBackToPrompt) session.markStandingInstructionsPrefixed();
+        if (resident && overlay && overlayConfig) {
+          // At most two reads: the second confirms the servers only another layer defines are
+          // now switched off. Anything else is refused before a thread exists to load it.
+          let disabled: string[] = [];
+          const verify = async (): Promise<ReturnType<typeof codexResidentMcpVerdict>> =>
+            codexResidentMcpVerdict(await client.request("config/read", { cwd: opts.cwd, includeLayers: true }), {
+              overlayConfig,
+              names: resident.names,
+              disabled,
+              missionServer: opts.mcp?.serverName ?? "",
+            });
+          for (let attempt = 0; ; attempt++) {
+            const verdict = await verify();
+            if (verdict.kind === "exact") break;
+            if (verdict.kind === "refuse") throw new Error(`this resident's MCP servers cannot be pinned: ${verdict.reason}`);
+            if (attempt > 0) throw new Error("this resident's MCP servers cannot be pinned: Codex kept another layer's servers on");
+            disabled = verdict.names;
+            prepareResidentCodexHome({ overlay, entries: previewEntries, disabled });
+          }
+          // Now this start's credentials, and one last read of what the thread will load.
+          prepareResidentCodexHome({ overlay, entries: resident.forStart(), disabled });
+          const final = await verify();
+          if (final.kind !== "exact") {
+            throw new Error(`this resident's MCP servers cannot be pinned: ${final.kind === "refuse" ? final.reason : "another layer changed during the start"}`);
+          }
+        }
         if (opts.resume) {
           const resumeParams: ThreadResumeParams = {
             threadId: opts.resume,
@@ -1555,6 +1659,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         } else if (opts.prompt) {
           await session.seed(opts.prompt);
         }
+        if (unexpectedServer) {
+          throw new Error(`this resident's Codex session started the MCP server ${unexpectedServer}, which is not in its snapshot`);
+        }
+        launched = true;
       } catch (err) {
         // Nothing above this line is durable yet - no row, no card, no SSE frame - so the
         // only thing to unwind is the subprocess.

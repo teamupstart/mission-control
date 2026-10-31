@@ -58,7 +58,7 @@ export function useShipping(): ShippingState {
       const [c, prs] = await Promise.all([fetchShippingConfig(), fetchInspectorPrs()]);
       if (!alive) return;
       if (prs) setInspections(prs);
-      if (c && writes.current === at) setConfig(c);
+      if (writes.current === at) setConfig(c);
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -90,7 +90,7 @@ export function useShipping(): ShippingState {
       setError(null);
       const at = (writes.current += 1);
       const c = await fetchShippingConfig();
-      if (c && writes.current === at) setConfig(c);
+      if (writes.current === at) setConfig(c);
       return true;
     },
     [setConfig],

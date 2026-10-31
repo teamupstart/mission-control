@@ -9,6 +9,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -1906,7 +1907,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "resident"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -2083,6 +2084,8 @@ export interface TaskAutomaticCleanup {
 }
 
 export interface Task {
+  /** Null or absent on historical tasks means a Git checkout. */
+  workspaceKind?: "resident-workspace" | null;
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
@@ -2199,9 +2202,9 @@ export interface Task {
    * this path belongs to the Pipeline provider and is only a Files and Diff projection.
    */
   pipelineWorkspacePath?: string | null;
-  /** Absolute path of the source repo the worktree is cut from. */
+  /** Source repository, or the run cwd when taskHasRepository is false. */
   repoRoot: string;
-  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
+  /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
@@ -2354,6 +2357,7 @@ export interface BacklogPlan {
 
 /** Compact task view denormalized onto a Session card. */
 export interface TaskSummary {
+  workspaceKind?: Task["workspaceKind"];
   planPolicy?: ManagedPlanPolicy | null;
   planInputs?: TaskPlanInput[];
   id: string;
@@ -2482,8 +2486,12 @@ export type ReviewStatus =
  * reads as null for the same reason - it may well have been a human, but the record does
  * not say so, and the conversation must not claim an answer the human cannot be shown to
  * have given.
+ *
+ * `standing-approval` is the daemon settling a managed plan's final-bundle approval on the
+ * operator's behalf, because they ticked "approve all future bundles for this task" on an
+ * earlier one. It is logged in the conversation as what it is, never as the human's answer.
  */
-export type ReviewActor = "human" | "foreman" | `session:${string}`;
+export type ReviewActor = "human" | "foreman" | "standing-approval" | `session:${string}`;
 
 /** One selectable choice within a `PlanDecision`. */
 export interface PlanDecisionOption {
@@ -2533,6 +2541,15 @@ export interface PlanDecisionAnswer {
   selected: string[];
   /** What was typed into "Other", when the decision allowed it and the human used it. */
   other: string | null;
+  /**
+   * An optional note to the agent typed beside the selection, on a `plan-decisions` form.
+   *
+   * Separate from `other` because it qualifies a choice rather than replacing one: "Other"
+   * is an answer outside the options, a note is instructions that travel with whichever
+   * option was taken. It never answers a decision on its own. Optional because rows written
+   * before it, and every answer a form without the note box produces, simply lack it.
+   */
+  note?: string | null;
 }
 
 export interface ReviewItem {
@@ -2561,6 +2578,11 @@ export interface ReviewItem {
   selections?: PlanDecisionAnswer[] | null;
   /** Who settled it, or null when nobody did (`orphaned`) and on pre-column rows. */
   resolvedBy?: ReviewActor | null;
+  /**
+   * A managed plan's final-bundle approval bound to a task, so answering it may grant
+   * "approve all future bundles for this task". Derived by the daemon, never stored on the row.
+   */
+  standingApprovalEligible?: boolean;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }
@@ -2805,6 +2827,7 @@ export interface InspectorComment {
  * PR itself is where you look.
  */
 export interface InspectorSummary {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -2859,6 +2882,7 @@ export interface RetroSummary {
 
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
+  codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;
@@ -3081,6 +3105,21 @@ export type ServerEvent =
        */
       schedules: MissionSchedule[];
       /**
+       * Live resident profiles, each with its current revision. Bounded by
+       * `RESIDENT_LIMITS.liveProfiles` (200): creation past it is refused, so the collection
+       * is never truncated. Archived profiles leave through `resident_profile_remove`.
+       * Optional so a snapshot from a build that predates residents still parses.
+       */
+      residentProfiles?: ResidentProfile[];
+      /**
+       * Live resident runs - launched or still launching, never ended or failed - each with
+       * its pinned revision's settings, so the board joins a session to its run (marker,
+       * label, pin) through its task id. Bounded by the residents actually running: a run
+       * leaves through `resident_run_remove` when it ends. Optional so a snapshot from a
+       * build that predates the collection still parses.
+       */
+      residentRuns?: ResidentRunSummary[];
+      /**
        * Every pipeline run the daemon is projecting, for the repositories an operator has
        * consented to. EMPTY on every fleet with no pipeline provider enabled, which is the
        * shipped state - so this collection costs an ordinary installation one `[]`.
@@ -3204,6 +3243,19 @@ export type ServerEvent =
    */
   | { type: "schedule_upsert"; schedule: MissionSchedule }
   | { type: "schedule_remove"; id: string }
+  /**
+   * A resident profile was created, edited, or restored - carrying the whole profile with its
+   * current revision, so a browser never fetches to reconcile. `resident_profile_remove`
+   * fires on archive, after the durable write.
+   */
+  | { type: "resident_profile_upsert"; profile: ResidentProfile }
+  | { type: "resident_profile_remove"; id: string }
+  /**
+   * A resident run was reserved or settled its launch. Carries the whole live summary.
+   * `resident_run_remove` fires when the run ends or its launch failed, after the write.
+   */
+  | { type: "resident_run_upsert"; run: ResidentRunSummary }
+  | { type: "resident_run_remove"; id: string }
   /**
    * A pipeline run's projection moved - a step changed state, a gate answered, the engine
    * halted, or the run appeared for the first time. Carries the WHOLE run, like
@@ -3409,7 +3461,7 @@ export interface TranscriptMessage {
  * log rather than drawn as platform instructions or invented prose.
  */
 export type TranscriptPresentation = {
-  kind: "launch";
+  kind: "launch" | "resident";
   displayText: string | null;
 };
 
@@ -3421,7 +3473,7 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session" | "resident";
 
 /** The session that typed a delegated turn: its id, and its name when the turn was sent. */
 export interface TurnOriginSession {

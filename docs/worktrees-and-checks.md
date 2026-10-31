@@ -416,8 +416,14 @@ What a Command gets:
   environment says.
 - **A closed stdin**, so a command that stops to ask a question fails immediately instead of
   hanging until its timeout.
-- **Bounded output.** The last 4,000 bytes are kept, because a failing build's useful lines are
-  its last ones, and the run detail reports exactly how many bytes were dropped.
+- **Bounded output.** The combined last 4,000 bytes remain inline because a failing build's
+  useful lines are usually last. Separately, each attempt retains up to 2 MiB across stdout
+  and stderr, and a workflow run retains at most 64 MiB of Command bodies. The daemon keeps
+  draining after either cap, so log volume never terminates an otherwise healthy command.
+  Run detail reports retained, observed, and dropped byte counts and reads each stream through
+  a 64 KiB paged route. That reader remains available when timeout, signal, or cleanup failure
+  leaves the attempt with infrastructure state and no check verdict. Storage failure is explicit
+  and does not change the process verdict.
 
 **This is not a sandbox, and the trimmed environment should not be read as one.** A check
 command runs as you, with your filesystem access. Removing the token narrows what a build can
@@ -431,6 +437,8 @@ returning the worktree, because a build that leaves a server running behind it i
 the leader exiting proves nothing about its children. A group it cannot prove is empty keeps
 its lease rather than handing back a tree something may still be writing into. Test commands
 get sixty minutes before this teardown begins; other Command slots keep the ten-minute default.
+Library can configure a slot from one minute through two hours. The chosen value is frozen for
+the attempt, and a timeout remains retryable infrastructure rather than a failed-code verdict.
 
 **A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
 Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
@@ -445,3 +453,14 @@ not been shown to have run against the commit it claims - so it is recorded as a
 failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
 command's own exit code is kept in the reason, so you can still tell "the build failed and then
 cleanup broke" from "the build passed and then cleanup broke".
+
+## Residents without a repository
+
+A resident launched with **No repository** uses a Mission-owned run directory instead of a
+checkout. The [resident profiles change contract](agent-guides/change-contracts.md#resident-profiles)
+defines the persisted workspace marker and shared repository predicate.
+
+Worktree allocation, diffs, pull-request observation, repository grouping, and worktree retention
+skip these runs. The run directory is removed after durable run completion and confirmed session
+shutdown. The same cleanup scans ended runs at startup and retries failures. Daemon shutdown
+alone does not end a run or remove its workspace.

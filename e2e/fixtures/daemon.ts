@@ -137,8 +137,10 @@ export interface DaemonHandle {
    * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
    */
   crash(): Promise<void>;
+  /** Gracefully suspend SDK sessions, retaining the home and database for restart(). */
+  shutdown(): Promise<void>;
   /**
-   * Boot a fresh daemon on the same port and home after `crash()`.
+   * Boot a fresh daemon on the same port and home after `crash()` or `shutdown()`.
    *
    * `envChanges` alters the successor's environment - an `undefined` value removes a variable -
    * for the states a different launch produces on the same installation, such as a Mac its
@@ -768,7 +770,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   };
 
   const restart = async (envChanges: Record<string, string | undefined> = {}): Promise<void> => {
-    if (!exited) throw new Error("restart() is for a dead daemon - call crash() first");
+    if (!exited) throw new Error("restart() is for a dead daemon - call crash() or shutdown() first");
     for (const [key, value] of Object.entries(envChanges)) {
       if (value === undefined) delete isolatedEnv[key];
       else isolatedEnv[key] = value;
@@ -779,6 +781,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the crash and this bind still fails loudly rather than being driven silently.
     child = spawnDaemon();
     await awaitBoot();
+  };
+
+  const shutdown = async (): Promise<void> => {
+    if (exited) throw new Error("shutdown() requires a running daemon");
+    const gone = new Promise<void>((resolve, reject) => child.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) resolve();
+      else reject(new Error(`daemon did not shut down gracefully (code ${code}, signal ${signal}):\n${log}`));
+    }));
+    child.kill("SIGTERM");
+    await gone;
   };
 
   // Prove the isolation held before any test writes through it.
@@ -819,6 +831,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     readLog: () => log,
     startForeman,
     crash,
+    shutdown,
     restart,
     desktopLaunchConfig: () => {
       if (!exited) throw new Error("Crash the fixture daemon before transferring its home to Electron");

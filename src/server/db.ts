@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
+import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
 import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
@@ -14,7 +17,7 @@ import {
   type AppConfigInput,
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
-import { DB_PATH } from "./config.ts";
+import { DB_PATH, envVar } from "./config.ts";
 import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
@@ -177,7 +180,12 @@ let db: DatabaseSync | undefined;
 // 7: claim-version retirement identities and immutable retirement sequence boundaries.
 // 8: repository-specific retirement of shared coverage claim versions.
 // 9: retain staged claim versions still applicable to sibling repositories.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 9;
+// 10: repository-free resident task markers and durable workspace cleanup obligations.
+// 11: resident loop state, generation delivery claims and durable pacing receipts.
+// 12: bind resident wake attribution to its recorded conversation and native turn.
+// 13: retain a resident SDK session's measured native compaction limit across resumes.
+// 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -373,6 +381,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       external_id   TEXT,
       source_url    TEXT,
       repo_root     TEXT NOT NULL,
+      workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
       pipeline_provider TEXT,
@@ -824,6 +833,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, manifest_hash TEXT NOT NULL,
       binding_id TEXT, workflow_version_id TEXT
     );
+    -- One row per task whose operator ticked "approve all future bundles for this task".
+    -- review_id is the human answer that granted it, kept as provenance.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_approvals (
+      task_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, granted_at INTEGER NOT NULL
+    );
+    -- The remaining questions of a request whose final bundle a standing approval settled,
+    -- keyed to that approval so the agent's answer can say the bundle is already approved.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_follow_ups (
+      review_id TEXT PRIMARY KEY, approval_review_id TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS managed_plan_validations (
       submission_id TEXT NOT NULL, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
       review_id TEXT NOT NULL, binding_id TEXT NOT NULL, workflow_version_id TEXT NOT NULL,
@@ -980,6 +999,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       slot                 TEXT PRIMARY KEY,
       default_command_json TEXT,
       max_runs             INTEGER NOT NULL DEFAULT 1,
+      timeout_ms           INTEGER,
+      on_unavailable       TEXT NOT NULL DEFAULT 'skip',
+      on_budget_exhausted  TEXT NOT NULL DEFAULT 'skip',
       revision             INTEGER NOT NULL DEFAULT 1,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL
@@ -999,6 +1021,19 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (slot, repo_root)
+    );
+
+    -- The operator's maximum repair rounds for one built-in workflow.
+    --
+    -- A built-in is not a row: its definition and versions ship with the build and stay
+    -- read-only. The round budget is the one setting an operator may change on one without
+    -- duplicating it, so it lives beside the catalog rather than in it, keyed by the
+    -- built-in's stable id. No row, or a NULL count, means the shipped value; a reset keeps
+    -- its row with a NULL count so the time of the reset still dates the definition.
+    CREATE TABLE IF NOT EXISTS workflow_builtin_round_limits (
+      workflow_id       TEXT PRIMARY KEY,
+      max_repair_rounds INTEGER,
+      updated_at        INTEGER NOT NULL
     );
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
@@ -1366,6 +1401,44 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_node_attempts(submission_id, node_id, attempt);
     CREATE INDEX IF NOT EXISTS idx_workflow_node_attempts_state
       ON workflow_node_attempts(state, retry_at);
+
+    -- Attempt-owned retained Command bodies. Bodies live under the daemon state directory;
+    -- this table is the durable identity, integrity and lifecycle authority.
+    CREATE TABLE IF NOT EXISTS workflow_command_artifact_reservations (
+      attempt_id      TEXT PRIMARY KEY,
+      run_id          TEXT NOT NULL,
+      reserved_bytes  INTEGER NOT NULL,
+      retained_bytes  INTEGER NOT NULL DEFAULT 0,
+      state           TEXT NOT NULL,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifact_reservations_run
+      ON workflow_command_artifact_reservations(run_id, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_command_artifacts (
+      id                 TEXT PRIMARY KEY,
+      run_id             TEXT NOT NULL,
+      submission_id      TEXT NOT NULL,
+      attempt_id         TEXT NOT NULL,
+      kind               TEXT NOT NULL,
+      retained_bytes     INTEGER NOT NULL,
+      observed_bytes     INTEGER NOT NULL,
+      dropped_bytes      INTEGER NOT NULL,
+      sha256             TEXT,
+      capture_state      TEXT NOT NULL,
+      availability       TEXT NOT NULL,
+      unavailable_reason TEXT,
+      storage_key        TEXT,
+      created_at         INTEGER NOT NULL,
+      finalized_at       INTEGER,
+      pruned_at          INTEGER,
+      UNIQUE(attempt_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_run
+      ON workflow_command_artifacts(run_id, availability, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_attempt
+      ON workflow_command_artifacts(attempt_id, kind);
 
     CREATE TABLE IF NOT EXISTS workflow_edge_receipts (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1913,6 +1986,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- outlive the session that did (a PR is not done when its session exits).
     CREATE TABLE IF NOT EXISTS inspector_prs (
       key              TEXT PRIMARY KEY,  -- "owner/repo#123"
+      code_rabbit_state TEXT,
       url              TEXT NOT NULL,
       owner            TEXT NOT NULL,
       repo             TEXT NOT NULL,
@@ -1979,6 +2053,114 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- so it can serve no query that one cannot, and it costs a write per row.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
       ON inspector_comments(pr_key, fingerprint);
+
+    -- ---- resident profiles ----
+    --
+    -- A profile is a name over an immutable revision chain, like a recurring mission: the
+    -- body lives on the revision so a run can say exactly what it launched with. Created on
+    -- every open, so an upgrading database gains the three tables empty. No REFERENCES
+    -- clauses: these relate by convention, like every non-ensemble family.
+    CREATE TABLE IF NOT EXISTS resident_profiles (
+      id               TEXT PRIMARY KEY NOT NULL,
+      name             TEXT NOT NULL,
+      normalized_name  TEXT NOT NULL,
+      revision         INTEGER NOT NULL,  -- -> resident_profile_revisions.revision
+      archived_at      INTEGER,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    -- A name is unique among LIVE profiles only, so archiving one frees its name.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_profiles_live_name
+      ON resident_profiles(normalized_name) WHERE archived_at IS NULL;
+
+    -- Immutable. An edit inserts revision n+1 and repoints the profile; nothing here is
+    -- ever updated, because a live run reads only the revision it pinned.
+    CREATE TABLE IF NOT EXISTS resident_profile_revisions (
+      profile_id     TEXT NOT NULL,
+      revision       INTEGER NOT NULL,
+      settings_json  TEXT NOT NULL,
+      created_at     INTEGER NOT NULL,
+      PRIMARY KEY (profile_id, revision)
+    );
+
+    -- One row per launch: the resident's durable identity. The row is written BEFORE the
+    -- task, with the task id reserved, so a crash between the two leaves a pending run that
+    -- startup reconciliation settles from evidence rather than a task nothing owns.
+    --
+    -- launch_request_id is NOT NULL so its unique index is the idempotency key itself: two
+    -- requests with one id collide here and exactly one reservation wins. launch_input is
+    -- the normalized request as canonical JSON, so a replay is compared from this row alone.
+    -- launch_state is an append-only vocabulary (RESIDENT_LAUNCH_STATES).
+    CREATE TABLE IF NOT EXISTS resident_runs (
+      id                 TEXT PRIMARY KEY NOT NULL,
+      profile_id         TEXT NOT NULL,
+      profile_revision   INTEGER NOT NULL,
+      task_id            TEXT NOT NULL,
+      launch_request_id  TEXT NOT NULL,
+      launch_input       TEXT NOT NULL,
+      -- The repository exactly as the request spelled it, trimmed. Not compared while the
+      -- repository resolves (launch_input holds the real path); it is what lets an exact
+      -- replay be recognized once the repository no longer resolves.
+      launch_repo_spelling TEXT NOT NULL DEFAULT '',
+      workspace_dir      TEXT,
+      launch_state       TEXT NOT NULL,
+      launch_error       TEXT,
+      persona_snapshot   TEXT NOT NULL,
+      run_instructions   TEXT NOT NULL DEFAULT '',
+      created_at         INTEGER NOT NULL,
+      ended_at           INTEGER,
+      -- The session-control grant a desktop Launch click gave this run, all NULL when it has
+      -- none. control_authorized_at is when the daemon consumed the click; the other three
+      -- are the Registry grant's identity when it was applied. A restart re-applies the grant
+      -- only when all four are set and the restored session still matches them, so every run
+      -- from before these columns existed stays ungranted. Mirrored in migrate().
+      control_authorized_at   INTEGER,
+      control_conversation_id TEXT,
+      control_cwd             TEXT,
+      control_episode_id      TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_runs_request
+      ON resident_runs(launch_request_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_task ON resident_runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_open
+      ON resident_runs(launch_state) WHERE ended_at IS NULL;
+
+    -- ---- resident MCP servers ----
+    --
+    -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
+    -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
+    -- a launch's snapshot, never returned by a route, published, logged or captured by a
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- server's id and the field ("env:NAME", "header:Name", "query:name").
+    CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
+      server_id   TEXT NOT NULL,
+      field       TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (server_id, field)
+    );
+
+    -- A run's MCP snapshot: its effective server set, resolved once at launch and read by
+    -- every start and resume, so no later edit to a profile, a custom server, a secret or the
+    -- harness's own configuration reaches a live run. Daemon-private like the secrets: a
+    -- global server's whole definition is here, because native configuration does not mark
+    -- which of its parts are credentials. Keyed by (source, name); removed when the run ends.
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_servers (
+      run_id           TEXT NOT NULL,
+      source           TEXT NOT NULL,  -- 'global' | 'custom'
+      name             TEXT NOT NULL,
+      position         INTEGER NOT NULL,
+      definition_json  TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, name)
+    );
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_secrets (
+      run_id  TEXT NOT NULL,
+      source  TEXT NOT NULL,
+      server  TEXT NOT NULL,
+      field   TEXT NOT NULL,
+      value   TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, server, field)
+    );
 
     -- ---- recurring missions ----
     --
@@ -3137,6 +3319,44 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "tasks", "workspace_kind", "TEXT");
+  addColumn(d, "resident_runs", "workspace_dir", "TEXT");
+  addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
+  addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");
+  for (const column of ["next_wake_at", "consumed_generation", "wake_request_delay_s", "wake_request_generation"]) {
+    addColumn(d, "resident_runs", column, "INTEGER");
+  }
+  for (const column of ["pause_reason", "wake_reason", "wake_request_reason"]) {
+    addColumn(d, "resident_runs", column, "TEXT");
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_iterations (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+      trigger TEXT NOT NULL, delivery TEXT NOT NULL, transcript_offset INTEGER,
+      claimed_at INTEGER NOT NULL, sent_at INTEGER, PRIMARY KEY (run_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_iterations_window ON resident_iterations(run_id, claimed_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_iterations_claim ON resident_iterations(run_id) WHERE delivery = 'claimed';
+    CREATE TABLE IF NOT EXISTS resident_pacing_calls (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, call_id TEXT NOT NULL,
+      receipt TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY (run_id, call_id)
+    );
+  `);
+  addColumn(d, "resident_iterations", "conversation_key", "TEXT");
+  addColumn(d, "resident_iterations", "message_id", "TEXT");
+  addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+
+  // Nullable with no default: a run launched before these existed reads as never granted.
+  addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
+  addColumn(d, "resident_runs", "control_conversation_id", "TEXT");
+  addColumn(d, "resident_runs", "control_cwd", "TEXT");
+  addColumn(d, "resident_runs", "control_episode_id", "TEXT");
+  // When the run's MCP snapshot was taken. NULL on a run launched before snapshots existed,
+  // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
+  // every run since, which starts exactly its snapshot.
+  addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -3184,6 +3404,7 @@ function migrate(d: DatabaseSync): void {
 
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+  addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3253,6 +3474,9 @@ function migrate(d: DatabaseSync): void {
   // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
   // backfill because the default IS the migrated value for every existing slot.
   addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
+  addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
+  addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.
@@ -3927,6 +4151,7 @@ function migrate(d: DatabaseSync): void {
   // No index. The table gains single-digit rows a day and nothing selects on the title;
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
+  addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -4568,18 +4793,25 @@ export function transferPendingReviews(sourceId: string, successorId: string, no
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
     WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
+}
+
+/** Re-derive which pending reviews can grant a standing plan-bundle approval: bound to a task. */
+function withStandingApprovalEligibility(reviews: ReviewItem[]): ReviewItem[] {
+  const eligible = openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ? AND task_id IS NOT NULL");
+  return reviews.map((review) => (eligible.get(review.id) ? { ...review, standingApprovalEligible: true } : review));
 }
 
 /**
- * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ * The reviews a session's conversation replays: the ones a HUMAN settled, directly or through
+ * a standing approval for its task, oldest first.
  *
  * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
  * two ask different questions of the same table. That one gathers evidence of intent, so it
@@ -4603,6 +4835,8 @@ export function loadPendingReviews(): ReviewItem[] {
  * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  // A standing approval is the operator's own earlier, explicit grant for this task, so the
+  // final-bundle gate counts it. A delegated session's answer never does.
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
@@ -4617,7 +4851,7 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by = 'human'${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
@@ -5225,6 +5459,7 @@ export function lastAgentBinding(sessionId: string): string | null {
 // ---- tasks ----
 
 interface TaskRow {
+  workspace_kind: string | null;
   id: string;
   title: string;
   intent: string;
@@ -5578,6 +5813,7 @@ function rowToTask(
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
     repoRoot: r.repo_root,
+    workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
         ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
@@ -5640,7 +5876,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root,
+         workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -5648,7 +5884,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5658,7 +5894,7 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
-         repo_root=excluded.repo_root,
+         repo_root=excluded.repo_root, workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
            WHEN ? THEN excluded.pipeline_commission_id
@@ -5692,7 +5928,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
@@ -11579,6 +11815,18 @@ export interface AutomationRoleSpend {
   runs: number;
 }
 
+/** Session-ledger spend strictly inside a rolling window; any unpriced row makes the total unknown. */
+export function sessionSpendSince(noteKeys: readonly string[], tsMs: number): {
+  costUsd: number | null; entries: Array<{ at: number; costUsd: number | null }>;
+} {
+  if (noteKeys.length === 0) return { costUsd: 0, entries: [] };
+  const rows = openDb().prepare(`SELECT ts, cost_usd, cost_known FROM usage_ledger
+    WHERE spend_kind = 'session' AND note_key IN (${noteKeys.map(() => "?").join(",")}) AND ts > ?
+    ORDER BY ts`).all(...noteKeys, tsMs) as Array<{ ts: number; cost_usd: number; cost_known: number }>;
+  const entries = rows.map((r) => ({ at: r.ts, costUsd: r.cost_known === 1 ? r.cost_usd : null }));
+  return { costUsd: entries.some((r) => r.costUsd === null) ? null : entries.reduce((sum, r) => sum + r.costUsd!, 0), entries };
+}
+
 /**
  * What each role spent since `tsMs`, newest-heaviest first.
  *
@@ -13854,6 +14102,7 @@ type InspectionTallyRow = InspectorPrRow & {
 function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   return {
     ...rowToInspectorPr(r),
+    codeRabbit: codeRabbitSummary(r.key),
     openFindings: Number(r.open_findings),
     postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),
@@ -15079,4 +15328,103 @@ export function setFileCommentReviewState(
     )
     .run(sessionId, state, pauseReason, state === "running" ? now : null, now);
   return loadFileCommentReview(sessionId);
+}
+
+
+// CodeRabbit extends the adoption row, so it cannot discover PRs or outlive deletion of
+// its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
+// per PR; exceeding either holds observation/delivery instead of evicting replay protection.
+const codeRabbitProcessId = randomUUID();
+export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
+  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+  try {
+    const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+function writeCodeRabbit(prKey: string, record: CodeRabbitRecord): void {
+  openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey);
+}
+
+export function recordCodeRabbit(prKey: string, input: {
+  headSha: string; state: "OPEN" | "CLOSED" | "MERGED"; draft: boolean;
+  findings: Omit<CodeRabbitFinding, "generation">[];
+}, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  // Corrupt history is unknown, never a fresh empty receipt ledger.
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  const findings = new Map((previous?.findings ?? []).map((f) => [f.id, { ...f, present: false }]));
+  for (const finding of input.findings) {
+    const old = findings.get(finding.id);
+    const changed = !finding.resolved && (!old || old.resolved || old.identity !== finding.identity);
+    findings.set(finding.id, { ...finding, present: true, generation: (old?.generation ?? 0) + Number(changed) });
+  }
+  if (findings.size > 2000) { failCodeRabbit(prKey, "CodeRabbit root history limit reached", now); return; }
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: codeRabbitProcessId,
+    observedAt: now, headSha: input.headSha, state: input.state, draft: input.draft,
+    error: null, findings: [...findings.values()], receipts: previous?.receipts ?? [],
+  });
+}
+
+export function failCodeRabbit(prKey: string, error: string, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: "", observedAt: now,
+    headSha: "", state: "OPEN", draft: true, findings: [], receipts: [],
+    ...previous, error: error.slice(0, 400),
+  });
+}
+
+export function codeRabbitSummary(prKey: string, owner?: { noteKey: string; episodeKey: string }, now = Date.now(), freshnessMs = Math.max(1_000, 3 * Number(envVar("INSPECTOR_POLL_MS") ?? 90_000))): CodeRabbitSummary {
+  const record = readCodeRabbit(prKey);
+  const threads = record?.findings.filter((f) => f.present && !f.resolved) ?? [];
+  const fresh = !!record && record.processId === codeRabbitProcessId && !record.error
+    && record.observedAt <= now && now - record.observedAt <= freshnessMs;
+  const receipts = record?.receipts.filter((r) => r.noteKey === owner?.noteKey && r.episodeKey === owner?.episodeKey) ?? [];
+  const pending = threads.filter((f) => !receipts.some((r) => r.threadId === f.id && r.generation === f.generation)).length;
+  const uncertain = receipts.some((r) => r.outcome === "uncertain" && threads.some((f) => f.id === r.threadId && f.generation === r.generation));
+  return {
+    status: record?.error ? "error" : fresh ? "complete" : "unknown",
+    observationId: record?.observationId ?? null, headSha: record?.headSha || null,
+    observedAt: record?.headSha ? record.observedAt : null,
+    freshUntil: fresh ? record!.observedAt + freshnessMs : null,
+    unresolved: record?.headSha ? threads.length : null, error: record?.error ?? null,
+    threads: threads.slice(0, 12).map(({ id, url, path }) => ({ id, url, path })),
+    pending: fresh && owner && record?.state === "OPEN" && !record.draft ? pending : 0,
+    delivery: uncertain ? "Delivery uncertain; manual messaging remains available"
+      : !fresh ? "Waiting for a complete fresh observation"
+      : record?.state !== "OPEN" || record.draft ? "PR is closed or draft"
+      : !threads.length ? "No unresolved CodeRabbit threads"
+      : !owner ? "Waiting for an eligible owning session"
+      : pending ? "Waiting for an eligible session" : "Feedback delivered",
+  };
+}
+
+export function claimCodeRabbit(prKey: string, owner: { noteKey: string; episodeKey: string }, observationId: string, now = Date.now()): string | null {
+  // All reads and the compare-and-set run synchronously in the sole daemon writer.
+  const record = readCodeRabbit(prKey);
+  if (!record || record.observationId !== observationId || codeRabbitSummary(prKey, owner, now).pending === 0) return null;
+  const pending = record.findings.filter((f) => f.present && !f.resolved && !record.receipts.some((r) =>
+    r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && r.threadId === f.id && r.generation === f.generation));
+  if (!pending.length) return null;
+  const claimId = randomUUID();
+  const previous = JSON.stringify(record);
+  record.receipts = record.receipts.filter((r) => !(r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && pending.some((f) => f.id === r.threadId)));
+  for (const f of pending) record.receipts.push({ ...owner, threadId: f.id, generation: f.generation, observationId, headSha: record.headSha, claimId, at: now, outcome: "uncertain" });
+  if (record.receipts.length > 10000) return null;
+  const result = openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ? AND code_rabbit_state = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey, previous);
+  return result.changes === 1 ? claimId : null;
+}
+
+export function finishCodeRabbit(prKey: string, claimId: string, outcome: "delivered" | "refused"): void {
+  const record = readCodeRabbit(prKey);
+  if (!record) return;
+  if (outcome === "refused") record.receipts = record.receipts.filter((r) => r.claimId !== claimId);
+  else for (const receipt of record.receipts) if (receipt.claimId === claimId) receipt.outcome = "delivered";
+  writeCodeRabbit(prKey, record);
 }

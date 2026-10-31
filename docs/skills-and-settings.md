@@ -266,7 +266,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -304,7 +304,7 @@ folds each empty column into a chip beside its last column, and a chip brings it
 back. Uncheck it to hide that stash, so empty columns leave the board entirely. An empty
 **needs you** column is never in the stash: it stays as a slim all-clear rail either way.
 
-Display's last panel is **Board card**, and it is the checklist of every optional item a
+Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,
 permission mode, cost, branch, worktree and last seen. Unchecking one applies to every card
 in every column immediately, and a live preview card in the panel redraws as you toggle, so
@@ -322,6 +322,32 @@ The same panel holds two **Task type** pickers, one under **Board card** and one
 how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
 medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
 the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+Each group has its own live preview, so picking a style shows what it changes without leaving
+Settings: the card's for **Board card**, and a console header for **Conversation header**. Each
+preview sits beside its group's controls, or under the group's heading when Settings is too
+narrow to hold it beside them.
+
+Display's last panel is **Top bar**, which chooses what the bar across the top of every page
+draws. A live preview of the real bar sits above its two lists and redraws as you change them.
+
+- **Show or hide** covers the bar's optional readouts and tools: the **Session count**,
+  **Need you** and **Working** counts in the fleet pulse, **Search** (the fleet filter),
+  **Cost estimate**, **Report product feedback** and **Alerts and away mode**. Hiding Search
+  also clears any filter term, so the fleet is never filtered by a box you cannot see. The
+  feedback form stays in the palette (<kbd>⌘</kbd><kbd>K</kbd>), cost settings stay in
+  Settings → Cost, and the pulse's **to answer** count is not on the list: it is the only way
+  into the attention inbox.
+- **Expanded or minimized** covers the controls that are always on the bar: the **Fleet**,
+  **Library**, **Runs** and **Scouts** page buttons, **Recurring missions** and **Foreman**.
+  **Minimized** hides the control's text label at every window width, the way the bar does
+  when it runs out of room, and keeps its glyph. A page button also drops its shortcut keycap,
+  and Foreman drops its mode chip (`live`, `off`). Counts stay visible: the Recurring missions
+  attention badge, and Foreman's issue count and queue count. Its name, tooltip and shortcut
+  still work.
+
+The shipped bar hides nothing and minimizes nothing. Whatever you choose, the bar still
+minimizes what is left when the window narrows, so it stays on one row. **Reset all** in the
+panel header puts the shipped bar back.
 
 Two things changed shape when the page arrived. **Layout and Appearance merged into
 Display**: both are one browser's preferences about how this screen draws the fleet, and a
@@ -508,10 +534,27 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   and lie about being separate grants; splitting them for real would take two stored lists
   first. Each capability still has its own switch in **Settings → Workflows**, so the cell is
   necessary for both and sufficient for neither.
-- **Adding is configuration; enabling is consent.** Adding a repo (resolved and canonicalized
-  first, so a typo is refused) stages an empty row and grants **nothing** - every cell starts
-  off, one deliberate click each. A staged, ungranted repo is remembered per machine so it
-  survives a reload before you come back to grant it.
+- **Add several repositories at once.** The page is two panes side by side. **Add
+  repositories**, on the left, lists every repository the workspace scan found that is not
+  in the matrix yet: search it, tick any number (or **Select all shown**), type a path for a
+  checkout the scan missed, and **Add** them in one batch. Each path is resolved and
+  canonicalized first, so a typo is refused. **Trusted**, on the right, is the matrix with a
+  filter of its own. Each pane scrolls inside itself, so the add controls never sit below a
+  long table.
+- **New repositories start with three grants.** An added repo gets **Foreman sends live**,
+  **Workflows act** and **GitHub Inspector posts reviews** straight away; **YOLO merges**
+  stays off until you click its cell. Every default is one click to revoke. Because the
+  Workflows cell also lets Commands run branch-authored code wherever **Allow workflow
+  Commands** is on, the double-dagger footnote names a new repo as soon as it is added. The
+  add waits until Foreman, Workflows and GitHub Inspector have all answered, and says which it
+  is waiting for, so an add is never made while one of them is still loading.
+- **A failed write is reported, not hidden.** The three grants are separate writes, so one
+  can fail while the others land. The new row then holds only the grants that landed, and
+  the pane names the ones that did not so you can click their cells to retry. If none of the
+  three can be written, the repo is kept as an ungranted row on this machine, which survives
+  a reload until its cells are granted. If that fallback cannot be saved either, no row is
+  created: the pane says the add was lost and keeps your picks and typed path, so adding
+  again is one click.
 - **Repository labels use directory names.** Read-only repository labels normally show only
   the final directory name; hover the label to see its complete path. If a Trust warning names
   two repositories with the same directory name, it shows their full paths in the warning so
@@ -523,7 +566,7 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   records the bare Git directory as the owner, including when it is named `.git`, rather
   than granting the containing folder. Tasks use the same owner and run in linked checkouts.
 - **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
-  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  the Trust row in the rail to the matrix and its add pane, and the tour leaves you on this
   page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
   a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,
@@ -558,3 +601,39 @@ another review-only workflow validates the frozen approved text; explicit None u
 merge edges stay blocked until their normal publication condition. Missing tools never permit
 fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
 home separately to retain plan contents and their daemon ledger.
+
+## Resident skill catalog
+
+**Residents > Skill sources** indexes global skills and operator-registered folders, independently
+of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
+YAML frontmatter, including folded descriptions, and reports source problems in place. The index
+is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+Rescans and source saves share a one-second cooldown after completion across windows and local
+API clients. An early retry reports how long to wait without starting another scan or changing
+registrations. The panel briefly disables its source controls after a request before allowing
+another action.
+Concurrent source edits are compared against the list a window loaded. A stale add or removal
+is refused and refreshes the list so the operator can review it before retrying.
+If restored registrations have an invalid shape, the catalog still shows global skills and
+explains the problem. **Reset source list** explicitly replaces those invalid registrations
+with an empty list before new folders can be added. Reads and rescans leave the stored value
+intact, and a reset also refuses a stale revision.
+
+The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
+must be absolute or start with `~/`; broad roots and canonical duplicates are refused. Child
+directory links resolving to the home directory or an ancestor are also refused. Claude entries
+are omitted only when their resolved directory is already indexed by the Mission Control source;
+independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
+including the source root, each SKILL.md read, ordinary files and hidden entries. An over-limit source reports
+truncation; the retained subset follows filesystem enumeration order. The complete serialized
+catalog is capped at 4 MiB, including source metadata, escaped descriptions and scan problems.
+Scanning stops before retaining an entry that would exceed that total; the panel explicitly
+reports the partial catalog. Remove unneeded sources or shorten descriptions, then rescan.
+The
+`residents.skillSources` setting stores stable ids and paths, backed up under
+`resident-skill-sources`. Skill content is never included in settings backups.
+
+This catalog is read-only with respect to the skills themselves. It currently offers no profile
+selection because neither harness has a verified frozen-isolation mechanism. See
+[Residents](residents.md#skill-sources) for the launch policy and current limitation.

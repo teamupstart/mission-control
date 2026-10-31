@@ -1,15 +1,17 @@
 import { APP_EXECUTABLE_NAME, binaryBundleName } from "../src/shared/app-naming.mjs";
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { getCurrentFuseWire, FuseV1Options } from '@electron/fuses';
 import { inspectBundle, verifyBinaryPublisher } from './install-staged-app.mjs';
 import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { assertBuildMetadata } from './distribution-contract.mjs';
 import { distributionDiagnostic, distributionToolError } from './distribution-diagnostics.mjs';
 import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
+import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
 
 function runMacTool(command, args) {
   return spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
@@ -22,7 +24,7 @@ function macTool(command, args) {
 }
 
 export async function validateDistributionTicket(path, {
-  run = runMacTool, wait = (ms) => new Promise((done) => setTimeout(done, ms)), log = console.log,
+  run = runMacTool, wait = (ms) => sleep(ms), log = console.log,
 } = {}) {
   for (let attempt = 0; ; attempt++) {
     const result = run('/usr/bin/xcrun', ['stapler', 'validate', path]);
@@ -31,8 +33,10 @@ export async function validateDistributionTicket(path, {
     // the observed dropped-connection failure, never a ticket/trust refusal.
     const connectionLost = result.status === 68 && !result.error && !result.signal
       && /\bNSURLErrorDomain Code=-1005\b/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`);
-    if (!connectionLost || attempt === 3) throw distributionToolError('/usr/bin/xcrun', result);
-    const retryInMs = 1000 * 2 ** attempt;
+    // A run validates four bundles, and one CloudKit outage outlasted 30s of
+    // retries (run 41049955795). Back off to 30s for about two minutes in all.
+    if (!connectionLost || attempt === 8) throw distributionToolError('/usr/bin/xcrun', result);
+    const retryInMs = Math.min(1000 * 2 ** attempt, 30_000);
     // No raw tool output or argv in retry logs; the final failure goes through
     // the existing bounded, redacted stage diagnostic.
     log(`[distribution] ${distributionDiagnostic({command: 'stapler', operation: 'validate',
@@ -74,6 +78,13 @@ export async function verifyDistributionDmg(dmg, policy) {
   assert.match(assessment.stderr, /^source=Notarized Developer ID$/m);
 }
 
+// The installer refuses any root entry outside the shared allow-list, so producer
+// qualification refuses the same image before it can be published.
+export function verifyDistributionDmgRoot(mount, appBundleName) {
+  const problem = dmgRootProblem(readdirSync(mount), appBundleName);
+  if (problem) throw new Error(problem);
+}
+
 export async function verifyDistributionArchives({app, appDigest, files, metadata, policy, requalifyRuntime = false}) {
   const root = mkdtempSync(join(tmpdir(), 'mission-archive-verification-'));
   const mount = join(root, 'image'); mkdirSync(mount);
@@ -83,6 +94,7 @@ export async function verifyDistributionArchives({app, appDigest, files, metadat
     assert.match(digest ?? '', /^[a-f0-9]{64}$/);
     macTool('/usr/bin/hdiutil', ['attach', files.dmg, '-readonly', '-nobrowse', '-mountpoint', mount]);
     mounted = true;
+    verifyDistributionDmgRoot(mount, binaryBundleName(metadata));
     const dmgApp = join(mount, binaryBundleName(metadata));
     assert.equal(inspectBundle(dmgApp).digest, digest, 'DMG must contain the exact signed app');
     await verifyDistributionApp(dmgApp, metadata, policy);

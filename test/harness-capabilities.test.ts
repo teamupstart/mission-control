@@ -621,3 +621,15 @@ test("extensions fold skips a harness whose capability is null", async () => {
   assert.equal(extensionsDirs().length, 1);
   await withCapabilityNull("pi", "extensions", () => assert.deepEqual(extensionsDirs(), []));
 });
+
+test("resident MCP pinning is recorded only where scripts/probe-resident-mcp.ts measured it", () => {
+  assert.deepEqual(HARNESS_CAPABILITIES.claude.mcpSelection, { mechanism: "strict-mcp-config", secrets: "scoped-launcher" });
+  assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, { mechanism: "codex-home-overlay", secrets: "scoped-launcher" });
+  assert.equal(HARNESS_CAPABILITIES.pi.mcpSelection, null);
+});
+
+test("resident skill isolation is explicitly unsupported until a full exact-set probe passes", () => {
+  for (const agent of ["claude", "codex", "pi"] as const) {
+    assert.equal(HARNESS_CAPABILITIES[agent].skillSelection, null);
+  }
+});

@@ -6,7 +6,7 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
-import { taskPillParts } from "@shared/task.ts";
+import { taskHasRepository, taskPillParts } from "@shared/task.ts";
 import { shortenCwd, uptime, relativeTime } from "../../lib/format.ts";
 import {
   newestSessionRun,
@@ -33,6 +33,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { ResidentBand } from "../../residents/ResidentBand.tsx";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -209,6 +210,7 @@ export function ConsoleDetail({
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
+  const resident = view.residentBySession?.get(session.id) ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -455,8 +457,8 @@ export function ConsoleDetail({
     [session.id, view.fileCommentThreads],
   );
   const tabs = useMemo(
-    () => detailTabs({ queueCount, fileReplyCount }),
-    [fileReplyCount, queueCount],
+    () => detailTabs({ queueCount, fileReplyCount }).filter((item) => item.id !== "diff" || taskHasRepository(session.task ?? {})),
+    [fileReplyCount, queueCount, session.task],
   );
   const tabLabel = tabs.find((t) => t.id === tab)?.label ?? "Detail";
 
@@ -640,6 +642,14 @@ export function ConsoleDetail({
         <CostChip cost={session.cost} />
       </header>
 
+      {/* The resident this session is, under the header rather than in it: the header's
+          one-row fit already has a give-way order to keep, and the band is the surface the
+          loop's state and controls join later. Not gated on the marker item - it is where a
+          resident is named, not decoration on top of it. */}
+      {resident && (
+        <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
+      )}
+
       {pipelineCommission && (
         <div className="detail-pipeline-meter">
           <PipelinePhaseMeter
@@ -661,7 +671,7 @@ export function ConsoleDetail({
             {/* The tooltip carries the UNTRUNCATED path, and is the only place it is
                 readable. It goes wherever this cell goes. */}
             <Tooltip label={workspaceRoot ?? "This session has no working directory"}>
-              <dd className="mono">{shortenCwd(workspaceRoot)}</dd>
+              <dd className="mono">{taskHasRepository(session.task ?? {}) ? shortenCwd(workspaceRoot) : "no repository"}</dd>
             </Tooltip>
           </div>
         )}
@@ -911,7 +921,7 @@ export function ConsoleDetail({
           </div>
         )}
 
-        {tab === "diff" && (
+        {tab === "diff" && taskHasRepository(session.task ?? {}) && (
           session.cwd ? (
             <InlineDiffViewer
               session={session}

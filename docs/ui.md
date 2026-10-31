@@ -678,8 +678,9 @@ The last three are what Mission Control MAY do on the operator's behalf, and whe
 6. **One table, four grants** selects Trust and spotlights the whole matrix - a row per
    repository, a column per grant - rather than a cell or a column, because which grants a
    machine needs depends on which repositories it works in.
-7. **Add a repository, then grant it** spotlights the add row and finishes, on the same
-   "adding is configuration; enabling is consent" line the panel itself draws.
+7. **Add the repositories you work in** spotlights the add pane and finishes. It says what an
+   add grants - Foreman, Workflows and GitHub Inspector, with YOLO merges left off - and
+   that every grant is one click to revoke.
 
 **It ends on Trust and stays there.** Every other tour replays the route it snapshotted;
 this one declares an `exit` route on its entry and hands the panel over instead, because
@@ -688,8 +689,9 @@ selection, Board drill-in, filter, and the open Line drawer are still restored, 
 route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
 the control that started the tour when it survived the move, and to the **Trust** rail row
 when it did not, which includes a startup-picker launch without an invoker. The rail row rather than the add
-field: a spotlight may be any element, but a landing control has to be focusable, and the add
-field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
+pane: a spotlight may be any element, but a landing control has to be focusable, and the add
+pane's first focusable control is its search field, which would put the caret in a box the
+operator never asked to type in. Those two never compete:
 the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
 non-focusable area leaves, so it is not started at all when the invoker took focus back.
 
@@ -829,7 +831,8 @@ available:
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
   the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
-  reasoning effort, permission mode, cost, branch, worktree and last seen - and unchecking
+  reasoning effort, permission mode, cost, branch, worktree, last seen and the resident
+  marker - and unchecking
   one applies to every card in every column immediately. A live preview card sits in the
   panel and redraws as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
@@ -887,7 +890,10 @@ available:
   scheduled task and a multi-repo task each keep it. The panel says so where you choose.
   These two switches are separate from the card's **Branch** and **Worktree** items on
   purpose: you can keep the path on the card and drop it from the console, have it in both
-  places, or have it in neither.
+  places, or have it in neither. The group has a preview of its own beside it, a console
+  header for the same sample session, which redraws as you pick a **Task type** style or
+  toggle either cell. Where Settings is too narrow to hold a preview beside its checklist,
+  each group's preview moves under the group's heading instead, above its controls.
 - **And the working indicator.** Under **Working indicator**, with a preview of its own beside
   it, sit two marks a conversation can add while its session works: **Pin the working row**,
   which keeps the log's "what it is doing now" row on the bottom edge while you scroll back,
@@ -980,6 +986,13 @@ available:
   backlog drag: dropping a card
   hands work over by resetting the agent, and a held agent's next turn belongs to its run - so
   during a drag the card lights up only over agents that are genuinely free.
+- **Residents glow and lead their column.** A [resident](residents.md#finding-a-resident)'s card
+  has an outline and soft glow in its profile's color and a short label chip, and, when its
+  profile pins it, it sorts first in its column ahead of free and held sessions. The Console rail
+  draws the same chip and leads with the same sessions, and a resident's Console header gains a
+  band naming its profile and the revision it launched from. The tone spine is untouched: the
+  glow says *which* agent, the spine still says *what state*. The **Residents** button beside
+  Foreman in the top bar opens a dock of live residents and the profiles you can launch.
 - **Killing a session closes its detail** once shutdown is accepted, without waiting for an
   Agent SDK subprocess and event stream to finish draining. The board goes straight back to
   its columns, and the console empties its pane. The session reads **stopping** during that drain, then **exited** until its ordinary

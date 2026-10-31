@@ -97,6 +97,18 @@ export function archiveReconcileMs(raw = envVar("SCOUT_RECONCILE_MS")): number |
 }
 
 /**
+ * How long a resident launch request waits for its dispatch to settle before answering
+ * "in progress", or undefined for the manager's default. A non-negative integer; anything else
+ * is ignored. Lowering it makes the in-progress path observable (the browser then replays the
+ * same request until the launch settles), which is what the residents browser spec does.
+ */
+export function residentLaunchWaitMs(raw = envVar("RESIDENT_LAUNCH_WAIT_MS")): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const ms = Number(raw);
+  return Number.isInteger(ms) && ms >= 0 ? ms : undefined;
+}
+
+/**
  * The skills catalog (`skills/<id>/SKILL.md`), baked into the repo and shipped with
  * the app - resolved absolutely, so it never depends on the daemon's working
  * directory (unpredictable when Electron spawns it).
@@ -175,6 +187,17 @@ export function codexHookPath(): string {
 /** Packaged claim-before-exec guard for managed terminal resumes. */
 export function resumeGuardPath(): string {
   return envVar("RESUME_GUARD") ?? fileURLToPath(new URL("../../dist/satellites/resume-guard.mjs", import.meta.url));
+}
+
+/**
+ * The resident MCP scoped launcher (`dist/satellites/resident-mcp-launcher.mjs`): the one process
+ * that receives a secret-bearing or global server's definition, by redeeming a single-use
+ * ticket, and starts that server with it. Resolved here for the bundle reason `mcpServerPath()`
+ * documents.
+ */
+export function residentMcpLauncherPath(): string {
+  return envVar("RESIDENT_MCP_LAUNCHER")
+    ?? fileURLToPath(new URL("../../dist/satellites/resident-mcp-launcher.mjs", import.meta.url));
 }
 
 /** Legacy output suffix is retained solely to recognize a dangling pre-generation link.

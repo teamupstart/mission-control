@@ -54,11 +54,18 @@ export function isHumanResolvedReview(review: ReviewItem): boolean {
   return review.resolvedBy === "human" && HUMAN_REVIEW_STATUSES.has(review.status);
 }
 
-/** Delegated answers are conversational records, but never evidence of direct human approval. */
+/**
+ * Delegated and standing-approval answers are conversational records, but never evidence of
+ * direct human approval. A standing approval is logged here so the session shows every final
+ * bundle it approved without asking.
+ */
 export function isConversationResolvedReview(review: ReviewItem): boolean {
-  return (review.resolvedBy === "human" || review.resolvedBy?.startsWith("session:") === true)
+  return (review.resolvedBy === "human" || review.resolvedBy === "standing-approval" || review.resolvedBy?.startsWith("session:") === true)
     && HUMAN_REVIEW_STATUSES.has(review.status);
 }
+
+/** The line a standing approval prefixes onto the agent's tool result and the logged record. */
+export const STANDING_APPROVAL_NOTE = "Approved automatically: the operator chose to approve all future plan bundles for this task.";
 
 /**
  * The semantic result a blocking review tool hands back to its caller.
@@ -163,10 +170,14 @@ export function formatResponse(
     const answer = byId.get(d.id);
     const labels = selectedOptions(d, answer).map((o) => o.label);
     const other = answer?.other?.trim() ?? "";
+    const note = answer?.note?.trim() ?? "";
     const lines = [`• ${d.question}`];
     if (labels.length) lines.push(`  → ${labels.join(", ")}`);
     if (d.allowOther && other) lines.push(`  Other: ${other}`);
     if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    // Not gated on `allowOther`: the note box is drawn on every decision of the forms that
+    // offer it, so dropping a typed note here would discard what the human sent.
+    if (note) lines.push(`  Note: ${note}`);
     return lines.join("\n");
   });
   return `${lead}\n\n${blocks.join("\n\n")}`;

@@ -31,6 +31,7 @@ import {
   type PipelineRun,
 } from "@shared/pipeline.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
@@ -104,6 +105,18 @@ export interface MissionState {
    * Non-archived schedules only; occurrence history is fetched on demand elsewhere.
    */
   schedules: MissionSchedule[];
+  /**
+   * Live resident profiles with their current revisions. The SOLE source, on the same terms
+   * as `schedules`: the snapshot and the two incremental frames, never a poll. Bounded by
+   * `RESIDENT_LIMITS.liveProfiles`.
+   */
+  residentProfiles: ResidentProfile[];
+  /**
+   * Live resident runs, each with its pinned revision's settings: what joins a session to the
+   * resident it is, for the board marker, pin and Console band. Snapshot plus the two
+   * incremental frames, never a poll; bounded by the residents actually running.
+   */
+  residentRuns: ResidentRunSummary[];
   /**
    * Every pipeline run an external SDLC engine is driving, for the repositories this
    * operator has consented to. The SOLE source of these facts, on the same terms as
@@ -235,6 +248,8 @@ export function useEventStream(): MissionState {
   const [workflowBindings, setWorkflowBindings] = useState<Map<string, WorkflowBindingSummary>>(new Map());
   const [ensembles, setEnsembles] = useState<Map<string, EnsembleSummary>>(new Map());
   const [schedules, setSchedules] = useState<Map<string, MissionSchedule>>(new Map());
+  const [residentProfiles, setResidentProfiles] = useState<Map<string, ResidentProfile>>(new Map());
+  const [residentRuns, setResidentRuns] = useState<Map<string, ResidentRunSummary>>(new Map());
   // Keyed `provider repoRoot slug` through `pipelineRunKey` - the engine's own identity for
   // a feature. Never a Mission Control id: nothing mints one, because this whole projection
   // is rebuildable from the engine's files and an id of ours is the one field a rebuild
@@ -341,6 +356,12 @@ export function useEventStream(): MissionState {
           // reconnect after a gap must drop schedules archived while we were away, not merge
           // them back in.
           setSchedules(new Map(msg.schedules.map((schedule) => [schedule.id, schedule])));
+          // `?? []` for a daemon that predates residents and sends no such field.
+          setResidentProfiles(
+            new Map((msg.residentProfiles ?? []).map((profile) => [profile.id, profile])),
+          );
+          // Replaced, never merged: a run that ended while this tab was away must not linger.
+          setResidentRuns(new Map((msg.residentRuns ?? []).map((run) => [run.id, run])));
           // Replaced wholesale for the reason above, with one extra edge this collection
           // has: consent can be withdrawn while a tab is disconnected, and a merge would
           // leave that repository's runs on screen for the rest of the session. The `?? []`
@@ -530,6 +551,27 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "resident_profile_upsert":
+          setResidentProfiles((prev) => new Map(prev).set(msg.profile.id, msg.profile));
+          break;
+        case "resident_profile_remove":
+          setResidentProfiles((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
+        case "resident_run_upsert":
+          setResidentRuns((prev) => new Map(prev).set(msg.run.id, msg.run));
+          break;
+        case "resident_run_remove":
+          setResidentRuns((prev) => {
+            if (!prev.has(msg.id)) return prev;
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         // The whole run, replaced: it is read as one picture of one feature, so a merge
         // could draw a strip whose steps came from two different instants.
         case "pipeline_upsert":
@@ -676,6 +718,15 @@ export function useEventStream(): MissionState {
   );
   const ensembleSummariesList = useMemo(() => [...ensembles.values()], [ensembles]);
   const schedulesList = useMemo(() => [...schedules.values()], [schedules]);
+  const residentProfilesList = useMemo(
+    () => [...residentProfiles.values()].sort((a, b) => a.name.localeCompare(b.name, "en-US")),
+    [residentProfiles],
+  );
+  // Oldest launch first: the dock lists residents in the order they started.
+  const residentRunsList = useMemo(
+    () => [...residentRuns.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+    [residentRuns],
+  );
   const pipelineRunsList = useMemo(() => [...pipelineRuns.values()], [pipelineRuns]);
   const pipelineCommissionsList = useMemo(
     () => [...pipelineCommissions.values()],
@@ -705,6 +756,8 @@ export function useEventStream(): MissionState {
     workflowBindingSummaries: workflowBindingSummariesList,
     ensembleSummaries: ensembleSummariesList,
     schedules: schedulesList,
+    residentProfiles: residentProfilesList,
+    residentRuns: residentRunsList,
     pipelineRuns: pipelineRunsList,
     pipelineCommissions: pipelineCommissionsList,
     fileCommentThreads: fileCommentThreadsList,

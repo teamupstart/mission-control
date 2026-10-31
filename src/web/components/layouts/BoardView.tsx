@@ -23,6 +23,7 @@ import {
   type BoardColumnId,
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
@@ -165,6 +166,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     groupByRepo,
     props.pipelineCommissionById,
     props.pipelineRunByKey,
+    pinnedResidentSessions(props.residentBySession),
   );
   const groups = order.groups;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
@@ -252,6 +254,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       // a position counted at the call site would restart inside every frame - which is the
       // one thing the numbering must not do.
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
+      resident={props.residentBySession?.get(s.id) ?? null}
     />
   };
   /**
@@ -318,6 +321,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineCommission={commission}
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
+      resident={props.residentBySession?.get(s.id) ?? null}
     />
   };
 

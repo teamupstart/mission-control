@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>101</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>112</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -563,7 +563,7 @@ LIMIT 20;
                 <div class="table-row"><code>session_delegated_turns</code><p>Which controlling session sent each message delivered through delegated session control, one row per delivery keyed by the target conversation's stable note key: a fingerprint of the text, the controller's id and name at send time, the target transcript's byte size at send (NULL when no transcript was located yet or its size could not be read, and then the row is never bound), whether another send of the same words raced it (a contested row is never bound), and the native transcript turn it was bound to: the first matching user turn written after that offset. Lets the target's log keep naming each sender after a restart, and when two controllers send identical words one after the other; concurrent identical deliveries from different controllers are contested and stay unnamed. The message text itself is not stored.</p></div>
                 <div class="table-row"><code>session_other_sends</code><p>Non-delegated sends to a session that are still inside the 24-hour race window, keyed by the target conversation's stable note key: a fingerprint of the text, when it was sent, and the target transcript's byte size at that moment (NULL when unknown). A delegated message of the same words that starts while one is in flight is contested and left unnamed, including across a daemon restart, so a pasted draft the operator submits later is never credited to a controller. Rows are deleted when a send provably did not land and pruned after the window. The message text itself is not stored.</p></div>
                 <div class="table-row"><code>session_standing_instructions</code><p>What repository standing instructions one session actually received at launch, per stable note key: the whole composed block byte for byte, which channel carried it, and one provenance entry per contributing repository. The launch text and its provenance are written once and never amended - a session keeps the standing instructions it launched with, so this is what an assignment replays and what the session header reads, never a fresh resolution of live configuration. The one field that can be corrected afterwards is the mechanism, and only in one direction: a resumed Codex session that finds its developer-instructions channel unusable is sent the same stored block as prose instead, and the row is moved to <code>prompt-prefix</code> to say so - because that field is what decides whether a later assignment repeats the rule, and a prefix governs only the turn it rode in.</p></div>
-                <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, and whether a turn was interrupted.</p></div>
+                <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, whether a turn was interrupted, and the measured resident native-compaction token limit replayed on resume.</p></div>
                 <div class="table-row"><code>session_runtime_transfers</code><p>Durable reservations for Continue in terminal: expected task and pinned workflow ownership, source process lifetime, prepared resume lease, launch proof, revision and recovery outcome. An unresolved row holds ownership across source removal and daemon restart until a proven successor is adopted or absence permits safe settlement. It contains neither credentials nor copied workflow evidence.</p></div>
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
                 <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>
@@ -592,10 +592,13 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>25 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>28 tables</span></summary>
               <div class="table-list">
-                <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot (test, lint, typecheck, build) holding its optional repository-neutral default argv, revision, and timestamps. Seeded on first open, so all four rows exist before anything is configured.</p></div>
+                <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot holding its optional repository-neutral default argv, run budget, timeout, skip-or-block policies, revision, and timestamps. Seeded on first open, so all five rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
+                <div class="table-row"><code>workflow_command_artifact_reservations</code><p>Atomic per-attempt reservations against the workflow run's retained Command-output quota, including reserved and finalized byte counts plus recovery state.</p></div>
+                <div class="table-row"><code>workflow_command_artifacts</code><p>Attempt-owned stdout, stderr, and future finding descriptors with raw-byte accounting, digest, capture completeness, retained-body locator, availability, and pruning state. Output bodies stay outside SQLite and outside ordinary run detail.</p></div>
+                <div class="table-row"><code>workflow_builtin_round_limits</code><p>The operator's maximum repair rounds for one built-in workflow, keyed by its stable id, the one setting a built-in takes without Duplicate. A NULL count is a reset to the shipped value; the row stays so its time still dates the definition.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
@@ -657,6 +660,20 @@ LIMIT 20;
               </div>
             </details>
 
+            <details class="family">
+              <summary><strong>Resident profiles</strong><span>8 tables</span></summary>
+              <div class="table-list">
+                <div class="table-row"><code>resident_profiles</code><p>Each resident profile's name, live-name uniqueness, archive state, and the current immutable revision new launches pin.</p></div>
+                <div class="table-row"><code>resident_profile_revisions</code><p>Immutable profile bodies: persona, instructions, harness, model, effort, workspace, authority, and loop settings. A live run reads only the revision it pinned.</p></div>
+                <div class="table-row"><code>resident_runs</code><p>One row per launch, written before its task: the pinned revision, reserved task id, unique launch request id, normalized launch input, persona snapshot, launch state, and end time. Durable loop state, iteration counters, consumed generation, pending pacing request, next wake, and pause reason survive daemon restarts. Four nullable <code>control_*</code> columns record the session-control grant a desktop Launch click gave the run: when the click was consumed, and the conversation, working directory and work episode the grant was applied to. A restart re-applies the grant only when all four are set and still match. <code>mcp_snapshot_at</code> marks when the run's MCP snapshot was taken; it is null on a run from before snapshots, which keeps native MCP behaviour.</p></div>
+                <div class="table-row"><code>resident_iterations</code><p>Each daemon-owned iteration claim and its delivery outcome, with a sequence, trigger, transcript offset, timestamps, and nullable conversation and native-message identity for verified attribution. One outstanding claim per run prevents duplicate delivery; claim times enforce the rolling iteration guardrail.</p></div>
+                <div class="table-row"><code>resident_pacing_calls</code><p>Idempotent schedule_next_iteration receipts keyed by run and call id, so replaying a request returns its original result without scheduling another wake.</p></div>
+                <div class="table-row"><code>resident_mcp_secrets</code><p>The write-only secret values of custom MCP servers, by server id and field. Never returned by a route, published, logged, or carried by a settings snapshot, and scrubbed from every full-database recovery point. A settings restore keeps a value only when it was set before that snapshot and its server's connection is unchanged, and clears the rest. The definitions themselves live in <code>app_config</code>.</p></div>
+                <div class="table-row"><code>resident_run_mcp_servers</code><p>A run's MCP snapshot: each server of its effective set, by source and name, with its definition minus secret values, resolved once at launch and read by every start and resume. Removed when the run ends.</p></div>
+                <div class="table-row"><code>resident_run_mcp_secrets</code><p>The secret values a run's snapshot bound to each (source, name), every environment and header value of a global server included. Daemon-private like <code>resident_mcp_secrets</code>, scrubbed from recovery points, and removed when the run ends.</p></div>
+              </div>
+            </details>
+
             <details class="family" open>
               <summary><strong>Multi-agent ensembles</strong><span>10 tables</span></summary>
               <div class="table-list">
@@ -674,12 +691,14 @@ LIMIT 20;
             </details>
 
             <details class="family">
-              <summary><strong>Managed plans (durable ledger)</strong><span>6 tables</span></summary>
+              <summary><strong>Managed plans (durable ledger)</strong><span>8 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>managed_plans</code><p>Stable plan identity, canonical owning repository, pinned policy, retained store path, originating session/task/work episode and current ready revision. Retained independently of task and session deletion.</p></div>
                 <div class="table-row"><code>managed_plan_revisions</code><p>Immutable revision references, manifest digests, idempotency identities and recoverable checkout write intents. Staging is incomplete; ready means saved, never approved or published.</p></div>
                 <div class="table-row"><code>managed_plan_reservations</code><p>Reserved plan identity and pinned policy for each task and canonical repository, established before launch or assignment.</p></div>
                 <div class="table-row"><code>managed_plan_reviews</code><p>Exact revision, manifest, writer episode and workflow binding associated with a human final-bundle review.</p></div>
+                <div class="table-row"><code>managed_plan_standing_approvals</code><p>One row per task whose operator approved a final bundle with "Approve all future bundles for this task" checked, naming the review that granted it. Later final bundles for that task are approved at creation.</p></div>
+                <div class="table-row"><code>managed_plan_standing_follow_ups</code><p>Remaining questions of a request whose final bundle a standing approval settled, keyed to that approval so the agent's answer states the bundle is already approved.</p></div>
                 <div class="table-row"><code>managed_plan_validations</code><p>Approval and immutable plan revision bound to an exact workflow submission and version for validation.</p></div>
                 <div class="table-row"><code>managed_plan_publications</code><p>Durable local publication receipts per plan revision. Survive source-task pruning and satisfy only matching artifact prerequisites, never code merge edges.</p></div>
               </div>

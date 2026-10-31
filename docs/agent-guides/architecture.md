@@ -14,6 +14,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
+| Resident loop | `src/server/residents/loop.ts` | Sole coordinator of resident loop turns, timers and driver calls |
+| Resident loop store | `src/server/residents/loop-store.ts` | Durable loop transitions, wake claims and pacing transactions |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
@@ -28,6 +30,36 @@ while daemons using independent homes may run concurrently. The kernel releases 
 process exit, including crashes; orderly shutdown closes SQLite before releasing it. The lock
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
+
+## Resident loop ownership
+
+`ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`
+reads pinned run revisions and observes Registry work-cycle completions and delivered human
+turns. Its durable state and claim transactions live in `residents/loop-store.ts`; timers are
+only a projection of `next_wake_at`. No browser, MCP process or Foreman worker sends loop turns.
+
+The loop uses the supervisor's serialized idle-send boundary, rechecking human priority before
+crossing it. Maintenance compaction uses that same boundary and completes only from native
+harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
+conservatively. Recovery confirms a claim only from the complete pinned wake text after its
+recorded transcript offset. Startup restores native sessions before reconciling claims and prunes only after
+reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
+before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
+completion of the old task cannot strand a replacement that has not yet reserved its request.
+
+Resident transcript attribution requires a sent iteration in the same native conversation.
+The store binds its first matching turn after the recorded transcript offset to a native message
+id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
+without conversation evidence are not attributed from their marker syntax.
+
+The SDK driver reports the resident native token limit it actually configured. The supervisor
+persists it with the SDK session and passes it back on resume. Codex therefore keeps its measured
+backstop across catalog refreshes, rather than recomputing from missing metadata or silently
+dropping the layer. Fresh launches and legacy rows without a saved limit still require the catalog.
+
+`schedule_next_iteration` uses the existing signed session/episode credential, without granting
+session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
+its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
 
 ## Executable environment and subprocesses
 
@@ -74,7 +106,8 @@ Startup order matters:
 5. Restore the prepared SDK rows serially in the background.
 6. Register or evict every restored session through the existing Registry lifecycle, replacing
    each projection by the same stable id.
-7. Start terminal discovery only after the owned SDK restore promise settles.
+7. Start `ResidentLoop` claim reconciliation, then terminal discovery, only after the owned SDK
+   restore promise settles. `ResidentManager.start()` has already settled pending launches.
 8. Reconcile task, workflow, and review bindings after the first completed observation.
 
 Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,
@@ -177,6 +210,11 @@ row at all - a first observation is what starts a window, never a pre-existing t
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
+A repo-less resident is the exception to task repository ownership. Its task carries a nullable
+workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
+grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
+and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
@@ -220,9 +258,25 @@ consumes it over the private utility-process channel; HTTP supplies only the req
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check before enabling control. Standalone
 daemons fail closed.
-Main registers every dashboard click arm, this one and the Feedback report's, through
-`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
-desktop e2e fixtures use the same registrar.
+Main registers every dashboard click arm, this one, the resident Launch and the Feedback
+report's, through `serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the
+reply rule. The desktop e2e fixtures use the same registrar.
+A resident's desktop Launch click is the only other way a grant is created, and it reuses every
+part of the above. `launchResident()` arms `mission:resident-launch-click` for the launch's
+request id, profile id and revision through the same preload capability. Main keeps both arms in
+`src/main/session-control-authorization.ts` and answers both asks over the same utility-process
+port. `ResidentManager.launch` consumes the click after reserving the run and before creating its
+task, and only for a caller `sessionControlCallerRefusal` accepts and a pinned revision with
+`authority.controlOtherSessions` on. It records `control_authorized_at`, then calls
+`Registry.setSessionControlEnabled` once the run's session has a `sessionControlIdentity` bound
+to the run's task, and records the conversation, cwd and work episode it applied to before it
+logs the grant. A grant it cannot apply or record is taken back and the record cleared. After SDK
+restore, on the first completed sweep, it re-applies the grant only when those three and the task
+match exactly, and otherwise clears the record. A revoke through the toggle route clears it
+through `ResidentManager.sessionControlRevoked` before the live grant is turned off. Resident
+launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
+session-control route's trusted menu click above is the other grant source, as
+[security](../security.md#delegated-session-control) states.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control
@@ -455,3 +509,16 @@ The GitHub Inspector stays in the daemon so it is present in packaged Electron b
 The GitHub Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.
 
 The GitHub Inspector's poll is also the only place a PR's remote state is READ. Its tick writes what it saw - `observed_head_sha`, `observed_state`, `head_ref_name` - onto the adoption ledger beside `head_sha`, which records only what the last completed review was about. That split matters: "has the branch reached the pull request yet" is a question the review head cannot answer, and it is the question a `pull_request` session action must answer before downstream stages read fresh evidence. Anything else that needs a PR's remote state reads those columns; adding a second poller would double the API cost of every open PR to answer a question this one already answers.
+
+
+### CodeRabbit observation and delivery
+
+The Inspector adoption ledger owns CodeRabbit state through the validated `code_rabbit_state`
+column. The same daemon poll runs for Inspector or the independent Shipping switch, completing
+thread observation before review work. Inspector review/posting and Shipping merge consent stay
+separate. The nested `InspectorSummary.codeRabbit` projection carries equivalent primary and
+attached-PR observations through Registry/SSE; it is not an Inspector finding or review receipt.
+
+Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `/inject` route
+rebuilds ownership and consent, assembles the text, claims current root generations atomically,
+and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.

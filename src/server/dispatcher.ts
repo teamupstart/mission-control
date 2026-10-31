@@ -1,4 +1,5 @@
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
+import type { ResidentMcpLaunch } from "./harness/types.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -30,8 +31,11 @@ import {
 } from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
+  taskHasRepository,
   dispatchHasNoProvisionedResources,
+  TASK_KIND_BEHAVIOR,
   taskKindAllowsBacklog,
+  taskKindForcedRuntime,
 } from "@shared/task.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
@@ -318,6 +322,21 @@ export class Dispatcher {
        */
       standingInstructions?: typeof standingInstructionsForLaunch;
       /**
+       * The resident launch composer, asked once per resident task for its standing
+       * instructions. Supplied by `ResidentManager`; a daemon without one refuses resident
+       * launches instead of starting an agent with no role.
+       */
+      residentLaunch?: (
+        task: Task,
+        repository: StandingInstructionsDelivery,
+        runtime: SessionRuntime,
+      ) => StandingInstructionsDelivery;
+      /**
+       * A resident task's pinned MCP set (`SdkLaunchOptions.residentMcp`), from the same
+       * composer, or null to keep the harness's native MCP behaviour.
+       */
+      residentMcp?: (task: Task) => ResidentMcpLaunch | null;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -403,7 +422,10 @@ export class Dispatcher {
       // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
       // the fork further down. Resolved before provisioning so the guard can refuse before
       // any worktree exists. A toggle flipped mid-batch still reaches the next session.
-      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // A kind that fixes its runtime (a resident is always the Agent SDK) takes that answer;
+      // every other kind asks the harness's configured runtime.
+      const runtime = taskKindForcedRuntime(task.kind)
+        ?? (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
       const configured = resolveAgentBin(task.agent);
@@ -434,7 +456,7 @@ export class Dispatcher {
       // Resolved BEFORE anything is provisioned, so a caller that named a commit this
       // repository does not have costs nothing but an error - rather than a worktree, a
       // terminal home and an agent that has to be torn down again.
-      const baseSha = options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
+      const baseSha = taskHasRepository(task) && options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
 
       // Resolve the backend only on the terminal arm. The exact choice is persisted with the
       // resulting home so a later settings edit cannot re-aim liveness or teardown at a
@@ -510,64 +532,68 @@ export class Dispatcher {
       // the third repository must not leave the first two leased. Placed after the cheap
       // refusals above so a dispatch that was going to be turned away for its runtime or
       // its harness capability does not pay for a network round trip first.
-      backlogRecoveryEligible = true;
-      const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
-        { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
-        baseSha,
-      );
-      const { primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases);
-      backlogRecoveryEligible = false;
-      // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
-      // The collection lands in the SAME patch so every durable native owner becomes visible
-      // atomically before provisional allocator state settles.
-      try {
-        this.patch(taskId, {
-          worktreePath: wt.path,
-          branch: wt.branch,
-          provider: wt.provider,
-          worktreeLeaseId: wt.leaseId,
-          baseSha: wt.baseSha,
-          extraRepos: extras,
-        });
-      } catch (recordError) {
-        const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
-        let reclaimed: readonly string[] = [];
+      let wt: DispatchWorkspace = { path: task.repoRoot, branch: null, provider: null, leaseId: null, baseSha: null };
+      let extras: Task["extraRepos"] = [];
+      if (taskHasRepository(task)) {
+        backlogRecoveryEligible = true;
+        const bases = await (this.deps.resolveBases ?? resolveTaskBases)(
+          { primary: task.repoRoot, extras: task.extraRepos.map((entry) => entry.repoRoot) },
+          baseSha,
+        );
+        ({ primary: wt, extras } = await this.provisionAll(task, taskId, slug, shortId, bases));
+        backlogRecoveryEligible = false;
+        // Record every worktree BEFORE spawning, so a spawn failure can still tear them down.
+        // The collection lands in the SAME patch so every durable native owner becomes visible
+        // atomically before provisional allocator state settles.
         try {
-          await this.teardown({
-            taskId,
-            repoRoot: task.repoRoot,
+          this.patch(taskId, {
             worktreePath: wt.path,
             branch: wt.branch,
             provider: wt.provider,
             worktreeLeaseId: wt.leaseId,
-            homeName: null,
+            baseSha: wt.baseSha,
             extraRepos: extras,
           });
-          reclaimed = paths;
-        } catch (cleanupError) {
-          reclaimed = reclaimedFrom(cleanupError);
-          console.error(
-            `[mission-control] could not fully unwind task ${taskId} after its lease record failed: ` +
-              (cleanupError instanceof Error ? cleanupError.message : String(cleanupError)),
-          );
-        }
-        if (reclaimed.includes(wt.path) && wt.leaseId) {
-          this.worktrees.settleDomainLease(wt.leaseId);
-        }
-        for (const entry of extras) {
-          if (
-            entry.worktreePath &&
-            reclaimed.includes(entry.worktreePath) &&
-            entry.worktreeLeaseId
-          ) {
-            this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+        } catch (recordError) {
+          const paths = [wt.path, ...extras.flatMap((entry) => entry.worktreePath ?? [])];
+          let reclaimed: readonly string[] = [];
+          try {
+            await this.teardown({
+              taskId,
+              repoRoot: task.repoRoot,
+              worktreePath: wt.path,
+              branch: wt.branch,
+              provider: wt.provider,
+              worktreeLeaseId: wt.leaseId,
+              homeName: null,
+              extraRepos: extras,
+            });
+            reclaimed = paths;
+          } catch (cleanupError) {
+            reclaimed = reclaimedFrom(cleanupError);
+            console.error(
+              `[mission-control] could not fully unwind task ${taskId} after its lease record failed: ` +
+                (cleanupError instanceof Error ? cleanupError.message : String(cleanupError)),
+            );
           }
+          if (reclaimed.includes(wt.path) && wt.leaseId) {
+            this.worktrees.settleDomainLease(wt.leaseId);
+          }
+          for (const entry of extras) {
+            if (
+              entry.worktreePath &&
+              reclaimed.includes(entry.worktreePath) &&
+              entry.worktreeLeaseId
+            ) {
+              this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+            }
+          }
+          throw recordError;
         }
-        throw recordError;
-      }
-      if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
-      for (const entry of extras) {
-        if (entry.worktreeLeaseId) this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+        if (wt.leaseId) this.worktrees.settleDomainLease(wt.leaseId);
+        for (const entry of extras) {
+          if (entry.worktreeLeaseId) this.worktrees.settleDomainLease(entry.worktreeLeaseId);
+        }
       }
       if (await this.abortIfSettled(taskId)) return;
 
@@ -576,7 +602,7 @@ export class Dispatcher {
       // so both have to read the provisioned shape rather than the backlog row.
       const provisioned: Task = {
         ...task,
-        worktreePath: wt.path,
+        worktreePath: taskHasRepository(task) ? wt.path : null,
         branch: wt.branch,
         provider: wt.provider,
         worktreeLeaseId: wt.leaseId,
@@ -599,11 +625,18 @@ export class Dispatcher {
       // Every attached repository contributes, in the manifest's order, because this
       // dispatch hands the agent write access to all of them - sending only the primary's
       // rules would be the same laundering `taskReposAllowlisted` refuses for consent.
-      const standing = await (this.deps.standingInstructions ?? standingInstructionsForLaunch)(
-        [wt.path, ...extras.map((entry) => entry.worktreePath).filter((p): p is string => !!p)],
+      const repositoryStanding = await (this.deps.standingInstructions ?? standingInstructionsForLaunch)(
+        taskHasRepository(task) ? [wt.path, ...extras.map((entry) => entry.worktreePath).filter((p): p is string => !!p)] : [],
         task.agent,
         runtime,
       );
+      // The one resident call site: the composer appends the run's resident section after the
+      // repository block. Asked by launch owner, never by harness id.
+      const resident = TASK_KIND_BEHAVIOR[task.kind].launch === "resident";
+      const standing = resident
+        ? this.residentStanding(task, repositoryStanding, runtime)
+        : repositoryStanding;
+      const residentMcp = resident ? this.deps.residentMcp?.(task) ?? null : null;
       // EXACTLY ONE delivery. A pair with an out-of-band channel carries the block there and
       // is NOT also prefixed; a pair without one is prefixed and sends nothing out of band.
       // Both would have the agent read the same rule twice in its first turn, which for a
@@ -669,7 +702,7 @@ export class Dispatcher {
         model,
         effort,
         source: tier,
-        repoCount: 1 + task.extraRepos.length,
+        repoCount: taskHasRepository(task) ? 1 + task.extraRepos.length : 0,
       };
       // The launch intent, recorded BEFORE anything is spawned on either arm. The session
       // appears - and is announced - before this function gets control back, so an intent
@@ -694,6 +727,7 @@ export class Dispatcher {
           extraDirs,
           standing,
           standingFallbackTurnOne,
+          residentMcp,
         );
         observeDispatchFinished({
           taskId,
@@ -1678,6 +1712,19 @@ export class Dispatcher {
     }
   }
 
+  /** The resident composer's standing instructions for this task, or a refusal. */
+  private residentStanding(
+    task: Task,
+    repository: StandingInstructionsDelivery,
+    runtime: SessionRuntime,
+  ): StandingInstructionsDelivery {
+    const compose = this.deps.residentLaunch;
+    if (!compose) {
+      throw new Error("this daemon has no resident launch composer, so it cannot launch a resident");
+    }
+    return compose(task, repository, runtime);
+  }
+
   /**
    * The embedded arm of the dispatch: hand the task to the supervisor and stop.
    *
@@ -1698,7 +1745,7 @@ export class Dispatcher {
   private async dispatchEmbedded(
     taskId: string,
     task: Task,
-    wt: ProvisionedWorktree,
+    wt: DispatchWorkspace,
     model: string | null,
     effort: ThinkingLevel | null,
     missionMcp: MissionMcpRequirement | null,
@@ -1710,6 +1757,8 @@ export class Dispatcher {
     standing: StandingInstructionsDelivery,
     /** `intent` recomposed with the block in its ordered slot, if the channel proves unusable. */
     standingFallbackTurnOne: string,
+    /** A resident run's pinned MCP set, rendered beside Mission's descriptor. */
+    residentMcp: ResidentMcpLaunch | null = null,
   ): Promise<void> {
     const supervisor = this.deps.supervisor;
     if (!supervisor) {
@@ -1790,6 +1839,7 @@ export class Dispatcher {
       effort,
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
+      residentMcp,
       extraDirs,
       // The WHOLE delivery, because the supervisor is the only place that learns what the
       // driver actually did with it - Codex can find its channel unusable at launch and fall
@@ -1799,8 +1849,8 @@ export class Dispatcher {
       standingInstructions: { delivery: standing, fallbackPrompt: standingFallbackTurnOne },
       taskId,
       gitBranch: wt.branch,
-      gitRoot: wt.path,
-      repoRoot: task.repoRoot,
+      gitRoot: taskHasRepository(task) ? wt.path : null,
+      repoRoot: taskHasRepository(task) ? task.repoRoot : null,
     });
     supervisorOwnsStateHome = true;
     if (await this.abortIfSettled(taskId)) {
@@ -2178,6 +2228,9 @@ export class Dispatcher {
 
 // ---- worktree provisioning ----
 
+/** Cwd may be a run workspace with no Git or allocator identity. */
+type DispatchWorkspace = Omit<ProvisionedWorktree, "provider"> & { provider: ProvisionedWorktree["provider"] | null };
+
 export interface ProvisionedWorktree {
   path: string; // realpath, so it matches a pane's reported cwd exactly
   branch: string | null;
@@ -2514,6 +2567,8 @@ async function headCommit(dir: string): Promise<string | null> {
  */
 export async function teardownWorktree(
   task: {
+    kind?: Task["kind"];
+    workspaceKind?: Task["workspaceKind"];
     taskId?: string;
     /** `Task.id` when the full durable task is passed. */
     id?: string;
@@ -2555,6 +2610,7 @@ export async function teardownWorktree(
   //
   // A single-repo task has no extras, so this is one entry and one error message, exactly
   // as it was before.
+  if (!taskHasRepository(task)) return;
   const taskId = task.taskId ?? task.id ?? null;
   const trees = [
     {
@@ -2989,3 +3045,6 @@ async function currentBranch(dir: string): Promise<string | null> {
 export async function agentBinPresent(agent: AgentType): Promise<boolean> {
   return hasBin(resolveAgentBin(agent));
 }
+
+/** The Dispatcher's dependency seams, named so an owner can late-bind one of them. */
+export type DispatcherDeps = NonNullable<ConstructorParameters<typeof Dispatcher>[2]>;

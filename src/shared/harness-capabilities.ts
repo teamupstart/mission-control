@@ -100,6 +100,28 @@ export interface PermissionModeSpec {
   launchArgs: ((mode: PermissionMode) => readonly string[]) | null;
 }
 
+/** A measured launch control that loads exactly an immutable skill snapshot on every start. */
+export interface SkillSelectionSpec {
+  mechanism: "config-overlay" | "native-discovery-disabled";
+}
+
+/**
+ * A measured launch control that starts exactly a resident run's MCP snapshot, plus Mission
+ * Control's own server, on every start and resume (`scripts/probe-resident-mcp.ts`).
+ *
+ * - `strict-mcp-config`: the SDK's `strictMcpConfig` with the snapshot in `mcpServers`, so no
+ *   user, local, project or plugin configuration is read for the run.
+ * - `codex-home-overlay`: a per-run `CODEX_HOME` whose generated `config.toml` holds only the
+ *   snapshot, verified before every thread start against every other configuration layer.
+ *
+ * `secrets` is how a secret-bearing or global server reaches only its own process: Mission's
+ * scoped launcher, which redeems a single-use ticket for that one server's definition.
+ */
+export interface McpSelectionSpec {
+  mechanism: "strict-mcp-config" | "codex-home-overlay";
+  secrets: "scoped-launcher";
+}
+
 /**
  * Installing skills for a harness and invoking them in a live session.
  *
@@ -494,6 +516,8 @@ export type ModelDiscoverySpec =
  * vocabulary to learn.
  */
 interface HarnessCapabilitiesBase {
+  /** Measured resident maintenance layers. Claude native threshold failed the 2.1.310 probe. */
+  residentCompaction: { betweenIterations: boolean; nativeBackstop: boolean } | null;
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
   id: AgentType;
   /**
@@ -531,6 +555,10 @@ interface HarnessCapabilitiesBase {
   resumes: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
+  /** Null until exact isolation, including native additions on resume, has passed a real probe. */
+  skillSelection: SkillSelectionSpec | null;
+  /** Null until a real probe shows a launch starts exactly a run's MCP snapshot. */
+  mcpSelection: McpSelectionSpec | null;
   extensions: ExtensionsSpec | null;
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
@@ -620,11 +648,16 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     },
     extensions: null,
     skills: CLAUDE_SKILLS,
+    skillSelection: null, // 2.1.310: overlay and launch settings still expose project skills.
+    // 2.1.310 and SDK 0.3.310: `strictMcpConfig` excluded user, local, project and plugin
+    // fixtures; only the passed servers started, each with exactly its passed definition.
+    mcpSelection: { mechanism: "strict-mcp-config", secrets: "scoped-launcher" },
     workQueue: {
       uninstrumentedWhy:
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
     },
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: false },
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control", migration: { kind: "jsonc", homeFile: ".claude.json", key: "mcpServers" } },
     missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
@@ -753,6 +786,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // typed at a running session. `skillsAgents()` therefore excludes it from the pane
     // broadcast.
     extensions: null,
+    skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
+    // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
+    // so every start also verifies the layers and disables foreign servers before they load.
+    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher" },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -776,6 +813,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Measured against 0.144.x, where `/clear` is Codex's own slash command and not, as
     // this said while the value was null, a line that would land in the prompt as text.
     clearContext: { command: "/clear" },
+    residentCompaction: { betweenIterations: true, nativeBackstop: true },
     // `codex mcp add <name> --env K=V -- <cmd>`: a different CLI and a different config
     // file from Claude's, which is what `cli` and `envFlag` carry. `scope: null` is the
     // real difference - Codex writes one registration and has no `-s user|project` to
@@ -885,6 +923,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // with pi's OWN dir so `skillsDirs()` does not have to reconcile a directory it shares with
     // Codex. pi has no skills-dir watcher. A dispatched session's exact launch identity
     // makes its transcript an attributable idle source for the verified command.
+    skillSelection: null,
+    mcpSelection: null, // No MCP client.
     skills: {
       reloadCommand: "/reload",
       reloadIdleSource: "transcript",
@@ -917,6 +957,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
     // summarises rather than clears). Hookless sessions have no attributable transcript path.
     clearContext: { command: "/new" },
+    residentCompaction: null,
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.
     mcp: null,

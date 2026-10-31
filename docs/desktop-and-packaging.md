@@ -51,14 +51,24 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 The standard [Bash installer](../scripts/install.sh) downloads canonical, immutable stable or
 exact-SHA alpha assets. Native macOS tools verify the size, SHA-256, product identity,
 arm64 executable, pinned Developer ID team and notarization before any downloaded code runs.
-It mounts the DMG read-only, checks its roots and links, copies the complete app to a private
+It mounts the DMG read-only, checks its root entries against the shared DMG layout contract and its links, copies the complete app to a private
 directory, verifies it again and unmounts the image. Only then does its embedded Electron Node
 engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, npm, npx, Git,
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
-Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+Without `--ref`, the installer selects a release by readiness, never by GitHub's newest record.
+A release exists before its Signed distribution run uploads the ready manifest, and that run can
+fail, so stable selection inventories every release and installs the highest `vX.Y.Z` that
+carries an uploaded manifest, as the desktop updater does. When no stable release is ready, the
+plain command installs the newest alpha and says so; `--channel stable` refuses instead. The app
+keeps alpha updates off unless they are enabled, so it offers the first ready stable release.
+`--channel alpha` installs `main`'s head when its alpha is ready. A merged commit has no alpha
+until its run publishes, so otherwise the installer walks the head's own history and installs
+the newest ancestor with a ready alpha, naming the unpublished head and how far behind it is.
+An alpha outside that history is never substituted. `--ref vX.Y.Z` and `--ref FULL_SHA` pin
+exact bytes and never substitute another release; an unpublished pin is named with its
+recovery. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows
@@ -338,6 +348,13 @@ here twice over - it points every recipient at the destination that needs an adm
 password, and a disk image is opened on somebody else's Mac, where no fixed link can name their
 own Applications folder and nothing expands a literal `~`.
 
+The published DMG's root also carries the window background (`.background.tiff`), volume icon
+and `.DS_Store` electron-builder writes for that layout. The standalone installer refuses any
+other root entry, and its allow-list is rendered from `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs), the same list producer
+qualification enforces on the mounted image. Changing the `dmg:` layout therefore means
+updating that list, or the Signed distribution job refuses the image before publication.
+
 Dragging the app out of a disk image records no receipt, so that copy never updates itself. The
 Read Me says so, names both destinations in words, and gives `make install` as the way to get
 managed updates.
@@ -464,6 +481,14 @@ copy is checked before publication on the ordinary swap path and again before la
 includes modes, file bytes and internal framework symlinks; escaping links and oversized
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
+
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
 
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained

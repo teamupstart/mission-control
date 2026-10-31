@@ -690,3 +690,19 @@ This permission does not put pipeline tasks into backlog autopilot and does not 
 re-entry. Foreman reads the daemon's halt view and posts its episode and action over HTTP. The
 daemon remains the only SQLite writer, and each attempted provider action is reserved in the
 decision ledger before the engine is called so a lost response cannot cause a duplicate act.
+
+
+### CodeRabbit review follow-through
+
+The off-by-default **Settings > Shipping > Follow up on CodeRabbit comments** switch adds a
+third source to Foreman's existing PR pass. It is independent of Inspector-comment and CI
+tracking. It uses the same invitation, Live mode, trust, settled-idle, human-input and queue
+rules. Non-terminal workflows retain ownership, including parked runs.
+
+The daemon rechecks the owning conversation, current intent episode, repository checkout,
+branch, PR association and complete fresh observation when claiming feedback and again inside
+the runtime write lock. Attached repositories require their own trust. One prompt per session
+per pass keeps PR follow-through ahead of ship recovery and ordinary queue work. Inspector/CI
+marks retain their existing clocks; CodeRabbit generations and claims live in the adoption
+ledger, never in the Foreman process. Unknown delivery stays spent across restarts and appears
+in Shipping with manual messaging available. Nothing in this source authorizes a merge.

@@ -82,6 +82,9 @@ import {
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
@@ -171,6 +174,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowCommandArtifactDescriptor,
   WorkflowAssetReferenceSet,
   WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
@@ -419,12 +423,15 @@ export const WORKFLOW_TABLES = [
   "session_actions",
   "workflow_commands",
   "workflow_command_overrides",
+  "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
   "workflow_node_attempts",
+  "workflow_command_artifact_reservations",
+  "workflow_command_artifacts",
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
@@ -962,6 +969,9 @@ const WorkflowCommandRowSchema = z.object({
    * WHOLE slot to "Not configured", hiding a command that is perfectly good.
    */
   max_runs: z.unknown().optional(),
+  timeout_ms: z.unknown().optional(),
+  on_unavailable: z.unknown().optional(),
+  on_budget_exhausted: z.unknown().optional(),
   revision: positive,
   created_at: integer,
   updated_at: integer,
@@ -1019,6 +1029,21 @@ function readCommandMaxRuns(raw: unknown): number {
   );
 }
 
+function readCommandTimeoutMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
+  return Math.min(
+    Math.max(raw, WORKFLOW_COMMAND_TIMEOUT_MIN_MS),
+    WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  );
+}
+
+function readCommandFailurePolicy(raw: unknown): "skip" | "block" {
+  return (WORKFLOW_COMMAND_FAILURE_POLICIES as readonly unknown[]).includes(raw)
+    ? raw as "skip" | "block"
+    : "skip";
+}
+
 /** An override, or null when its argv is unreadable - in which case it is not projected. */
 function parseWorkflowCommandOverrideRow(
   row: WorkflowCommandOverrideRow,
@@ -1074,6 +1099,9 @@ function parseWorkflowCommandRow(
       row.default_command_json,
     ),
     maxRuns: readCommandMaxRuns(row.max_runs),
+    timeoutMs: readCommandTimeoutMs(row.timeout_ms),
+    onUnavailable: readCommandFailurePolicy(row.on_unavailable),
+    onBudgetExhausted: readCommandFailurePolicy(row.on_budget_exhausted),
     overrides,
     revision: row.revision,
     createdAt: row.created_at,
@@ -2516,7 +2544,9 @@ export type WorkflowStoreWrite =
         | "archived"
         | "not_archived"
         | "active_binding"
-        | "builtin";
+        | "builtin"
+        /** A round limit can be set in place only on a built-in; a copy edits its own draft. */
+        | "not_builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -2925,6 +2955,49 @@ function coverageSchemaReason(error: unknown): string {
  * verification it was captured for. So an unknown episode leaves provenance alone; only a known
  * one moves it.
  */
+/** One `workflow_builtin_round_limits` row, read. A null count is a reset to the shipped value. */
+interface BuiltinRoundLimit {
+  maxRepairRounds: number | null;
+  updatedAt: number;
+}
+
+/**
+ * The built-in with the operator's round limit applied to its definition and to every version.
+ *
+ * Every version, not only the current one, because the setting answers "how many repair
+ * rounds does this workflow get" and a new binding may pin any of them. The versions'
+ * graphs, policies and other binding defaults are untouched. A limit equal to what this
+ * build ships is no change at all, so the built-in comes back exactly as shipped.
+ */
+function withBuiltinRoundLimit(
+  builtin: BuiltinWorkflow,
+  limit: BuiltinRoundLimit | undefined,
+): BuiltinWorkflow {
+  const shippedMaxRepairRounds = builtin.definition.bindingDefaults.maxRepairRounds;
+  if (!limit) return builtin;
+  // A reset, or a value a later build now ships: the shipped built-in, still dated by the
+  // change, so an editor that refetches after a reset sees a newer definition than it holds.
+  if (limit.maxRepairRounds === null || limit.maxRepairRounds === shippedMaxRepairRounds) {
+    return {
+      ...builtin,
+      definition: { ...builtin.definition, updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt) },
+    };
+  }
+  const rounds = limit.maxRepairRounds;
+  const withRounds = <T extends { bindingDefaults: WorkflowDefinition["bindingDefaults"] }>(item: T): T => ({
+    ...item,
+    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: rounds },
+  });
+  return {
+    definition: {
+      ...withRounds(builtin.definition),
+      updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt),
+      shippedMaxRepairRounds,
+    },
+    versions: builtin.versions.map(withRounds),
+  };
+}
+
 function restampsEpisode(stamped: string | null, episodeKey: string | null): boolean {
   return episodeKey !== null && stamped !== episodeKey;
 }
@@ -3572,6 +3645,9 @@ export class WorkflowStore {
       defaultCommand: string[] | null;
       overrides: readonly WorkflowCommandOverride[];
       maxRuns: number;
+      timeoutMs?: number | null;
+      onUnavailable?: "skip" | "block";
+      onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
   ): WorkflowCommandStoreWrite {
@@ -3597,7 +3673,8 @@ export class WorkflowStore {
       const updated = this.db
         .prepare(
           `UPDATE workflow_commands
-              SET default_command_json = ?, max_runs = ?, revision = revision + 1, updated_at = ?
+              SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3611,6 +3688,9 @@ export class WorkflowStore {
             Math.max(next.maxRuns, WORKFLOW_LIMITS.commandMaxRunsMin),
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
+          next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
+          next.onUnavailable ?? current.onUnavailable,
+          next.onBudgetExhausted ?? current.onBudgetExhausted,
           now,
           key,
           expectedRevision,
@@ -3862,11 +3942,15 @@ export class WorkflowStore {
       );
       this.db.prepare(
         `UPDATE workflow_commands
-            SET default_command_json = ?, max_runs = ?, revision = ?, updated_at = ?
+            SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                on_budget_exhausted = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
         row.maxRuns,
+        row.timeoutMs,
+        row.onUnavailable,
+        row.onBudgetExhausted,
         revision,
         now,
         row.slot,
@@ -4149,7 +4233,67 @@ export class WorkflowStore {
    * definition of a version list it did not also consult.
    */
   private builtinWorkflowDefinitions(): WorkflowDefinition[] {
-    return this.builtinWorkflows.map((builtin) => builtin.definition);
+    const limits = this.builtinRoundLimits();
+    return this.builtinWorkflows.map((builtin) =>
+      withBuiltinRoundLimit(builtin, limits.get(builtin.definition.id)).definition);
+  }
+
+  /** Every operator round limit, by built-in id. Rows naming no shipped built-in are ignored. */
+  private builtinRoundLimits(workflowId?: string): Map<string, BuiltinRoundLimit> {
+    const rows = (workflowId === undefined
+      ? this.db.prepare(`SELECT * FROM workflow_builtin_round_limits`).all()
+      : this.db.prepare(`SELECT * FROM workflow_builtin_round_limits WHERE workflow_id = ?`)
+        .all(workflowId)) as Array<Record<string, unknown>>;
+    const out = new Map<string, BuiltinRoundLimit>();
+    for (const row of rows) {
+      const rounds = row.max_repair_rounds === null ? null : Number(row.max_repair_rounds);
+      const updatedAt = Number(row.updated_at);
+      // An unreadable row is the shipped value, never a budget outside the binding schema.
+      if (typeof row.workflow_id !== "string"
+        || !Number.isSafeInteger(updatedAt)
+        || (rounds !== null && (!Number.isInteger(rounds)
+          || rounds < WORKFLOW_LIMITS.repairRoundsMin
+          || rounds > WORKFLOW_LIMITS.repairRoundsMax))) continue;
+      out.set(row.workflow_id, { maxRepairRounds: rounds, updatedAt });
+    }
+    return out;
+  }
+
+  /**
+   * Change the one setting a built-in workflow lets an operator change in place.
+   *
+   * Everything else about a built-in stays read-only, and nothing here can reach it: the only
+   * input is a round count. `null`, or the value this build ships, stores a NULL count so the
+   * built-in follows the shipped value again, including when a later build changes it, while
+   * the row keeps dating the definition with the time of the reset. The new
+   * value is what every NEW binding of any of its versions starts from; a binding or run that
+   * already exists keeps the budget it copied when it was created.
+   */
+  setBuiltinRoundLimit(
+    id: string,
+    maxRepairRounds: number | null,
+    updatedAt = Date.now(),
+  ): WorkflowStoreWrite {
+    return this.mutate((): WorkflowStoreWrite => {
+      const shipped = this.builtinWorkflows.find((builtin) => builtin.definition.id === id);
+      if (!shipped) {
+        const current = this.getWorkflowInTransaction(id);
+        return current
+          ? { ok: false, reason: "not_builtin", current }
+          : { ok: false, reason: "not_found", current: null };
+      }
+      const stored = maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds
+        ? null
+        : maxRepairRounds;
+      this.db.prepare(
+        `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(workflow_id) DO UPDATE SET
+           max_repair_rounds = excluded.max_repair_rounds,
+           updated_at = excluded.updated_at`,
+      ).run(id, stored, updatedAt);
+      return { ok: true, workflow: this.builtinWorkflowById(id)!.definition };
+    }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 
   private sortWorkflows(workflows: WorkflowDefinition[]): WorkflowDefinition[] {
@@ -4157,21 +4301,29 @@ export class WorkflowStore {
       a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
   }
 
+  /**
+   * A shipped workflow as this installation runs it: the catalog entry with the operator's
+   * round limit, if any, applied. Every built-in read goes through here or
+   * `builtinWorkflowDefinitions`, so no reader can see the shipped budget while another sees
+   * the operator's.
+   */
   private builtinWorkflowById(id: string): BuiltinWorkflow | null {
-    return this.builtinWorkflows.find((builtin) => builtin.definition.id === id) ?? null;
+    const builtin = this.builtinWorkflows.find((candidate) => candidate.definition.id === id);
+    return builtin ? withBuiltinRoundLimit(builtin, this.builtinRoundLimits(id).get(id)) : null;
   }
 
   private builtinWorkflowNamed(normalizedName: string): WorkflowDefinition | null {
-    return this.builtinWorkflows
-      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition ?? null;
+    const id = this.builtinWorkflows
+      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition.id;
+    return id === undefined ? null : this.builtinWorkflowById(id)?.definition ?? null;
   }
 
   private builtinWorkflowVersion(id: string): WorkflowVersion | null {
-    for (const builtin of this.builtinWorkflows) {
-      const version = builtin.versions.find((candidate) => candidate.id === id);
-      if (version) return version;
-    }
-    return null;
+    const builtin = this.builtinWorkflows.find((candidate) =>
+      candidate.versions.some((version) => version.id === id));
+    if (!builtin) return null;
+    return this.builtinWorkflowById(builtin.definition.id)!.versions
+      .find((candidate) => candidate.id === id) ?? null;
   }
 
   listWorkflows(includeArchived = false): WorkflowDefinition[] {
@@ -8293,6 +8445,15 @@ export class WorkflowStore {
     });
   }
 
+  /** Return this attempt's claim after the executor reports that no Command could start. */
+  releaseCheckRun(attemptId: string, slot: string): boolean {
+    return this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET check_run_slot = NULL
+        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+    ).run(attemptId, slot).changes === 1;
+  }
+
   /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
@@ -8336,13 +8497,37 @@ export class WorkflowStore {
 
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
   listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
-    return (this.db.prepare(
+    const attempts = (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
          JOIN workflow_submissions s ON s.id = a.submission_id
         WHERE s.run_id = ?
         ORDER BY s.round ASC, s.segment ASC,
                  a.created_at ASC, a.node_id ASC, a.attempt ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_command_artifacts WHERE run_id = ? ORDER BY attempt_id, kind`,
+    ).all(runId) as Array<{
+      id: string; attempt_id: string; kind: "stdout" | "stderr" | "findings";
+      retained_bytes: number; observed_bytes: number; dropped_bytes: number;
+      sha256: string | null; capture_state: "complete" | "partial";
+      availability: "retained" | "pruned" | "unavailable";
+      unavailable_reason: string | null;
+    }>;
+    const byAttempt = new Map<string, WorkflowCommandArtifactDescriptor[]>();
+    for (const row of rows) {
+      const items = byAttempt.get(row.attempt_id) ?? [];
+      items.push({
+        id: row.id, kind: row.kind, retainedBytes: row.retained_bytes,
+        observedBytes: row.observed_bytes, droppedBytes: row.dropped_bytes,
+        sha256: row.sha256, captureState: row.capture_state,
+        availability: row.availability, unavailableReason: row.unavailable_reason,
+      });
+      byAttempt.set(row.attempt_id, items);
+    }
+    return attempts.map((attempt) => {
+      const commandArtifacts = byAttempt.get(attempt.id);
+      return commandArtifacts ? { ...attempt, commandArtifacts } : attempt;
+    });
   }
 
   listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
@@ -8483,7 +8668,7 @@ export class WorkflowStore {
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.listEvents(runId).find((event) =>
-        event.kind === "manual_infrastructure_retry"
+        (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry")
         && event.payload
         && !Array.isArray(event.payload)
         && typeof event.payload === "object"
@@ -8494,6 +8679,10 @@ export class WorkflowStore {
           submission: this.mustSubmission(submissionId),
           idempotent: true,
         };
+      }
+      const recoveryPhase = this.mustRun(runId).currentPhase;
+      if (recoveryPhase !== "infrastructure_error" && recoveryPhase !== "command_action_required") {
+        throw new Error(`Workflow run ${runId} is not in a retryable Command phase`);
       }
       const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
       if (!latest || latest.state !== "error") {
@@ -8524,13 +8713,15 @@ export class WorkflowStore {
       if (!this.reviveFailedSubmission(
         submissionId,
         runId,
-        "infrastructure_error",
+        recoveryPhase,
         now,
       )) {
         throw new Error(`Workflow submission ${submissionId} cannot be revived`);
       }
       this.setRunState(runId, "running", "persona_review", null, now);
-      this.appendEvent(runId, "manual_infrastructure_retry", {
+      this.appendEvent(runId, recoveryPhase === "command_action_required"
+        ? "manual_command_retry"
+        : "manual_infrastructure_retry", {
         requestId,
         nodeAttemptId: latest.id,
         reactivatedNodeAttemptIds: errored.map((attempt) => attempt.id),
@@ -10171,6 +10362,11 @@ export class WorkflowStore {
               ) AND availability = 'retained'`,
           ).run(input.now, runId);
           this.db.prepare(
+            `UPDATE workflow_command_artifacts
+                SET availability = 'pruned', pruned_at = ?
+              WHERE run_id = ? AND availability = 'retained'`,
+          ).run(input.now, runId);
+          this.db.prepare(
             `UPDATE workflow_deliveries
                 SET payload = '', payload_pruned_at = ?,
                     error = CASE
@@ -10257,6 +10453,8 @@ export class WorkflowStore {
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               )`,
           ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
           this.db.prepare(
             `DELETE FROM workflow_node_attempts
               WHERE submission_id IN (
@@ -10895,6 +11093,8 @@ export class WorkflowStore {
         `SELECT id FROM workflow_bindings WHERE note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
+        this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
         ).run(runId);

@@ -63,6 +63,9 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // having previously been unconditional. The two working marks ship on. See
   // `UI_CONFIG_DEFAULTS` for the whole reasoning.
   assert.deepEqual(config.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  // The shipped topbar: every item drawn, every control expanded.
+  assert.deepEqual(config.hiddenTopbarItems, []);
+  assert.deepEqual(config.compactTopbarItems, []);
 });
 
 test("a written cache round-trips", () => {
@@ -96,6 +99,9 @@ test("a written cache round-trips", () => {
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
+    // Non-empty, both: the shipped bar hides and minimizes nothing.
+    hiddenTopbarItems: ["cost", "feedback"],
+    compactTopbarItems: ["fleet", "foreman"],
   });
   const config = readCache();
   assert.equal(config.layout, "console");
@@ -115,6 +121,8 @@ test("a written cache round-trips", () => {
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.showEmptyColumnStash, false);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
+  assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
+  assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);
 });
 
 test("a preference this cache forgets to copy would reset on every cold paint", () => {

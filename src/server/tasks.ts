@@ -50,16 +50,20 @@ import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
+  taskHasRepository,
   dispatchHasNoProvisionedResources,
-  TASK_KIND_BACKLOG_REFUSAL,
+  RESIDENT_TASK_REFUSAL,
   providerOwnsTaskCompletion,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
+  taskKindCreator,
   taskRequeueRefusal,
 } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
   Dispatcher,
+  type DispatcherDeps as TaskDispatcherDeps,
   deriveTitle,
   reclaimedFrom,
   releasedTaskResources,
@@ -303,10 +307,19 @@ export type InternalCreateOptions =
   | {
       id: string;
       schedule: TaskScheduleProvenance;
+      resident?: undefined;
     }
   | {
       id: string;
       schedule?: undefined;
+      resident?: undefined;
+    }
+  | {
+      /** The task id the resident run reserved before this task existed. */
+      id: string;
+      schedule?: undefined;
+      /** The run that owns this task. Identity only; the run row stays the source of truth. */
+      resident: { runId: string; workspaceDir?: string | null };
     };
 
 /** A preallocated id already belongs to a DIFFERENT task. Corruption, never idempotency. */
@@ -345,6 +358,13 @@ export class TaskEffortUnsupportedError extends Error {}
  */
 export const MANUAL_DISPATCH_TASK_CREATE = Symbol("manual-dispatch-task-create");
 
+/**
+ * Capability held only by `ResidentManager.launch`. A resident task is created with the id its
+ * run reserved, and only after that reservation exists, so no other creator - the Dispatch
+ * route included - can file one.
+ */
+export const RESIDENT_LAUNCH_TASK_CREATE = Symbol("resident-launch-task-create");
+
 export class TaskStatusConflictError extends Error {}
 
 export const INTERRUPTED_BEFORE_PROVISION_ERROR =
@@ -352,6 +372,9 @@ export const INTERRUPTED_BEFORE_PROVISION_ERROR =
 
 export const INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR =
   "Chat dispatch was interrupted before a worktree or agent was created. Launch a new chat from Dispatch.";
+
+export const INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR =
+  "Resident launch was interrupted before a worktree or agent was created. Launch the resident again from its profile.";
 
 /**
  * One authorized automatic cleanup, as the retention service presents it.
@@ -512,6 +535,7 @@ class TaskCleanupQueue {
 
 /** Every repository whose cleanup one task can reach, in the queue's canonical key space. */
 function taskCleanupRepoKeys(task: Task): string[] {
+  if (!taskHasRepository(task)) return [];
   return [...new Set(
     [task.repoRoot, ...task.extraRepos.map((entry) => entry.repoRoot)].map(canonicalWorktreePath),
   )];
@@ -937,6 +961,9 @@ export class TaskManager {
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
+  /** The resident launch composer, installed by the daemon once `ResidentManager` exists. */
+  private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
+  private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
    * installed one. Absent in every focused test, which is exactly the shipped default
@@ -981,6 +1008,15 @@ export class TaskManager {
       // The launch no longer waits for a model to name it, so the name can arrive on either
       // side of the session. This is the "session arrived" half; see `settleTitleName`.
       onSessionBound: (taskId) => void this.settleTitleName(taskId),
+      // Late-bound: the composer's owner is built after this manager, because it creates its
+      // tasks through `create`. A resident dispatched with no composer installed is refused.
+      residentLaunch: (task, repository, runtime) => {
+        if (!this.residentLaunch) {
+          throw new Error("this daemon has no resident launch composer, so it cannot launch a resident");
+        }
+        return this.residentLaunch(task, repository, runtime);
+      },
+      residentMcp: (task) => this.residentMcp?.(task) ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1398,6 +1434,15 @@ export class TaskManager {
    */
   registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
     this.writeback = enqueuer;
+  }
+
+  /** Install the resident launch composer after `ResidentManager` exists. */
+  registerResidentLaunch(
+    compose: NonNullable<TaskDispatcherDeps["residentLaunch"]>,
+    mcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>,
+  ): void {
+    this.residentLaunch = compose;
+    this.residentMcp = mcp;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -2703,15 +2748,29 @@ export class TaskManager {
     manualDispatch?: symbol,
     creationPolicy?: TaskCreationPolicy,
   ): Task {
-    if (!taskKindAllowsBacklog(input.kind) && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
-      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+    const creator = taskKindCreator(input.kind);
+    const refusal = taskKindBacklogRefusal(input.kind);
+    if (creator === "resident-launch") {
+      // Only the resident launch, and only with the id its run reserved: a resident task with
+      // no run row behind it would be work no lifecycle owns.
+      if (manualDispatch !== RESIDENT_LAUNCH_TASK_CREATE || !internal?.resident) {
+        throw new TaskKindBacklogError(refusal);
+      }
+      if (internal.resident.workspaceDir &&
+          (input.repoRoot !== internal.resident.workspaceDir || input.extraRepoRoots?.length)) {
+        throw new TaskKindBacklogError("a resident workspace cannot attach repositories");
+      }
+    } else if (internal?.resident) {
+      throw new TaskKindBacklogError(`a ${input.kind} task cannot be reserved by a resident run`);
+    } else if (creator === "dispatch" && manualDispatch !== MANUAL_DISPATCH_TASK_CREATE) {
+      throw new TaskKindBacklogError(refusal);
     }
     if (
       !taskKindAllowsBacklog(input.kind) &&
-      (input.backlog || internal !== undefined || input.source !== undefined ||
-        (input.dependencies?.length ?? 0) > 0)
+      (input.backlog || (internal !== undefined && !internal.resident) ||
+        input.source !== undefined || (input.dependencies?.length ?? 0) > 0)
     ) {
-      throw new TaskKindBacklogError(TASK_KIND_BACKLOG_REFUSAL);
+      throw new TaskKindBacklogError(refusal);
     }
     const now = Date.now();
     const explicitTitle = input.title?.trim();
@@ -2744,6 +2803,27 @@ export class TaskManager {
       // different Task, so fail closed rather than adopt and rewrite a stranger's work.
       const existing = getDurableTask(id);
       if (existing) {
+        if (internal.resident) {
+          // The resident producer's identity check: the reserved id must still hold a resident
+          // task carrying exactly the launch the run recorded. Anything else is somebody
+          // else's task under a colliding id, and is refused rather than adopted.
+          if (
+            existing.kind !== "resident" ||
+            existing.repoRoot !== input.repoRoot ||
+            (existing.workspaceKind ?? null) !== (internal.resident.workspaceDir ? "resident-workspace" : null) ||
+            existing.intent !== input.intent ||
+            existing.title !== explicitTitle ||
+            existing.agent !== agent ||
+            existing.model !== (input.model ?? null) ||
+            existing.effort !== (input.effort ?? null) ||
+            existing.workflowId !== null
+          ) {
+            throw new TaskIdCollisionError(
+              `task ${id} already exists and is not resident run ${internal.resident.runId}'s task`,
+            );
+          }
+          return existing;
+        }
         if (internal.schedule) {
           const p = internal.schedule;
           if (
@@ -2777,7 +2857,11 @@ export class TaskManager {
       // each call site: first persist a named ordinary backlog Task. The scheduler stops
       // there; the ensemble engine separately dispatches through TaskManager only after the
       // complete wave exists. A blank title would also put model titling on a recovery path.
-      if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
+      // A resident is the one durable producer that launches at once: its run row, written
+      // first, is what recovery reads, so there is no backlog stop to recover from.
+      if (!input.backlog && !internal.resident) {
+        throw new Error(`internally created task ${id} must be backlog`);
+      }
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
     const { planPolicy, workflowId } = creationPolicy ?? this.prepareCreationPolicy(input);
@@ -2835,6 +2919,7 @@ export class TaskManager {
       // rows and for tasks persisted by builds that learned the link only from a child.
       pipelineRun: null,
       repoRoot: input.repoRoot,
+      workspaceKind: internal?.resident?.workspaceDir ? "resident-workspace" : null,
       worktreePath: null,
       branch: null,
       provider: null,
@@ -3107,9 +3192,14 @@ export class TaskManager {
           : { ok: false, error: recovered.error, task: recovered.task };
       }
     }
+    // A resident launches only through its profile: retrying the task would start a second
+    // session under a run that already settled.
+    if (taskKindCreator(t.kind) === "resident-launch") {
+      return { ok: false, error: RESIDENT_TASK_REFUSAL, task: t };
+    }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
       if (!taskKindAllowsBacklog(t.kind)) {
-        return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, task: t };
+        return { ok: false, error: taskKindBacklogRefusal(t.kind), task: t };
       }
       // Asked before dependencies, like the allowlist is in `decideBacklogTick`: it is
       // the coarser fact and the one the operator can act on immediately.
@@ -3616,7 +3706,7 @@ export class TaskManager {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
     if (!isAnnotationOnlyUpdate(patch) && !taskKindAllowsBacklog(patch.kind ?? t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
+      return { ok: false, error: taskKindBacklogRefusal(patch.kind ?? t.kind) };
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
@@ -4045,7 +4135,7 @@ export class TaskManager {
       return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
     }
     if (!taskKindAllowsBacklog(t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, scope: "task" };
+      return { ok: false, error: taskKindBacklogRefusal(t.kind), scope: "task" };
     }
     // Provider-owned tasks need the provider's own terminal launch. Handing one to an
     // existing harness session would bypass that launch and type an engine idea into an
@@ -4622,7 +4712,7 @@ export class TaskManager {
   /** Stop only an agent this task launched, leaving assigned operator sessions alone. */
   private async quiesceLaunchedAgentBeforeCapture(t: Task): Promise<void> {
     const session = t.sessionId ? this.registry.getSession(t.sessionId) : undefined;
-    if ((taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
+    if ((!taskHasRepository(t) || taskHasWorktrees(t) || providerOwnsTaskCompletion(t.kind)) && session?.runtime === "sdk") {
       if (!this.supervisor) throw new Error("this build has no session supervisor");
       if (this.supervisor.handleFor(session.id)) await this.supervisor.stop(session.id);
     }
@@ -5374,7 +5464,7 @@ export class TaskManager {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (!taskKindAllowsBacklog(t.kind)) {
-      return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL };
+      return { ok: false, error: taskKindBacklogRefusal(t.kind) };
     }
     if (t.status !== "cancelled" && t.status !== "failed") {
       return {
@@ -6052,7 +6142,10 @@ export class TaskManager {
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
     if (transferForTask(t.id)) return;
-    if (dispatchHasNoProvisionedResources(t)) {
+    // A repo-less resident can have a durable SDK row before dispatch binds its task,
+    // with no worktree milestone. The row is stronger evidence than empty resource fields.
+    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
+    if (dispatchHasNoProvisionedResources(t) && embedded !== true) {
       const current = this.registry.getTask(t.id);
       if (!current || !dispatchHasNoProvisionedResources(current)) return;
       this.registry.upsertTask({
@@ -6060,7 +6153,9 @@ export class TaskManager {
         status: taskKindAllowsBacklog(current.kind) ? "backlog" : "failed",
         error: taskKindAllowsBacklog(current.kind)
           ? INTERRUPTED_BEFORE_PROVISION_ERROR
-          : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+          : taskKindCreator(current.kind) === "resident-launch"
+            ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR
+            : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
         dispatchedAt: null,
         updatedAt: Date.now(),
       });
@@ -6077,7 +6172,6 @@ export class TaskManager {
     // supervisor answers from the row: a row that says it was alive is a session this
     // daemon is about to pick back up, and reading the empty handle map would reclaim its
     // worktree out from under it.
-    const embedded = this.supervisor?.taskLiveness(t.id) ?? null;
     if (providerOwnsTaskCompletion(t.kind) && t.homeName === null && t.pipelineRun !== null) {
       const session = this.supervisor?.liveSessionForTask(t.id) ?? null;
       if (embedded === true && session) {

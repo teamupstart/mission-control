@@ -49,7 +49,9 @@ const policyWith = (over: Partial<WorkflowPolicy> = {}): WorkflowPolicy => ({
 
 /** One slot's catalog entry, in the grouped shape the daemon projects. */
 const commandView = (
-  over: Partial<Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "maxRuns">> = {},
+  over: Partial<Pick<WorkflowCommandView,
+    "defaultCommand" | "overrides" | "maxRuns" | "timeoutMs"
+    | "onUnavailable" | "onBudgetExhausted">> = {},
   slot: WorkflowCheckSlot = "test",
 ): WorkflowCommandView => ({ ...emptyWorkflowCommandView(slot), ...over });
 
@@ -245,6 +247,166 @@ test("a missing executable is unavailable, which is a configuration problem and 
   });
   assert.equal(result.kind === "outcome" && result.outcome.status, "unavailable");
   assert.match(result.kind === "outcome" ? result.outcome.note : "", /not on PATH/);
+});
+
+test("a missing executable returns its reservation before the corrected retry", async () => {
+  const configured = commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "test"] }],
+    maxRuns: 1,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
+  });
+  let spent = 0;
+  const reserveRun = () => spent >= 1
+    ? { granted: false, spent }
+    : {
+        granted: true,
+        spent: spent++,
+        release: () => { spent -= 1; },
+      };
+
+  const missing = await runCheck({
+    ...at(ALLOWED, configured),
+    reserveRun,
+  }, {
+    execute: executorReturning({ kind: "unavailable", note: "npm is missing" }).execute,
+  });
+  assert.deepEqual(missing, { kind: "action_required", reason: "npm is missing" });
+  assert.equal(spent, 0, "an unavailable executable kept the run allowance it could not use");
+
+  const corrected = executorReturning({
+    kind: "exited", exitCode: 0, output: "passed", truncatedBytes: 0,
+  });
+  const retried = await runCheck({
+    ...at(ALLOWED, configured),
+    reserveRun,
+  }, { execute: corrected.execute });
+  assert.equal(retried.kind === "outcome" && retried.outcome.status, "passed");
+  assert.equal(corrected.seen.length, 1, "the corrected Command was blocked by the old claim");
+});
+
+test("legacy timeout and skip policies stay unchanged until explicitly configured", async () => {
+  const testStub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  await runCheck(READY(), { execute: testStub.execute });
+  assert.equal(testStub.seen[0]!.timeoutMs, 60 * 60_000);
+
+  const lintStub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  await runCheck(at(ALLOWED, commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "run", "lint"] }],
+  }, "lint"), "lint"), { execute: lintStub.execute });
+  assert.equal(lintStub.seen[0]!.timeoutMs, 10 * 60_000);
+
+  const unavailable = await runCheck(READY(), {
+    execute: executorReturning({ kind: "unavailable", note: "missing" }).execute,
+  });
+  assert.equal(unavailable.kind, "outcome");
+  assert.equal(unavailable.kind === "outcome" && unavailable.outcome.status, "unavailable");
+
+  const exhausted = await runCheck(at(ALLOWED, TEST_COMMAND, "test", () => ({
+    granted: false, spent: 1,
+  })), { execute: testStub.execute });
+  assert.equal(exhausted.kind, "outcome");
+  assert.equal(exhausted.kind === "outcome" && exhausted.outcome.status, "budget_spent");
+});
+
+test("configured timeout is frozen into the execution request and outcome", async () => {
+  const configured = commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "test"] }],
+    timeoutMs: 90 * 60_000,
+  });
+  const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
+  const result = await runCheck(at(ALLOWED, configured), { execute: stub.execute });
+  assert.equal(stub.seen[0]!.timeoutMs, 90 * 60_000);
+  assert.equal(result.kind === "outcome" && result.outcome.timeoutMs, 90 * 60_000);
+});
+
+test("opt-in unavailable and budget policies block without creating a defect verdict", async () => {
+  const unavailableCommand = commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "test"] }],
+    onUnavailable: "block",
+  });
+  const notAuthorized = await runCheck(at(
+    policyWith({ checksEnabled: false, repoAllowlist: [REPO] }),
+    unavailableCommand,
+  ));
+  assert.equal(notAuthorized.kind, "action_required");
+
+  const missing = await runCheck(at(ALLOWED, unavailableCommand), {
+    execute: executorReturning({ kind: "unavailable", note: "npm is missing" }).execute,
+  });
+  assert.deepEqual(missing, { kind: "action_required", reason: "npm is missing" });
+
+  const budgetCommand = commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "test"] }],
+    onBudgetExhausted: "block",
+  });
+  const budget = await runCheck(at(ALLOWED, budgetCommand, "test", () => ({
+    granted: false, spent: 1,
+  })), { execute: executorReturning({
+    kind: "exited", exitCode: 0, output: "", truncatedBytes: 0,
+  }).execute });
+  assert.equal(budget.kind, "action_required");
+  assert.match(budget.kind === "action_required" ? budget.reason : "", /Raise the run allowance/);
+});
+
+test("unavailable block policy bypasses execution but leaves unconfigured slots skipped", async () => {
+  const blockDefault = commandView({
+    defaultCommand: ["npm", "test"],
+    onUnavailable: "block",
+  });
+  const noRepositoryExecutor = executorReturning({
+    kind: "exited", exitCode: 0, output: "", truncatedBytes: 0,
+  });
+  let noRepositoryReservations = 0;
+  const noRepository = await runCheck({
+    ...at(ALLOWED, blockDefault, "test", () => {
+      noRepositoryReservations += 1;
+      return { granted: true, spent: 0 };
+    }),
+    // The cwd proves authorization, while the absent repository leaves no checkout to lease.
+    cwd: `${REPO}/packages/web`,
+    repoRoot: null,
+  }, { execute: noRepositoryExecutor.execute });
+  assert.equal(noRepository.kind, "action_required");
+  assert.match(
+    noRepository.kind === "action_required" ? noRepository.reason : "",
+    /reported no repository/,
+  );
+  assert.deepEqual(noRepositoryExecutor.seen, [], "no-repository policy block launched a Command");
+  assert.equal(noRepositoryReservations, 0, "no-repository policy block spent a run");
+
+  const blockOverride = commandView({
+    overrides: [{ repoRoot: REPO, command: ["npm", "test"] }],
+    onUnavailable: "block",
+  });
+  let noExecutorReservations = 0;
+  const noExecutor = await runCheck(at(ALLOWED, blockOverride, "test", () => {
+    noExecutorReservations += 1;
+    return { granted: true, spent: 0 };
+  }));
+  assert.deepEqual(noExecutor, {
+    kind: "action_required",
+    reason: CHECK_RUNTIME_UNAVAILABLE_NOTE,
+  });
+  assert.equal(noExecutorReservations, 0, "no-executor policy block spent a run");
+
+  const unconfiguredExecutor = executorReturning({
+    kind: "exited", exitCode: 1, output: "should not run", truncatedBytes: 0,
+  });
+  let unconfiguredReservations = 0;
+  const unconfigured = await runCheck(at(
+    ALLOWED,
+    commandView({ onUnavailable: "block" }),
+    "test",
+    () => {
+      unconfiguredReservations += 1;
+      return { granted: true, spent: 0 };
+    },
+  ), { execute: unconfiguredExecutor.execute });
+  assert.equal(unconfigured.kind, "outcome");
+  assert.equal(unconfigured.kind === "outcome" && unconfigured.outcome.status, "skipped");
+  assert.deepEqual(unconfiguredExecutor.seen, [], "an unconfigured slot launched a Command");
+  assert.equal(unconfiguredReservations, 0, "an unconfigured slot spent a run");
 });
 
 test("a command that died without answering is infrastructure, NEVER a fail verdict", async () => {

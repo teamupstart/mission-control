@@ -58,6 +58,8 @@ export interface CheckSpawnRequest {
   timeoutMs: number;
   /** Defaults to `WORKFLOW_EXECUTION_LIMITS.checkOutput`; there is no second output bound. */
   maxOutputBytes?: number;
+  /** Optional attempt-owned retained body sink. It never controls process lifetime. */
+  capture?: { push(kind: "stdout" | "stderr", chunk: Buffer): void };
   /** How long the shim gets to report readiness before the attempt is abandoned. */
   readyMs?: number;
   teardown?: CheckGroupTeardownOptions;
@@ -345,8 +347,14 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   const report = child.stdio[4] as Socket;
   gate.on("error", () => {});
   report.on("error", () => {});
-  child.stdout?.on("data", (chunk: Buffer) => ring.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => ring.push(chunk));
+  child.stdout?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stdout", chunk);
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stderr", chunk);
+  });
 
   let supervisor: CheckSupervisorIdentity | null = null;
   let failure: CheckExecutionResult | null = null;

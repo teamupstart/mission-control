@@ -196,6 +196,15 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   checkVerdictOutput: 2_000,
 } as const;
 
+/** Browser-safe bounds shared by capture, persistence, HTTP and MCP readers. */
+export const WORKFLOW_COMMAND_OUTPUT_LIMITS = {
+  retainedBytesPerAttempt: 2 * 1_024 * 1_024,
+  retainedBytesPerRun: 64 * 1_024 * 1_024,
+  readBytesMin: 4,
+  readBytesMax: 64 * 1_024,
+  cursorChars: 1_024,
+} as const;
+
 /**
  * Workflow evidence inherits Phase 1's provider limits and adds bounds for durable metadata.
  * These are browser-safe because every intake surface and every retained row must agree.
@@ -2844,6 +2853,12 @@ export interface WorkflowCommandView {
    * again and is bounded separately by `MAX_INFRA_ATTEMPTS`.
    */
   maxRuns: number;
+  /** Null uses the slot's shipped default. */
+  timeoutMs: number | null;
+  /** What to do when an otherwise configured Command cannot execute. */
+  onUnavailable: WorkflowCommandFailurePolicy;
+  /** What to do after the Command has spent its per-run allowance. */
+  onBudgetExhausted: WorkflowCommandFailurePolicy;
   /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
   revision: number;
   createdAt: number;
@@ -2862,6 +2877,28 @@ export interface WorkflowCommandView {
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
 
+export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
+export type WorkflowCommandFailurePolicy =
+  (typeof WORKFLOW_COMMAND_FAILURE_POLICIES)[number];
+
+export const WORKFLOW_COMMAND_TIMEOUT_MIN_MS = 60_000;
+export const WORKFLOW_COMMAND_TIMEOUT_MAX_MS = 2 * 60 * 60_000;
+
+/** Existing slots retain their pre-policy runtime defaults. */
+export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, number> = {
+  test: 60 * 60_000,
+  lint: 10 * 60_000,
+  typecheck: 10 * 60_000,
+  build: 10 * 60_000,
+  documentation: 10 * 60_000,
+};
+
+export function effectiveWorkflowCommandTimeoutMs(
+  view: Pick<WorkflowCommandView, "slot" | "timeoutMs">,
+): number {
+  return view.timeoutMs ?? WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[view.slot];
+}
+
 /** The projected state of a slot nobody has configured yet. */
 export function emptyWorkflowCommandView(
   slot: WorkflowCheckSlot,
@@ -2872,6 +2909,9 @@ export function emptyWorkflowCommandView(
     defaultCommand: null,
     overrides: [],
     maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -3462,8 +3502,37 @@ export interface WorkflowCheckOutcome {
   output: string;
   /** Bytes of streamed output dropped to honour that bound, or 0 when nothing was. */
   truncatedBytes: number;
+  /** Bounded bodies captured outside output_json. Empty on historical/non-executed attempts. */
+  artifacts: WorkflowCommandArtifactDescriptor[];
+  /** The frozen timeout used by this attempt, null when no process was launched. */
+  timeoutMs: number | null;
   /** Always a complete sentence, including on a pass. */
   note: string;
+}
+
+export const WORKFLOW_COMMAND_ARTIFACT_KINDS = ["stdout", "stderr", "findings"] as const;
+export type WorkflowCommandArtifactKind =
+  (typeof WORKFLOW_COMMAND_ARTIFACT_KINDS)[number];
+export const WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY = [
+  "retained", "pruned", "unavailable",
+] as const;
+
+export interface WorkflowCommandArtifactDescriptor {
+  id: string;
+  kind: WorkflowCommandArtifactKind;
+  retainedBytes: number;
+  observedBytes: number;
+  droppedBytes: number;
+  sha256: string | null;
+  captureState: "complete" | "partial";
+  availability: (typeof WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY)[number];
+  unavailableReason: string | null;
+}
+
+export interface WorkflowCommandOutputPage {
+  artifact: WorkflowCommandArtifactDescriptor;
+  text: string;
+  nextCursor: string | null;
 }
 
 /**
@@ -3641,8 +3710,17 @@ export interface WorkflowDefinition {
    * A built-in workflow is app data, not operator data: it is not a row, it arrives already
    * published, and it can be neither edited, archived, nor published again. Duplicate is the
    * path to a customized copy, and that copy is an ordinary workflow like any other.
+   *
+   * The one exception is `bindingDefaults.maxRepairRounds`, which an operator may change in
+   * place. See `shippedMaxRepairRounds`.
    */
   builtin: boolean;
+  /**
+   * What this build ships as the built-in's maximum repair rounds, present only while the
+   * operator's own value replaces it. `bindingDefaults` (here and on every version of the
+   * built-in) already carries the operator's value; this is what Reset returns to.
+   */
+  shippedMaxRepairRounds?: number;
 }
 
 export interface WorkflowVersion {
@@ -4289,6 +4367,8 @@ export interface WorkflowNodeAttempt {
   model: string | null;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
+  /** Attempt-owned retained Command bodies, including on infrastructure failures. */
+  commandArtifacts?: WorkflowCommandArtifactDescriptor[];
   retryAt: number | null;
   inputFingerprint: string;
   error: string | null;
@@ -4426,6 +4506,7 @@ export interface WorkflowCheckEvidence {
   omittedBytes: number;
   headSha: string | null;
   note: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type WorkflowContextSnapshot = WorkflowSteeringContext & {

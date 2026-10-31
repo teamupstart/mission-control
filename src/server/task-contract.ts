@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import type { Task, TaskKind } from "@shared/types.ts";
 import {
   deferredImperativeList,
@@ -108,6 +109,9 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   ].join("\n\n"),
   pipeline: () => null,
   chat: () => null,
+  // A resident's role travels as standing instructions, and it has no completion boundary of
+  // its own: it ends only when a human chooses Complete & close.
+  resident: () => null,
 };
 
 /**
@@ -143,10 +147,10 @@ export function withTaskKindContract(
   inputs: TaskContractInputs = {},
 ): string {
   const appendices = [
-    executionAuthorizationContract({
+    taskHasRepository(task) ? executionAuthorizationContract({
       workflowEvidence: false,
       workflowContinuation: false,
-    }),
+    }) : null,
     inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),
     // Whether a Persona will read evidence is the workflow's property, resolved once by the

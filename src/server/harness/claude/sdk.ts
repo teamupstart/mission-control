@@ -1,5 +1,8 @@
+import { resolveTranscriptPath } from "./transcript.ts";
+import { CompactionCompletion } from "../compaction.ts";
+import { defaultWindowForModel } from "@shared/model.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -14,6 +17,7 @@ import type {
 import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   SdkEvent,
+  ResidentMcpEntry,
   SdkLaunchOptions,
   SdkSessionHandle,
   SdkSpec,
@@ -163,8 +167,7 @@ export function claudeSdkTranscriptPath(
   agentSessionId: string,
   projectsDir: string = PROJECTS_DIR,
 ): string | null {
-  const path = join(projectsDir, cwd.replace(/[/.]/g, "-"), `${agentSessionId}.jsonl`);
-  return existsSync(path) ? path : null;
+  return resolveTranscriptPath({ cwd, agentSessionId, transcriptPath: null }, projectsDir);
 }
 
 /**
@@ -337,6 +340,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private relaunch: (
     prompt: AsyncIterable<ClaudeSdkUserMessage>,
     resume: string,
+    modelOverride: string | null,
   ) => Promise<ClaudeSdkQuery> = async () => {
     throw new Error("this Claude SDK session cannot be relaunched");
   };
@@ -349,6 +353,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private agentSessionId: string | null = null;
   /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
   private modelId: string | null = null;
+  /** An accepted live selection must outlive the query, independently of init metadata. */
+  private modelOverride: string | null = null;
   /**
    * The preceding query-to-date usage snapshot, used to recover one turn's delta.
    *
@@ -420,6 +426,17 @@ class ClaudeSdkSession implements SdkSessionHandle {
     return steering ? "steered" : "started";
   }
 
+  private readonly compaction = new CompactionCompletion();
+  compact = async (focus: string) => {
+    if (this.turnActive) throw new Error("Cannot compact a busy session.");
+    const completed = this.compaction.begin();
+    try {
+      const accepted = await this.sendIfIdle({ text: `/compact ${focus}`.trim() });
+      if (!accepted) this.compaction.fail("The driver refused compaction while busy.");
+    } catch (error) { this.compaction.fail(String(error)); }
+    return completed;
+  };
+
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     if (this.stopped) throw new Error("this session's driver has stopped");
     await this.recoverIfAuthenticationFailed();
@@ -476,7 +493,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     // native conversation. The replacement therefore starts a new accounting window.
     this.cumulativeUsage = null;
     try {
-      const fresh = await this.relaunch(this.turns, this.agentSessionId);
+      const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
       if (this.stopped) {
         await fresh.return(undefined);
         throw new Error("this session's driver has stopped");
@@ -633,6 +650,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   setModel = async (model: string): Promise<void> => {
     await this.requireQuery().setModel(model);
+    this.modelOverride = model;
     this.modelId = model;
   };
 
@@ -738,6 +756,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     relaunch: (
       prompt: AsyncIterable<ClaudeSdkUserMessage>,
       resume: string,
+      modelOverride: string | null,
     ) => Promise<ClaudeSdkQuery>,
   ): void {
     this.relaunch = relaunch;
@@ -943,6 +962,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private finish(reason: string): void {
+    this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
     this.query = null;
@@ -962,6 +982,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private consume(message: ClaudeSdkMessage): void {
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      const metadata = message.compact_metadata as { post_tokens?: number } | undefined;
+      this.compaction.observe(metadata?.post_tokens ?? null, defaultWindowForModel(this.modelId));
+    }
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;
     }
@@ -1006,6 +1030,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
         this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
       }
       this.out.emit({ kind: "turn_done", usage });
+      this.compaction.finish();
       this.refreshRateLimits();
       return;
     }
@@ -1253,7 +1278,124 @@ function withArtifactTool(env: Record<string, string | undefined>): Record<strin
   return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
 }
 
+/** One resident entry as Claude Code's `mcpServers` value. */
+function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> {
+  const claude = entry.options.claude ?? {};
+  const options = {
+    ...(claude.timeoutMs !== undefined ? { timeout: claude.timeoutMs } : {}),
+    ...(claude.alwaysLoad !== undefined ? { alwaysLoad: claude.alwaysLoad } : {}),
+  };
+  if (entry.shape === "http") return { type: "http", url: entry.url, headers: entry.headers, ...options };
+  return { type: "stdio", command: entry.command, args: entry.args, env: entry.env, ...options };
+}
+
+/**
+ * Mission's server, and for a resident run its snapshot under `strictMcpConfig`, so the CLI
+ * reads no user, local, project or plugin MCP configuration. Called once per process start,
+ * because a resident's launcher entries carry that start's single-use credentials.
+ */
+function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
+  // No prototype, so every server name - whatever a configuration used - is an own entry.
+  const servers: Record<string, unknown> = Object.create(null);
+  if (opts.mcp) {
+    servers[opts.mcp.serverName] = { type: "stdio", command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env };
+  }
+  if (!opts.residentMcp) return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+  for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  return {
+    ...(Object.keys(servers).length > 0 ? { mcpServers: servers } : {}),
+    strictMcpConfig: true,
+    // `strictMcpConfig` names configuration files; claude.ai's cloud connectors are fetched
+    // for an account instead, and this is the setting that keeps them out.
+    settings: { disableClaudeAiConnectors: true },
+  };
+}
+
+/**
+ * How long a resident's start waits for Claude to report its servers and for them to stop
+ * pending. Long enough for a server fetched on first use, such as an `npx` package, to come up.
+ */
+const RESIDENT_MCP_SETTLE_MS = 60_000;
+const RESIDENT_MCP_POLL_MS = 200;
+
+/**
+ * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
+ * the set must be configured and must not have failed, be switched off, or wait on a login: a
+ * resident never runs silently without one of its servers. A remote server behind an OAuth login
+ * Claude Code holds lands here as failed, because the launcher's bridge cannot present that login.
+ */
+function residentMcpStatusProblem(
+  statuses: ReadonlyArray<{ name: string; status: string }>,
+  allowed: ReadonlySet<string>,
+): string | null {
+  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  if (extra) return `configured the MCP server ${extra.name}, which is not in its snapshot`;
+  const reported = new Map(statuses.map((status) => [status.name, status.status]));
+  for (const name of allowed) {
+    const state = reported.get(name);
+    if (state === undefined) return `did not configure its MCP server ${name}`;
+    if (state === "disabled") return `has its MCP server ${name} switched off`;
+    if (state === "needs-auth") return `cannot use its MCP server ${name}, which needs a login a resident cannot present`;
+    if (state === "failed") return `could not connect to its MCP server ${name}`;
+  }
+  return null;
+}
+
+type ResidentMcpStatuses = Array<{ name: string; status: string }>;
+
+/** The query's server statuses, or why it gave none before the deadline. */
+async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<ResidentMcpStatuses | "rejected" | "timeout"> {
+  let timer: NodeJS.Timeout | undefined;
+  const answer = await Promise.race([
+    query.mcpServerStatus!().catch((): "rejected" => "rejected"),
+    new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), Math.max(0, deadline - Date.now()));
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return answer;
+}
+
+/**
+ * Why Claude's report does not confirm a resident's set, or null when it does. A server still
+ * pending is asked about again until the deadline. Anything that leaves the set unconfirmed - no
+ * status call, a rejected or unanswered one, or a server still starting at the deadline - is a
+ * refusal: a resident never starts without knowing it has the servers its profile selected.
+ */
+async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySet<string>, settleMs: number): Promise<string | null> {
+  if (!query.mcpServerStatus) return "cannot report its MCP servers, so their set cannot be confirmed";
+  const whole = Math.max(1, Math.round(settleMs / 1000));
+  const seconds = `${whole} second${whole === 1 ? "" : "s"}`;
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const answer = await statusesBefore(query, deadline);
+    if (answer === "rejected") return "could not report its MCP servers, so their set cannot be confirmed";
+    if (answer === "timeout") return `did not report its MCP servers within ${seconds}`;
+    const problem = residentMcpStatusProblem(answer, allowed);
+    if (problem) return problem;
+    const pending = answer.find((status) => allowed.has(status.name) && status.status === "pending");
+    if (!pending) return null;
+    if (Date.now() + RESIDENT_MCP_POLL_MS >= deadline) return `was still starting its MCP server ${pending.name} after ${seconds}`;
+    await new Promise((resolve) => setTimeout(resolve, RESIDENT_MCP_POLL_MS));
+  }
+}
+
+/**
+ * Confirm the CLI configured exactly Mission's server and the run's snapshot, and that each one
+ * connected - the direct check behind `strictMcpConfig`, which also covers sources no fixture can
+ * reach, such as managed configuration. A start that cannot be confirmed is refused.
+ */
+async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, settleMs: number): Promise<void> {
+  const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
+  const problem = await residentMcpUnconfirmed(query, allowed, settleMs);
+  if (!problem) return;
+  await query.return(undefined).catch(() => {});
+  throw new Error(`this resident's Claude Code session ${problem}`);
+}
+
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
+  const settleMs = deps.residentMcpSettleMs ?? RESIDENT_MCP_SETTLE_MS;
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
@@ -1319,18 +1461,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // every session that started in any other mode unable to reach bypass at all.
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
-        ...(opts.mcp
-          ? {
-              mcpServers: {
-                [opts.mcp.serverName]: {
-                  type: "stdio",
-                  command: opts.mcp.command,
-                  args: opts.mcp.args,
-                  env: opts.mcp.env,
-                },
-              },
-            }
-          : {}),
+        ...claudeMcpOptions(opts),
         // The ask channel's disallow + redirect are deliberately NOT rendered here. They
         // exist because a menu on a child's screen is unreadable to the dashboard; a
         // driver request IS the dashboard's own control, so the native tool is better
@@ -1346,12 +1477,25 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // kills it). A turn ceiling here would end one mid-work with no way to say so.
         includePartialMessages: false,
       };
-      session.configureRelaunch((prompt, resume) => {
+      session.configureRelaunch(async (prompt, resume, modelOverride) => {
         const { resume: _previousResume, ...base } = options;
-        return deps.query({ prompt, options: { ...base, resume } });
+        // A resident's launcher credentials are single-use and were spent by the process being
+        // replaced, so the replacement mints its own.
+        const fresh = await deps.query({ prompt, options: {
+          ...base,
+          ...claudeMcpOptions(opts),
+          // The original options predate any accepted live model change.
+          ...(modelOverride ? { model: modelOverride } : {}),
+          resume,
+        } });
+        // The replacement starts its servers again, so it is held to the same check as the first
+        // start; a refusal here ends the session with its reason.
+        if (opts.residentMcp) await verifyResidentMcp(fresh, opts, settleMs);
+        return fresh;
       });
       const query = await deps.query({ prompt: session.input(), options });
       session.attach(query);
+      if (opts.residentMcp) await verifyResidentMcp(query, opts, settleMs);
       return session;
     },
   };

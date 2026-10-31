@@ -129,16 +129,18 @@ export async function* readFrames(child: {
 /** Everything the Codex driver reaches for outside itself. Tests replace the whole object. */
 export interface CodexSdkDeps {
   /**
-   * Start one connection. `args` are the launch-scoped `-c` config overrides; `traceContext`
-   * is the session's W3C parent, carried in the environment because `codex app-server` reads
-   * `TRACEPARENT` once at startup and parents every request span that has no `trace` of its
-   * own under it. One server per session makes that process-wide value session-scoped.
+   * Start one connection. `args` are the launch-scoped `-c` config overrides. `codexHome` is a
+   * resident run's private overlay home (`resident-home.ts`), set as this one server's
+   * `CODEX_HOME`; every other launch keeps the operator's. `traceContext` is the session's W3C
+   * parent, carried in the environment because `codex app-server` reads `TRACEPARENT` once at
+   * startup and parents every request span that has no `trace` of its own under it. One server
+   * per session makes that process-wide value session-scoped.
    */
   connect(
     args: readonly string[],
     cwd: string,
     stateHome?: string,
-    traceContext?: AgentTraceContext | null,
+    options?: { codexHome?: string; traceContext?: AgentTraceContext | null },
   ): Promise<AppServerTransport>;
 }
 
@@ -156,17 +158,14 @@ export function codexAppServerEnv(
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
-  async connect(args, cwd, stateHome, traceContext) {
+  async connect(args, cwd, stateHome, options) {
     // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
     // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    return spawnAppServer(
-      await codexExecutable(),
-      args,
-      cwd,
-      codexAppServerEnv(process.env, cwd, stateHome, traceContext),
-    );
+    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext);
+    if (options?.codexHome) env.CODEX_HOME = options.codexHome;
+    return spawnAppServer(await codexExecutable(), args, cwd, env);
   },
 };

@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { validateReceipt, isTrustedInstallRepo, CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
-import { APP_BUNDLE_NAME, SYSTEM_APPS_DIR, reserveRenamedApp, publishRenamedApp, removeRenamedBundle, bundleShortVersion, replaceAppBundle, stagingPaths, RESTORE_AUTHORIZATION_PROMPT } from "./app-bundle-swap.mjs";
+import { APP_BUNDLE_NAME, BUNDLE_COPY_ARGUMENTS, SYSTEM_APPS_DIR, reserveRenamedApp, publishRenamedApp, removeRenamedBundle, bundleShortVersion, replaceAppBundle, stagingPaths, RESTORE_AUTHORIZATION_PROMPT } from "./app-bundle-swap.mjs";
 import { inspectInstallDirectory, installDirectoryProblem } from "./install-destination.mjs";
 import { acquireHelperLock, releaseHelperLock, realHelperLockOperations, parseClaimEntryName, HELPER_LOCK_DIR_NAME } from "./update-lock.mjs";
 
@@ -233,7 +233,7 @@ function stageInPlaceTarget(plan, checkpoint) {
   requireInstallSpace([{path: plan.stateDirectory, bytes}, {path: dirname(plan.target), bytes: plan.descriptor.bytes + bytes}]);
   ensureBackupDirectory(plan, true);
   if (existsSync(plan.backup)) throw new Error("The attempt backup already exists");
-  execFileSync("/bin/cp", ["-R", plan.target, plan.backup], {timeout: 10 * 60 * 1000});
+  execFileSync("/bin/cp", [...BUNDLE_COPY_ARGUMENTS, plan.target, plan.backup], {timeout: 10 * 60 * 1000});
   if (inspectBundle(plan.backup).digest !== plan.sourceDigest || inspectBundle(plan.target).digest !== plan.sourceDigest) throw new Error("The recovery copy changed");
   checkpoint("source-backed-up");
   checkpoint("target-staging");
@@ -608,7 +608,7 @@ function stageRenameTarget(plan, checkpoint) {
   const sourceBytes = inspectBundle(plan.source).bytes;
   requireInstallSpace([{path: plan.stateDirectory, bytes: sourceBytes}, {path: dirname(plan.target), bytes: plan.descriptor.bytes}]);
   ensureBackupDirectory(plan, true);
-  execFileSync("/bin/cp", ["-R", plan.source, plan.backup], {timeout: 600_000});
+  execFileSync("/bin/cp", [...BUNDLE_COPY_ARGUMENTS, plan.source, plan.backup], {timeout: 600_000});
   if (inspectBundle(plan.backup).digest !== plan.sourceDigest) throw new Error("The old-name recovery copy changed");
   checkpoint("source-backed-up");
   const staging = reserveRenamedApp(plan.target);
@@ -617,7 +617,7 @@ function stageRenameTarget(plan, checkpoint) {
     checkpoint("target-staging");
     // Preserve quarantine, modes and framework links entirely within our private
     // directory. A changed public name is never a copy or chmod destination.
-    execFileSync("/bin/cp", ["-pR", plan.stagedBundle, staged], {timeout: 600_000});
+    execFileSync("/bin/cp", [...BUNDLE_COPY_ARGUMENTS, plan.stagedBundle, staged], {timeout: 600_000});
     if (inspectBundle(staged).digest !== plan.descriptor.digest) throw new Error("The private rename target changed while copying");
     const identity = directoryIdentity(staged);
     // Persist ownership BEFORE publication: the atomic move keeps dev:ino, so a

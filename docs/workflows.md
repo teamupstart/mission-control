@@ -16,6 +16,11 @@ An orphaned or historical binding that cannot establish current ownership requir
 (1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
 `get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
 submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+Command attempts in that detail carry bounded artifact descriptors, never full output bodies.
+Read one stream with
+`read_workflow_command_output({runId, attemptId, artifactId, cursor?, limit?})`, using the
+opaque ids from run detail and following `nextCursor` until it is null. A page is at most 64
+KiB. The same owning-session and **Control other sessions** authorization applies.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:
@@ -54,7 +59,8 @@ the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery
 `DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
 review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
 
-These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`,
+`/read-command-output`, and `/act` authorization
 routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
 use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
 They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
@@ -398,6 +404,19 @@ there is a line saying why. **Duplicate** is the way to a version you own - the 
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
 bindable.
+
+The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
+settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
+it changes the round budget for that built-in on this installation and leaves its graph,
+policies, trigger and delivery as they were. The new value is shown on the workflow and on
+every one of its versions. Every new binding starts from it, including the bindings Foreman
+creates for dispatched tasks. A binding or run that already exists keeps the budget it copied
+when it was created; use the binding dialog or **Grant rounds** on a blocked run to change
+those. **Reset to** returns to the value this build ships, and a later build's new default is
+then followed again. The value is stored in the daemon's database through
+`PUT /api/workflows/:id/round-limit`, which accepts only `{ "maxRepairRounds": 1-20 | null }`
+and refuses a workflow you own (edit and publish its draft instead). Settings backups do not
+carry it yet.
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
 `No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
@@ -786,9 +805,14 @@ repository override, then the slot's global default, then *skipped*. Everything 
 consent, Trust, the run budget, the platform floor, the runtime - is unchanged, and a
 configured default still runs only in a repository that holds the Workflows grant.
 
-Saving a slot replaces its default, its complete override list and its run budget in one
-compare-and-swap, so the parts are never stored apart and a second window's save is refused
-rather than silently overwriting unsaved typing.
+Saving a slot replaces its default, complete override list, run budget, timeout, and
+skip-or-block policies in one compare-and-swap, so the parts are never stored apart and a
+second window's save is refused rather than silently overwriting unsaved typing.
+
+Each slot also carries a timeout from one minute through two hours. A null setting keeps the
+existing slot default: sixty minutes for `test`, and ten minutes for every other shipped slot.
+The effective value is frozen when an attempt starts. A later catalog edit cannot change a
+running process or rewrite a completed result.
 
 **A Command runs once per workflow run by default.** Beside the command itself, each slot
 carries **how often this Command may run** - how many times it may actually execute inside a
@@ -799,7 +823,7 @@ means "every round, without ever being skipped".
 This exists because a slow gate is slow in every round. A twenty-minute test suite that
 re-runs on each repair round is the largest fixed cost in a long workflow, and the rounds after
 the first are usually re-proving the same passing paths. Once a run has spent the budget, the
-gate is *skipped* with a note naming the limit, the graph advances, and the remaining coverage
+gate is *skipped* by default with a note naming the limit, the graph advances, and the remaining coverage
 comes from CI, which runs the full suite against the merge commit anyway. Raising the number
 buys re-validation of a repair at the cost of running the command again.
 
@@ -827,13 +851,20 @@ checkout's `packages/web` resolves the command configured for the repository's
 `examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
-**An unrun gate passes, with a note saying why.** A slot with no override for this repository
+**An unrun gate passes by default, with a note saying why.** A slot with no override for this repository
 and no global default is *skipped*; a repository that has not been authorized is *not run*; a
 platform that cannot run Commands, or an executable that is not there, is *not run* too; and a
 Command that has already run as often as this run allows is *skipped* with its own distinct
 reason. All of them pass, because a workflow that failed on every unconfigured machine would be
 broken by default, and each says which of them happened so it is never mistaken for a gate that
 ran. Only a command that ran and exited non-zero fails.
+
+For a configured Command, the slot can instead set **If the command is unavailable** or
+**When the run budget is exhausted** to **Block for operator action**. A block parks the run
+without an automatic infrastructure retry, a repair round, or a code-fix packet. Correct the
+authorization, executable, platform, or allowance and use the run's Retry action. Both
+policies default to **Skip with a note**, preserving existing Command behavior. An
+unconfigured slot and an operator-disabled node remain skips regardless of these policies.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block
@@ -863,9 +894,17 @@ does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 
-Run detail draws a Command as its own card: the slot, the configured argv, the exit code, and the
-last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
-the sentence saying which of the reasons above applied.
+Run detail draws a Command as its own card: the slot, configured argv, exit code, effective
+timeout, and the last few kilobytes of combined output with a count of anything dropped. Each
+attempt also retains separate stdout and stderr bodies up to 2 MiB combined, within a 64 MiB
+per-run quota. The dashboard and attributed MCP reader fetch those bodies in bounded pages;
+they are never placed in SSE or ordinary run-detail payloads. Retained byte counts and SHA-256
+describe raw bytes, while display strips terminal control sequences and rejects invalid UTF-8.
+Pruned, partial, unavailable, and historical-not-captured states remain explicit. Raw-output
+truncation never changes the exit-code verdict. For a gate that did not run, the card shows
+the sentence saying which reason above applied. When a launched Command ends as infrastructure
+rather than producing a check outcome, its attempt card keeps the same retained-output reader,
+including for timeout, signal, cancellation, and cleanup failures.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or

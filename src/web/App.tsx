@@ -1,9 +1,9 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
-  type KeepAwakeStatus,
   type RestoringSession,
   type Session,
   type Task,
@@ -40,7 +40,6 @@ import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { RecurringMissionsPanel } from "./components/RecurringMissionsPanel.tsx";
 import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
-import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsPage } from "./components/SettingsPage.tsx";
 import {
   DEFAULT_SETTINGS_CATEGORY,
@@ -49,9 +48,6 @@ import {
 import { settingsGearDot } from "./lib/settings-dots.ts";
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
 import type { WorkflowLaunchFix } from "@shared/workflow.ts";
-import { ForemanBar } from "./components/ForemanBar.tsx";
-import { SpendChip } from "./components/SpendChip.tsx";
-import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
 import { ShipLogPage } from "./components/ShipLogPage.tsx";
 import { ScoutsPage } from "./components/scouts/ScoutsPage.tsx";
 import { LineStrip } from "./components/LineStrip.tsx";
@@ -63,8 +59,8 @@ import { ShippedDrawer } from "./components/line/ShippedDrawer.tsx";
 import { LINE_STAGE_TARGETS } from "./lib/line-targets.ts";
 import { nextLineDrawer, type LineDrawerStage } from "./lib/line-drawer.ts";
 import type { LineStageId } from "@shared/line.ts";
-import { Keycap } from "./components/Keycap.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
+import { Topbar } from "./components/Topbar.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type {
@@ -86,6 +82,7 @@ import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
 import { useDisplayItems } from "./lib/board-card.ts";
+import { isTopbarItemShown, PAGE_SEGMENTS, useTopbarLayout } from "./lib/topbar-items.ts";
 import {
   assignCardShortcuts,
   cardShortcutTarget,
@@ -98,17 +95,15 @@ import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
-  useKeybindingHints,
   useKeybindings,
   chordFromEvent,
   chordHasCommandModifier,
   chordUsesFunctionKey,
   chordYieldsToSelection,
-  formatChord,
   isTypingTarget,
 } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, stateDisplay } from "./lib/format.ts";
 import { matchesSessionFilter } from "./lib/fleet-filter.ts";
 import { autopilotGate, type BacklogTrustView } from "./lib/backlog-copy.ts";
 import { clearInterrupting, markInterrupting } from "./lib/interrupting.ts";
@@ -143,6 +138,8 @@ import { CommandLibrary } from "./workflows/CommandLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
+import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { pinnedResidentSessions, residentMarksBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -249,44 +246,6 @@ function gearDotPhrase(tone: ReturnType<typeof settingsGearDot>): string | null 
   }
 }
 
-/** The topbar's primary pages, in reading order, with one direct shortcut each. */
-const PAGE_SEGMENTS = [
-  {
-    id: "fleet",
-    action: "fleet",
-    label: "Fleet",
-    glyph: "▦",
-    hint: "The fleet of running sessions, their tasks and their reviews",
-  },
-  {
-    id: "library",
-    action: "workflows",
-    label: "Library",
-    glyph: "⌗",
-    hint: "The Library - workflows, Personas, actions, ensemble strategies and intake",
-  },
-  {
-    id: "runs",
-    action: "runs",
-    label: "Runs",
-    glyph: "▷",
-    hint: "Workflow Runs - live and finished workflow reviews",
-  },
-  {
-    id: "scouts",
-    action: "scouts",
-    label: "Scouts",
-    glyph: "⌖",
-    hint: "Scouts - finished investigations and the evidence they kept",
-  },
-] as const satisfies readonly {
-  id: "fleet" | "library" | "runs" | "scouts";
-  action: ActionId;
-  label: string;
-  glyph: string;
-  hint: string;
-}[];
-
 /**
  * Everything a tour moves and therefore owes back.
  *
@@ -365,6 +324,8 @@ export function App(): React.JSX.Element {
     archivesRevision,
     settingsRestoreNotice,
     schedules,
+    residentProfiles,
+    residentRuns,
     connected,
     hasSnapshot,
     sessionTransfers,
@@ -385,11 +346,11 @@ export function App(): React.JSX.Element {
   );
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
-  const [keybindingHints] = useKeybindingHints();
   useEffect(() => {
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.page === "residents" ? "residents"
       : route.kind === "pipelines" ? "pipelines" : "runs";
     featureVisit("page", JSON.stringify(route), feature);
   }, [route]);
@@ -550,6 +511,9 @@ export function App(): React.JSX.Element {
   // A one-shot request rather than lifted popover state: ForemanBar still owns its ordinary
   // toggle/close lifecycle, while the System profile can ask that existing control to open.
   const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
+  // The same one-shot shape for the Residents dock beside it: its chord and its palette row.
+  const [residentsDockRequest, setResidentsDockRequest] = useState(0);
+  const openResidentsDock = useCallback(() => setResidentsDockRequest((n) => n + 1), []);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -665,6 +629,14 @@ export function App(): React.JSX.Element {
   // this so the rename shortcut and a title click drive the same session.
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  // The operator's Top bar choices (Settings > Display). Hiding Search drops any term the box
+  // held: a filter with no box on screen would leave the fleet missing cards with nothing
+  // saying why.
+  const topbarLayout = useTopbarLayout();
+  const searchShown = isTopbarItemShown(topbarLayout, "search");
+  useEffect(() => {
+    if (!searchShown) setFilter("");
+  }, [searchShown]);
 
   // The single source of truth for "is an overlay open". Populated by the overlays
   // themselves as they mount (see Overlay.tsx), so the guards below can never fall out
@@ -869,6 +841,11 @@ export function App(): React.JSX.Element {
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
   const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
+  const openResidentLaunch = useCallback(
+    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
+    [],
+  );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
    * Ensemble mode on that strategy.
@@ -1044,7 +1021,7 @@ export function App(): React.JSX.Element {
     setSeeWorkTourBriefReady(false);
     const preferredRepo = run.sessionId
       ? sessions.find((session) => session.id === run.sessionId)?.repoRoot ?? null
-      : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+      : tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setSeeWorkTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1107,7 +1084,7 @@ export function App(): React.JSX.Element {
       setWorkflowsTourRepoRoot(null);
       return;
     }
-    const preferredRepo = tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    const preferredRepo = tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setWorkflowsTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1650,6 +1627,9 @@ export function App(): React.JSX.Element {
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
+        case "residents-dock":
+          openResidentsDock();
+          return;
         default: {
           // Exhaustiveness: a new target kind fails to compile here rather than silently
           // doing nothing when its row is pressed.
@@ -1662,6 +1642,7 @@ export function App(): React.JSX.Element {
       navigate,
       openDispatch,
       openFeedback,
+      openResidentsDock,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -2158,11 +2139,19 @@ export function App(): React.JSX.Element {
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
   const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
+    [sessions, residentRuns, residentProfiles],
+  );
+  const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey);
-  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey]);
+    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
+  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
   const visible = fleet.sessions;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
@@ -2249,12 +2238,13 @@ export function App(): React.JSX.Element {
       foldAttention({
         sessions,
         reviews: answerableReviews,
+        residentRuns,
         ensembles: ensembleSummaries,
         pipelineRuns,
         pipelineCommissions,
         tasks,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, residentRuns],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -2800,6 +2790,8 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    residentBySession,
+    onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
   // Drop selection / collapse / close the diff if the session disappears
@@ -3054,6 +3046,22 @@ export function App(): React.JSX.Element {
       if (shortcutTarget) {
         e.preventDefault();
         navigate(shortcutTarget);
+        return;
+      }
+      // Residents is a route rather than a title-bar segment, with the same stand-downs.
+      if (
+        chord === bindings.residents && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        navigate({ page: "residents" });
+        return;
+      }
+      // The dock lives in the top bar on every page, so its chord works from every page too.
+      if (
+        chord === bindings.residentsDock && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        openResidentsDock();
         return;
       }
 
@@ -3771,213 +3779,59 @@ export function App(): React.JSX.Element {
       >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
-        <header className="topbar" ref={topbarRef}>
-          <div className="brand">
-            <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
-            <h1>Mission Control</h1>
-          </div>
-          {/* The three primary pages as one control: sessions, reusable authoring, and run
-              history. Each segment has its own direct chord, so its label and keycap keep
-              the same meaning from every page. `aria-current` rather than `aria-pressed`:
-              these are navigation, and only one of them is where you are. */}
-          <nav className="page-seg" aria-label="Pages">
-            {PAGE_SEGMENTS.map(({ id, action, label, glyph, hint }) => {
-              const current = route.page === id;
-              const chord = formatChord(bindings[action]);
-              return (
-                <Tooltip
-                  key={id}
-                  label={chord ? `${hint} (${chord})` : hint}
-                >
-                  <button
-                    className={`page-seg-btn${current ? " is-current" : ""}`}
-                    {...(current ? { "aria-current": "page" as const } : {})}
-                    onClick={() => navigate({ page: id })}
-                  >
-                    <span aria-hidden>{glyph}</span>
-                    <span className="tb-label">{label}</span>
-                    <Keycap action={action} />
-                  </button>
-                </Tooltip>
-              );
-            })}
-          </nav>
-          {/* A <label>, not a <div>: at narrow widths the input collapses to zero and the
-              box is just its ⌕, so the click that opens it lands on the glyph rather than
-              on the field. An implicit label makes that click focus the input, which is
-              what makes the collapse a control instead of a dead icon. */}
-          <label className="filter-box">
-            <span className="filter-icon" aria-hidden>
-              ⌕
-            </span>
-            <input
-              ref={filterRef}
-              className="filter-input"
-              type="text"
-              placeholder={`Filter (${formatChord(bindings.filter)})`}
-              aria-label="Filter sessions by title, status, agent, or PR number"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  if (filter) setFilter("");
-                  else e.currentTarget.blur();
-                }
-              }}
-            />
-            {filter && (
-              <Tooltip label="Clear the filter">
-                <button
-                  className="filter-clear"
-                  aria-label="Clear filter"
-                  onClick={() => {
-                    setFilter("");
-                    filterRef.current?.focus();
-                  }}
-                >
-                  ✕
-                </button>
-              </Tooltip>
-            )}
-          </label>
-          <FleetPulse
-            connected={connected}
-            keepAwake={keepAwakeStatus}
-            sessions={sessions.length}
-            attention={counts.attention}
-            working={counts.working}
-            inbox={attention.total}
-            onOpenInbox={() => setInboxOpen(true)}
-          />
-          {launcherFocusError && (
-            <span className="launch-flash is-error" role="status">
-              {launcherFocusError}
-            </span>
-          )}
-          {/* A READOUT, so it sits with the pulse rather than inside the action cluster
-              below - which is three ranked groups of CONTROLS, and a figure dropped into
-              them would break the rank it teaches. The bar's whole right-hand side is
-              this phase's; the page segment arriving on the left is another's. */}
-          <SpendChip
-            fleet={fleetCost}
-            view={cost.status?.config.view ?? "usd"}
-            onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
-          />
-          {/* Twelve peers at one weight is what made this bar unreadable, so the
-              cluster is THREE groups with a rank, not one rhythm: destinations you
-              navigate to, the two controls that act on the fleet (Foreman's posture and
-              the primary Dispatch), and the glyph tools. The groups sit at 16px from each
-              other and 8px within, which is what lets the eye find four things instead of
-              counting twelve. `live` is no longer stranded past the end of it - it moved
-              into the pulse, where the rest of the status lives.
-
-              Each degradable label is a `.tb-label`: at narrow container widths it goes
-              visually-hidden rather than `display: none`, so the button keeps its
-              accessible name and only its glyph is drawn. Dispatch has no `.tb-label` -
-              the one control you would hunt for keeps its word at every width. */}
-          <div className="topbar-actions">
-            <div className="tb-group">
-              <Tooltip label="Recurring missions - schedule tasks on a cadence, preview, and audit run history">
-                <button
-                  className="ghost-btn missions-btn"
-                  onClick={openMissions}
-                  aria-label={
-                    scheduleAttentionCount > 0
-                      ? `Recurring missions - ${scheduleAttentionCount} need attention`
-                      : "Recurring missions"
-                  }
-                >
-                  <span aria-hidden>◷</span> <span className="tb-label">Missions</span>
-                  {scheduleAttentionCount > 0 && (
-                    <span className="ghost-badge">{scheduleAttentionCount}</span>
-                  )}
-                </button>
-              </Tooltip>
-            </div>
-            <div className="tb-group">
-              <ForemanBar
-                state={foreman}
-                openRequest={foremanOpenRequest}
-                onOpenModels={() => navigate({ page: "settings", category: "models" })}
-                onOpenSettings={() => navigate({ page: "settings", category: "foreman" })}
-              />
-              <Tooltip label={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}>
-                <button className="dispatch-btn" onClick={openDispatch} ref={dispatchTourRef}>
-                  {/* The keycap REPLACES the decorative glyph rather than sitting beside
-                      it: the default chord is "+", so drawing both put a ＋ on each end of
-                      one word and read as a rendering fault. Any other chord takes the
-                      same slot, which is the one place on this button an operator is
-                      already looking. */}
-                  {keybindingHints ? <Keycap action="dispatch" /> : <span aria-hidden>＋</span>}
-                  Dispatch
-                </button>
-              </Tooltip>
-            </div>
-            <div className="tb-group tb-tools">
-              {/* Glyph-only, like its two peers, and so it adds the same ~30px at every rung
-                  rather than a word that has to be shed. The accessible name is the same
-                  phrase the palette row uses, at every width, because this button is the
-                  one an unhappy person hunts for and it must not go quiet. */}
-              <Tooltip label="Report product feedback - file a public GitHub issue about Mission Control">
-                <button
-                  className="ghost-btn glyph-btn feedback-btn"
-                  onClick={openFeedback}
-                  aria-label="Report product feedback"
-                >
-                  <span aria-hidden>☺</span>
-                </button>
-              </Tooltip>
-              <Tooltip
-                label={
-                  route.page === "settings"
-                    ? "Return to the fleet of running sessions"
-                    : gearPhrase
-                      ? `Settings (⌘,) - ${gearPhrase}`
-                      : "Settings (⌘,)"
-                }
-              >
-                <button
-                  ref={settingsGearTourRef}
-                  className={`ghost-btn glyph-btn gear-btn${route.page === "settings" ? " is-active" : ""}`}
-                  onClick={() =>
-                    navigate(
-                      route.page === "settings"
-                        ? { page: "fleet" }
-                        : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
-                    )
-                  }
-                  // The label changes with what the click will do, the way the Workflows
-                  // button's does. No `aria-pressed` beside it: a toggle button that
-                  // renames itself and reports a pressed state announces the same fact
-                  // twice, and the second telling contradicts the first ("Return to Fleet,
-                  // pressed"). The worst-status phrase rides the label so the dot's meaning
-                  // is not carried by colour alone.
-                  aria-label={
-                    route.page === "settings"
-                      ? "Return to Fleet"
-                      : gearPhrase
-                        ? `Settings - ${gearPhrase}`
-                        : "Settings"
-                  }
-                >
-                  <span aria-hidden>⚙</span>
-                  {/* The gear inherits the worst rail dot, so a subsystem needing attention
-                      is visible without opening Settings. Purely visual - the phrase above
-                      carries it to assistive tech. */}
-                  {gearDot && <span className={`gear-dot settings-dot-${gearDot}`} aria-hidden />}
-                </button>
-              </Tooltip>
-              <AlertBar
-                settings={alertSettings}
-                update={updateAlerts}
-                away={away}
-                setAway={setAway}
-                buffered={buffered}
-              />
-            </div>
-          </div>
-        </header>
+        <Topbar
+          barRef={topbarRef}
+          layout={topbarLayout}
+          page={route.page}
+          onNavigatePage={(page) => navigate({ page })}
+          filter={filter}
+          onFilterChange={setFilter}
+          filterRef={filterRef}
+          connected={connected}
+          keepAwake={keepAwakeStatus}
+          sessions={sessions.length}
+          attention={counts.attention}
+          working={counts.working}
+          inbox={attention.total}
+          onOpenInbox={() => setInboxOpen(true)}
+          launcherFocusError={launcherFocusError}
+          fleetCost={fleetCost}
+          costView={cost.status?.config.view ?? "usd"}
+          onOpenCostSettings={() => navigate({ page: "settings", category: "cost" })}
+          scheduleAttentionCount={scheduleAttentionCount}
+          onOpenMissions={openMissions}
+          foreman={foreman}
+          foremanOpenRequest={foremanOpenRequest}
+          onOpenModels={() => navigate({ page: "settings", category: "models" })}
+          onOpenForemanSettings={() => navigate({ page: "settings", category: "foreman" })}
+          residents={{
+            runs: residentRuns,
+            profiles: residentProfiles,
+            sessions,
+            openRequest: residentsDockRequest,
+            onOpenSession: openSessionOnFleet,
+            onOpenLaunch: openResidentLaunch,
+            onManage: () => navigate({ page: "residents" }),
+          }}
+          onOpenDispatch={openDispatch}
+          dispatchRef={dispatchTourRef}
+          onOpenFeedback={openFeedback}
+          gearDot={gearDot}
+          gearPhrase={gearPhrase}
+          onGear={() =>
+            navigate(
+              route.page === "settings"
+                ? { page: "fleet" }
+                : { page: "settings", category: DEFAULT_SETTINGS_CATEGORY },
+            )
+          }
+          gearRef={settingsGearTourRef}
+          alertSettings={alertSettings}
+          updateAlerts={updateAlerts}
+          away={away}
+          setAway={setAway}
+          buffered={buffered}
+        />
 
         <UpdateBanner
           snapshot={desktopUpdates.snapshot}
@@ -4152,6 +4006,26 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          residents={route.page === "residents" ? (
+            <ResidentsPage
+              runs={residentRuns}
+              profiles={residentProfiles}
+              personas={personas}
+              selectedId={route.profileId ?? null}
+              creating={route.creating === true}
+              skillSources={route.skillSources === true}
+              onSkillSources={() => navigate({ page: "residents", skillSources: true })}
+              mcpServers={route.mcpServers === true}
+              onMcpServers={() => navigate({ page: "residents", mcpServers: true })}
+              onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onCreate={() => navigate({ page: "residents", creating: true })}
+              // Ungated: the page itself just settled the draft (saved, archived, discarded).
+              onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onDirtyChange={setWorkflowDirty}
+              onLaunch={(profile) => openResidentLaunch(profile.id)}
+              onCreatePersona={() => navigate({ page: "library", shelf: "personas", creating: true })}
+            />
+          ) : null}
           scouts={
             // Mounted only when the route IS Scouts, like every other slot, so the archive
             // list and detail fetches never run while somebody is on the fleet. The page
@@ -4534,6 +4408,9 @@ export function App(): React.JSX.Element {
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
                 onEnsembleLaunched={openEnsembleRun}
+                residentProfiles={residentProfiles}
+                onEditResidentProfile={(profileId) =>
+                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
               />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
@@ -4647,7 +4524,7 @@ export function App(): React.JSX.Element {
             request={{
               title: "Leave with unsaved changes",
               body:
-                "The workflow or Persona open in the editor has changes that have not been "
+                "The workflow, Persona or resident profile open in the editor has changes that have not been "
                 + "saved. Leaving this page discards them.",
               confirmLabel: "Discard and leave",
               confirmHint: "Throw the unsaved edits away and go to the page you asked for",
@@ -4692,137 +4569,6 @@ function taskLaunchStopped(task: Task | null): boolean {
       (task.status === "failed" ||
         task.status === "cancelled" ||
         (task.status === "backlog" && task.error !== null)),
-  );
-}
-
-/**
- * One segment of the fleet pulse: a tone dot, a figure, and a word.
- *
- * The word is a `.tb-label`, so the narrow ladder can take it away and leave a dot and a
- * number - which is why every segment carries a Tooltip whether or not it is clickable.
- * Tooltip always renders its label into a hidden `aria-describedby` node, so the meaning
- * survives the collapse for a screen reader as well as for a pointer.
- */
-function PulseStat({
-  n,
-  label,
-  tip,
-  tone,
-  onClick,
-}: {
-  n: number;
-  label: string;
-  tip: string;
-  tone?: Tone;
-  onClick?: () => void;
-}): React.JSX.Element {
-  const cls = `pulse-seg${tone ? ` pulse-${tone}` : ""}`;
-  const body = (
-    <>
-      <span className="pulse-dot" aria-hidden />
-      <span className="pulse-n">{n}</span>
-      <span className="tb-label">{label}</span>
-    </>
-  );
-  return (
-    <Tooltip label={tip}>
-      {onClick ? (
-        <button type="button" className={`${cls} pulse-btn`} onClick={onClick}>
-          {body}
-        </button>
-      ) : (
-        <div className={cls}>{body}</div>
-      )}
-    </Tooltip>
-  );
-}
-
-/**
- * The fleet's state as ONE readout.
- *
- * This was four separately-bordered pills plus a `live` indicator stranded on the far side
- * of the action cluster - five bordered boxes for one idea, at the same visual weight as
- * the seven buttons beside them, and the widest thing in the bar. One container with
- * hairline-separated segments says the same in roughly two thirds the width and one
- * border, which is most of what buys the single row at half screen.
- *
- * The connection state leads the readout rather than trailing the actions, because that is
- * what it qualifies: every figure to its right came over the stream, so when the stream is
- * down they are stale and `.is-down` dims them to say so. That is also why the down state
- * keeps its word while the counts give theirs up on the narrow ladder - a lone red dot is
- * the one thing here you cannot afford to have to hover.
- */
-function FleetPulse({
-  connected,
-  keepAwake,
-  sessions,
-  attention,
-  working,
-  inbox,
-  onOpenInbox,
-}: {
-  connected: boolean;
-  /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
-  keepAwake: KeepAwakeStatus | null;
-  sessions: number;
-  attention: number;
-  working: number;
-  /**
-   * How many answers the operator owes - the attention fold's total, not a review count.
-   *
-   * A separate segment from `attention`, which counts SESSIONS in an attention tone. The two
-   * are different UNITS of one set, not different sets: `attention` is how many agents are
-   * blocked, `inbox` is how many replies it takes to unblock them, so one session holding
-   * three questions reads `1 need you` beside `3 to answer`. It reads "to answer" rather than
-   * borrowing "need you" because two segments carrying the same word in one readout is a
-   * figure nobody can attribute.
-   *
-   * `inbox >= attention` always, and `attention-pill-invariant.test.ts` holds the fold to it.
-   * The reverse used to be reachable - a session parked on a permission prompt, or one whose
-   * `awaiting_input` came from a hook that files no review, counted in `attention` and
-   * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
-   */
-  inbox: number;
-  onOpenInbox: () => void;
-}): React.JSX.Element {
-  return (
-    <div className={`pulse${connected ? "" : " is-down"}`}>
-      {/* The connection segment, now the Keep Awake control. It keeps the leading
-          position and the live/reconnecting word because the connection fact still
-          qualifies every figure to its right; the dropdown it opens is the one place
-          host power state is controlled from. */}
-      <KeepAwakeControl connected={connected} status={keepAwake} />
-      <PulseStat
-        n={sessions}
-        label={sessions === 1 ? "session" : "sessions"}
-        tip={`${sessions} session${sessions === 1 ? "" : "s"} on the fleet`}
-      />
-      {attention > 0 && (
-        <PulseStat
-          n={attention}
-          label="need you"
-          tone="attention"
-          tip={`${attention} session${attention === 1 ? " is" : "s are"} waiting on you`}
-        />
-      )}
-      {working > 0 && (
-        <PulseStat
-          n={working}
-          label="working"
-          tone="working"
-          tip={`${working} session${working === 1 ? " is" : "s are"} working`}
-        />
-      )}
-      {inbox > 0 && (
-        <PulseStat
-          n={inbox}
-          label="to answer"
-          tone="attention"
-          onClick={onOpenInbox}
-          tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
-        />
-      )}
-    </div>
   );
 }
 

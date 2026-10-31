@@ -18,12 +18,14 @@ import type { WorkflowStore } from "../workflows/store.ts";
 import {
   SETTINGS_BACKUP_CATALOGS,
   SettingsBackupPersonaSchema,
+  SettingsBackupResidentProfileSchema,
   SettingsBackupSessionActionSchema,
   SettingsBackupWorkflowCommandSchema,
   SettingsBackupWorkflowDefinitionSchema,
   SettingsBackupWorkflowVersionSchema,
   parseSettingsCatalogPayload,
   type SettingsBackupPersona,
+  type SettingsBackupResidentProfile,
   type SettingsBackupSessionAction,
   type SettingsBackupWorkflowCommand,
   type SettingsBackupWorkflowDefinition,
@@ -36,6 +38,13 @@ import {
   type StagedSettingsConfigRestore,
 } from "./config-registry.ts";
 import { validateSettingsBackupDomains } from "./format.ts";
+import {
+  RESIDENT_LIMITS,
+  ResidentProfileRevisionSchema,
+  canonicalResidentJson,
+  type ResidentProfile,
+} from "@shared/residents.ts";
+import { listAllResidentProfiles, normalizeResidentName, storedResidentSettings } from "../residents/store.ts";
 
 export interface MigratedSettingsBackup {
   snapshot: SettingsBackupEnvelopeV1;
@@ -45,6 +54,11 @@ export interface MigratedSettingsBackup {
   workflowCommands: SettingsBackupWorkflowCommand[];
   workflows: SettingsBackupWorkflowDefinition[];
   workflowVersions: SettingsBackupWorkflowVersion[];
+  /**
+   * Resident profiles, or null when the snapshot predates their domain. Null is not "none":
+   * it means this snapshot says nothing about residents, so restore leaves them as they are.
+   */
+  residentProfiles: SettingsBackupResidentProfile[] | null;
 }
 
 export interface StagedSettingsBackup extends MigratedSettingsBackup {
@@ -65,6 +79,7 @@ export function migrateSettingsBackupSnapshot(
   for (const descriptor of SETTINGS_CONFIG_BACKUP_ENTRIES) {
     if (descriptor.backupDomain === null) throw new TypeError(`${descriptor.key} has no backup domain`);
     const entry = byDomain.get(descriptor.backupDomain);
+    if (!entry && descriptor.optionalInSnapshot) continue;
     if (!entry) throw new TypeError(`Snapshot is missing domain ${descriptor.backupDomain}`);
     if (entry.version !== descriptor.snapshotVersion) {
       throw new TypeError(
@@ -75,6 +90,7 @@ export function migrateSettingsBackupSnapshot(
   }
   for (const descriptor of SETTINGS_BACKUP_CATALOGS) {
     const entry = byDomain.get(descriptor.domain);
+    if (!entry && "optional" in descriptor && descriptor.optional) continue;
     if (!entry) throw new TypeError(`Snapshot is missing domain ${descriptor.domain}`);
     if (entry.version !== descriptor.version) {
       throw new TypeError(
@@ -92,6 +108,9 @@ export function migrateSettingsBackupSnapshot(
     workflowCommands: SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
     workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
     workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
+    residentProfiles: byDomain.has("resident-profiles")
+      ? SettingsBackupResidentProfileSchema.array().parse(payload("resident-profiles"))
+      : null,
   };
 }
 
@@ -167,6 +186,76 @@ function workflowContent(value: WorkflowDefinition | SettingsBackupWorkflowDefin
     createdAt: _createdAt, updatedAt: _updatedAt, builtin: _builtin, ...content
   } = value;
   return content;
+}
+
+/** Compared as stored, so a section only a newer build understands still counts as content. */
+function residentContent(value: ResidentProfile | SettingsBackupResidentProfile): unknown {
+  const settings = "normalizedName" in value
+    ? value.settings
+    : storedResidentSettings(value.id, value.revision) ?? value.settings;
+  return { name: value.name, settings: JSON.parse(canonicalResidentJson(settings)) as unknown };
+}
+
+/**
+ * Every live resident that names a Persona must still name a live one after this restore, or it
+ * could no longer be launched. A resident without a Persona depends on none. The post-restore
+ * residents are the snapshot's live rows, or - for a snapshot that predates the domain - the
+ * live residents kept as they are. The post-restore Personas are the built-ins plus the
+ * snapshot's live operator Personas: restore archives operator Personas it does not name.
+ */
+function residentPersonaBlockers(
+  staged: StagedSettingsBackup,
+  builtinPersonaIds: ReadonlySet<string>,
+): string[] {
+  const livePersonas = new Set([
+    ...builtinPersonaIds,
+    ...staged.personas.filter((row) => row.archivedAt === null).map((row) => row.id),
+  ]);
+  const residents = staged.residentProfiles === null
+    ? listAllResidentProfiles().filter((row) => row.archivedAt === null)
+      .map((row) => ({ name: row.name, personaId: row.settings.persona.personaId }))
+    : staged.residentProfiles.filter((row) => row.archivedAt === null)
+      .map((row) => ({ name: row.name, personaId: ResidentProfileRevisionSchema.parse(row.settings).persona.personaId }));
+  return residents
+    .filter((row) => row.personaId !== "" && !livePersonas.has(row.personaId))
+    .map((row) =>
+      `Resident profile ${row.name} uses Persona ${row.personaId}, which would not be live after this restore`);
+}
+
+/** Blockers and preview counts for the resident catalog, or zeros when the snapshot predates it. */
+function residentProfileRestore(staged: StagedSettingsBackup): {
+  blockers: string[];
+  changes: SettingsRestorePreview["residentProfiles"];
+} {
+  if (staged.residentProfiles === null) {
+    return { blockers: [], changes: { added: 0, changed: 0, archived: 0, reactivated: 0 } };
+  }
+  const blockers = [
+    ...keyedDuplicates(staged.residentProfiles, (row) => row.id, "resident profile id"),
+    ...keyedDuplicates(
+      staged.residentProfiles.filter((row) => row.archivedAt === null),
+      (row) => normalizeResidentName(row.name),
+      "live resident profile name",
+    ),
+  ];
+  // The live catalog is bounded so the SSE snapshot and the page can hold all of it; a restore
+  // must not write past that bound and leave profiles nothing can show. Restore archives every
+  // live profile the snapshot omits, so the snapshot's live rows ARE the post-restore catalog.
+  const live = staged.residentProfiles.filter((row) => row.archivedAt === null).length;
+  if (live > RESIDENT_LIMITS.liveProfiles) {
+    blockers.push(
+      `Snapshot holds ${live} live resident profiles; at most ${RESIDENT_LIMITS.liveProfiles} are allowed`,
+    );
+  }
+  for (const row of staged.residentProfiles) {
+    if (row.normalizedName !== normalizeResidentName(row.name)) {
+      blockers.push(`Resident profile ${row.id} has a normalized name that does not match its name`);
+    }
+  }
+  return {
+    blockers,
+    changes: catalogChanges(listAllResidentProfiles(), staged.residentProfiles, residentContent),
+  };
 }
 
 function catalogChanges<
@@ -402,6 +491,9 @@ export function preflightSettingsRestore(
     const current = commandBySlot.get(row.slot);
     return !current || canonical(commandContent(current)) !== canonical(commandContent(row));
   }).length;
+  const residents = residentProfileRestore(staged);
+  blockers.push(...residents.blockers);
+  blockers.push(...residentPersonaBlockers(staged, builtinPersonaIds));
   const changedDomains = staged.config.filter((item) => item.changed).map((item) => item.domain);
   const externalEffects = ["skills", "cost"] as const;
 
@@ -414,6 +506,7 @@ export function preflightSettingsRestore(
     workflowCommandsChanged,
     workflows: catalogChanges(operatorWorkflows, staged.workflows, workflowContent),
     workflowVersions: { inserted, retained },
+    residentProfiles: residents.changes,
     externalEffects,
     exclusions: [
       "Tasks, sessions, schedules, worktrees, and goals remain current",

@@ -104,6 +104,7 @@ test("the table reaches a database that already had rows", () => {
       "turn_in_progress",
       "display_name",
       "recovery_process_json",
+      "resident_compaction_token_limit",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a
@@ -124,6 +125,8 @@ test("the table reaches a database that already had rows", () => {
   // exactly what null means here - so an upgraded database keeps deriving rather than coming
   // back with every card blank-titled.
   assert.equal(getSdkSession("sdk:pre-continuation")?.displayName, null);
+  assert.equal(getSdkSession("sdk:pre-continuation")?.residentCompactionTokenLimit, undefined,
+    "upgrading an old session does not invent a measured native compaction limit");
 });
 
 test("a row round-trips, and the id is upserted rather than duplicated", () => {

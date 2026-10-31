@@ -15,7 +15,7 @@ import { acknowledgeHelper, finishHelper } from "./update-helper-runtime.mjs";
 import { prepareSourceUpdate, installStagedApp, bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 import { readReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes } from "node:crypto";
-import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, assertSafeAppLaunches, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -27,6 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { BUNDLE_COPY_ARGUMENTS } from "./app-bundle-swap.mjs";
 import { readMigrationJson, validateMigrationPlan, updateMigrationReceipt, runMigration, recoverMigration, readMigrationJournal } from "./install-migration.mjs";
 import { migrationRuntimePorts } from "./migration-runtime.mjs";
 import { fileURLToPath } from "node:url";
@@ -237,7 +238,12 @@ export function realApplyOperations(
     }
   };
   return {
-    preflight: (bundle) => assertSafeAppLaunch(bundle, mac),
+    // The transaction's own deadline, not a fixed cap: a preflight that runs out of time fails
+    // the install, so it may spend what the install has (cost recorded on `inspectAppLaunches`).
+    preflight: (bundle) => assertSafeAppLaunch(bundle, mac, installTimeoutMs),
+    // Several bundles from ONE sweep: the sweep is machine-wide, so a sweep per bundle re-reads
+    // the same launchd jobs only to filter them differently.
+    preflightAll: (bundles) => assertSafeAppLaunches(bundles, mac, installTimeoutMs),
     waitForBundle: (bundle) => waitForBundleExit(bundle, mac),
     prepareLaunch: (bundle) => prepareAppLaunch(bundle, mac),
     verifyLaunch: (bundle, nonce) => verifyAppLaunch(bundle, nonce, mac),
@@ -248,7 +254,7 @@ export function realApplyOperations(
     // Keep stderr in a thrown error. The caller sanitizes it before it reaches the outcome,
     // and "Operation not permitted" is the difference between a diagnosable rollback and the
     // old generic "Command failed: cp" report.
-    copy: (from, to) => execFileSync("cp", ["-R", from, to], {
+    copy: (from, to) => execFileSync("cp", [...BUNDLE_COPY_ARGUMENTS, from, to], {
       encoding: "utf8",
       stdio: ["ignore", "ignore", "pipe"],
     }),
@@ -358,13 +364,14 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       // The acknowledged parent is still quitting. Its runningboard job and
       // Foreground registration can disappear at different times, so inspecting
       // them now can mistake our own shutdown for a persistent launch conflict.
+      //
+      // Each checkpoint asks about both bundles from one sweep, rather than one sweep per
+      // bundle - see `inspectAppLaunches` for why that matters to the readiness window.
       await waitForSource();
-      await ops.preflight(plan.source);
-      await ops.preflight(plan.target);
+      await ops.preflightAll([plan.source, plan.target]);
       await ops.waitForBundle(plan.source);
       await ops.waitForBundle(plan.target);
-      await ops.preflight(plan.source);
-      await ops.preflight(plan.target);
+      await ops.preflightAll([plan.source, plan.target]);
     };
     const result = await runMigration(plan, ports);
     if (args.attemptDirectory && result.committed) finishHelper(args.attemptDirectory);

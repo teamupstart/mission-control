@@ -137,7 +137,8 @@ export type PaletteTarget =
   | { kind: "browse-tours" }
   | { kind: "start-tour"; tourId: TourId }
   | { kind: "report-product-issue" }
-  | { kind: "open-mission"; scheduleId: string };
+  | { kind: "open-mission"; scheduleId: string }
+  | { kind: "residents-dock" };
 
 export interface PaletteRow {
   /** Unique across every provider. Prefixed by kind, so two stores cannot collide on an id. */
@@ -257,6 +258,17 @@ const pageProvider: PaletteProvider = {
       // either mean a fetch from the palette or loading every scout ever run into memory to
       // answer a keystroke. Archive search stays inside the page that owns the catalog.
       target: { kind: "route", route: { page: "scouts" } },
+    },
+    {
+      id: "page:residents",
+      kind: "page",
+      title: "Residents",
+      detail: "Author resident profiles and launch long-running agents from them.",
+      // The words an operator reaches for when they want an agent that stays: none of them is
+      // the product's name for it.
+      keywords: ["resident", "profile", "persona", "long-running", "standing", "agent", "launch", "loop"],
+      glyph: "⌂",
+      target: { kind: "route", route: { page: "residents" } },
     },
   ],
 };
@@ -523,6 +535,14 @@ const commandProvider: PaletteProvider = {
       target: { kind: "dispatch" },
     },
     {
+      id: "command:residents-dock",
+      kind: "command",
+      title: "Open the Residents dock",
+      detail: "Live residents and the profiles you can launch, beside Foreman.",
+      keywords: ["resident", "long-running", "standing", "agent", "launch", "dock", "profile"],
+      target: { kind: "residents-dock" },
+    },
+    {
       id: "command:report-product-issue",
       kind: "command",
       title: "Report product feedback…",
@@ -683,6 +703,8 @@ function routeDestination(route: MissionRoute): string {
       return `${settingsCategory(route.category).label} settings`;
     case "fleet":
       return "the Fleet";
+    case "residents":
+      return "Residents";
   }
 }
 
@@ -713,6 +735,8 @@ export function paletteRowHint(row: PaletteRow): string {
       return "Open the Feedback form to file a public GitHub issue about Mission Control.";
     case "open-mission":
       return "Open Recurring Missions on this schedule's run history.";
+    case "residents-dock":
+      return "Open the Residents dock in the top bar.";
   }
 }
 

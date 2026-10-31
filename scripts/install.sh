@@ -8,7 +8,7 @@ field() { /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null || fail "Missi
 digest() { local value; value=$(/usr/bin/openssl dgst -sha256 "$1"); echo "${value##* }"; }
 
 download() {
-  local endpoint=$1 output=$2 limit=$3 accept=${4:-application/vnd.github+json} pid watchdog result=0 seconds=120
+  local endpoint=$1 output=$2 limit=$3 accept=${4:-application/vnd.github+json} missing=${5:-} pid watchdog result=0 seconds=120
   [[ $limit -le 16777216 ]] || seconds=900
   # Bound disk consumption as well as elapsed time. Transport diagnostics stay private.
   (ulimit -f $((limit / 1024 + 1)); exec "$mission_gh" api --hostname github.com "$endpoint" -H "Accept: $accept") >"$output" 2>"$mission_tmp/transport.log" &
@@ -20,8 +20,92 @@ download() {
   wait "$pid" || result=$?
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
+  # A private repository also answers 404 to a token that cannot see it. Name the
+  # absent release only once the repository itself is readable; otherwise the
+  # probe fails with the authentication guidance below.
+  if [[ $result != 0 && -n $missing ]] && /usr/bin/grep -q '(HTTP 404)' "$mission_tmp/transport.log"; then
+    download 'repos/teamupstart/mission-control' "$mission_tmp/repository.json" 1048576
+    fail "$missing"
+  fi
   [[ $result == 0 ]] || fail "Canonical download failed. Check gh authentication and connectivity; no source build was attempted."
   [[ $(/usr/bin/stat -f %z "$output") -le $limit ]] || fail "Download exceeds its size limit."
+}
+
+# Inventories every release tag in one plutil read per release. GitHub lists
+# releases by creation time, not version, so selection needs the whole inventory.
+list_releases() {
+  local page file index tag
+  for ((page=1; page<=20; page++)); do
+    file="$mission_tmp/releases-$page.json"
+    download "repos/teamupstart/mission-control/releases?per_page=100&page=$page" "$file" 16777216
+    for ((index=0; index<100; index++)); do
+      tag=$(/usr/bin/plutil -extract "$index.tag_name" raw -o - "$file" 2>/dev/null) || break
+      if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+        stable_tag+=("$tag"); stable_at+=("$page $index")
+      elif [[ "$tag" =~ ^alpha-[a-f0-9]{40}$ ]]; then
+        alpha_tag+=("$tag"); alpha_at+=("$page $index")
+      fi
+    done
+    [[ $index == 100 ]] || return 0
+  done
+  fail 'Release inventory exceeds its limit.'
+}
+
+# The manifest is the readiness marker: publication uploads it last and alpha
+# retirement removes it first, so a pending, failed or retired run is never ready.
+release_ready() {
+  local file="$mission_tmp/releases-${1% *}.json" index=${1#* } prerelease=$2 asset name
+  for ((asset=0; asset<=100; asset++)); do
+    name=$(/usr/bin/plutil -extract "$index.assets.$asset.name" raw -o - "$file" 2>/dev/null) || return 1
+    [[ "$name" != 'mission-control-manifest.json' ]] || break
+  done
+  [[ $asset -le 100 && $(field "$file" "$index.assets.$asset.state") == uploaded &&
+     $(field "$file" "$index.draft") == false && $(field "$file" "$index.prerelease") == "$prerelease" ]]
+}
+
+# True when version tag $1 is newer than $2.
+newer_version() {
+  local a=${1#v} b=${2#v} x y
+  while :; do
+    x=${a%%.*}; y=${b%%.*}
+    if ((x != y)); then ((x > y)); return; fi
+    [[ "$a" == *.* ]] || return 1
+    a=${a#*.}; b=${b#*.}
+  done
+}
+
+# Selects the newest ready stable version as ref, checking candidates newest first.
+newest_stable() {
+  local -a rejected=(); local i best
+  while :; do
+    best=''
+    for i in ${stable_tag[@]+"${!stable_tag[@]}"}; do
+      [[ -z ${rejected[i]:-} ]] || continue
+      if [[ -z $best ]] || newer_version "${stable_tag[i]}" "${stable_tag[best]}"; then best=$i; fi
+    done
+    [[ -n $best ]] || return 1
+    if release_ready "${stable_at[best]}" false; then ref=${stable_tag[best]}; return 0; fi
+    rejected[best]=1
+  done
+}
+
+# Selects main's newest commit with a ready alpha as ref. Walking the history of
+# main's exact head proves a substitute is an ancestor of the unpublished commit.
+newest_alpha() {
+  local head=$1 page file index sha i
+  for ((page=1; page<=3; page++)); do
+    file="$mission_tmp/main-$page.json"
+    download "repos/teamupstart/mission-control/commits?sha=$head&per_page=100&page=$page" "$file" 16777216
+    for ((index=0; index<100; index++)); do
+      sha=$(/usr/bin/plutil -extract "$index.sha" raw -o - "$file" 2>/dev/null) || return 1
+      for i in ${alpha_tag[@]+"${!alpha_tag[@]}"}; do
+        if [[ "${alpha_tag[i]}" == "alpha-$sha" ]] && release_ready "${alpha_at[i]}" true; then
+          ref=$sha; alpha_behind=$(((page - 1) * 100 + index)); return 0
+        fi
+      done
+    done
+  done
+  return 1
 }
 
 verify_app() {
@@ -89,6 +173,7 @@ main() {
     elif [[ "$ref" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then [[ "$channel" != alpha ]] || fail 'A version tag requires stable.'; channel=stable
     else fail 'Select a stable vX.Y.Z tag or full lowercase main SHA.'; fi
   fi
+  local requested=$channel
   channel=${channel:-stable}
   [[ $(/usr/bin/uname -s) == Darwin && $(/usr/bin/uname -m) == arm64 ]] || fail 'The desktop app requires macOS on Apple Silicon.'
   [[ $(/usr/bin/sw_vers -productVersion) != 10.* && $(/usr/bin/sw_vers -productVersion) != 11.* ]] || fail 'macOS 12 or newer is required.'
@@ -101,15 +186,33 @@ main() {
   trap 'if [[ $mission_mounted == 1 ]]; then /usr/bin/hdiutil detach "$mission_tmp/image" >/dev/null 2>&1 || true; fi; echo "Installer files retained at $mission_tmp" >&2' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  if [[ -z "$ref" && "$channel" == alpha ]]; then
-    download 'repos/teamupstart/mission-control/commits/main' "$mission_tmp/commit.json" 1048576
-    ref=$(field "$mission_tmp/commit.json" sha)
-    [[ "$ref" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid main identity.'
+  local tag head alpha_behind=0 missing='' release="$mission_tmp/release.json" manifest="$mission_tmp/manifest.json"
+  local -a stable_tag=() stable_at=() alpha_tag=() alpha_at=()
+  if [[ -z "$ref" ]]; then
+    # Follow the newest ready release, never merely the newest record: a release is
+    # created before its Signed distribution run publishes, and that run can fail.
+    list_releases
+    if [[ "$channel" == stable ]] && ! newest_stable; then
+      [[ "$requested" != stable ]] || fail "No stable release has a ready binary yet. Pin one with --ref vX.Y.Z once it publishes, or follow main with --channel alpha (gh release list --repo teamupstart/mission-control)."
+      echo 'No stable release has a ready binary yet; installing the newest alpha. The app offers stable releases as they publish.' >&2
+      channel=alpha
+    fi
+    if [[ "$channel" == alpha ]]; then
+      download 'repos/teamupstart/mission-control/commits/main' "$mission_tmp/commit.json" 1048576
+      head=$(field "$mission_tmp/commit.json" sha)
+      [[ "$head" =~ ^[a-f0-9]{40}$ ]] || fail 'Invalid main identity.'
+      newest_alpha "$head" || fail "No commit in main's recent history has a published alpha. Signed distribution runs may still be pending or may have failed. Retry after one publishes (gh release list --repo teamupstart/mission-control)."
+      [[ $alpha_behind == 0 ]] || echo "Main $head has no published alpha yet; its Signed distribution run may still be pending. Installing the newest published alpha, $alpha_behind commit(s) behind main." >&2
+    fi
   fi
-  local tag endpoint release="$mission_tmp/release.json" manifest="$mission_tmp/manifest.json"
-  if [[ "$channel" == alpha ]]; then tag="alpha-$ref"; else tag=$ref; fi
-  endpoint="repos/teamupstart/mission-control/releases/tags/$tag"; [[ -n "$tag" ]] || endpoint='repos/teamupstart/mission-control/releases/latest'
-  download "$endpoint" "$release" 1048576
+  if [[ "$channel" == alpha ]]; then
+    tag="alpha-$ref"
+    missing="Commit $ref has no published alpha. Its Signed distribution run may still be pending or may have failed, or the alpha was retired. Retry after it publishes, or pin a published alpha with --ref FULL_SHA (gh release list --repo teamupstart/mission-control)."
+  else
+    tag=$ref
+    missing="Release $tag is not published. Select an existing vX.Y.Z tag (gh release list --repo teamupstart/mission-control)."
+  fi
+  download "repos/teamupstart/mission-control/releases/tags/$tag" "$release" 1048576 application/vnd.github+json "$missing"
   [[ $(field "$release" draft) == false ]] || fail 'Draft releases cannot be installed.'
   tag=$(field "$release" tag_name)
   if [[ "$channel" == stable ]]; then
@@ -165,7 +268,7 @@ main() {
   local entry
   shopt -s dotglob nullglob
   for entry in "$mission_tmp/image/"*; do
-    case "${entry##*/}" in "$app_bundle"|'Read Me.txt'|'.DS_Store'|'.background'|'.VolumeIcon.icns'|'.fseventsd'|'.Trashes') ;; *) fail 'Unexpected DMG root.';; esac
+    case "${entry##*/}" in "$app_bundle"|'Read Me.txt'|'.DS_Store'|'.background'|'.background.tiff'|'.VolumeIcon.icns'|'.fseventsd'|'.Trashes') ;; *) fail 'Unexpected DMG root.';; esac
   done
   verify_app "$mission_tmp/image/$app_bundle"
   /usr/bin/ditto "$mission_tmp/image/$app_bundle" "$mission_tmp/$app_bundle"

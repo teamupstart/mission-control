@@ -8,6 +8,8 @@ import type {
   WorkflowDelivery,
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
+  WorkflowCommandArtifactDescriptor,
+  WorkflowCommandOutputPage,
   WorkflowExternalSource,
   WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
@@ -327,10 +329,127 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
 const checkChip = (outcome: WorkflowCheckOutcome): PipelineStatus =>
   checkStatus(outcome.status === "failed" ? "fail" : "pass", outcome.status);
 
+interface RetainedOutputState {
+  text: string;
+  nextCursor: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function RetainedCommandOutput({
+  runId,
+  attemptId,
+  artifacts,
+}: {
+  runId: string;
+  attemptId: string;
+  artifacts: readonly WorkflowCommandArtifactDescriptor[];
+}): React.JSX.Element | null {
+  const [pages, setPages] = useState<Record<string, RetainedOutputState>>({});
+
+  async function load(artifact: WorkflowCommandArtifactDescriptor): Promise<void> {
+    const current = pages[artifact.id];
+    setPages((value) => ({
+      ...value,
+      [artifact.id]: {
+        text: value[artifact.id]?.text ?? "",
+        nextCursor: value[artifact.id]?.nextCursor ?? null,
+        loading: true,
+        error: null,
+      },
+    }));
+    const query = current?.nextCursor
+      ? `?cursor=${encodeURIComponent(current.nextCursor)}`
+      : "";
+    try {
+      const page = await workflowRequest<WorkflowCommandOutputPage>(
+        `/api/workflow-runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}`
+        + `/command-output/${encodeURIComponent(artifact.id)}${query}`,
+      );
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: `${value[artifact.id]?.text ?? ""}${page.text}`,
+          nextCursor: page.nextCursor,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (caught) {
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: value[artifact.id]?.text ?? "",
+          nextCursor: value[artifact.id]?.nextCursor ?? null,
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not read retained output",
+        },
+      }));
+    }
+  }
+
+  if (artifacts.length === 0) return null;
+  return (
+    <div className="wf-run-command-artifacts">
+      <h5>Retained command output</h5>
+      {artifacts.map((artifact) => {
+        const page = pages[artifact.id];
+        const label = `${artifact.kind} · ${formatBytes(artifact.retainedBytes)}`;
+        if (artifact.availability !== "retained") {
+          return (
+            <p className="wf-run-meta" key={artifact.id}>
+              {label} · {artifact.availability}
+              {artifact.unavailableReason ? `: ${artifact.unavailableReason}` : ""}
+            </p>
+          );
+        }
+        const actionLabel = page?.loading
+          ? "Loading…"
+          : page?.error
+            ? page.text ? "Retry load more" : `Retry ${artifact.kind}`
+            : page ? "Load more" : `Load ${artifact.kind}`;
+        const finished = page !== undefined && page.error === null && page.nextCursor === null;
+        return (
+          <div className="wf-run-command-artifact" key={artifact.id}>
+            <div className="wf-run-command-artifact-head">
+              <strong>{label}</strong>
+              <Tooltip label={finished
+                ? "All retained output has been loaded"
+                : page?.error
+                  ? "Retry reading retained output from the last cursor"
+                  : `Read the next page of retained ${artifact.kind}`}>
+                <button
+                  className="btn btn-ghost"
+                  disabled={page?.loading || finished}
+                  onClick={() => void load(artifact)}
+                >
+                  {actionLabel}
+                </button>
+              </Tooltip>
+            </div>
+            {page?.text && <pre className="wf-run-check-output">{page.text}</pre>}
+            {page?.error && <p className="wf-error" role="alert">{page.error}</p>}
+            {(artifact.droppedBytes > 0 || artifact.captureState === "partial") && (
+              <p className="wf-run-meta">
+                {artifact.droppedBytes > 0
+                  ? `${formatBytes(artifact.droppedBytes)} exceeded the retained limit. `
+                  : ""}
+                {artifact.captureState === "partial" ? "Capture ended before the attempt settled." : ""}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CheckCard({
+  runId,
   attempt,
   outcome,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   outcome: WorkflowCheckOutcome;
 }): React.JSX.Element {
@@ -339,8 +458,10 @@ function CheckCard({
   const parts = [
     outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
+    outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
   ].filter((part): part is string => part !== null);
+  const artifacts = attempt.commandArtifacts ?? outcome.artifacts;
   return (
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
@@ -363,6 +484,15 @@ function CheckCard({
           )}
         </div>
       )}
+      {outcome.exitCode !== null && artifacts.length === 0
+        ? <p className="wf-run-meta">Extended output was not captured for this historical attempt.</p>
+        : (
+          <RetainedCommandOutput
+            runId={runId}
+            attemptId={attempt.id}
+            artifacts={artifacts}
+          />
+        )}
       <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
   );
@@ -561,9 +691,11 @@ function PersonaReadinessInput({ attempt }: { attempt: WorkflowNodeAttempt }): R
 }
 
 function AttemptCard({
+  runId,
   attempt,
   name,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   name: string;
 }): React.JSX.Element {
@@ -589,6 +721,11 @@ function AttemptCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+      <RetainedCommandOutput
+        runId={runId}
+        attemptId={attempt.id}
+        artifacts={attempt.commandArtifacts ?? []}
+      />
     </article>
   );
 }
@@ -1322,7 +1459,11 @@ function RunWorklist({
           <>
             <div className="wf-run-worklist-detail-body">
               {selected.kind === "check" && (
-                <CheckCard attempt={selected.attempt} outcome={selected.outcome} />
+                <CheckCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  outcome={selected.outcome}
+                />
               )}
               {selected.kind === "verdict" && (
                 <VerdictCard
@@ -1332,7 +1473,11 @@ function RunWorklist({
                 />
               )}
               {selected.kind === "attempt" && (
-                <AttemptCard attempt={selected.attempt} name={selected.name} />
+                <AttemptCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  name={selected.name}
+                />
               )}
               {selected.kind === "change" && (
                 <ChangeDetail

@@ -88,11 +88,16 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 const db = openDb();
 
-test("an upgrading database receives both command tables without losing what it held", () => {
+test("an upgrading database receives command catalog and artifact tables without losing what it held", () => {
   const tables = (db.prepare(
     `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workflow_command%'`,
   ).all() as unknown as Array<{ name: string }>).map((row) => row.name).sort();
-  assert.deepEqual(tables, ["workflow_command_overrides", "workflow_commands"]);
+  assert.deepEqual(tables, [
+    "workflow_command_artifact_reservations",
+    "workflow_command_artifacts",
+    "workflow_command_overrides",
+    "workflow_commands",
+  ]);
 
   assert.deepEqual(
     (db.prepare(`PRAGMA table_info(workflow_commands)`).all() as unknown as Array<{ name: string }>)
@@ -101,7 +106,10 @@ test("an upgrading database receives both command tables without losing what it 
     // `workflow_commands` table at all. A database that DID carry one gets the same column
     // appended by `addColumn` instead, which is a different order and the same schema - see
     // the upgrade case below.
-    ["slot", "default_command_json", "max_runs", "revision", "created_at", "updated_at"],
+    [
+      "slot", "default_command_json", "max_runs", "timeout_ms", "on_unavailable",
+      "on_budget_exhausted", "revision", "created_at", "updated_at",
+    ],
   );
   assert.deepEqual(
     (db.prepare(`PRAGMA table_info(workflow_command_overrides)`)
@@ -134,12 +142,14 @@ test("the slot column carries no CHECK, so appending a fifth slot stays a one-li
   assert.equal(/\bCHECK\b/i.test(sql), false);
 });
 
-test("the fresh CREATE TABLE block is the upgrade path, so it names both tables", () => {
+test("the fresh CREATE TABLE block is the upgrade path, so it names catalog and artifact tables", () => {
   // At RUNTIME a fresh database and a migrated one are indistinguishable - the CREATE TABLE
   // block runs on every open - so the only place an omission would be visible is the source.
   const source = readFileSync(new URL("../src/server/db.ts", import.meta.url), "utf8");
   assert.match(source, /CREATE TABLE IF NOT EXISTS workflow_commands \(/);
   assert.match(source, /CREATE TABLE IF NOT EXISTS workflow_command_overrides \(/);
+  assert.match(source, /CREATE TABLE IF NOT EXISTS workflow_command_artifact_reservations \(/);
+  assert.match(source, /CREATE TABLE IF NOT EXISTS workflow_command_artifacts \(/);
   assert.match(source, /PRIMARY KEY \(slot, repo_root\)/);
 });
 

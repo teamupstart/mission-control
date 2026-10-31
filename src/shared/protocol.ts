@@ -99,6 +99,12 @@ import {
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_CHECK_STATUSES,
+  WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY,
+  WORKFLOW_COMMAND_ARTIFACT_KINDS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_OUTPUT_LIMITS,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   WORKFLOW_COMPLETION_KINDS,
   WORKFLOW_DELIVERY_MODES,
   WORKFLOW_LIMITS,
@@ -5854,6 +5860,17 @@ export const WorkflowCheckEvidenceSchema = z.object({
   omittedBytes: z.number().int().nonnegative(),
   headSha: z.string().max(100).nullable(),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional(),
 });
 
 const WorkflowIntentSourceSchema = z.object({
@@ -6418,6 +6435,12 @@ export const UpdateWorkflowCommandSchema = z.object({
     .int()
     .min(WORKFLOW_LIMITS.commandMaxRunsMin)
     .max(WORKFLOW_LIMITS.commandMaxRunsMax),
+  timeoutMs: z.number().int()
+    .min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS)
+    .nullable(),
+  onUnavailable: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
+  onBudgetExhausted: z.enum(WORKFLOW_COMMAND_FAILURE_POLICIES),
   overrides: z
     .array(WorkflowCommandOverrideSchema)
     .max(WORKFLOW_LIMITS.commandOverrides)
@@ -6526,8 +6549,32 @@ export const WorkflowCheckOutcomeSchema = z.object({
   exitCode: z.number().int().nullable(),
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),
+  artifacts: z.array(z.object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(WORKFLOW_COMMAND_ARTIFACT_KINDS),
+    retainedBytes: z.number().int().nonnegative(),
+    observedBytes: z.number().int().nonnegative(),
+    droppedBytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    captureState: z.enum(["complete", "partial"]),
+    availability: z.enum(WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY),
+    unavailableReason: z.string().max(2_000).nullable(),
+  })).max(3).optional().default([]),
+  timeoutMs: z.number().int().min(WORKFLOW_COMMAND_TIMEOUT_MIN_MS)
+    .max(WORKFLOW_COMMAND_TIMEOUT_MAX_MS).nullable().optional().default(null),
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
 });
+
+export const ReadWorkflowCommandOutputSchema = z.object({
+  runId: z.string().min(1).max(500),
+  attemptId: z.string().min(1).max(500),
+  artifactId: z.string().min(1).max(500),
+  cursor: z.string().max(WORKFLOW_COMMAND_OUTPUT_LIMITS.cursorChars).nullable().optional(),
+  limit: z.number().int()
+    .min(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMin)
+    .max(WORKFLOW_COMMAND_OUTPUT_LIMITS.readBytesMax)
+    .optional(),
+}).strict();
 
 /**
  * Foreman's proof that a completion episode is verified, offered to whatever workflow is

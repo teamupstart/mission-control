@@ -23,6 +23,11 @@ const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workf
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
+const defaultExecutionPolicy = {
+  timeoutMs: null,
+  onUnavailable: "skip" as const,
+  onBudgetExhausted: "skip" as const,
+};
 
 test("the opening snapshot carries every slot, configured or not", () => {
   clearWorkflowTables(db);
@@ -43,6 +48,7 @@ test("snapshot, upsert and reconnect produce one equivalent catalog", () => {
   const unsubscribe = registry.subscribe((event) => events.push(event));
   assert.equal(
     manager.replace("test", {
+      ...defaultExecutionPolicy,
       expectedRevision: 1,
       defaultCommand: ["npm", "test"],
       maxRuns: 1,
@@ -53,11 +59,17 @@ test("snapshot, upsert and reconnect produce one equivalent catalog", () => {
   // A refusal must publish nothing: every open window would otherwise redraw a slot that
   // never moved.
   assert.equal(
-    manager.replace("test", { expectedRevision: 1, defaultCommand: null, overrides: [], maxRuns: 1 }, 200).ok,
+    manager.replace("test", {
+      ...defaultExecutionPolicy,
+      expectedRevision: 1, defaultCommand: null, overrides: [], maxRuns: 1,
+    }, 200).ok,
     false,
   );
   assert.equal(
-    manager.replace("build", { expectedRevision: 1, defaultCommand: ["npm", "run", "build"], overrides: [], maxRuns: 1 }, 300).ok,
+    manager.replace("build", {
+      ...defaultExecutionPolicy,
+      expectedRevision: 1, defaultCommand: ["npm", "run", "build"], overrides: [], maxRuns: 1,
+    }, 300).ok,
     true,
   );
   unsubscribe();
@@ -109,6 +121,7 @@ test("the collection is bounded by the slot list rather than by operator data", 
   const registry = new Registry();
   const manager = new WorkflowCommandManager(registry, new WorkflowStore(db));
   manager.replace("test", {
+    ...defaultExecutionPolicy,
     expectedRevision: 1,
     defaultCommand: ["npm", "test"],
     maxRuns: 1,

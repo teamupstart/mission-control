@@ -239,7 +239,8 @@ the rest of `MISSION_HOME`.
 
 Format v1 includes normalized values for every registered setting, including schema defaults,
 plus every active or archived operator-owned Persona, session action, Workflow definition, its
-immutable published versions, and all four Command slots. Built-in catalog items are supplied by
+immutable published versions, and all five Command slots, including timeout and skip-or-block
+policies. Built-in catalog items are supplied by
 the application and are not copied. Snapshots also exclude tasks, queues, schedules, sessions,
 workflow bindings and runs, reviews, telemetry and spend history, operational away or lease state,
 derived reload generations, credentials, tokens, and environment secrets.

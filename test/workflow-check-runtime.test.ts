@@ -14,11 +14,11 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
@@ -32,6 +32,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
+const { WorkflowCommandArtifactService } =
+  await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
 const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
@@ -42,6 +44,7 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
+type ArtifactService = InstanceType<typeof WorkflowCommandArtifactService>;
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
@@ -558,7 +561,7 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
   };
 }
 
-test("test commands get sixty minutes while typecheck keeps ten", async () => {
+test("slot defaults and a configured request timeout reach the supervisor", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 1);
   const leases = new CheckLeaseManager(db, {
@@ -590,8 +593,162 @@ test("test commands get sixty minutes while typecheck keeps ten", async () => {
     assert.equal(outcome.kind, "exited");
   }
 
-  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000]);
+  const configured = await runtime.executorFor(attemptRef())({
+    slot: "build",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+    timeoutMs: 90 * 60_000,
+  });
+  assert.equal(configured.kind, "exited");
+
+  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000, 90 * 60_000]);
 });
+
+test("an unavailable output directory does not prevent the Command from running", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `unavailable-command-output-${seq++}`);
+  mkdirSync(outputRoot, { recursive: true });
+  writeFileSync(join(outputRoot, ".tmp"), "not a directory");
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  let launched = false;
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      launched = true;
+      request.capture?.push("stdout", Buffer.from("command still ran\n"));
+      return {
+        result: { kind: "exited", exitCode: 0, output: "command still ran\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-output-failure-${seq++}` };
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(launched, true);
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.length, 2);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+test("a capped capture losing its temporary path preserves the Command verdict", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `missing-capped-command-output-${seq++}`);
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      request.capture?.push("stdout", Buffer.concat([
+        Buffer.alloc(WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt - 1, 120),
+        Buffer.from("🙂", "utf8"),
+      ]));
+      const stdoutTemp = readdirSync(join(outputRoot, ".tmp"))
+        .find((name) => name.includes("-stdout-"));
+      assert.ok(stdoutTemp);
+      rmSync(join(outputRoot, ".tmp", stdoutTemp), { force: true });
+      return {
+        result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-capped-output-failure-${seq++}` };
+
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+for (const failurePoint of ["reservation", "finalization", "supervisor-and-finalization"] as const) {
+  test(`artifact ${failurePoint} database failure settles the lease before propagating`, async () => {
+    const { repoRoot, headSha } = gitRepo();
+    const pool = fakePool(repoRoot, 1);
+    const leases = new CheckLeaseManager(db, {
+      verifyBase: verifyPinnedBase,
+      acquisitionProvider: modeledProvider(pool.cli),
+    });
+    const databaseError = new Error("injected artifact database failure");
+    const supervisorError = new Error("injected supervisor failure");
+    class FailingArtifacts extends WorkflowCommandArtifactService {
+      override beginCapture(input: Parameters<ArtifactService["beginCapture"]>[0]) {
+        if (failurePoint === "reservation") throw databaseError;
+        return super.beginCapture(input);
+      }
+      override finalizeCapture(...args: Parameters<ArtifactService["finalizeCapture"]>) {
+        if (failurePoint !== "reservation") throw databaseError;
+        return super.finalizeCapture(...args);
+      }
+    }
+    let launched = false;
+    const runtime = new CheckRuntime(leases, {
+      artifacts: new FailingArtifacts(db, join(home, `metadata-failure-${seq++}`)),
+      leaseStore: leaseRows,
+      platform: () => ({ supported: true, note: "" }),
+      supervise: async () => {
+        launched = true;
+        if (failurePoint === "supervisor-and-finalization") throw supervisorError;
+        return {
+          result: { kind: "exited", exitCode: 0, output: "ok", truncatedBytes: 0 },
+          emptiness: "empty",
+          supervisor: null,
+        };
+      },
+    });
+    const ref = { ...attemptRef(), runId: `run-metadata-failure-${seq++}` };
+    await assert.rejects(runtime.executorFor(ref)({
+      slot: "test", command: PASSES, repoRoot, workingSubpath: "", headSha,
+    }), (error: unknown) => failurePoint === "supervisor-and-finalization"
+      ? error instanceof AggregateError
+        && error.errors[0] === supervisorError && error.errors[1] === databaseError
+      : error === databaseError);
+    assert.equal(launched, failurePoint !== "reservation");
+    if (failurePoint === "supervisor-and-finalization") {
+      assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
+      // Unknown supervision cannot authorize release, but must drop this daemon's active
+      // claim so ordinary reclamation can settle it once the group is proven empty.
+      await leases.reclaimLeaked(async () => "empty");
+    }
+    assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+    assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), false);
+  });
+}
 
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();

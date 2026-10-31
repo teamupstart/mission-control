@@ -2,7 +2,8 @@ import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import {
-  GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema,
+  GetWorkflowRunSchema, ListWorkflowRunsSchema, ReadWorkflowCommandOutputMcpSchema,
+  WorkflowMcpActionSchema,
   type WorkflowActionRequestSchema, workflowActionPath,
 } from "@shared/workflow-mcp.ts";
 import type { WorkflowBinding } from "@shared/workflow.ts";
@@ -86,6 +87,36 @@ export function registerWorkflowMcpRoutes(
       manager.store.getBinding(manager.store.getRun(parsed.data.runId)?.bindingId ?? ""));
     if (!allowed()) return denied(c);
     const response = await app.request(`http://localhost/api/workflow-runs/${encodeURIComponent(parsed.data.runId)}`, { headers: { host: "localhost" } });
+    const stillCurrent = callerFor(c, registry);
+    if (stillCurrent.response) return stillCurrent.response;
+    return allowed() ? response : denied(c);
+  });
+
+  app.post("/mcp/workflows/read-command-output", async (c) => {
+    const auth = callerFor(c, registry);
+    if (auth.response) return auth.response;
+    const parsed = await parseBody(c, ReadWorkflowCommandOutputMcpSchema);
+    if (!parsed.ok) return parsed.res;
+    const current = callerFor(c, registry);
+    if (current.response) return current.response;
+    const manager = getManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const allowed = () => registry.sessionControlEnabled(current.caller!) || ownsBinding(
+      registry,
+      current.caller!,
+      manager.store.getBinding(manager.store.getRun(parsed.data.runId)?.bindingId ?? ""),
+    );
+    if (!allowed()) return denied(c);
+    const query = new URLSearchParams();
+    if (parsed.data.cursor) query.set("cursor", parsed.data.cursor);
+    if (parsed.data.limit) query.set("limit", String(parsed.data.limit));
+    const response = await app.request(
+      `http://localhost/api/workflow-runs/${encodeURIComponent(parsed.data.runId)}`
+      + `/attempts/${encodeURIComponent(parsed.data.attemptId)}`
+      + `/command-output/${encodeURIComponent(parsed.data.artifactId)}`
+      + (query.size > 0 ? `?${query}` : ""),
+      { headers: { host: "localhost" } },
+    );
     const stillCurrent = callerFor(c, registry);
     if (stillCurrent.response) return stillCurrent.response;
     return allowed() ? response : denied(c);

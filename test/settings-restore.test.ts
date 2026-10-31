@@ -135,6 +135,9 @@ function seedBaseline(): void {
     defaultCommand: ["SECRET_ARGV", "test"],
     overrides: [{ repoRoot: "/secret/repository", command: ["SECRET_OVERRIDE"] }],
     maxRuns: 2,
+    timeoutMs: 90 * 60_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
   }, 15).ok, true);
 
   setAppConfig(APP_CONFIG_ENTRIES.skills, SkillsConfigSchema.parse({
@@ -269,6 +272,9 @@ function mutateCurrentState(): void {
     defaultCommand: ["changed"],
     overrides: [],
     maxRuns: 4,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
   }, 109).ok, true);
   setAppConfig(APP_CONFIG_ENTRIES.skills, SkillsConfigSchema.parse({
     enabled: true,
@@ -555,6 +561,9 @@ test("restore advances catalogs, preserves immutable history and every excluded 
   assert.equal(workflowStore.getBinding("binding-current")!.workflowVersionId, "version-two");
   assert.equal(workflowStore.getRun("run-current")!.workflowVersionId, "version-two");
   assert.deepEqual(workflowStore.getWorkflowCommand("test")!.defaultCommand, ["SECRET_ARGV", "test"]);
+  assert.equal(workflowStore.getWorkflowCommand("test")!.timeoutMs, 90 * 60_000);
+  assert.equal(workflowStore.getWorkflowCommand("test")!.onUnavailable, "block");
+  assert.equal(workflowStore.getWorkflowCommand("test")!.onBudgetExhausted, "block");
   assert.deepEqual(dumpExcludedTables(), excludedBefore);
   assert.equal(registry.snapshot().personas.some((row) => row.id === "persona-one"), true);
   assert.equal(registry.snapshot().workflowSummaries.find((row) => row.id === "workflow-one")

@@ -999,6 +999,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       slot                 TEXT PRIMARY KEY,
       default_command_json TEXT,
       max_runs             INTEGER NOT NULL DEFAULT 1,
+      timeout_ms           INTEGER,
+      on_unavailable       TEXT NOT NULL DEFAULT 'skip',
+      on_budget_exhausted  TEXT NOT NULL DEFAULT 'skip',
       revision             INTEGER NOT NULL DEFAULT 1,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL
@@ -1398,6 +1401,44 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_node_attempts(submission_id, node_id, attempt);
     CREATE INDEX IF NOT EXISTS idx_workflow_node_attempts_state
       ON workflow_node_attempts(state, retry_at);
+
+    -- Attempt-owned retained Command bodies. Bodies live under the daemon state directory;
+    -- this table is the durable identity, integrity and lifecycle authority.
+    CREATE TABLE IF NOT EXISTS workflow_command_artifact_reservations (
+      attempt_id      TEXT PRIMARY KEY,
+      run_id          TEXT NOT NULL,
+      reserved_bytes  INTEGER NOT NULL,
+      retained_bytes  INTEGER NOT NULL DEFAULT 0,
+      state           TEXT NOT NULL,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifact_reservations_run
+      ON workflow_command_artifact_reservations(run_id, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_command_artifacts (
+      id                 TEXT PRIMARY KEY,
+      run_id             TEXT NOT NULL,
+      submission_id      TEXT NOT NULL,
+      attempt_id         TEXT NOT NULL,
+      kind               TEXT NOT NULL,
+      retained_bytes     INTEGER NOT NULL,
+      observed_bytes     INTEGER NOT NULL,
+      dropped_bytes      INTEGER NOT NULL,
+      sha256             TEXT,
+      capture_state      TEXT NOT NULL,
+      availability       TEXT NOT NULL,
+      unavailable_reason TEXT,
+      storage_key        TEXT,
+      created_at         INTEGER NOT NULL,
+      finalized_at       INTEGER,
+      pruned_at          INTEGER,
+      UNIQUE(attempt_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_run
+      ON workflow_command_artifacts(run_id, availability, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_attempt
+      ON workflow_command_artifacts(attempt_id, kind);
 
     CREATE TABLE IF NOT EXISTS workflow_edge_receipts (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3433,6 +3474,9 @@ function migrate(d: DatabaseSync): void {
   // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
   // backfill because the default IS the migrated value for every existing slot.
   addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
+  addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
+  addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.

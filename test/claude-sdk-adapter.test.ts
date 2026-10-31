@@ -631,6 +631,44 @@ test("an authentication failure before binding exits as unresumable", async () =
   }
 });
 
+for (const initialModel of [null, "claude-opus-5"]) {
+  test(`authentication recovery preserves an accepted model upgrade from ${initialModel ?? "default"}`, async (t) => {
+    const starts: Harnessed[] = [];
+    const deps: ClaudeSdkDeps = {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({}),
+      query: async ({ prompt, options }) => {
+        const query = new FakeQuery();
+        const turns: ClaudeSdkUserMessage[] = [];
+        starts.push({ query, options, turns });
+        void (async () => {
+          for await (const turn of prompt) turns.push(turn);
+          query.end();
+        })();
+        return query;
+      },
+    };
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ model: initialModel }));
+    t.after(() => handle.stop());
+    const first = starts[0]!;
+    first.query.emit(INIT("model-recovery"));
+    await collect(handle.events, event => event.kind === "bound");
+    await handle.setModel!("claude-opus-5-5");
+    first.query.setModel = async () => { throw new Error("model unavailable"); };
+    await assert.rejects(handle.setModel!("refused-model"), /model unavailable/);
+
+    first.query.emit({ type: "assistant", session_id: "model-recovery", error: "authentication_failed" });
+    first.query.emit({ type: "result", session_id: "model-recovery", subtype: "error_during_execution" });
+    await collect(handle.events, event => event.kind === "turn_done");
+    await handle.send({ text: "continue after login" });
+
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1]!.options.resume, "model-recovery");
+    assert.equal(starts[1]!.options.model, "claude-opus-5-5", "recovery must not restore the original model");
+    assert.equal(starts[0]!.options.model, initialModel ?? undefined, "the first launch remains an unchanged snapshot");
+  });
+}
+
 test("an authentication failure reloads credentials by resuming on the next turn", async () => {
   const starts: Harnessed[] = [];
   const deps: ClaudeSdkDeps = {

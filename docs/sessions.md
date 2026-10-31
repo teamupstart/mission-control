@@ -936,6 +936,8 @@ it does not change dispatch defaults. Until the conversation reports the selecte
 the badge marks it **selected**, including while runtime metadata is absent. Claude's `[1m]`
 context marker does not make an otherwise matching model pending. A response already underway
 can still report its previous model; rebinding does not replace the saved selection.
+Claude also retains an accepted model selection when authentication recovery replaces its
+subprocess and resumes the conversation, instead of replaying the original launch model.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
 selection. If saving an accepted change fails, Mission Control restores the previously saved model,
 including after repeated failed attempts.

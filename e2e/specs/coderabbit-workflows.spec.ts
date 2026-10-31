@@ -14,7 +14,7 @@ async function api<T>(d:DaemonHandle,path:string,body?:unknown,method?:string):P
 function git(d:DaemonHandle,...args:string[]){return execFileSync("git",["-C",d.repo,...args],{encoding:"utf8"}).trim();}
 function yaml(d:DaemonHandle,source:string|null){
  if(source!==null)writeFileSync(join(d.repo,".coderabbit.yaml"),source);
- git(d,"add",".");git(d,"commit","--allow-empty","-qm","CodeRabbit fixture");
+ git(d,"add",".");git(d,"-c","user.name=Fixture","-c","user.email=fixture@example.com","-c","commit.gpgsign=false","commit","--allow-empty","-qm","CodeRabbit fixture");
 }
 async function dispatch(page:Page,d:DaemonHandle){
  await page.getByRole("button",{name:"Dispatch"}).click();const dialog=page.getByRole("dialog",{name:"Dispatch an agent"});

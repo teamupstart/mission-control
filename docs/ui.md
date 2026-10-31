@@ -1366,6 +1366,10 @@ is on disk now. If the agent has rewritten that line since, the click says so in
 the box, and the line stops being clickable until you reload the diff. There is no Preview here;
 a diff is source, so every comment made from it is a line comment.
 
+Diff loading runs independent Git reads together and reads untracked files in batches of
+at most eight. The list keeps Git's file order, and each tab entry reads fresh checkout
+contents. The existing patch-size and untracked-file limits still apply.
+
 The control says why when a file takes no comment, and stays focusable so the reason is
 reachable from the keyboard: a **single-commit** diff (its new side is that commit, not the
 working tree a comment anchors to), a **deleted** file, a **binary** file, and a file the Files

@@ -44,6 +44,7 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
+type ArtifactService = InstanceType<typeof WorkflowCommandArtifactService>;
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
@@ -694,6 +695,60 @@ test("a capped capture losing its temporary path preserves the Command verdict",
     (artifact) => artifact.availability === "unavailable",
   ), true);
 });
+
+for (const failurePoint of ["reservation", "finalization", "supervisor-and-finalization"] as const) {
+  test(`artifact ${failurePoint} database failure settles the lease before propagating`, async () => {
+    const { repoRoot, headSha } = gitRepo();
+    const pool = fakePool(repoRoot, 1);
+    const leases = new CheckLeaseManager(db, {
+      verifyBase: verifyPinnedBase,
+      acquisitionProvider: modeledProvider(pool.cli),
+    });
+    const databaseError = new Error("injected artifact database failure");
+    const supervisorError = new Error("injected supervisor failure");
+    class FailingArtifacts extends WorkflowCommandArtifactService {
+      override beginCapture(input: Parameters<ArtifactService["beginCapture"]>[0]) {
+        if (failurePoint === "reservation") throw databaseError;
+        return super.beginCapture(input);
+      }
+      override finalizeCapture(...args: Parameters<ArtifactService["finalizeCapture"]>) {
+        if (failurePoint !== "reservation") throw databaseError;
+        return super.finalizeCapture(...args);
+      }
+    }
+    let launched = false;
+    const runtime = new CheckRuntime(leases, {
+      artifacts: new FailingArtifacts(db, join(home, `metadata-failure-${seq++}`)),
+      leaseStore: leaseRows,
+      platform: () => ({ supported: true, note: "" }),
+      supervise: async () => {
+        launched = true;
+        if (failurePoint === "supervisor-and-finalization") throw supervisorError;
+        return {
+          result: { kind: "exited", exitCode: 0, output: "ok", truncatedBytes: 0 },
+          emptiness: "empty",
+          supervisor: null,
+        };
+      },
+    });
+    const ref = { ...attemptRef(), runId: `run-metadata-failure-${seq++}` };
+    await assert.rejects(runtime.executorFor(ref)({
+      slot: "test", command: PASSES, repoRoot, workingSubpath: "", headSha,
+    }), (error: unknown) => failurePoint === "supervisor-and-finalization"
+      ? error instanceof AggregateError
+        && error.errors[0] === supervisorError && error.errors[1] === databaseError
+      : error === databaseError);
+    assert.equal(launched, failurePoint !== "reservation");
+    if (failurePoint === "supervisor-and-finalization") {
+      assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
+      // Unknown supervision cannot authorize release, but must drop this daemon's active
+      // claim so ordinary reclamation can settle it once the group is proven empty.
+      await leases.reclaimLeaked(async () => "empty");
+    }
+    assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+    assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), false);
+  });
+}
 
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();

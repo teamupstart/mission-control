@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
   CheckExecutionRequest,
   CheckExecutionResult,
@@ -210,11 +211,19 @@ export class CheckRuntime {
       };
     }
 
-    const capture = attempt.runId ? this.artifacts.beginCapture({
-      runId: attempt.runId,
-      submissionId: attempt.submissionId,
-      attemptId: attempt.attemptId,
-    }) : undefined;
+    let capture: ReturnType<WorkflowCommandArtifactService["beginCapture"]> | undefined;
+    try {
+      capture = attempt.runId ? this.artifacts.beginCapture({
+        runId: attempt.runId,
+        submissionId: attempt.submissionId,
+        attemptId: attempt.attemptId,
+      }) : undefined;
+    } catch (error) {
+      // No process has started. A metadata database failure stays fail-closed, but must
+      // first release the leased tree rather than leave it owned until daemon restart.
+      await this.settle(attempt.attemptId, "empty");
+      throw error;
+    }
     let outcome: CheckSpawnOutcome;
     try {
       outcome = await this.supervise(
@@ -236,11 +245,17 @@ export class CheckRuntime {
         },
       );
     } catch (err) {
-      const artifacts = capture?.finalize(false) ?? [];
+      let artifacts: WorkflowCommandArtifactDescriptor[];
       // The supervisor is written not to throw, and a lease outliving one that did would be a
       // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
       // reading: the row and the pin are kept and reclamation asks about the group later.
-      await this.settle(attempt.attemptId, "unknown");
+      try {
+        artifacts = capture?.finalize(false) ?? [];
+      } catch (captureError) {
+        throw new AggregateError([err, captureError], "Check supervision and artifact metadata failed");
+      } finally {
+        await this.settle(attempt.attemptId, "unknown");
+      }
       return {
         kind: "infrastructure",
         reason: `the ${request.slot} check runtime failed: ${message(err)}`,
@@ -248,15 +263,19 @@ export class CheckRuntime {
       };
     }
 
-    const artifacts = capture?.finalize(
-      outcome.result.kind === "exited" || outcome.result.kind === "unavailable",
-    ) ?? [];
-
     // BEFORE the result surfaces, always. An `infrastructure` result reaches
     // `handleInfrastructureFailure`, which finishes this attempt and creates a fresh one, and
     // the retry gate it consults can only be right if this lease has already reached its true
     // state by the time it is asked.
-    const cleanup = await this.settle(attempt.attemptId, outcome.emptiness);
+    let artifacts: WorkflowCommandArtifactDescriptor[];
+    let cleanup: CheckCleanup;
+    try {
+      artifacts = capture?.finalize(
+        outcome.result.kind === "exited" || outcome.result.kind === "unavailable",
+      ) ?? [];
+    } finally {
+      cleanup = await this.settle(attempt.attemptId, outcome.emptiness);
+    }
     // A cleanup that did not resolve is an INFRASTRUCTURE failure, and it outranks whatever the
     // command said. Two reasons, and the second is the one that makes this load-bearing rather
     // than fastidious:

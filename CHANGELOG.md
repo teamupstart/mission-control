@@ -1,5 +1,63 @@
 # Changelog
 
+## [1.28.0](https://github.com/teamupstart/mission-control/compare/v1.27.2...v1.28.0) (2026-10-31)
+
+
+### Features
+
+* add opt-in delegated session control ([#1208](https://github.com/teamupstart/mission-control/issues/1208)) ([33013f2](https://github.com/teamupstart/mission-control/commit/33013f2a6f1c4c80197fb8892c15dbbc6780293c))
+* **desktop:** complete Node-free owned integrations ([#1217](https://github.com/teamupstart/mission-control/issues/1217)) ([b31fa5e](https://github.com/teamupstart/mission-control/commit/b31fa5e20bfbc6a7d7fcc981ac975ee533a45fed))
+* **desktop:** rename macOS app and migrate binary updates ([#1216](https://github.com/teamupstart/mission-control/issues/1216)) ([046e672](https://github.com/teamupstart/mission-control/commit/046e6728e00856c6bcb48bf06ac8e9656083bbcc))
+* **display:** customize which top bar items show and which stay minimized ([#1249](https://github.com/teamupstart/mission-control/issues/1249)) ([44ee8dd](https://github.com/teamupstart/mission-control/commit/44ee8ddca2f220aab494319af7544c5e9676fa73))
+* install signed desktop binaries without system Node ([#1193](https://github.com/teamupstart/mission-control/issues/1193)) ([0ece182](https://github.com/teamupstart/mission-control/commit/0ece1821752d288fe3d112a1d48fcb255fa3c89b))
+* **mcp:** add notes to plan decisions and retire share_plan and report_product_feedback ([#1261](https://github.com/teamupstart/mission-control/issues/1261)) ([80247f5](https://github.com/teamupstart/mission-control/commit/80247f5e30f0fd68533171ab650f3acdf938f25f))
+* **mcp:** expose workflow runtime actions ([#1205](https://github.com/teamupstart/mission-control/issues/1205)) ([e2abf2c](https://github.com/teamupstart/mission-control/commit/e2abf2c76cd1fc42a6ce98c368488bc4d35dbad1))
+* **plans:** approve all future plan bundles for a task ([#1252](https://github.com/teamupstart/mission-control/issues/1252)) ([b199c45](https://github.com/teamupstart/mission-control/commit/b199c454a2a9cbd969809f62c37944e25252c88b))
+* **residents:** add global and registered skill catalog ([#1262](https://github.com/teamupstart/mission-control/issues/1262)) ([e776c3b](https://github.com/teamupstart/mission-control/commit/e776c3b316705757c781211973553f73b5425393))
+* **residents:** author resident profiles and launch them from Dispatch &gt; Resident ([#1255](https://github.com/teamupstart/mission-control/issues/1255)) ([d96187d](https://github.com/teamupstart/mission-control/commit/d96187d1ab78e71da5f88dc6aa259fef464968ae))
+* **residents:** grant session control through the desktop Launch click ([#1264](https://github.com/teamupstart/mission-control/issues/1264)) ([7991f72](https://github.com/teamupstart/mission-control/commit/7991f729c3cddcfe48ff8e0f45970f96501d177a))
+* **residents:** launch residents without a repository ([#1258](https://github.com/teamupstart/mission-control/issues/1258)) ([6b9b4c2](https://github.com/teamupstart/mission-control/commit/6b9b4c2ba1d9775a9464d90572bd5acbccbd94f8))
+* **residents:** link to Persona creation from the profile picker and make the Persona optional ([#1275](https://github.com/teamupstart/mission-control/issues/1275)) ([ca11378](https://github.com/teamupstart/mission-control/commit/ca11378c4659e172708bb04b2d8536517615ca23))
+* **residents:** mark, pin and dock residents on the board and top bar ([#1257](https://github.com/teamupstart/mission-control/issues/1257)) ([814bfe4](https://github.com/teamupstart/mission-control/commit/814bfe41c054c48b0054b706f529c16f3d2371c2))
+* **residents:** run durable daemon-owned iteration loops ([#1267](https://github.com/teamupstart/mission-control/issues/1267)) ([12e4dce](https://github.com/teamupstart/mission-control/commit/12e4dcee3de2bfcb050cd88587abd6fbe9579766))
+* **residents:** select MCP servers per profile with write-only secrets ([#1269](https://github.com/teamupstart/mission-control/issues/1269)) ([835c1a7](https://github.com/teamupstart/mission-control/commit/835c1a7b992c39f358cf705c04085d556eae11bc))
+* **sessions:** color delegated messages and name the sending session ([#1218](https://github.com/teamupstart/mission-control/issues/1218)) ([03ca049](https://github.com/teamupstart/mission-control/commit/03ca049d195bfd73e1be54e5542bd68acfc68d86))
+* **settings:** preview the conversation header in Display ([#1260](https://github.com/teamupstart/mission-control/issues/1260)) ([8589d16](https://github.com/teamupstart/mission-control/commit/8589d1674271939dbb598b813807236fe9fa9274))
+* **shipping:** follow up on CodeRabbit review threads ([#1244](https://github.com/teamupstart/mission-control/issues/1244)) ([fe8e85f](https://github.com/teamupstart/mission-control/commit/fe8e85f530f21f66749ba76e5857972303b1e8f6))
+* **trust:** add repositories in batches with default grants ([#1250](https://github.com/teamupstart/mission-control/issues/1250)) ([80b1258](https://github.com/teamupstart/mission-control/commit/80b1258eae07e7a6a84a799d47f331d541cc86cc))
+* **workflows:** change a built-in workflow's repair rounds without duplicating it ([#1239](https://github.com/teamupstart/mission-control/issues/1239)) ([2570aeb](https://github.com/teamupstart/mission-control/commit/2570aebd28d9a61a3db9a30f15b3921fac46bc2c))
+
+
+### Bug Fixes
+
+* **codex:** preserve latest model observation across large rollouts ([#1246](https://github.com/teamupstart/mission-control/issues/1246)) ([b8c6f08](https://github.com/teamupstart/mission-control/commit/b8c6f08bcfa02c227be51e3ffeb23095abbb5112))
+* **console:** line up the conversation toolbar and Chat prompt label ([#1236](https://github.com/teamupstart/mission-control/issues/1236)) ([7bcdd8d](https://github.com/teamupstart/mission-control/commit/7bcdd8d65c845303e0f668b603e7e1160200b5dc))
+* **desktop:** close utility logs only after the child's output drains ([#1268](https://github.com/teamupstart/mission-control/issues/1268)) ([8a2a4e9](https://github.com/teamupstart/mission-control/commit/8a2a4e96e7f282d7f0679b568784c6a39daa7015))
+* **desktop:** reply to dashboard click arms exactly once ([#1215](https://github.com/teamupstart/mission-control/issues/1215)) ([1c5f609](https://github.com/teamupstart/mission-control/commit/1c5f609b4e07518857e89621374c23eee2dc0840))
+* **distribution:** guard codesign text and updater shutdown ([#1226](https://github.com/teamupstart/mission-control/issues/1226)) ([01749ab](https://github.com/teamupstart/mission-control/commit/01749ab64862aa442ee7b76d6ded102b03561cce))
+* **distribution:** pass codesign publisher requirements as text ([#1225](https://github.com/teamupstart/mission-control/issues/1225)) ([f68b3aa](https://github.com/teamupstart/mission-control/commit/f68b3aa7971871b92e879b522fb965e5d29f87c8))
+* **distribution:** preserve packaging failures and safe diagnostics ([#1220](https://github.com/teamupstart/mission-control/issues/1220)) ([58b9c57](https://github.com/teamupstart/mission-control/commit/58b9c573689351d7154870b25162afe4c940d456))
+* **distribution:** render the installer's DMG root allow-list from the shared contract ([#1253](https://github.com/teamupstart/mission-control/issues/1253)) ([4ad38c0](https://github.com/teamupstart/mission-control/commit/4ad38c0ccc6b8e1c2ba85d3fd048eafaad703a92))
+* **distribution:** retire alphas published under the renamed asset names ([#1248](https://github.com/teamupstart/mission-control/issues/1248)) ([5d9ede0](https://github.com/teamupstart/mission-control/commit/5d9ede07d199fc47949c2b9659dd03d502181890))
+* **distribution:** retry dropped Apple ticket validation connections ([#1238](https://github.com/teamupstart/mission-control/issues/1238)) ([a32e7cc](https://github.com/teamupstart/mission-control/commit/a32e7cc30b9ac0be76a5106d29c78cb61eb032fa))
+* **distribution:** ride out CloudKit ticket outages and name unpublished alphas ([#1259](https://github.com/teamupstart/mission-control/issues/1259)) ([c0b12e9](https://github.com/teamupstart/mission-control/commit/c0b12e998673089461301f65a2905d9bc0bd58ed))
+* **install:** install the newest ready release instead of GitHub's latest record ([#1265](https://github.com/teamupstart/mission-control/issues/1265)) ([874a470](https://github.com/teamupstart/mission-control/commit/874a470604e3b12377ac3fac4d6c942abb7ddfff))
+* **install:** preserve bundle modes in every verified install copy ([#1256](https://github.com/teamupstart/mission-control/issues/1256)) ([7621b78](https://github.com/teamupstart/mission-control/commit/7621b78cdedbe66f5141f11644a5929887b6d6f1))
+* **plans:** always offer phased scheduling for plan tasks ([#1222](https://github.com/teamupstart/mission-control/issues/1222)) ([c36cc69](https://github.com/teamupstart/mission-control/commit/c36cc69f235c6d863a3a29fad5c4f5cd4b3b8065))
+* **residents:** omit stale skill link warnings ([#1273](https://github.com/teamupstart/mission-control/issues/1273)) ([91eb069](https://github.com/teamupstart/mission-control/commit/91eb069ddc94622df00257c0cc448d6f06b99e5d))
+* **residents:** share scan admission across source saves ([#1266](https://github.com/teamupstart/mission-control/issues/1266)) ([d1fcf57](https://github.com/teamupstart/mission-control/commit/d1fcf5733b4af130ff07831ad0ba1a4fe6b822a1))
+* **security:** remediate 6 vulnerabilities ([#1211](https://github.com/teamupstart/mission-control/issues/1211)) ([9902ec3](https://github.com/teamupstart/mission-control/commit/9902ec37e99ddea720e625f0706e8edfb25a5d15))
+* **sessions:** isolate SDK ownership from auxiliary hooks ([#1234](https://github.com/teamupstart/mission-control/issues/1234)) ([8473b3d](https://github.com/teamupstart/mission-control/commit/8473b3d2d7f8ccc95ee3cc06ec83f9639e8e1736))
+* **sessions:** retire a Claude steer when Claude records it as a queued command ([#1230](https://github.com/teamupstart/mission-control/issues/1230)) ([40d47a4](https://github.com/teamupstart/mission-control/commit/40d47a45d0c9872ba45b520257d6750d5c04e45f))
+* **settings:** keep the page still when picking a task type style ([#1247](https://github.com/teamupstart/mission-control/issues/1247)) ([8f363d3](https://github.com/teamupstart/mission-control/commit/8f363d3fdf513db71d31edeeb87ea3787d7639cc))
+* stop launchd sweeps and Mac sleep from failing updates and activity probes ([#1272](https://github.com/teamupstart/mission-control/issues/1272)) ([4c93c35](https://github.com/teamupstart/mission-control/commit/4c93c350d543be946701a0672c1c2fc701bf2fed))
+* **telemetry:** preserve product drafts and unblock release CI ([#1245](https://github.com/teamupstart/mission-control/issues/1245)) ([a545aea](https://github.com/teamupstart/mission-control/commit/a545aeaf8d912270d0ea69c92ea6009d7349e8f0))
+* **test:** count an unreaped parent as exited in the detached migration test ([#1237](https://github.com/teamupstart/mission-control/issues/1237)) ([57d2bcf](https://github.com/teamupstart/mission-control/commit/57d2bcfcb17a908b5f4023acf222f2563be71474))
+* **updates:** snooze dismissed versions for 48 hours ([#1235](https://github.com/teamupstart/mission-control/issues/1235)) ([64f67ed](https://github.com/teamupstart/mission-control/commit/64f67ed83eeb98487fc28ae8fcc928f7b6ea006b))
+* **updates:** stop the running app from blocking its own update cleanup ([#1271](https://github.com/teamupstart/mission-control/issues/1271)) ([3000d65](https://github.com/teamupstart/mission-control/commit/3000d65cd99a245107c5ce8d19648aa54515e237))
+* **web:** diagnose startup failures and verify port forwarding ([#1227](https://github.com/teamupstart/mission-control/issues/1227)) ([e145190](https://github.com/teamupstart/mission-control/commit/e1451906278cce1eb72e65dc6913c4356ac0a600))
+* **workflows:** retire stale evidence claims and preserve readiness ([#1219](https://github.com/teamupstart/mission-control/issues/1219)) ([4cba1b1](https://github.com/teamupstart/mission-control/commit/4cba1b18171daed37317cb555797844015ed32e1))
+
 ## [1.27.2](https://github.com/teamupstart/mission-control/compare/v1.27.1...v1.27.2) (2026-10-23)
 
 

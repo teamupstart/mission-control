@@ -706,9 +706,11 @@ export class UpdateController {
         const reusableStaged = this.staged?.releaseTag === targetRef && this.descriptor && this.stagedBundleIsIntact(this.staged);
         const binary = reusableStaged ? this.staged!.binary : commit ? await this.port.binaryForCommit(commit.sha) : release?.binary;
         this.offeredBinary = binary ? structuredClone(binary) : null;
-        // Check after discovery's final await so a manual request joining a background
-        // check can still show the offer. Explicit checks do not erase its saved snooze.
-        if (!this.manualCheckRequested && (this.snoozedUntil[targetRef] ?? 0) > this.port.now()) {
+        // Background discovery stays quiet until there is a usable binary; the existing
+        // schedule will check again. Read manual intent after discovery's final await so
+        // a joining explicit check still gets the blocker and retry action.
+        // Explicit checks also bypass, but do not erase, a saved snooze.
+        if (!this.manualCheckRequested && (!this.offeredBinary || (this.snoozedUntil[targetRef] ?? 0) > this.port.now())) {
           return this.publish(idleSnapshot(currentVersion, lastOutcome, checkedAt));
         }
         return this.publish({

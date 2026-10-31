@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { UpdateController, type GhRunner, type UpdaterPort, type UpdateStageRequest } from "../../src/main/updater.ts";
+import { UpdateController, createDefaultUpdaterPort, ALPHA_RECHECK_MS, type GhRunner, type UpdaterPort, type UpdateStageRequest } from "../../src/main/updater.ts";
 import type { BinaryStageOutcome } from "../../src/main/update-binary.ts";
 import { latestStableBinary, binaryForCommit } from "../../src/main/update-binary-release.ts";
 import { binaryOffer, binaryStaged, binaryReceipt, binaryRenamePlan } from "../../test/helpers/binary-update.ts";
@@ -229,5 +229,74 @@ for (const channel of ["stable", "alpha"] as const) {
       await expect(banner).toContainText("is ready to install"); expect(preparations).toBe(1);
       if (channel === "alpha") expect(queries.some(path => path.startsWith("releases?"))).toBe(false);
     } finally {unsubscribe(); controller.stop();}
+  });
+}
+
+for (const alpha of [false, true]) {
+  const channel = alpha ? "alpha" : "stable";
+  test(`${channel} missing binaries stay quiet automatically but manual checks offer retry`, async ({ dashboard, daemon }) => {
+    let ready = false;
+    let now = Date.now();
+    const port = createDefaultUpdaterPort({
+      packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => "a".repeat(40),
+      stateDirectory: daemon.home, helperSource: "", requestQuit: () => {},
+      installSnapshot: () => ({ receipt: { schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home,
+        appPath: join(daemon.home, "fixture.app"), installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-10-31T00:00:00Z" }, problem: null }),
+      dialogs: { available: async () => "defer", ready: async () => "defer", error: async () => {},
+        upToDate: async () => {}, preparing: async () => {}, applying: async () => {}, outcome: async () => {} },
+    });
+    // Real controller and dashboard; only the clock and release transport are scripted.
+    // No download, installation, or real agent is launched by this availability test.
+    port.now = () => now;
+    port.readAlpha = () => alpha;
+    port.readOutcome = () => null;
+    port.migrationStatus = () => undefined;
+    port.latestRelease = async () => ({ tagName: "v1.2.4", name: "1.2.4", body: "A quieter update experience.",
+      publishedAt: "2026-10-31T00:00:00Z", isDraft: false, isPrerelease: false, binary: ready ? binaryOffer() : undefined });
+    port.latestMainCommit = async () => ({ sha: "b".repeat(40), message: "A quieter update experience.", committedAt: "2026-10-31T00:00:00Z" });
+    port.binaryForCommit = async commit => ready ? binaryOffer(commit, "alpha") : null;
+    const controller = new UpdateController(port);
+    const banner = dashboard.getByRole("status", { name: "Mission Control update" });
+    const capture = async (name: string) => {
+      if (process.env.MC_E2E_EVIDENCE !== "1") return;
+      const dir = join(process.cwd(), "e2e/.artifacts/update-availability");
+      await mkdir(dir, { recursive: true });
+      await dashboard.mouse.move(1, 1);
+      await expect(dashboard.locator(".tooltip")).toHaveCount(0);
+      await dashboard.screenshot({ path: join(dir, `${channel}-${name}.png`), fullPage: true });
+    };
+    let disconnect = () => {};
+    try {
+      await controller.start();
+      disconnect = await connectUpdateController(dashboard, controller);
+      await controller.check(false);
+      await dashboard.reload();
+      await expect(dashboard.getByRole("button", { name: "Settings" })).toBeVisible();
+      await expect(banner).toHaveCount(0);
+      await expect(dashboard.getByRole("dialog", { name: "Mission Control update" })).toHaveCount(0);
+      await capture("automatic-pending-hidden");
+
+      ready = true;
+      now += alpha ? ALPHA_RECHECK_MS : 6 * 60 * 60 * 1000;
+      controller.onActivate();
+      await expect(banner.getByRole("button", { name: "Update Now" })).toBeEnabled();
+      await capture("automatic-ready");
+
+      ready = false;
+      await dashboard.getByRole("button", { name: "Settings" }).click();
+      await dashboard.getByRole("tab", { name: "Setup" }).click();
+      await dashboard.getByRole("region", { name: "Application updates" }).getByRole("button", { name: "Check for updates" }).click();
+      await expect(banner).toContainText("pending or unavailable");
+      await expect(banner.getByRole("button", { name: "Update Now" })).toBeDisabled();
+      await expect(banner.getByRole("button", { name: "Check again" })).toBeEnabled();
+      await capture("manual-pending-retry");
+      ready = true;
+      await banner.getByRole("button", { name: "Check again" }).click();
+      await expect(banner.getByRole("button", { name: "Update Now" })).toBeEnabled();
+      await expect(banner.getByRole("button", { name: "Check again" })).toHaveCount(0);
+    } finally {
+      disconnect();
+      controller.stop();
+    }
   });
 }

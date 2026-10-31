@@ -1239,7 +1239,11 @@ test("a check outcome is read from output_json, and a Persona attempt is not mis
     truncatedBytes: 0,
     note: "`npm run typecheck` exited 2.",
   };
-  assert.deepEqual(checkOutcomeOf(attempt("a", "s", "gate", { output: outcome })), outcome);
+  assert.deepEqual(checkOutcomeOf(attempt("a", "s", "gate", { output: outcome })), {
+    ...outcome,
+    artifacts: [],
+    timeoutMs: null,
+  });
   // A Persona attempt's `output_json` is a feedback packet, and reading it as a check would
   // draw an exit-code card over a reviewer's verdict.
   assert.equal(

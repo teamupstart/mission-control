@@ -34,6 +34,9 @@ interface CommandView {
   defaultCommand: string[] | null;
   overrides: Array<{ repoRoot: string; command: string[] }>;
   maxRuns: number;
+  timeoutMs: number | null;
+  onUnavailable: "skip" | "block";
+  onBudgetExhausted: "skip" | "block";
   revision: number;
 }
 
@@ -274,7 +277,7 @@ test("an unconfigured slot's run budget reads once per run, in the control and i
   await expect(budget).toBeVisible();
   await expect(budget).toHaveValue("1");
   await expect(budget.locator("option:checked")).toHaveText("Once per run");
-  await expect(dashboard.locator(".wf-command-budget"))
+  await expect(budget.locator(".."))
     .toContainText("Runs once per workflow run");
 
   // The ceiling is offered as a plain choice rather than hidden behind a number box, and it
@@ -287,6 +290,59 @@ test("an unconfigured slot's run budget reads once per run, in the control and i
   // Untouched, so nothing to save. A default that arrived as a dirty draft would offer to
   // write a row for every slot an operator merely looked at.
   await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+});
+
+test("timeout and skip-or-block policies save, stream, and survive reload", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await card(dashboard, "lint").click();
+
+  const useDefault = dashboard.getByLabel("Use slot default");
+  const timeout = dashboard.getByLabel("Timeout in minutes");
+  await expect(useDefault).toHaveAccessibleDescription("Use the default timeout for this Command");
+  await expect(dashboard.getByLabel("If the command is unavailable")).toHaveAccessibleDescription(
+    "Choose whether unavailable execution skips or waits for operator action",
+  );
+  await expect(dashboard.getByLabel("When the run budget is exhausted")).toHaveAccessibleDescription(
+    "Choose whether an exhausted run allowance skips or waits for operator action",
+  );
+  await useDefault.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText("Use the default timeout for this Command");
+  await expect(dashboard.locator(".tooltip")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}command-policy-tooltip.png`, fullPage: true });
+  }
+  await expect(useDefault).toBeChecked();
+  await expect(timeout).toBeDisabled();
+  await useDefault.uncheck();
+  await timeout.fill("45");
+  await dashboard.getByLabel("If the command is unavailable").selectOption("block");
+  await dashboard.getByLabel("When the run budget is exhausted").selectOption("block");
+  await dashboard.getByRole("button", { name: "Save Command" }).click();
+
+  await expect.poll(async () => {
+    const view = slotOf(await catalog(daemon), "lint");
+    return {
+      timeoutMs: view.timeoutMs,
+      onUnavailable: view.onUnavailable,
+      onBudgetExhausted: view.onBudgetExhausted,
+    };
+  }).toEqual({
+    timeoutMs: 45 * 60_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
+  });
+  await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
+
+  await dashboard.reload();
+  await expect(dashboard.getByLabel("Use slot default")).not.toBeChecked();
+  await expect(dashboard.getByLabel("Timeout in minutes")).toHaveValue("45");
+  await expect(dashboard.getByLabel("If the command is unavailable")).toHaveValue("block");
+  await expect(dashboard.getByLabel("When the run budget is exhausted")).toHaveValue("block");
+  await shoot(dashboard, "command-policy");
 });
 
 test("changing only the run budget saves the whole slot, and it survives a reload", async ({
@@ -314,7 +370,7 @@ test("changing only the run budget saves the whole slot, and it survives a reloa
 
   // The sentence follows the control before anything is stored - the operator is choosing
   // against what it says, not against what was saved last time.
-  await expect(dashboard.locator(".wf-command-budget"))
+  await expect(budget.locator(".."))
     .toContainText("Runs up to 3 times per workflow run");
 
   // Dirty on the budget alone, with the command box still empty.
@@ -338,7 +394,7 @@ test("changing only the run budget saves the whole slot, and it survives a reloa
   await dashboard.reload();
   await expect(dashboard.getByRole("heading", { name: "build", exact: true })).toBeVisible();
   await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("3");
-  await expect(dashboard.locator(".wf-command-budget"))
+  await expect(budget.locator(".."))
     .toContainText("Runs up to 3 times per workflow run");
   await expect(dashboard.getByRole("button", { name: "Save Command" })).toBeDisabled();
 
@@ -657,6 +713,9 @@ test("a revision that lands while you are typing is surfaced, never silently app
         expectedRevision: before.revision,
         defaultCommand: ["eslint", "."],
         maxRuns: before.maxRuns,
+        timeoutMs: before.timeoutMs,
+        onUnavailable: before.onUnavailable,
+        onBudgetExhausted: before.onBudgetExhausted,
         overrides: [],
       },
     },
@@ -683,6 +742,9 @@ test("a revision that lands while you are typing is surfaced, never silently app
       expectedRevision: current.revision,
       defaultCommand: ["eslint", "--max-warnings=0", "."],
       maxRuns: current.maxRuns,
+      timeoutMs: current.timeoutMs,
+      onUnavailable: current.onUnavailable,
+      onBudgetExhausted: current.onBudgetExhausted,
       overrides: [],
     },
   });
@@ -720,6 +782,10 @@ test("a refused save keeps its conflict until the stream actually catches up", a
           slot: "build",
           defaultCommand: ["make", "release"],
           overrides: [],
+          maxRuns: 1,
+          timeoutMs: null,
+          onUnavailable: "skip",
+          onBudgetExhausted: "skip",
           revision: 9,
           createdAt: 0,
           updatedAt: 0,

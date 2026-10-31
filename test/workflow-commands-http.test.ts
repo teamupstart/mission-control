@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
+import {
+  WORKFLOW_CHECK_SLOTS,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
+  WORKFLOW_LIMITS,
+} from "../src/shared/workflow.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 
 // What is at stake: HTTP is the write boundary for an argv the daemon will EXECUTE, and there
@@ -47,6 +52,11 @@ function fixture() {
 }
 
 const body = (value: unknown): string => JSON.stringify(value);
+const executionPolicy = {
+  timeoutMs: null,
+  onUnavailable: "skip" as const,
+  onBudgetExhausted: "skip" as const,
+};
 
 test("the list projects every built-in slot, in registry order, before anything is written", async () => {
   const { request } = fixture();
@@ -68,7 +78,15 @@ test("an unknown slot is 404 on read and on write, rather than minting a fifth s
   assert.equal((await request("/api/workflow-commands/deploy")).status, 404);
   const written = await request("/api/workflow-commands/deploy", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["x"], overrides: [], maxRuns: 1 }),
+    body: body({
+      expectedRevision: 1,
+      defaultCommand: ["x"],
+      overrides: [],
+      maxRuns: 1,
+      timeoutMs: null,
+      onUnavailable: "skip",
+      onBudgetExhausted: "skip",
+    }),
   });
   assert.equal(written.status, 404);
   assert.equal((await written.json() as { code: string }).code, "workflow_command_not_found");
@@ -84,6 +102,10 @@ test("one update replaces the default and the complete override list atomically"
   const saved = await request("/api/workflow-commands/test", {
     method: "PUT",
     body: body({
+      ...executionPolicy,
+      timeoutMs: 90 * 60_000,
+      onUnavailable: "block",
+      onBudgetExhausted: "block",
       expectedRevision: 1,
       defaultCommand: ["npm", "test"],
       maxRuns: 1,
@@ -98,18 +120,27 @@ test("one update replaces the default and the complete override list atomically"
     revision: number;
     defaultCommand: string[];
     overrides: Array<{ repoRoot: string; command: string[] }>;
+    timeoutMs: number | null;
+    onUnavailable: string;
+    onBudgetExhausted: string;
   };
   // The COMMITTED view comes back, not the request: the revision the next write must carry
   // is the one thing a caller cannot compute for itself.
   assert.equal(view.revision, 2);
   assert.deepEqual(view.defaultCommand, ["npm", "test"]);
   assert.deepEqual(view.overrides.map((entry) => entry.repoRoot), ["/repo", "/repo/packages/web"]);
+  assert.equal(view.timeoutMs, 90 * 60_000);
+  assert.equal(view.onUnavailable, "block");
+  assert.equal(view.onBudgetExhausted, "block");
   assert.equal(emitted.length, 1, "one committed mutation is one event");
 
   // Removal is expressible: a shorter list is the removal, and a null default clears it.
   const cleared = await request("/api/workflow-commands/test", {
     method: "PUT",
-    body: body({ expectedRevision: 2, defaultCommand: null, overrides: [], maxRuns: 1 }),
+    body: body({
+      ...executionPolicy,
+      expectedRevision: 2, defaultCommand: null, overrides: [], maxRuns: 1,
+    }),
   });
   assert.equal(cleared.status, 200);
   const empty = await cleared.json() as { defaultCommand: null; overrides: unknown[] };
@@ -117,15 +148,64 @@ test("one update replaces the default and the complete override list atomically"
   assert.deepEqual(empty.overrides, []);
 });
 
+test("timeout endpoints are accepted and adjacent values are refused without changing the catalog", async () => {
+  const { request } = fixture();
+  const update = (expectedRevision: number, timeoutMs: number) => request(
+    "/api/workflow-commands/build",
+    {
+      method: "PUT",
+      body: body({
+        ...executionPolicy,
+        expectedRevision,
+        defaultCommand: ["npm", "run", "build"],
+        overrides: [],
+        maxRuns: 1,
+        timeoutMs,
+      }),
+    },
+  );
+
+  const minimum = await update(1, WORKFLOW_COMMAND_TIMEOUT_MIN_MS);
+  assert.equal(minimum.status, 200);
+  assert.partialDeepStrictEqual(
+    await minimum.json() as { revision: number; timeoutMs: number },
+    { revision: 2, timeoutMs: WORKFLOW_COMMAND_TIMEOUT_MIN_MS },
+  );
+
+  const maximum = await update(2, WORKFLOW_COMMAND_TIMEOUT_MAX_MS);
+  assert.equal(maximum.status, 200);
+  const maximumView = await maximum.json() as { revision: number; timeoutMs: number };
+  assert.equal(maximumView.revision, 3);
+  assert.equal(maximumView.timeoutMs, WORKFLOW_COMMAND_TIMEOUT_MAX_MS);
+
+  assert.equal((await update(3, WORKFLOW_COMMAND_TIMEOUT_MIN_MS - 1)).status, 400);
+  assert.equal((await update(3, WORKFLOW_COMMAND_TIMEOUT_MAX_MS + 1)).status, 400);
+
+  const unchanged = await (await request("/api/workflow-commands/build")).json() as {
+    revision: number;
+    defaultCommand: string[];
+    timeoutMs: number;
+  };
+  assert.equal(unchanged.revision, 3, "rejected writes do not advance the catalog revision");
+  assert.deepEqual(unchanged.defaultCommand, ["npm", "run", "build"]);
+  assert.equal(unchanged.timeoutMs, WORKFLOW_COMMAND_TIMEOUT_MAX_MS);
+});
+
 test("a stale revision is refused with the current view, so neither window silently loses", async () => {
   const { request } = fixture();
   await request("/api/workflow-commands/lint", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["npm", "run", "lint"], overrides: [], maxRuns: 1 }),
+    body: body({
+      ...executionPolicy,
+      expectedRevision: 1, defaultCommand: ["npm", "run", "lint"], overrides: [], maxRuns: 1,
+    }),
   });
   const stale = await request("/api/workflow-commands/lint", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["eslint", "."], overrides: [], maxRuns: 1 }),
+    body: body({
+      ...executionPolicy,
+      expectedRevision: 1, defaultCommand: ["eslint", "."], overrides: [], maxRuns: 1,
+    }),
   });
   assert.equal(stale.status, 409);
   const refusal = await stale.json() as {
@@ -147,6 +227,9 @@ test("every invalid write is a visible refusal rather than a silently repaired o
   assert.equal(await refused({ expectedRevision: 1, defaultCommand: ["x"] }), 400);
   assert.equal(await refused({ expectedRevision: 1, overrides: [] }), 400);
   assert.equal(await refused({ defaultCommand: null, overrides: [], maxRuns: 1 }), 400);
+  assert.equal(await refused({
+    expectedRevision: 1, defaultCommand: null, overrides: [], maxRuns: 1,
+  }), 400, "a complete CAS may not silently reset omitted policy fields");
   // Empty argv, over-long argument, too many arguments, empty path.
   assert.equal(await refused({ expectedRevision: 1, defaultCommand: [], overrides: [], maxRuns: 1 }), 400);
   assert.equal(
@@ -215,6 +298,7 @@ test("a catalog at its ceiling in non-ASCII characters is accepted, not refused 
     command: widestArgv(),
   }));
   const payload = {
+    ...executionPolicy,
     expectedRevision: 1,
     defaultCommand: widestArgv(),
     overrides,
@@ -255,7 +339,10 @@ test("the legacy config route reads overrides out of the catalog and writes back
   // A global default first, through the catalog's own route.
   await request("/api/workflow-commands/test", {
     method: "PUT",
-    body: body({ expectedRevision: 1, defaultCommand: ["npm", "test"], overrides: [], maxRuns: 1 }),
+    body: body({
+      ...executionPolicy,
+      expectedRevision: 1, defaultCommand: ["npm", "test"], overrides: [], maxRuns: 1,
+    }),
   });
 
   const emitted: string[] = [];
@@ -368,6 +455,9 @@ test("a legacy save that cannot persist policy rolls its commands back too", () 
   const { commands, registry } = fixture();
   assert.equal(
     commands.replace("lint", {
+      timeoutMs: null,
+      onUnavailable: "skip",
+      onBudgetExhausted: "skip",
       expectedRevision: 1,
       defaultCommand: null,
       maxRuns: 1,

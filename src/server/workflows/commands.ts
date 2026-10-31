@@ -54,6 +54,9 @@ export class WorkflowCommandManager {
         defaultCommand: input.defaultCommand,
         overrides: input.overrides,
         maxRuns: input.maxRuns,
+        timeoutMs: input.timeoutMs,
+        onUnavailable: input.onUnavailable,
+        onBudgetExhausted: input.onBudgetExhausted,
       },
       now,
     ));

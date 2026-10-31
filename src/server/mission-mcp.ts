@@ -61,6 +61,7 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
 export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
+  "read_workflow_command_output",
   "trigger_workflow_action",
   "read_sessions",
   "control_session",

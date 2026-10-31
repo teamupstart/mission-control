@@ -44,7 +44,12 @@ import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
+import {
+  GetWorkflowRunSchema,
+  ListWorkflowRunsSchema,
+  ReadWorkflowCommandOutputMcpSchema,
+  WorkflowMcpActionSchema,
+} from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -251,6 +256,18 @@ server.registerTool("get_workflow_run", {
 }, async ({ runId }) => {
   try {
     const res = await http("/mcp/workflows/read", "POST", { runId }, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("read_workflow_command_output", {
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  inputSchema: ReadWorkflowCommandOutputMcpSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
     return textResult(await res.text(), !res.ok);
   } catch (error) {
     return textResult(String(error), true);

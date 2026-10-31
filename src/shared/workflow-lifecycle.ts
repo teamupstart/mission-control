@@ -157,6 +157,7 @@ export const WORKFLOW_RUN_PHASES = [
   "capture_interrupted",
   "capturing",
   "check_cleanup_unresolved",
+  "command_action_required",
   "complete",
   "conversation_changed",
   "delivery_blocked",
@@ -255,6 +256,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   capture_interrupted: ["blocked"],
   capturing: ["capturing"],
   check_cleanup_unresolved: ["blocked"],
+  command_action_required: ["blocked"],
   complete: ["completed"],
   conversation_changed: ["blocked"],
   delivery_blocked: ["blocked"],
@@ -339,6 +341,7 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // it means a later code change cannot silently produce "inspector round limit" prose.
   inspector_round_limit: "out of GitHub Inspector rounds",
   infrastructure_error: "review execution failed",
+  command_action_required: "Command needs operator action",
   provider_token_exhausted: "provider token or quota limit reached",
   evidence_reconciliation_error: "criterion mapping unavailable",
   inspector_findings: "GitHub Inspector findings",
@@ -530,6 +533,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   capture_interrupted: ["error"],
   capturing: [],
   check_cleanup_unresolved: ["nodeId", "attempts", "error"],
+  command_action_required: ["nodeId", "attempts", "error"],
   complete: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
   conversation_changed: ["reason"],
   delivery_blocked: ["deliveryId", "reason"],
@@ -692,6 +696,7 @@ export type WorkflowGateDetail =
   | { kind: "none" }
   | { kind: "round_limit"; budget: WorkflowRoundLimitBudget }
   | { kind: "check_cleanup"; block: WorkflowCheckCleanupBlock }
+  | { kind: "command_action_required"; block: WorkflowCheckCleanupBlock }
   | { kind: "capture_failure"; failure: WorkflowCaptureFailure }
   | { kind: "opaque"; detail: WorkflowJson };
 
@@ -878,6 +883,10 @@ function decodeDetail(
   if (record.phase === WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE && record.status === "blocked") {
     const block = checkCleanupBlock(own);
     return block ? { kind: "check_cleanup", block } : { kind: "opaque", detail: own };
+  }
+  if (record.phase === "command_action_required" && record.status === "blocked") {
+    const block = checkCleanupBlock(own);
+    return block ? { kind: "command_action_required", block } : { kind: "opaque", detail: own };
   }
   // Phase-first, like the branch above: `capture_error` and `image_evidence_capture` persist
   // the same two keys, so only the phase tells them apart.

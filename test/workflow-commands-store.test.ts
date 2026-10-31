@@ -92,6 +92,44 @@ test("a replacement swaps the whole slot and refuses a stale or duplicate write"
   assert.equal(s.getWorkflowCommand("deploy"), null);
 });
 
+test("policy fields default compatibly, persist atomically, and survive legacy-shaped writes", () => {
+  const s = store();
+  const initial = s.getWorkflowCommand("test")!;
+  assert.deepEqual({
+    timeoutMs: initial.timeoutMs,
+    onUnavailable: initial.onUnavailable,
+    onBudgetExhausted: initial.onBudgetExhausted,
+  }, {
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
+  });
+
+  const changed = s.replaceWorkflowCommandCas("test", initial.revision, {
+    defaultCommand: ["npm", "test"],
+    overrides: [],
+    maxRuns: 10,
+    timeoutMs: 90 * 60_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
+  });
+  assert.equal(changed.ok, true);
+  const configured = s.getWorkflowCommand("test")!;
+  assert.equal(configured.timeoutMs, 90 * 60_000);
+  assert.equal(configured.onUnavailable, "block");
+  assert.equal(configured.onBudgetExhausted, "block");
+
+  assert.equal(s.replaceWorkflowCommandCas("test", configured.revision, {
+    defaultCommand: ["npm", "run", "test:ci"],
+    overrides: [],
+    maxRuns: 10,
+  }).ok, true);
+  const preserved = s.getWorkflowCommand("test")!;
+  assert.equal(preserved.timeoutMs, 90 * 60_000);
+  assert.equal(preserved.onUnavailable, "block");
+  assert.equal(preserved.onBudgetExhausted, "block");
+});
+
 test("an untouched override keeps its creation instant across a neighbour's edit", () => {
   const s = store();
   s.replaceWorkflowCommandCas("test", 1, {

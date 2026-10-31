@@ -36,6 +36,7 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -53,7 +54,9 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
   const caller = registry.registerSdkSession({ id: `sdk:workflow-caller-${randomUUID()}`,
     agent: "claude", name: "Workflow controller", cwd: home, agentSessionId: `native-${randomUUID()}` });
   registry.setSessionControlEnabled(caller.id, true);
-  const workflows = new WorkflowManager(registry, undefined, options);
+  const commandArtifacts = options.commandArtifacts
+    ?? new WorkflowCommandArtifactService(undefined, join(home, `command-output-${randomUUID()}`));
+  const workflows = new WorkflowManager(registry, undefined, { ...options, commandArtifacts });
   const store = workflows.store;
   const app = buildApp({ registry, workflows, tasks: new TaskManager(registry),
     queues: new QueueManager(registry), reviews: new ReviewManager(registry) });
@@ -103,7 +106,10 @@ async function fixture(t: TestContext, options: WorkflowManagerOptions = {}, cre
     return { run, submission, version };
   }
   const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
-  return { client, call, seed, requests, store, workflows, registry, caller, app, credential };
+  return {
+    client, call, seed, requests, store, workflows, registry, caller, app, credential,
+    commandArtifacts,
+  };
 }
 
 /** Fake only external work. Actions still use the real MCP child, routes, manager and store. */
@@ -287,6 +293,63 @@ test("MCP run reads and pagination are scoped before limiting, and credentials c
   assert.equal(stale.status, 403);
   // A refreshed credential also cannot claim the previous conversation's binding.
   await f.call("get_workflow_run", { runId: own[0]!.run.id }, /Control other sessions/i);
+});
+
+test("MCP retained Command output uses the same owning-session authorization and opaque paging", async (t) => {
+  const f = await fixture(t);
+  const own = f.seed(f.caller.id);
+  const other = f.seed();
+  const ownCapture = f.commandArtifacts.beginCapture({
+    runId: own.run.id,
+    submissionId: own.submission.id,
+    attemptId: "attempt-own-output",
+  });
+  ownCapture.push("stdout", Buffer.from("🙂owned"));
+  const ownArtifact = ownCapture.finalize(true).find((artifact) => artifact.kind === "stdout")!;
+  const otherCapture = f.commandArtifacts.beginCapture({
+    runId: other.run.id,
+    submissionId: other.submission.id,
+    attemptId: "attempt-other-output",
+  });
+  otherCapture.push("stdout", Buffer.from("other"));
+  const otherArtifact = otherCapture.finalize(true).find((artifact) => artifact.kind === "stdout")!;
+
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const first = await f.call("read_workflow_command_output", {
+    runId: own.run.id,
+    attemptId: "attempt-own-output",
+    artifactId: ownArtifact.id,
+    limit: 4,
+  });
+  assert.equal(first.text, "🙂");
+  assert.ok(first.nextCursor);
+  const second = await f.call("read_workflow_command_output", {
+    runId: own.run.id,
+    attemptId: "attempt-own-output",
+    artifactId: ownArtifact.id,
+    cursor: first.nextCursor,
+    limit: 64,
+  });
+  assert.equal(second.text, "owned");
+  assert.equal(second.nextCursor, null);
+
+  await f.call("read_workflow_command_output", {
+    runId: other.run.id,
+    attemptId: "attempt-other-output",
+    artifactId: otherArtifact.id,
+  }, /Control other sessions/i);
+  f.registry.setSessionControlEnabled(f.caller.id, true);
+  assert.equal((await f.call("read_workflow_command_output", {
+    runId: other.run.id,
+    attemptId: "attempt-other-output",
+    artifactId: otherArtifact.id,
+  })).text, "other");
+
+  await f.call("read_workflow_command_output", {
+    runId: own.run.id,
+    attemptId: "attempt-other-output",
+    artifactId: otherArtifact.id,
+  }, /No such retained Command output/i);
 });
 
 test("MCP requires daemon-issued caller identity even when the machine token and grant are present", async (t) => {

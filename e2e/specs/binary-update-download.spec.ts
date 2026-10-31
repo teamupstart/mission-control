@@ -232,9 +232,13 @@ for (const channel of ["stable", "alpha"] as const) {
   });
 }
 
-for (const alpha of [false, true]) {
+for (const [alpha, availability] of [
+  [false, "missing"], [true, "missing"],
+  [false, "unsupported-layout"], [true, "unsupported-layout"],
+  [false, "blocked-descriptor"],
+] as const) {
   const channel = alpha ? "alpha" : "stable";
-  test(`${channel} missing binaries stay quiet automatically but manual checks offer retry`, async ({ dashboard, daemon }) => {
+  test(`${channel} ${availability} binaries stay quiet automatically but manual checks offer retry`, async ({ dashboard, daemon }) => {
     let ready = false;
     let now = Date.now();
     const port = createDefaultUpdaterPort({
@@ -251,10 +255,17 @@ for (const alpha of [false, true]) {
     port.readAlpha = () => alpha;
     port.readOutcome = () => null;
     port.migrationStatus = () => undefined;
+    const discoveredOffer = (channel: "stable" | "alpha", commit = "b".repeat(40)) => {
+      if (!ready && availability === "missing") return undefined;
+      const offer = binaryOffer(commit, channel);
+      if (!ready && availability === "unsupported-layout") delete offer.manifest.appBundleName;
+      return offer;
+    };
     port.latestRelease = async () => ({ tagName: "v1.2.4", name: "1.2.4", body: "A quieter update experience.",
-      publishedAt: "2026-10-31T00:00:00Z", isDraft: false, isPrerelease: false, binary: ready ? binaryOffer() : undefined });
+      publishedAt: "2026-10-31T00:00:00Z", isDraft: false, isPrerelease: false, binary: discoveredOffer("stable"),
+      unavailable: !ready && availability === "blocked-descriptor" ? "The signed binary is pending or unavailable. Check again later." : undefined });
     port.latestMainCommit = async () => ({ sha: "b".repeat(40), message: "A quieter update experience.", committedAt: "2026-10-31T00:00:00Z" });
-    port.binaryForCommit = async commit => ready ? binaryOffer(commit, "alpha") : null;
+    port.binaryForCommit = async commit => discoveredOffer("alpha", commit) ?? null;
     const controller = new UpdateController(port);
     const banner = dashboard.getByRole("status", { name: "Mission Control update" });
     const capture = async (name: string) => {
@@ -263,7 +274,7 @@ for (const alpha of [false, true]) {
       await mkdir(dir, { recursive: true });
       await dashboard.mouse.move(1, 1);
       await expect(dashboard.locator(".tooltip")).toHaveCount(0);
-      await dashboard.screenshot({ path: join(dir, `${channel}-${name}.png`), fullPage: true });
+      await dashboard.screenshot({ path: join(dir, `${channel}-${availability}-${name}.png`), fullPage: true });
     };
     let disconnect = () => {};
     try {

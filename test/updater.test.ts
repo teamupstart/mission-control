@@ -496,6 +496,63 @@ for (const alpha of [false, true]) {
   });
 }
 
+for (const alpha of [false, true]) {
+  for (const blockedBy of ["legacy-layout", "release-blocker"] as const) {
+    if (alpha && blockedBy === "release-blocker") continue;
+    test(`${alpha ? "alpha" : "stable"} blocked descriptor (${blockedBy}) stays quiet automatically and explains manual retry`, async (t) => {
+      const offer = binaryOffer("b".repeat(40), alpha ? "alpha" : "stable");
+      if (blockedBy === "legacy-layout") delete offer.manifest.appBundleName;
+      const unavailable = blockedBy === "release-blocker" ? "This binary is not available yet. Check again later." : undefined;
+      const f = fixture({
+        readAlpha: () => alpha,
+        latestRelease: async () => release({ binary: offer, unavailable }),
+        binaryForCommit: async () => offer,
+      });
+      t.after(() => f.controller.stop());
+      await f.controller.start();
+      const phases: string[] = [];
+      f.controller.subscribe(snapshot => phases.push(snapshot.phase));
+      assert.equal((await f.controller.check(false)).phase, "idle");
+      assert.equal(phases.includes("available"), false);
+      assert.deepEqual(f.events, []);
+      const manual = await f.controller.checkForUpdates();
+      assert.equal(manual.phase, "available");
+      if (manual.phase === "available") {
+        assert.match(manual.blocker!, /not available|pending or unavailable/);
+        if (unavailable) assert.equal(manual.blocker, unavailable);
+      }
+      assert.match(f.events[0]!, /error-dialog:/);
+      assert.equal(await f.controller.apply(), false);
+      assert.equal(f.stageRequests.length, 0);
+      f.port.latestRelease = async () => release();
+      f.port.binaryForCommit = async commit => binaryOffer(commit, "alpha");
+      const ready = await f.controller.check(false);
+      assert.equal(ready.phase, "available");
+      if (ready.phase === "available") assert.equal(ready.blocker, undefined);
+    });
+  }
+}
+
+test("a blocked stable release does not suppress an independent ready alpha binary", async (t) => {
+  const f = fixture({ readAlpha: () => true, latestRelease: async () => release({ unavailable: "Stable binary pending" }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const ready = await f.controller.check(false);
+  assert.equal(ready.phase, "available");
+  if (ready.phase === "available") assert.equal(ready.blocker, undefined);
+});
+
+test("an empty availability message cannot make a missing binary actionable", async (t) => {
+  const f = fixture({ latestRelease: async () => release({ binary: undefined, unavailable: "" }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal((await f.controller.check(false)).phase, "idle");
+  const manual = await f.controller.check(true);
+  assert.equal(manual.phase, "available");
+  if (manual.phase === "available") assert.match(manual.blocker!, /pending or unavailable/);
+  assert.equal(await f.controller.apply(), false);
+});
+
 test("an intact deferred alpha remains usable after its remote asset expires", async () => {
   const f = fixture({readAlpha: () => true});
   await f.controller.start(); await f.controller.check(true); await f.controller.apply(); f.controller.defer();

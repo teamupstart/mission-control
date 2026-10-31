@@ -276,6 +276,19 @@ test("every invalid write is a visible refusal rather than a silently repaired o
   assert.equal(view.defaultCommand, null);
 });
 
+test("ordinary override argv exceeding the total bound is refused before advancing the catalog", async () => {
+  const { request } = fixture();
+  const command = Array.from({ length: 5 }, () => "x".repeat(WORKFLOW_LIMITS.checkCommandArg));
+  const response = await request("/api/workflow-commands/test", { method: "PUT", body: body({
+    ...executionPolicy, expectedRevision: 1, defaultCommand: null, maxRuns: 1,
+    overrides: [{ repoRoot: "/repo", command }],
+  }) });
+  assert.equal(response.status, 400);
+  const current = await (await request("/api/workflow-commands/test")).json() as { revision: number; overrides: unknown[] };
+  assert.equal(current.revision, 1);
+  assert.deepEqual(current.overrides, []);
+});
+
 test("a catalog at its ceiling in non-ASCII characters is accepted, not refused unread", async () => {
   // The schema counts CHARACTERS - that is what `z.string().max()` measures - and the route's
   // body limit counts BYTES. A budget that conflated the two would refuse this payload with a

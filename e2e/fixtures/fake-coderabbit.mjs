@@ -11,7 +11,9 @@ if (args[0] !== "review" || !args.includes("--agent") || args.includes("--use-cr
 const emit = e => process.stdout.write(JSON.stringify(e) + "\n");
 process.stderr.write("CodeRabbit diagnostic: deliberately not NDJSON\n");
 emit({ type: "review_context", expectedDuration: "15 minutes" });
-const findings = script.mode === "findings" ? [
+const findings = script.longTitles ? Array.from({ length: 8 }, (_, i) => ({
+ type: "finding", severity: "major", fileName: "README.md", title: `Finding ${i + 1}: ${"x".repeat(250)}`, comment: "Retain this complete finding",
+})) : script.mode === "findings" ? [
  { type: "finding", severity: "major", fileName: "README.md", title: "Early retained finding", comment: "Verify the actual behavior before changing it", codegenInstructions: "Inspect the complete retained findings", suggestions: ["untrusted suggestion"], startLine: 1, endLine: 2 },
  { type: "finding", severity: "minor", fileName: "README.md", title: "Advisory retained finding", comment: "Keep this advisory too" },
 ] : [];

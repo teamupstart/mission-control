@@ -5,7 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
-import type { WorkflowRunDetail } from "../../src/shared/workflow.ts";
+import { WORKFLOW_EXECUTION_LIMITS, type WorkflowRunDetail } from "../../src/shared/workflow.ts";
 
 async function api<T>(d:DaemonHandle,path:string,body?:unknown,method?:string):Promise<T>{
  const r=await fetch(`${d.baseURL}${path}`,{method:method??(body===undefined?"GET":"POST"),headers:{"content-type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -104,6 +104,18 @@ test("YAML enabled without override executes, retains early/advisory findings be
  expect(retained.review.comparison.yaml.enabled).toBe(true);
  expect(readFileSync(join(daemon.recordDir,"coderabbit.jsonl"),"utf8").trim().split("\n").map(s=>JSON.parse(s)).filter(call=>call.args[0]==="review")).toHaveLength(1);
 
+});
+
+test("many findings keep the recorded outcome valid for downstream workflow evidence",async({dashboard,daemon})=>{
+ yaml(daemon,"reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home,"coderabbit-script.json"),JSON.stringify({longTitles:true}));
+ const r=await start(dashboard,daemon);
+ await expect.poll(async()=>{const d=await detail(daemon,r.id);return d.attempts.find(a=>a.nodeId==="cr")?.output;},{timeout:60000}).toMatchObject({status:"failed",review:{counts:{major:8}}});
+ const d=await detail(daemon,r.id);const output=d.attempts.find(a=>a.nodeId==="cr")!.output as {note:string};
+ expect(output.note.length).toBeLessThanOrEqual(WORKFLOW_EXECUTION_LIMITS.verdictSummary);
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await dashboard.getByRole("button",{name:/Load findings/}).click();
+ await expect(dashboard.locator(".wf-run-command-artifact pre")).toContainText("Finding 8:");
 });
 
 test("enabled unavailable trust block links to Setup and shows version/auth diagnostics",async({dashboard,daemon})=>{

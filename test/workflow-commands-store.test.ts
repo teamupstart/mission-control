@@ -156,6 +156,21 @@ test("an untouched override keeps its creation instant across a neighbour's edit
   ]);
 });
 
+test("an unreadable CodeRabbit override emits a bounded diagnostic while preserving catalog recovery", (t) => {
+  const s = store();
+  const logs: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => logs.push(args.join(" ")));
+  for (const raw of ["not json fixture-secret", JSON.stringify({ kind: "coderabbit", severity: "invalid" })]) {
+    db.prepare(`INSERT OR REPLACE INTO workflow_command_overrides (slot, repo_root, command_json, created_at, updated_at)
+      VALUES ('coderabbit', '/repo', ?, 1, 1)`).run(raw);
+    assert.deepEqual(s.getWorkflowCommand("coderabbit")!.overrides, []);
+  }
+  assert.equal(logs.length, 2);
+  assert.ok(logs.every(line => line.includes("event=malformed_durable_row")));
+  assert.ok(logs.every(line => !line.includes("fixture-secret")));
+  assert.equal(s.getWorkflowCommand("coderabbit")!.revision, 1);
+});
+
 test("an unreadable row degrades what it holds, not the catalog around it", () => {
   const s = store();
   s.replaceWorkflowCommandCas("build", 1, {

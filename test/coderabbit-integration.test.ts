@@ -21,6 +21,7 @@ const { BUILTIN_WORKFLOWS }=await import("../src/server/workflows/builtin-workfl
 const { stubRun }=await import("../src/server/util/exec.ts");
 const { openDb }=await import("../src/server/db.ts");
 const { ensureToken }=await import("../src/shared/harness-runtime.mjs");
+const { WorkflowCheckOutcomeSchema }=await import("../src/shared/protocol.ts");
 const enabled=parseCodeRabbitConfig(Buffer.from('reviews: {auto_review: {enabled: true}}'));
 const comparison:CodeRabbitComparison={interpreterVersion:1,yaml:enabled,head:"a".repeat(40),baseTip:"b".repeat(40),mergeBase:"c".repeat(40),baseRef:"main",severity:"major",maxRuns:10,timeoutMs:2700000,ruleRevision:1,empty:false,error:null};
 const summary={comparison,status:"complete" as const,counts:{critical:0,major:0,minor:1,trivial:0,info:0,none:0},titles:["minor advisory"],diagnostic:"Complete review"};
@@ -67,6 +68,12 @@ test("YAML true needs no catalog override and defaults to ten runs and 45 minute
  const i=input();assert.equal(i.command!.maxRuns,10);assert.equal(i.command!.overrides.length,0);
  const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
+});
+test("eight long finding titles still produce a schema-valid outcome for Persona evidence",async()=>{
+ const r=await runCheck(input(),{...deps(),execute:async()=>({kind:"exited",exitCode:2,output:"",truncatedBytes:0,
+  review:{...summary,counts:{...summary.counts,major:8},titles:Array.from({length:8},(_,i)=>`${i}: ${"x".repeat(246)}`)}})});
+ assert.equal(r.kind,"outcome");
+ if(r.kind==="outcome")assert.equal(WorkflowCheckOutcomeSchema.safeParse(r.outcome).success,true);
 });
 test("skipped and blocked review summaries without a Command view use shared CodeRabbit defaults", async () => {
  for (const state of ["skipped", "blocked"] as const) {

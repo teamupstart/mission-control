@@ -6418,7 +6418,7 @@ export const CodeRabbitTuningSchema = z.object({
 
 export const WorkflowCommandOverrideSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
-  command: z.array(z.string().min(1).max(WORKFLOW_LIMITS.checkCommandArg)).max(WORKFLOW_LIMITS.checkCommandArgs),
+  command: z.union([WorkflowCommandArgvSchema, z.tuple([])]),
   review: CodeRabbitTuningSchema.optional(),
 }).superRefine((value, ctx) => {
   if (value.review ? value.command.length !== 0 : value.command.length === 0)

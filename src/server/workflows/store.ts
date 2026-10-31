@@ -1054,7 +1054,7 @@ function parseWorkflowCommandOverrideRow(
     try {
       const review = CodeRabbitTuningSchema.parse(JSON.parse(row.command_json));
       return { repoRoot: row.repo_root, command: [], review };
-    } catch { return null; }
+    } catch (error) { diagnose(error); return null; }
   }
   const command = readCommandArgv(
     "workflow_command_overrides",

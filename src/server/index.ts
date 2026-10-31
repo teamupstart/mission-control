@@ -51,6 +51,7 @@ import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
+import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
 import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
@@ -302,7 +303,8 @@ const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
-const checkRuntime = new CheckRuntime(checkLeases);
+const commandArtifacts = new WorkflowCommandArtifactService();
+const checkRuntime = new CheckRuntime(checkLeases, { artifacts: commandArtifacts });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
@@ -354,6 +356,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  commandArtifacts,
   // The gate stops being a formality here. A configured, allowlisted check now leases a
   // pooled worktree pinned to the captured commit, runs the operator's argv in it, and a
   // non-zero exit FAILS the submission - where before it recorded "not run" and passed.

@@ -23,6 +23,7 @@ export const WORKFLOW_PHASE_RECOVERY = {
   capture_interrupted: "resume",
   capturing: "resume",
   check_cleanup_unresolved: "resume",
+  command_action_required: "retry",
   complete: "resume",
   conversation_changed: "resume",
   delivery_blocked: "decision",
@@ -106,7 +107,8 @@ export function infrastructureRecoveryAvailable(
   submission: WorkflowRecoveryContext["latest"],
   hasFailedAttempt: boolean,
 ): boolean {
-  return run.status === "blocked" && run.phase === "infrastructure_error"
+  return run.status === "blocked"
+    && (run.phase === "infrastructure_error" || run.phase === "command_action_required")
     && submission?.status === "failed" && hasFailedAttempt;
 }
 

@@ -567,3 +567,126 @@ test("two check nodes on one Command share its budget inside a single round", as
   // And the run still completed: a shared budget must not turn the second gate into a block.
   assert.equal(store.getRun("run-shared")?.status, "completed");
 });
+
+test("an action-required Command blocks without retrying and resumes only after explicit retry", async () => {
+  const store = seedSubmission("action-required");
+  let authorized = false;
+  let executions = 0;
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: scriptedRunner(() => "pass"),
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowPolicy: () => ({
+        ...checkPolicy(),
+        checksEnabled: authorized,
+      }),
+      workflowCommand: (slot: WorkflowCheckSlot) => ({
+        ...catalogFor(1)(slot),
+        onUnavailable: "block",
+      }),
+      checkDeps: () => ({
+        execute: async () => {
+          executions += 1;
+          return {
+            kind: "exited" as const,
+            exitCode: 0,
+            output: "passed after operator action\n",
+            truncatedBytes: 0,
+          };
+        },
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-action-required");
+  await waitFor(() => store.getRun("run-action-required")?.status === "blocked");
+
+  const blocked = store.getRun("run-action-required")!;
+  assert.equal(blocked.currentPhase, "command_action_required");
+  assert.equal(executions, 0, "authorization refusal must not launch the Command");
+  const firstGate = store.listAttempts("submission-action-required")
+    .find((attempt) => attempt.nodeId === "gate")!;
+  assert.equal(firstGate.state, "error");
+  assert.equal(
+    store.listAttempts("submission-action-required")
+      .some((attempt) => attempt.nodeId === "gate" && attempt.state === "retry_wait"),
+    false,
+    "action-required is not an infrastructure auto-retry",
+  );
+
+  authorized = true;
+  const retried = manager.retry("run-action-required", {
+    requestId: "operator-corrected-command",
+    nodeAttemptId: firstGate.id,
+  }, 20);
+  assert.equal(retried.ok, true);
+  await waitFor(() => store.getRun("run-action-required")?.status === "completed");
+  await manager.stop();
+
+  assert.equal(executions, 1);
+  const gateAttempts = store.listAttempts("submission-action-required")
+    .filter((attempt) => attempt.nodeId === "gate")
+    .sort((left, right) => left.attempt - right.attempt);
+  assert.deepEqual(gateAttempts.map((attempt) => attempt.state), ["error", "completed"]);
+});
+
+test("installing a missing executable lets an action-required Command retry under the same allowance", async () => {
+  const store = seedSubmission("missing-executable");
+  let executableAvailable = false;
+  let executions = 0;
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: scriptedRunner(() => "pass"),
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: (slot: WorkflowCheckSlot) => ({
+        ...catalogFor(1)(slot),
+        onUnavailable: "block",
+        onBudgetExhausted: "block",
+      }),
+      checkDeps: () => ({
+        execute: async () => {
+          executions += 1;
+          return executableAvailable
+            ? {
+                kind: "exited" as const,
+                exitCode: 0,
+                output: "passed after install\n",
+                truncatedBytes: 0,
+              }
+            : { kind: "unavailable" as const, note: "npm is missing" };
+        },
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission("submission-missing-executable");
+  await waitFor(() => store.getRun("run-missing-executable")?.status === "blocked");
+
+  const firstGate = store.listAttempts("submission-missing-executable")
+    .find((attempt) => attempt.nodeId === "gate")!;
+  assert.equal(firstGate.state, "error");
+  assert.equal(executions, 1);
+  assert.equal(
+    openDb().prepare(`SELECT check_run_slot FROM workflow_node_attempts WHERE id = ?`)
+      .get(firstGate.id)?.check_run_slot,
+    null,
+    "the unavailable executable kept a durable run reservation",
+  );
+
+  executableAvailable = true;
+  const retried = manager.retry("run-missing-executable", {
+    requestId: "operator-installed-executable",
+    nodeAttemptId: firstGate.id,
+  }, 20);
+  assert.equal(retried.ok, true);
+  await waitFor(() => store.getRun("run-missing-executable")?.status === "completed");
+  await manager.stop();
+
+  assert.equal(executions, 2, "the corrected retry never reached the executor");
+  assert.equal(gateOutcome(store, "submission-missing-executable").status, "passed");
+});

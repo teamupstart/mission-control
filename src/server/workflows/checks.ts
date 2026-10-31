@@ -6,11 +6,13 @@ import {
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   checkBlockedReason,
   checkCommandSubpath,
+  effectiveWorkflowCommandTimeoutMs,
   formatCheckCommand,
   resolveWorkflowCommand,
   type WorkflowCheckOutcome,
   type WorkflowCheckSlot,
   type WorkflowCommandView,
+  type WorkflowCommandArtifactDescriptor,
   type WorkflowPolicy,
 } from "@shared/workflow.ts";
 
@@ -45,6 +47,8 @@ import {
 export interface CheckRunReservation {
   granted: boolean;
   spent: number;
+  /** Return a granted claim when the executor proves it could not start the Command. */
+  release?: () => void;
 }
 
 /**
@@ -58,11 +62,19 @@ export interface CheckRunReservation {
 export interface CheckInfrastructureFailure {
   kind: "infrastructure";
   reason: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
+}
+
+export interface CheckActionRequiredFailure {
+  kind: "action_required";
+  reason: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type CheckResult =
   | { kind: "outcome"; outcome: WorkflowCheckOutcome }
-  | CheckInfrastructureFailure;
+  | CheckInfrastructureFailure
+  | CheckActionRequiredFailure;
 
 /** What the execution runtime is asked to do, once the ladder has decided it should run. */
 export interface CheckExecutionRequest {
@@ -87,15 +99,18 @@ export interface CheckExecutionRequest {
   workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
+  /** Frozen from the catalog before the attempt starts. */
+  timeoutMs?: number;
 }
 
 export type CheckExecutionResult =
   /** The command ran to completion and reported this. */
-  | { kind: "exited"; exitCode: number; output: string; truncatedBytes: number }
+  | { kind: "exited"; exitCode: number; output: string; truncatedBytes: number;
+      artifacts?: WorkflowCommandArtifactDescriptor[] }
   /** The configured executable is not there. A settings problem, not a defect. */
   | { kind: "unavailable"; note: string }
   /** It could not be run, or died without answering. Never a fail. */
-  | { kind: "infrastructure"; reason: string };
+  | { kind: "infrastructure"; reason: string; artifacts?: WorkflowCommandArtifactDescriptor[] };
 
 export type CheckExecutor = (request: CheckExecutionRequest) => Promise<CheckExecutionResult>;
 
@@ -172,6 +187,8 @@ function outcome(
       exitCode: null,
       output: "",
       truncatedBytes: 0,
+      artifacts: [],
+      timeoutMs: null,
       note,
       ...over,
     },
@@ -309,22 +326,32 @@ export async function runCheck(
   const command = resolved.command;
 
   const blocked = checkBlockedReason(policy, input.cwd, input.repoRoot);
-  if (blocked) return outcome(slot, "unavailable", blocked, { command });
+  if (blocked) {
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: blocked }
+      : outcome(slot, "unavailable", blocked, { command });
+  }
 
   // A configured command with no repository to run it in cannot be located, and guessing one
   // is how a gate ends up testing somebody else's checkout.
   if (!input.repoRoot) {
-    return outcome(
+    const reason =
+      "This session reported no repository, so there was nowhere to run the command.";
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason }
+      : outcome(
       slot,
       "unavailable",
-      "This session reported no repository, so there was nowhere to run the command.",
+      reason,
       { command },
     );
   }
 
   const execute = deps.execute ?? null;
   if (!execute) {
-    return outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: CHECK_RUNTIME_UNAVAILABLE_NOTE }
+      : outcome(slot, "unavailable", CHECK_RUNTIME_UNAVAILABLE_NOTE, { command });
   }
 
   // THE LAST RUNG BEFORE THE SPAWN, and that position is the invariant rather than a
@@ -349,12 +376,17 @@ export async function runCheck(
       WORKFLOW_LIMITS.commandMaxRunsMin,
       input.command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
     );
+    const reason =
+      `The ${slot} Command already ran ${runCount(reservation.spent)} in this workflow run, `
+      + `which is the most its ${allowed === 1 ? "limit of one run" : `limit of ${allowed} runs`} `
+      + "allows.";
+    if (input.command?.onBudgetExhausted === "block") {
+      return { kind: "action_required", reason: `${reason} Raise the run allowance, then retry.` };
+    }
     return outcome(
       slot,
       "budget_spent",
-      `The ${slot} Command already ran ${runCount(reservation.spent)} in this workflow run, `
-      + `which is the most its ${allowed === 1 ? "limit of one run" : `limit of ${allowed} runs`} `
-      + "allows, so this gate was skipped rather than running it again. CI still runs it "
+      `${reason} This gate was skipped rather than running it again. CI still runs it `
       + "against the merge commit.",
       { command },
     );
@@ -369,10 +401,16 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
   });
-  if (result.kind === "infrastructure") return { kind: "infrastructure", reason: result.reason };
+  if (result.kind === "infrastructure") {
+    return { kind: "infrastructure", reason: result.reason, artifacts: result.artifacts };
+  }
   if (result.kind === "unavailable") {
-    return outcome(slot, "unavailable", result.note, { command });
+    reservation?.release?.();
+    return input.command?.onUnavailable === "block"
+      ? { kind: "action_required", reason: result.note }
+      : outcome(slot, "unavailable", result.note, { command });
   }
 
   const bounded = tailBounded(result.output, WORKFLOW_EXECUTION_LIMITS.checkOutput);
@@ -386,11 +424,15 @@ export async function runCheck(
         exitCode: 0,
         output: bounded.text,
         truncatedBytes,
+        artifacts: result.artifacts ?? [],
+        timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
       })
     : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.`), {
         command,
         exitCode: result.exitCode,
         output: bounded.text,
         truncatedBytes,
+        artifacts: result.artifacts ?? [],
+        timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
       });
 }

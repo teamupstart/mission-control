@@ -288,6 +288,7 @@ export function personaCheckEvidence(
       omittedBytes: parsed.data.truncatedBytes + retained.droppedBytes,
       headSha,
       note: parsed.data.note,
+      artifacts: parsed.data.artifacts,
     }));
   }
   return evidence;
@@ -327,7 +328,11 @@ export function sessionActionCompleteEdges(
  * A build log with an empty tail would otherwise produce an empty `rationale`, which the
  * strict schema refuses.
  */
-function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
+function checkVerdict(
+  outcome: WorkflowCheckOutcome,
+  runId: string,
+  attemptId: string,
+): PersonaVerdict | null {
   const summary = outcome.note;
   if (checkOutcomePasses(outcome)) {
     return normalizePersonaVerdict({
@@ -340,9 +345,15 @@ function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): Persona
   const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
-  const rationale = dropped > 0
+  const reader = outcome.artifacts
+    .filter((artifact) => artifact.availability === "retained")
+    .map((artifact) =>
+      `read_workflow_command_output({ runId: ${JSON.stringify(runId)}, attemptId: `
+      + `${JSON.stringify(attemptId)}, artifactId: ${JSON.stringify(artifact.id)} })`)
+    .join("\n");
+  const rationale = (dropped > 0
     ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
-    : quote;
+    : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
   return normalizePersonaVerdict({
     verdict: "fail",
     summary,
@@ -1341,6 +1352,7 @@ export class WorkflowEngine {
     }
 
     const attemptRef = {
+      runId: run.id,
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
@@ -1370,13 +1382,21 @@ export class WorkflowEngine {
          * Called only if the ladder gets as far as spawning - resolution, authorization and
          * locatability are all asked first, and none of them may spend a run.
          */
-        reserveRun: () => this.store.reserveCheckRun(
-          run.id,
-          claimed.id,
-          node.slot,
-          this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
-          run.checkBudgetEpochRound ?? null,
-        ),
+        reserveRun: () => {
+          const reservation = this.store.reserveCheckRun(
+            run.id,
+            claimed.id,
+            node.slot,
+            this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+            run.checkBudgetEpochRound ?? null,
+          );
+          return reservation.granted
+            ? {
+                ...reservation,
+                release: () => { this.store.releaseCheckRun(claimed.id, node.slot); },
+              }
+            : reservation;
+        },
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
@@ -1389,13 +1409,17 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
       return;
     }
+    if (result.kind === "action_required") {
+      this.handleCheckActionRequired(claimed, run.id, result.reason);
+      return;
+    }
     if (result.kind === "infrastructure") {
       this.handleInfrastructureFailure(claimed, run.id, result.reason);
       return;
     }
 
     const { outcome: checkOutcome } = result;
-    const verdict = checkVerdict(checkOutcome, claimed.id);
+    const verdict = checkVerdict(checkOutcome, run.id, claimed.id);
     if (!verdict) {
       this.handleInfrastructureFailure(
         claimed,
@@ -1584,6 +1608,34 @@ export class WorkflowEngine {
     this.store.appendEvent(runId, "persona_infrastructure_exhausted", {
       nodeId: attempt.nodeId,
       attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+  }
+
+  /** Configuration or consent needs a human correction, never an automatic retry or code fix. */
+  private handleCheckActionRequired(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason }, this.now());
+    this.store.setSubmissionState(submission.id, "failed", this.now());
+    this.store.setRunState(runId, "blocked", "command_action_required", {
+      nodeId: attempt.nodeId,
+      attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.store.appendEvent(runId, "command_action_required", {
+      nodeId: attempt.nodeId,
+      attemptId: attempt.id,
       error: reason,
     }, this.now());
     this.onRunChanged(runId);

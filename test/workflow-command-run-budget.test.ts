@@ -453,7 +453,17 @@ test("an upgrading catalog gains the column, keeps its commands, and adopts the 
     .all() as unknown as Array<{ name: string }>).map((column) => column.name);
   assert.deepEqual(
     columns,
-    ["slot", "default_command_json", "revision", "created_at", "updated_at", "max_runs"],
+    [
+      "slot",
+      "default_command_json",
+      "revision",
+      "created_at",
+      "updated_at",
+      "max_runs",
+      "timeout_ms",
+      "on_unavailable",
+      "on_budget_exhausted",
+    ],
   );
 
   const store = new WorkflowStore(db);

@@ -20,6 +20,7 @@ import {
   type CheckSpawnOutcome,
   type CheckSupervisorLookup,
 } from "./check-supervisor.ts";
+import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 
 // The execution runtime a Check node reaches: the ONE place the worktree lease and the gated
 // process supervisor meet, and the change that makes a configured check gate stop passing
@@ -68,6 +69,7 @@ import {
  * nothing about the retry itself would collide with the lease it must not outrun.
  */
 export interface CheckAttemptRef {
+  runId?: string;
   attemptId: string;
   submissionId: string;
   nodeId: string;
@@ -102,6 +104,7 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
+  artifacts?: WorkflowCommandArtifactService;
 }
 
 /**
@@ -116,6 +119,7 @@ export class CheckRuntime {
   private readonly timeoutMs: number | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
+  private readonly artifacts: WorkflowCommandArtifactService;
 
   /**
    * Phase 3's answer to the lease manager's open question, ready to inject.
@@ -137,6 +141,7 @@ export class CheckRuntime {
     this.timeoutMs = deps.timeoutMs;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
+    this.artifacts = deps.artifacts ?? new WorkflowCommandArtifactService(deps.db);
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
       const row = store.get(attemptId);
@@ -205,6 +210,11 @@ export class CheckRuntime {
       };
     }
 
+    const capture = attempt.runId ? this.artifacts.beginCapture({
+      runId: attempt.runId,
+      submissionId: attempt.submissionId,
+      attemptId: attempt.attemptId,
+    }) : undefined;
     let outcome: CheckSpawnOutcome;
     try {
       outcome = await this.supervise(
@@ -217,7 +227,8 @@ export class CheckRuntime {
           // unrelated checkout and report the answer as if it were about this submission.
           leasePath,
           workingSubpath: request.workingSubpath,
-          timeoutMs: this.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
+          timeoutMs: this.timeoutMs ?? request.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
+          capture,
         },
         {
           registry: this.leases.processes,
@@ -225,6 +236,7 @@ export class CheckRuntime {
         },
       );
     } catch (err) {
+      const artifacts = capture?.finalize(false) ?? [];
       // The supervisor is written not to throw, and a lease outliving one that did would be a
       // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
       // reading: the row and the pin are kept and reclamation asks about the group later.
@@ -232,8 +244,13 @@ export class CheckRuntime {
       return {
         kind: "infrastructure",
         reason: `the ${request.slot} check runtime failed: ${message(err)}`,
+        artifacts,
       };
     }
+
+    const artifacts = capture?.finalize(
+      outcome.result.kind === "exited" || outcome.result.kind === "unavailable",
+    ) ?? [];
 
     // BEFORE the result surfaces, always. An `infrastructure` result reaches
     // `handleInfrastructureFailure`, which finishes this attempt and creates a fresh one, and
@@ -262,9 +279,12 @@ export class CheckRuntime {
         reason:
           `the ${request.slot} check ran and ${describeResult(outcome.result)}, but that result is `
           + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
+        artifacts,
       };
     }
-    return outcome.result;
+    return outcome.result.kind === "exited" || outcome.result.kind === "infrastructure"
+      ? { ...outcome.result, artifacts }
+      : outcome.result;
   }
 
   /**

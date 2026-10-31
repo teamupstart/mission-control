@@ -222,6 +222,7 @@ import {
   SetWorkflowPersonaDirectiveSchema,
   WorkflowCompletionClaimSchema,
   UpdateWorkflowCommandSchema,
+  ReadWorkflowCommandOutputSchema,
   WorkflowConfigSchema,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
@@ -613,6 +614,7 @@ import type {
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
+import { CommandArtifactReadError } from "./workflows/command-artifacts.ts";
 import {
   getWorkflowPolicy,
   setWorkflowPolicy,
@@ -2890,6 +2892,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           code: "workflow_run_not_found",
         }, 404);
   });
+  app.get(
+    "/api/workflow-runs/:id/attempts/:attemptId/command-output/:artifactId",
+    (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const rawLimit = c.req.query("limit");
+      const parsed = ReadWorkflowCommandOutputSchema.safeParse({
+        runId: c.req.param("id"),
+        attemptId: c.req.param("attemptId"),
+        artifactId: c.req.param("artifactId"),
+        cursor: c.req.query("cursor") ?? null,
+        ...(rawLimit === undefined ? {} : { limit: Number(rawLimit) }),
+      });
+      if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+      try {
+        const page = manager.readCommandOutput(parsed.data);
+        return page ? c.json(page) : c.json({ error: "Command output service unavailable" }, 503);
+      } catch (error) {
+        const known = error instanceof CommandArtifactReadError ? error : null;
+        return c.json({
+          error: known?.message ?? "Retained Command output could not be read",
+          code: known?.code ?? "command_output_failed",
+        }, (known?.status ?? 409) as 400 | 404 | 409 | 410);
+      }
+    },
+  );
   app.get("/api/workflow-runs/:id/images/:imageId", (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);

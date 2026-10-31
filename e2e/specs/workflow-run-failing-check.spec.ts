@@ -1,7 +1,10 @@
+import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * A failed command gate is a blocker, and it keeps everything a person needs from it.
@@ -27,6 +30,7 @@ const NODE = {
   end: "end-node",
 };
 const REVIEWER = "E2E agreeable reviewer";
+const EVIDENCE = artifactsDir("workflow-run-failing-check");
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -70,7 +74,16 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
  * degenerate case, and it has to open on `Blocking` with that check selected rather than on a
  * rail full of approvals.
  */
-async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<string> {
+async function seedFailingCheckRun(
+  page: Page,
+  daemon: DaemonHandle,
+  options: {
+    command?: string[];
+    workflowName?: string;
+    requestId?: string;
+    infrastructure?: boolean;
+  } = {},
+): Promise<string> {
   const sessionId = await dispatch(page, daemon);
 
   // Commands are off by default and allowlisted per repository, so both switches are thrown
@@ -85,7 +98,11 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
       slot: "test",
       // `shell: false`, so `sh` is simply the executable being spawned. The stderr line is
       // what the retained output tail has to carry back to the pane.
-      command: ["sh", "-c", "echo 'E2E CHECK BOOM' 1>&2; exit 3"],
+      command: options.command ?? [
+        "sh",
+        "-c",
+        "printf 'E2E EARLY MARKER\\n'; i=0; while [ $i -lt 70000 ]; do printf x; i=$((i+1)); done; printf '\\n'; echo 'E2E CHECK BOOM' 1>&2; exit 3",
+      ],
     }],
   }, "PUT");
 
@@ -94,7 +111,7 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
     guidanceMarkdown: `# ${REVIEWER}\n\nE2E_PASS_VERDICT`,
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
-    name: "E2E failing check",
+    name: options.workflowName ?? "E2E failing check",
     draft: {
       nodes: [
         { id: NODE.session, kind: "session", position: { x: 0, y: 0 } },
@@ -128,7 +145,7 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
   const submitted = await api<{ run: { id: string } }>(
     daemon,
     `/api/workflow-bindings/${binding.id}/submit`,
-    { requestId: "e2e-failing-check" },
+    { requestId: options.requestId ?? "e2e-failing-check" },
   );
   const runId = submitted.run.id;
 
@@ -138,13 +155,29 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
     await expect
       .poll(async () => {
         const run = await api<{
-          attempts: Array<{ nodeId: string; output: unknown }>;
+          attempts: Array<{
+            nodeId: string;
+            state: string;
+            output: unknown;
+            commandArtifacts?: unknown[];
+          }>;
         }>(daemon, `/api/workflow-runs/${runId}`);
-        const check = run.attempts.find((attempt) => attempt.nodeId === NODE.check);
+        const checks = run.attempts.filter((attempt) => attempt.nodeId === NODE.check);
+        const check = checks.at(-1);
+        if (options.infrastructure) {
+          return check?.state === "error" && (check.commandArtifacts?.length ?? 0) > 0
+            ? "infrastructure-with-output"
+            : check?.state ?? "";
+        }
         const output = check?.output as { status?: string; exitCode?: number } | null | undefined;
         return output?.status ?? "";
-      }, { message: "the configured command should run and exit non-zero", timeout: 60_000 })
-      .toBe("failed");
+      }, {
+        message: options.infrastructure
+          ? "the command should exhaust infrastructure retries with retained output on the final attempt"
+          : "the configured command should run and exit non-zero",
+        timeout: options.infrastructure ? 120_000 : 60_000,
+      })
+      .toBe(options.infrastructure ? "infrastructure-with-output" : "failed");
   } catch (caught) {
     // eslint-disable-next-line no-console
     console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
@@ -192,7 +225,46 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   await expect(card).toHaveCount(1);
   await expect(card).toContainText("The configured command ran and exited non-zero");
   await expect(card.locator("pre.wf-run-check-output")).toContainText("E2E CHECK BOOM");
+  await expect(card.locator("pre.wf-run-check-output")).not.toContainText("E2E EARLY MARKER");
   await expect(card).toContainText("exit 3");
+
+  let outputReads = 0;
+  await dashboard.route("**/api/workflow-runs/*/attempts/*/command-output/*", async (route) => {
+    outputReads += 1;
+    if (outputReads === 1 || outputReads === 3) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporary retained-output failure" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await card.getByRole("button", { name: "Load stdout" }).click();
+  const retryFirstPage = card.getByRole("button", { name: "Retry stdout" });
+  await expect(card.getByRole("alert")).toContainText("temporary retained-output failure");
+  await expect(retryFirstPage).toBeEnabled();
+  await retryFirstPage.click();
+  await expect(card).toContainText("E2E EARLY MARKER");
+  await expect(card.getByRole("button", { name: "Load more" })).toBeEnabled();
+
+  await card.getByRole("button", { name: "Load more" }).click();
+  const retryLaterPage = card.getByRole("button", { name: "Retry load more" });
+  await expect(card.getByRole("alert")).toContainText("temporary retained-output failure");
+  await expect(retryLaterPage).toBeEnabled();
+  await retryLaterPage.click();
+  await expect(card.getByRole("button", { name: "Load more" })).toBeDisabled();
+  expect(outputReads, "a later-page retry did not resume from its preserved cursor").toBe(4);
+  await expect(card).toContainText(/stdout · [0-9.]+ KiB/);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({
+      path: `${EVIDENCE}retained-command-output.png`,
+      fullPage: true,
+    });
+  }
 
   // A command gate has no reviewer to give feedback to and no reviewer to switch off, so those
   // controls are absent rather than rendered dead.
@@ -230,4 +302,60 @@ test("a failed command gate is the blocker, and keeps its exit code and output",
   await expect(row).toHaveAttribute("aria-current", "true");
   await expect(worklist.locator("article.wf-run-check pre.wf-run-check-output"))
     .toContainText("E2E CHECK BOOM");
+
+  // Retention changes the live attempt descriptor without rewriting the frozen outcome. A
+  // fresh dashboard read must use that current descriptor, so it stops offering a body the
+  // route will answer with 410 for.
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `UPDATE workflow_command_artifacts
+          SET availability = 'pruned', pruned_at = ?
+        WHERE run_id = ? AND availability = 'retained'`,
+    ).run(Date.now(), runId);
+  });
+  await dashboard.reload();
+  const prunedWorklist = worklistOf(dashboard);
+  await expect(prunedWorklist).toBeVisible({ timeout: 40_000 });
+  const prunedCard = prunedWorklist.locator("article.wf-run-check");
+  await expect(prunedCard).toContainText(/stdout · [0-9.]+ KiB · pruned/);
+  await expect(prunedCard.getByRole("button", { name: "Load stdout" })).toHaveCount(0);
+});
+
+test("an infrastructure-failed command keeps its retained output accessible", async ({
+  dashboard,
+  daemon,
+}) => {
+  const runId = await seedFailingCheckRun(dashboard, daemon, {
+    command: [
+      "sh",
+      "-c",
+      "printf 'E2E INFRASTRUCTURE MARKER\\n'; kill -KILL $$",
+    ],
+    workflowName: "E2E infrastructure check",
+    requestId: "e2e-infrastructure-check",
+    infrastructure: true,
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const worklist = worklistOf(dashboard);
+  await expect(worklist).toBeVisible({ timeout: 40_000 });
+
+  const row = worklist.locator("button.wf-run-worklist-row.is-attempt");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Command · test");
+  await expect(row).toContainText(/killed by SIGKILL/);
+  await row.click();
+
+  const card = worklist.locator("article.wf-run-attempt");
+  await expect(card).toContainText("Retained command output");
+  await card.getByRole("button", { name: "Load stdout" }).click();
+  await expect(card.locator("pre.wf-run-check-output"))
+    .toContainText("E2E INFRASTRUCTURE MARKER");
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({
+      path: `${EVIDENCE}infrastructure-retained-command-output.png`,
+      fullPage: true,
+    });
+  }
 });

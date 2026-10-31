@@ -3,6 +3,7 @@ import {
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_PURPOSE,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS,
   WORKFLOW_LIMITS,
   checkCommandRoot,
   formatCheckCommand,
@@ -14,6 +15,7 @@ import {
 import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
+  WorkflowCommandFailurePolicy,
   WorkflowCommandView,
 } from "@shared/workflow.ts";
 import { fetchRepos, fetchWorkflowRepoAllowlist, resolveRepo } from "../lib/api.ts";
@@ -79,6 +81,9 @@ export interface CommandDraft {
    * `abc`, or `0` would need three refusal sentences for a value with twenty legal answers.
    */
   maxRuns: number;
+  timeoutMs?: number | null;
+  onUnavailable?: WorkflowCommandFailurePolicy;
+  onBudgetExhausted?: WorkflowCommandFailurePolicy;
 }
 
 /** Every budget an operator may choose, smallest first. */
@@ -126,6 +131,9 @@ export function commandDraftFrom(view: WorkflowCommandView | null): CommandDraft
     // A slot the catalog has not delivered opens at the same budget a fresh one carries, so
     // the control never shows a number the daemon would disagree with.
     maxRuns: view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    timeoutMs: view?.timeoutMs ?? null,
+    onUnavailable: view?.onUnavailable ?? "skip",
+    onBudgetExhausted: view?.onBudgetExhausted ?? "skip",
   };
 }
 
@@ -146,6 +154,9 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
   if (draft.defaultText.trim() !== "" && !parsed.ok) return true;
   if (JSON.stringify(nextDefault) !== JSON.stringify(storedDefault)) return true;
   if (draft.maxRuns !== (view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS)) return true;
+  if ((draft.timeoutMs ?? null) !== (view?.timeoutMs ?? null)) return true;
+  if ((draft.onUnavailable ?? "skip") !== (view?.onUnavailable ?? "skip")) return true;
+  if ((draft.onBudgetExhausted ?? "skip") !== (view?.onBudgetExhausted ?? "skip")) return true;
   return JSON.stringify([...draft.overrides].sort(byRepoRoot))
     !== JSON.stringify((view?.overrides ?? []).map((entry) => ({
       repoRoot: entry.repoRoot,
@@ -175,6 +186,9 @@ export function commandUpdateBody(
     defaultCommand: string[] | null;
     overrides: WorkflowCommandOverride[];
     maxRuns: number;
+    timeoutMs: number | null;
+    onUnavailable: WorkflowCommandFailurePolicy;
+    onBudgetExhausted: WorkflowCommandFailurePolicy;
   };
 }
   | { ok: false; error: string } {
@@ -192,6 +206,9 @@ export function commandUpdateBody(
       defaultCommand,
       overrides: [...draft.overrides].sort(byRepoRoot),
       maxRuns: draft.maxRuns,
+      timeoutMs: draft.timeoutMs ?? null,
+      onUnavailable: draft.onUnavailable ?? "skip",
+      onBudgetExhausted: draft.onBudgetExhausted ?? "skip",
     },
   };
 }
@@ -652,7 +669,7 @@ export function CommandLibrary({
         <div className="wf-command-sidebar-head">
           <div>
             <h3>Commands</h3>
-            <p>4 slots</p>
+            <p>{WORKFLOW_CHECK_SLOTS.length} slots</p>
           </div>
         </div>
         <div className="wf-command-list">
@@ -684,8 +701,8 @@ export function CommandLibrary({
         {/* Why there is no New here, said where the missing control would have been. The
             other two rails end in controls; this one ends in the reason it has none. */}
         <p className="wf-command-rail-foot">
-          Four slots ship with Mission Control and there is no fifth to author. A workflow
-          names a slot, never a command.
+          These slots ship with Mission Control and operators cannot author another. A
+          workflow names a slot, never a command.
         </p>
       </aside>
 
@@ -828,6 +845,79 @@ export function CommandLibrary({
               of running the command again - CI still runs it against the merge commit.
               Granting a run more repair rounds starts the count over.
             </p>
+          </div>
+
+          <div className="wf-command-policy-grid">
+            <div className="wf-command-budget">
+              <label htmlFor="workflow-command-timeout">Timeout in minutes</label>
+              <div className="wf-command-timeout-row">
+                <input
+                  id="workflow-command-timeout"
+                  className="field-input"
+                  type="number"
+                  min={1}
+                  max={120}
+                  step={1}
+                  disabled={draft.timeoutMs === null}
+                  value={Math.round((draft.timeoutMs
+                    ?? WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot]) / 60_000)}
+                  onChange={(event) => setDraft((current) => ({
+                    ...current,
+                    timeoutMs: Math.min(120, Math.max(1, Number(event.target.value))) * 60_000,
+                  }))}
+                />
+                <label className="wf-command-timeout-default">
+                  <input
+                    type="checkbox"
+                    checked={draft.timeoutMs === null}
+                    onChange={(event) => setDraft((current) => ({
+                      ...current,
+                      timeoutMs: event.target.checked
+                        ? null
+                        : WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot],
+                    }))}
+                  />
+                  Use slot default
+                </label>
+              </div>
+              <p className="wf-command-hint">
+                The default is {WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot] / 60_000}
+                {" minutes"}. A timeout remains an infrastructure failure and follows the
+                existing bounded retry path.
+              </p>
+            </div>
+
+            <div className="wf-command-budget">
+              <label htmlFor="workflow-command-unavailable">If the command is unavailable</label>
+              <select
+                id="workflow-command-unavailable"
+                className="field-input"
+                value={draft.onUnavailable}
+                onChange={(event) => setDraft((current) => ({
+                  ...current,
+                  onUnavailable: event.target.value as WorkflowCommandFailurePolicy,
+                }))}
+              >
+                <option value="skip">Skip with a note</option>
+                <option value="block">Block for operator action</option>
+              </select>
+            </div>
+
+            <div className="wf-command-budget">
+              <label htmlFor="workflow-command-budget-exhausted">When the run budget is exhausted</label>
+              <select
+                id="workflow-command-budget-exhausted"
+                className="field-input"
+                value={draft.onBudgetExhausted}
+                onChange={(event) => setDraft((current) => ({
+                  ...current,
+                  onBudgetExhausted: event.target.value as WorkflowCommandFailurePolicy,
+                }))}
+              >
+                <option value="skip">Skip with a note</option>
+                <option value="block">Block for operator action</option>
+              </select>
+            </div>
           </div>
 
           {/* The precedence, said once, above the table that draws it. Everything here used
@@ -1004,8 +1094,8 @@ export function CommandLibrary({
           </div>
 
           <p className="wf-command-hint wf-command-save-note">
-            Save replaces this slot's default, its whole override list and its run budget
-            together, so the parts can never be stored apart.
+            Save replaces this slot's default, its whole override list, run budget, timeout,
+            and skip-or-block policies together, so the parts can never be stored apart.
           </p>
         </article>
       </div>

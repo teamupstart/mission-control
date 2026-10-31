@@ -164,10 +164,17 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
         }
       } finally { handle.closeSync(); }
     }
-    const walk = (directory: string, folder: string, depth: number): void => {
+    const walk = (directory: string, folder: string, depth: number, childLink = false): void => {
       if (result.truncated || entries > MAX_ENTRIES_PER_SOURCE) return;
       try {
-        const real = realpathSync(directory);
+        let real: string;
+        try { real = realpathSync(directory); } catch (error) {
+          // Stale installed links can outlive their app bundle. They contribute no
+          // skill, but should not clutter the catalog with missing-directory warnings.
+          // Only missing child-link targets are quiet; roots and other failures report.
+          if (childLink && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+          throw error;
+        }
         // Recheck every resolved directory: a child link can be just as broad as a root.
         if (resolvesAtOrAboveHome(real)) {
           problem(`${folder ? `${folder}: ` : ""}This directory resolves at or above your home. Choose a narrower folder.`);
@@ -208,7 +215,7 @@ export function scanSkillSources(sources: readonly ResidentSkillSource[], config
             if (child.name.startsWith(".")) continue;
             if (!child.isDirectory() && !child.isSymbolicLink()) continue;
             subfolders++;
-            walk(join(directory, child.name), folder ? `${folder}/${child.name}` : child.name, depth + 1);
+            walk(join(directory, child.name), folder ? `${folder}/${child.name}` : child.name, depth + 1, child.isSymbolicLink());
             if (entries > MAX_ENTRIES_PER_SOURCE) break;
           }
           if (folder && !subfolders && entries <= MAX_ENTRIES_PER_SOURCE) problem(`${folder}: no SKILL.md.`);

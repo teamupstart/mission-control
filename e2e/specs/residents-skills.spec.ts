@@ -160,3 +160,68 @@ test("skill list shows 200 matches and asks to narrow only above that limit", as
   await expect(list.getByText("Boundary skill 201", { exact: true })).toBeVisible();
   await expect(notice).toHaveCount(0);
 });
+
+test("valid installed skill links appear without stale symlink warnings", async ({ dashboard: page, daemon }) => {
+  const root = join(daemon.home, "linked-skills");
+  const installed = join(daemon.home, "installed-skills");
+  skill(installed, "example", "Installed linked skill");
+  mkdirSync(root);
+  symlinkSync(join(installed, "example"), join(root, "valid-link"));
+  symlinkSync(join(daemon.home, "old-app/skills/retired"), join(root, "mission-retired"));
+  await page.goto(`${daemon.baseURL}/#/residents/skill-sources`);
+  const panel = page.getByRole("region", { name: "Skill sources" });
+  await panel.getByLabel("Skill folder").fill(root);
+  await panel.getByRole("button", { name: "Add source" }).click();
+  await expect(panel.getByLabel("Skill folder")).toHaveValue("");
+  const row = panel.getByRole("list", { name: "Registered skill sources" }).getByRole("listitem")
+    .filter({ has: page.getByRole("button", { name: `Remove source ${root}` }) });
+  await expect(row).toContainText("1 skills");
+  await expect(row.locator("summary")).toHaveCount(0);
+  await panel.getByRole("combobox", { name: "Source", exact: true }).selectOption({ label: root });
+  await expect(panel.getByRole("list", { name: "Indexed skills" })).toContainText("Installed linked skill");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("residents-skills");
+    mkdirSync(dir, { recursive: true });
+    await page.setViewportSize({ width: 1440, height: 1400 });
+    await row.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(dir, "linked-skills.png") });
+  }
+});
+
+test("all five pre-installed Mission skills appear despite stale global installation links", async ({ dashboard: page, daemon }) => {
+  const names = ["html-plans", "html-report", "phased-plan", "pull-request", "retro"];
+  for (const global of [".claude/skills", ".agents/skills"]) {
+    const root = join(daemon.home, global);
+    mkdirSync(root, { recursive: true });
+    for (const name of names) {
+      symlinkSync(join(daemon.home, "Applications/Mission Control.app/Contents/Resources/app/skills", name),
+        join(root, `mission-${name}`));
+    }
+  }
+  await page.goto(`${daemon.baseURL}/#/residents/skill-sources`);
+  const panel = page.getByRole("region", { name: "Skill sources" });
+  await panel.getByRole("button", { name: "Rescan" }).click();
+  await expect(panel.getByRole("button", { name: "Rescan" })).toBeEnabled();
+  const sources = panel.getByRole("list", { name: "Registered skill sources" });
+  for (const label of ["Claude global", "Agents global"]) {
+    const row = sources.getByRole("listitem").filter({ has: page.getByText(label, { exact: true }) });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator("summary")).toHaveCount(0);
+  }
+  // These are the shipped SKILL.md files served by the built daemon, not synthetic
+  // replacements or repaired links. The current bundle is their canonical source.
+  await panel.getByRole("combobox", { name: "Source", exact: true }).selectOption("mission");
+  const list = panel.getByRole("list", { name: "Indexed skills" });
+  for (const name of names) {
+    await expect(list.getByRole("listitem").filter({ has: page.getByText(name, { exact: true }) })).toBeVisible();
+    await expect(list.getByText(`mission:${name}`, { exact: true })).toBeVisible();
+  }
+  await expect(list.getByRole("listitem")).toHaveCount(names.length);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("residents-skills");
+    mkdirSync(dir, { recursive: true });
+    await page.setViewportSize({ width: 1440, height: 1800 });
+    await page.mouse.move(0, 0);
+    await page.screenshot({ path: join(dir, "preinstalled-skills.png"), fullPage: true });
+  }
+});

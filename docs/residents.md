@@ -400,13 +400,18 @@ Open **Residents > Skill sources** to browse Mission Control's `skills/`, `~/.cl
 `~/.agents/skills`, and `$CODEX_HOME/skills` (or `~/.codex/skills` when unset). Claude entries
 that resolve to a skill already indexed by Mission Control are omitted; independent
 `mission-*` folders and links remain indexed.
+The pre-installed html-plans, html-report, phased-plan, pull-request and retro skills appear
+under **Mission Control**, read directly from the current app bundle. Stale global links to an
+older app location do not remove those entries; choose **Mission Control** in the Source filter
+to see them.
 Register up to 16 additional absolute or home-relative folders. Removing a source only removes
 its registration; it never deletes skill files.
 
 The catalog is scanned at daemon startup and on **Rescan**. Adding or removing a source also
 rescans. Search matches names, descriptions and folders; the Source filter narrows the list.
 Malformed frontmatter, missing folders, unreadable files and bounded-scan limits appear beside
-the source. Grouped folders and symlinked skill folders are supported, but links to the home
+the source. Child symlinks whose targets no longer exist are skipped silently; valid linked
+skills remain discoverable and missing source roots still report a problem. Grouped folders and symlinked skill folders are supported, but links to the home
 directory or an ancestor are refused. The 5,000-entry scan budget includes ordinary and hidden
 files as well as directories. A skill's stable identity
 is its source id plus relative folder, so editing its name does not change its identity.

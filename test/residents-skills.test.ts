@@ -515,3 +515,18 @@ test("restored invalid source paths are reported and never scanned", () => {
   assert.ok(index.sources.find((source) => source.id === row.id)?.problems.some((problem) => problem.includes("not an absolute path")));
   assert.ok(!index.skills.some((skill) => skill.sourceId === row.id));
 });
+
+test("dangling child skill links are quiet while valid links and missing roots retain their behavior", () => {
+  const path = join(root, "dangling-links");
+  const target = join(root, "installed-target");
+  skill(target, "Installed linked skill");
+  mkdirSync(path);
+  symlinkSync(target, join(path, "installed"));
+  symlinkSync(join(root, "old-app/skills/retired"), join(path, "mission-retired"));
+  const missing = join(root, "missing-source");
+  const result = scanSkillSources([source(path), source(missing, "missing")], { directories: [] });
+  assert.deepEqual(result.skills.map(s => s.id), ["test:installed"]);
+  assert.deepEqual(result.sources[0]!.problems, []);
+  assert.ok(result.sources[1]!.problems.some(p => p.includes("directory is missing")));
+  assert.ok(fs.lstatSync(join(path, "mission-retired")).isSymbolicLink());
+});

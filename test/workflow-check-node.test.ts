@@ -815,5 +815,5 @@ test("the slot list is append-only and every slot is reachable", () => {
   // Renaming one orphans every published graph naming the old spelling: the node stops
   // matching a configured command and skips forever, which looks exactly like a repository
   // nobody configured.
-  assert.deepEqual([...WORKFLOW_CHECK_SLOTS], ["test", "lint", "typecheck", "build", "documentation"]);
+  assert.deepEqual([...WORKFLOW_CHECK_SLOTS], ["test", "lint", "typecheck", "build", "documentation", "coderabbit"]);
 });

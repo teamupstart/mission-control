@@ -47,7 +47,7 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
     const [session] = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
     return session?.state;
   }).toBe("idle");
-  const [before] = await api<Array<{ id: string; agentSessionId: string | null }>>(
+  const [before] = await api<Array<{ id: string; cwd: string; agentSessionId: string | null }>>(
     daemon,
     "/api/sessions",
   );
@@ -71,10 +71,15 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
   // so only a new subprocess can observe this file.
   writeFileSync(join(daemon.recordDir, "claude-auth-restored"), "ok\n");
 
-  const sdkInvocations = (): Array<{ argv: string[] }> =>
-    recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+  // A catalog refresh is another SDK subprocess, not another conversation launch.
+  // Its record can land during recovery under contention and must not spend this count.
+  const refreshed = await dashboard.request.get(`${daemon.baseURL}/api/harnesses/models?refresh=1`);
+  expect(refreshed.ok()).toBe(true);
+
+  const sdkInvocations = (): Array<{ argv: string[]; cwd: string }> =>
+    recordsIn<{ argv: string[]; cwd: string }>(join(daemon.recordDir, "claude"))
       .filter((record) =>
-        record.argv.includes("--input-format") && !record.argv.includes("--setting-sources="),
+        record.cwd === before?.cwd && argvValue(record.argv, "--input-format") === "stream-json",
       );
   await reply.fill("continue after external login");
   await reply.press("Enter");

@@ -713,3 +713,21 @@ test("MCP retries readiness with new proof, overrides gaps, and recovers failed 
 test("valid-state scenarios successfully execute every advertised MCP workflow action", () => {
   assert.deepEqual([...successfulActions].sort(), [...WorkflowActionRequestSchema.optionsMap.keys()].sort());
 });
+
+test("MCP retrieves complete normalized findings independently of a clipped raw stream",async(t)=>{
+ const f=await fixture(t);const own=f.seed(f.caller.id);const other=f.seed();
+ const identity={runId:own.run.id,submissionId:own.submission.id,attemptId:"semantic-findings-attempt"};
+ const capture=f.commandArtifacts.beginCapture({...identity,semanticBytes:4*1024*1024});
+ capture.push("stdout",Buffer.alloc(2*1024*1024+100,120));capture.push("stdout",Buffer.from("EARLY FINDING OUTSIDE RAW ARCHIVE"));
+ const raw=capture.finalize(true).find(a=>a.kind==="stdout")!;assert.ok(raw.droppedBytes>0);
+ const body=Buffer.from(JSON.stringify({id:"semantic:1",severity:"minor",comment:"EARLY FINDING OUTSIDE RAW ARCHIVE",codegenInstructions:"Verify before editing"})+"\n");
+ const findings=f.commandArtifacts.publishFindings(identity,body,true);
+ f.registry.setSessionControlEnabled(f.caller.id,false);
+ let text="",cursor:string|null=null;
+ do {
+  const page=await f.call("read_workflow_command_output",{runId:own.run.id,attemptId:identity.attemptId,artifactId:findings.id,limit:32,...(cursor?{cursor}:{})});
+  text+=page.text;cursor=page.nextCursor;
+ }while(cursor);
+ assert.equal(text,body.toString());
+ await f.call("read_workflow_command_output",{runId:other.run.id,attemptId:identity.attemptId,artifactId:findings.id},/Control other sessions/i);
+});

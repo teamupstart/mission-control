@@ -306,6 +306,11 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 ![Mission Control workflow run](docs/images/workflows.png)
 
+Local CodeRabbit reviews are available as a reusable Library Command and in the optional
+No-Mistakes review stage. Root YAML enables review without a Library override; the default
+allowance is ten executions, with warning skips on exhaustion. See
+[CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
+
 Read more in [Workflows and Personas](docs/workflows.md) and
 [The Library](docs/library-and-line.md).
 

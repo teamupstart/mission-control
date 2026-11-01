@@ -266,3 +266,68 @@ test("a non-numeric lock window falls back instead of spinning forever", () => {
   assert.equal(runs().length, 1, "and it must actually do its work once it gets in");
   rmSync(lockPath, { recursive: true, force: true });
 });
+
+
+test("inspection retains the published history while another reservation is writing", async () => {
+  rmSync(statePath, { force: true });
+  const create = (attempt: string) => [
+    "engineer", "run-create", "--repo-root", home, "--idea", "Published history",
+    "--correlation-id", "corr-publication", "--attempt-key", attempt,
+  ];
+  assert.equal(engineer(create("first")).status, 0);
+  const writing = join(home, "publication-writing");
+  const release = join(home, "publication-release");
+  const hook = join(home, "slow-publication.cjs");
+  // Suspend a real write halfway through. A read-only provider CLI does not take the
+  // writer lock, so readers must keep seeing the prior complete file until publication.
+  writeFileSync(hook, `
+const fs = require("node:fs");
+const write = fs.writeFileSync;
+const state = ${JSON.stringify(statePath)};
+fs.writeFileSync = function(path, data, ...rest) {
+  if (String(path) !== state && !String(path).startsWith(state + ".tmp-")) {
+    return write.call(this, path, data, ...rest);
+  }
+  const fd = fs.openSync(path, "w");
+  try {
+    const bytes = Buffer.from(data);
+    const mid = Math.floor(bytes.length / 2);
+    fs.writeSync(fd, bytes.subarray(0, mid));
+    write(${JSON.stringify(writing)}, "ready");
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(${JSON.stringify(release)})) {
+      if (Date.now() > deadline) throw new Error("publication was never released");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    fs.writeSync(fd, bytes.subarray(mid));
+  } finally { fs.closeSync(fd); }
+};
+`);
+  const writer = spawn(process.execPath, ["--require", hook, fake.bin, ...create("second")], {
+    env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  writer.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  const finished = new Promise<number | null>((resolve, reject) => {
+    writer.once("error", reject);
+    writer.once("close", resolve);
+  });
+  let observed: ReturnType<typeof engineer> | undefined;
+  try {
+    const deadline = Date.now() + 10000;
+    while (!existsSync(writing)) {
+      assert.ok(Date.now() < deadline, "the writer must reach the controlled publication boundary");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    observed = engineer([
+      "engineer", "run-inspect", "--repo-root", home, "--correlation-id", "corr-publication",
+    ]);
+  } finally {
+    writeFileSync(release, "continue");
+    assert.equal(await finished, 0, stderr);
+  }
+  assert.equal(observed?.status, 0);
+  assert.equal(JSON.parse(observed!.stdout).runs.length, 1,
+    "an in-progress write must not turn an existing reservation into missing history");
+  assert.equal(runs().length, 2);
+});

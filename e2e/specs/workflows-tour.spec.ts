@@ -214,9 +214,11 @@ test("the palette starts the tour, and it walks the demonstration run even over 
 
   dialog = step(dashboard, "Personas judge the work");
   await expect(dialog).toContainText("Step 9 of 13");
-  const judgeStage = dashboard.locator(".wf-pipeline-slot").nth(1);
+  const judgeStage = dashboard.locator(".wf-pipeline-slot")
+    .filter({ has: dashboard.locator(".wf-pipeline-reviewer.is-persona") }).first();
   await expect(judgeStage).toContainText("Intent Conformance");
   await expect(judgeStage).toHaveCSS("outline-width", "2px");
+  await shoot(dashboard, "09-first-persona-stage");
   await dialog.getByRole("button", { name: "Next" }).click();
 
   // 10. The round scrubber, holding the seeded run's one round.
@@ -348,7 +350,8 @@ test("an empty machine seeds the demonstration run, once, and walks it whole", a
   await dialog.getByRole("button", { name: "Next" }).click();
 
   dialog = step(dashboard, "Personas judge the work");
-  const judgeStage = dashboard.locator(".wf-pipeline-slot").nth(1);
+  const judgeStage = dashboard.locator(".wf-pipeline-slot")
+    .filter({ has: dashboard.locator(".wf-pipeline-reviewer.is-persona") }).first();
   await expect(judgeStage).toContainText("Intent Conformance");
   await expect(judgeStage).toContainText("Passed");
   await dialog.getByRole("button", { name: "Next" }).click();

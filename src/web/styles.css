@@ -18432,6 +18432,37 @@ button.lib-chip:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.wf-command-review-tuning {
+  display: grid;
+  gap: 12px;
+}
+.wf-command-review-tuning > label,
+.wf-command-review-fields > label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.wf-command-review-rule {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.wf-command-review-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 180px);
+  gap: 12px;
+}
+.wf-command-review-tuning .field-input { width: 100%; }
+.wf-command-review-tuning .wf-command-preview {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+.wf-command-review-tuning .btn { justify-self: start; }
+
 /* ---- the resolution table ----
    One table, because a slot IS an ordered list of rules: the repository-neutral default,
    then each exception, with the longest matching path winning. Two separately titled

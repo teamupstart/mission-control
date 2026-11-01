@@ -1,3 +1,5 @@
+import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
@@ -1048,6 +1050,12 @@ function readCommandFailurePolicy(raw: unknown): "skip" | "block" {
 function parseWorkflowCommandOverrideRow(
   row: WorkflowCommandOverrideRow,
 ): WorkflowCommandOverride | null {
+  if (row.slot === "coderabbit") {
+    try {
+      const review = CodeRabbitTuningSchema.parse(JSON.parse(row.command_json));
+      return { repoRoot: row.repo_root, command: [], review };
+    } catch (error) { diagnose(error); return null; }
+  }
   const command = readCommandArgv(
     "workflow_command_overrides",
     `${row.slot}:${row.repo_root}`,
@@ -1070,7 +1078,7 @@ function sameOverrides(
   a: readonly WorkflowCommandOverride[],
   b: readonly WorkflowCommandOverride[],
 ): boolean {
-  const byPath = new Map(a.map((entry) => [entry.repoRoot, entry.command]));
+  const byPath = new Map(a.map((entry) => [entry.repoRoot, JSON.stringify(entry.review ?? entry.command)]));
   // A list carrying the same path twice describes no set at all, so it can never be "the
   // configuration already stored" - the stored side is unique by its composite primary key.
   // Answering "unchanged" for one would silently keep a row it does not contain.
@@ -1080,8 +1088,7 @@ function sameOverrides(
   return b.every((entry) => {
     const command = byPath.get(entry.repoRoot);
     return command !== undefined
-      && command.length === entry.command.length
-      && command.every((arg, index) => arg === entry.command[index]);
+      && command === JSON.stringify(entry.review ?? entry.command);
   });
 }
 
@@ -1098,7 +1105,7 @@ function parseWorkflowCommandRow(
       "default_command_json",
       row.default_command_json,
     ),
-    maxRuns: readCommandMaxRuns(row.max_runs),
+    maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
     timeoutMs: readCommandTimeoutMs(row.timeout_ms),
     onUnavailable: readCommandFailurePolicy(row.on_unavailable),
     onBudgetExhausted: readCommandFailurePolicy(row.on_budget_exhausted),
@@ -2498,7 +2505,7 @@ export type WorkflowCommandStoreWrite =
   | { ok: true; view: WorkflowCommandView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "duplicate_override";
+      reason: "not_found" | "revision_conflict" | "duplicate_override" | "invalid_recipe";
       current: WorkflowCommandView | null;
     };
 
@@ -3569,6 +3576,24 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
+    const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
+    const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    // Earlier builds stored failed resolutions. Retry must resolve those again, while
+    // corrupt metadata still throws above rather than silently changing reviewed identity.
+    return comparison?.error === null ? comparison : null;
+  }
+
+  freezeCodeRabbitComparison(submissionId: string, comparison: CodeRabbitComparison): CodeRabbitComparison {
+    const frozen = this.getCodeRabbitComparison(submissionId);
+    if (frozen) return frozen;
+    if (comparison.error !== null) return comparison;
+    this.db.prepare(`UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ?
+      AND (coderabbit_json IS NULL OR json_extract(coderabbit_json, '$.error') IS NOT NULL)`)
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getCodeRabbitComparison(submissionId) ?? comparison;
+  }
+
   /**
    * Every built-in slot, in registry order, whether or not it has ever been written.
    *
@@ -3622,10 +3647,10 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, revision, created_at, updated_at)
-       VALUES (?, NULL, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
     return wasEmpty;
   }
 
@@ -3655,6 +3680,9 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
+    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+      return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
+    }
     // Refused here as well as at the route, because the store is the boundary a future
     // caller reaches without passing the schema. The composite PRIMARY KEY would refuse the
     // second row anyway, but as a constraint violation rather than a readable answer.
@@ -3689,8 +3717,8 @@ export class WorkflowStore {
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
           next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
-          next.onUnavailable ?? current.onUnavailable,
-          next.onBudgetExhausted ?? current.onBudgetExhausted,
+          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
           now,
           key,
           expectedRevision,
@@ -3712,7 +3740,7 @@ export class WorkflowStore {
         insert.run(
           key,
           entry.repoRoot,
-          JSON.stringify(entry.command),
+          JSON.stringify(entry.review ?? entry.command),
           previous.get(entry.repoRoot) ?? now,
           now,
         );
@@ -3965,7 +3993,7 @@ export class WorkflowStore {
         insertOverride.run(
           row.slot,
           override.repoRoot,
-          JSON.stringify(override.command),
+          JSON.stringify(override.review ?? override.command),
           previousOverrides.get(override.repoRoot) ?? now,
           now,
         );
@@ -4144,6 +4172,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
+      if (slot === "coderabbit") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -8431,7 +8460,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND a.state NOT IN ('error', 'cancelled')
+            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -8468,7 +8497,7 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND a.state NOT IN ('error', 'cancelled')`,
+          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }

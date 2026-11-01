@@ -51,7 +51,7 @@ export interface SetupDeps {
   cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
   resolveBinPath(bin: string): Promise<string | null>;
-  runCommand(bin: string, argv: string[]): Promise<RunResult>;
+  runCommand(bin: string, argv: string[], managedEnv?: NodeJS.ProcessEnv): Promise<RunResult>;
   installedPlugins(): Promise<InstalledPluginsRead>;
   skills(): SetupSkillsRead;
   conductorProbe(): Promise<PipelineProbe>;

@@ -6661,6 +6661,7 @@ export class WorkflowManager {
         };
       }
       const frozenIntent = runRow.intent ?? null;
+      const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
       const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
@@ -6673,6 +6674,7 @@ export class WorkflowManager {
             binding.noteKey,
           ),
           frozenIntent,
+          version?.graph,
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
@@ -7081,7 +7083,6 @@ export class WorkflowManager {
       });
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
-      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const shippingOnlyContinuation = submission.refinementReason === "session_action"
         && submission.continuationNodeId !== null
         && version !== null

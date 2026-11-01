@@ -2731,7 +2731,8 @@ reviews:
 Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
 Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
 Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
-skipping. Submission capture freezes this decision; retries reuse it and new submissions refresh it.
+skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
+Submission capture freezes the decision; retries reuse it and new submissions refresh it.
 
 No Library override is needed. Optional repository-root tuning selects a base ref and severity
 (default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies

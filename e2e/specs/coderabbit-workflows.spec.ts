@@ -172,11 +172,13 @@ test("the new No-Mistakes stage uses YAML defaults without tuning",async({dashbo
 });
 
 test("an existing binding stays on No-Mistakes version 21 and never gains CodeRabbit implicitly",async({dashboard,daemon})=>{
- yaml(daemon,null);const r=await start(dashboard,daemon,{builtIn:true,version:21});
+ yaml(daemon,"reviews: {auto_review: {enabled: true}}");const r=await start(dashboard,daemon,{builtIn:true,version:21});
  const binding=(await api<Array<{id:string;workflowVersionId:string}>>(daemon,"/api/workflow-bindings")).find(b=>b.id===r.bindingId)!;expect(binding.workflowVersionId).toBe("builtin-workflow:no-mistakes-review@21");
  const old=await api<{graph:{nodes:Array<{id:string}>}}>(daemon,"/api/workflows/builtin-workflow:no-mistakes-review/versions/21");expect(old.graph.nodes.some(n=>n.id==="nmr-check-coderabbit")).toBe(false);
  await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await expect(dashboard.getByRole("main")).toContainText("v21");
  expect((await detail(daemon,r.id)).run.workflowVersionId).toBe(binding.workflowVersionId);
+ await expect.poll(async()=>(await detail(daemon,r.id)).submissions[0]!.context,{timeout:60000}).toHaveProperty("evidence");
+ expect((await detail(daemon,r.id)).submissions[0]!.context).not.toHaveProperty("evidence.coderabbit");
 });
 
 test("Setup reports an old CLI and a corrected stored-auth state without starting a review",async({dashboard,daemon})=>{

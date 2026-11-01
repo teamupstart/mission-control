@@ -33,6 +33,13 @@ export function weztermEmulator(): ReturnType<typeof nativeWeztermEmulator> {
   let previous: Awaited<ReturnType<typeof list>> = null;
   // Hold the last discovery observation across the deliberately widened restart gap.
   // This never bypasses the final write boundary, which must reject that stale handle.
-  adapter.list = async () => read()?.freezeDiscovery ? previous : (previous = await list());
+  adapter.list = async () => {
+    if (read()?.freezeDiscovery) return previous;
+    const observation = await list();
+    // A poll already in flight when the freeze starts must not overwrite the held handle.
+    if (read()?.freezeDiscovery) return previous;
+    previous = observation;
+    return observation;
+  };
   return adapter;
 }

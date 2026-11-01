@@ -55,7 +55,7 @@ export async function resolveCodeRabbitComparison(input: {
     timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command), maxRuns: input.command.maxRuns, error: null };
   const git = async (args: string[]) => {
     const r = await run("git", ["-C", input.repoRoot, ...args], { timeoutMs: 5000, maxBuffer: 64 * 1024 });
-    if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("Git comparison could not be resolved unambiguously. Correct local refs or set an explicit baseRef in Library > Commands, then submit again");
+    if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("Git comparison could not be resolved unambiguously. Correct local refs or set an explicit baseRef in Library > Commands, then retry");
     return r.stdout.trim();
   };
   try {
@@ -65,7 +65,7 @@ export async function resolveCodeRabbitComparison(input: {
       // A locally observed remote HEAD is reliable; guessing main/master is not.
       result.baseRef = await git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
     }
-    if (!/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(result.baseRef) || result.baseRef.includes("..")) throw new Error("Set a valid explicit baseRef in Library > Commands and submit again");
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(result.baseRef) || result.baseRef.includes("..")) throw new Error("Set a valid explicit baseRef in Library > Commands and retry");
     result.baseTip = await git(["rev-parse", "--verify", "--end-of-options", `${result.baseRef}^{commit}`]);
     if (!FULL_SHA.test(result.baseTip)) throw new Error("The configured base did not resolve to one commit");
     result.mergeBase = await git(["merge-base", "--all", result.baseTip, result.head]);

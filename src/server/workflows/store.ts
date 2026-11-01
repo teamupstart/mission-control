@@ -3578,11 +3578,18 @@ export class WorkflowStore {
 
   getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
     const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
-    return row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    // Earlier builds stored failed resolutions. Retry must resolve those again, while
+    // corrupt metadata still throws above rather than silently changing reviewed identity.
+    return comparison?.error === null ? comparison : null;
   }
 
   freezeCodeRabbitComparison(submissionId: string, comparison: CodeRabbitComparison): CodeRabbitComparison {
-    this.db.prepare("UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ? AND coderabbit_json IS NULL")
+    const frozen = this.getCodeRabbitComparison(submissionId);
+    if (frozen) return frozen;
+    if (comparison.error !== null) return comparison;
+    this.db.prepare(`UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ?
+      AND (coderabbit_json IS NULL OR json_extract(coderabbit_json, '$.error') IS NOT NULL)`)
       .run(JSON.stringify(comparison), submissionId);
     return this.getCodeRabbitComparison(submissionId) ?? comparison;
   }

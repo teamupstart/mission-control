@@ -24,7 +24,7 @@ async function dispatch(page:Page,d:DaemonHandle){
  await dialog.getByRole("button",{name:"Dispatch now"}).click();await expect(dialog).toBeHidden();
  let id="";await expect.poll(async()=>{const ss=await api<Array<{id:string;state:string}>>(d,"/api/sessions");const s=ss.find(s=>s.state!=="exited");id=s?.id??"";return s?.state;}).toBe("idle");return id;
 }
-async function start(page:Page,d:DaemonHandle, options:{group?:boolean;maxRuns?:number;checks?:boolean; builtIn?:boolean;version?:number}={}){
+async function start(page:Page,d:DaemonHandle, options:{group?:boolean;maxRuns?:number;checks?:boolean; builtIn?:boolean;version?:number;missingBase?:boolean}={}){
  const base=git(d,"rev-parse","HEAD~1");git(d,"update-ref","refs/remotes/origin/main",base);git(d,"symbolic-ref","refs/remotes/origin/HEAD","refs/remotes/origin/main");
  const sessionId=await dispatch(page,d);
  // Dispatch can lease a pre-existing branch. The submission must inspect that checkout,
@@ -36,6 +36,8 @@ async function start(page:Page,d:DaemonHandle, options:{group?:boolean;maxRuns?:
   execFileSync("git",["-C",session.cwd,"add",".coderabbit.yaml"]);
   execFileSync("git",["-C",session.cwd,"-c","user.name=Fixture","-c","user.email=fixture@example.com","-c","commit.gpgsign=false","commit","--allow-empty","-qm","Captured CodeRabbit fixture"]);
  }
+ // Dispatch can refresh the observed default while preparing its worktree.
+ if(options.missingBase)git(d,"symbolic-ref","--delete","refs/remotes/origin/HEAD");
 
  await api(d,"/api/workflows/config",{liveEnabled:true,checksEnabled:options.checks??true,repoAllowlist:[d.repo],defaultWorkflowId:null,checkCommands:[]},"PUT");
  if(options.maxRuns){const command=await api<Record<string,unknown>>(d,"/api/workflow-commands/coderabbit");await api(d,"/api/workflow-commands/coderabbit",{...command,expectedRevision:command.revision,maxRuns:options.maxRuns},"PUT");}
@@ -53,7 +55,7 @@ async function start(page:Page,d:DaemonHandle, options:{group?:boolean;maxRuns?:
  return {id:r.run.id,bindingId:b.id,sessionId,cwd:session.cwd};
 }
 const detail=(d:DaemonHandle,id:string)=>api<WorkflowRunDetail>(d,`/api/workflow-runs/${id}`);
-async function shot(page:Page,name:string){if(!process.env.MC_E2E_EVIDENCE)return;const dir=artifactsDir("coderabbit-workflows");mkdirSync(dir,{recursive:true});await page.screenshot({path:`${dir}${name}.png`,fullPage:true});}
+async function shot(page:Page,name:string){if(!process.env.MC_E2E_EVIDENCE)return;const dir=artifactsDir("coderabbit-workflows");mkdirSync(dir,{recursive:true});await page.screenshot({path:`${dir}${name}.png`,fullPage:true,mask:[page.locator(".wf-run-worklist-row-line").filter({hasText:/^\/(?:Users|home|private|tmp)\//})]});}
 
 test("Library typed tuning saves, reloads and removes without changing YAML enablement; policies are derived",async({dashboard,daemon})=>{
  await dashboard.goto(`${daemon.baseURL}/#/library/commands/coderabbit`);
@@ -140,6 +142,32 @@ test("incomplete vendor result blocks without repair and retains findings access
  await dashboard.getByRole("button",{name:/Retry the failed call/}).click();
  await expect.poll(async()=>{const d=await detail(daemon,r.id);return d.attempts.filter(a=>a.nodeId==="cr").at(-1)?.output;},{timeout:60000}).toMatchObject({status:"passed"});
  await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review");
+});
+
+test("Retry resolves a corrected comparison on the same submission without spending failed preflight allowance", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ const r = await start(dashboard, daemon, { missingBase: true });
+ await expect.poll(async () => (await detail(daemon, r.id)).run.status, { timeout: 60_000 }).toBe("blocked");
+ const before = await detail(daemon, r.id);
+ const failed = before.attempts.find(a => a.nodeId === "cr")!;
+ expect(failed.state).toBe("error");
+ expect(failed.output).toMatchObject({ review: { comparison: { error: expect.stringContaining("explicit baseRef") } } });
+ expect(readFileSync(join(daemon.recordDir, "coderabbit.jsonl"), "utf8")).not.toContain('"review"');
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await expect(dashboard.getByRole("main")).toContainText("explicit baseRef");
+ await expect(dashboard.getByRole("main")).toContainText("then retry");
+ await shot(dashboard, "comparison-retry-blocked");
+ git(daemon, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+ await dashboard.getByRole("button", { name: /Retry the failed call/ }).click();
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.filter(a => a.nodeId === "cr").at(-1)?.output,
+  { timeout: 60_000 }).toMatchObject({ status: "passed", review: { remainingRuns: 9, comparison: { error: null } } });
+ const after = await detail(daemon, r.id);
+ expect(after.submissions.map(s => s.id)).toEqual(before.submissions.map(s => s.id));
+ expect(after.attempts.find(a => a.id === failed.id)!.output).toEqual(failed.output);
+ await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review");
+ await shot(dashboard, "comparison-retry-recovered");
+ const calls = readFileSync(join(daemon.recordDir, "coderabbit.jsonl"), "utf8").trim().split("\n").map(s => JSON.parse(s));
+ expect(calls.filter(c => c.args[0] === "review")).toHaveLength(1);
 });
 
 test("a passing gate without an explicit coverage count remains incomplete", async ({ dashboard, daemon }) => {

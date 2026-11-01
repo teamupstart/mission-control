@@ -137,6 +137,10 @@ history seen by dispatch. The state-lock regression pauses a write halfway throu
 checks that inspection still sees the previous complete reservation. Failed browser tests
 attach their daemon log before the isolated fixture home is removed.
 
+The native-probe fixture test asserts the production one-second probe request separately from
+its bounded child execution budget. It verifies JavaScript refusal and status classification,
+including a stalled test worker, without making host scheduling part of that contract.
+
 ## Evidence
 
 Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright

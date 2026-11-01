@@ -23,12 +23,20 @@ function fixture(name: string) {
   return { home, fake, env };
 }
 
+// This tests native fixture execution and response classification, not host scheduling.
+// Keep the production deadline assertion, but give real child startup/collection its own
+// bounded budget so a busy full-suite worker does not turn a valid response into a timeout.
+function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv, onSpawn?: () => void): TerminalExec {
+  return (_bin, args, options) => {
+    assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
+    return run(bin, args, { ...options, env, timeoutMs: 10_000, onSpawn });
+  };
+}
+
 for (const mode of ["ready", "stopped", "refused"]) {
   test(`native cmux ${mode} probe does not depend on JavaScript startup`, async () => {
     const { fake, env } = fixture(`cmux-${mode}`);
-    const execute: TerminalExec = (_bin, args, options) => run(fake.bins.cmux, args, {
-      ...options, env: { ...env, MC_E2E_CMUX_CONTROL: mode },
-    });
+    const execute = nativeProbeExec(fake.bins.cmux, { ...env, MC_E2E_CMUX_CONTROL: mode });
     assert.deepEqual(await cmuxControlProbe(execute), mode === "ready"
       ? { state: "ready", accessMode: "allowAll" } : { state: mode });
     assert.equal(readdirSync(fake.recordDir).length, 0, "health reads must not become launch records");
@@ -41,9 +49,7 @@ for (const mode of ["stable", "newer", "incompatible"]) {
       const { home, fake, env } = fixture(`herdr-${mode}-${running}`);
       const socket = join(home, "fake-herdr.sock");
       if (running) writeFileSync(socket, "fixture socket presence");
-      const execute: TerminalExec = (_bin, args, options) => run(fake.bins.herdr, args, {
-        ...options, env: { ...env, MC_E2E_HERDR_MODE: mode },
-      });
+      const execute = nativeProbeExec(fake.bins.herdr, { ...env, MC_E2E_HERDR_MODE: mode });
       const result = await createHerdrClient(execute, { env: null, candidates: [fake.bins.herdr], dropEnv: [] }).probe();
       const version = mode === "newer" ? "0.9.0" : mode === "incompatible" ? "0.7.0" : "0.8.2";
       if (mode === "incompatible") {
@@ -54,3 +60,14 @@ for (const mode of ["stable", "newer", "incompatible"]) {
   }
 }
 
+test("native Herdr classification survives a test-worker stall beyond the production deadline", async () => {
+  const { home, fake, env } = fixture("herdr-starved");
+  writeFileSync(join(home, "fake-herdr.sock"), "fixture socket presence");
+  const execute = nativeProbeExec(fake.bins.herdr, { ...env, MC_E2E_HERDR_MODE: "incompatible" }, () => {
+    // Model the full-suite worker not servicing child events for longer than one second.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
+  });
+  const result = await createHerdrClient(execute, { env: null, candidates: [fake.bins.herdr], dropEnv: [] }).probe();
+  assert.equal(result.state, "failed");
+  if (result.state === "failed") assert.match(result.error, /incompatible|protocol|restart/i);
+});

@@ -2739,9 +2739,11 @@ No Library override is needed. Optional repository-root tuning selects a base re
 the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
 these defaults. The command previews its owned argv, never an editable shell recipe.
 
-The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes,
-and the default hard timeout is 45 minutes. Exhaustion always skips with a visible warning,
-even if the tool is unavailable. It does not mean a clean review. YAML-enabled reviews with
+The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
+Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
+ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
+Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
+mean a clean review. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
 and stored authentication under the daemon's effective `HOME`. Unavailability or incomplete
 review blocks with an error and a **Settings > Setup** link, without spending a repair round or
@@ -2749,8 +2751,9 @@ sending code-fix instructions. Correct the problem and explicitly retry. No inst
 CLI update, remote-ref fetch or paid-credit continuation happens automatically.
 
 Only committed content is reviewed. Dirty submissions must be committed and submitted again.
-The stored comparison records the full captured head, configured base, resolved base tip and
-merge-base. Later ref movement cannot rewrite an existing submission's comparison. Reviews run
+The first successful comparison pins the full captured head, configured base, resolved base tip
+and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
+same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
 

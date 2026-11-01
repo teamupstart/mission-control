@@ -375,15 +375,18 @@ update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
 inventory. If a newer release is pending and every complete release is at or below the installed
-version, the pending release remains visible with **Check again**. An older complete release is
-offered only when it is still newer than the installed version.
+version, automatic checks stay quiet and retry on the existing schedule (about six hours for
+stable updates, five minutes for alpha). Explicit **Check for Updates** commands show the pending
+release with **Check again**. An older complete release is offered only when it is still newer
+than the installed version.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-Missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
+On a manual check, missing assets or an unsupported app layout leave **Update Now** disabled
+with **Check again**; retry refreshes discovery. Automatic stable and alpha checks do not show
+an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
 

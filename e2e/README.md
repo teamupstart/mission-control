@@ -141,6 +141,19 @@ The native-probe fixture test asserts the production one-second probe request se
 its bounded child execution budget. It verifies JavaScript refusal and status classification,
 including a stalled test worker, without making host scheduling part of that contract.
 
+## Diff loading performance
+
+`diff-performance.spec.ts` opens a real checkout with one tracked edit and 80 new files,
+checks the complete file list and first/last file contents, and verifies fresh reads on tab
+re-entry. To compare builds on an otherwise idle host, build the baseline, then run
+`MC_DIFF_BENCHMARK=baseline npm run test:e2e -- e2e/specs/diff-performance.spec.ts --workers=1`.
+Build the changed version and repeat with `MC_DIFF_BENCHMARK=result`. Each run records seven
+click-to-paint samples for the first diff and complete navigation list. Result mode requires
+the median to be at most half the saved baseline. This timing gate is opt-in; ordinary CI
+checks behavior without a host-dependent time limit. Logs, JSON and screenshots belong in
+gitignored `e2e/.artifacts/diff-performance/`. This workload emphasizes untracked-file reads;
+it is not a guarantee of the same speedup for every repository or patch size.
+
 ## Evidence
 
 Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright

@@ -5,7 +5,7 @@ import { assertSafeAppLaunch } from "../../scripts/mac-app-lifecycle.mjs";
 import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
 import { prepareInPlaceInstall, prepareMigration, keepSystemInstallation, readMigrationJournal, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
 import { PORT } from "../shared/harness-runtime.mjs";
-import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME } from "../shared/app-naming.mjs";
+import { APP_BUNDLE_NAME, LEGACY_APP_BUNDLE_NAME, binaryBundleName } from "../shared/app-naming.mjs";
 import type { UpdateMigration } from "../shared/update.ts";
 import { execFile } from "node:child_process";
 import { statSync, readFileSync } from "node:fs";
@@ -705,10 +705,16 @@ export class UpdateController {
           : release!.body;
         const reusableStaged = this.staged?.releaseTag === targetRef && this.descriptor && this.stagedBundleIsIntact(this.staged);
         const binary = reusableStaged ? this.staged!.binary : commit ? await this.port.binaryForCommit(commit.sha) : release?.binary;
-        this.offeredBinary = binary ? structuredClone(binary) : null;
-        // Check after discovery's final await so a manual request joining a background
-        // check can still show the offer. Explicit checks do not erase its saved snooze.
-        if (!this.manualCheckRequested && (this.snoozedUntil[targetRef] ?? 0) > this.port.now()) {
+        // Release availability belongs only to a fresh stable offer, not to alpha
+        // release news or a verified candidate retained locally after preparation.
+        const blocker = (!commit && !reusableStaged ? release?.unavailable : undefined)
+          || (!binary || binaryBundleName(binary.manifest) !== APP_BUNDLE_NAME ? BINARY_PENDING : undefined);
+        this.offeredBinary = binary && !blocker ? structuredClone(binary) : null;
+        // Background discovery stays quiet until there is a usable binary; the existing
+        // schedule will check again. Read manual intent after discovery's final await so
+        // a joining explicit check still gets the blocker and retry action.
+        // Explicit checks also bypass, but do not erase, a saved snooze.
+        if (!this.manualCheckRequested && (blocker || (this.snoozedUntil[targetRef] ?? 0) > this.port.now())) {
           return this.publish(idleSnapshot(currentVersion, lastOutcome, checkedAt));
         }
         return this.publish({
@@ -722,7 +728,7 @@ export class UpdateController {
           publishedAt: commit?.committedAt ?? release!.publishedAt,
           checkedAt,
           lastOutcome,
-          ...(!this.offeredBinary ? { blocker: release?.unavailable ?? BINARY_PENDING } : {}),
+          ...(blocker ? { blocker } : {}),
         });
       } catch (error) {
         const safe = safeUpdateError(error);

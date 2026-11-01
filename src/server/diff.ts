@@ -16,6 +16,8 @@ import type { SessionDiff } from "@shared/types.ts";
 const MAX_PATCH_BYTES = 1_200_000;
 /** Don't generate new-file diffs for an unbounded pile of untracked files. */
 const MAX_UNTRACKED = 100;
+/** Bound subprocess pressure while avoiding one round trip per new file. */
+const UNTRACKED_CONCURRENCY = 8;
 /** git's empty tree, so a root commit (no parent) still diffs as "all added". */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -113,11 +115,11 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
 export async function sourceRef(cwd: string): Promise<string | null> {
   const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
-  for (const ref of ["origin/main", "origin/master", "main", "master"]) {
-    const r = await git(cwd, ["rev-parse", "--verify", "--quiet", ref]);
-    if (r.code === 0 && r.stdout.trim()) return ref;
-  }
-  return null;
+  const refs = ["origin/main", "origin/master", "main", "master"];
+  const results = await Promise.all(refs.map((ref) =>
+    git(cwd, ["rev-parse", "--verify", "--quiet", ref])));
+  const index = results.findIndex((result) => result.code === 0 && result.stdout.trim());
+  return index < 0 ? null : refs[index]!;
 }
 
 /**
@@ -314,26 +316,31 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   };
   if (!cwd) return { ...base0, error: "session has no working directory" };
 
-  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  const [top, branchRes, headRes, ref] = await Promise.all([
+    git(cwd, ["rev-parse", "--show-toplevel"]),
+    git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    git(cwd, ["rev-parse", "--short", "HEAD"]),
+    source ? Promise.resolve(source) : sourceRef(cwd),
+  ]);
   if (top.code !== 0) return { ...base0, error: "not a git repository" };
   // Reported, not discarded: `patch`'s paths are relative to the toplevel, so a
   // caller resolving them against the session's cwd would be wrong for any session
   // that isn't sitting at the repo root - the ordinary case in a monorepo.
   const repoRoot = top.stdout.trim() || null;
 
-  const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : null;
-  const headRes = await git(cwd, ["rev-parse", "--short", "HEAD"]);
   const headSha = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
 
-  const ref = source || (await sourceRef(cwd));
   const base = ref ? ref.replace(/^origin\//, "") : null; // display name (strip remote prefix)
   // Diff from the merge-base so the mainline's own newer commits don't appear -
   // only what this branch/worktree changed since it diverged.
   let diffBase = "HEAD";
   let baseSha: string | null = null;
   if (ref) {
-    const mb = await git(cwd, ["merge-base", "HEAD", ref]);
+    const [mb, wanted] = await Promise.all([
+      git(cwd, ["merge-base", "HEAD", ref]),
+      source ? git(cwd, ["rev-parse", "--verify", "--quiet", `${source}^{commit}`]) : null,
+    ]);
     const merged = mb.code === 0 ? mb.stdout.trim() : "";
     // An EXPLICIT base must be an ancestor of HEAD, not merely share one with it.
     //
@@ -348,7 +355,6 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
     // Auto-detected refs get no such check, by design: `merge-base(HEAD, origin/main)`
     // is SUPPOSED to be an ancestor of both and equal to neither. Their fall back to
     // HEAD (a brand-new branch with no shared history) is deliberate and stays.
-    const wanted = source ? await git(cwd, ["rev-parse", "--verify", "--quiet", `${source}^{commit}`]) : null;
     const ok = source ? Boolean(merged) && merged === wanted?.stdout.trim() : Boolean(merged);
     if (ok) {
       diffBase = merged;
@@ -370,7 +376,7 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
     }
   }
 
-  // Tracked changes: numstat for accurate stats, then the patch itself.
+  // Tracked changes: numstat for accurate stats alongside the patch itself.
   //
   // Both exit codes are checked, unlike the `--no-index` call below (whose exit 1
   // just means "these files differ"). These two are the calls that PRODUCE the
@@ -398,9 +404,14 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   // diff and fails closed there.
   const unborn =
     headSha === null && (await git(cwd, ["symbolic-ref", "-q", "HEAD"])).code === 0;
+  const untrackedCwd = repoRoot ?? cwd;
+  const [numstat, patchRes, untrackedRes] = await Promise.all([
+    unborn ? null : git(cwd, ["diff", "--numstat", diffBase]),
+    unborn ? null : git(cwd, ["diff", diffBase]),
+    git(untrackedCwd, ["ls-files", "--others", "--exclude-standard"]),
+  ]);
   if (!unborn) {
-    const numstat = await git(cwd, ["diff", "--numstat", diffBase]);
-    if (numstat.code !== 0) {
+    if (!numstat || numstat.code !== 0) {
       return { ...base0, branch, headSha, repoRoot, base: base ?? null, baseSha, error: "could not read the diff stats" };
     }
     for (const line of numstat.stdout.split("\n")) {
@@ -410,8 +421,7 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
       if (m[1] !== "-") insertions += Number(m[1]);
       if (m[2] !== "-") deletions += Number(m[2]);
     }
-    const patchRes = await git(cwd, ["diff", diffBase]);
-    if (patchRes.code !== 0) {
+    if (!patchRes || patchRes.code !== 0) {
       return { ...base0, branch, headSha, repoRoot, base: base ?? null, baseSha, error: "could not read the diff" };
     }
     patch = patchRes.stdout;
@@ -429,8 +439,6 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   // paths at all: for a session cwd'd in a monorepo package, `src/x.ts` resolved
   // against the toplevel is a directory that doesn't exist, so that package's own
   // CLAUDE.md never loaded.
-  const untrackedCwd = repoRoot ?? cwd;
-  const untrackedRes = await git(untrackedCwd, ["ls-files", "--others", "--exclude-standard"]);
   if (untrackedRes.code !== 0) {
     return {
       ...base0,
@@ -443,28 +451,36 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
     };
   }
   const untracked = untrackedRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
-  for (const path of untracked.slice(0, MAX_UNTRACKED)) {
-    const d = await git(untrackedCwd, ["diff", "--no-index", "--", "/dev/null", path]);
-    if (
-      d.outcomeUnknown
-      || d.overflowed
-      || (d.code !== 0 && d.code !== 1)
-      || (d.code === 1 && !d.stdout)
-    ) {
-      return {
-        ...base0,
-        branch,
-        headSha,
-        repoRoot,
-        base: base ?? null,
-        baseSha,
-        error: `could not read untracked file ${path}`,
-      };
+  // Batch read-only commands, then consume in Git's original order. Completion order
+  // must not change file navigation, truncation, or which failed path we report.
+  const included = untracked.slice(0, MAX_UNTRACKED);
+  for (let offset = 0; offset < included.length; offset += UNTRACKED_CONCURRENCY) {
+    const paths = included.slice(offset, offset + UNTRACKED_CONCURRENCY);
+    const results = await Promise.all(paths.map((path) =>
+      git(untrackedCwd, ["diff", "--no-index", "--", "/dev/null", path])));
+    for (const [index, d] of results.entries()) {
+      const path = paths[index]!;
+      if (
+        d.outcomeUnknown
+        || d.overflowed
+        || (d.code !== 0 && d.code !== 1)
+        || (d.code === 1 && !d.stdout)
+      ) {
+        return {
+          ...base0,
+          branch,
+          headSha,
+          repoRoot,
+          base: base ?? null,
+          baseSha,
+          error: `could not read untracked file ${path}`,
+        };
+      }
+      if (!d.stdout) continue;
+      patch += d.stdout;
+      filesChanged++;
+      insertions += countAdded(d.stdout);
     }
-    if (!d.stdout) continue;
-    patch += d.stdout;
-    filesChanged++;
-    insertions += countAdded(d.stdout);
   }
 
   let truncated = untracked.length > MAX_UNTRACKED;

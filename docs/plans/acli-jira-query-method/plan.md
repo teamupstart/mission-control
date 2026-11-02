@@ -37,7 +37,7 @@ captured (see Contract capture).
 | Preflight | `acli jira auth status`, then the real JQL with `--limit 1` | Logged-out behaviour verified (below). Logged-in output not yet captured. |
 | Read one issue | `acli jira workitem view <KEY> --fields status --json` | Flags verified. `--fields` accepts a field list, `*all`, `*navigable` and `-field`; there is no expand option. |
 | Comment | `acli jira workitem comment create --key <KEY> --body <text or ADF>` | Verified: "Comment body in plain text or Atlassian Document Format (ADF)". |
-| Transition | `acli jira workitem transition --key <KEY> --status <name> --yes` | Flags verified; `--yes` is "Confirm transition without prompting". |
+| Transition | `acli jira workitem transition --key <KEY> --status <name> --yes --json` | Flags verified; `--yes` is "Confirm transition without prompting" and `--json` is "Generate a JSON output". The JSON shape is not captured, since that needs a real move; a confirming status read decides success. No command takes a `--site` or profile flag. |
 | Remote (web) link | none | **Verified unsupported.** `workitem` offers archive, assign, attachment, clone, comment, create, create-bulk, delete, edit, link, list-watchers, search, transition, unarchive, view, watcher. `link create` takes only `--out`, `--in`, `--type` (or a JSON/CSV of those): issue-to-issue. Neither `acli --help` nor `acli jira --help` offers a raw API command. |
 | List an issue's transitions | none found | No command or flag lists transitions; to be probed live with `view --fields "*all" --json`. |
 | Auth | `acli jira auth login --web` (OAuth) or `--token`; also `acli auth login` (global OAuth across Jira and Confluence) | Both `acli jira auth status` and `acli auth status` exist. Profiles live in `~/.config/acli/*.yaml` (`current_profile`, `profiles`). |
@@ -106,9 +106,12 @@ flowchart LR
   positive proof that acli's active site is the configured site, checked with `acli jira auth
   status` immediately before it runs rather than once at preflight, because acli's active profile
   can change at any time. When it cannot be established, a sweep or linked read files nothing and
-  a write is refused before any subprocess that could mutate. Issue keys are not unique across
-  sites, so a sweep against the wrong site would file somebody else's issues and a write would
-  change somebody else's ticket.
+  a write is refused before any subprocess that could mutate. acli 1.3.40 has no per-command site
+  or profile flag, so a write cannot be bound to the site just checked; every write is therefore
+  followed by a second check, and a site change seen there turns the delivery into an unknown
+  outcome naming both sites rather than a success. Issue keys are not unique across sites, so a
+  sweep against the wrong site would file somebody else's issues and a write would change
+  somebody else's ticket.
 - **Sweep bounds.** One sweep reads at most `MAX_SWEEP_ISSUES` (1000) issues within the sweeper's
   60 s cap (`src/server/task-sources/sweeper.ts:28`). Asking acli for one more than the bound
   answers "is there a tail" exactly, as the CLI rung already does with `limit + 1`; a tail is the
@@ -126,7 +129,9 @@ flowchart LR
   same fake-backed tests are where support is added.
 - **Resolve.** Read the issue's current status with `workitem view --fields status --json`;
   already in the wanted status is success. Otherwise run `workitem transition --key <KEY>
-  --status <name> --yes`. When acli refuses, the refusal names the issue's current status and
+  --status <name> --yes --json`, and count it as a move only when a second status read shows the
+  target, because acli may exit 0 while its JSON reports a per-issue failure. When acli refuses,
+  the refusal names the issue's current status and
   quotes acli's own error, which may itself list the reachable statuses. This relaxes, for this
   method only, the rule that a refusal must list the reachable transitions
   (`RESOLVE_NEEDS_READ`). Before relying on the relaxation, the implementation checks whether

@@ -18,7 +18,7 @@ This is the half of issue #1270 that desktop users feel first: the backlog fills
 - The planning pull request that adds `docs/plans/acli-jira-query-method/` has merged.
 - No earlier implementation phase.
 - **Operator prerequisite for step 1:** acli is installed on the machine running this task
-  (`acli version 1.3.40-stable` at `/opt/homebrew/bin/acli` when this was planned) and logged in
+  (`acli version 1.3.40-stable`, installed with Homebrew, when this was planned) and logged in
   to the Jira site the operator uses. If `acli jira auth status` exits non-zero when you start,
   ask the operator to run `acli jira auth login --web` (Mission Control `request_input`) and wait;
   do not invent fixtures in place of a capture.
@@ -80,10 +80,12 @@ acli's login from Mission Control.
    structure, field names, value types and the relationships the tests rely on. The raw captures
    stay in a gitignored scratch location and are never committed; only the rewritten files go
    under `test/fixtures/acli/`, and a final `grep` for the real host and the real project key
-   before committing must return nothing. Never run `comment`, `transition`, `edit`,
+   before committing must return nothing. The JQL used for the capture is operator data too:
+   fixtures and their README record it rewritten with the synthetic project key, and neither
+   contains a local filesystem path, a home directory or a username. Never run `comment`, `transition`, `edit`,
    `create`, `delete`, `assign`, `link create`, or anything without `--help`/`view`/`search`/
    `status` in it. Save the outputs under `test/fixtures/acli/` with a `README.md` naming the acli
-   version and each command. Record in the pull request what the captures established.
+   version and each command in its rewritten form. Record in the pull request what the captures established.
 2. **Schema.** `queryVia: z.enum(["local", "upstartclaw", "acli"]).default("local")` in
    `src/shared/task-source.ts`. Update the `JiraConfigSchema` doc comment and the kind's `blurb`
    so they name acli.
@@ -210,5 +212,7 @@ record format and its `MISSION_ACLI_BIN` wiring; the empty-stdin rule. Phase 2 r
   and linked read, because acli's active profile can change after preflight and a sweep would
   otherwise file another site's issues; and fixtures became fully synthetic, because real keys
   and hosts are operator data.
+- Review round 2 (CodeRabbit, PR #1282): the capture JQL and local paths are named as operator data
+  too, so neither the fixtures nor their README carries them.
 - The `view --fields "*all"` capture is placed here because Phase 2's resolve contract depends on
   its result and Phase 2 has no logged-in capture step of its own.

@@ -55,11 +55,25 @@ are exercised only against the fake. The operator verifies one real write after 
 
 ## 5. Implementation steps, in order
 
-1. **Write site gate.** Reuse Phase 1's `acliSiteGate` immediately before every write
-   (comment, view-then-transition), never a cached answer from an earlier sweep or preflight,
-   because acli's active profile can change between them. Its refusal becomes a write-back
-   refusal with "so nothing was written" appended. Every refusal here is
-   `outcomeUnknown: false`, and nothing that can mutate has been spawned.
+1. **Write site gate, and a check after every write.** acli 1.3.40 cannot bind a single
+   command to a site or profile: `workitem comment create`, `workitem transition` and
+   `workitem view` take no `--site` or profile flag, and `acli --help` has no global one
+   (verified from `--help`). The active login can therefore change between any check and the
+   write that follows it, and no pre-check can close that window. The write path narrows it and
+   makes a hit visible instead of silent:
+   - Reuse Phase 1's `acliSiteGate` immediately before every write (comment,
+     view-then-transition), never a cached answer from an earlier sweep or preflight. Its refusal
+     becomes a write-back refusal with "so nothing was written" appended, `outcomeUnknown:
+     false`, and nothing that can mutate has been spawned.
+   - Before a transition, the `view` read in step 4 also proves the issue is on the configured
+     site: a `self` host in its output that is not the configured site refuses the resolve.
+   - After every write, run `acliSiteGate` again, and read the `self` host from the write's own
+     `--json` output where it carries one. If either shows another site, report the delivery as
+     `outcomeUnknown: true`, naming both sites and the issue key, so the ledger never retries it
+     and the operator is told to check both sites. A write is reported delivered only when both
+     agree with the configured site.
+   - If a later acli release adds a per-command site or profile selector, pass the configured
+     site through it on every command and keep the checks above as a second line.
 2. **Comment.** `acliCommentArgs(key, notice)`:
    `workitem comment create --key <KEY> --body <JSON.stringify(commentBodyAdf(notice))>`. If argv
    size is a concern for long outcomes, use `--body-file` with a private temp file that is removed
@@ -81,14 +95,24 @@ are exercised only against the fake. The operator verifies one real write after 
      `view --fields "*all" --json`, read them and use `transitionFor` so an unreachable target is
      refused with the reachable list before anything moves, and the transition is requested by the
      matched name. If Phase 1 found none, skip the probe;
-   - run `workitem transition --key <KEY> --status <wanted> --yes`. Exit 0 is
-     `moved to "<wanted>"`. `no-answer` is `outcomeUnknown: true`. Any other failure is a refusal
-     that names the issue's current status and quotes acli's own reason (which may list the
-     reachable statuses): for example `MC-12 cannot move to "Done" from "In Review" - acli said:
-     <reason>. Set this source's resolve status to one the issue can reach`. Never retry on another
-     rung.
-   - Note `transition --json` exists; if its output reports per-key failure while exiting 0, treat
-     that as a refusal. Model this in the fake and test it.
+   - run `workitem transition --key <KEY> --status <wanted> --yes --json`. `--json` ("Generate a
+     JSON output") is verified in acli 1.3.40's `workitem transition --help`; its output shape is
+     not, because capturing it would mean moving a real issue. So exit 0 alone is never success:
+     - parse the `--json` output for a per-issue result for `<KEY>`; one that reports failure, or
+       an error field, is a refusal quoting it, even when the exit code is 0;
+     - then read the status again with `workitem view <KEY> --fields status --json`. Only that read
+       showing `<wanted>` returns `moved to "<wanted>"`. Showing any other status is a refusal that
+       names it and quotes acli's reason, `outcomeUnknown: false`, since the issue verifiably did
+       not move. A failed confirming read is `outcomeUnknown: true`, because the move may have
+       happened;
+     - `no-answer` from the transition itself is `outcomeUnknown: true`. Any other non-zero exit is
+       a refusal that names the issue's current status and quotes acli's own reason (which may
+       list the reachable statuses): for example `MC-12 cannot move to "Done" from "In Review" -
+       acli said: <reason>. Set this source's resolve status to one the issue can reach`. Never
+       retry on another rung.
+     The fake models every branch: exit 0 with a per-issue failure in its JSON, exit 0 with JSON
+     the parser does not recognise, exit 0 where the confirming read still shows the old status,
+     and exit 0 where the confirming read fails.
 5. **Dispatch in `jira.ts`.** `annotate` and `resolve` call the acli functions when
    `cfg.queryVia === "acli"`. Delete `ACLI_WRITE_PENDING` and its branch in `writeTarget`. The
    local path's `writeRungs`, `RESOLVE_NEEDS_READ` and REST code stay as they are.
@@ -118,7 +142,11 @@ are exercised only against the fake. The operator verifies one real write after 
   with `linkVia` both / comment / remote-link (refusal); the gate refuses on failed status, unknown
   site and mismatched site without spawning comment or transition; resolve already-there, moved,
   refused (current status and acli's reason in the sentence), `no-answer` as `outcomeUnknown`,
-  failed status read as a refusal, empty target refused first; the transition probe path,
+  failed status read as a refusal, empty target refused first; transition exit 0 with a per-issue
+  failure in its `--json` output is a refusal; exit 0 is `moved` only when the confirming status
+  read shows the target, a confirming read showing the old status is a refusal, and a failed
+  confirming read is `outcomeUnknown`; a post-write site check or `self` host showing another site
+  turns a delivered write into `outcomeUnknown` naming both sites; the transition probe path,
   exercised against a fixture with transitions even if the real capture had none, so the code path
   is covered either way.
 - `test/task-source-writeback.test.ts` / `test/task-source-writeback-e2e.test.ts`: an acli source's
@@ -157,3 +185,7 @@ acli release that adds remote links would extend `acliAnnotate` behind the same 
 - No concurrency with Phase 1: this phase edits the same module, fake and panel.
 - Review round 1 (Inspector, PR #1282): the write gate now reuses Phase 1's `acliSiteGate`
   instead of defining its own, since the site check became a Phase 1 contract for every read.
+- Review round 2 (Inspector and CodeRabbit, PR #1282): the transition runs with `--json` and is
+  confirmed by a second status read before it counts as a move, because acli may exit 0 for a
+  per-issue failure; and every write is followed by a site re-check, because acli 1.3.40 has no
+  per-command site selector that could bind the write to the checked site.

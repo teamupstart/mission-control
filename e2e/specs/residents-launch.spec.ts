@@ -487,6 +487,8 @@ test.describe("a launch the daemon accepts while its resident is still starting"
     await dialog.getByRole("button", { name: "Launch resident" }).click();
     // No session-start timeout: the form closes on the daemon's acceptance.
     await expect(dialog).toBeHidden();
+    // The dashboard as it reads the moment Dispatch closed, while the resident is still starting.
+    await capture(dashboard.locator("body"), "resident-dispatch-closed-on-accepted-launch");
     await expect.poll(() => answered).toEqual(["pending"]);
     release();
     await dashboard.unroute(launchRoute);

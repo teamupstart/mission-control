@@ -46,8 +46,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
-    runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
+    resolveBinPath: async (bin) => bin === "coderabbit" ? "/tools/coderabbit" : bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
+    runCommand: async (bin, argv) => stubRun({ stdout: bin === "/tools/coderabbit" ? argv[0] === "--version" ? "0.9.1" : JSON.stringify({type:"status", authenticated:true}) : bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
       plugins: [{ plugin: "one", marketplace: "official", version: "1", installPath: "/plugins/one" }],

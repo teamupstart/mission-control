@@ -1,3 +1,4 @@
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS } from "./coderabbit-result.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
@@ -78,7 +79,7 @@ export interface CheckAttemptRef {
 
 /** Test suites get the larger budget; faster check slots keep the supervisor default. */
 export function defaultCheckTimeoutMs(slot: CheckExecutionRequest["slot"]): number {
-  return slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
+  return slot === "coderabbit" ? 45 * 60_000 : slot === "test" ? 60 * 60_000 : DEFAULT_CHECK_TIMEOUT_MS;
 }
 
 /** How the composed runtime is driven, and every seam a test needs to drive it without a pool. */
@@ -183,6 +184,7 @@ export class CheckRuntime {
       // some other commit as though it were about this submission.
       return {
         kind: "infrastructure",
+        started: false,
         reason:
           "this submission captured no commit, so there was nothing to pin a check worktree to",
       };
@@ -207,16 +209,19 @@ export class CheckRuntime {
     } catch (err) {
       return {
         kind: "infrastructure",
+        started: false,
         reason: `a worktree for the ${request.slot} check could not be prepared: ${message(err)}`,
       };
     }
 
+    const parser = request.coderabbit ? new CodeRabbitResultParser(attempt.attemptId, request.coderabbit.severity) : null;
     let capture: ReturnType<WorkflowCommandArtifactService["beginCapture"]> | undefined;
     try {
       capture = attempt.runId ? this.artifacts.beginCapture({
         runId: attempt.runId,
         submissionId: attempt.submissionId,
         attemptId: attempt.attemptId,
+        semanticBytes: parser ? CODERABBIT_RESULT_LIMITS.findingsBytes : 0,
       }) : undefined;
     } catch (error) {
       // No process has started. A metadata database failure stays fail-closed, but must
@@ -237,30 +242,30 @@ export class CheckRuntime {
           leasePath,
           workingSubpath: request.workingSubpath,
           timeoutMs: this.timeoutMs ?? request.timeoutMs ?? defaultCheckTimeoutMs(request.slot),
-          capture,
+          capture: { push: (kind, chunk) => {
+            if (kind === "stdout") parser?.push(chunk);
+            capture?.push(kind, chunk);
+          } },
         },
         {
           registry: this.leases.processes,
+          env: request.env,
           teardown: this.teardown,
         },
       );
     } catch (err) {
       let artifacts: WorkflowCommandArtifactDescriptor[];
-      // The supervisor is written not to throw, and a lease outliving one that did would be a
-      // pool slot lost to a bug nobody can see. Resolved as unproven, which is the fail-closed
-      // reading: the row and the pin are kept and reclamation asks about the group later.
+      let review: import("@shared/workflow.ts").CodeRabbitReviewSummary | undefined;
       try {
         artifacts = capture?.finalize(false) ?? [];
+        review = this.retainReview(attempt, request, parser, artifacts, false, 1);
       } catch (captureError) {
         throw new AggregateError([err, captureError], "Check supervision and artifact metadata failed");
       } finally {
         await this.settle(attempt.attemptId, "unknown");
       }
-      return {
-        kind: "infrastructure",
-        reason: `the ${request.slot} check runtime failed: ${message(err)}`,
-        artifacts,
-      };
+      return { kind: "infrastructure", reason: `the ${request.slot} check runtime failed: ${message(err)}`,
+        artifacts, ...(review ? { review } : {}) };
     }
 
     // BEFORE the result surfaces, always. An `infrastructure` result reaches
@@ -292,18 +297,41 @@ export class CheckRuntime {
     //
     // The command's own outcome rides along in the reason rather than being dropped, so the
     // operator can still see what the build said before the lease went wrong.
+    const review = this.retainReview(attempt, request, parser, artifacts, cleanup.ok,
+      outcome.result.kind === "exited" ? outcome.result.exitCode : 1);
     if (!cleanup.ok) {
-      return {
-        kind: "infrastructure",
-        reason:
-          `the ${request.slot} check ran and ${describeResult(outcome.result)}, but that result is `
-          + `not reported because its pooled worktree could not be accounted for: ${cleanup.reason}`,
-        artifacts,
-      };
+      return { kind: "infrastructure",
+        reason: `the ${request.slot} check ran and ${describeResult(outcome.result)}, but its result is withheld because its pooled worktree could not be accounted for: ${cleanup.reason}`,
+        artifacts, review };
     }
     return outcome.result.kind === "exited" || outcome.result.kind === "infrastructure"
-      ? { ...outcome.result, artifacts }
+      ? { ...outcome.result, artifacts, ...(review ? { review } : {}), ...(outcome.result.kind === "infrastructure" ? { started: outcome.supervisor !== null } : {}) }
       : outcome.result;
+  }
+
+  /** Findings share the raw artifact lifecycle and quota, including partial failures. */
+  private retainReview(
+    attempt: CheckAttemptRef,
+    request: CheckExecutionRequest,
+    parser: CodeRabbitResultParser | null,
+    artifacts: WorkflowCommandArtifactDescriptor[],
+    cleanupComplete: boolean,
+    exitCode: number,
+  ): import("@shared/workflow.ts").CodeRabbitReviewSummary | undefined {
+    if (!parser || !request.coderabbit) return undefined;
+    const semantic = parser.finish(exitCode, request.coderabbit.empty);
+    const complete = cleanupComplete && semantic.status !== "incomplete";
+    const findings = attempt.runId ? this.artifacts.publishFindings({
+      runId: attempt.runId, submissionId: attempt.submissionId, attemptId: attempt.attemptId,
+    }, semantic.body, complete) : null;
+    if (findings) artifacts.push(findings);
+    const lost = !findings || findings.availability !== "retained";
+    return { comparison: request.coderabbit,
+      status: lost || !complete ? "incomplete" : semantic.status === "skipped" ? "skipped" : "complete",
+      counts: semantic.counts, titles: semantic.titles,
+      ...(semantic.retryAt ? { retryAt: semantic.retryAt } : {}),
+      ...(semantic.expectedDuration ? { expectedDuration: semantic.expectedDuration } : {}),
+      diagnostic: lost ? "CodeRabbit findings could not be durably retained" : semantic.diagnostic };
   }
 
   /**

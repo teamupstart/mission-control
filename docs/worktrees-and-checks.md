@@ -464,3 +464,13 @@ Worktree allocation, diffs, pull-request observation, repository grouping, and w
 skip these runs. The run directory is removed after durable run completion and confirmed session
 shutdown. The same cleanup scans ended runs at startup and retries failures. Daemon shutdown
 alone does not end a run or remove its workspace.
+
+### CodeRabbit comparisons
+
+CodeRabbit uses the same supervised Check lease and retained-output reader. It reviews the
+captured committed head against a frozen merge-base, resolving refs in the run's repository.
+It never fetches refs or overlays uncommitted content. Dirty YAML-enabled submissions block
+with a commit-and-resubmit remedy. Missing/invalid YAML and exhausted allowance skip with
+warnings before any availability probe. Complete normalized findings have their own 4 MiB /
+1,000-finding bound within the shared 64 MiB run quota; raw stdout/stderr keep their independent
+2 MiB cap. A semantic overflow or unavailable findings artifact blocks even on exit zero.

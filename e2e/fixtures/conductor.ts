@@ -64,6 +64,12 @@ interface FakeEngineerState {
   runs: FakeEngineerRun[];
 }
 
+function publishEngineerState(path: string, state: FakeEngineerState): void {
+  const next = `${path}.tmp-${process.pid}`;
+  writeFileSync(next, JSON.stringify(state, null, 2));
+  renameSync(next, path);
+}
+
 /** Add one provider event to the currently active fake Engineer run. */
 export function appendConductorEngineerEvent(
   home: string,
@@ -94,7 +100,7 @@ export function appendConductorEngineerEvent(
   }
   if (type === "engineer_run_failed") run.state = "failed";
   if (type === "engineer_run_cancelled") run.state = "cancelled";
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  publishEngineerState(path, state);
   return event;
 }
 
@@ -149,7 +155,7 @@ export function seedDirectConductorEngineerSuccessor(home: string): FakeEngineer
     type: "engineer_run_started",
   });
   state.runs.push(run);
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  publishEngineerState(path, state);
   return run;
 }
 
@@ -285,7 +291,7 @@ export function seedConductorInstallerCheckout(repo: string): string {
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
@@ -319,7 +325,12 @@ const readEngineerState = () => {
   catch { return { runs: [] }; }
 };
 const writeEngineerState = (state) => {
-  if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
+  if (!engineerStatePath) return;
+  // Inspect/replay readers do not take the mutation lock. Publish a complete snapshot
+  // so an overlapping read cannot mistake a truncated JSON file for missing history.
+  const next = engineerStatePath + ".tmp-" + process.pid;
+  writeFileSync(next, JSON.stringify(state, null, 2));
+  renameSync(next, engineerStatePath);
 };
 /**
  * Hold an exclusive lock across a read-modify-write of the Engineer state file.

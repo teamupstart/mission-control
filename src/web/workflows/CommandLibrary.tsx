@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   WORKFLOW_CHECK_SLOTS,
+  CODERABBIT_SEVERITIES,
   WORKFLOW_COMMAND_PURPOSE,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS,
@@ -120,14 +121,17 @@ function byRepoRoot(a: WorkflowCommandOverride, b: WorkflowCommandOverride): num
   return a.repoRoot < b.repoRoot ? -1 : 1;
 }
 
+/** Compare typed rules by value, independent of JSON object property insertion order. */
+function copyCommandRule(entry: WorkflowCommandOverride): WorkflowCommandOverride {
+  return { repoRoot: entry.repoRoot, command: [...entry.command],
+    ...(entry.review ? { review: { kind: "coderabbit", baseRef: entry.review.baseRef, severity: entry.review.severity } as const } : {}) };
+}
+
 /** The draft one stored slot opens as. */
 export function commandDraftFrom(view: WorkflowCommandView | null): CommandDraft {
   return {
     defaultText: view?.defaultCommand ? formatCheckCommand(view.defaultCommand) : "",
-    overrides: (view?.overrides ?? []).map((entry) => ({
-      repoRoot: entry.repoRoot,
-      command: [...entry.command],
-    })),
+    overrides: (view?.overrides ?? []).map(copyCommandRule),
     // A slot the catalog has not delivered opens at the same budget a fresh one carries, so
     // the control never shows a number the daemon would disagree with.
     maxRuns: view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
@@ -157,11 +161,8 @@ export function commandDraftDirty(draft: CommandDraft, view: WorkflowCommandView
   if ((draft.timeoutMs ?? null) !== (view?.timeoutMs ?? null)) return true;
   if ((draft.onUnavailable ?? "skip") !== (view?.onUnavailable ?? "skip")) return true;
   if ((draft.onBudgetExhausted ?? "skip") !== (view?.onBudgetExhausted ?? "skip")) return true;
-  return JSON.stringify([...draft.overrides].sort(byRepoRoot))
-    !== JSON.stringify((view?.overrides ?? []).map((entry) => ({
-      repoRoot: entry.repoRoot,
-      command: [...entry.command],
-    })));
+  return JSON.stringify(draft.overrides.map(copyCommandRule).sort(byRepoRoot))
+    !== JSON.stringify((view?.overrides ?? []).map(copyCommandRule));
 }
 
 /**
@@ -574,10 +575,12 @@ export function CommandLibrary({
     });
   }
 
+  const isCodeRabbit = selectedSlot === "coderabbit";
+
   async function addOverride(): Promise<void> {
     const typed = overridePath.trim();
     if (!typed || saving) return;
-    const parsed = parseCheckCommand(overrideCommand);
+    const parsed = isCodeRabbit ? { ok: true as const, argv: [] } : parseCheckCommand(overrideCommand);
     if (!parsed.ok) {
       setError(parsed.error);
       return;
@@ -594,13 +597,14 @@ export function CommandLibrary({
       // lossy in exactly the direction that matters - `/repo/packages/web` resolves to
       // `/repo` - so storing the root alone would make a nested override unconfigurable.
       const root = checkCommandRoot(resolved.repoRoot, resolved.path);
+      if (isCodeRabbit && root !== resolved.repoRoot) { setError("CodeRabbit tuning must name the repository root"); return; }
       setDraft((current) => ({
         ...current,
         // Replace rather than append on a repeat: `(slot, repoRoot)` is one identity, and the
         // route refuses a duplicate outright rather than picking one for us.
         overrides: [
           ...current.overrides.filter((entry) => entry.repoRoot !== root),
-          { repoRoot: root, command: parsed.argv },
+          { repoRoot: root, command: parsed.argv, ...(isCodeRabbit ? { review: { kind: "coderabbit" as const, baseRef: null, severity: "major" as const } } : {}) },
         ].sort(byRepoRoot),
       }));
       setOverridePath("");
@@ -788,7 +792,7 @@ export function CommandLibrary({
               it, and `docs/library-and-line.md` describes the pair. */}
           <p className="wf-command-note">
             {WORKFLOW_COMMAND_PURPOSE[selectedSlot]}{" "}
-            Saving stores an argv - it runs nothing. A workflow reaching the{" "}
+            {isCodeRabbit ? "Saving stores optional review tuning - it runs nothing." : "Saving stores an argv - it runs nothing."} A workflow reaching the{" "}
             <code>{selectedSlot}</code> Command runs it later, without a shell, in a
             commit-pinned checkout of a repository granted the Workflows cell in Trust.
           </p>
@@ -841,8 +845,7 @@ export function CommandLibrary({
             <p className="wf-command-hint">
               {workflowCommandRunsFact(draft.maxRuns)}, counting only the times it actually
               executes and shared by every gate that runs this Command. Once a workflow run has
-              spent this budget, later gates and repair rounds are skipped with a note instead
-              of running the command again - CI still runs it against the merge commit.
+              spent this budget, {isCodeRabbit ? "later reviews skip with a warning and do not claim a completed review. " : "later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
               Granting a run more repair rounds starts the count over.
             </p>
           </div>
@@ -884,8 +887,7 @@ export function CommandLibrary({
               </div>
               <p className="wf-command-hint">
                 The default is {WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[selectedSlot] / 60_000}
-                {" minutes"}. A timeout remains an infrastructure failure and follows the
-                existing bounded retry path.
+                {" minutes"}. {isCodeRabbit ? "A timed-out review blocks as incomplete and requires explicit retry. Heartbeats do not extend this hard deadline." : "A timeout remains an infrastructure failure and follows the existing bounded retry path."}
               </p>
             </div>
 
@@ -895,13 +897,14 @@ export function CommandLibrary({
                 <select
                   id="workflow-command-unavailable"
                   className="field-input"
-                  value={draft.onUnavailable}
+                  disabled={isCodeRabbit}
+                  value={isCodeRabbit ? "block" : draft.onUnavailable}
                   onChange={(event) => setDraft((current) => ({
                     ...current,
                     onUnavailable: event.target.value as WorkflowCommandFailurePolicy,
                   }))}
                 >
-                  <option value="skip">Skip with a note</option>
+                  <option value="skip">{isCodeRabbit ? "Skip with a warning" : "Skip with a note"}</option>
                   <option value="block">Block for operator action</option>
                 </select>
               </Tooltip>
@@ -913,13 +916,14 @@ export function CommandLibrary({
                 <select
                   id="workflow-command-budget-exhausted"
                   className="field-input"
-                  value={draft.onBudgetExhausted}
+                  disabled={isCodeRabbit}
+                  value={isCodeRabbit ? "skip" : draft.onBudgetExhausted}
                   onChange={(event) => setDraft((current) => ({
                     ...current,
                     onBudgetExhausted: event.target.value as WorkflowCommandFailurePolicy,
                   }))}
                 >
-                  <option value="skip">Skip with a note</option>
+                  <option value="skip">{isCodeRabbit ? "Skip with a warning" : "Skip with a note"}</option>
                   <option value="block">Block for operator action</option>
                 </select>
               </Tooltip>
@@ -930,6 +934,42 @@ export function CommandLibrary({
               to be split across two section hints that never mentioned each other - one
               calling the default repository-neutral, the other saying the longest match wins -
               so the rule connecting them had to be assembled by the reader. */}
+          {isCodeRabbit ? (
+            <section className="wf-command-review-tuning" aria-label="CodeRabbit tuning">
+              <p className="wf-command-note">Only repository-root .coderabbit.yaml with reviews.auto_review.enabled set to boolean true enables review. No Library override is required. Removing tuning restores defaults.</p>
+              <p className="wf-command-hint">Derived policy: unavailable or incomplete enabled reviews block with an error and Settings &gt; Setup link. Exhausted allowance always skips with a warning. Default base: observed origin/HEAD; otherwise set an explicit ref. Default severity: major.</p>
+              <pre className="wf-command-preview">coderabbit review --agent --gate major --committed --base-commit &lt;resolved-merge-base&gt;</pre>
+              {draft.overrides.map((entry) => (
+                <div className="wf-command-review-rule" key={entry.repoRoot}>
+                  <RepositoryName path={entry.repoRoot} className="wf-command-rule-name" />
+                  <span className="wf-command-rule-path">{entry.repoRoot}</span>
+                  <div className="wf-command-review-fields">
+                  <label>Base ref
+                    <input className="field-input" aria-label={`Base ref for ${entry.repoRoot}`} placeholder="Observed origin/HEAD" value={entry.review?.baseRef ?? ""}
+                      onChange={(event) => setDraft((current) => ({ ...current, overrides: current.overrides.map((row) => row.repoRoot !== entry.repoRoot ? row : { ...row, review: { kind: "coderabbit", severity: row.review?.severity ?? "major", baseRef: event.target.value || null } }) }))} />
+                  </label>
+                  <label>Severity
+                    <Tooltip label="Review every finding and gate on this severity or higher">
+                    <select className="field-input" aria-label={`Severity for ${entry.repoRoot}`} value={entry.review?.severity ?? "major"}
+                      onChange={(event) => setDraft((current) => ({ ...current, overrides: current.overrides.map((row) => row.repoRoot !== entry.repoRoot ? row : { ...row, review: { kind: "coderabbit", baseRef: row.review?.baseRef ?? null, severity: event.target.value as import("@shared/workflow.ts").CodeRabbitSeverity } }) }))}>
+                      {CODERABBIT_SEVERITIES.map((value) => <option key={value}>{value}</option>)}
+                    </select>
+                    </Tooltip>
+                  </label>
+                  </div>
+                  <pre className="wf-command-preview">{`coderabbit review --agent --gate ${entry.review?.severity ?? "major"} --committed --base-commit <merge-base of ${entry.review?.baseRef ?? "observed origin/HEAD"}>`}</pre>
+                  <Tooltip label="Restore effective defaults for this repository; YAML still owns enablement">
+                    <button className="btn btn-ghost" onClick={() => removeOverride(entry.repoRoot)}>Remove tuning</button>
+                  </Tooltip>
+                </div>
+              ))}
+              <label htmlFor="coderabbit-tuning-repository">Repository root for CodeRabbit tuning</label>
+              <RepoCombobox value={overridePath} onChange={setOverridePath} repos={commandRepoOptions(repos, allowlist)} placeholder="Repository root" id="coderabbit-tuning-repository" />
+              <Tooltip label="Add optional base and severity tuning at this repository root">
+                <button className="btn btn-ghost" disabled={!overridePath.trim() || saving} onClick={() => void addOverride()}>Add repository tuning</button>
+              </Tooltip>
+            </section>
+          ) : (<>
           <p className="wf-command-hint">
             <strong>The longest matching path wins.</strong> The default is
             repository-neutral - it is what the <code>{selectedSlot}</code> Command runs
@@ -1099,6 +1139,7 @@ export function CommandLibrary({
             </table>
           </div>
 
+          </>)}
           <p className="wf-command-hint wf-command-save-note">
             Save replaces this slot's default, its whole override list, run budget, timeout,
             and skip-or-block policies together, so the parts can never be stored apart.

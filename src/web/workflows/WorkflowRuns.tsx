@@ -1,3 +1,4 @@
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
@@ -444,6 +445,24 @@ function RetainedCommandOutput({
   );
 }
 
+function CodeRabbitBlockedReview({ value }: { value: unknown }): React.JSX.Element | null {
+  const parsed = CodeRabbitReviewSummarySchema.safeParse(value);
+  return parsed.success ? <CodeRabbitReview summary={parsed.data} /> : null;
+}
+
+function CodeRabbitReview({ summary }: { summary: import("@shared/workflow.ts").CodeRabbitReviewSummary }): React.JSX.Element {
+  const { comparison } = summary;
+  return <div className="wf-run-card-body">
+    <p>CodeRabbit: {summary.status} · threshold {comparison.severity}{summary.remainingRuns === undefined ? "" : ` · ${summary.remainingRuns} executions remaining`}</p>
+    <p>{summary.diagnostic}</p>
+    {summary.expectedDuration && <p className="wf-run-meta">Expected vendor duration: {summary.expectedDuration}. The hard timeout remains fixed.</p>}
+    {summary.retryAt && <p className="wf-command-hint">Do not retry before {new Date(summary.retryAt).toLocaleString()}.</p>}
+    <p className="wf-run-meta">YAML {comparison.yaml.source}: {comparison.yaml.state} · digest {comparison.yaml.digest ?? "unavailable"}</p>
+    <p className="wf-run-meta">Head {comparison.head} · base {comparison.baseRef} at {comparison.baseTip} · merge-base {comparison.mergeBase}</p>
+    <p>{Object.entries(summary.counts).map(([severity, count]) => `${severity}: ${count}`).join(" · ")}</p>
+  </div>;
+}
+
 function CheckCard({
   runId,
   attempt,
@@ -456,7 +475,7 @@ function CheckCard({
   const view = checkStatusView(outcome.status);
   const chip = checkChip(outcome);
   const parts = [
-    outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
+    outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
     outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
@@ -468,8 +487,11 @@ function CheckCard({
         <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
         <strong>Command · {outcome.slot}</strong>
       </header>
-      <p className="wf-run-summary">{outcome.note}</p>
-      <p className="wf-run-check-sentence">{view.sentence}</p>
+      <p className="wf-run-summary" role={outcome.warning ? "status" : undefined}>{outcome.note}</p>
+      {outcome.diagnosticError && <p role="alert" className="wf-error">Error: {outcome.diagnosticError}</p>}
+      {outcome.review && <CodeRabbitReview summary={outcome.review} />}
+
+      <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>
       {outcome.output && (
         <div className="wf-run-card-body">
           <h5>Command output</h5>
@@ -618,6 +640,7 @@ function SessionActionCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+
     </article>
   );
 }
@@ -721,6 +744,8 @@ function AttemptCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.setup === true && <Tooltip label="Inspect CodeRabbit installation, version and stored authentication"><a href="#/settings/setup">Settings &gt; Setup</a></Tooltip>}
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.review && <CodeRabbitBlockedReview value={attempt.output.review} />}
       <RetainedCommandOutput
         runId={runId}
         attemptId={attempt.id}
@@ -977,7 +1002,7 @@ function WorklistRailRow({
           lines: [
             item.outcome.command
               ? formatCheckCommand(item.outcome.command)
-              : "no command configured",
+              : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
             ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
           ],
         };

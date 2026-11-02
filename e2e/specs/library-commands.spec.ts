@@ -85,7 +85,7 @@ async function shoot(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(150);
 }
 
-const SLOTS = ["test", "lint", "typecheck", "build", "documentation"] as const;
+const SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
 
 const card = (page: Page, slot: string) =>
   page.getByRole("region", { name: "What does each standard gate run?" })
@@ -112,7 +112,7 @@ const ruleRows = (page: Page) =>
 
 const hash = (page: Page) => page.evaluate(() => location.hash);
 
-test("the Commands shelf is the sixth question, with five built-in cards and no New", async ({
+test("the Commands shelf is the sixth question, with six built-in cards and no New", async ({
   dashboard,
   daemon,
 }) => {
@@ -129,7 +129,7 @@ test("the Commands shelf is the sixth question, with five built-in cards and no 
     await expect(card(dashboard, slot)).toBeVisible();
     // A fresh daemon configures none of them, and an unconfigured slot is still a card: a
     // missing tile would read as a missing subsystem rather than as work to do.
-    await expect(card(dashboard, slot)).toContainText("Not configured");
+    await expect(card(dashboard, slot)).toContainText(slot === "coderabbit" ? "YAML-enabled defaults" : "Not configured");
     await expect(card(dashboard, slot)).toContainText("built-in");
   }
   // Every authoring shelf carries a ＋ New card. This one cannot: the slots ship with the
@@ -146,7 +146,7 @@ test("the Commands shelf is the sixth question, with five built-in cards and no 
   await shoot(dashboard, "shelf");
 });
 
-test("an unloaded catalog says so, rather than claiming four unconfigured slots", async ({
+test("an unloaded catalog says so, rather than claiming unconfigured slots", async ({
   dashboard,
   daemon,
 }) => {
@@ -171,7 +171,7 @@ test("an unloaded catalog says so, rather than claiming four unconfigured slots"
   const shelf = dashboard.getByRole("region", { name: "What does each standard gate run?" });
   await expect(shelf).toBeVisible();
   for (const slot of SLOTS) {
-    // Still four cards - the slots are a fixed vocabulary that ships with the build, so their
+    // Still six cards - the slots are a fixed vocabulary that ships with the build, so their
     // existence is knowable without the daemon. What they RUN is not.
     await expect(card(dashboard, slot)).toBeVisible();
     await expect(card(dashboard, slot)).toContainText("Waiting for the daemon");

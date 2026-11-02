@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_CHECK_SLOTS } from "../src/shared/workflow.ts";
+import { DatabaseSync } from "node:sqlite";
+import { WORKFLOW_CHECK_SLOTS, type CodeRabbitComparison } from "../src/shared/workflow.ts";
 
 // What is at stake: the store is the boundary a future caller reaches WITHOUT passing the
 // route schema, and what it holds is an argv the daemon spawns. So the rules that make
@@ -28,6 +29,35 @@ function store() {
   created.seedWorkflowCommands(1_000);
   return created;
 }
+
+test("only successful CodeRabbit comparisons freeze, including recovery of previously stored errors", (t) => {
+  const database = new DatabaseSync(":memory:");
+  t.after(() => database.close());
+  database.exec("CREATE TABLE workflow_submissions (id TEXT PRIMARY KEY, coderabbit_json TEXT)");
+  database.prepare("INSERT INTO workflow_submissions (id) VALUES (?)").run("submission");
+  const s = new WorkflowStore(database);
+  const resolved: CodeRabbitComparison = {
+    interpreterVersion: 1,
+    yaml: { source: ".coderabbit.yaml", digest: "a".repeat(64), enabled: true, state: "enabled", diagnostic: "enabled" },
+    head: "a".repeat(40), baseRef: "origin/main", baseTip: "b".repeat(40), mergeBase: "b".repeat(40),
+    severity: "major", ruleRevision: 1, timeoutMs: 2_700_000, maxRuns: 10, empty: false, error: null,
+  };
+  const failed = { ...resolved, baseTip: null, mergeBase: null, error: "Git comparison timed out" };
+  assert.deepEqual(s.freezeCodeRabbitComparison("submission", failed), failed);
+  assert.equal(s.getCodeRabbitComparison("submission"), null, "failed resolution must stay retryable");
+  assert.deepEqual(database.prepare("SELECT coderabbit_json FROM workflow_submissions").get()?.coderabbit_json, null);
+
+  // Previously published builds persisted errors. They must not prevent Retry from recovering.
+  database.prepare("UPDATE workflow_submissions SET coderabbit_json = ?").run(JSON.stringify(failed));
+  assert.equal(s.getCodeRabbitComparison("submission"), null);
+  assert.deepEqual(s.freezeCodeRabbitComparison("submission", resolved), resolved);
+  const moved = { ...resolved, baseTip: "c".repeat(40), mergeBase: "c".repeat(40), maxRuns: 1 };
+  assert.deepEqual(s.freezeCodeRabbitComparison("submission", moved), resolved, "first successful identity and policy stay pinned");
+  assert.deepEqual(s.freezeCodeRabbitComparison("submission", failed), resolved);
+  assert.deepEqual(new WorkflowStore(database).getCodeRabbitComparison("submission"), resolved, "successful pin survives reload");
+  database.prepare("UPDATE workflow_submissions SET coderabbit_json = ?").run('{"corrupt":true}');
+  assert.throws(() => s.getCodeRabbitComparison("submission"), "corrupt metadata must still fail closed");
+});
 
 test("seeding is idempotent and never resets a slot somebody configured", () => {
   const s = store();
@@ -154,6 +184,21 @@ test("an untouched override keeps its creation instant across a neighbour's edit
     { repo_root: "/other", created_at: 6_000 },
     { repo_root: "/repo", created_at: 5_000 },
   ]);
+});
+
+test("an unreadable CodeRabbit override emits a bounded diagnostic while preserving catalog recovery", (t) => {
+  const s = store();
+  const logs: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => logs.push(args.join(" ")));
+  for (const raw of ["not json fixture-secret", JSON.stringify({ kind: "coderabbit", severity: "invalid" })]) {
+    db.prepare(`INSERT OR REPLACE INTO workflow_command_overrides (slot, repo_root, command_json, created_at, updated_at)
+      VALUES ('coderabbit', '/repo', ?, 1, 1)`).run(raw);
+    assert.deepEqual(s.getWorkflowCommand("coderabbit")!.overrides, []);
+  }
+  assert.equal(logs.length, 2);
+  assert.ok(logs.every(line => line.includes("event=malformed_durable_row")));
+  assert.ok(logs.every(line => !line.includes("fixture-secret")));
+  assert.equal(s.getWorkflowCommand("coderabbit")!.revision, 1);
 });
 
 test("an unreadable row degrades what it holds, not the catalog around it", () => {

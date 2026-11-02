@@ -537,7 +537,7 @@ order is left alone; a page reordered to match a tour would be the tour dictatin
    and node palette.
 10. **Draft and published** spotlights the Pipeline/Graph toggle, then the **disabled**
     Publish button - the draft-versus-published lesson without a draft existing.
-11. **No-Mistakes Review** walks the five stages on the authored pipeline strip.
+11. **No-Mistakes Review** walks the six stages on the authored pipeline strip, including optional CodeRabbit.
 12. **Binding it** spotlights **Bind to a session…** and names the postures version 10 ships.
 13. **A run, moving** opens `#/runs/:id` on one run that has already ended and spotlights its
     pipeline strip, then its review worklist.
@@ -554,7 +554,7 @@ model call. Terminal means any of the three ends a run can reach - `completed`, 
 moving, which all three share; a cancelled run draws the same pipeline strip, worklist and stage
 ladder that a completed one does, and the selector rejects only a run that is still open. The
 workflow match is exact, so an operator's own duplicate of No-Mistakes does not qualify: a run
-of another workflow need not carry any of the five stages stop 11 just walked.
+of another workflow need not carry the stages stop 11 just walked.
 
 **The version has to agree too.** Published versions are immutable and older ones are kept, so
 the newest terminal run on a machine can easily be a run of version 9 while the built-in has

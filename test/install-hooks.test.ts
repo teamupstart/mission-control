@@ -52,7 +52,7 @@ function runInstallerHome(settingsPath: string, homeDir: string, args: string[] 
       MISSION_HOME: homeDir,
     },
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
@@ -233,6 +233,22 @@ test("--statusline wraps an existing status line and records the original", () =
     // The original command is recorded so the forwarder delegates to it.
     assert.equal(readFileSync(join(home, "statusline-inner"), "utf8").trim(), "npx -y ccstatusline@latest");
     assert.equal(Object.keys(s.hooks).length, 9, "hooks are installed alongside");
+  });
+});
+
+test("--statusline preserves the original settings when saving the inner command fails", () => {
+  withTempSettingsHome(SETTINGS_WITH_STATUSLINE, (path, home) => {
+    // A directory at the sidecar path fails the actual write, including for root,
+    // without relying on platform-specific read-only permission behavior.
+    mkdirSync(join(home, "statusline-inner"));
+    const original = readFileSync(path, "utf8");
+    assert.throws(() => runInstallerHome(path, home, ["--statusline"]), error => {
+      const failure = error as Error & {status: number; stderr: string};
+      assert.equal(failure.status, 1);
+      assert.match(failure.stderr, /Could not save the existing status line; settings were preserved\./);
+      return true;
+    });
+    assert.equal(readFileSync(path, "utf8"), original, "the command and all other settings survive the failed save");
   });
 });
 

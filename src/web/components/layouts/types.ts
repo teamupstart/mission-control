@@ -20,6 +20,7 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
+import type { ResidentSessionMark } from "../../residents/marker.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -289,6 +290,15 @@ export interface SessionViewProps {
    * switched off. A layout arranges; it does not decide which sessions get keys.
    */
   cardShortcutBySession?: ReadonlyMap<string, string>;
+  /**
+   * App-owned join from each resident's session to its live run (`residentMarksBySession`):
+   * the marker, label and pin from the run's pinned revision. Absent entries are ordinary -
+   * every session that is not a resident. Read by the card, the rail row, the Console band
+   * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
+   */
+  residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /** Open a resident's profile on `#/residents`, from its Console band. */
+  onOpenResidentProfile?: (profileId: string) => void;
 }
 
 /** The run summary behind this session's member link, when both are on hand. */

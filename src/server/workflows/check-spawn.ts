@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { basename } from "node:path";
+import { resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
+import { currentOwnedRuntime } from "../owned-runtime.ts";
 import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import type { CheckExecutionResult } from "./checks.ts";
@@ -57,6 +58,8 @@ export interface CheckSpawnRequest {
   timeoutMs: number;
   /** Defaults to `WORKFLOW_EXECUTION_LIMITS.checkOutput`; there is no second output bound. */
   maxOutputBytes?: number;
+  /** Optional attempt-owned retained body sink. It never controls process lifetime. */
+  capture?: { push(kind: "stdout" | "stderr", chunk: Buffer): void };
   /** How long the shim gets to report readiness before the attempt is abandoned. */
   readyMs?: number;
   teardown?: CheckGroupTeardownOptions;
@@ -207,10 +210,7 @@ interface ShimReport {
  * binary, which behaves as node when `ELECTRON_RUN_AS_NODE` is set.
  */
 function shimRuntime(): { command: string; env: NodeJS.ProcessEnv } {
-  if (/^node(\.exe)?$/.test(basename(process.execPath))) {
-    return { command: process.execPath, env: {} };
-  }
-  return { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+  return resolveOwnedRuntime(currentOwnedRuntime());
 }
 
 /**
@@ -347,8 +347,14 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   const report = child.stdio[4] as Socket;
   gate.on("error", () => {});
   report.on("error", () => {});
-  child.stdout?.on("data", (chunk: Buffer) => ring.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => ring.push(chunk));
+  child.stdout?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stdout", chunk);
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stderr", chunk);
+  });
 
   let supervisor: CheckSupervisorIdentity | null = null;
   let failure: CheckExecutionResult | null = null;

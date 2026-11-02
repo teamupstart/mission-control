@@ -18,8 +18,9 @@ assets refuse installation. Existing source installs can be replaced in place by
 once assets are published, preserving their state and destination. Copied signed DMGs can enroll
 through **Settings > Setup > Application updates**. Reopen an enrolled app to enable automatic stable and exact-SHA alpha binary updates.
 
-The commands below concern source development. Setup's universal Node row is retained until
-the separate integration-runtime phase; it is not a prerequisite for binary installation.
+The commands below concern source development. Electron includes Node for the desktop app,
+updates and Mission-owned helpers. Independent agent CLIs, user projects and optional Conductor
+keep their own prerequisites.
 
 ## Prerequisites
 
@@ -66,16 +67,30 @@ The row links to [Running Mission Control at Upstart](upstart.md), which include
 plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
 without the plugin remain free of Upstart-specific setup chrome.
 
-The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
-source installer (currently Node.js 24). It reports a missing or older runtime as
+The **Runtime** family identifies the process serving this dashboard: the app's bundled
+Electron runtime, development Electron, or standalone Node. Connecting an Electron window to
+an existing source daemon does not change that daemon's runtime. Older daemons without this
+field report **Serving runtime unknown**.
+
+External **Node.js** is optional for desktop use. Its diagnostic uses the source-development
+minimum (currently Node.js 24), while third-party tools retain their own version requirements. It reports a missing or older runtime as
 **Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**
 opens `brew install node` in the selected visible terminal to install or update Node.js and npm.
 This command requires Homebrew; if you manage Node another way, select a supported version in
 that manager instead. Read the command's exit status, then press **Re-check**. Opening the
 installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
 PATH still selects an older runtime, correct that selection and restart Mission Control with
-the corrected environment. Desktop binary updates do not use that host runtime. This Setup row remains for the separate
-integration-runtime phase; source development and third-party tools keep their own prerequisites.
+the corrected environment. Desktop binary updates do not use that host runtime, and this row
+never creates a universal Setup warning. Other required gaps and first-launch guidance remain.
+
+In the desktop app, **Agent extensions > Install Claude integrations** installs or repairs
+owned hooks and MCP registrations using the app runtime, including existing source registrations
+with a recognized literal command. Existing owned statusline wrappers move to the bundled wrapper;
+their saved inner command stays unchanged, with its independent prerequisites. No statusline or
+third-party inner command is installed implicitly. Custom syntax, disabled registrations, comments,
+permissions and unrelated settings are preserved. Concurrent edits leave recovery originals and
+manual reconciliation guidance. The tray menu offers the same action. See the
+[owned-runtime inventory and R2 handoff](owned-runtimes.md).
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
@@ -125,8 +140,8 @@ operator to re-check.
 The **Set up this machine** guided tour shows you how to reach this panel and what to do with
 it, then continues into **Trust**, in seven stops: the ⚙ gear, **Setup** in the Settings rail,
 the dependency list where you install the tools you will use, **Re-check** to confirm they
-took, then **Trust** in the rail, its repository-by-grant matrix, and the row that adds a
-repository to it. It runs once automatically on a fresh profile, and can be started again from
+took, then **Trust** in the rail, its repository-by-grant matrix, and the pane that adds
+repositories to it. It runs once automatically on a fresh profile, and can be started again from
 **Help & tours** at the bottom of the Settings rail or from **Start Set up this machine tour**
 in the command palette. It executes no remedy and clicks no grant, and it leaves you on Trust
 rather than returning you to the page you started from. See
@@ -233,3 +248,13 @@ viewport, and local scenario players, so it does not use agent models or alter y
 The current binary is Agent Mission Control.app. Use the current installer for an old-name
 installation; it preserves the existing folder, scope and state. Saved old bootstraps refuse
 the new layout. See [migration and compatibility](app-name-migration.md).
+
+## Optional CodeRabbit workflow reviews
+
+Settings > Setup reports the optional CodeRabbit CLI path/source, minimum version 0.9.1 and
+stored authentication readiness without installing, signing in or reviewing. Follow the
+[official installation guide](https://docs.coderabbit.ai/cli), then run `coderabbit auth login`
+under the same effective HOME as the daemon and press Re-check. Managed invocations disable
+auto-update and never authorize usage credits. YAML must explicitly enable each repository;
+installation and login alone do not enable review. YAML-enabled blocks link directly back to
+Setup. See [workflow configuration and findings](workflows.md#local-coderabbit-command).

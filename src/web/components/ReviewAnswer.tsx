@@ -102,6 +102,7 @@ function AnsweredDecision({
 }): React.JSX.Element {
   const chosen = new Set(selectedOptions(decision, answer).map((o) => o.id));
   const other = answer?.other?.trim() ?? "";
+  const note = answer?.note?.trim() ?? "";
   // A decision can be answered entirely in free text when `allowOther` is set, and a
   // dismissed review has no answer at all. Both are stated rather than left as an empty
   // block, so the reader is never shown a question with no visible outcome.
@@ -143,6 +144,12 @@ function AnsweredDecision({
         </p>
       )}
       {nothingPicked && <p className="review-answer-none">No option chosen.</p>}
+      {note && (
+        <p className="review-answer-other review-answer-note">
+          <span className="review-answer-other-tag">Note</span>
+          {note}
+        </p>
+      )}
     </div>
   );
 }

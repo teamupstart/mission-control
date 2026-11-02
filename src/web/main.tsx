@@ -1,4 +1,5 @@
-import { installExperienceReporting } from "./lib/experience.ts";
+import { installExperienceReporting, reportBrowserError } from "./lib/experience.ts";
+import { showStartupFailure } from "./lib/startup-failure.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
@@ -29,7 +30,14 @@ installExperienceReporting();
 const root = document.getElementById("root");
 const planQuery = new URLSearchParams(window.location.search);
 if (!root) throw new Error("missing #root");
-createRoot(root).render(
+createRoot(root, {
+  onUncaughtError(error, info) {
+    console.error("[dashboard] Uncaught rendering error", error, info.componentStack);
+    reportBrowserError(error, "exception", undefined, false);
+    // React clears the failed tree first; publish the diagnostic after that commit.
+    queueMicrotask(() => showStartupFailure(root, "render"));
+  },
+}).render(
   <StrictMode>
     <ModelCatalogProvider>
       {planQuery.has("plan") ? <ManagedPlanReader id={planQuery.get("plan")!} revision={Number(planQuery.get("revision"))} /> : <App />}

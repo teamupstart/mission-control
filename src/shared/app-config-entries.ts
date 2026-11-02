@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
+import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
 import {
   AwayConfigSchema,
   BacklogPlanSchema,
@@ -54,6 +56,8 @@ interface AppConfigEntryBase<Key extends string, Schema extends z.ZodTypeAny> {
   schema: Schema;
   /** Version of this entry's logical snapshot meaning, independent from SQLite. */
   snapshotVersion: 1;
+  /** New domains may be absent in older snapshots; absence leaves current settings alone. */
+  optionalInSnapshot?: boolean;
   capture: AppConfigCaptureKind;
 }
 
@@ -229,6 +233,7 @@ const inspectorFields = {
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 
 const shippingFields = {
+  codeRabbitAutoResolve: "setting",
   autoMerge: "setting",
   soakMinutes: "setting",
   method: "setting",
@@ -262,6 +267,8 @@ const uiFields = {
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
   collapsedBoardColumns: "setting",
+  hiddenTopbarItems: "setting",
+  compactTopbarItems: "setting",
 } satisfies Record<keyof UiConfig, AppConfigValueClass>;
 
 const repoIndexFields = {
@@ -288,6 +295,10 @@ const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number
  * service enumerates the same object, so there is no second inclusion list to forget.
  */
 export const APP_CONFIG_ENTRIES = {
+  residentSkillSources: { ...fieldsEntry("residents.skillSources", ResidentSkillSourcesSchema, "resident-skill-sources", { directories: "setting" }), optionalInSnapshot: true },
+  // Custom MCP server DEFINITIONS only. A field marked secret stores its name here and its
+  // value in the write-only `resident_mcp_secrets` table, so a snapshot never carries one.
+  residentMcpServers: { ...fieldsEntry("residents.mcpServers", ResidentMcpServersDocumentSchema, "resident-mcp-servers", { servers: "setting" }), optionalInSnapshot: true },
   harnesses: fieldsEntry(
     "harnesses", HarnessesConfigSchema, "harnesses", harnessesFields, "harnesses",
   ),

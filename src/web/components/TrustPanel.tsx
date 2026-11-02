@@ -6,10 +6,14 @@ import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import { useUiConfig, updateUiConfig } from "../lib/uiConfig.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import {
+  addRepositoriesPatch,
   candidateRepos,
   checkExecutionGrants,
+  DEFAULT_ADD_GRANTS,
+  grantFailureMessage,
   grantPatch,
   mergeBlindSpots,
+  planBatchAdd,
   trustRows,
   type ChecksArmedReading,
   type GrantColumn,
@@ -18,7 +22,7 @@ import {
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
-import { RepoCombobox } from "./RepoCombobox.tsx";
+import { filterRepos, repoOptionLabels } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -28,9 +32,15 @@ import { Tooltip } from "./Tooltip.tsx";
 // `repoAllowlist`, and a cell click patches that subsystem's config through the exact route
 // its panel used to. The daemon's four consent gates are untouched; this is a view that
 // happens to be able to write to what it shows. The one piece of state it does own is the
-// staged list (`UiConfig.trustStaged`): a repo added to the table but granted nothing lives
-// in no allowlist, so without a home of its own it would vanish on the next reload - which
-// would quietly break the plan's "adding is configuration; enabling is consent".
+// staged list (`UiConfig.trustStaged`): a repo in the table that holds no grant lives in no
+// allowlist, so without a home of its own it would vanish on the next reload. Adding grants
+// `DEFAULT_ADD_GRANTS` straight away, so a repo lands there only when none of those writes
+// could be made - or because an older build staged it ungranted.
+//
+// The page is two panes side by side, so adding never sits below a long table: the left
+// pane picks any number of the workspace's repositories (or a typed path) and adds them in
+// one batch, the right pane is the matrix with a filter of its own. Each pane scrolls inside
+// itself.
 //
 // Two combinations are flagged amber, and they are different kinds of thing. The merge
 // blind spot is a CONTRADICTION - a repo YOLO may merge but the Inspector may not review
@@ -40,11 +50,18 @@ import { Tooltip } from "./Tooltip.tsx";
 // flagged because it is the heaviest grant here and the one whose weight the cell cannot
 // show on its own. See `checkExecutionGrants`.
 
-/** The four columns, left to right, each naming the grant by what it permits. */
+/**
+ * The four columns, left to right, each naming the grant by what it permits.
+ *
+ * `label` is the grant's full name, which every cell's accessible name and the header's
+ * tooltip carry. `short` is what the header prints: the matrix shares its row with the add
+ * pane, and the full names would not fit four columns of pills beside it.
+ */
 const COLUMNS = [
   {
     key: "foreman",
     label: "Foreman sends live",
+    short: "Foreman",
     title: "Foreman answers prompts in this repo's sessions without asking you.",
   },
   {
@@ -53,6 +70,7 @@ const COLUMNS = [
     // rail draws over this category are contiguous rather than interleaved.
     key: "workflows",
     label: "Workflows act",
+    short: "Workflows",
     // ONE cell, both capabilities, because it is one stored list - said in full here since
     // this tooltip is the only place the second one is visible from the matrix.
     //
@@ -75,11 +93,13 @@ const COLUMNS = [
   {
     key: "inspector",
     label: "GitHub Inspector posts reviews",
+    short: "GitHub Inspector",
     title: "Publishes review comments on this repo's PRs under your GitHub account.",
   },
   {
     key: "merge",
     label: "YOLO merges",
+    short: "YOLO merges",
     title: "Clean, soaked PRs in this repo merge themselves to the base branch.",
   },
 ] as const;
@@ -147,14 +167,24 @@ export function TrustPanel({
    */
   checks: ChecksArmedReading;
 }): React.JSX.Element {
-  // The two spotlights the Setup tour's Trust half points at: the whole matrix, and the row
-  // that adds a repository to it. The matrix rather than a cell or a column - which grants a
+  // The two spotlights the Setup tour's Trust half points at: the whole matrix, and the pane
+  // that adds repositories to it. The matrix rather than a cell or a column - which grants a
   // machine needs depends on which repositories it works in, and a row may not exist yet.
   const matrixTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-matrix");
   const addTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-add");
   const ui = useUiConfig();
-  const [repos, setRepos] = useState<string[]>([]);
-  const [draft, setDraft] = useState("");
+  /** The workspace's repositories, or null until the first read lands. */
+  const [repos, setRepos] = useState<string[] | null>(null);
+  /** The add pane's search over repositories not yet in the matrix. */
+  const [pickQuery, setPickQuery] = useState("");
+  /** Picked repositories, kept across searches so a batch can be built from several. */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  /** A path typed by hand, for a checkout the workspace scan did not find. */
+  const [pathDraft, setPathDraft] = useState("");
+  /** The matrix pane's filter over repositories already in it. */
+  const [trustedQuery, setTrustedQuery] = useState("");
+  /** The last batch added, tagged "new" in the matrix so the rows can be found again. */
+  const [recent, setRecent] = useState<ReadonlySet<string>>(() => new Set());
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -299,36 +329,75 @@ export function TrustPanel({
     void workflows.update({ ...config, checksEnabled: false });
   }
 
+  /**
+   * Add every picked repository, plus a typed path, in one batch - each with the default
+   * grants (`DEFAULT_ADD_GRANTS`), and YOLO merges left for a deliberate cell click.
+   *
+   * One write per owning allowlist rather than one per repository: each config route takes
+   * the whole list, so writing them repo by repo would race every write against the last.
+   */
   async function add(): Promise<void> {
-    const path = draft.trim();
-    if (!path || adding) return;
+    const typed = pathDraft.trim();
+    const chosen = candidates.filter((r) => picked.has(r));
+    if ((chosen.length === 0 && !typed) || adding || awaiting.length > 0) return;
     setAdding(true);
     setAddError(null);
-    // Resolve + canonicalize server-side so the staged path is the realpath the daemon
-    // gates on, exactly as the three panels did before a cell can grant against it.
-    const res = await resolveRepo(path);
-    setAdding(false);
-    if (!res.ok) {
-      setAddError(res.error);
-      return;
-    }
-    const root = res.repoRoot;
+    // Resolve + canonicalize server-side - picked repos as well as the typed path - so every
+    // grant is written against the realpath the daemon gates on.
+    const asked = typed ? [...chosen, typed] : chosen;
+    const resolved = await Promise.all(asked.map((path) => resolveRepo(path)));
     // Duplicate-checked against the whole matrix - the allowlists AND the staged list - so a
-    // repo already granted somewhere, or already staged, is refused rather than staged twice.
-    const present = new Set([
+    // repo already in it is never added twice.
+    const { roots, refused, errors } = planBatchAdd(asked, resolved, new Set(currentRepos()));
+    let stagingFailed = false;
+
+    if (roots.length > 0) {
+      const patch = addRepositoriesPatch(roots, {
+        foreman: foremanRef.current,
+        workflows: workflowsRef.current,
+        inspector: inspectorRef.current,
+        shipping: shippingRef.current,
+        staged: stagedRef.current,
+      });
+      const workflowConfig = workflowConfigRef.current;
+      const written = await Promise.all([
+        foreman.config ? foreman.update({ repoAllowlist: patch.foreman }) : false,
+        workflowConfig
+          ? workflows.update({ ...workflowConfig, repoAllowlist: patch.workflows })
+          : false,
+        inspector.config ? inspector.update({ repoAllowlist: patch.inspector }) : false,
+      ]);
+      const failed = ["Foreman", "Workflows", "GitHub Inspector"].filter((_, i) => !written[i]);
+      if (failed.length === DEFAULT_ADD_GRANTS.length) {
+        // Nothing landed, so the new repos sit in no allowlist. Stage them so the rows still
+        // show, and their cells can be granted once the daemon answers again - and say so
+        // plainly if even that write fails, because then there is no row to click.
+        stagingFailed = !(await updateUiConfig({ trustStaged: [...stagedRef.current, ...roots] }));
+      }
+      const message = grantFailureMessage(failed, roots.length, stagingFailed);
+      if (message) errors.push(message);
+      if (!stagingFailed) setRecent(new Set(roots));
+    }
+
+    // Keep only what was refused, so a failed pick or path can be corrected and retried. A
+    // refused pick that is already in the matrix drops out of the list by itself. When the
+    // whole add was lost, keep everything, so trying again is one click.
+    const keep = (i: number): boolean => stagingFailed || refused.includes(i);
+    setPicked(new Set(chosen.filter((_, i) => keep(i))));
+    if (!typed || !keep(asked.length - 1)) setPathDraft("");
+    setAdding(false);
+    setAddError(errors.length > 0 ? errors.join(" ") : null);
+  }
+
+  /** Every repository the matrix holds, in any allowlist or staged. */
+  function currentRepos(): string[] {
+    return [
       ...foremanRef.current,
       ...workflowsRef.current,
       ...inspectorRef.current,
       ...shippingRef.current,
       ...stagedRef.current,
-    ]);
-    if (present.has(root)) {
-      setAddError(`${root} is already in the matrix`);
-      return;
-    }
-    setDraft("");
-    // Grants NOTHING: it only stages the row. Enabling is a separate, deliberate cell click.
-    await updateUiConfig({ trustStaged: [...stagedRef.current, root] });
+    ];
   }
 
   /** Whether each column's owning daemon has answered, so a cell can disable rather than lie. */
@@ -374,16 +443,44 @@ export function TrustPanel({
     );
   }
 
-  const candidates = candidateRepos(repos, [
+  const candidates = candidateRepos(repos ?? [], [
     ...foremanList,
     ...workflowsList,
     ...inspectorList,
     ...shippingList,
     ...staged,
   ]);
+  // The add pane's list, narrowed by its own search. Picks survive a search that hides them,
+  // so the count and the button read from every candidate rather than only the shown ones.
+  const shownCandidates = filterRepos(candidates, pickQuery);
+  const pickedCount = candidates.filter((r) => picked.has(r)).length;
+  const addCount = pickedCount + (pathDraft.trim() ? 1 : 0);
+  // The subsystems whose default grant an add would have to skip right now. An add waits for
+  // every one of them to answer rather than writing what it can: a subsystem that has not
+  // loaded yet is not one that refused, and adding before it does would quietly hand a new
+  // repository two grants out of three - which is exactly what a quick add after opening the
+  // page used to do.
+  const awaiting = [
+    !foreman.config && "Foreman",
+    !workflows.config && "Workflows",
+    !inspector.config && "GitHub Inspector",
+  ].filter((x): x is string => Boolean(x));
+  // The matrix pane's filter, by the same name-first rule as every repository picker.
+  const keepRows = new Set(filterRepos(rows.map((r) => r.repo), trustedQuery));
+  const shownRows = rows.filter((r) => keepRows.has(r.repo));
+
+  function togglePick(repo: string): void {
+    setAddError(null);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) next.delete(repo);
+      else next.add(repo);
+      return next;
+    });
+  }
 
   return (
-    <section className="settings-section">
+    <section className="settings-section trust-section">
       <p className="settings-hint">
         Every grant that lets Mission Control act outside this app, in one table. Each column
         is its subsystem's own allowlist - clicking a cell writes there, and the Foreman,
@@ -398,41 +495,193 @@ export function TrustPanel({
         </p>
       )}
 
-      <div className="trust-matrix" data-anchor="trust/matrix" ref={matrixTourRef}>
-        <div className="trust-grid" role="table" aria-label="Repository trust grants">
-          <div className="trust-h trust-h-repo">Repository</div>
-          {COLUMNS.map((c) => (
-            <div className="trust-h" key={c.key}>
-              {c.label}
+      <div className="trust-split">
+        <div
+          className="trust-pane trust-add"
+          data-anchor="trust/add"
+          ref={addTourRef}
+          role="group"
+          aria-labelledby="trust-add-title"
+        >
+          <div className="trust-pane-head">
+            <div className="trust-pane-title-row">
+              <h3 className="trust-pane-title" id="trust-add-title">
+                Add repositories
+              </h3>
+              <span className="trust-pane-count">{candidates.length} available</span>
             </div>
-          ))}
-          <div className="trust-h" aria-hidden />
-          {rows.map((row) => (
-            <Fragment key={row.repo}>
-              <div className="trust-c trust-repo">
-                <RepositoryName path={row.repo} className="trust-repo-path" />
-              </div>
-              {COLUMNS.map((c) => cell(row, c))}
-              <div className="trust-c trust-remove-c">
-                <Tooltip label={`Remove ${row.repo} - revokes every grant it holds`}>
-                  <button
-                    type="button"
-                    className="trust-remove"
-                    aria-label={`Remove every grant for ${row.repo}`}
-                    onClick={() => removeRow(row)}
+            <input
+              type="search"
+              className="trust-search"
+              placeholder="Search repositories…"
+              aria-label="Search repositories to add"
+              value={pickQuery}
+              onChange={(e) => setPickQuery(e.target.value)}
+            />
+            <div className="trust-pick-actions">
+              <Tooltip label="Tick every repository the search is showing">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={shownCandidates.length === 0}
+                  onClick={() => setPicked((prev) => new Set([...prev, ...shownCandidates]))}
+                >
+                  Select all shown
+                </button>
+              </Tooltip>
+              <Tooltip label="Untick every picked repository, including ones the search hides">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={pickedCount === 0}
+                  onClick={() => setPicked(new Set())}
+                >
+                  Clear
+                </button>
+              </Tooltip>
+              <span className="trust-pane-count trust-picked-count">{pickedCount} selected</span>
+            </div>
+          </div>
+
+          <ul className="trust-pick-list" aria-label="Repositories to add">
+            {repoOptionLabels(shownCandidates).map(({ repo, name, hint }) => {
+              const on = picked.has(repo);
+              return (
+                <li key={repo}>
+                  <Tooltip label={repo}>
+                    <label className={`trust-pick${on ? " is-picked" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        aria-label={`Select ${repo}`}
+                        onChange={() => togglePick(repo)}
+                      />
+                      <span className="trust-pick-name">{name}</span>
+                      {hint && <span className="trust-pick-hint">{hint}</span>}
+                    </label>
+                  </Tooltip>
+                </li>
+              );
+            })}
+          </ul>
+          {shownCandidates.length === 0 && (
+            <p className="settings-hint trust-pick-empty">
+              {repos === null
+                ? "Looking for repositories…"
+                : repos.length === 0
+                  ? "No repositories found in your workspace. Type a path below to add one."
+                  : candidates.length === 0
+                    ? "Every repository in your workspace is already trusted. Type a path below to add another."
+                    : "No repositories match that search."}
+            </p>
+          )}
+
+          <div className="trust-pane-foot">
+            <input
+              className="trust-path"
+              placeholder="or type a path…"
+              aria-label="Repository path"
+              value={pathDraft}
+              onChange={(e) => {
+                setPathDraft(e.target.value);
+                setAddError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void add();
+              }}
+            />
+            <p className="trust-defaults">
+              <span>New repositories get</span>
+              {COLUMNS.map((c) => {
+                const on = (DEFAULT_ADD_GRANTS as readonly GrantColumn[]).includes(c.key);
+                return (
+                  <span
+                    key={c.key}
+                    className={`trust-grant trust-default ${on ? "is-on" : "is-off"}`}
                   >
-                    ✕
-                  </button>
-                </Tooltip>
-              </div>
-            </Fragment>
-          ))}
+                    <span className="trust-grant-dot" aria-hidden />
+                    {on ? c.short : `${c.short} off`}
+                  </span>
+                );
+              })}
+            </p>
+            <Tooltip label="Add the picked repositories and the typed path, each with Foreman, Workflows and GitHub Inspector granted">
+              <button
+                type="button"
+                className="btn btn-primary trust-add-btn"
+                disabled={addCount === 0 || adding || awaiting.length > 0}
+                onClick={() => void add()}
+              >
+                {adding
+                  ? "Adding…"
+                  : addCount === 0
+                    ? "Add repositories"
+                    : `Add ${addCount} ${addCount === 1 ? "repository" : "repositories"}`}
+              </button>
+            </Tooltip>
+            {awaiting.length > 0 && (
+              <p className="settings-hint trust-add-waiting">
+                Waiting for {awaiting.join(", ")} to answer before adding, so a new repository
+                gets every default grant.
+              </p>
+            )}
+            {addError && <p className="settings-error trust-add-error">{addError}</p>}
+          </div>
         </div>
-        {rows.length === 0 && (
-          <p className="settings-hint trust-empty">
-            No repositories yet. Add one below, then grant it what it needs.
-          </p>
-        )}
+
+        <div className="trust-pane trust-matrix" data-anchor="trust/matrix" ref={matrixTourRef}>
+          <div className="trust-pane-head trust-matrix-head">
+            <h3 className="trust-pane-title">Trusted</h3>
+            <span className="trust-pane-count">{rows.length}</span>
+            <input
+              type="search"
+              className="trust-search"
+              placeholder="Filter trusted…"
+              aria-label="Filter trusted repositories"
+              value={trustedQuery}
+              onChange={(e) => setTrustedQuery(e.target.value)}
+            />
+          </div>
+          <div className="trust-grid" role="table" aria-label="Repository trust grants">
+            <div className="trust-h trust-h-repo">Repository</div>
+            {COLUMNS.map((c) => (
+              <Tooltip key={c.key} label={`${c.label}: ${c.title}`}>
+                <div className="trust-h">{c.short}</div>
+              </Tooltip>
+            ))}
+            <div className="trust-h" aria-hidden />
+            {shownRows.map((row) => (
+              <Fragment key={row.repo}>
+                <div className="trust-c trust-repo">
+                  <RepositoryName path={row.repo} className="trust-repo-path" />
+                  {recent.has(row.repo) && <span className="trust-new-tag">new</span>}
+                </div>
+                {COLUMNS.map((c) => cell(row, c))}
+                <div className="trust-c trust-remove-c">
+                  <Tooltip label={`Remove ${row.repo} - revokes every grant it holds`}>
+                    <button
+                      type="button"
+                      className="trust-remove"
+                      aria-label={`Remove every grant for ${row.repo}`}
+                      onClick={() => removeRow(row)}
+                    >
+                      ✕
+                    </button>
+                  </Tooltip>
+                </div>
+              </Fragment>
+            ))}
+          </div>
+          {rows.length === 0 ? (
+            <p className="settings-hint trust-empty">
+              No repositories yet. Pick some on the left and add them.
+            </p>
+          ) : (
+            shownRows.length === 0 && (
+              <p className="settings-hint trust-empty">No trusted repositories match that filter.</p>
+            )
+          )}
+        </div>
       </div>
 
       {blindSpots.length > 0 && (
@@ -466,7 +715,7 @@ export function TrustPanel({
               Turn Commands off
             </button>
           </Tooltip>
-          , or revoke a repo's Workflows cell above - which also stops Live delivery there.
+          , or revoke a repo's Workflows cell in the matrix - which also stops Live delivery there.
         </p>
       )}
 
@@ -484,27 +733,6 @@ export function TrustPanel({
           nothing here has been disarmed - only rendered unverifiable.
         </p>
       )}
-
-      <div className="trust-add" data-anchor="trust/add" ref={addTourRef}>
-        <RepoCombobox
-          repos={candidates}
-          value={draft}
-          onChange={(v) => {
-            setDraft(v);
-            setAddError(null);
-          }}
-        />
-        <Tooltip label="Add this repo to the matrix - it grants nothing until you click a cell">
-          <button className="btn" disabled={!draft.trim() || adding} onClick={() => void add()}>
-            {adding ? "Adding…" : "Add"}
-          </button>
-        </Tooltip>
-      </div>
-      <p className="settings-hint trust-add-note">
-        Adding a repo grants nothing yet - cells start empty, one deliberate click each.
-        Adding is configuration; enabling is consent.
-      </p>
-      {addError && <p className="settings-error">{addError}</p>}
     </section>
   );
 }

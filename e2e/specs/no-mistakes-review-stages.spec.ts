@@ -26,13 +26,13 @@ for (const name of ["General Review", "Bug Fix Review", "No-Mistakes Review (Hig
     await dashboard.getByRole("button", { name: new RegExp(name.replace(/[()]/g, "\\$&")) }).click();
     await expect(dashboard.getByRole("textbox", { name: "Name", exact: true })).toHaveValue(name);
     const stages = dashboard.locator(".wf-pipeline-strip section.wf-pipeline-stage");
-    await expect(stages).toHaveCount(5);
+    await expect(stages).toHaveCount(name === "No-Mistakes Review (High Rigor)" ? 6 : 5);
     const first = stages.first();
     await expect(first.locator(".wf-pipeline-stage-name")).toHaveText("Stage 1");
     await expect(first.locator(".wf-pipeline-reviewer-name")).toHaveText([
       "Commandtypecheck", "Commandtest", "Commandlint",
     ]);
-    await expect(stages.nth(1).locator(".wf-pipeline-reviewer-name").first())
+    await expect(stages.nth(name === "No-Mistakes Review (High Rigor)" ? 2 : 1).locator(".wf-pipeline-reviewer-name").first())
       .toHaveText("Intent Conformance Judge");
     await first.scrollIntoViewIfNeeded();
     await expect(first.locator(".wf-pipeline-reviewer-name").last()).toBeInViewport();
@@ -58,10 +58,11 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   await expect(pipeline).toBeVisible();
   const stages = pipeline.locator("section.wf-pipeline-stage");
-  await expect(stages).toHaveCount(5);
+  await expect(stages).toHaveCount(6);
+  await expect(stages.nth(1).locator(".wf-pipeline-reviewer-name")).toHaveText(["Commandcoderabbit"]);
 
-  const stage2 = stages.nth(1);
-  await expect(stage2.locator(".wf-pipeline-stage-name")).toHaveText("Stage 2");
+  const stage2 = stages.nth(2);
+  await expect(stage2.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
   await expect(stage2.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Intent Conformance Judge",
     "Test Coverage Judge",
@@ -75,23 +76,23 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
     });
   }
 
-  const stage3 = stages.nth(2);
-  await expect(stage3.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
+  const stage3 = stages.nth(3);
+  await expect(stage3.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
   await expect(stage3.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Code Risk Reviewer",
     "Code Quality Judge",
     "Code Design Reviewer",
   ]);
 
-  const stage4 = stages.nth(3);
-  await expect(stage4.locator(".wf-pipeline-stage-name")).toHaveText("Stage 4");
+  const stage4 = stages.nth(4);
+  await expect(stage4.locator(".wf-pipeline-stage-name")).toHaveText("Stage 5");
   await expect(stage4.locator(".wf-pipeline-reviewer-name")).toHaveText([
     "Test Evidence Auditor",
     "Documentation Steward",
     "Slop Filter",
   ]);
 
-  const pullRequest = stages.nth(4);
+  const pullRequest = stages.nth(5);
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
   await expect(pipeline.locator(".wf-pipeline-inspector")).toBeVisible();
 

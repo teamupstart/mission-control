@@ -17,6 +17,13 @@ export const LAUNCH_TIMEOUT_MS = 25_000;
  * that update's recovery. A caller that has a deadline passes what is left of it instead.
  */
 export const COMMAND_TIMEOUT_MS = 15_000;
+/**
+ * How long a WHOLE launch-conflict inspection may take when its caller has no deadline to give:
+ * the startup health check and the interactive preflight, both of which a person is waiting on.
+ * Sized above the sweep's real cost (see `inspectAppLaunches`) and well below a migration's own
+ * budget. A caller that owns a deadline passes what is left of it instead.
+ */
+export const LAUNCH_INSPECTION_TIMEOUT_MS = 60_000;
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const POLL_MS = 250;
 export const launchAckPath = (directory, nonce) => join(directory, `update-launch-${nonce}.json`);
@@ -30,7 +37,10 @@ export function realMacAppOps(directory) {
       if (command === "/usr/bin/open") delete env.ELECTRON_RUN_AS_NODE;
       execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, env }, (error, stdout) => {
         if (error && (typeof error.code !== "number" || error.killed)) {
-          reject(new Error("Could not inspect macOS launch state within the time limit."));
+          // Name the executable, never its arguments: `launchctl print gui/<uid>/<label>` and
+          // `lsregister -f <bundle>` carry a job label and a bundle path, and this message is
+          // written to update.log. The name is what tells one probe's timeout from another's.
+          reject(new Error(`Could not inspect macOS launch state within the time limit (${basename(command)}).`));
         } else resolve({code: error?.code ?? 0, stdout});
       });
     }),
@@ -274,7 +284,41 @@ export function jobLaunchesBundle(text, bundle) {
 // that runs out of time rejects rather than being retried, so a per-probe cap bought nothing but
 // an earlier failure: on a busy Mac one `ps` or `launchctl print` taking more than two seconds
 // failed the whole update and then its recovery, well inside the deadline the caller had set.
-export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 15_000) {
+//
+// That holds for the whole sweep, not only the probes inside it, so the budget is a parameter all
+// the way out to `assertSafeAppLaunch`.
+export async function inspectAppLaunch(
+  bundle,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  return (await inspectAppLaunches([bundle], ops, timeout))[0];
+}
+
+/**
+ * ONE launchd sweep, evaluated for every bundle in `bundles`, in order.
+ *
+ * The sweep is machine-wide: `launchctl list` plus one `launchctl print` per user launchd label,
+ * and nothing in it depends on which bundle is being asked about until the very last step, where
+ * each printed job is tested against a bundle path. So several bundles share one sweep, and
+ * every bundle still receives both checks - a respawn job that launches it, and a main process
+ * that is not a registered Foreground app - against a snapshot at least as fresh as a second,
+ * later sweep would have read.
+ *
+ * What a sweep costs, because it sets every deadline that guards one. This is the one place
+ * these numbers are recorded; callers say only why they need their own deadline. launchd answers
+ * the prints essentially serially, so extra concurrency buys nothing (554 labels: 4.7s at 8-wide,
+ * 4.1-4.4s at 16, 32 and 64), and the cost is set by the host's label count, which this app does
+ * not control. On a developer Mac with ~550 labels one sweep took 4.1-5.3s idle and 19-31s under
+ * a concurrency-6 test suite, which is why a fixed 15s cap refused 20 of 25 loaded sweeps. A
+ * detached install used to run five sweeps - its parent-exit checkpoint asked about the source
+ * and the target separately, twice - and now runs three (2,855 probe calls down to 1,738).
+ */
+export async function inspectAppLaunches(
+  bundles,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
   const deadline = ops.now() + timeout;
   const budget = () => {
     const remaining = deadline - ops.now();
@@ -289,7 +333,7 @@ export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 
     const match = /^(?:\d+|-)\s+-?\d+\s+(.+)$/.exec(line);
     return match ? [match[1]] : [];
   });
-  const jobs = [];
+  const jobs = bundles.map(() => []);
   // Bounded concurrency avoids serially paying one subprocess startup per login item.
   let next = 0;
   await Promise.all(Array.from({length: Math.min(8, labels.length)}, async () => {
@@ -299,17 +343,20 @@ export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 
       // launchctl list includes inherited user-domain services, and jobs can exit mid-read.
       if (result.code === 113) continue; // no service in this GUI domain
       if (result.code !== 0) throw new Error("Could not inspect a GUI launchd job. Check launchctl before retrying.");
-      if (!jobLaunchesBundle(result.stdout, bundle)) continue;
+      // Read once per job; only the bundle comparison below differs between bundles.
       const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1]);
       const managed = /^\s*managed_by = com\.apple\.runningboard\s*$/m.test(result.stdout);
-      if (managed && registered(registrations, bundle, pid)) continue;
-      jobs.push(label);
+      for (const [index, bundle] of bundles.entries()) {
+        if (!jobLaunchesBundle(result.stdout, bundle)) continue;
+        if (managed && registered(registrations, bundle, pid)) continue;
+        jobs[index].push(label);
+      }
     }
   }));
-  return {
-    jobs: jobs.sort(),
+  return bundles.map((bundle, index) => ({
+    jobs: jobs[index].sort(),
     unregistered: running.filter((row) => isMain(row.executable, bundle) && !registered(registrations, bundle, row.pid)).map((row) => row.pid),
-  };
+  }));
 }
 
 const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
@@ -327,9 +374,29 @@ export function launchConflictMessage(conflicts, uid) {
   return lines.length ? `${lines.join("\n")}\nNo launchd job was removed. Retry the update after resolving this launch conflict.` : null;
 }
 
-export async function assertSafeAppLaunch(bundle, ops = realMacAppOps()) {
-  const message = launchConflictMessage(await inspectAppLaunch(bundle, ops), ops.uid);
-  if (message) throw new Error(message);
+export async function assertSafeAppLaunch(
+  bundle,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  await assertSafeAppLaunches([bundle], ops, timeout);
+}
+
+/**
+ * `assertSafeAppLaunch` for several bundles from ONE sweep - see `inspectAppLaunches`.
+ *
+ * Refuses on the first bundle, in the order given, that has a conflict, which is the same
+ * refusal a run of sequential single-bundle checks would have raised first.
+ */
+export async function assertSafeAppLaunches(
+  bundles,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  for (const inspection of await inspectAppLaunches(bundles, ops, timeout)) {
+    const message = launchConflictMessage(inspection, ops.uid);
+    if (message) throw new Error(message);
+  }
 }
 
 async function poll(ops, timeout, check, message) {

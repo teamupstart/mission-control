@@ -17,6 +17,7 @@ import {
   SubmitWorkflowSchema,
   WorkflowRunActionSchema,
   WorkflowRunStatusSchema,
+  ReadWorkflowCommandOutputSchema,
 } from "@shared/protocol.ts";
 
 const id = z.string().trim().min(1).max(500)
@@ -61,6 +62,7 @@ export const ListWorkflowRunsSchema = z.object({
 }).strict();
 
 export const GetWorkflowRunSchema = z.object({ runId: id }).strict();
+export const ReadWorkflowCommandOutputMcpSchema = ReadWorkflowCommandOutputSchema;
 export const WorkflowMcpActionSchema = z.object({ request: WorkflowActionRequestSchema }).strict();
 
 /** Only known dashboard endpoints, never a caller-supplied URL or arbitrary method. */

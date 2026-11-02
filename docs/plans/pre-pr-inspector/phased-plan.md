@@ -5,7 +5,7 @@ Status: approved, scheduled, and gated on planning publication
 ## Source of truth
 
 - Approved source plan: [`plan.md`](plan.md)
-- Supporting investigation: [`../../reports/inspector-pre-pr-assessment/report.html`](../../reports/inspector-pre-pr-assessment/report.html)
+- Supporting investigation: `docs/reports/inspector-pre-pr-assessment/report.html` (removed from the repository in #1213)
 - Detailed implementation phase: [`phase-1-code-quality-judge-dual-mode.md`](phase-1-code-quality-judge-dual-mode.md)
 
 The source plan's reviewed decisions are requirements:

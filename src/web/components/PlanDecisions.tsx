@@ -4,9 +4,9 @@ import { formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import type { DecisionAnswer as Answer, DecisionAnswers as Answers } from "../lib/review-drafts.ts";
 
-/** Per-decision answer state: chosen option ids plus any free-text "Other". */
-type Answers = Record<string, { selected: string[]; other: string }>;
+const EMPTY: Answer = { selected: [], other: "", note: "" };
 
 /** Stable inside one review form, shared with its Foreman recommendation matcher. */
 export function decisionChoiceKey(decisionId: string, optionId: string): string {
@@ -20,8 +20,8 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
  * form indexes by decision id on every keystroke, which a map does well and an array does
  * not. Every decision is emitted, answered or not - an unanswered one is a real fact about
  * a submission, and dropping it would make a form that could not have been submitted look
- * like one that never asked. Blank "Other" text normalizes to null so "typed nothing" and
- * "typed and cleared it" are the same record.
+ * like one that never asked. Blank "Other" text normalizes to null and a blank note is
+ * omitted, so "typed nothing" and "typed and cleared it" are the same record.
  */
 function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDecisionAnswer[] {
   return decisions.map((d) => {
@@ -30,6 +30,8 @@ function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDec
       decisionId: d.id,
       selected: a?.selected ?? [],
       other: a?.other.trim() ? a.other.trim() : null,
+      // Present only when typed, so an answer without one keeps the shape it always had.
+      ...(a?.note.trim() ? { note: a.note.trim() } : {}),
     };
   });
 }
@@ -74,7 +76,17 @@ export function DecisionForm({
    * because the decision id itself must stay untouched - it is echoed in the response payload.
    */
   namePrefix = "d",
+  /**
+   * Draw an optional note box under every decision, so the human can pick an option AND send
+   * instructions with it. Off by default: a form whose resolution never reaches an agent as
+   * prose - the product-issue confirmation, which acts on the selection alone - must not
+   * offer a box whose text would go nowhere.
+   */
+  allowNote = false,
   foremanRecommended,
+  besideSubmit,
+  answers: heldAnswers,
+  onAnswersChange,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -88,6 +100,7 @@ export function DecisionForm({
   lead?: string;
   hideQuestions?: boolean;
   namePrefix?: string;
+  allowNote?: boolean;
   /**
    * Exact decision-option keys Foreman's prose names.
    *
@@ -96,16 +109,29 @@ export function DecisionForm({
    * Foreman note names this exact form, so an unmatched recommendation marks nothing.
    */
   foremanRecommended?: ReadonlySet<string>;
+  /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
+  besideSubmit?: React.ReactNode;
+  /**
+   * The answers, held by the caller instead of by this mount.
+   *
+   * A review card passes its parked draft here so picks and typed text survive the form
+   * unmounting - the modal closing, the inbox folding, the page reloading. Left out, the form
+   * keeps its own state, as a standalone form with nothing to outlive has always done.
+   */
+  answers?: Answers;
+  onAnswersChange?: (change: (prev: Answers) => Answers) => void;
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Answers>({});
+  const [ownAnswers, setOwnAnswers] = useState<Answers>({});
+  const answers = heldAnswers ?? ownAnswers;
+  const setAnswers = onAnswersChange ?? setOwnAnswers;
 
-  function get(id: string): { selected: string[]; other: string } {
-    return answers[id] ?? { selected: [], other: "" };
+  function get(id: string): Answer {
+    return answers[id] ?? EMPTY;
   }
 
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
     setAnswers((prev) => {
-      const cur = prev[d.id] ?? { selected: [], other: "" };
+      const cur = prev[d.id] ?? EMPTY;
       let selected: string[];
       if (d.multiSelect) {
         selected = checked
@@ -118,10 +144,10 @@ export function DecisionForm({
     });
   }
 
-  function setOther(id: string, other: string): void {
+  function setText(id: string, field: "other" | "note", text: string): void {
     setAnswers((prev) => ({
       ...prev,
-      [id]: { ...(prev[id] ?? { selected: [], other: "" }), other },
+      [id]: { ...(prev[id] ?? EMPTY), [field]: text },
     }));
   }
 
@@ -171,7 +197,18 @@ export function DecisionForm({
               className="decision-other"
               placeholder="Other…"
               value={get(d.id).other}
-              onChange={(e) => setOther(d.id, e.target.value)}
+              onChange={(e) => setText(d.id, "other", e.target.value)}
+              disabled={busy}
+            />
+          )}
+          {allowNote && (
+            <textarea
+              className="decision-note"
+              aria-label={`Note to the agent: ${d.question}`}
+              placeholder="Optional note to the agent…"
+              rows={3}
+              value={get(d.id).note}
+              onChange={(e) => setText(d.id, "note", e.target.value)}
               disabled={busy}
             />
           )}
@@ -185,6 +222,7 @@ export function DecisionForm({
             </button>
           </Tooltip>
         )}
+        {besideSubmit}
         <Tooltip
           label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
         >

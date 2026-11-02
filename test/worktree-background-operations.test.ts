@@ -245,6 +245,12 @@ test("a bulk preview measures sizes a few at a time and stops waiting at its bud
   let started = 0;
   let inFlight = 0;
   let peak = 0;
+  let scheduledMs: number | null = null;
+  let expire = (): void => {};
+  let markWorkersStarted = (): void => {};
+  const workersStarted = new Promise<void>((resolve) => {
+    markWorkersStarted = resolve;
+  });
   const bounded = new WorktreeOperationsService(manager, {
     legacy: new LegacyTreehouseService(db),
     tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
@@ -252,25 +258,36 @@ test("a bulk preview measures sizes a few at a time and stops waiting at its bud
     checkRecovery: async () => "unknown",
     notifyChanged: () => {},
     diskMeasureBudgetMs: 150,
+    scheduleDiskMeasureDeadline: (delayMs, callback) => {
+      scheduledMs = delayMs;
+      expire = callback;
+      return () => {};
+    },
     // A walk that never finishes: the warm, dependency-heavy checkout in the worst case.
     diskBytes: () => {
       started += 1;
       inFlight += 1;
       peak = Math.max(peak, inFlight);
+      if (started === 4) markWorkersStarted();
       return new Promise<number | null>(() => {});
     },
   });
-  const began = Date.now();
-  const preview = await bounded.preview({
+  // A real-time ceiling tests the host scheduler rather than this budget. Under the full suite
+  // the event loop can be starved for seconds before a correct timer gets to run. Fire only the
+  // injected disk deadline after all four workers have reached their never-finishing walk.
+  const pending = bounded.preview({
     action: "destroy",
     target: { kind: "slots", slotIds: slots.map((slot) => slot.slotId) },
   });
-  const waited = Date.now() - began;
+  await workersStarted;
+  assert.equal(started, 4, "all four bounded workers started before the deadline");
+  assert.equal(scheduledMs, 150, "the preview schedules its configured wall-clock budget");
+  expire();
+  const preview = await pending;
   assert.equal(preview.affected.length, 6);
   assert.deepEqual(preview.affected.map((target) => target.diskBytes), [null, null, null, null, null, null]);
   assert.equal(peak, 4, "no more than four walks run at once");
   assert.equal(started, 4, "nothing new starts once the budget is spent");
-  assert.ok(waited < 5_000, `the dialog is not held by unfinished walks (waited ${waited}ms)`);
   assert.equal(preview.allowed, true, preview.blockers.join("; "));
 });
 

@@ -1,3 +1,5 @@
+import { taskHasRepository } from "@shared/task.ts";
+import { codeRabbitSummary } from "./db.ts";
 import { homeRecord } from "./terminal/home.ts";
 import { sessionTransferPage, transferForNote, transferForSource, transferHold, transferRetiredSource,
   adoptedTransferHome, transferSummary, updateSessionTransfer, transferScopeMatches, unresolvedSessionTransfers, type SessionTransfer } from "./session-transfers/store.ts";
@@ -59,6 +61,7 @@ import type {
 } from "@shared/types.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import { residentRunSummary, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
   pipelineCommissionFrameMayReplace,
@@ -142,6 +145,7 @@ import { claimInjectionEcho } from "./injections.ts";
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
+import { listLiveResidentProfiles, listOpenResidentRuns } from "./residents/store.ts";
 // The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
 // store with it: everything it reads is gathered by `lineSummaryNow` below.
 import type { LineSummary } from "@shared/line.ts";
@@ -290,6 +294,7 @@ import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
+import { pruneDelegatedTurns } from "./delegated-turns.ts";
 
 /**
  * A pull request a session's agent was PROVEN to have just opened, carried to whoever
@@ -567,6 +572,12 @@ const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "ensemble_remove",
   "schedule_upsert",
   "schedule_remove",
+  // `resident_profile_upsert` / `resident_profile_remove` are DELIBERATELY absent: a profile is
+  // authoring state, like a Persona. A launched resident reaches the Line as its task and its
+  // session, through the frames above.
+  // `resident_run_upsert` / `resident_run_remove` are DELIBERATELY absent too: the
+  // `residentRuns` collection only joins a session to the run that launched it, for the board
+  // marker and pin. Nothing in it is a Line input - the run's task and session already are.
   // Moves the Shipped stage's per-PR figure.
   "cost_fleet",
   // Moves the Intake stage's tone: `taskSources.failing` and this tuple are the same read.
@@ -849,6 +860,18 @@ export class Registry extends EventEmitter {
    */
   private schedules = new Map<string, MissionSchedule>();
   /**
+   * Live resident profiles. A cache and a notifier, like `schedules`: `ResidentManager` is the
+   * only writer of the resident tables and announces each change here after its write.
+   * Bounded by `RESIDENT_LIMITS.liveProfiles`.
+   */
+  private residentProfiles = new Map<string, ResidentProfile>();
+  /**
+   * Live resident runs, by run id. A cache and a notifier on the same terms as the profiles
+   * above. Bounded by the residents running: only open runs enter, and each leaves when it
+   * ends or its launch fails.
+   */
+  private residentRuns = new Map<string, ResidentRunSummary>();
+  /**
    * The pipeline projection, keyed `provider repoRoot slug` (see `pipelineRunKey`).
    *
    * A cache and a notifier, exactly like `schedules`: the pipelines watcher is the only
@@ -1002,7 +1025,7 @@ export class Registry extends EventEmitter {
    * Kept apart from the session because the field on the session is not the same claim.
    * There it is the last binding we LEARNED, from a hook or from `lastAgentBinding` after
    * a restart, and a `/clear` is supposed to replace it. Here it is evidence from the
-   * process table, which a hook cannot contradict - so this, and only this, is what
+   * process table, which a hook cannot contradict - so for terminal sessions this is what
    * `applyHook` refuses a mismatching event against. Reading the session's own field
    * instead makes the guard reject the rebinding it exists to protect.
    */
@@ -1138,6 +1161,11 @@ export class Registry extends EventEmitter {
     // Seed the live catalog so a reconnect snapshot is truthful before the scheduler's first
     // tick. Empty on every machine that has never saved a schedule.
     for (const s of loadActiveSchedules()) this.schedules.set(s.id, s);
+    for (const profile of listLiveResidentProfiles()) this.residentProfiles.set(profile.id, profile);
+    for (const { run } of listOpenResidentRuns()) {
+      const summary = residentRunSummary(run);
+      if (summary) this.residentRuns.set(summary.id, summary);
+    }
     // Every non-orphaned thread, so a dashboard reconnecting after a daemon restart is
     // handed the same queue it was looking at. Threads whose session went away while the
     // daemon was down are still here at this point and are settled by the
@@ -1175,6 +1203,8 @@ export class Registry extends EventEmitter {
     workflowBindingSummaries: WorkflowBindingSummary[];
     ensembleSummaries: EnsembleSummary[];
     schedules: MissionSchedule[];
+    residentProfiles: ResidentProfile[];
+    residentRuns: ResidentRunSummary[];
     pipelineRuns: PipelineRun[];
     pipelineCommissions: PipelineCommission[];
     fileCommentThreads: FileCommentThread[];
@@ -1195,10 +1225,12 @@ export class Registry extends EventEmitter {
       sessionActions: [...this.sessionActions.values()],
       workflowCommands: [...this.workflowCommands.values()],
       workflowSummaries: [...this.workflowSummaries.values()],
-      workflowRunSummaries: [...this.workflowRuns.values()],
+      workflowRunSummaries: this.workflowRunSummaries(),
       workflowBindingSummaries: [...this.workflowBindings.values()],
       ensembleSummaries: [...this.ensembles.values()],
       schedules: [...this.schedules.values()],
+      residentProfiles: [...this.residentProfiles.values()],
+      residentRuns: [...this.residentRuns.values()],
       // Seeded from the projection at boot, so a dashboard connecting before the watcher's
       // first pass is already right rather than blank for one tick. Empty on every fleet
       // that has enabled no pipeline repository.
@@ -1966,6 +1998,11 @@ export class Registry extends EventEmitter {
     this.workflowRuns = new Map(runs.map((run) => [run.id, run]));
   }
 
+  /** Live workflow ownership without computing the full dashboard snapshot. */
+  workflowRunSummaries(): WorkflowRunSummary[] {
+    return [...this.workflowRuns.values()];
+  }
+
   upsertWorkflowRun(run: WorkflowRunSummary): void {
     this.workflowRuns.set(run.id, run);
     this.emitEvent({ type: "workflow_run_upsert", run });
@@ -2039,6 +2076,60 @@ export class Registry extends EventEmitter {
 
   removeSchedule(id: string): void {
     if (this.schedules.delete(id)) this.emitEvent({ type: "schedule_remove", id });
+  }
+
+  // ---- resident profiles (live catalog) ----
+  //
+  // The same notifier shape as the schedule catalog above: `ResidentManager` writes the tables,
+  // then calls these, so every frame follows the durable write it reflects.
+
+  getResidentProfile(id: string): ResidentProfile | undefined {
+    return this.residentProfiles.get(id);
+  }
+
+  listResidentProfiles(): ResidentProfile[] {
+    return [...this.residentProfiles.values()];
+  }
+
+  upsertResidentProfile(profile: ResidentProfile): void {
+    if (profile.archivedAt !== null) {
+      this.removeResidentProfile(profile.id);
+      return;
+    }
+    this.residentProfiles.set(profile.id, profile);
+    this.emitEvent({ type: "resident_profile_upsert", profile });
+  }
+
+  removeResidentProfile(id: string): void {
+    if (this.residentProfiles.delete(id)) this.emitEvent({ type: "resident_profile_remove", id });
+  }
+
+  listResidentRuns(): ResidentRunSummary[] {
+    return [...this.residentRuns.values()];
+  }
+
+  /** Announce a live run. `ResidentManager` calls this after the write it reflects. */
+  upsertResidentRun(summary: ResidentRunSummary): void {
+    this.residentRuns.set(summary.id, summary);
+    this.emitEvent({ type: "resident_run_upsert", run: summary });
+  }
+
+  removeResidentRun(id: string): void {
+    if (this.residentRuns.delete(id)) this.emitEvent({ type: "resident_run_remove", id });
+  }
+
+  /** Replace the live catalog after a settings restore, emitting only what changed. */
+  replaceResidentProfiles(profiles: readonly ResidentProfile[]): void {
+    const next = new Map(profiles.filter((profile) => profile.archivedAt === null)
+      .map((profile) => [profile.id, profile]));
+    for (const id of [...this.residentProfiles.keys()]) {
+      if (!next.has(id)) this.removeResidentProfile(id);
+    }
+    for (const profile of next.values()) {
+      const current = this.residentProfiles.get(profile.id);
+      if (current && current.revision === profile.revision && current.updatedAt === profile.updatedAt) continue;
+      this.upsertResidentProfile(profile);
+    }
   }
 
   // ---- line comments in the Files workspace ----
@@ -3050,6 +3141,7 @@ export class Registry extends EventEmitter {
    * `cwd`. Authorship is per pull request; the chip is per session.
    */
   private applyDriverPrCreated(s: Session, urls: string[]): void {
+    if (!taskHasRepository(s.task ?? {})) return;
     const url = urls[0];
     if (!url) return;
     // Native leases are detached at registration. The driver observed `gh pr create`, so
@@ -3141,6 +3233,13 @@ export class Registry extends EventEmitter {
     const target = this.findSessionForHook(evt, key);
     if (target && taskSessionClosureForSession(target.id)?.retiredAt != null) return;
 
+    // SDK identity belongs to the owned driver, including initial binding and clears.
+    // An auxiliary CLI can inherit this cwd or pane without MISSION_HEADLESS, so those
+    // coordinates alone cannot authorize its hooks. Refuse before retaining an overlay
+    // or rotating the work episode and its task/workflow ownership. Matching native
+    // hooks may still supply instrumentation; only driver events can replace the owner.
+    if (target?.runtime === "sdk" && (!evt.sessionId || evt.sessionId !== target.agentSessionId)) return;
+
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
     //
@@ -3210,7 +3309,7 @@ export class Registry extends EventEmitter {
       // branch untouched, but let the first real branch replace the acquisition-time null
       // so the existing PR and workflow lifecycles can use it immediately.
       const gitBranch = target.gitBranch ??
-        (target.runtime === "sdk" && target.cwd
+        (target.runtime === "sdk" && target.cwd && taskHasRepository(target.task ?? {})
           ? gitInfo(target.cwd).branch
           : null);
       let next: Session = {
@@ -4807,7 +4906,7 @@ export class Registry extends EventEmitter {
       episodeId: string | null;
     }[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.cwd || s.state === "exited") continue;
+      if (!s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       const episode = this.ensureWorkEpisode(s);
       out.push({
         id: s.id,
@@ -4837,7 +4936,7 @@ export class Registry extends EventEmitter {
   extraRepoPrPollTargets(): RepoPrPollTarget[] {
     const out: RepoPrPollTarget[] = [];
     for (const s of this.sessions.values()) {
-      if (!s.cwd || s.state === "exited") continue;
+      if (!s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       const task = this.activeTaskFor(s.id, s.cwd);
       if (!task || task.extraRepos.length === 0) continue;
       const episode = sessionWorkEpisodeFor(s.id);
@@ -5060,7 +5159,7 @@ export class Registry extends EventEmitter {
     return {
       prNumber: live.number,
       prChecks: live.checks,
-      inspector: this.inspectorSummaryForUrl(prUrl),
+      inspector: this.inspectorSummaryForUrl(prUrl, this.sessions.get(sessionId)),
     };
   }
 
@@ -5127,7 +5226,7 @@ export class Registry extends EventEmitter {
   driverGitTargets(): { id: string; cwd: string }[] {
     const out: { id: string; cwd: string }[] = [];
     for (const s of this.sessions.values()) {
-      if (s.runtime !== "sdk" || !s.cwd || s.state === "exited") continue;
+      if (s.runtime !== "sdk" || !s.cwd || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       out.push({ id: s.id, cwd: s.cwd });
     }
     return out;
@@ -5154,7 +5253,7 @@ export class Registry extends EventEmitter {
   ): void {
     for (const [id, snapshot] of snapshots) {
       const s = this.sessions.get(id);
-      if (!s || s.runtime !== "sdk" || s.state === "exited") continue;
+      if (!s || s.runtime !== "sdk" || s.state === "exited" || !taskHasRepository(s.task ?? {})) continue;
       if (s.gitBranch === snapshot.branch) continue;
       const next: Session = {
         ...s,
@@ -5182,7 +5281,7 @@ export class Registry extends EventEmitter {
    */
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
-      if (skip.has(id)) continue;
+      if (skip.has(id) || !taskHasRepository(s.task ?? {})) continue;
       let match = found.get(id) ?? null;
       const currentEpisode = sessionWorkEpisodeFor(id);
       if (
@@ -6951,6 +7050,7 @@ export class Registry extends EventEmitter {
           title: t.title,
           fullTitle: fullTaskTitle(t.title, t.intent),
           kind: t.kind,
+          workspaceKind: t.workspaceKind ?? null,
           workflowId: t.workflowId,
           planPolicy: t.planPolicy,
           planInputs: t.planInputs,
@@ -7246,7 +7346,7 @@ export class Registry extends EventEmitter {
     if (!cwd) return undefined;
     let best: Task | undefined;
     for (const t of this.tasks.values()) {
-      if (t.worktreePath !== cwd) continue;
+      if ((taskHasRepository(t) ? t.worktreePath : t.repoRoot) !== cwd) continue;
       if (t.status === "backlog" || t.status === "cancelled") continue;
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }
@@ -7805,6 +7905,15 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
     return this.launchTurns.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Delegated-turn senders: live keys are never touched. Before the first sweep liveness is
+   * unknown and nothing is pruned; after it, an empty session map is a known "none live", so
+   * old rows of finished conversations still go.
+   */
+  pruneDelegatedTurns(olderThan: number): number {
+    return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
   }
 
   /**
@@ -8615,7 +8724,7 @@ export class Registry extends EventEmitter {
    * a PR chip and no inspector chip is saying that PR came from somewhere else.
    */
   private inspectorSummaryFor(s: Session): InspectorSummary | null {
-    return this.inspectorSummaryForUrl(s.prUrl);
+    return this.inspectorSummaryForUrl(s.prUrl, s);
   }
 
   /**
@@ -8625,13 +8734,16 @@ export class Registry extends EventEmitter {
    * in this very ledger and reaches no session scalar, so the only difference between its chip
    * facts and the primary's is which url you ask about.
    */
-  private inspectorSummaryForUrl(prUrl: string | null): InspectorSummary | null {
+  private inspectorSummaryForUrl(prUrl: string | null, session?: Session): InspectorSummary | null {
     if (!prUrl) return null;
     const parsed = parsePrUrl(prUrl);
     if (!parsed) return null;
     const row = this.inspections.get(parsed.key);
     if (!row) return null;
+    const episodeKey = session ? resolvedSessionIntent(this.getGoal(session.id))?.episodeKey : undefined;
+    const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
+      codeRabbit: codeRabbitSummary(row.key, owner),
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,

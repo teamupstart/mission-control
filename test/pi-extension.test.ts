@@ -11,7 +11,7 @@ import { hookBody, PI_EVENTS, statusBody } from "../src/pi/event-map.ts";
 import { piHooks } from "../src/server/harness/pi/hooks.ts";
 import { HookIngestSchema, StatusLineIngestSchema } from "../src/shared/protocol.ts";
 import { THINKING_LEVELS } from "../src/shared/types.ts";
-import extension from "../src/pi/extension.ts";
+import extension, { missionControlBuild } from "../src/pi/extension.ts";
 import type { PiContext, PiEvent, PiTool } from "../src/pi/api.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-extension-"));
@@ -186,6 +186,48 @@ test("factory owns no child and shutdown is safe before startup", async () => {
   try {
     for (const [type, handler] of handlers) await assert.doesNotReject(handler({ type }, {} as PiContext));
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("owned Pi bridge uses the serving daemon runtime and requires its explicit capability", async () => {
+  const handlers = new Map<string, (event: PiEvent, ctx: PiContext) => Promise<unknown>>();
+  const tools: PiTool[] = [];
+  const originalFetch = globalThis.fetch;
+  const originalServer = missionControlBuild.mcpServerPath;
+  const overrides = ["MISSION_MCP_SERVER", "FLEET_MCP_SERVER", "HARNESS_MCP_SERVER"];
+  const saved = overrides.map(key => process.env[key]);
+  overrides.forEach(key => { delete process.env[key]; });
+  missionControlBuild.mcpServerPath = server;
+  let runtime: unknown = null;
+  let requests = 0;
+  globalThis.fetch = async input => {
+    if (new URL(String(input)).pathname === "/api/integrations/runtime") {
+      requests++;
+      return new Response(JSON.stringify(runtime));
+    }
+    return new Response(null, {status: 204});
+  };
+  extension({on: (name, handler) => { handlers.set(name, handler); }, registerTool: tool => tools.push(tool)});
+  const emit = (type: string) => handlers.get(type)!({type}, {...ctx, cwd: root});
+  try {
+    await emit("session_start");
+    assert.equal(tools.length, 0, "an older daemon must not invent runtime readiness");
+    runtime = {executable: join(root, "missing-runtime"), kind: "node"};
+    await emit("session_start");
+    assert.equal(tools.length, 0, "the supplied executable is used, not Pi's own fallback");
+    runtime = {executable: process.execPath, kind: "node"};
+    await emit("session_start");
+    assert.equal(tools.length, 1);
+    assert.equal(requests, 3);
+    assert.deepEqual((await tools[0]!.execute("id", {question: "ready?"})).content,
+      [{type: "text", text: '{"question":"ready?"}'}]);
+  } finally {
+    await emit("session_shutdown");
+    globalThis.fetch = originalFetch;
+    missionControlBuild.mcpServerPath = originalServer;
+    overrides.forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
+    });
+  }
 });
 
 test("coordinator refreshes identity and credentials, delivers instructions once and keeps daemon failures quiet", async () => {

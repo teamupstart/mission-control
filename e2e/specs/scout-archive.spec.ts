@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { settled } from "../fixtures/settle.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { writeScoutBundle } from "../../test/helpers/archive-fixture.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -242,7 +243,7 @@ test("a dispatched scout is told to write a report, and archives it, with skills
   await expect(card).not.toContainText("PR #");
 });
 
-test("a scout without a report warns first, then closes only after confirmation", async ({
+test("a scout without a submitted report warns first, then closes and preserves its written report", async ({
   dashboard,
   daemon,
 }) => {
@@ -265,13 +266,18 @@ test("a scout without a report warns first, then closes only after confirmation"
   // The first request changes nothing and turns the refusal into an explicit warning. It
   // names the missing contract and replaces the ordinary action with the narrower choice.
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("No scout report will be archived.");
+  await expect(dialog).toContainText("No submitted scout report is ready to archive.");
+  await expect(dialog).toContainText("Cleanup may still preserve report files already in the checkout.");
   await expect(dialog).toContainText("docs/reports/<slug>/report.html");
   await expect(dialog).toContainText("submit_scout_artifacts");
   await expect(dialog.getByRole("button", { name: "Complete & close" })).toHaveCount(0);
   const confirm = dialog.getByRole("button", { name: "Close without report" });
   await expect(confirm).toBeVisible();
+  await expectContentClearsBorder(dialog);
   if (process.env.MC_E2E_EVIDENCE === "1") {
+    await confirm.hover();
+    await dashboard.mouse.move(0, 0);
+    await expect(dashboard.locator(".tooltip")).toHaveCount(0);
     mkdirSync(CLOSE_WARNING_EVIDENCE, { recursive: true });
     await dialog.screenshot({
       path: join(CLOSE_WARNING_EVIDENCE, "confirm-close-without-report.png"),
@@ -291,10 +297,10 @@ test("a scout without a report warns first, then closes only after confirmation"
   await expect(dialog).toBeHidden();
   await complete.click();
   await expect(dialog).toBeVisible();
-  await expect(dialog).not.toContainText("No scout report will be archived.");
+  await expect(dialog).not.toContainText("No submitted scout report is ready to archive.");
   await expect(dialog.getByRole("button", { name: "Close without report" })).toHaveCount(0);
   await dialog.getByRole("button", { name: "Complete & close" }).click();
-  await expect(dialog).toContainText("No scout report will be archived.");
+  await expect(dialog).toContainText("No submitted scout report is ready to archive.");
   const reopenedConfirm = dialog.getByRole("button", { name: "Close without report" });
   await expect(reopenedConfirm).toBeVisible();
 
@@ -314,7 +320,19 @@ test("a scout without a report warns first, then closes only after confirmation"
       return ((await res.json()) as FleetSession[]).length;
     }, { timeout: 20_000, message: "the confirmed close should finish stopping the scout" })
     .toBe(0);
-  expect(await archives(daemon), "confirmed completion still publishes no fake report").toHaveLength(0);
+  // NO_SUBMIT wrote a real report. Checkout return must preserve it through the archive
+  // cleanup guard, even though normal completion refused the missing submission. Session
+  // removal precedes that asynchronous capture/indexing, so an immediate zero-count read
+  // sometimes passed before the very recovery this fixture requires had finished.
+  await expect.poll(() => archives(daemon).then((rows) => rows.length), {
+    timeout: 30_000, message: "cleanup should preserve the existing unsubmitted report",
+  }).toBe(1);
+  const [recovered] = await archives(daemon);
+  expect(recovered).toMatchObject({
+    status: "ready", captureStatus: "complete", hasPrimaryReport: true, artifactCount: 2,
+  });
+  expect(await archives(daemon, `?q=${encodeURIComponent(FINDING)}`),
+    "the recovery contains the written report, not an invented conversation summary").toHaveLength(1);
 });
 
 test("a report the daemon refuses is reported to the scout and archives nothing", async ({

@@ -167,6 +167,9 @@ export function startGoalRefiner(registry: Registry): () => void {
         // property - a third timer would be a third place to get that property wrong.
         const launches = registry.pruneLaunchTurns(now - GOAL_PRUNE_AGE_MS);
         if (launches > 0) console.log(`[goal] pruned ${launches} orphaned launch marker(s)`);
+        // And delegated-turn senders, one row per message a controller sent a conversation.
+        const delegated = registry.pruneDelegatedTurns(now - GOAL_PRUNE_AGE_MS);
+        if (delegated > 0) console.log(`[goal] pruned ${delegated} orphaned delegated-turn sender(s)`);
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same
         // tick, same window, same live-key safety property.

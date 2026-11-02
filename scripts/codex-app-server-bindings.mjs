@@ -52,6 +52,8 @@ const ROOTS = [
   "v2/TurnSteerResponse",
   "v2/TurnInterruptParams",
   "v2/TurnInterruptResponse",
+  "v2/ThreadCompactStartParams",
+  "v2/ThreadCompactStartResponse",
   "v2/ThreadStartedNotification",
   "v2/ThreadStatusChangedNotification",
   "v2/TurnStartedNotification",

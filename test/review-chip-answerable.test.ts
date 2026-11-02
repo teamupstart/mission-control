@@ -25,6 +25,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+const topbar = readFileSync(
+  fileURLToPath(new URL("../src/web/components/Topbar.tsx", import.meta.url)),
+  "utf8",
+);
 
 test("the inbox's review input is pending reviews narrowed to sessions that still exist", () => {
   const start = app.indexOf("const answerableReviews");
@@ -52,14 +56,23 @@ test("the fold is handed that one list, and the count and the click are both the
   // The segment now lives inside `FleetPulse` and takes ONE `inbox` prop, so the four readings
   // that used to be spelled out side by side (gate, plural, sentence, figure) cannot drift from
   // each other by construction.
-  const handoff = app.slice(app.indexOf("<FleetPulse"));
+  // Two hops since the bar became its own component: `App` hands `Topbar` the fold's total,
+  // and `Topbar` hands it to the pulse untouched. Both are pinned, so neither hop can swap in
+  // a second count.
+  const handoff = app.slice(app.indexOf("<Topbar"));
   assert.match(
     handoff.slice(0, handoff.indexOf("/>")),
     /inbox=\{attention\.total\}/,
-    "the pulse must be handed the fold's own total, not a second count of anything",
+    "the bar must be handed the fold's own total, not a second count of anything",
+  );
+  const relay = topbar.slice(topbar.indexOf("<FleetPulse"));
+  assert.match(
+    relay.slice(0, relay.indexOf("/>")),
+    /inbox=\{props\.inbox\}/,
+    "the pulse must be handed the bar's own total, untouched",
   );
 
-  const pulse = app.slice(app.indexOf("function FleetPulse"));
+  const pulse = topbar.slice(topbar.indexOf("function FleetPulse"));
   const chip = pulse.slice(pulse.indexOf("{inbox > 0 &&"), pulse.indexOf("</div>\n  );"));
   assert.notEqual(chip.length, 0, "the segment no longer gates on the fold's total");
 

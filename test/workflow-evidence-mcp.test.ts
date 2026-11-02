@@ -114,3 +114,29 @@ test("the confirmation counts what this call registered, not what the tray holds
     "Registered 0 image(s), 1 text artifact(s), and 1 coverage claim(s) at generation 9.",
   );
 });
+
+
+for (const input of [
+  { coverage: [{ ...coverage[0]!, criterionId: "canonical-1" }] },
+  { coverage: [{ ...coverage[0]!, supersedes: ["old-claim"] }] },
+  { withdrawClientCriterionIds: ["old-claim"] },
+]) test(`coverage mutation refuses a daemon that could silently strip ${Object.keys(input)[0]}`, async () => {
+  const fake = requester(true); // Supports the older coverage capability only.
+  const result = await submitWorkflowEvidenceToDaemon(input, identity, fake.request);
+  assert.equal(result.isError, true);
+  assert.deepEqual(fake.calls.map(call => call.path), ["/api/health"]);
+});
+
+test("coverage mutations reach a capable daemon intact", async () => {
+  const input = { withdrawClientCriterionIds: ["old"], coverage: [{ ...coverage[0]!, criterionId: "c1", supersedes: ["older"] }] };
+  let posted: unknown;
+  const result = await submitWorkflowEvidenceToDaemon(input, identity, async (path, _method, body) => {
+    if (path === "/api/health") return Response.json({ service: "mission-control", capabilities: ["workflow-coverage-mutations-v1"] });
+    posted = body;
+    return Response.json({ generation: 2 });
+  });
+  assert.equal(result.isError, false);
+  assert.deepEqual(posted, { ...identity, images: [], artifacts: [], commandOutputs: [], ...input });
+  assert.match(result.text, /Requested withdrawal of 1 id\(s\); unknown ids are ignored/);
+  assert.doesNotMatch(result.text, /Withdrew/);
+});

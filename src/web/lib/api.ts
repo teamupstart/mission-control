@@ -1826,8 +1826,9 @@ export const api = {
     action: "approve" | "reject" | "answer" | "dismiss",
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
+    approveFutureBundles = false,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**

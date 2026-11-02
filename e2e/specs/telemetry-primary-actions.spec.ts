@@ -3,6 +3,7 @@ import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("telemetry-primary-actions");
@@ -107,6 +108,10 @@ test("development remounts do not repeat entry and a copied report records compl
   const dev = await startDevDashboard(daemon);
   try {
     await dashboard.goto(`${dev.origin}/#/settings/telemetry`);
+    // The diagnostic entry imports the app asynchronously. A cold Vite transform in CI
+    // can outlive the ordinary assertion budget; wait for the mounted app's SSE snapshot
+    // before measuring telemetry behavior, just as the other startup scenarios do.
+    await expectDashboardReady(dashboard, { timeout: 90_000 });
     await expect(dashboard.getByLabel("Collect Mission Control telemetry on this machine")).toBeChecked();
     await expect.poll(() => captured(daemon, "mission.feature.entry").filter((e) => e.facts.feature === "settings" && e.facts.action === "enter").length).toBe(1);
     // A settings status event causes a render, not another visit.
@@ -142,7 +147,10 @@ test("development remounts do not repeat entry and a copied report records compl
     await expect.poll(() => readerEntries().length).toBe(2);
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({ path: `${EVIDENCE}reader-reentered.png`, animations: "disabled" });
-  } finally { dev.stop(); }
+  } finally {
+    await dashboard.goto("about:blank");
+    dev.stop();
+  }
 });
 
 

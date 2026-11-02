@@ -44,6 +44,7 @@ const {
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  evaluateWorkflowEvidenceReadiness,
   workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
 const {
@@ -59,6 +60,7 @@ const {
 } = await import("../src/server/workflows/images.ts");
 const { withEvidenceItem } = await import("../src/server/workflows/evidence-error.ts");
 const { parsePersonaVerdict } = await import("../src/server/workflows/verdict.ts");
+const { reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
 
 openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -870,6 +872,194 @@ test("secure agent staging accepts only contained gitignored raster files", asyn
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+test("canonical citations explain when no active workflow run receives the claim", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-citation-run-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "no-citation-run-note";
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [],
+      coverage: [{ clientCriterionId: "claim", criterionId: "criterion-from-another-run", criterion: "The result works",
+        proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const, links: [] }] };
+    for (const bound of [false, true]) {
+      if (bound) store.insertBinding({ id: "no-citation-run-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+        noteKey, sessionId: "no-citation-run-session", sessionAgent: "codex", sessionName: "No run yet",
+        sessionCwd: root, sessionRepoRoot: root, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+      const before = store.listWorkflowEvidence(noteKey);
+      await assert.rejects(stageAgentWorkflowEvidence(input), (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "unknown_criterion_id");
+        assert.match(error.message, /No active workflow run receives repository scope repo-01/);
+        assert.match(error.message, /omit criterionId until a repair message names the criteria/);
+        return true;
+      });
+      assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("canonical citations must belong to every run receiving the claim's repository scope", async () => {
+  const primary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-primary-")));
+  const secondary = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-secondary-")));
+  const unbound = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-unbound-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "citation-scope-note";
+    const runs = [primary, secondary].map((root, index) => {
+      const binding = store.insertBinding({
+        id: `citation-binding-${index}`, workflowVersionId: IMAGE_WORKFLOW_VERSION_ID, noteKey,
+        sessionId: "citation-session", sessionAgent: "codex", sessionName: "citations",
+        sessionCwd: primary, sessionRepoRoot: primary, ...(index === 1 ? { repoRoot: root } : {}),
+        triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1,
+      });
+      const canonicalCriteria = [
+        { id: `criterion-repo-${index + 1}`, text: `Repository ${index + 1} works`, material: true, suggestedProofClass: null },
+        { id: "criterion-shared", text: "Both repositories work", material: true, suggestedProofClass: null },
+      ];
+      const snapshot = { ...context(), canonicalCriteria };
+      const created = store.createInitialSubmission(
+        { id: `citation-run-${index}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `citation-source-${index}`, now: 2 },
+        { id: `citation-source-${index}`, triggerSource: "manual", triggerKey: `citation-source-${index}`,
+          context: workflowJson(snapshot), evidence: {}, now: 2 });
+      if (index === 0) store.freezeRunCriteria(created.run.id, {
+        intentFingerprint: created.run.intent!.fingerprint, constraints: [], acceptanceCriteria: [], canonicalCriteria,
+        compaction: { status: "model", runner: "codex", model: "fake", error: null },
+        compactedFromSubmissionId: created.submission.id, compactedAt: 2,
+      });
+      // The sibling uses the legacy latest-context fallback, while the primary has frozen criteria.
+      return { ...created, canonicalCriteria };
+    });
+    const input = { store, noteKey, task: taskAt(primary, [secondary, unbound]), fallbackRoot: primary, images: [] };
+    const proof = { kind: "command" as const, clientItemId: "scope-proof", command: "check both repositories",
+      exitCode: 0, output: "passed", caption: "Shared execution proof", repositoryScope: "all" as const };
+    const claim = { clientCriterionId: "wrong-run", criterion: "A criterion owned by another run",
+      proofClass: "focused_execution" as const, links: [{ clientItemId: proof.clientItemId, role: "execution" as const }] };
+    const before = store.listWorkflowEvidence(noteKey);
+    for (const [repositoryScope, criterionId] of [
+      ["repo-01", "criterion-repo-2"],
+      ["repo-02", "criterion-repo-1"],
+      ["repo-03", "criterion-repo-1"],
+      ["all", "criterion-repo-1"],
+    ] as const) {
+      await assert.rejects(stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof],
+        coverage: [{ ...claim, repositoryScope, criterionId }] }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "unknown_criterion_id");
+        if (repositoryScope === "repo-03") assert.match(error.message, /No active workflow run receives repository scope repo-03/);
+        else assert.match(error.message, /cites unknown criterionId/);
+        return true;
+      },
+      `${repositoryScope} cannot borrow ${criterionId} from a different receiving run`);
+      assert.deepEqual(store.listWorkflowEvidence(noteKey), before, "refusal stages neither proof nor claims and does not advance the generation");
+    }
+    await stageAgentWorkflowEvidence({ ...input, commandOutputs: [proof], coverage: [
+      { ...claim, clientCriterionId: "primary", repositoryScope: "repo-01", criterionId: "criterion-repo-1" },
+      { ...claim, clientCriterionId: "secondary", repositoryScope: "repo-02", criterionId: "criterion-repo-2" },
+      { ...claim, clientCriterionId: "shared", repositoryScope: "all", criterionId: "criterion-shared" },
+    ] });
+    for (const [index, source] of runs.entries()) {
+      const child = store.createRepairSubmission({ id: `citation-repair-${index}`, runId: source.run.id, round: 2,
+        triggerSource: "manual", triggerKey: `citation-repair-${index}`, evidenceGroupKey: "citation-shared-capture",
+        context: {}, evidence: {}, now: 3 });
+      await captureSubmissionTextArtifacts(store, child.submission.id, 3);
+      const coverage = store.listSubmissionCoverage(child.submission.id);
+      assert.deepEqual(coverage.map(c => c.clientCriterionId).sort(), [index === 0 ? "primary" : "secondary", "shared"]);
+      const readiness = evaluateWorkflowEvidenceReadiness({ canonicalCriteria: source.canonicalCriteria, coverage,
+        criterionMappings: reconcileWorkflowCriterionMappings(source.canonicalCriteria, coverage),
+        evidence: store.submissionFrozenEvidenceIdentities(child.submission.id) });
+      assert.equal(readiness.status, "ready", "each receiving run freezes only citations valid for its own criteria");
+    }
+  } finally {
+    rmSync(primary, { recursive: true, force: true });
+    rmSync(secondary, { recursive: true, force: true });
+    rmSync(unbound, { recursive: true, force: true });
+  }
+});
+
+test("citation validation recognises symlinked binding roots and pending canonical criteria", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-citation-alias-")));
+  const alias = `${root}-alias`;
+  try {
+    symlinkSync(root, alias, "dir");
+    const store = new WorkflowStore();
+    const noteKey = "citation-alias-note";
+    const binding = store.insertBinding({ id: "citation-alias-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey, sessionId: "citation-alias-session", sessionAgent: "codex", sessionName: "Alias",
+      sessionCwd: alias, sessionRepoRoot: alias, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+    const created = store.createInitialSubmission(
+      { id: "citation-alias-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "citation-alias-first", now: 2 },
+      { id: "citation-alias-first", triggerSource: "manual", triggerKey: "citation-alias-first", context: {}, evidence: {}, now: 2 });
+    const claim = { clientCriterionId: "claim", criterionId: "canonical-alias", criterion: "The result works",
+      proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const, links: [] };
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [], coverage: [claim] };
+    const before = store.listWorkflowEvidence(noteKey);
+    await assert.rejects(stageAgentWorkflowEvidence(input), (error: unknown) => {
+      assert.ok(error instanceof WorkflowImageEvidenceError);
+      assert.match(error.message, /Canonical criteria have not been captured/);
+      assert.match(error.message, /omit criterionId until a repair message names the criteria/);
+      return true;
+    });
+    assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    store.freezeRunCriteria(created.run.id, { intentFingerprint: created.run.intent!.fingerprint,
+      constraints: [], acceptanceCriteria: [], canonicalCriteria: [
+        { id: claim.criterionId, text: claim.criterion, material: true, suggestedProofClass: null },
+      ], compaction: { status: "model", runner: "codex", model: "fake", error: null },
+      compactedFromSubmissionId: created.submission.id, compactedAt: 3 });
+    const registered = await stageAgentWorkflowEvidence(input);
+    assert.equal(registered.coverage?.[0]?.criterionId, claim.criterionId);
+    assert.equal(store.workflowEvidenceGeneration(noteKey, alias), registered.generation);
+    const captured = store.createRepairSubmission({ id: "citation-alias-retry", runId: created.run.id, round: 2,
+      triggerSource: "manual", triggerKey: "citation-alias-retry", context: {}, evidence: {}, now: 4 });
+    assert.equal(captured.submission.stagedImageGeneration, registered.generation);
+    assert.equal(store.listSubmissionCoverage(captured.submission.id)[0]?.criterionId, claim.criterionId,
+      "the accepted scoped citation also freezes for the symlinked receiving binding");
+  } finally { rmSync(alias, { force: true }); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy canonical citations survive failed image captures with empty contexts", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-legacy-citation-")));
+  try {
+    const store = new WorkflowStore();
+    const noteKey = "legacy-citation-note";
+    const binding = store.insertBinding({ id: "legacy-citation-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey, sessionId: "legacy-citation-session", sessionAgent: "codex", sessionName: "legacy citations",
+      sessionCwd: root, sessionRepoRoot: root, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 1 });
+    const canonicalCriteria = [{ id: "canonical-legacy", text: "The result works", material: true, suggestedProofClass: null }];
+    const snapshot = { ...context(), canonicalCriteria };
+    const first = store.createInitialSubmission(
+      { id: "legacy-citation-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "legacy-first", now: 2 },
+      { id: "legacy-first", triggerSource: "manual", triggerKey: "legacy-first", context: workflowJson(snapshot), evidence: {}, now: 2 });
+    store.updateSubmissionCapture(first.submission.id, { context: workflowJson(snapshot), evidence: {},
+      fingerprint: "legacy-captured", repositoryFingerprint: "tree-1", status: "running" }, 2);
+    assert.equal(store.getRun(first.run.id)?.criteria, null, "legacy criteria exist only in the captured context");
+    for (const round of [2, 3]) {
+      const failed = store.createRepairSubmission({ id: `legacy-failed-${round}`, runId: first.run.id, round,
+        triggerSource: "manual", triggerKey: `legacy-failed-${round}`, context: {}, evidence: {}, now: round + 1 });
+      store.failEvidencePreparation({ submissionId: failed.submission.id, kind: "capture", automatic: false,
+        detail: { code: "image_changed", error: "Evidence image changed after it was staged" }, now: round + 1 });
+    }
+    const input = { store, noteKey, task: taskAt(root), fallbackRoot: root, images: [],
+      commandOutputs: [{ kind: "command" as const, clientItemId: "legacy-proof", command: "check result", exitCode: 0,
+        output: "passed", caption: "The result works", repositoryScope: "repo-01" as const }] };
+    const claim = { clientCriterionId: "legacy-claim", criterionId: "canonical-legacy", criterion: "The result works",
+      proofClass: "focused_execution" as const, repositoryScope: "repo-01" as const,
+      links: [{ clientItemId: "legacy-proof", role: "execution" as const }] };
+    const before = store.listWorkflowEvidence(noteKey);
+    await assert.rejects(stageAgentWorkflowEvidence({ ...input, coverage: [{ ...claim, criterionId: "unknown" }] }),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "unknown_criterion_id");
+    assert.deepEqual(store.listWorkflowEvidence(noteKey), before);
+    await stageAgentWorkflowEvidence({ ...input, coverage: [claim] });
+    const retry = store.createRepairSubmission({ id: "legacy-retry", runId: first.run.id, round: 4,
+      triggerSource: "manual", triggerKey: "legacy-retry", context: {}, evidence: {}, now: 5 });
+    await captureSubmissionTextArtifacts(store, retry.submission.id, 5);
+    const coverage = store.listSubmissionCoverage(retry.submission.id);
+    assert.equal(coverage[0]?.criterionId, "canonical-legacy");
+    assert.equal(evaluateWorkflowEvidenceReadiness({ canonicalCriteria, coverage,
+      criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage),
+      evidence: store.submissionFrozenEvidenceIdentities(retry.submission.id) }).status, "ready");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("reservation freezes immutable bytes, supports all-scope fan-out, and prunes through the cleanup ledger", async () => {

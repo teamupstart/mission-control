@@ -23,6 +23,9 @@ import { Tooltip } from "../Tooltip.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
+import { useDisplayItems } from "../../lib/board-card.ts";
+import { ResidentChip } from "../../residents/ResidentChip.tsx";
+import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -51,6 +54,7 @@ export function RailRow({
   pipelineCommission = null,
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
+  resident = null,
 }: {
   session: Session;
   /**
@@ -81,6 +85,8 @@ export function RailRow({
   pipelineCommission?: PipelineCommission | null;
   pipelineCommissionRun?: PipelineRun | null;
   onOpenPipelineCommission?: (commissionId: string) => void;
+  /** The resident this session is, or null. The same mark and gate the Board card reads. */
+  resident?: ResidentSessionMark | null;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -128,14 +134,22 @@ export function RailRow({
   // surfaces carry the figure itself (`CostChip`); `costIsNotable` is shared so all four
   // agree on where the line sits.
   if (costIsNotable(session.cost)) marks.push("≈$");
-  const description = `${session.name || "(unnamed)"} - ${st.label}`;
+  // The card's `residentMarker` item governs the rail's accent edge and chip too, the way
+  // `cardShortcut` governs both keycaps: one resident marker, drawn on both surfaces.
+  const residentMark = useDisplayItems()("residentMarker") ? resident : null;
+  const description = `${session.name || "(unnamed)"} - ${st.label}${
+    residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
+  }`;
   const descriptionId = useId();
 
   return (
     <>
       <button
         ref={setRef}
-        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}`}
+        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}${
+          residentMark ? " is-resident" : ""
+        }`}
+        style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
         aria-current={selected}
         aria-describedby={descriptionId}
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
@@ -146,7 +160,10 @@ export function RailRow({
       >
         <AgentDot agent={session.agent} />
         <Tooltip label={description}>
-          <span className="rail-name">{session.name || "(unnamed)"}</span>
+          <span className="rail-name">
+            {residentMark && <ResidentChip mark={residentMark} tooltip={false} />}
+            {session.name || "(unnamed)"}
+          </span>
         </Tooltip>
         <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
         {/* Two lines, never four: the state, then everything else on one line. Given a

@@ -13,6 +13,7 @@ export const WORKFLOW_ACTION_ROUTES = [
   ["POST", "/api/workflows/:id/unarchive", "workflow.unarchive"],
   ["POST", "/api/workflows/:id/delete", "workflow.delete"],
   ["POST", "/api/workflows/:id/publish", "workflow.publish"],
+  ["PUT", "/api/workflows/:id/round-limit", "workflow.round_limit"],
   ["POST", "/api/workflow-bindings", "workflow.bind"],
   ["PATCH", "/api/workflow-bindings/:id", "workflow.binding.edit"],
   ["DELETE", "/api/workflow-bindings/:id", "workflow.unbind"],

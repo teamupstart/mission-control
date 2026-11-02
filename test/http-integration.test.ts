@@ -126,6 +126,7 @@ test("/api/health surfaces the shared runtime identity + package version", async
     "criterion-mapped-workflow-evidence-v1",
     "daemon-executable-environment-v1",
     "multiple-scout-reports-v1",
+    "workflow-coverage-mutations-v1",
   ]);
 });
 

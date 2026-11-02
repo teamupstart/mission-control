@@ -3,9 +3,10 @@ import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { TranscriptStreamMsg } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import type { Registry } from "./registry.ts";
+import { noteKeyFor, type Registry } from "./registry.ts";
 import { sessionMessages, transcriptFor } from "./harness/index.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
+import type { DelegatedConversation } from "./delegated-turns.ts";
 import {
   bindLaunchTurnMessage,
   resolveLaunchMarker,
@@ -76,6 +77,11 @@ export function transcriptStreamHandler(registry: Registry) {
       const launch = (): LaunchTurnMarker | null => resolveLaunchMarker(registry, id);
       /** Anchor the marker to the turn a frame just identified, so later reads agree. */
       const anchor = (messageId: string): void => bindLaunchTurnMessage(registry, id, messageId);
+      /** The target conversation, per frame for the reason `launch` is. */
+      const conversation = (): DelegatedConversation | null => {
+        const current = id ? registry.getSession(id) : undefined;
+        return current ? { key: noteKeyFor(current), transcript: source } : null;
+      };
 
       let pos = 0;
       // `?from=<byte>` is a reader saying "I still have everything up to here, just tell
@@ -111,7 +117,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = resumed.pos;
           await send({
             type: "resume",
-            messages: attributeTranscript(id, resumed.messages, launch(), anchor),
+            messages: attributeTranscript(id, resumed.messages, launch(), anchor, conversation()),
             pos,
           });
         } else {
@@ -119,7 +125,7 @@ export function transcriptStreamHandler(registry: Registry) {
           pos = init.pos;
           await send({
             type: "init",
-            messages: attributeTranscript(id, init.messages, launch(), anchor),
+            messages: attributeTranscript(id, init.messages, launch(), anchor, conversation()),
             start: init.start,
             atStart: init.atStart,
             pos,
@@ -140,7 +146,7 @@ export function transcriptStreamHandler(registry: Registry) {
           const { messages, pos: next } = read.appended(path, pos);
           pos = next;
           if (messages.length > 0) {
-            await send({ type: "append", messages: attributeTranscript(id, messages, launch(), anchor), pos });
+            await send({ type: "append", messages: attributeTranscript(id, messages, launch(), anchor, conversation()), pos });
             sinceHeartbeat = 0;
             continue;
           }

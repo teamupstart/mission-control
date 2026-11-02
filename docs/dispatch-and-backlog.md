@@ -305,6 +305,13 @@ that the agent has answered, but it does not offer or send an automatic completi
 session stays live for later turns until you choose **Complete**. If you explicitly select a
 Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
+**resident** is not a choice in the Kind picker. A resident task is launched only from a
+[resident profile](residents.md), through **Dispatch > Resident**, and every other creation path -
+Single agent Dispatch, MCP `create_task`, a Recurring Mission, a task source, the backlog editors -
+refuses it. It always runs in the Agent SDK with its profile's harness, model and effort, receives
+its Persona and instructions as standing instructions, and, like chat, ends only when you choose
+**Complete & close**.
+
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write self-contained static reports at `docs/reports/<slug>/report.html`, one
 directory per report, and submit them. Normal completion requires at least one complete report
@@ -323,9 +330,14 @@ checkout files. See [managed plans](managed-plans.md#tools-and-storage) for the 
 and managed tools.
 
 In either mode, ask for the review - and for every open choice in it - through
-`request_plan_decisions` rather than in prose, and end that review with the phased
+`request_plan_decisions` rather than in prose, and end the root plan's first review with the phased
 implementation follow-up. Choose it and the phases are added to the same bundle and scheduled
 as dependency-linked backlog tasks gated by the saved plan's publication policy.
+The follow-up is required even when the plan has no other open choices, with an option to stop
+after the plan. Only selecting phasing authorizes the Phased Plan skill to break up and schedule
+the plan; declining or dismissing does not. Later repair and re-approval reviews retain the
+submitted choice without repeating the offer. Derived phases do not repeat it either.
+Plan completion checks include this requirement in both storage modes.
 
 The contract **points at** that skill rather than restating it, which is the one place plan
 differs from scout in kind and not just in wording. A scout's contract repeats its skill,
@@ -471,8 +483,10 @@ until you enable or manually launch it. **Dispatch now** still launches immediat
 Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
-The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog. It is offered only on a new dispatch: editing a backlog task and the See the
+The **Single agent / Ensemble / Resident** toggle sits in the modal header, since it reshapes the
+whole dialog. **Resident** replaces the brief with profile cards, an optional repository, optional
+instructions for this run, a read-only summary of what the launch carries, and **Edit profile**;
+see [Residents](residents.md#launching-a-resident). It is offered only on a new dispatch: editing a backlog task and the See the
 work tour's dispatch preview show neither it nor the **Guided** switch, because neither form
 can become another kind of dispatch. Chat calls the fold **Task details** and omits dependencies because they would
 turn an immediate conversation into backlog work.

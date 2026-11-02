@@ -5,6 +5,7 @@ import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { decisionLead } from "@shared/review-item.ts";
+import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
@@ -19,6 +20,7 @@ import {
 } from "../lib/foreman-review.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
+import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -92,13 +94,21 @@ export function ReviewCard({
   review: ReviewItem;
   note?: SessionNoteSummary | null;
 }): React.JSX.Element {
-  const [note, setNote] = useState("");
-  const [answer, setAnswer] = useState("");
+  // Everything typed or picked lives in the review-draft map, not in this mount, so closing
+  // the modal, folding the inbox or reloading the page brings it back on the next open.
+  const [draft, updateDraft] = useReviewDraft(review.id);
+  const { note, answer, approveFuture } = draft;
+  const setNote = (next: string) => updateDraft((d) => ({ ...d, note: next }));
+  const setAnswer = (next: string) => updateDraft((d) => ({ ...d, answer: next }));
+  const setApproveFuture = (next: boolean) => updateDraft((d) => ({ ...d, approveFuture: next }));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
+  const finalBundle = review.standingApprovalEligible === true
+    && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
   const foremanNote = foremanNoteForReview(review, sessionNote);
   const recommendationChoices: RecommendationChoice[] =
     decisions?.flatMap((decision) =>
@@ -131,9 +141,18 @@ export function ReviewCard({
   ) {
     setBusy(true);
     setErr(null);
-    const r = await api.resolveReview(review.id, action, response, selections);
+    const r = await api.resolveReview(
+      review.id,
+      action,
+      response,
+      selections,
+      // Granted only alongside an approval of this bundle, never with "Needs revision".
+      action === "answer" && finalBundle && approveFuture && approvesFinalBundle(selections),
+    );
     setBusy(false);
     if (!r.ok) setErr(r.error ?? "failed");
+    // Delivered: the draft has nothing left to come back for. A failed resolve keeps it.
+    else clearReviewDraft(review.id);
   }
 
   const dismissButton = (
@@ -203,12 +222,35 @@ export function ReviewCard({
           busy={busy}
           lead={decisionLead(review.kind)}
           hideQuestions={review.kind === "input"}
+          // Only `request_plan_decisions` returns the formatted answer to the agent for every
+          // form it draws. An option-carrying `input` also serves the product-issue
+          // confirmation, which acts on the selection alone and would drop a note.
+          allowNote={review.kind === "plan-decisions"}
           // Review ids are unique, and every pending review of a session - or, in the
           // attention inbox, of the WHOLE FLEET - is drawn into one document. Without
           // `namePrefix` two option-carrying `input` reviews share a radio group and answering
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
+          answers={draft.decisions}
+          onAnswersChange={(change) =>
+            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
+          }
+          besideSubmit={
+            finalBundle && (
+              <label className="decisions-standing-approval">
+                <Tooltip label="When you approve this bundle, also approve every later bundle for this task without asking; each is logged in this session">
+                  <input
+                    type="checkbox"
+                    checked={approveFuture}
+                    disabled={busy}
+                    onChange={(e) => setApproveFuture(e.target.checked)}
+                  />
+                </Tooltip>
+                <span>Approve all future bundles for this task</span>
+              </label>
+            )
+          }
           onDismiss={() => void resolve("dismiss", null)}
           onSubmit={(response, selections) => void resolve("answer", response, selections)}
         />

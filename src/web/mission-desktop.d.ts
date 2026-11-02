@@ -4,7 +4,7 @@
 
 import type { UpdateSnapshot } from "@shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "@shared/update-dialog.ts";
-import type { SessionControlAuthorization } from "@shared/session-control-authorization.ts";
+import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "@shared/session-control-authorization.ts";
 
 export {};
 
@@ -23,6 +23,12 @@ declare global {
     claimProductIssueAuthorization?(): string | null;
     claimSessionControlAuthorization?(): string | null;
     authorizeSessionControl?(capability: string, input: SessionControlAuthorization): boolean;
+    /**
+     * Arm one resident launch - request, profile and revision - for the session-control grant,
+     * only inside a trusted Launch click and only for the module holding the session-control
+     * capability. Optional for an older preload beside a newer dashboard.
+     */
+    authorizeResidentLaunch?(capability: string, input: ResidentLaunchAuthorization): boolean;
     /** Arm one exact report only for the module that claimed the private capability. */
     authorizeProductIssue?(
       capability: string,

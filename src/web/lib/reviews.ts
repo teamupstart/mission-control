@@ -90,6 +90,8 @@ export function answeredDecisions(
  * that called both "you reviewed" would leave the reader unable to tell which.
  */
 export function reviewAnswerVerb(review: ReviewItem): string {
+  // Never in the human's voice: nobody was asked. Their earlier standing approval answered.
+  if (review.resolvedBy === "standing-approval") return "auto-approved (all future bundles for this task)";
   const who = review.resolvedBy?.startsWith("session:") ? `session ${review.resolvedBy.slice(8)}` : "you";
   switch (review.status) {
     case "approved":

@@ -77,9 +77,9 @@ has no private utility-process channel, so preflight reports that the report mus
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
 The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_feedback` previews and publishes automatically through MCP. It
-does not request a second dashboard approval. The compatibility tool `report_product_issue`
-still waits for a human-submitted `input` review. Neither preview mints a dashboard grant.
+user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+review before it publishes. There is no MCP path that publishes without that review. The preview
+does not mint a dashboard grant.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside
@@ -142,8 +142,12 @@ takes its contents wherever it goes. Deletion is explicit and local.
 
 The per-session **Control other sessions** grant is opt-in and held by the Registry for the
 current daemon run. Its identity includes the process, native conversation id, working
-directory, work episode and task. Neither dispatch defaults nor a session-control tool can
-create a grant. Resetting or replacing that identity revokes it.
+directory, work episode and task. Exactly two things create a grant, and both are a trusted
+click in the desktop dashboard: the session's own control menu, and the **Launch** click for a
+resident profile whose pinned revision turns **Control other sessions** on (see
+[Resident launch grants](#resident-launch-grants)). Dispatch defaults, a launch from any other
+surface and session-control tools cannot create one. Resetting or replacing that identity
+revokes it.
 
 The MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
@@ -168,6 +172,44 @@ The standalone browser dashboard cannot change this setting. A desktop app that 
 an independently launched daemon also refuses changes, because it has no private channel
 to that daemon. Stop the standalone daemon and reopen the app to use the menu.
 
+### Resident launch grants
+
+A resident profile's **Control other sessions** setting is off by default and grants nothing on
+its own. It lets one thing give a resident run the grant above: the operator's **Launch** click
+in the desktop app.
+
+- **The click.** Inside the click, before the launch request is sent, the dashboard arms a
+  single-use authorization bound to that launch's request id, the profile id and the profile
+  revision. It uses the same private preload capability and trusted-click check as the session
+  menu, through its own channel registered with `serveDashboardClick`. It expires after 15
+  seconds and is cleared when the daemon is replaced.
+- **The consumption.** Only the resident launch route asks the shell for it, over the private
+  utility-process channel. It asks once, for the request that reserved the run, when the run's
+  pinned revision turns control on, and for the revision the run pinned. A request carrying the
+  machine token, a signed agent credential, an agent actor header or a non-loopback origin never
+  consumes a click. A replay is answered from the run row and asks for nothing.
+- **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
+  then applies the existing Registry grant to the run's session once that session has a full
+  identity bound to the run's task, and records the conversation, working directory and work
+  episode it applied to before it writes the grant's audit event. If the grant cannot be
+  applied, or its identity cannot be recorded, the live grant is taken back and the run's record
+  is cleared, so the launch reports that it started without control. A launch that answers
+  before the session has a full identity reports the grant as not granted yet; if the daemon
+  restarts before it is applied, the consumed click is cleared and the run stays ungranted.
+- **After a restart.** This is the one grant that survives a daemon restart, and only for the
+  same conversation. After SDK restore it is applied again only when all four recorded fields are
+  set and the restored session's conversation, working directory, work episode and task all
+  match them. The process id is the only part of the identity a restart changes, and the only
+  part not compared. A clear, a new conversation, a changed working directory, a replacement work
+  episode or a launch on a new profile revision needs a new click. A grant that no longer matches
+  is forgotten, and runs from before these records existed stay ungranted.
+- **Revocation.** Turning control off from the session's menu revokes the grant and clears the
+  record, so a restart cannot restore it.
+
+A launch from the standalone browser, from a desktop app that adopted a standalone daemon, or
+from any caller other than that click starts without control. Dispatch, the Residents dock and
+the Console band say so, and the session's menu stays the only way to grant control afterwards.
+
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
 are available without the grant; cross-session access requires **Control other sessions** on
 the caller. The daemon checks binding session and conversation identity, filters ownership
@@ -182,3 +224,77 @@ which already has access to other local dashboard actions and operator-owned fil
 private click boundary specifically prevents local HTTP from self-granting this capability;
 it does not protect against OS-level UI automation or a compromised desktop process. Revocation
 refuses new requests; it does not undo an action already accepted by a runtime.
+
+## Resident MCP secrets
+
+A custom MCP server's secret values - environment variables and headers marked **Secret**, and
+every URL query value - are write-only. They are accepted on a save and never returned: every
+dashboard route answers with the field's name and whether it is set. They are kept apart from the
+definition, which lives in `app_config` (`residents.mcpServers`) and travels with settings
+snapshots, in the `resident_mcp_secrets` table, which no dashboard route, SSE frame, settings
+snapshot or log reads.
+
+The one exception is the scoped launcher's redemption route, `POST /api/residents/mcp/redeem`
+(below). It answers only a holder of a valid single-use ticket, and only with that ticket's one
+server's definition and values, read from the run's snapshot rather than from this table.
+
+A global server's configuration does not say which of its parts are credentials, so all of it is
+treated as private: the catalog the dashboard sees carries only its name, transport, command
+basename or URL origin, and the names of its environment variables and headers.
+
+At launch a run copies its servers' definitions and values once, into `resident_run_mcp_servers`
+and `resident_run_mcp_secrets`. Both are daemon-private like the secrets table, read again only by
+that run's starts, and removed when the run ends.
+
+**No secret on a command line, in a configuration file or in the agent's environment.** Each
+harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
+written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
+environment is inherited by every shell and tool it runs. So a global server, and a custom server
+with any secret, is rendered as an entry for Mission's scoped launcher, whose arguments name only
+the run, the server's name and a credential file:
+
+- For each process start the daemon writes one credential file per launcher entry in the run's
+  private directory: owner-only, created exclusively, holding a single-use ticket bound to that
+  run, that server and that start, which expires 30 seconds later. The daemon removes any file left
+  unredeemed once its ticket expires, and every such file at startup.
+- The launcher reads its file, removes it, and redeems the ticket over the loopback API
+  (`POST /api/residents/mcp/redeem`). The ticket is the whole credential and is spent on first
+  presentation, whatever the outcome. The answer is that one server's definition and values.
+- A stdio server is started with its values in its own environment only. For an HTTP server the
+  launcher is a stdio bridge that adds the headers and query values to every request itself,
+  an SSE server's message endpoint included, only to the configured origin: a redirect within it is
+  followed, one to another origin is refused.
+- Secret headers and query values travel only over `https`, or over plain `http` to this machine's
+  loopback. A custom server that would send them elsewhere in the clear is refused at save, a
+  global one is unavailable to residents, and the launcher refuses either before any request.
+- A missing, spent or expired ticket, or a run that has ended, starts nothing.
+
+Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
+`env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
+the agent itself inherits, so a global server that uses one is not available to residents: its
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
+authentication the harness holds (an OAuth login). Claude Code's configuration does not mark such a
+server, so it cannot connect through the launcher, and the start is refused, naming it. A custom server's argument in a credential
+form is refused when it is saved; detection is a guard rather than a proof, which is why the
+editor says arguments are stored and backed up as written.
+
+**A value belongs to its connection.** An edit that changes a custom server's command, arguments,
+URL, or a plain environment variable or header refuses to keep a secret left blank, naming each
+one to enter again, so a value never reaches a destination it was not entered for.
+
+**Backups.** Settings snapshots carry custom server definitions without their values. Restoring
+one keeps a value only when it was set before the snapshot was taken and the restore leaves its
+server's connection unchanged; every other value is cleared in the same transaction, so a later
+value is never passed off as the snapshot's and no value reaches a connection it was not entered
+for. A full-database recovery point is scrubbed of both secret tables before it is published, and every
+global server's definition in a run snapshot is redacted in place, with the freed pages
+overwritten. A restored database shows those secrets as not set, and a restored run whose snapshot
+lost a secret or a definition refuses to start that server rather than start it without it.
+
+This boundary is what the agent is handed - its environment, arguments, configuration and
+transcript - and it was measured on real Claude Code and Codex installations
+(`scripts/probe-resident-mcp.ts`). The date, harness versions, result and retained output, and
+what that measurement does not cover, are in
+[resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation). A credential file's path is metadata, not a secret. Mission
+Control does not claim an operating-system sandbox against a process running as the same user as
+the daemon, which could read an owner-only file before the launcher does.

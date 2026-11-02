@@ -52,6 +52,9 @@ export const PLAN_PHASED_SKILL_ID = "phased-plan";
 /** Both, in the order they are needed - which is the order a refusal reports them in. */
 export const PLAN_SKILL_IDS = [PLAN_HTML_SKILL_ID, PLAN_PHASED_SKILL_ID] as const;
 
+const PHASED_FOLLOW_UP = `Always offer the phased implementation follow-up once per root plan, on its first review, as the last selectable decision in \`${PLAN_DECISIONS_TOOL}\`, even when there are no other open choices. Let the human choose to break up and schedule the plan or stop after the plan. Later repair and re-approval reviews retain the submitted choice without repeating the offer.`;
+const PHASED_SELECTION = "Only invoke phased-plan after the human selects it; a decline or dismissal does not authorize scheduling. Do not recursively offer it for derived phases.";
+
 /**
  * Whether this task's delivery carries the plan contract.
  *
@@ -90,10 +93,12 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
   if (storage === "local") {
     const contract = taskCompletionContract("plan", workflowBound, "local")!;
     return [PLAN_APPENDIX_MARKER,
-      "This is a local plan-only task. Do not implement the plan. Invoke the static planning skills:",
-      skills.htmlPlans, skills.phasedPlan,
+      "This is a local plan-only task. Do not implement the plan. Invoke the html-plans skill:",
+      skills.htmlPlans,
       "Call get_plan_context and save_plan with the complete Markdown and rendered HTML bundle. Local mode overrides the saved HTML-commit preference. Use read_plan for exact revisions and the returned scoped preview.",
       "Use request_plan_decisions for open choices. Bind final approval with managedPlan {repoSlot, planId, revision}; the human must explicitly approve the complete final bundle. If phasing or repair changes it, save and approve the new revision.",
+      PHASED_FOLLOW_UP, PHASED_SELECTION,
+      `When selected, invoke the phased-plan skill to write phases and schedule dependency-linked tasks. On this harness: ${skills.phasedPlan}`,
       "Schedule requested phases with create_task planInputs and planPrerequisites naming exact repoKey, planId, revision and Markdown files. Add only direct implementation task merge edges. Local artifact publication never releases those code edges.",
       "## Local plan completion handoff", ...contract.complete.map((item) => `- ${item}`),
       `Do not ${deferredImperativeList(contract)} for this local plan-only task.`,
@@ -118,8 +123,8 @@ export function planContractAppendix(skills: PlanSkillInvocations, workflowBound
     `3. Ask for the review, and for every open choice in it, with the \`${PLAN_DECISIONS_TOOL}\``,
     "   tool rather than in prose. It blocks until the human answers, which is what holds the",
     "   refinement open. A dismissal ends the work; it is never read back as a selection.",
-    "4. The last decision that tool is given is the phased implementation follow-up the skill",
-    `   specifies. When the human takes it, invoke the ${PLAN_PHASED_SKILL_ID} skill and let it write`,
+    `4. ${PHASED_FOLLOW_UP}`,
+    `   ${PHASED_SELECTION} When selected, invoke the ${PLAN_PHASED_SKILL_ID} skill and let it write`,
     `   the phases and schedule the tasks with \`${PLAN_SCHEDULING_TOOL}\`. On this harness:`,
     `   ${skills.phasedPlan}`,
     "",

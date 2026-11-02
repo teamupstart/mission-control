@@ -13,6 +13,7 @@ export const ACTION_EXCLUSIONS = [
   ["POST", "/ingest/conductor", "Provider notifications are reconciled at the normalized pipeline owner; ingest traffic is not a second action."],
   ["POST", "/v1/metrics", "Existing agent cost receiver; Phase 3 owns deduplicated usage."],
   ["POST", "/mcp/status", "Presence/status refresh, not intentional feature use."],
+  ["POST", "/api/residents/mcp/redeem", "A resident MCP launcher redeeming its single-use ticket at process start; the launch that issued it is the action, and the answer carries secrets that must not reach any record."],
   ["POST", "/api/sessions/:id/composer-activity", "High-frequency typing/liveness signal; explicitly excluded from activity telemetry."],
   ["POST", "/api/sessions/:id/send", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],
   ["POST", "/api/sessions/:id/select-option", "Phase 3 session/dispatch/task owner already records this outcome; add request surface only."],

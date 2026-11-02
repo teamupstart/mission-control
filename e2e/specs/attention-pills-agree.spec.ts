@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Locator, Page } from "@playwright/test";
 
@@ -80,42 +81,26 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
  * Post the hook a real Claude install posts when it parks on a permission prompt.
  *
  * Byte-for-byte the shape `hooks/harness-hook.mjs` forwards: the raw event's selected fields
- * plus the terminal env it captured. Bound to the session by `cwd`, which is
- * `findSessionByEnv`'s third resolution path and the only one available to a session the
- * daemon launched itself rather than discovered in a pane.
+ * plus the terminal env it captured. The SDK driver's native conversation identity
+ * attributes the hook to the owner; a shared cwd alone cannot authorize SDK hooks.
  *
  * The message deliberately avoids "waiting for your input" - `isIdleNudge` treats that exact
  * phrase as the periodic prompt-nudge and reports `idle`, which would make this spec assert
  * against a session that is not blocked at all.
  */
-async function parkOnPermissionPrompt(daemon: DaemonHandle, cwd: string): Promise<void> {
+async function parkOnPermissionPrompt(daemon: DaemonHandle): Promise<void> {
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const res = await fetch(`${daemon.baseURL}/hooks/Notification`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": token },
     body: JSON.stringify({
       agent: "claude",
-      cwd,
+      ...await dispatchedSdkHookIdentity(daemon),
       env: {},
       message: "Claude needs your permission to use Bash",
     }),
   });
   expect(res.status, "the daemon accepted the hook").toBe(204);
-}
-
-/**
- * The dispatched session's checkout, which is what binds the hook to it.
- *
- * Picked by runtime rather than by being the only row: this daemon's process discovery is
- * machine-wide, so on a developer box it also finds the operator's own running agents. Those
- * arrive as discovered TERMINAL sessions; the one dispatched here is the only `sdk` one.
- */
-async function dispatchedSessionCwd(daemon: DaemonHandle): Promise<string> {
-  const res = await fetch(`${daemon.baseURL}/api/sessions`);
-  const all = (await res.json()) as { id: string; cwd: string; runtime: string }[];
-  const dispatched = all.filter((s) => s.runtime === "sdk");
-  expect(dispatched.length, "exactly one SDK session was dispatched").toBe(1);
-  return dispatched[0]!.cwd;
 }
 
 /** A pulse segment's figure, or 0 when the segment is hidden because it is at zero. */
@@ -136,7 +121,7 @@ test("a session parked on a permission prompt is counted AND answerable", async 
   const beforeAmber = await pulseCount(dashboard, "need you");
   const beforeOwed = await pulseCount(dashboard, "to answer");
 
-  await parkOnPermissionPrompt(daemon, await dispatchedSessionCwd(daemon));
+  await parkOnPermissionPrompt(daemon);
 
   const needYou = dashboard.locator(".pulse-seg", { hasText: "need you" });
   const toAnswer = dashboard.locator("button.pulse-seg", { hasText: "to answer" });

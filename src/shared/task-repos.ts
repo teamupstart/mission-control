@@ -17,6 +17,7 @@
 // `taskRepoRefs` is the only enumeration in the codebase that returns both, and every
 // function here is built on it so nothing can iterate half a task by accident.
 
+import { taskHasRepository } from "./task.ts";
 import type {
   RepoPrFeedback,
   Task,
@@ -60,7 +61,7 @@ export interface TaskRepoRef {
 export type TaskRepoSource = Pick<
   Task,
   "repoRoot" | "worktreePath" | "branch" | "provider" | "worktreeLeaseId" | "baseSha"
-> & { extraRepos: readonly TaskRepoEntry[] };
+> & Pick<Task, "workspaceKind"> & Partial<Pick<Task, "kind">> & { extraRepos: readonly TaskRepoEntry[] };
 
 /**
  * Every repository this task is attached to, primary FIRST, then secondaries in position
@@ -74,6 +75,7 @@ export type TaskRepoSource = Pick<
  * identical to today's behavior for the tasks that are nearly all of them.
  */
 export function taskRepoRefs(task: TaskRepoSource): TaskRepoRef[] {
+  if (!taskHasRepository(task)) return [];
   return [
     {
       repoRoot: task.repoRoot,
@@ -136,7 +138,7 @@ export function taskHasWorktrees(task: TaskRepoSource): boolean {
 export function taskHoldsCleanupResources(
   task: TaskRepoSource & { homeName: string | null },
 ): boolean {
-  return taskHasWorktrees(task) || Boolean(task.homeName);
+  return taskHasRepository(task) && (taskHasWorktrees(task) || Boolean(task.homeName));
 }
 
 /**

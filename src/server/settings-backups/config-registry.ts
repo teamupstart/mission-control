@@ -100,7 +100,9 @@ export interface StagedSettingsConfigRestore {
 export function stageSettingsConfigRestore(
   staged: ReadonlyMap<SettingsBackupDomainId, unknown>,
 ): StagedSettingsConfigRestore[] {
-  return SETTINGS_CONFIG_BACKUP_ENTRIES.map((entry) => {
+  return SETTINGS_CONFIG_BACKUP_ENTRIES.filter((entry) =>
+    !entry.optionalInSnapshot || (entry.backupDomain !== null && staged.has(entry.backupDomain)),
+  ).map((entry) => {
     if (entry.backupDomain === null) throw new TypeError(`${entry.key} has no backup domain`);
     if (!staged.has(entry.backupDomain)) {
       throw new TypeError(`Snapshot is missing settings domain ${entry.backupDomain}`);

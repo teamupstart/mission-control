@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,6 +34,7 @@ test("repeated Clean up preserves a legacy cmux task's checkout when its home wa
   });
   await daemon.restart();
   await dashboard.reload();
+  await expectDashboardReady(dashboard);
   await dashboard.keyboard.press("Shift+P");
   const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });
   await expectContentClearsBorder(sitrep);

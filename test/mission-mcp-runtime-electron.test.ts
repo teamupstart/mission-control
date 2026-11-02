@@ -24,7 +24,7 @@ const require = createRequire(import.meta.url);
 
 test("the Electron binary runs the MCP runtime as Node, new enough for the bundle, in a pinned checkout", () => {
   const electron = require("electron") as string;
-  const runtime = resolveMissionMcpRuntime(electron);
+  const runtime = resolveMissionMcpRuntime(electron, "electron");
   assert.deepEqual(runtime.env, { ELECTRON_RUN_AS_NODE: "1" });
 
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as {

@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
+import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
 import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
@@ -14,7 +17,7 @@ import {
   type AppConfigInput,
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
-import { DB_PATH } from "./config.ts";
+import { DB_PATH, envVar } from "./config.ts";
 import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
@@ -174,7 +177,15 @@ let db: DatabaseSync | undefined;
 // 4: explicit final-completion worktree-return obligations, with no historical backfill.
 // 5: immutable managed plan bundles and recoverable checkout publication.
 // 6: pinned task plan inputs, local policy, final approval and artifact receipts.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 6;
+// 7: claim-version retirement identities and immutable retirement sequence boundaries.
+// 8: repository-specific retirement of shared coverage claim versions.
+// 9: retain staged claim versions still applicable to sibling repositories.
+// 10: repository-free resident task markers and durable workspace cleanup obligations.
+// 11: resident loop state, generation delivery claims and durable pacing receipts.
+// 12: bind resident wake attribution to its recorded conversation and native turn.
+// 13: retain a resident SDK session's measured native compaction limit across resumes.
+// 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -370,6 +381,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       external_id   TEXT,
       source_url    TEXT,
       repo_root     TEXT NOT NULL,
+      workspace_kind TEXT,
       -- Provider-owned lifecycle key for a pipeline task. repo_root is the third
       -- coordinate, so only provider and slug need their own nullable columns.
       pipeline_provider TEXT,
@@ -706,6 +718,48 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_session_launch_turns_age
       ON session_launch_turns(updated_at);
 
+    -- WHICH SESSION SENT A DELEGATED MESSAGE, one row per delivery.
+    --
+    -- A message one session sends another through session control lands in the target's
+    -- transcript as an ordinary user turn, so without this the target's log credits the
+    -- operator with it as soon as the in-memory label is gone. One row per DELIVERY rather
+    -- than per text, because two controllers can send identical words and each turn must
+    -- still name its own sender. transcript_offset is the target transcript's byte size
+    -- when the message was sent: the row binds to the first matching user turn written
+    -- after it, in rowid (reservation) order, and message_id is never re-pointed after.
+    CREATE TABLE IF NOT EXISTS session_delegated_turns (
+      id              TEXT PRIMARY KEY,
+      note_key        TEXT NOT NULL,   -- the TARGET's noteKeyFor(s)
+      fingerprint     TEXT NOT NULL,   -- injectionFingerprint of the delivered text
+      controller_id   TEXT NOT NULL,   -- the sending session's id
+      controller_name TEXT NOT NULL,   -- its name when it sent the message
+      delivered_at    INTEGER NOT NULL,
+      transcript_offset INTEGER,        -- target transcript size at send; NULL if none was located or its size was unreadable
+      contested       INTEGER NOT NULL DEFAULT 0, -- 1: another send of the same words raced it
+      message_id      TEXT,            -- native id of the bound turn, NULL until seen
+      message_ts      INTEGER          -- that turn's timestamp, for re-synthesized ids
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_delegated_turns_key
+      ON session_delegated_turns(note_key, fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_session_delegated_turns_age
+      ON session_delegated_turns(delivered_at);
+
+    -- NON-DELEGATED SENDS STILL IN THEIR RACE WINDOW, so a delegated message of the same words
+    -- is contested even after a restart. A pasted, unsubmitted draft is one: the operator's Enter
+    -- turns it into a message outside Mission Control, perhaps after the daemon has restarted.
+    -- No message text, only its fingerprint; rows expire after the 24-hour race window.
+    CREATE TABLE IF NOT EXISTS session_other_sends (
+      id                TEXT PRIMARY KEY,
+      note_key          TEXT NOT NULL,   -- the target's noteKeyFor(s)
+      fingerprint       TEXT NOT NULL,   -- injectionFingerprint of the sent text
+      sent_at           INTEGER NOT NULL,
+      transcript_offset INTEGER          -- target transcript size at send; NULL if unknown
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_key
+      ON session_other_sends(note_key);
+    CREATE INDEX IF NOT EXISTS idx_session_other_sends_age
+      ON session_other_sends(sent_at);
+
     -- WHAT STANDING INSTRUCTIONS THIS SESSION ACTUALLY RECEIVED, recorded at launch.
     --
     -- A session outlives the setting that launched it. Reading live configuration back to a
@@ -778,6 +832,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       review_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
       session_id TEXT NOT NULL, task_id TEXT, episode_id TEXT, manifest_hash TEXT NOT NULL,
       binding_id TEXT, workflow_version_id TEXT
+    );
+    -- One row per task whose operator ticked "approve all future bundles for this task".
+    -- review_id is the human answer that granted it, kept as provenance.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_approvals (
+      task_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, granted_at INTEGER NOT NULL
+    );
+    -- The remaining questions of a request whose final bundle a standing approval settled,
+    -- keyed to that approval so the agent's answer can say the bundle is already approved.
+    CREATE TABLE IF NOT EXISTS managed_plan_standing_follow_ups (
+      review_id TEXT PRIMARY KEY, approval_review_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS managed_plan_validations (
       submission_id TEXT NOT NULL, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -935,6 +999,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       slot                 TEXT PRIMARY KEY,
       default_command_json TEXT,
       max_runs             INTEGER NOT NULL DEFAULT 1,
+      timeout_ms           INTEGER,
+      on_unavailable       TEXT NOT NULL DEFAULT 'skip',
+      on_budget_exhausted  TEXT NOT NULL DEFAULT 'skip',
       revision             INTEGER NOT NULL DEFAULT 1,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL
@@ -954,6 +1021,19 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (slot, repo_root)
+    );
+
+    -- The operator's maximum repair rounds for one built-in workflow.
+    --
+    -- A built-in is not a row: its definition and versions ship with the build and stay
+    -- read-only. The round budget is the one setting an operator may change on one without
+    -- duplicating it, so it lives beside the catalog rather than in it, keyed by the
+    -- built-in's stable id. No row, or a NULL count, means the shipped value; a reset keeps
+    -- its row with a NULL count so the time of the reset still dates the definition.
+    CREATE TABLE IF NOT EXISTS workflow_builtin_round_limits (
+      workflow_id       TEXT PRIMARY KEY,
+      max_repair_rounds INTEGER,
+      updated_at        INTEGER NOT NULL
     );
 
     -- The complete workflow family is front-loaded in Phase 1 so published definitions,
@@ -1093,6 +1173,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       evidence_json        TEXT NOT NULL,
       readiness_json       TEXT,
       pr_head_sha          TEXT,
+      coderabbit_json      TEXT,
       status               TEXT NOT NULL,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
@@ -1170,12 +1251,21 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       reserved_group_key    TEXT,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
-      UNIQUE(note_key, client_criterion_id)
+      is_current            INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
       ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
       ON workflow_evidence_coverage_staging(reserved_group_key, state);
+
+    -- Conversation-owned retirement markers suppress ancestry without rewriting frozen history.
+    CREATE TABLE IF NOT EXISTS workflow_evidence_coverage_retirements (
+      note_key              TEXT NOT NULL,
+      client_criterion_id   TEXT NOT NULL,
+      generation            INTEGER NOT NULL,
+      source_roots_json     TEXT,
+      PRIMARY KEY(note_key, client_criterion_id, generation)
+    );
 
     CREATE TABLE IF NOT EXISTS workflow_evidence_reservations (
       staging_id            TEXT NOT NULL,
@@ -1312,6 +1402,44 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       ON workflow_node_attempts(submission_id, node_id, attempt);
     CREATE INDEX IF NOT EXISTS idx_workflow_node_attempts_state
       ON workflow_node_attempts(state, retry_at);
+
+    -- Attempt-owned retained Command bodies. Bodies live under the daemon state directory;
+    -- this table is the durable identity, integrity and lifecycle authority.
+    CREATE TABLE IF NOT EXISTS workflow_command_artifact_reservations (
+      attempt_id      TEXT PRIMARY KEY,
+      run_id          TEXT NOT NULL,
+      reserved_bytes  INTEGER NOT NULL,
+      retained_bytes  INTEGER NOT NULL DEFAULT 0,
+      state           TEXT NOT NULL,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifact_reservations_run
+      ON workflow_command_artifact_reservations(run_id, state);
+
+    CREATE TABLE IF NOT EXISTS workflow_command_artifacts (
+      id                 TEXT PRIMARY KEY,
+      run_id             TEXT NOT NULL,
+      submission_id      TEXT NOT NULL,
+      attempt_id         TEXT NOT NULL,
+      kind               TEXT NOT NULL,
+      retained_bytes     INTEGER NOT NULL,
+      observed_bytes     INTEGER NOT NULL,
+      dropped_bytes      INTEGER NOT NULL,
+      sha256             TEXT,
+      capture_state      TEXT NOT NULL,
+      availability       TEXT NOT NULL,
+      unavailable_reason TEXT,
+      storage_key        TEXT,
+      created_at         INTEGER NOT NULL,
+      finalized_at       INTEGER,
+      pruned_at          INTEGER,
+      UNIQUE(attempt_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_run
+      ON workflow_command_artifacts(run_id, availability, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_command_artifacts_attempt
+      ON workflow_command_artifacts(attempt_id, kind);
 
     CREATE TABLE IF NOT EXISTS workflow_edge_receipts (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1859,6 +1987,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- outlive the session that did (a PR is not done when its session exits).
     CREATE TABLE IF NOT EXISTS inspector_prs (
       key              TEXT PRIMARY KEY,  -- "owner/repo#123"
+      code_rabbit_state TEXT,
       url              TEXT NOT NULL,
       owner            TEXT NOT NULL,
       repo             TEXT NOT NULL,
@@ -1925,6 +2054,114 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- so it can serve no query that one cannot, and it costs a write per row.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
       ON inspector_comments(pr_key, fingerprint);
+
+    -- ---- resident profiles ----
+    --
+    -- A profile is a name over an immutable revision chain, like a recurring mission: the
+    -- body lives on the revision so a run can say exactly what it launched with. Created on
+    -- every open, so an upgrading database gains the three tables empty. No REFERENCES
+    -- clauses: these relate by convention, like every non-ensemble family.
+    CREATE TABLE IF NOT EXISTS resident_profiles (
+      id               TEXT PRIMARY KEY NOT NULL,
+      name             TEXT NOT NULL,
+      normalized_name  TEXT NOT NULL,
+      revision         INTEGER NOT NULL,  -- -> resident_profile_revisions.revision
+      archived_at      INTEGER,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    -- A name is unique among LIVE profiles only, so archiving one frees its name.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_profiles_live_name
+      ON resident_profiles(normalized_name) WHERE archived_at IS NULL;
+
+    -- Immutable. An edit inserts revision n+1 and repoints the profile; nothing here is
+    -- ever updated, because a live run reads only the revision it pinned.
+    CREATE TABLE IF NOT EXISTS resident_profile_revisions (
+      profile_id     TEXT NOT NULL,
+      revision       INTEGER NOT NULL,
+      settings_json  TEXT NOT NULL,
+      created_at     INTEGER NOT NULL,
+      PRIMARY KEY (profile_id, revision)
+    );
+
+    -- One row per launch: the resident's durable identity. The row is written BEFORE the
+    -- task, with the task id reserved, so a crash between the two leaves a pending run that
+    -- startup reconciliation settles from evidence rather than a task nothing owns.
+    --
+    -- launch_request_id is NOT NULL so its unique index is the idempotency key itself: two
+    -- requests with one id collide here and exactly one reservation wins. launch_input is
+    -- the normalized request as canonical JSON, so a replay is compared from this row alone.
+    -- launch_state is an append-only vocabulary (RESIDENT_LAUNCH_STATES).
+    CREATE TABLE IF NOT EXISTS resident_runs (
+      id                 TEXT PRIMARY KEY NOT NULL,
+      profile_id         TEXT NOT NULL,
+      profile_revision   INTEGER NOT NULL,
+      task_id            TEXT NOT NULL,
+      launch_request_id  TEXT NOT NULL,
+      launch_input       TEXT NOT NULL,
+      -- The repository exactly as the request spelled it, trimmed. Not compared while the
+      -- repository resolves (launch_input holds the real path); it is what lets an exact
+      -- replay be recognized once the repository no longer resolves.
+      launch_repo_spelling TEXT NOT NULL DEFAULT '',
+      workspace_dir      TEXT,
+      launch_state       TEXT NOT NULL,
+      launch_error       TEXT,
+      persona_snapshot   TEXT NOT NULL,
+      run_instructions   TEXT NOT NULL DEFAULT '',
+      created_at         INTEGER NOT NULL,
+      ended_at           INTEGER,
+      -- The session-control grant a desktop Launch click gave this run, all NULL when it has
+      -- none. control_authorized_at is when the daemon consumed the click; the other three
+      -- are the Registry grant's identity when it was applied. A restart re-applies the grant
+      -- only when all four are set and the restored session still matches them, so every run
+      -- from before these columns existed stays ungranted. Mirrored in migrate().
+      control_authorized_at   INTEGER,
+      control_conversation_id TEXT,
+      control_cwd             TEXT,
+      control_episode_id      TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_runs_request
+      ON resident_runs(launch_request_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_task ON resident_runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_resident_runs_open
+      ON resident_runs(launch_state) WHERE ended_at IS NULL;
+
+    -- ---- resident MCP servers ----
+    --
+    -- Custom server DEFINITIONS live in app_config (residents.mcpServers) and travel with
+    -- settings snapshots. Their SECRET VALUES live only here: written by a save, read only by
+    -- a launch's snapshot, never returned by a route, published, logged or captured by a
+    -- backup (WRITE_ONLY_SECRET_TABLES in database-backups/service.ts). Keyed by the
+    -- server's id and the field ("env:NAME", "header:Name", "query:name").
+    CREATE TABLE IF NOT EXISTS resident_mcp_secrets (
+      server_id   TEXT NOT NULL,
+      field       TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (server_id, field)
+    );
+
+    -- A run's MCP snapshot: its effective server set, resolved once at launch and read by
+    -- every start and resume, so no later edit to a profile, a custom server, a secret or the
+    -- harness's own configuration reaches a live run. Daemon-private like the secrets: a
+    -- global server's whole definition is here, because native configuration does not mark
+    -- which of its parts are credentials. Keyed by (source, name); removed when the run ends.
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_servers (
+      run_id           TEXT NOT NULL,
+      source           TEXT NOT NULL,  -- 'global' | 'custom'
+      name             TEXT NOT NULL,
+      position         INTEGER NOT NULL,
+      definition_json  TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, name)
+    );
+    CREATE TABLE IF NOT EXISTS resident_run_mcp_secrets (
+      run_id  TEXT NOT NULL,
+      source  TEXT NOT NULL,
+      server  TEXT NOT NULL,
+      field   TEXT NOT NULL,
+      value   TEXT NOT NULL,
+      PRIMARY KEY (run_id, source, server, field)
+    );
 
     -- ---- recurring missions ----
     --
@@ -3083,6 +3320,44 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "tasks", "workspace_kind", "TEXT");
+  addColumn(d, "resident_runs", "workspace_dir", "TEXT");
+  addColumn(d, "resident_runs", "launch_repo_spelling", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "resident_runs", "loop_state", "TEXT NOT NULL DEFAULT 'waiting'");
+  addColumn(d, "resident_runs", "iteration", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "resident_runs", "last_seq", "INTEGER NOT NULL DEFAULT 0");
+  for (const column of ["next_wake_at", "consumed_generation", "wake_request_delay_s", "wake_request_generation"]) {
+    addColumn(d, "resident_runs", column, "INTEGER");
+  }
+  for (const column of ["pause_reason", "wake_reason", "wake_request_reason"]) {
+    addColumn(d, "resident_runs", column, "TEXT");
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS resident_iterations (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+      trigger TEXT NOT NULL, delivery TEXT NOT NULL, transcript_offset INTEGER,
+      claimed_at INTEGER NOT NULL, sent_at INTEGER, PRIMARY KEY (run_id, seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_resident_iterations_window ON resident_iterations(run_id, claimed_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resident_iterations_claim ON resident_iterations(run_id) WHERE delivery = 'claimed';
+    CREATE TABLE IF NOT EXISTS resident_pacing_calls (
+      run_id TEXT NOT NULL REFERENCES resident_runs(id) ON DELETE CASCADE, call_id TEXT NOT NULL,
+      receipt TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY (run_id, call_id)
+    );
+  `);
+  addColumn(d, "resident_iterations", "conversation_key", "TEXT");
+  addColumn(d, "resident_iterations", "message_id", "TEXT");
+  addColumn(d, "resident_iterations", "message_ts", "INTEGER");
+
+  // Nullable with no default: a run launched before these existed reads as never granted.
+  addColumn(d, "resident_runs", "control_authorized_at", "INTEGER");
+  addColumn(d, "resident_runs", "control_conversation_id", "TEXT");
+  addColumn(d, "resident_runs", "control_cwd", "TEXT");
+  addColumn(d, "resident_runs", "control_episode_id", "TEXT");
+  // When the run's MCP snapshot was taken. NULL on a run launched before snapshots existed,
+  // which keeps the native MCP behaviour it launched with; set (even for an empty set) on
+  // every run since, which starts exactly its snapshot.
+  addColumn(d, "resident_runs", "mcp_snapshot_at", "INTEGER");
   addColumn(d, "pending_turns", "delivery_mode", "TEXT NOT NULL DEFAULT 'after-turn'");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -3130,6 +3405,7 @@ function migrate(d: DatabaseSync): void {
 
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
+  addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3199,6 +3475,9 @@ function migrate(d: DatabaseSync): void {
   // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
   // backfill because the default IS the migrated value for every existing slot.
   addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
+  addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
+  addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.
@@ -3251,6 +3530,7 @@ function migrate(d: DatabaseSync): void {
   // inventing a completion boundary, and generation zero means no staged set was observed.
   addColumn(d, "workflow_submissions", "evidence_group_key", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "workflow_submissions", "staged_image_generation", "INTEGER NOT NULL DEFAULT 0");
+  migrateCoverageRetirements(d);
   // The same capture hashed without its transcript anchor, so "has the work changed since the
   // round that asked for a fix?" stops being answered by the submission's identity. Nullable
   // with no default and no backfill on purpose: a row written before this column existed has
@@ -3294,6 +3574,44 @@ function migrate(d: DatabaseSync): void {
   // submission freezes and the mapping has to survive that copy.
   addColumn(d, "workflow_evidence_coverage_staging", "criterion_id", "TEXT");
   addColumn(d, "workflow_submission_evidence_coverage", "criterion_id", "TEXT");
+  // The caller id still identifies one mutable registration. Earlier versions can remain
+  // applicable to siblings when that registration narrows its scope before their capture.
+  // Replace the table's inline uniqueness constraint with a current-registration index.
+  if (!(d.prepare("PRAGMA table_info(workflow_evidence_coverage_staging)").all() as Array<{ name: string }>)
+    .some(column => column.name === "is_current")) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE workflow_evidence_coverage_staging_versioned (
+          id TEXT PRIMARY KEY, note_key TEXT NOT NULL, client_criterion_id TEXT NOT NULL,
+          criterion TEXT NOT NULL, criterion_id TEXT, proof_class TEXT NOT NULL,
+          repository_scope TEXT NOT NULL, source_root TEXT NOT NULL, links_json TEXT NOT NULL,
+          episode_key TEXT, generation INTEGER NOT NULL, state TEXT NOT NULL,
+          reserved_group_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          is_current INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO workflow_evidence_coverage_staging_versioned
+          SELECT id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+            repository_scope, source_root, links_json, episode_key, generation, state,
+            reserved_group_key, created_at, updated_at, 1
+          FROM workflow_evidence_coverage_staging;
+        DROP TABLE workflow_evidence_coverage_staging;
+        ALTER TABLE workflow_evidence_coverage_staging_versioned RENAME TO workflow_evidence_coverage_staging;
+      `);
+      d.exec("COMMIT;");
+    } catch (error) {
+      d.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+  d.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_coverage_current
+      ON workflow_evidence_coverage_staging(note_key, client_criterion_id) WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_owner
+      ON workflow_evidence_coverage_staging(note_key, state, generation, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_evidence_coverage_staging_reservation
+      ON workflow_evidence_coverage_staging(reserved_group_key, state);
+  `);
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -3338,6 +3656,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_submissions", "coderabbit_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 
   // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
@@ -3834,6 +4153,7 @@ function migrate(d: DatabaseSync): void {
   // No index. The table gains single-digit rows a day and nothing selects on the title;
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
+  addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -4194,6 +4514,46 @@ function backfillBacklogRank(d: DatabaseSync): void {
   `);
 }
 
+/** Keep retirement identities and their snapshot cutoffs atomic across interrupted upgrades. */
+function migrateCoverageRetirements(d: DatabaseSync): void {
+  d.exec("BEGIN IMMEDIATE;");
+  try {
+    const retirementBoundaryAdded = addColumn(d, "workflow_submissions", "coverage_retirement_sequence", "INTEGER NOT NULL DEFAULT 0");
+    const retirementSequenceAdded = addColumn(d, "workflow_evidence_coverage_retirements", "sequence", "INTEGER NOT NULL DEFAULT 0");
+    addColumn(d, "workflow_evidence_coverage_retirements", "staging_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    // NULL keeps historical withdrawals global; scoped replacement preserves sibling proof.
+    addColumn(d, "workflow_evidence_coverage_retirements", "source_roots_json", "TEXT");
+    if (retirementSequenceAdded) {
+      d.exec(`UPDATE workflow_evidence_coverage_retirements AS retirement
+        SET sequence = rowid, staging_ids_json = (
+          SELECT json_group_array(DISTINCT c.staging_id)
+          FROM workflow_submission_evidence_coverage c
+          JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id
+          JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE c.client_criterion_id = retirement.client_criterion_id AND c.generation <= retirement.generation
+            AND (b.note_key = retirement.note_key OR EXISTS (
+              SELECT 1 FROM workflow_events e WHERE e.run_id = r.id AND e.event_kind = 'binding_reattached'
+                AND json_extract(e.payload_json, '$.priorNoteKey') = retirement.note_key AND c.created_at <= e.ts
+            ))
+        )`);
+    }
+    if (retirementBoundaryAdded) {
+      d.exec(`UPDATE workflow_submissions AS s SET coverage_retirement_sequence = COALESCE((
+        SELECT MAX(retirement.sequence) FROM workflow_evidence_coverage_retirements retirement
+        JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+        WHERE retirement.note_key = b.note_key AND retirement.generation <= s.staged_image_generation
+      ), 0)`);
+    }
+    d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_coverage_retirement_sequence ON workflow_evidence_coverage_retirements(sequence)");
+    d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_submission_retirement_sequence ON workflow_submissions(coverage_retirement_sequence)");
+    d.exec("COMMIT;");
+  } catch (error) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw error;
+  }
+}
+
 function migrateTaskHomeName(d: DatabaseSync): void {
   try {
     d.exec("BEGIN IMMEDIATE;");
@@ -4435,18 +4795,25 @@ export function transferPendingReviews(sourceId: string, successorId: string, no
   if (!db.isTransaction) throw new Error("Review transfer requires an ownership transaction");
   const rows = db.prepare(`UPDATE reviews SET session_id = ?, mcp_wait_detached_at = COALESCE(mcp_wait_detached_at, ?)
     WHERE session_id = ? AND status = 'pending' RETURNING *`).all(successorId, now, sourceId) as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
 export function loadPendingReviews(): ReviewItem[] {
   const rows = openDb()
     .prepare(`SELECT * FROM reviews WHERE status = 'pending' ORDER BY created_at ASC`)
     .all() as unknown as ReviewRow[];
-  return rows.map(rowToReview);
+  return withStandingApprovalEligibility(rows.map(rowToReview));
+}
+
+/** Re-derive which pending reviews can grant a standing plan-bundle approval: bound to a task. */
+function withStandingApprovalEligibility(reviews: ReviewItem[]): ReviewItem[] {
+  const eligible = openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ? AND task_id IS NOT NULL");
+  return reviews.map((review) => (eligible.get(review.id) ? { ...review, standingApprovalEligible: true } : review));
 }
 
 /**
- * The reviews a session's conversation replays: the ones a HUMAN settled, oldest first.
+ * The reviews a session's conversation replays: the ones a HUMAN settled, directly or through
+ * a standing approval for its task, oldest first.
  *
  * Separate from `loadResolvedWorkflowReviews` rather than sharing its query, because the
  * two ask different questions of the same table. That one gathers evidence of intent, so it
@@ -4470,6 +4837,8 @@ export function loadPendingReviews(): ReviewItem[] {
  * paper over the gap.
  */
 export function loadHumanResolvedReviews(sessionId: string, limit = 500): ReviewItem[] {
+  // A standing approval is the operator's own earlier, explicit grant for this task, so the
+  // final-bundle gate counts it. A delegated session's answer never does.
   return loadConversationReviewHistory(sessionId, limit, false);
 }
 
@@ -4484,7 +4853,7 @@ function loadConversationReviewHistory(sessionId: string, limit: number, include
       `SELECT * FROM (
          SELECT * FROM reviews
           WHERE session_id = ?
-            AND (resolved_by = 'human'${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
+            AND (resolved_by IN ('human', 'standing-approval')${includeDelegated ? " OR resolved_by LIKE 'session:%'" : ""})
             AND status IN (${statuses.map(() => "?").join(", ")})
           ORDER BY resolved_at DESC, created_at DESC
           LIMIT ?
@@ -5092,6 +5461,7 @@ export function lastAgentBinding(sessionId: string): string | null {
 // ---- tasks ----
 
 interface TaskRow {
+  workspace_kind: string | null;
   id: string;
   title: string;
   intent: string;
@@ -5445,6 +5815,7 @@ function rowToTask(
         ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
         : null,
     repoRoot: r.repo_root,
+    workspaceKind: r.workspace_kind === "resident-workspace" ? r.workspace_kind : null,
     pipelineRun:
       r.pipeline_provider && isPipelineProviderId(r.pipeline_provider) && r.pipeline_slug
         ? { provider: r.pipeline_provider, repoRoot: r.repo_root, slug: r.pipeline_slug }
@@ -5507,7 +5878,7 @@ export function upsertTask(t: Task): string[] {
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
          model, effort,
-         workflow_id, source_id, external_id, source_url, repo_root,
+         workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
@@ -5515,7 +5886,7 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5525,7 +5896,7 @@ export function upsertTask(t: Task): string[] {
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
-         repo_root=excluded.repo_root,
+         repo_root=excluded.repo_root, workspace_kind=excluded.workspace_kind,
          pipeline_provider=excluded.pipeline_provider, pipeline_slug=excluded.pipeline_slug,
          pipeline_commission_id=CASE
            WHEN ? THEN excluded.pipeline_commission_id
@@ -5559,7 +5930,7 @@ export function upsertTask(t: Task): string[] {
       t.effort,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
-      t.repoRoot, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
+      t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
@@ -10504,6 +10875,131 @@ export function pruneSessionLaunchTurns(liveKeys: Iterable<string>, olderThan: n
   return Number(r.changes);
 }
 
+// ---- delegated turns (which controlling session sent a message) ----
+
+/** One delegated delivery into a target conversation, bound to its turn once seen. */
+export interface DelegatedTurnRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  controllerId: string;
+  controllerName: string;
+  deliveredAt: number;
+  /** The target transcript's size at send; null when none was located or its size could not be read, and the row never binds. */
+  transcriptOffset: number | null;
+  /** Another send of the same words was in flight with it, so its turn cannot be told apart. */
+  contested: boolean;
+  messageId: string | null;
+  messageTs: number | null;
+}
+
+export function insertDelegatedTurn(row: DelegatedTurnRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_delegated_turns
+         (id, note_key, fingerprint, controller_id, controller_name, delivered_at,
+          transcript_offset, contested, message_id, message_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.controllerId, row.controllerName,
+      row.deliveredAt, row.transcriptOffset, row.contested ? 1 : 0, row.messageId, row.messageTs);
+}
+
+/** Drop a delivery that provably did not land. */
+export function deleteDelegatedTurn(id: string): void {
+  openDb().prepare(`DELETE FROM session_delegated_turns WHERE id = ?`).run(id);
+}
+
+/** In reservation order: rowid, not a timestamp two senders can share or a random id. */
+export function loadDelegatedTurns(noteKey: string): DelegatedTurnRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, controller_id AS controllerId,
+              controller_name AS controllerName, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, message_id AS messageId, message_ts AS messageTs
+         FROM session_delegated_turns WHERE note_key = ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey) as unknown as Array<Omit<DelegatedTurnRow, "contested"> & { contested: number }>;
+  return rows.map((row) => ({ ...row, contested: row.contested === 1 }));
+}
+
+/**
+ * Mark an unbound delivery as raced by another send of its words, so it is never bound; or
+ * clear that mark when the only send that raced it provably did not land.
+ */
+export function contestDelegatedTurn(id: string, contested = true): void {
+  openDb()
+    .prepare(`UPDATE session_delegated_turns SET contested = ? WHERE id = ? AND message_id IS NULL`)
+    .run(contested ? 1 : 0, id);
+}
+
+/** Write-once: a bound delivery is never re-pointed at a later turn with the same words. */
+export function bindDelegatedTurn(id: string, messageId: string, messageTs: number): boolean {
+  const r = openDb()
+    .prepare(
+      `UPDATE session_delegated_turns SET message_id = ?, message_ts = ?
+         WHERE id = ? AND message_id IS NULL`,
+    )
+    .run(messageId, messageTs, id);
+  return Number(r.changes) > 0;
+}
+
+/**
+ * Delete rows older than `olderThan` whose conversation holds no live key. A live key is never
+ * touched. `liveKeys` null means liveness is unknown and deletes nothing; an EMPTY list is a
+ * known answer - every session has exited - and prunes every old row.
+ */
+export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan: number): number {
+  if (liveKeys === null) return 0;
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const r = openDb()
+    .prepare(
+      `DELETE FROM session_delegated_turns
+         WHERE delivered_at < ?${keys.length ? ` AND note_key NOT IN (${placeholders})` : ""}`,
+    )
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
+/** One non-delegated send still inside its race window. */
+export interface OtherSendRow {
+  id: string;
+  noteKey: string;
+  fingerprint: string;
+  sentAt: number;
+  transcriptOffset: number | null;
+}
+
+export function insertOtherSend(row: OtherSendRow): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset);
+}
+
+/** Take back a send with positive evidence that nothing landed. */
+export function deleteOtherSend(id: string): void {
+  openDb().prepare(`DELETE FROM session_other_sends WHERE id = ?`).run(id);
+}
+
+/** A conversation's sends newer than `since`, oldest first. */
+export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
+  return openDb()
+    .prepare(
+      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset
+         FROM session_other_sends WHERE note_key = ? AND sent_at >= ? ORDER BY rowid ASC`,
+    )
+    .all(noteKey, since) as unknown as OtherSendRow[];
+}
+
+/** Drop sends past the race window, for every conversation. */
+export function pruneOtherSends(olderThan: number): number {
+  return Number(openDb().prepare(`DELETE FROM session_other_sends WHERE sent_at < ?`).run(olderThan).changes);
+}
+
 // ---- session standing instructions (what a launch actually delivered) ----
 
 /** One session's launch snapshot: what was delivered, how, and from which stored keys. */
@@ -11319,6 +11815,18 @@ export interface AutomationRoleSpend {
   costUsd: number | null;
   tokens: number;
   runs: number;
+}
+
+/** Session-ledger spend strictly inside a rolling window; any unpriced row makes the total unknown. */
+export function sessionSpendSince(noteKeys: readonly string[], tsMs: number): {
+  costUsd: number | null; entries: Array<{ at: number; costUsd: number | null }>;
+} {
+  if (noteKeys.length === 0) return { costUsd: 0, entries: [] };
+  const rows = openDb().prepare(`SELECT ts, cost_usd, cost_known FROM usage_ledger
+    WHERE spend_kind = 'session' AND note_key IN (${noteKeys.map(() => "?").join(",")}) AND ts > ?
+    ORDER BY ts`).all(...noteKeys, tsMs) as Array<{ ts: number; cost_usd: number; cost_known: number }>;
+  const entries = rows.map((r) => ({ at: r.ts, costUsd: r.cost_known === 1 ? r.cost_usd : null }));
+  return { costUsd: entries.some((r) => r.costUsd === null) ? null : entries.reduce((sum, r) => sum + r.costUsd!, 0), entries };
 }
 
 /**
@@ -13596,6 +14104,7 @@ type InspectionTallyRow = InspectorPrRow & {
 function rowToInspection(r: InspectionTallyRow): InspectorInspection {
   return {
     ...rowToInspectorPr(r),
+    codeRabbit: codeRabbitSummary(r.key),
     openFindings: Number(r.open_findings),
     postedOpenFindings: Number(r.posted_open_findings),
     resolvedFindings: Number(r.resolved_findings),
@@ -14821,4 +15330,103 @@ export function setFileCommentReviewState(
     )
     .run(sessionId, state, pauseReason, state === "running" ? now : null, now);
   return loadFileCommentReview(sessionId);
+}
+
+
+// CodeRabbit extends the adoption row, so it cannot discover PRs or outlive deletion of
+// its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
+// per PR; exceeding either holds observation/delivery instead of evicting replay protection.
+const codeRabbitProcessId = randomUUID();
+export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
+  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+  try {
+    const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+function writeCodeRabbit(prKey: string, record: CodeRabbitRecord): void {
+  openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey);
+}
+
+export function recordCodeRabbit(prKey: string, input: {
+  headSha: string; state: "OPEN" | "CLOSED" | "MERGED"; draft: boolean;
+  findings: Omit<CodeRabbitFinding, "generation">[];
+}, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  // Corrupt history is unknown, never a fresh empty receipt ledger.
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  const findings = new Map((previous?.findings ?? []).map((f) => [f.id, { ...f, present: false }]));
+  for (const finding of input.findings) {
+    const old = findings.get(finding.id);
+    const changed = !finding.resolved && (!old || old.resolved || old.identity !== finding.identity);
+    findings.set(finding.id, { ...finding, present: true, generation: (old?.generation ?? 0) + Number(changed) });
+  }
+  if (findings.size > 2000) { failCodeRabbit(prKey, "CodeRabbit root history limit reached", now); return; }
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: codeRabbitProcessId,
+    observedAt: now, headSha: input.headSha, state: input.state, draft: input.draft,
+    error: null, findings: [...findings.values()], receipts: previous?.receipts ?? [],
+  });
+}
+
+export function failCodeRabbit(prKey: string, error: string, now = Date.now()): void {
+  const previous = readCodeRabbit(prKey);
+  if (!previous && openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey)?.code_rabbit_state != null) return;
+  writeCodeRabbit(prKey, {
+    version: 1, observationId: randomUUID(), processId: "", observedAt: now,
+    headSha: "", state: "OPEN", draft: true, findings: [], receipts: [],
+    ...previous, error: error.slice(0, 400),
+  });
+}
+
+export function codeRabbitSummary(prKey: string, owner?: { noteKey: string; episodeKey: string }, now = Date.now(), freshnessMs = Math.max(1_000, 3 * Number(envVar("INSPECTOR_POLL_MS") ?? 90_000))): CodeRabbitSummary {
+  const record = readCodeRabbit(prKey);
+  const threads = record?.findings.filter((f) => f.present && !f.resolved) ?? [];
+  const fresh = !!record && record.processId === codeRabbitProcessId && !record.error
+    && record.observedAt <= now && now - record.observedAt <= freshnessMs;
+  const receipts = record?.receipts.filter((r) => r.noteKey === owner?.noteKey && r.episodeKey === owner?.episodeKey) ?? [];
+  const pending = threads.filter((f) => !receipts.some((r) => r.threadId === f.id && r.generation === f.generation)).length;
+  const uncertain = receipts.some((r) => r.outcome === "uncertain" && threads.some((f) => f.id === r.threadId && f.generation === r.generation));
+  return {
+    status: record?.error ? "error" : fresh ? "complete" : "unknown",
+    observationId: record?.observationId ?? null, headSha: record?.headSha || null,
+    observedAt: record?.headSha ? record.observedAt : null,
+    freshUntil: fresh ? record!.observedAt + freshnessMs : null,
+    unresolved: record?.headSha ? threads.length : null, error: record?.error ?? null,
+    threads: threads.slice(0, 12).map(({ id, url, path }) => ({ id, url, path })),
+    pending: fresh && owner && record?.state === "OPEN" && !record.draft ? pending : 0,
+    delivery: uncertain ? "Delivery uncertain; manual messaging remains available"
+      : !fresh ? "Waiting for a complete fresh observation"
+      : record?.state !== "OPEN" || record.draft ? "PR is closed or draft"
+      : !threads.length ? "No unresolved CodeRabbit threads"
+      : !owner ? "Waiting for an eligible owning session"
+      : pending ? "Waiting for an eligible session" : "Feedback delivered",
+  };
+}
+
+export function claimCodeRabbit(prKey: string, owner: { noteKey: string; episodeKey: string }, observationId: string, now = Date.now()): string | null {
+  // All reads and the compare-and-set run synchronously in the sole daemon writer.
+  const record = readCodeRabbit(prKey);
+  if (!record || record.observationId !== observationId || codeRabbitSummary(prKey, owner, now).pending === 0) return null;
+  const pending = record.findings.filter((f) => f.present && !f.resolved && !record.receipts.some((r) =>
+    r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && r.threadId === f.id && r.generation === f.generation));
+  if (!pending.length) return null;
+  const claimId = randomUUID();
+  const previous = JSON.stringify(record);
+  record.receipts = record.receipts.filter((r) => !(r.noteKey === owner.noteKey && r.episodeKey === owner.episodeKey && pending.some((f) => f.id === r.threadId)));
+  for (const f of pending) record.receipts.push({ ...owner, threadId: f.id, generation: f.generation, observationId, headSha: record.headSha, claimId, at: now, outcome: "uncertain" });
+  if (record.receipts.length > 10000) return null;
+  const result = openDb().prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = ? AND code_rabbit_state = ?")
+    .run(JSON.stringify(CodeRabbitRecordSchema.parse(record)), prKey, previous);
+  return result.changes === 1 ? claimId : null;
+}
+
+export function finishCodeRabbit(prKey: string, claimId: string, outcome: "delivered" | "refused"): void {
+  const record = readCodeRabbit(prKey);
+  if (!record) return;
+  if (outcome === "refused") record.receipts = record.receipts.filter((r) => r.claimId !== claimId);
+  else for (const receipt of record.receipts) if (receipt.claimId === claimId) receipt.outcome = "delivered";
+  writeCodeRabbit(prKey, record);
 }

@@ -39,14 +39,18 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  * `projectsDir` is injectable for tests; production uses the default.
  */
 export function resolveTranscriptPath(
-  session: Session,
+  session: Pick<Session, "cwd" | "agentSessionId" | "transcriptPath">,
   projectsDir: string = PROJECTS_DIR,
 ): string | null {
   if (session.transcriptPath && existsSync(session.transcriptPath)) return session.transcriptPath;
   if (!session.agentSessionId || !session.cwd) return null;
-  const dir = join(projectsDir, session.cwd.replace(/[/.]/g, "-"));
-  const derived = join(dir, `${session.agentSessionId}.jsonl`);
-  return existsSync(derived) ? derived : null;
+  // Current Claude escapes underscores and spaces too. Retain the older spelling for
+  // conversations written by older installations.
+  for (const encoded of new Set([session.cwd.replace(/[^a-zA-Z0-9-]/g, "-"), session.cwd.replace(/[/.]/g, "-")])) {
+    const derived = join(projectsDir, encoded, `${session.agentSessionId}.jsonl`);
+    if (existsSync(derived)) return derived;
+  }
+  return null;
 }
 
 /**
@@ -104,6 +108,7 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   // 103 skill payload attachments and 62 copies of "Continue from where you left off.",
   // every one of them rendered as something the operator had said.
   if (rec.isMeta === true) return null;
+  if (rec.type === "attachment") return queuedPrompt(rec);
   if (rec.type !== "user" && rec.type !== "assistant") return null;
   const m = rec.message as Record<string, unknown> | undefined;
   if (!m || typeof m !== "object") return null;
@@ -137,9 +142,48 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   if (role === "user" && !text && hasToolResult) return null;
   if (!text && tools.length === 0) return null;
 
+  return withIdentity(rec, role, text, tools);
+}
+
+function withIdentity(
+  rec: Record<string, unknown>,
+  role: "user" | "assistant",
+  text: string,
+  tools: ToolCall[],
+): TranscriptMessage {
   const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) : 0;
   const id = typeof rec.uuid === "string" ? rec.uuid : `${role}-${ts}-${text.length}`;
   return { id, role, text, tools, ts: Number.isNaN(ts) ? 0 : ts };
+}
+
+/**
+ * A message the operator sent while a turn was running, or null for any other attachment.
+ *
+ * Claude Code usually records it only as a `queued_command` attachment on the running turn,
+ * with no `user` record. A matching `user` record can follow; `collapseSteerEchoes` draws
+ * the pair once. Dropping the attachment hid the operator's words from the log and left the
+ * daemon's steer-receipt scan with nothing to match, so a steer Claude was already
+ * answering stayed pinned under the log until the turn ended.
+ *
+ * `commandMode: "prompt"` with no `origin` is what a person typed. The same attachment also
+ * carries background-task completions (`task-notification`) and messages from a peer agent
+ * (an `origin` naming it); neither is the operator speaking.
+ */
+function queuedPrompt(rec: Record<string, unknown>): TranscriptMessage | null {
+  const a = rec.attachment as Record<string, unknown> | undefined;
+  if (!a || typeof a !== "object" || a.type !== "queued_command") return null;
+  if (a.commandMode !== "prompt" || a.origin != null) return null;
+  let text = "";
+  if (typeof a.prompt === "string") text = a.prompt;
+  else if (Array.isArray(a.prompt)) {
+    for (const b of a.prompt) {
+      if (b && typeof b === "object" && (b as Record<string, unknown>).type === "text") {
+        text += String((b as Record<string, unknown>).text ?? "");
+      }
+    }
+  }
+  text = conversationText(text.trim());
+  return text ? { ...withIdentity(rec, "user", text, []), takenMidTurn: true } : null;
 }
 
 // ---- the current TodoWrite narration -------------------------------------

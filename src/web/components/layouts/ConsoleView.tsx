@@ -9,6 +9,7 @@ import {
   type FleetBlock,
 } from "../../lib/fleet-order.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
+import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { repoColor } from "../../lib/repo-color.ts";
 import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
@@ -57,6 +58,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     useUiConfig().groupBoardByRepo,
     props.pipelineCommissionById,
     props.pipelineRunByKey,
+    pinnedResidentSessions(props.residentBySession),
   );
   const pending = provisioningTasks(props.tasks);
   // Keep Working mounted for the first dispatch onto an otherwise quiet fleet because its
@@ -104,6 +106,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       pipelineCommission={commission}
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
+      resident={props.residentBySession?.get(s.id) ?? null}
     />
   };
 

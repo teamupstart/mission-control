@@ -278,12 +278,19 @@ test("Display offers both marks checked, spaced like the groups above, and the p
   // The heading clears the Git branch row above it by the same distance the Conversation
   // header heading clears the last Board card row. It used to sit almost on the row's border:
   // the group is a customizer of its own, so its heading was a first child with no margin.
+  // Each group is its own customizer, so the row above a heading is the LAST row of the group
+  // before it - taken by position rather than by name, so an item added to the end of a group
+  // moves the reference with it instead of measuring from a row in the middle.
   const conversation = panel.getByRole("heading", { name: "Conversation header" });
-  const lastCardRow = conversation.locator("xpath=preceding-sibling::label[1]");
-  // `has` is queried inside each label, so it is rooted at the page rather than the panel.
-  const gitBranchRow = panel.locator("label.settings-toggle").filter({
-    has: dashboard.getByRole("checkbox", { name: "Git branch", exact: true }),
-  });
+  // `has` is queried inside each customizer, so it is rooted at the page rather than the panel.
+  const lastRowOf = (heading: string) =>
+    panel
+      .locator(".board-card-customizer")
+      .filter({ has: dashboard.getByRole("heading", { name: heading, exact: true }) })
+      .locator("label.settings-toggle")
+      .last();
+  const lastCardRow = lastRowOf("Board card");
+  const gitBranchRow = lastRowOf("Conversation header");
   const reference = await gapBetween(lastCardRow, conversation);
   expect(reference, "the reference gap should be a real separation").toBeGreaterThanOrEqual(20);
   expect(await gapBetween(gitBranchRow, heading), "the Working indicator heading is crowded").toBe(

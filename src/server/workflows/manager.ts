@@ -226,6 +226,7 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
+import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -388,6 +389,7 @@ export interface WorkflowManagerOptions {
    * single spender, so it is passed straight through rather than held here.
    */
   checkScheduler?: CheckScheduler;
+  commandArtifacts?: WorkflowCommandArtifactService;
   /**
    * The execution runtime a Check node reaches, bound per attempt.
    *
@@ -682,6 +684,7 @@ export class WorkflowManager {
     this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
@@ -968,6 +971,11 @@ export class WorkflowManager {
     return this.finish(result);
   }
 
+  /** A built-in's maximum repair rounds, the one setting it lets an operator change in place. */
+  setBuiltinRoundLimit(id: string, maxRepairRounds: number | null, now = Date.now()): WorkflowMutation {
+    return this.finish(this.store.setBuiltinRoundLimit(id, maxRepairRounds, now));
+  }
+
   archive(id: string, expectedDraftRevision: number, now = Date.now()): WorkflowMutation {
     return this.finish(this.store.archiveWorkflowCas(id, expectedDraftRevision, now));
   }
@@ -1141,6 +1149,13 @@ export class WorkflowManager {
     return result.kind === "found"
       ? { kind: "found", detail: this.decorateRun(result.detail) }
       : result;
+  }
+
+  readCommandOutput(input: {
+    runId: string; attemptId: string; artifactId: string;
+    cursor?: string | null; limit?: number;
+  }) {
+    return this.options.commandArtifacts?.read(input) ?? null;
   }
 
   /** Add current recovery facts at the response boundary, never to persisted run rows. */
@@ -1594,6 +1609,7 @@ export class WorkflowManager {
       artifacts?: readonly WorkflowAgentTextEvidenceLocator[];
       commandOutputs?: readonly WorkflowAgentCommandEvidenceLocator[];
       coverage?: readonly WorkflowEvidenceCoverageClaim[];
+      withdrawClientCriterionIds?: readonly string[];
     },
     now = Date.now(),
   ): Promise<WorkflowStagedEvidenceList> {
@@ -1625,6 +1641,7 @@ export class WorkflowManager {
       artifacts: evidence.artifacts,
       commandOutputs: evidence.commandOutputs,
       coverage: evidence.coverage,
+      withdrawClientCriterionIds: evidence.withdrawClientCriterionIds,
       now,
       episodeKey: resolvedSessionIntent(this.registry.getGoal(session.id))?.episodeKey ?? null,
     });
@@ -2572,7 +2589,7 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const existingEvent = this.store.listEvents(run.id).find((event) =>
-      event.kind === "manual_infrastructure_retry" &&
+      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry") &&
       event.payload &&
       !Array.isArray(event.payload) &&
       typeof event.payload === "object" &&
@@ -6542,13 +6559,18 @@ export class WorkflowManager {
     runId: string,
     submission: WorkflowSubmission,
   ): { coverage: WorkflowEvidenceCoverageClaim[]; mappings: WorkflowCriterionMapping[] } {
-    const previous = previousEvidenceSubmission(this.store, submission);
-    if (!previous) return { coverage: [], mappings: [] };
-    const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
-    return {
-      coverage: this.store.listSubmissionCoverage(previous.id),
-      mappings: parsed.success ? parsed.data.criterionMappings ?? [] : [],
-    };
+    let previous = previousEvidenceSubmission(this.store, submission);
+    const visited = new Set<string>();
+    while (previous && !visited.has(previous.id)) {
+      visited.add(previous.id);
+      const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
+      if (parsed.success && parsed.data.criterionMappings.length > 0) {
+        return { coverage: this.store.listSubmissionCoverage(previous.id), mappings: parsed.data.criterionMappings };
+      }
+      if (previous.status !== "failed" || previous.repositoryFingerprint) break;
+      previous = previousEvidenceSubmission(this.store, previous);
+    }
+    return { coverage: [], mappings: [] };
   }
 
   /**
@@ -6662,6 +6684,7 @@ export class WorkflowManager {
         };
       }
       const frozenIntent = runRow.intent ?? null;
+      const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
       const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
@@ -6674,6 +6697,7 @@ export class WorkflowManager {
             binding.noteKey,
           ),
           frozenIntent,
+          version?.graph,
           this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
@@ -7078,13 +7102,12 @@ export class WorkflowManager {
           canonicalCriteria: context.canonicalCriteria ?? [],
           criterionMappings: context.criterionMappings ?? [],
           coverage: frozenCoverage,
-          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource) : undefined,
+          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource, currentSubmission) : undefined,
           sourceSubmissionId: selectionSource?.id ?? null,
         }),
       });
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
-      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const shippingOnlyContinuation = submission.refinementReason === "session_action"
         && submission.continuationNodeId !== null
         && version !== null
@@ -7539,6 +7562,7 @@ export class WorkflowManager {
         this.store,
         getWorkflowPolicy().retention,
       );
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       this.lastRetentionAt = Date.now();

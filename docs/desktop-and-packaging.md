@@ -51,14 +51,24 @@ first startup reconciliation remain gated behind completion of the full SDK rest
 The standard [Bash installer](../scripts/install.sh) downloads canonical, immutable stable or
 exact-SHA alpha assets. Native macOS tools verify the size, SHA-256, product identity,
 arm64 executable, pinned Developer ID team and notarization before any downloaded code runs.
-It mounts the DMG read-only, checks its roots and links, copies the complete app to a private
+It mounts the DMG read-only, checks its root entries against the shared DMG layout contract and its links, copies the complete app to a private
 directory, verifies it again and unmounts the image. Only then does its embedded Electron Node
 engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, npm, npx, Git,
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
-Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+Without `--ref`, the installer selects a release by readiness, never by GitHub's newest record.
+A release exists before its Signed distribution run uploads the ready manifest, and that run can
+fail, so stable selection inventories every release and installs the highest `vX.Y.Z` that
+carries an uploaded manifest, as the desktop updater does. When no stable release is ready, the
+plain command installs the newest alpha and says so; `--channel stable` refuses instead. The app
+keeps alpha updates off unless they are enabled, so it offers the first ready stable release.
+`--channel alpha` installs `main`'s head when its alpha is ready. A merged commit has no alpha
+until its run publishes, so otherwise the installer walks the head's own history and installs
+the newest ancestor with a ready alpha, naming the unpublished head and how far behind it is.
+An alpha outside that history is never substituted. `--ref vX.Y.Z` and `--ref FULL_SHA` pin
+exact bytes and never substitute another release; an unpublished pin is named with its
+recovery. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows
@@ -338,6 +348,13 @@ here twice over - it points every recipient at the destination that needs an adm
 password, and a disk image is opened on somebody else's Mac, where no fixed link can name their
 own Applications folder and nothing expands a literal `~`.
 
+The published DMG's root also carries the window background (`.background.tiff`), volume icon
+and `.DS_Store` electron-builder writes for that layout. The standalone installer refuses any
+other root entry, and its allow-list is rendered from `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs), the same list producer
+qualification enforces on the mounted image. Changing the `dmg:` layout therefore means
+updating that list, or the Signed distribution job refuses the image before publication.
+
 Dragging the app out of a disk image records no receipt, so that copy never updates itself. The
 Read Me says so, names both destinations in words, and gives `make install` as the way to get
 managed updates.
@@ -347,21 +364,29 @@ managed updates.
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
-Deferring hides the banner until the next scheduled check or launch. The banner is part of the
+**Later** hides automatic reminders for that exact version for 48 hours, including across
+scheduled checks, window reloads, and app restarts. A different release or alpha commit can
+still appear. Explicit **Check for Updates** commands show a snoozed version immediately
+without clearing its deadline; choosing **Later** again starts a new 48-hour period.
+The snoozes are saved beside the alpha setting in `update-preferences.json`.
+The banner is part of the
 Electron-only preload capability: the plain browser dashboard has no update bridge, renders no
 update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
 inventory. If a newer release is pending and every complete release is at or below the installed
-version, the pending release remains visible with **Check again**. An older complete release is
-offered only when it is still newer than the installed version.
+version, automatic checks stay quiet and retry on the existing schedule (about six hours for
+stable updates, five minutes for alpha). Explicit **Check for Updates** commands show the pending
+release with **Check again**. An older complete release is offered only when it is still newer
+than the installed version.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-Missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
+On a manual check, missing assets or an unsupported app layout leave **Update Now** disabled
+with **Check again**; retry refreshes discovery. Automatic stable and alpha checks do not show
+an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
 
@@ -459,6 +484,14 @@ copy is checked before publication on the ordinary swap path and again before la
 includes modes, file bytes and internal framework symlinks; escaping links and oversized
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
+
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
 
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained
@@ -840,3 +873,10 @@ fixture and browser results do not establish the remaining operating-system beha
 New ZIP and DMG packages contain Agent Mission Control.app. The executable, bundle identifier
 and state home retain their existing identities. See [app-name migration](app-name-migration.md)
 for the source-update bridge, legacy/bootstrap compatibility, same-folder transaction and recovery.
+
+## Owned integration runtimes
+
+Electron's embedded Node runs shipped Mission hooks, MCP, statusline wrappers, Pi installation
+checks and resume guards. **Settings > Setup > Runtime** reports the serving daemon rather than
+inferring ownership from the connected window. External Node is an optional source/tool check.
+See the [consumer inventory, repair behavior and R2 checklist](owned-runtimes.md).

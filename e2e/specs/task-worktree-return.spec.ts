@@ -43,7 +43,13 @@ async function dispatch(page: Page, daemon: DaemonHandle, intent: string, multi 
   await expect(dialog).toBeHidden();
   await expect.poll(() => taskFor(daemon, intent), { timeout: 45_000 }).toMatchObject({ status: "running", worktreePath: expect.any(String) });
   const task = (await taskFor(daemon, intent))!;
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: task.title }).click();
+  const row = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: task.title });
+  // A running task can still be launching its first turn. Act on its settled session,
+  // rather than selecting a startup row before native identity/SSE binding finishes.
+  await expect(row.locator(".rail-state")).toHaveText("idle", { timeout: 45_000 });
+  await row.click();
+  await expect(row).toHaveAttribute("aria-current", "true");
+  await expect(page.locator(".console-detail")).toBeVisible();
   return task;
 }
 async function capture(page: Page, name: string): Promise<void> {

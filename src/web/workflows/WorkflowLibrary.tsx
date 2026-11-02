@@ -191,8 +191,8 @@ export function WorkflowStateNotice({
     return (
       <p className="wf-state builtin">
         Built-in - this workflow ships with Mission Control, always carries the graph this
-        build was made from, and is already published. Duplicate it to make a copy you own and
-        can edit.
+        build was made from, and is already published. Only its maximum repair rounds can be
+        changed here. Duplicate it to make a copy you own and can edit.
       </p>
     );
   }
@@ -380,6 +380,10 @@ export function WorkflowLibrary({
   // affordance answer "can this be changed?" identically. A built-in is app data: the daemon
   // refuses the write, and offering the control anyway is a button that reports an error.
   const readOnly = !workflow || workflow.archivedAt !== null || workflow.builtin;
+  // A built-in's round limit is the one thing `readOnly` does not lock.
+  const roundLimit = workflow?.builtin && workflow.archivedAt === null
+    ? { disabled: transitioning, saving: draft.savingRoundLimit, onSave: draft.saveRoundLimit }
+    : undefined;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
@@ -440,7 +444,12 @@ export function WorkflowLibrary({
   // What is open, reported back so the address bar can name it. One effect on the id rather
   // than a call inside `openWorkflow`, because the restore above and the removal handler
   // below both set it without going through there.
-  useEffect(() => onSelectionChange?.(selectedId), [onSelectionChange, selectedId]);
+  useEffect(() => {
+    // Before the catalog arrives, null means selection has not been restored yet. Reporting
+    // it would erase the deep link that the restore effect still needs from the parent.
+    if (!hasSnapshot && selectedId === null) return;
+    onSelectionChange?.(selectedId);
+  }, [hasSnapshot, onSelectionChange, selectedId]);
   useEffect(() => {
     if (removalTarget === undefined) return;
     const next = workflowSelectionAfterRemoval(
@@ -936,7 +945,7 @@ export function WorkflowLibrary({
           <section className="workflow-empty"><span className="workflow-empty-mark">◇</span><h3>Build a review workflow</h3><p>Create a draft, then connect Session, Personas, joins, and End outcomes.</p><Tooltip label="Create a new workflow draft"><button className="btn" disabled={transitioning} onClick={() => void create()}>New workflow</button></Tooltip></section>
         )}
         {draft.loading && <section className="workflow-empty"><p>Loading workflow…</p></section>}
-        <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !workflow && !draft.loading)} onRetry={() => void draft.reload()} />
+        <WorkflowLoadError error={draft.error} canRetry={Boolean(selectedId && !draft.loading && (!workflow || draft.versionsStale))} onRetry={() => void draft.reload()} />
         {workflow && (
           <>
             {/* Three groups: what you are looking at, what you are editing with, and what
@@ -1260,6 +1269,7 @@ export function WorkflowLibrary({
               stageCount={pipeline?.stages.length ?? 0}
               readOnly={transitioning || readOnly}
               onUpdate={draft.update}
+              roundLimit={roundLimit}
             />
           ) : (
             <WorkflowProperties
@@ -1273,6 +1283,7 @@ export function WorkflowLibrary({
               readOnly={transitioning || readOnly}
               onUpdate={draft.update}
               onConfirm={setConfirm}
+              roundLimit={roundLimit}
             />
           )}
           <WorkflowVersionHistory

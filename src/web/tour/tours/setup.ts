@@ -100,7 +100,7 @@ const STEPS: readonly Step[] = [
   {
     id: "trust-add",
     ...tourStageContent("setup", "trust-add"),
-    targets: [{ target: "setup:trust-add", side: "top" }],
+    targets: [{ target: "setup:trust-add", side: "right" }],
     prepare: (context) => context.navigation.showTrust(),
     nextLabel: () => "Finish tour",
     reconcile: refresh,

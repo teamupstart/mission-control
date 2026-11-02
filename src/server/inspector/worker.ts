@@ -1,3 +1,6 @@
+import { codeRabbitEnabled } from "../shipping/config.ts";
+import { observeCodeRabbit } from "./code-rabbit.ts";
+import { recordCodeRabbit, failCodeRabbit } from "../db.ts";
 import { recordAutomationTransition } from "../telemetry/experience.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -566,6 +569,8 @@ async function processPr(
 
   const dir = liveDir(pr);
   if (!dir) {
+    if (codeRabbitEnabled()) failCodeRabbit(pr.key, "The owning checkout is unavailable", now);
+    if (!cfg.enabled) return false;
     if (backedOff) return false;
     return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
   }
@@ -577,10 +582,19 @@ async function processPr(
   // was not the cause of.
   const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
   if (!snap.ok || !snap.value) {
+    if (codeRabbitEnabled()) failCodeRabbit(pr.key, snap.error ?? "Could not read PR", now);
+    if (!cfg.enabled) return false;
     if (backedOff) return false;
     return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
+  if (codeRabbitEnabled()) {
+    const observation = await observeCodeRabbit({ cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: s, startedAt: now });
+    if (observation.ok && observation.value) recordCodeRabbit(pr.key, {
+      headSha: s.headSha, state: s.state, draft: s.isDraft, findings: observation.value,
+    }, Date.now());
+    else failCodeRabbit(pr.key, observation.error ?? "Incomplete CodeRabbit observation", Date.now());
+  }
   // Write the sighting down BEFORE anything decides what to do about it.
   //
   // `onObserved` is a wakeup - transient, and only for whoever happens to be subscribed when
@@ -623,6 +637,9 @@ async function processPr(
     );
     return true;
   }
+
+  // Observation consent never grants Inspector review, posting, or merge authority.
+  if (!getInspectorConfig().enabled) return true;
 
   // A push is new evidence, and `pushEndsTheWait` decides whether it is the kind of
   // evidence that ends the wait its predecessor earned - always, for the six-hour park
@@ -1233,12 +1250,12 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     if (stopped) return;
     try {
       const cfg = getInspectorConfig();
-      if (cfg.enabled) {
+      if (cfg.enabled || codeRabbitEnabled()) {
         for (const pr of loadOpenInspectorPrs()) {
           if (stopped) break;
           // Re-read per PR so turning the feature off mid-sweep is honoured now rather
           // than after everything already queued has posted.
-          if (!getInspectorConfig().enabled) break;
+          if (!getInspectorConfig().enabled && !codeRabbitEnabled()) break;
           // The row may have been written by an earlier PR in this same sweep.
           const fresh = getInspectorPr(pr.key) ?? pr;
           const observed: {
@@ -1251,6 +1268,9 @@ export function startInspector(registry: Registry, options: InspectorStartOption
             (snapshot, observedAt) => {
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);
+              // CodeRabbit may be delivered while a model review is still running.
+              // With this source off, retain Inspector's once-per-sweep refresh.
+              if (codeRabbitEnabled()) registry.refreshInspections();
             },
             options.workflowGate ?? (() => "none"),
           ));

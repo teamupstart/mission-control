@@ -174,6 +174,32 @@ test("the contract names the path, the tools, the dismissal rule and the pull re
   assert.match(appendix, /pull request/, "unlike a scout, a plan is meant to land");
 });
 
+test("every plan delivery requires a selectable phasing choice even without open plan questions", () => {
+  for (const agent of ["claude", "codex", "pi"] as const) {
+    const resolved = planSkillsForAgent(agent, forAgent());
+    assert.ok(resolved.ok);
+    for (const storage of ["repository", "local"] as const) {
+      for (const workflowBound of [false, true]) {
+        const appendix = planContractAppendix(resolved.commands, workflowBound, storage);
+        assert.match(appendix, /Always offer the phased implementation follow-up/);
+        assert.match(appendix, /even when there are no other open choices/);
+        assert.match(appendix, /once per root plan, on its first review/);
+        assert.match(appendix, /Later repair and re-approval reviews retain the submitted choice without repeating the offer/);
+        assert.match(appendix, /selectable decision.*request_plan_decisions/);
+        assert.match(appendix, /Only invoke phased-plan after the human selects it/);
+        assert.match(appendix, /Do not recursively offer it for derived phases/);
+        assert.ok(appendix.includes(resolved.commands.phasedPlan));
+      }
+    }
+  }
+});
+
+test("the planning skill retains the root follow-up choice through re-approval", () => {
+  const skill = src("skills/html-plans/SKILL.md");
+  assert.match(skill, /once per root plan, on its first review/);
+  assert.match(skill, /Later repair and re-approval reviews retain the submitted choice without repeating the offer/);
+});
+
 test("the contract points at the skills instead of restating their procedure", () => {
   // The approved decision, asserted as an ABSENCE because that is the only way it can be. The
   // scout appendix restates its skill because a scout's output is server-enforced and had to

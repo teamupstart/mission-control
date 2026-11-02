@@ -158,6 +158,12 @@ export interface WorkflowDraftState {
   reload: () => Promise<void>;
   publish: () => Promise<WorkflowVersion | null>;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
+  /** A built-in's maximum repair rounds, its one in-place setting. `null` restores the shipped value. */
+  saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
+  /** A round-limit save or reset is in flight. Held here, not in the field, so a view switch keeps it. */
+  savingRoundLimit: boolean;
+  /** A saved round limit landed but the version list it changed could not be refetched. */
+  versionsStale: boolean;
   clearConflict: () => void;
   clearError: () => void;
   showError: (message: string) => void;
@@ -166,6 +172,9 @@ export interface WorkflowDraftState {
   undo: () => void;
   redo: () => void;
 }
+
+/** What the editor says when a round limit saved but the version list it changed did not refetch. */
+export const VERSIONS_STALE_MESSAGE = "Repair rounds saved, but the version history could not be refreshed.";
 
 /** One-workflow CAS autosave state machine. No second save starts while one is in flight. */
 export function useWorkflowDraft(
@@ -181,6 +190,9 @@ export function useWorkflowDraft(
   const [loading, setLoading] = useState(false);
   const [conflict, setConflict] = useState<WorkflowSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savingRoundLimit, setSavingRoundLimit] = useState(false);
+  const [versionsStale, setVersionsStale] = useState(false);
+  const roundLimitInFlight = useRef(false);
   const workflowIdRef = useRef(workflowId);
   const loadGeneration = useRef(0);
   workflowIdRef.current = workflowId;
@@ -218,6 +230,7 @@ export function useWorkflowDraft(
       setWorkflow(null);
       workflowRef.current = null;
       setVersions([]);
+      setVersionsStale(false);
       setSavedFingerprint(null);
       savedFingerprintRef.current = null;
       setConflict(null);
@@ -238,6 +251,7 @@ export function useWorkflowDraft(
       setWorkflow(detail.workflow);
       workflowRef.current = detail.workflow;
       setVersions(detail.versions);
+      setVersionsStale(false);
       const loadedFingerprint = editableFingerprint(detail.workflow);
       setSavedFingerprint(loadedFingerprint);
       savedFingerprintRef.current = loadedFingerprint;
@@ -432,6 +446,54 @@ export function useWorkflowDraft(
     }
   }, []);
 
+  const saveRoundLimit = useCallback(async (maxRepairRounds: number | null): Promise<boolean> => {
+    const current = workflowRef.current;
+    // Not the draft autosave: a built-in has no draft to save, and this writes nothing else.
+    if (!current?.builtin) return false;
+    // One request at a time, whichever rail or button asked. The Pipeline and Graph rails each
+    // mount their own field, so a guard held in the field would be lost on a view switch and
+    // let a Reset race a Save, applying whichever response landed last.
+    if (roundLimitInFlight.current) return false;
+    roundLimitInFlight.current = true;
+    setSavingRoundLimit(true);
+    setError(null);
+    try {
+      const response = await workflowRequest<WorkflowWriteResponse>(`/api/workflows/${current.id}/round-limit`, {
+        method: "PUT",
+        body: JSON.stringify({ maxRepairRounds }),
+      });
+      if (workflowIdRef.current !== current.id) return true;
+      workflowRef.current = response.workflow;
+      setWorkflow(response.workflow);
+      const storedFingerprint = editableFingerprint(response.workflow);
+      setSavedFingerprint(storedFingerprint);
+      savedFingerprintRef.current = storedFingerprint;
+      // Every version of the built-in now offers the new budget to a binding. The PUT has
+      // already landed, so a failed refresh is not a failed save: it is stale history, said
+      // as such, with Retry reloading the detail that carries the versions.
+      try {
+        await refreshVersions(current.id);
+        // A refresh that lands clears what an earlier failed one left behind.
+        if (workflowIdRef.current === current.id) {
+          setVersionsStale(false);
+          setError((message) => (message === VERSIONS_STALE_MESSAGE ? null : message));
+        }
+      } catch {
+        if (workflowIdRef.current === current.id) {
+          setVersionsStale(true);
+          setError(VERSIONS_STALE_MESSAGE);
+        }
+      }
+      return true;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save the repair rounds");
+      return false;
+    } finally {
+      roundLimitInFlight.current = false;
+      setSavingRoundLimit(false);
+    }
+  }, [refreshVersions]);
+
   return useMemo(() => ({
     workflow: currentWorkflow,
     versions,
@@ -451,6 +513,9 @@ export function useWorkflowDraft(
     reload,
     publish,
     duplicate,
+    saveRoundLimit,
+    savingRoundLimit,
+    versionsStale,
     clearConflict: () => {
       conflictRef.current = null;
       setConflict(null);
@@ -461,5 +526,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saving, update, versions, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

@@ -85,8 +85,14 @@ test("verified restore reloads its window and invalidates other windows without 
     `/api/workflows/${desiredWorkflow.workflow.id}/publish`,
     { body: { expectedDraftRevision: 1 } },
   );
-  const lint = await request<{ revision: number; maxRuns: number }>(daemon, "/api/workflow-commands/lint");
-  const desiredCommand = await request<{ revision: number; maxRuns: number }>(
+  const lint = await request<{
+    revision: number; maxRuns: number; timeoutMs: number | null;
+    onUnavailable: "skip" | "block"; onBudgetExhausted: "skip" | "block";
+  }>(daemon, "/api/workflow-commands/lint");
+  const desiredCommand = await request<{
+    revision: number; maxRuns: number; timeoutMs: number | null;
+    onUnavailable: "skip" | "block"; onBudgetExhausted: "skip" | "block";
+  }>(
     daemon,
     "/api/workflow-commands/lint",
     {
@@ -95,6 +101,9 @@ test("verified restore reloads its window and invalidates other windows without 
         expectedRevision: lint.revision,
         defaultCommand: ["npm", "run", "lint:snapshot"],
         maxRuns: lint.maxRuns,
+        timeoutMs: lint.timeoutMs,
+        onUnavailable: lint.onUnavailable,
+        onBudgetExhausted: lint.onBudgetExhausted,
         overrides: [],
       },
     },
@@ -123,7 +132,7 @@ test("verified restore reloads its window and invalidates other windows without 
   });
   await request(daemon, "/api/shipping/config", {
     method: "PUT",
-    body: { repoAllowlist: [desiredTrustRepo] },
+    body: { repoAllowlist: [desiredTrustRepo], codeRabbitAutoResolve: true },
   });
 
   // Reboot after removing only today's disposable fixture snapshot. The production startup
@@ -168,7 +177,7 @@ test("verified restore reloads its window and invalidates other windows without 
   });
   await request(daemon, "/api/shipping/config", {
     method: "PUT",
-    body: { repoAllowlist: [currentTrustRepo] },
+    body: { repoAllowlist: [currentTrustRepo], codeRabbitAutoResolve: false },
   });
   await request(daemon, `/api/personas/${desiredPersona.id}`, {
     method: "PATCH",
@@ -188,6 +197,9 @@ test("verified restore reloads its window and invalidates other windows without 
       expectedRevision: desiredCommand.revision,
       defaultCommand: ["npm", "run", "lint:current"],
       maxRuns: desiredCommand.maxRuns,
+      timeoutMs: desiredCommand.timeoutMs,
+      onUnavailable: desiredCommand.onUnavailable,
+      onBudgetExhausted: desiredCommand.onBudgetExhausted,
       overrides: [],
     },
   });
@@ -261,6 +273,8 @@ test("verified restore reloads its window and invalidates other windows without 
   await expect(verifiedPreview).toBeVisible();
   await expect(dashboard.getByLabel("Restore sequence")).toContainText("Capture safety snapshot");
   await expect(dashboard.getByText("Workflow commands", { exact: true })).toBeVisible();
+  // Resident profiles are a catalog of their own in the preview, beside the Library's.
+  await expect(dashboard.getByText("Resident profiles", { exact: true })).toBeVisible();
   await verifiedPreview.scrollIntoViewIfNeeded();
   await shoot(dashboard, "verified-preview");
 
@@ -302,6 +316,7 @@ test("verified restore reloads its window and invalidates other windows without 
     request<{ repoAllowlist: string[] }>(daemon, "/api/shipping/config"),
   ]);
   for (const config of restoredTrust) expect(config.repoAllowlist).toEqual([desiredTrustRepo]);
+  expect(await request(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true });
 
   await dashboard.goto(`${daemon.baseURL}/#/settings/trust`);
   const trustTable = dashboard.getByRole("table", { name: "Repository trust grants" });

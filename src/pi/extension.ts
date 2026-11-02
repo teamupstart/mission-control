@@ -8,6 +8,7 @@ import { hookBody, PI_EVENTS, statusBody } from "./event-map.ts";
 import { McpClient } from "./mcp-client.ts";
 import { adaptTool } from "./tool-adapter.ts";
 import { holdPiGeneration } from "./generation-lease.ts";
+import { OwnedRuntimeContextSchema } from "@shared/owned-runtime.ts";
 
 declare const __MISSION_PI_PACKAGED__: boolean;
 
@@ -68,8 +69,11 @@ export default function missionControl(pi: PiApi): void {
     if (event.type === "input" && decision?.decision === "block") return { action: "handled" };
     if (body) await postStatus(event, ctx);
     if (event.type === "session_start") {
-      const connection = new McpClient(envVar("MCP_SERVER") ?? missionControlBuild.mcpServerPath, {
+      const override = envVar("MCP_SERVER");
+      const runtime = override ? undefined : OwnedRuntimeContextSchema.parse(await daemonRequest("/api/integrations/runtime"));
+      const connection = new McpClient(override ?? missionControlBuild.mcpServerPath, {
         cwd: ctx.cwd,
+        runtime,
         env: { ...process.env, [MISSION_AGENT_SESSION_ID_ENV]: ctx.sessionManager.getSessionId() },
       });
       client = connection;

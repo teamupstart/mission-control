@@ -61,8 +61,8 @@ export const MISSION_MCP_SERVER_NAME = "mission-control";
 export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
+  "read_workflow_command_output",
   "trigger_workflow_action",
-  "share_plan",
   "read_sessions",
   "control_session",
   PLAN_DECISIONS_TOOL,
@@ -77,7 +77,6 @@ export const MISSION_MCP_TOOLS = [
   "publish_plan",
   "get_pull_request_policy",
   "request_input",
-  "report_product_feedback",
   "report_product_issue",
   "report_status",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
@@ -91,6 +90,7 @@ export const MISSION_MCP_TOOLS = [
   SUBMIT_SCOUT_ARTIFACTS_TOOL,
   SUBMIT_WORKFLOW_EVIDENCE_TOOL,
   COMPLETE_RETRO_NO_CHANGE_TOOL,
+  "schedule_next_iteration",
 ] as const;
 
 export type MissionMcpTool = (typeof MISSION_MCP_TOOLS)[number];
@@ -138,6 +138,7 @@ const KIND_MISSION_MCP_TOOLS: Record<TaskKind, readonly MissionMcpTool[]> = {
   plan: [PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL, PLAN_CONTEXT_TOOL, PLAN_SAVE_TOOL, PLAN_READ_TOOL, "publish_plan"],
   pipeline: [],
   chat: [],
+  resident: ["schedule_next_iteration"],
 };
 
 /**
@@ -200,8 +201,8 @@ interface MissionMcpRuntime {
  * bundle on Node 18, which has no `crypto` global, and every Mission Control tool call in
  * that session failed with "ReferenceError: crypto is not defined".
  */
-export function resolveMissionMcpRuntime(execPath: string = process.execPath): MissionMcpRuntime {
-  return resolveOwnedRuntime({executable: execPath, kind: /^node(\.exe)?$/.test(basename(execPath)) ? "node" : "electron"});
+export function resolveMissionMcpRuntime(execPath: string = process.execPath, kind: "node" | "electron" = process.versions.electron ? "electron" : "node"): MissionMcpRuntime {
+  return resolveOwnedRuntime({executable: execPath, kind});
 }
 
 /**

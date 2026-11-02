@@ -530,7 +530,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
     // either never agreed to run commands on their machine.
     assert.equal(
       versionBody.graph.nodes.filter((node) => node.kind === "check").length,
-      number < 3 ? 0 : number < 19 ? 2 : 3,
+      number < 3 ? 0 : number < 19 ? 2 : number < 22 ? 3 : 4,
     );
     // The same rule for the session action node, which only version 8 authors: a binding
     // pinned to any earlier version never agreed to have a pull request typed at its session

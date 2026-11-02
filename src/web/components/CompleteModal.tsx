@@ -294,9 +294,9 @@ export function CompleteModal({
 
           {activeScoutWarning && (
             <div className="complete-warning" role="alert">
-              <strong>No scout report will be archived.</strong>
+              <strong>No submitted scout report is ready to archive.</strong>
               <p>{activeScoutWarning.join("; ")}</p>
-              <p>Close without a report only if you do not need this scout's findings in Scouts.</p>
+              <p>Close only if you do not need a verified report. Cleanup may still preserve report files already in the checkout.</p>
             </div>
           )}
           {error && <p className="complete-error">{error}</p>}

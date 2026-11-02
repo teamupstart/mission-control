@@ -936,6 +936,8 @@ it does not change dispatch defaults. Until the conversation reports the selecte
 the badge marks it **selected**, including while runtime metadata is absent. Claude's `[1m]`
 context marker does not make an otherwise matching model pending. A response already underway
 can still report its previous model; rebinding does not replace the saved selection.
+Claude also retains an accepted model selection when authentication recovery replaces its
+subprocess and resumes the conversation, instead of replaying the original launch model.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
 selection. If saving an accepted change fails, Mission Control restores the previously saved model,
 including after repeated failed attempts.
@@ -943,6 +945,16 @@ If restoration is also unavailable, the dropdown shows the accepted runtime choi
 that it was not saved and a restart may revert it. Retry that selection to save it, including
 after closing and reopening the dropdown.
 Terminal sessions and stopped sessions keep a read-only model badge.
+
+Codex's observed model and effort come from the newest turn in its rollout, even when
+large tool output pushes that record out of the live tail. Polling retains verified turn
+evidence for both terminal and SDK sessions and scans backwards across missed output after
+a restart or a gap between reads. If the latest turn cannot be established within the bounded
+16 MiB scan, its model remains unconfirmed rather than reverting to an older model from the log's
+beginning. This observation never changes the model configured for future turns.
+Before reusing a turn across file growth, the reader rechecks that turn's source record so
+an in-place rewrite cannot retain a model from the replaced record. A stale explicit rollout
+path falls back to discovery for the current session, with the usual lookup cache and retry delay.
 
 When Mission Control can safely read and write the live session, its thinking badge is
 also a picker: click it to see the effort levels Mission Control can safely apply to the
@@ -1200,6 +1212,16 @@ not transcript turns; like Foreman's, they happened beside the conversation and 
 when they happened, so an agent that blocked on a question for an hour shows your answer
 after the hour of work, not before it. The original pull request includes a runtime capture of
 how the four read against each other.
+
+A fifth voice appears only when another session is
+[controlling this one](#let-a-session-steer-other-sessions): a message it sends is drawn in pink, under a
+**Delegated session** tag followed by **from** and the sending session's name, whenever Mission
+Control can tell which turn that message produced. The terminal rendering names the sender on the
+shell host, as `<session-name>@session`. Hover the sender for its session id. When it cannot
+tell - identical words sent by you, Foreman or a second controlling session while the first is
+still on its way, so either turn could have arrived first - the message is left unlabelled
+rather than credited to the wrong sender, and it then reads like an ordinary turn. See
+[Let a session steer other sessions](#let-a-session-steer-other-sessions) for the exact cases.
 
 What the CLI writes into the conversation on its own behalf is not one of those voices and
 never reaches the dashboard: the note it leaves in place of a pasted image, the payload it
@@ -1590,7 +1612,7 @@ reason: its hook delivery is the first arrival and so is the capture.
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
-restart are all typed into the session exactly the way you type, and the agent reports each
+restart, and resident loop wakes are all typed into the session exactly the way you type, and the agent reports each
 one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
 arrivals are recognized and discarded rather than captured. Without that rule a
 completion-review packet became the session's ask, was frozen onto the next workflow run, and
@@ -1608,6 +1630,10 @@ the session, it is heard and the Goal moves. The conversation log still credits 
 originally typed each turn; only the recognition is used up. Recognition is also in-memory, so
 a daemon restart landing between a delivery and its echo lets that single turn through as
 though you had typed it.
+
+Resident wake turns carry the `resident` origin. The conversation displays the loop prompt
+without its delivery marker; the native transcript retains that marker for crash reconciliation.
+Human and compaction turns are not resident iterations. See [the resident loop](residents.md#the-persistent-loop).
 
 Each reconciliation records one of five relationships:
 
@@ -1943,6 +1969,10 @@ at any time; subsequent reads and actions refuse immediately. An action already 
 may finish. The grant lasts only for the current conversation, task and work episode in this
 daemon run. A reset, replacement conversation, different task, session removal or Mission
 Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+The one exception is a [resident](residents.md#session-control) whose profile turns
+**Control other sessions** on: launched with a click in the desktop app, its run gets the grant,
+and the grant survives a restart only when the conversation, task, working directory and work
+episode all still match.
 
 Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
 The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
@@ -1970,7 +2000,24 @@ For example, after inspecting the target:
 {"sessionId":"sdk:target-id","command":{"action":"message","text":"Focus on the failing parser test first."}}
 ```
 
-Messages are marked **Delegated session** in the live conversation. Review answers retain
+Messages are marked **Delegated session** in the live conversation, in their own pink colour
+and with the controller named beside the tag (**from Controller**). The name is the one the
+controller had when it sent the message, so it still reads after that session ends. Unlike the
+other bylines, the sender is recorded durably, one row per delivery, and bound to the
+transcript turn the first time the conversation is read, so a daemon restart does not hand the
+message back to you, and identical words sent by two controllers each name their own sender
+when the second is sent after the first one's message has arrived.
+A later turn you type with the same words reads as yours, even when nobody had the target open
+in between: each delivery claims the first turn with its words written to the transcript after
+it was sent, so neither a turn you wrote just before it nor a later repeat is mistaken for it.
+If you send the same words while the controller's message is still on its way, so that either
+turn could be written first, neither is labelled: the message is never credited to the
+controller when it might be yours, nor labelled as Foreman's. A draft you paste without
+submitting counts as a send, because pressing Enter sends it. A send of yours that is refused
+before anything reaches the session does not count as a race. The same holds between two controlling sessions: if both send
+identical words before either message reaches the transcript, neither is labelled, because
+either could have arrived first. A second controller sending after the first one's message has
+arrived keeps both labels. Review answers retain
 `session:<controller-id>` attribution and remain visible after reload. They are not recorded
 as direct human approvals for managed plan publication. The daemon's session event ledger
 records the controller, target, action and HTTP outcome without recording the message body.
@@ -2038,10 +2085,12 @@ review request.
 
 The MCP tools are:
 
-- `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer
+  dismisses that decision set without an answer. Every decision also has an optional note
+  box, so the human can pick an option and send instructions with it; a note returns to the
+  agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
+  an empty `decisions` list to show a plan for approval with no open choices
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2080,14 +2129,6 @@ The MCP tools are:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
   can be dismissed without sending an answer
-- `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
-  the session to report Mission Control feedback, publishes a public GitHub issue automatically
-  and returns its URL without a second dashboard approval. The tool prepares the daemon preview
-  and submits the same bounded draft, with the daemon choosing the destination and labels.
-  Both MCP tools inherit the dashboard report schema and use its `ProductIssueService` for
-  issue formatting, destination, labels, attachments, and publication. Only caller attribution
-  and approval differ. Include only public-safe content. Screenshot limits and retry guidance
-  match the tool below.
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -2184,9 +2225,9 @@ how you were asked:
 
 | You answered | The entry shows |
 |---|---|
-| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** and any **Note** you added |
 | **A direct-text question** (`request_input` with no options) | the text you submitted |
-| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A diff** (`request_review`) | what you did - approved, or requested changes - and the note you left, if any |
 | **A dismissal** | that you closed it without choosing, and nothing more |
 
 It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be

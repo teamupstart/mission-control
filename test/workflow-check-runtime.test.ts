@@ -14,11 +14,11 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
@@ -32,6 +32,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
+const { WorkflowCommandArtifactService } =
+  await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
 const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
@@ -42,6 +44,7 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
+type ArtifactService = InstanceType<typeof WorkflowCommandArtifactService>;
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
@@ -558,7 +561,7 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
   };
 }
 
-test("test commands get sixty minutes while typecheck keeps ten", async () => {
+test("slot defaults and a configured request timeout reach the supervisor", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 1);
   const leases = new CheckLeaseManager(db, {
@@ -590,8 +593,162 @@ test("test commands get sixty minutes while typecheck keeps ten", async () => {
     assert.equal(outcome.kind, "exited");
   }
 
-  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000]);
+  const configured = await runtime.executorFor(attemptRef())({
+    slot: "build",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+    timeoutMs: 90 * 60_000,
+  });
+  assert.equal(configured.kind, "exited");
+
+  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000, 90 * 60_000]);
 });
+
+test("an unavailable output directory does not prevent the Command from running", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `unavailable-command-output-${seq++}`);
+  mkdirSync(outputRoot, { recursive: true });
+  writeFileSync(join(outputRoot, ".tmp"), "not a directory");
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  let launched = false;
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      launched = true;
+      request.capture?.push("stdout", Buffer.from("command still ran\n"));
+      return {
+        result: { kind: "exited", exitCode: 0, output: "command still ran\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-output-failure-${seq++}` };
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(launched, true);
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.length, 2);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+test("a capped capture losing its temporary path preserves the Command verdict", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `missing-capped-command-output-${seq++}`);
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      request.capture?.push("stdout", Buffer.concat([
+        Buffer.alloc(WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt - 1, 120),
+        Buffer.from("🙂", "utf8"),
+      ]));
+      const stdoutTemp = readdirSync(join(outputRoot, ".tmp"))
+        .find((name) => name.includes("-stdout-"));
+      assert.ok(stdoutTemp);
+      rmSync(join(outputRoot, ".tmp", stdoutTemp), { force: true });
+      return {
+        result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-capped-output-failure-${seq++}` };
+
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+for (const failurePoint of ["reservation", "finalization", "supervisor-and-finalization"] as const) {
+  test(`artifact ${failurePoint} database failure settles the lease before propagating`, async () => {
+    const { repoRoot, headSha } = gitRepo();
+    const pool = fakePool(repoRoot, 1);
+    const leases = new CheckLeaseManager(db, {
+      verifyBase: verifyPinnedBase,
+      acquisitionProvider: modeledProvider(pool.cli),
+    });
+    const databaseError = new Error("injected artifact database failure");
+    const supervisorError = new Error("injected supervisor failure");
+    class FailingArtifacts extends WorkflowCommandArtifactService {
+      override beginCapture(input: Parameters<ArtifactService["beginCapture"]>[0]) {
+        if (failurePoint === "reservation") throw databaseError;
+        return super.beginCapture(input);
+      }
+      override finalizeCapture(...args: Parameters<ArtifactService["finalizeCapture"]>) {
+        if (failurePoint !== "reservation") throw databaseError;
+        return super.finalizeCapture(...args);
+      }
+    }
+    let launched = false;
+    const runtime = new CheckRuntime(leases, {
+      artifacts: new FailingArtifacts(db, join(home, `metadata-failure-${seq++}`)),
+      leaseStore: leaseRows,
+      platform: () => ({ supported: true, note: "" }),
+      supervise: async () => {
+        launched = true;
+        if (failurePoint === "supervisor-and-finalization") throw supervisorError;
+        return {
+          result: { kind: "exited", exitCode: 0, output: "ok", truncatedBytes: 0 },
+          emptiness: "empty",
+          supervisor: null,
+        };
+      },
+    });
+    const ref = { ...attemptRef(), runId: `run-metadata-failure-${seq++}` };
+    await assert.rejects(runtime.executorFor(ref)({
+      slot: "test", command: PASSES, repoRoot, workingSubpath: "", headSha,
+    }), (error: unknown) => failurePoint === "supervisor-and-finalization"
+      ? error instanceof AggregateError
+        && error.errors[0] === supervisorError && error.errors[1] === databaseError
+      : error === databaseError);
+    assert.equal(launched, failurePoint !== "reservation");
+    if (failurePoint === "supervisor-and-finalization") {
+      assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
+      // Unknown supervision cannot authorize release, but must drop this daemon's active
+      // claim so ordinary reclamation can settle it once the group is proven empty.
+      await leases.reclaimLeaked(async () => "empty");
+    }
+    assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+    assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), false);
+  });
+}
 
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();
@@ -849,6 +1006,7 @@ function seedCheckRun(
   id: string,
   repoRoot: string,
   headSha: string,
+  slot: WorkflowCheckSlot = "test",
 ): InstanceType<typeof WorkflowStore> {
   const context = contextAt(headSha);
   const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
@@ -863,7 +1021,10 @@ function seedCheckRun(
        id, workflow_id, version, source_draft_revision, graph_json,
        completion_policy_json, binding_defaults_json, published_at
      ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
-  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(checkGraph), defaults);
+  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify({
+    ...checkGraph,
+    nodes: checkGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot } : node),
+  }), defaults);
   const store = new WorkflowStore();
   const binding = store.insertBinding({
     id: `binding-${id}`,
@@ -891,6 +1052,78 @@ function seedCheckRun(
   }, 3);
   return store;
 }
+
+test("restart during CodeRabbit findings publication preserves raw output without completing the review", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const id = "coderabbit-publication-interrupted";
+  const store = seedCheckRun(id, repoRoot, headSha, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}` };
+  store.setRunState(ref.runId, "running", "persona_review");
+  store.insertAttempt({
+    id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4,
+  });
+  assert.deepEqual(store.reserveCheckRun(ref.runId, ref.attemptId, "coderabbit", 10, null),
+    { granted: true, spent: 0 });
+
+  const root = join(home, id);
+  const artifacts = new WorkflowCommandArtifactService(db, root);
+  const capture = artifacts.beginCapture({ ...ref, semanticBytes: 4 * 1024 * 1024 });
+  const finding = { type: "finding", severity: "minor", fileName: "root.txt", title: "Verify advisory",
+    comment: "This finding must survive in raw output when semantic publication is interrupted" };
+  const stdout = [finding, { type: "complete", status: "review_completed", outcome: "completed",
+    unreviewedFileCount: 0, findings: 1, gate: { threshold: "major", status: "passed", blockingFindings: 0 } }]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  const stderr = "review process exited before findings were published\n";
+  capture.push("stdout", Buffer.from(stdout));
+  capture.push("stderr", Buffer.from(stderr));
+  const raw = capture.finalize(true);
+  const reservation = () => db.prepare(
+    "SELECT state, retained_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?",
+  ).get(ref.attemptId);
+  assert.equal((reservation() as { state: string }).state, "reserved");
+  assert.deepEqual(raw.map((artifact) => [artifact.kind, artifact.availability, artifact.captureState]),
+    [["stdout", "retained", "complete"], ["stderr", "retained", "complete"]]);
+
+  // Crash after raw finalization, before publishFindings: startup must preserve those
+  // bodies and publish an explicit missing-findings descriptor rather than trust stdout.
+  const restarted = new WorkflowCommandArtifactService(db, root);
+  const recovered = restarted.listForAttempt(ref.attemptId);
+  assert.deepEqual(recovered.filter((artifact) => artifact.kind !== "findings"), raw);
+  for (const [kind, text] of [["stdout", stdout], ["stderr", stderr]]) {
+    const artifact = recovered.find((item) => item.kind === kind)!;
+    assert.equal(restarted.read({ ...ref, artifactId: artifact.id }).text, text);
+  }
+  const findings = recovered.find((artifact) => artifact.kind === "findings");
+  assert.ok(findings, "CodeRabbit recovery must describe unpublished findings explicitly");
+  assert.equal(findings.availability, "unavailable");
+  assert.equal(findings.captureState, "partial");
+  assert.match(findings.unavailableReason!, /interrupted/);
+  assert.throws(() => restarted.read({ ...ref, artifactId: findings.id }),
+    { code: "command_output_unavailable", status: 409 });
+  assert.deepEqual({ ...reservation() }, {
+    state: "interrupted", retained_bytes: Buffer.byteLength(stdout) + Buffer.byteLength(stderr),
+  });
+  restarted.recoverInterrupted();
+  assert.deepEqual(restarted.listForAttempt(ref.attemptId), recovered);
+  assert.deepEqual(restarted.publishFindings(ref, Buffer.from(JSON.stringify(finding) + "\n"), true), findings,
+    "late publication must not turn interrupted findings into a complete review");
+
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("startup recovery must not call a model"); },
+    checkDeps: () => { throw new Error("a fresh review is outside this recovery test"); },
+  });
+  engine.start();
+  // Startup recovery is synchronous. Stop before the queued pump executes a fresh attempt.
+  await engine.stop();
+  const interrupted = store.getAttempt(ref.attemptId)!;
+  assert.equal(interrupted.state, "error");
+  assert.match(interrupted.error!, /Interrupted by daemon restart/);
+  assert.equal(interrupted.verdict, null);
+  assert.equal(interrupted.output, null);
+  assert.notEqual(store.getRun(ref.runId)!.status, "completed");
+  assert.equal(store.latestAttemptForNode(ref.submissionId, "gate")!.state, "retry_wait");
+});
 
 async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {
   const started = Date.now();

@@ -102,7 +102,7 @@ export async function startDevDashboard(daemon: DaemonHandle): Promise<DevDashbo
       const response = await fetch(origin, { signal: AbortSignal.timeout(5_000) });
       // The dev entry module, which is the one line of `src/web/index.html` that says this
       // is the development document rather than a proxied error page.
-      if (response.ok && (await response.text()).includes("main.tsx")) break;
+      if (response.ok && (await response.text()).includes("bootstrap.ts")) break;
     } catch {
       // Not up yet.
     }

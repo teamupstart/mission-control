@@ -51,6 +51,10 @@ queue health, and the two irreversible operations (discard a queue, reset the in
 pseudonym). Both consent switches always open the panel rather than flipping from a search result,
 because the copy beside them is the substance of the decision.
 
+Both destination forms preserve unsaved endpoint and export-setting edits when configuration
+refreshes arrive. Edits made while a save is pending stay in the form for the next save; only
+the values submitted by the completed request are stored.
+
 Everything the panel does is also reachable over the loopback API:
 
 ```sh

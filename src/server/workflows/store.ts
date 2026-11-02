@@ -1,3 +1,5 @@
+import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
@@ -6,6 +8,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -81,6 +84,9 @@ import {
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
@@ -170,6 +176,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowCommandArtifactDescriptor,
   WorkflowAssetReferenceSet,
   WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
@@ -418,12 +425,15 @@ export const WORKFLOW_TABLES = [
   "session_actions",
   "workflow_commands",
   "workflow_command_overrides",
+  "workflow_builtin_round_limits",
   "workflow_definitions",
   "workflow_versions",
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
   "workflow_node_attempts",
+  "workflow_command_artifact_reservations",
+  "workflow_command_artifacts",
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
@@ -961,6 +971,9 @@ const WorkflowCommandRowSchema = z.object({
    * WHOLE slot to "Not configured", hiding a command that is perfectly good.
    */
   max_runs: z.unknown().optional(),
+  timeout_ms: z.unknown().optional(),
+  on_unavailable: z.unknown().optional(),
+  on_budget_exhausted: z.unknown().optional(),
   revision: positive,
   created_at: integer,
   updated_at: integer,
@@ -1018,10 +1031,31 @@ function readCommandMaxRuns(raw: unknown): number {
   );
 }
 
+function readCommandTimeoutMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
+  return Math.min(
+    Math.max(raw, WORKFLOW_COMMAND_TIMEOUT_MIN_MS),
+    WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  );
+}
+
+function readCommandFailurePolicy(raw: unknown): "skip" | "block" {
+  return (WORKFLOW_COMMAND_FAILURE_POLICIES as readonly unknown[]).includes(raw)
+    ? raw as "skip" | "block"
+    : "skip";
+}
+
 /** An override, or null when its argv is unreadable - in which case it is not projected. */
 function parseWorkflowCommandOverrideRow(
   row: WorkflowCommandOverrideRow,
 ): WorkflowCommandOverride | null {
+  if (row.slot === "coderabbit") {
+    try {
+      const review = CodeRabbitTuningSchema.parse(JSON.parse(row.command_json));
+      return { repoRoot: row.repo_root, command: [], review };
+    } catch (error) { diagnose(error); return null; }
+  }
   const command = readCommandArgv(
     "workflow_command_overrides",
     `${row.slot}:${row.repo_root}`,
@@ -1044,7 +1078,7 @@ function sameOverrides(
   a: readonly WorkflowCommandOverride[],
   b: readonly WorkflowCommandOverride[],
 ): boolean {
-  const byPath = new Map(a.map((entry) => [entry.repoRoot, entry.command]));
+  const byPath = new Map(a.map((entry) => [entry.repoRoot, JSON.stringify(entry.review ?? entry.command)]));
   // A list carrying the same path twice describes no set at all, so it can never be "the
   // configuration already stored" - the stored side is unique by its composite primary key.
   // Answering "unchanged" for one would silently keep a row it does not contain.
@@ -1054,8 +1088,7 @@ function sameOverrides(
   return b.every((entry) => {
     const command = byPath.get(entry.repoRoot);
     return command !== undefined
-      && command.length === entry.command.length
-      && command.every((arg, index) => arg === entry.command[index]);
+      && command === JSON.stringify(entry.review ?? entry.command);
   });
 }
 
@@ -1072,7 +1105,10 @@ function parseWorkflowCommandRow(
       "default_command_json",
       row.default_command_json,
     ),
-    maxRuns: readCommandMaxRuns(row.max_runs),
+    maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
+    timeoutMs: readCommandTimeoutMs(row.timeout_ms),
+    onUnavailable: readCommandFailurePolicy(row.on_unavailable),
+    onBudgetExhausted: readCommandFailurePolicy(row.on_budget_exhausted),
     overrides,
     revision: row.revision,
     createdAt: row.created_at,
@@ -1640,6 +1676,7 @@ export function parseWorkflowEvidenceStagingRow(value: unknown): WorkflowEvidenc
 
 const WorkflowEvidenceCoverageStagingRowSchema = z.object({
   id: nonempty.max(200),
+  is_current: z.union([z.literal(0), z.literal(1)]).optional().default(1),
   note_key: nonempty,
   client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
   criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
@@ -2468,7 +2505,7 @@ export type WorkflowCommandStoreWrite =
   | { ok: true; view: WorkflowCommandView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "duplicate_override";
+      reason: "not_found" | "revision_conflict" | "duplicate_override" | "invalid_recipe";
       current: WorkflowCommandView | null;
     };
 
@@ -2514,7 +2551,9 @@ export type WorkflowStoreWrite =
         | "archived"
         | "not_archived"
         | "active_binding"
-        | "builtin";
+        | "builtin"
+        /** A round limit can be set in place only on a built-in; a copy edits its own draft. */
+        | "not_builtin";
       current: WorkflowDefinition | null;
     };
 
@@ -2923,6 +2962,49 @@ function coverageSchemaReason(error: unknown): string {
  * verification it was captured for. So an unknown episode leaves provenance alone; only a known
  * one moves it.
  */
+/** One `workflow_builtin_round_limits` row, read. A null count is a reset to the shipped value. */
+interface BuiltinRoundLimit {
+  maxRepairRounds: number | null;
+  updatedAt: number;
+}
+
+/**
+ * The built-in with the operator's round limit applied to its definition and to every version.
+ *
+ * Every version, not only the current one, because the setting answers "how many repair
+ * rounds does this workflow get" and a new binding may pin any of them. The versions'
+ * graphs, policies and other binding defaults are untouched. A limit equal to what this
+ * build ships is no change at all, so the built-in comes back exactly as shipped.
+ */
+function withBuiltinRoundLimit(
+  builtin: BuiltinWorkflow,
+  limit: BuiltinRoundLimit | undefined,
+): BuiltinWorkflow {
+  const shippedMaxRepairRounds = builtin.definition.bindingDefaults.maxRepairRounds;
+  if (!limit) return builtin;
+  // A reset, or a value a later build now ships: the shipped built-in, still dated by the
+  // change, so an editor that refetches after a reset sees a newer definition than it holds.
+  if (limit.maxRepairRounds === null || limit.maxRepairRounds === shippedMaxRepairRounds) {
+    return {
+      ...builtin,
+      definition: { ...builtin.definition, updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt) },
+    };
+  }
+  const rounds = limit.maxRepairRounds;
+  const withRounds = <T extends { bindingDefaults: WorkflowDefinition["bindingDefaults"] }>(item: T): T => ({
+    ...item,
+    bindingDefaults: { ...item.bindingDefaults, maxRepairRounds: rounds },
+  });
+  return {
+    definition: {
+      ...withRounds(builtin.definition),
+      updatedAt: Math.max(builtin.definition.updatedAt, limit.updatedAt),
+      shippedMaxRepairRounds,
+    },
+    versions: builtin.versions.map(withRounds),
+  };
+}
+
 function restampsEpisode(stamped: string | null, episodeKey: string | null): boolean {
   return episodeKey !== null && stamped !== episodeKey;
 }
@@ -3494,6 +3576,24 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
+    const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
+    const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    // Earlier builds stored failed resolutions. Retry must resolve those again, while
+    // corrupt metadata still throws above rather than silently changing reviewed identity.
+    return comparison?.error === null ? comparison : null;
+  }
+
+  freezeCodeRabbitComparison(submissionId: string, comparison: CodeRabbitComparison): CodeRabbitComparison {
+    const frozen = this.getCodeRabbitComparison(submissionId);
+    if (frozen) return frozen;
+    if (comparison.error !== null) return comparison;
+    this.db.prepare(`UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ?
+      AND (coderabbit_json IS NULL OR json_extract(coderabbit_json, '$.error') IS NOT NULL)`)
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getCodeRabbitComparison(submissionId) ?? comparison;
+  }
+
   /**
    * Every built-in slot, in registry order, whether or not it has ever been written.
    *
@@ -3547,10 +3647,10 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, revision, created_at, updated_at)
-       VALUES (?, NULL, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
     return wasEmpty;
   }
 
@@ -3570,6 +3670,9 @@ export class WorkflowStore {
       defaultCommand: string[] | null;
       overrides: readonly WorkflowCommandOverride[];
       maxRuns: number;
+      timeoutMs?: number | null;
+      onUnavailable?: "skip" | "block";
+      onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
   ): WorkflowCommandStoreWrite {
@@ -3577,6 +3680,9 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
+    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+      return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
+    }
     // Refused here as well as at the route, because the store is the boundary a future
     // caller reaches without passing the schema. The composite PRIMARY KEY would refuse the
     // second row anyway, but as a constraint violation rather than a readable answer.
@@ -3595,7 +3701,8 @@ export class WorkflowStore {
       const updated = this.db
         .prepare(
           `UPDATE workflow_commands
-              SET default_command_json = ?, max_runs = ?, revision = revision + 1, updated_at = ?
+              SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3609,6 +3716,9 @@ export class WorkflowStore {
             Math.max(next.maxRuns, WORKFLOW_LIMITS.commandMaxRunsMin),
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
+          next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
+          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
           now,
           key,
           expectedRevision,
@@ -3630,7 +3740,7 @@ export class WorkflowStore {
         insert.run(
           key,
           entry.repoRoot,
-          JSON.stringify(entry.command),
+          JSON.stringify(entry.review ?? entry.command),
           previous.get(entry.repoRoot) ?? now,
           now,
         );
@@ -3860,11 +3970,15 @@ export class WorkflowStore {
       );
       this.db.prepare(
         `UPDATE workflow_commands
-            SET default_command_json = ?, max_runs = ?, revision = ?, updated_at = ?
+            SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                on_budget_exhausted = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
         row.maxRuns,
+        row.timeoutMs,
+        row.onUnavailable,
+        row.onBudgetExhausted,
         revision,
         now,
         row.slot,
@@ -3879,7 +3993,7 @@ export class WorkflowStore {
         insertOverride.run(
           row.slot,
           override.repoRoot,
-          JSON.stringify(override.command),
+          JSON.stringify(override.review ?? override.command),
           previousOverrides.get(override.repoRoot) ?? now,
           now,
         );
@@ -4058,6 +4172,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
+      if (slot === "coderabbit") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -4147,7 +4262,67 @@ export class WorkflowStore {
    * definition of a version list it did not also consult.
    */
   private builtinWorkflowDefinitions(): WorkflowDefinition[] {
-    return this.builtinWorkflows.map((builtin) => builtin.definition);
+    const limits = this.builtinRoundLimits();
+    return this.builtinWorkflows.map((builtin) =>
+      withBuiltinRoundLimit(builtin, limits.get(builtin.definition.id)).definition);
+  }
+
+  /** Every operator round limit, by built-in id. Rows naming no shipped built-in are ignored. */
+  private builtinRoundLimits(workflowId?: string): Map<string, BuiltinRoundLimit> {
+    const rows = (workflowId === undefined
+      ? this.db.prepare(`SELECT * FROM workflow_builtin_round_limits`).all()
+      : this.db.prepare(`SELECT * FROM workflow_builtin_round_limits WHERE workflow_id = ?`)
+        .all(workflowId)) as Array<Record<string, unknown>>;
+    const out = new Map<string, BuiltinRoundLimit>();
+    for (const row of rows) {
+      const rounds = row.max_repair_rounds === null ? null : Number(row.max_repair_rounds);
+      const updatedAt = Number(row.updated_at);
+      // An unreadable row is the shipped value, never a budget outside the binding schema.
+      if (typeof row.workflow_id !== "string"
+        || !Number.isSafeInteger(updatedAt)
+        || (rounds !== null && (!Number.isInteger(rounds)
+          || rounds < WORKFLOW_LIMITS.repairRoundsMin
+          || rounds > WORKFLOW_LIMITS.repairRoundsMax))) continue;
+      out.set(row.workflow_id, { maxRepairRounds: rounds, updatedAt });
+    }
+    return out;
+  }
+
+  /**
+   * Change the one setting a built-in workflow lets an operator change in place.
+   *
+   * Everything else about a built-in stays read-only, and nothing here can reach it: the only
+   * input is a round count. `null`, or the value this build ships, stores a NULL count so the
+   * built-in follows the shipped value again, including when a later build changes it, while
+   * the row keeps dating the definition with the time of the reset. The new
+   * value is what every NEW binding of any of its versions starts from; a binding or run that
+   * already exists keeps the budget it copied when it was created.
+   */
+  setBuiltinRoundLimit(
+    id: string,
+    maxRepairRounds: number | null,
+    updatedAt = Date.now(),
+  ): WorkflowStoreWrite {
+    return this.mutate((): WorkflowStoreWrite => {
+      const shipped = this.builtinWorkflows.find((builtin) => builtin.definition.id === id);
+      if (!shipped) {
+        const current = this.getWorkflowInTransaction(id);
+        return current
+          ? { ok: false, reason: "not_builtin", current }
+          : { ok: false, reason: "not_found", current: null };
+      }
+      const stored = maxRepairRounds === shipped.definition.bindingDefaults.maxRepairRounds
+        ? null
+        : maxRepairRounds;
+      this.db.prepare(
+        `INSERT INTO workflow_builtin_round_limits (workflow_id, max_repair_rounds, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(workflow_id) DO UPDATE SET
+           max_repair_rounds = excluded.max_repair_rounds,
+           updated_at = excluded.updated_at`,
+      ).run(id, stored, updatedAt);
+      return { ok: true, workflow: this.builtinWorkflowById(id)!.definition };
+    }, (result) => result.ok ? { kind: "definition", id, now: updatedAt } : null);
   }
 
   private sortWorkflows(workflows: WorkflowDefinition[]): WorkflowDefinition[] {
@@ -4155,21 +4330,29 @@ export class WorkflowStore {
       a.normalizedName.localeCompare(b.normalizedName, "en-US") || a.id.localeCompare(b.id));
   }
 
+  /**
+   * A shipped workflow as this installation runs it: the catalog entry with the operator's
+   * round limit, if any, applied. Every built-in read goes through here or
+   * `builtinWorkflowDefinitions`, so no reader can see the shipped budget while another sees
+   * the operator's.
+   */
   private builtinWorkflowById(id: string): BuiltinWorkflow | null {
-    return this.builtinWorkflows.find((builtin) => builtin.definition.id === id) ?? null;
+    const builtin = this.builtinWorkflows.find((candidate) => candidate.definition.id === id);
+    return builtin ? withBuiltinRoundLimit(builtin, this.builtinRoundLimits(id).get(id)) : null;
   }
 
   private builtinWorkflowNamed(normalizedName: string): WorkflowDefinition | null {
-    return this.builtinWorkflows
-      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition ?? null;
+    const id = this.builtinWorkflows
+      .find((builtin) => builtin.definition.normalizedName === normalizedName)?.definition.id;
+    return id === undefined ? null : this.builtinWorkflowById(id)?.definition ?? null;
   }
 
   private builtinWorkflowVersion(id: string): WorkflowVersion | null {
-    for (const builtin of this.builtinWorkflows) {
-      const version = builtin.versions.find((candidate) => candidate.id === id);
-      if (version) return version;
-    }
-    return null;
+    const builtin = this.builtinWorkflows.find((candidate) =>
+      candidate.versions.some((version) => version.id === id));
+    if (!builtin) return null;
+    return this.builtinWorkflowById(builtin.definition.id)!.versions
+      .find((candidate) => candidate.id === id) ?? null;
   }
 
   listWorkflows(includeArchived = false): WorkflowDefinition[] {
@@ -5258,6 +5441,7 @@ export class WorkflowStore {
     now = Date.now(),
     episodeKey: string | null = null,
     coverage: readonly WorkflowStagedEvidenceCoverageWrite[] = [],
+    withdrawClientCriterionIds: readonly string[] = [],
   ): WorkflowStagedEvidenceList {
     const validatedItems = items.map((item) => ({
       ...item,
@@ -5279,12 +5463,112 @@ export class WorkflowStore {
         `SELECT * FROM workflow_evidence_coverage_staging WHERE note_key = ?`,
       ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceCoverageStagingRow);
       const existingCoverage = new Map(
-        existingCoverageRows.map((row) => [row.client_criterion_id, row]),
+        existingCoverageRows.filter(row => row.is_current === 1).map((row) => [row.client_criterion_id, row]),
       );
+      const retireIds = new Set(withdrawClientCriterionIds);
+      const scopedRetirements = new Map<string, Set<string>>();
+      const retireReplacedClaim = (id: string, claim: WorkflowStagedEvidenceCoverageWrite) => {
+        const versions = existingCoverageRows.filter(row => row.client_criterion_id === id);
+        if (claim.repositoryScope === "all" || (versions.length > 0
+            && versions.every(row => row.repository_scope !== "all" && row.source_root === claim.sourceRoot))) {
+          retireIds.add(id);
+        } else if (versions.length === 0 || versions.some(row => row.repository_scope === "all" || row.source_root === claim.sourceRoot)) {
+          const roots = scopedRetirements.get(id) ?? new Set<string>();
+          roots.add(claim.sourceRoot);
+          scopedRetirements.set(id, roots);
+        }
+      };
+      const priorMappings = !coverage.some((claim) => claim.criterionId) ? [] : this.activeBindingsForNote(noteKey).flatMap((binding) => {
+        const run = this.activeRunForBinding(binding.id);
+        let source = run ? this.latestSubmission(run.id) : null;
+        const visited = new Set<string>();
+        // Failed capture packets have no mappings yet. Follow the same ancestry as evidence
+        // inheritance so a replacement can retire semantic claims from the completed capture.
+        while (source && !visited.has(source.id)) {
+          visited.add(source.id);
+          const context = WorkflowContextSnapshotSchema.safeParse(source.context);
+          if (context.success && context.data.criterionMappings.length > 0) return context.data.criterionMappings;
+          if (source.status !== "failed" || source.repositoryFingerprint) break;
+          source = this.evidenceInheritanceSource(source)?.source ?? null;
+        }
+        return [];
+      });
+      for (const claim of coverage) {
+        for (const id of claim.supersedes ?? []) retireIds.add(id);
+        if (!claim.criterionId) continue;
+        for (const row of existingCoverageRows) {
+          if (row.client_criterion_id !== claim.clientCriterionId && row.criterion_id === claim.criterionId) {
+            retireReplacedClaim(row.client_criterion_id, claim);
+          }
+        }
+        for (const mapping of priorMappings) {
+          if (mapping.criterionId !== claim.criterionId) continue;
+          for (const id of mapping.matchedClientCriterionIds) {
+            const prior = existingCoverage.get(id);
+            // An uncited claim can still prove another criterion. The new binding wins here
+            // without retiring that shared proof; explicit supersedes retires the whole id.
+            const coversAnotherCriterion = !prior?.criterion_id && priorMappings.some((other) =>
+              other.criterionId !== claim.criterionId && other.matchedClientCriterionIds.includes(id));
+            if (id !== claim.clientCriterionId
+                && (!prior?.criterion_id || prior.criterion_id === claim.criterionId)
+                && !coversAnotherCriterion) retireReplacedClaim(id, claim);
+          }
+        }
+      }
+      if (coverage.some((claim) => retireIds.has(claim.clientCriterionId) || scopedRetirements.has(claim.clientCriterionId))) {
+        throw new WorkflowImageEvidenceError("coverage_invalid", "A claim cannot be registered and withdrawn or superseded in the same call");
+      }
+      const retired = this.db.prepare(
+        "SELECT client_criterion_id, staging_ids_json, source_roots_json FROM workflow_evidence_coverage_retirements WHERE note_key = ?",
+      ).all(noteKey) as Array<{ client_criterion_id: string; staging_ids_json: string; source_roots_json: string | null }>;
+      const changedRetirements = new Map<string, Set<string> | null>();
+      for (const id of new Set([...retireIds, ...scopedRetirements.keys()])) {
+        const registration = existingCoverage.get(id);
+        // A typo is not a material evidence change. Frozen-only claims still count even
+        // when their mutable registration has already left the tray.
+        if (!existingCoverageRows.some(row => row.client_criterion_id === id)
+            && !this.db.prepare(`SELECT 1 FROM workflow_submission_evidence_coverage c
+              JOIN workflow_submissions s ON s.id = c.submission_id
+              JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+              WHERE b.note_key = ? AND c.client_criterion_id = ? LIMIT 1`).get(noteKey, id)) continue;
+        // A replacement shares a generation with its predecessor's retirement. Only the
+        // retired version ids tell us whether the current registration was already retired.
+        const previous = retired.filter(row => row.client_criterion_id === id
+          && (!registration || (JSON.parse(row.staging_ids_json) as string[]).includes(registration.id)));
+        if (previous.some(row => row.source_roots_json === null)) continue;
+        if (retireIds.has(id)) changedRetirements.set(id, null);
+        else {
+          const retiredRoots = new Set(previous.flatMap(row => JSON.parse(row.source_roots_json!) as string[]));
+          const roots = new Set([...scopedRetirements.get(id)!].filter(root => !retiredRoots.has(root)));
+          if (roots.size > 0) changedRetirements.set(id, roots);
+        }
+      }
       const changedItems: WorkflowStagedEvidenceWrite[] = [];
       const changedCoverage: WorkflowStagedEvidenceCoverageWrite[] = [];
       const affectedRoots = new Set<string>();
       let allAffected = false;
+      const globallyRetiredVersions = new Set(retired.filter(row => row.source_roots_json === null)
+        .flatMap(row => JSON.parse(row.staging_ids_json) as string[]));
+      for (const [id, roots] of changedRetirements) {
+        if (roots) {
+          for (const root of roots) affectedRoots.add(root);
+          continue;
+        }
+        // Global withdrawal retires every live version, including earlier shared proof
+        // retained for siblings and legacy versions that survive only in frozen packets.
+        const frozen = this.db.prepare(`SELECT c.staging_id AS id, c.repository_scope,
+            CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+          FROM workflow_submission_evidence_coverage c JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{
+            id: string; repository_scope: string; source_root: string | null;
+          }>;
+        for (const version of [...existingCoverageRows.filter(row => row.client_criterion_id === id), ...frozen]) {
+          if (globallyRetiredVersions.has(version.id)) continue;
+          if (version.repository_scope === "all") allAffected = true;
+          else if (version.source_root) affectedRoots.add(version.source_root);
+        }
+      }
       /*
        * Return byte-identical evidence to the mutable tray instead of doing nothing.
        *
@@ -5333,9 +5617,8 @@ export class WorkflowStore {
             "evidence_reserved",
             `Workflow evidence item ${item.clientItemId} is already reserved`
               + " and its content changed. Register the new content under a new id."
-              + " A claim that cited the old id needs re-registering under a new criterion id"
-              + " pointing at the new one; keep its criterion text identical so it supersedes"
-              + " the claim it replaces.",
+              + " Update the claim's links using the same clientCriterionId, or register a new"
+              + " claim with supersedes naming the old clientCriterionId.",
           );
         }
         changedItems.push(item);
@@ -5347,6 +5630,7 @@ export class WorkflowStore {
         const row = existingCoverage.get(claim.clientCriterionId);
         const same = row
           && row.criterion === claim.criterion
+          && row.criterion_id === (claim.criterionId ?? null)
           && row.proof_class === claim.proofClass
           && row.repository_scope === claim.repositoryScope
           && row.source_root === claim.sourceRoot
@@ -5357,19 +5641,13 @@ export class WorkflowStore {
           }
           continue;
         }
-        if (row?.reserved_group_key) {
-          throw new WorkflowImageEvidenceError(
-            "coverage_reserved",
-            `Workflow coverage claim ${claim.clientCriterionId} is already reserved`
-              + " and its content changed. Register the new claim under a new criterion id,"
-              + " keeping its criterion text identical to the reserved one: a replacement whose"
-              + " proof satisfies its declared class supersedes the claim it replaces. Its links"
-              + " may cite evidence an earlier submission already froze.",
-          );
-        }
+        // Frozen submissions own copies. Updating the mutable registration cannot rewrite them.
         changedCoverage.push(claim);
-        if (row?.repository_scope === "all" || claim.repositoryScope === "all") allAffected = true;
-        if (row && row.repository_scope !== "all") affectedRoots.add(row.source_root);
+        // An update may never freeze if its evidence later drifts. Retire its predecessor
+        // now so inheritance cannot resurrect that older proof in the receiving repository.
+        if (existingCoverageRows.some(prior => prior.client_criterion_id === claim.clientCriterionId)) changedRetirements.set(claim.clientCriterionId,
+          claim.repositoryScope === "all" ? null : new Set([claim.sourceRoot]));
+        if (claim.repositoryScope === "all") allAffected = true;
         if (claim.repositoryScope !== "all") affectedRoots.add(claim.sourceRoot);
       }
       /*
@@ -5422,7 +5700,7 @@ export class WorkflowStore {
         row.reserved_group_key = null;
         row.episode_key = episodeKey ?? row.episode_key;
       }
-      if (changedItems.length === 0 && changedCoverage.length === 0) {
+      if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetirements.size === 0) {
         return this.listWorkflowEvidence(noteKey);
       }
 
@@ -5490,7 +5768,7 @@ export class WorkflowStore {
       );
       const nextCoverage = [
         ...existingCoverageRows
-          .filter((row) => row.state === "staged" && !changedCriterionIds.has(row.client_criterion_id))
+          .filter((row) => row.is_current === 1 && row.state === "staged" && !changedCriterionIds.has(row.client_criterion_id) && !retireIds.has(row.client_criterion_id))
           .map(coverageClaimFromRow),
         ...changedCoverage.map(({ id: _id, sourceRoot: _sourceRoot, ...claim }) => claim),
       ];
@@ -5622,13 +5900,41 @@ export class WorkflowStore {
           now,
         );
       }
+      const retirementSequence = changedRetirements.size > 0 ? this.coverageRetirementSequence() + 1 : 0;
+      for (const [id, roots] of changedRetirements) {
+        const versions = this.db.prepare(`SELECT DISTINCT c.staging_id FROM workflow_submission_evidence_coverage c
+          JOIN workflow_submissions s ON s.id = c.submission_id
+          JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{ staging_id: string }>;
+        const stagingIds = new Set(versions.map(row => row.staging_id));
+        for (const registration of existingCoverageRows) {
+          if (registration.client_criterion_id === id) stagingIds.add(registration.id);
+        }
+        this.db.prepare(`INSERT OR IGNORE INTO workflow_evidence_coverage_retirements
+          (note_key, client_criterion_id, generation, sequence, staging_ids_json, source_roots_json) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(noteKey, id, owner.generation, retirementSequence, JSON.stringify([...stagingIds]), roots ? JSON.stringify([...roots]) : null);
+        if (!roots) this.db.prepare("DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ? AND client_criterion_id = ?")
+          .run(noteKey, id);
+        else {
+          // A shared claim displaced only here remains proof for siblings, including their
+          // first capture under a different reservation group and a different replacement id.
+          this.db.prepare(`UPDATE workflow_evidence_coverage_staging
+            SET is_current = 0, state = 'staged', reserved_group_key = NULL
+            WHERE note_key = ? AND client_criterion_id = ? AND repository_scope = 'all'`).run(noteKey, id);
+          this.db.prepare(`DELETE FROM workflow_evidence_coverage_staging
+            WHERE note_key = ? AND client_criterion_id = ? AND is_current = 0
+              AND repository_scope <> 'all' AND source_root IN (SELECT value FROM json_each(?))`)
+            .run(noteKey, id, JSON.stringify([...roots]));
+        }
+      }
       const writeCoverage = this.db.prepare(
         `INSERT INTO workflow_evidence_coverage_staging (
            id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
            repository_scope, source_root, links_json, episode_key, generation, state,
            reserved_group_key, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
-         ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
+         ON CONFLICT(note_key, client_criterion_id) WHERE is_current = 1 DO UPDATE SET
+           id = excluded.id,
            criterion = excluded.criterion,
            criterion_id = excluded.criterion_id,
            proof_class = excluded.proof_class,
@@ -5643,8 +5949,17 @@ export class WorkflowStore {
       );
       for (const claim of changedCoverage) {
         const prior = existingCoverage.get(claim.clientCriterionId);
+        if (prior && claim.repositoryScope !== "all"
+            && (prior.repository_scope === "all" || prior.source_root !== claim.sourceRoot)) {
+          // Keep the exact earlier version under the same caller id. A sibling with no
+          // submission yet has no frozen ancestor from which to recover this shared proof.
+          this.db.prepare(`UPDATE workflow_evidence_coverage_staging
+            SET is_current = 0, state = 'staged', reserved_group_key = NULL WHERE id = ?`).run(prior.id);
+        }
         writeCoverage.run(
-          prior?.id ?? claim.id,
+          // Every material edit is a new version. Retirement applies to the old proof,
+          // including shared proof retained for siblings, never to this replacement.
+          existingCoverageRows.some(row => row.client_criterion_id === claim.clientCriterionId) ? randomUUID() : claim.id,
           noteKey,
           claim.clientCriterionId,
           claim.criterion,
@@ -5674,7 +5989,7 @@ export class WorkflowStore {
     ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceStagingRow);
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
-        WHERE note_key = ? AND state = 'staged'
+        WHERE note_key = ? AND state = 'staged' AND is_current = 1
         ORDER BY created_at ASC, id ASC`,
     ).all(noteKey) as unknown[]).map(parseWorkflowEvidenceCoverageStagingRow);
     return {
@@ -5724,13 +6039,15 @@ export class WorkflowStore {
 
   /** Latest material staged-set change that applies to this one repository checkout. */
   workflowEvidenceGeneration(noteKey: string, sourceRoot: string): number {
+    // Keep legacy literal roots comparable while new registrations use the physical path.
     const row = this.db.prepare(
-      `SELECT MAX(o.all_generation, COALESCE(g.generation, 0)) AS generation
+      `SELECT MAX(o.all_generation, COALESCE((
+           SELECT MAX(g.generation) FROM workflow_evidence_scope_generations g
+           WHERE g.note_key = o.note_key AND g.source_root IN (?, ?)
+         ), 0)) AS generation
          FROM workflow_evidence_owners o
-         LEFT JOIN workflow_evidence_scope_generations g
-           ON g.note_key = o.note_key AND g.source_root = ?
         WHERE o.note_key = ?`,
-    ).get(sourceRoot, noteKey) as { generation: number } | undefined;
+    ).get(sourceRoot, sourceRoot ? canonicalWorktreePath(sourceRoot) : "", noteKey) as { generation: number } | undefined;
     return Number(row?.generation ?? 0);
   }
 
@@ -5791,44 +6108,60 @@ export class WorkflowStore {
     clientCriterionId: string,
     now = Date.now(),
   ): WorkflowStagedEvidenceList {
-    return transaction(this.db, () => {
-      const value = this.db.prepare(
-        `SELECT * FROM workflow_evidence_coverage_staging
-          WHERE note_key = ? AND client_criterion_id = ? AND state = 'staged'
-            AND reserved_group_key IS NULL`,
-      ).get(noteKey, clientCriterionId);
-      const claim = value ? parseWorkflowEvidenceCoverageStagingRow(value) : null;
-      const removed = this.db.prepare(
-        `DELETE FROM workflow_evidence_coverage_staging
-          WHERE note_key = ? AND client_criterion_id = ? AND state = 'staged'
-            AND reserved_group_key IS NULL`,
-      ).run(noteKey, clientCriterionId);
-      if (Number(removed.changes) > 0 && claim) {
-        this.db.prepare(
-          `UPDATE workflow_evidence_owners
-              SET generation = generation + 1, updated_at = ?
-            WHERE note_key = ?`,
-        ).run(now, noteKey);
-        const owner = this.db.prepare(
-          `SELECT generation FROM workflow_evidence_owners WHERE note_key = ?`,
-        ).get(noteKey) as { generation: number };
-        if (claim.repository_scope === "all") {
-          this.db.prepare(
-            `UPDATE workflow_evidence_owners SET all_generation = ? WHERE note_key = ?`,
-          ).run(owner.generation, noteKey);
-        } else {
-          this.db.prepare(
-            `INSERT INTO workflow_evidence_scope_generations (
-               note_key, source_root, generation, updated_at
-             ) VALUES (?, ?, ?, ?)
-             ON CONFLICT(note_key, source_root) DO UPDATE SET
-               generation = excluded.generation,
-               updated_at = excluded.updated_at`,
-          ).run(noteKey, claim.source_root, owner.generation, now);
-        }
-      }
-      return this.listWorkflowEvidence(noteKey);
-    });
+    return this.stageWorkflowEvidence(noteKey, [], now, null, [], [clientCriterionId]);
+  }
+
+  private coverageRetirementSequence(): number {
+    // Reserved snapshots keep the clock monotonic even after old retirement rows are pruned.
+    return (this.db.prepare(`SELECT MAX(
+      COALESCE((SELECT MAX(sequence) FROM workflow_evidence_coverage_retirements), 0),
+      COALESCE((SELECT MAX(coverage_retirement_sequence) FROM workflow_submissions), 0)
+    ) AS sequence`).get() as { sequence: number }).sequence;
+  }
+
+  /** Retirement is bounded by both the target reservation and its receiving repository. */
+  private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
+    if (stagingIds.length === 0) return new Set();
+    const target = this.db.prepare(`SELECT CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+      FROM workflow_submissions s JOIN workflow_runs r ON r.id = s.run_id
+      JOIN workflow_bindings b ON b.id = r.binding_id WHERE s.id = ?`).get(targetId) as { source_root: string | null } | undefined;
+    if (!target) return new Set();
+    const sourceRoot = target.source_root ? canonicalWorktreePath(target.source_root) : "";
+    const rows = this.db.prepare(`SELECT DISTINCT version.value AS staging_id
+      FROM workflow_evidence_coverage_retirements r
+      JOIN json_each(r.staging_ids_json) version
+      JOIN json_each(?) candidate ON candidate.value = version.value
+      JOIN workflow_submissions target ON target.id = ? AND r.sequence <= target.coverage_retirement_sequence
+      WHERE r.source_roots_json IS NULL OR EXISTS (
+        SELECT 1 FROM json_each(r.source_roots_json) root
+        WHERE root.value IN (?, ?)
+      )`).all(JSON.stringify(stagingIds), targetId, target.source_root ?? "", sourceRoot) as Array<{ staging_id: string }>;
+    return new Set(rows.map(row => row.staging_id));
+  }
+
+  /** Claim versions retired before the target reservation, independent of conversation reattachment. */
+  retiredSubmissionCoverageIds(submissionId: string, targetId: string): Set<string> {
+    const rows = this.db.prepare(`SELECT client_criterion_id, staging_id
+      FROM workflow_submission_evidence_coverage WHERE submission_id = ?`)
+      .all(submissionId) as Array<{ client_criterion_id: string; staging_id: string }>;
+    const retired = this.retiredCoverageVersions(rows.map(row => row.staging_id), targetId);
+    return new Set(rows.filter(row => retired.has(row.staging_id)).map(row => row.client_criterion_id));
+  }
+
+  /** One live version per caller id for this receiver, including retained staged siblings. */
+  private applicableCoverageRows(noteKey: string, groupKey: string, sourceRoot: string, submissionId: string): WorkflowEvidenceCoverageStagingRow[] {
+    const rows = (this.db.prepare(`SELECT * FROM workflow_evidence_coverage_staging
+      WHERE note_key = ? AND (is_current = 0 OR state = 'staged' OR reserved_group_key = ?)
+        AND (repository_scope = 'all' OR source_root IN (?, ?))
+      ORDER BY generation DESC, id ASC`).all(noteKey, groupKey, sourceRoot, sourceRoot ? canonicalWorktreePath(sourceRoot) : "") as unknown[])
+      .map(parseWorkflowEvidenceCoverageStagingRow);
+    const retired = this.retiredCoverageVersions(rows.map(row => row.id), submissionId);
+    const seen = new Set<string>();
+    return rows.filter(row => {
+      if (retired.has(row.id) || seen.has(row.client_criterion_id)) return false;
+      seen.add(row.client_criterion_id);
+      return true;
+    }).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
   }
 
   listReservedWorkflowEvidence(submissionId: string): WorkflowReservedEvidence[] {
@@ -6288,32 +6621,9 @@ export class WorkflowStore {
     ).all(input.sourceSubmissionId) as unknown[];
     const ownCoverage = this.listSubmissionCoverage(input.submissionId);
     let claimBudget = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims - ownCoverage.length;
-    /*
-     * Every frozen parent claim, retained whole, up to what a submission can hold.
-     *
-     * Not collapsed to one claim per criterion, and not reduced to a merge of its links into
-     * somebody else's claim. A claim is an author's assertion with its own id, proof class,
-     * scope and link set, and carrying a criterion's proof forward while discarding the claim
-     * that made it is not inheriting coverage - it is summarising it.
-     *
-     * The one bound is the frozen-coverage limit itself. `listSubmissionCoverage` reads this
-     * table through `WorkflowEvidenceCoverageClaimsSchema`, which caps a submission at
-     * `maxClaims`, so a carry that ignored it would not retain more coverage - it would make
-     * the submission's coverage unreadable and lose all of it. `maxClaims` is 100 and a
-     * submission cannot stage more than that either, so the bound is only reachable when a
-     * parent already at the cap meets a child that declared claims of its own. Reaching it is
-     * recorded as `evidence_carry_truncated` rather than passed over in silence.
-     *
-     * The reason this can be literal is that ambiguity moved to where it belongs.
-     * `evaluateWorkflowEvidenceReadiness` prefers a claim the author declared on THIS
-     * submission over the ancestry standing behind it, so retaining the ancestry no longer
-     * turns a clear current claim into `ambiguous_mapping`. Where a criterion has no claim of
-     * its own, the carried ones answer for it and are judged among themselves exactly as
-     * before, which is the case inheritance exists for.
-     *
-     * Newest first, so the claim budget is spent on the most recent ancestry when a run has
-     * more of it than the limit admits.
-     */
+    // Keep active ancestry within the frozen-coverage limit, newest declarations first.
+    // Retirement markers and new explicit bindings below remove superseded claims before
+    // spending the budget. Frozen historical packets themselves remain unchanged.
     const orderedCoverage = coverageRows
       .map((value) => ({
         claim: submissionCoverageClaimFromRow(value),
@@ -6358,8 +6668,11 @@ export class WorkflowStore {
      * is not a claim the limit turned away.
      */
     const declaredHere = new Set(ownCoverage.map((claim) => claim.clientCriterionId));
+    const retirements = this.retiredSubmissionCoverageIds(input.sourceSubmissionId, input.submissionId);
     for (const { claim, row } of orderedCoverage) {
       if (declaredHere.has(claim.clientCriterionId)) continue;
+      if (retirements.has(claim.clientCriterionId)) continue;
+      if (claim.criterionId && ownCoverage.some((own) => own.criterionId === claim.criterionId)) continue;
       if (claimBudget <= 0) {
         truncated.claims += 1;
         continue;
@@ -6376,8 +6689,7 @@ export class WorkflowStore {
       claimBudget -= 1;
       // `OR IGNORE` on (submission_id, client_criterion_id): where this submission declared a
       // claim under the same id, that is the same claim re-declared and the author's current
-      // wording wins. A DIFFERENT id for the same criterion is a different claim and is
-      // retained beside it.
+      // wording wins. Explicit replacements and withdrawals were filtered above.
       freezeCoverage.run(
         input.submissionId,
         row.staging_id,
@@ -8148,7 +8460,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND a.state NOT IN ('error', 'cancelled')
+            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -8160,6 +8472,15 @@ export class WorkflowStore {
         .run(slot, attemptId);
       return { granted: true, spent };
     });
+  }
+
+  /** Return this attempt's claim after the executor reports that no Command could start. */
+  releaseCheckRun(attemptId: string, slot: string): boolean {
+    return this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET check_run_slot = NULL
+        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+    ).run(attemptId, slot).changes === 1;
   }
 
   /**
@@ -8176,7 +8497,7 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND a.state NOT IN ('error', 'cancelled')`,
+          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }
@@ -8205,13 +8526,37 @@ export class WorkflowStore {
 
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
   listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
-    return (this.db.prepare(
+    const attempts = (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
          JOIN workflow_submissions s ON s.id = a.submission_id
         WHERE s.run_id = ?
         ORDER BY s.round ASC, s.segment ASC,
                  a.created_at ASC, a.node_id ASC, a.attempt ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_command_artifacts WHERE run_id = ? ORDER BY attempt_id, kind`,
+    ).all(runId) as Array<{
+      id: string; attempt_id: string; kind: "stdout" | "stderr" | "findings";
+      retained_bytes: number; observed_bytes: number; dropped_bytes: number;
+      sha256: string | null; capture_state: "complete" | "partial";
+      availability: "retained" | "pruned" | "unavailable";
+      unavailable_reason: string | null;
+    }>;
+    const byAttempt = new Map<string, WorkflowCommandArtifactDescriptor[]>();
+    for (const row of rows) {
+      const items = byAttempt.get(row.attempt_id) ?? [];
+      items.push({
+        id: row.id, kind: row.kind, retainedBytes: row.retained_bytes,
+        observedBytes: row.observed_bytes, droppedBytes: row.dropped_bytes,
+        sha256: row.sha256, captureState: row.capture_state,
+        availability: row.availability, unavailableReason: row.unavailable_reason,
+      });
+      byAttempt.set(row.attempt_id, items);
+    }
+    return attempts.map((attempt) => {
+      const commandArtifacts = byAttempt.get(attempt.id);
+      return commandArtifacts ? { ...attempt, commandArtifacts } : attempt;
+    });
   }
 
   listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
@@ -8352,7 +8697,7 @@ export class WorkflowStore {
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.listEvents(runId).find((event) =>
-        event.kind === "manual_infrastructure_retry"
+        (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry")
         && event.payload
         && !Array.isArray(event.payload)
         && typeof event.payload === "object"
@@ -8363,6 +8708,10 @@ export class WorkflowStore {
           submission: this.mustSubmission(submissionId),
           idempotent: true,
         };
+      }
+      const recoveryPhase = this.mustRun(runId).currentPhase;
+      if (recoveryPhase !== "infrastructure_error" && recoveryPhase !== "command_action_required") {
+        throw new Error(`Workflow run ${runId} is not in a retryable Command phase`);
       }
       const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
       if (!latest || latest.state !== "error") {
@@ -8393,13 +8742,15 @@ export class WorkflowStore {
       if (!this.reviveFailedSubmission(
         submissionId,
         runId,
-        "infrastructure_error",
+        recoveryPhase,
         now,
       )) {
         throw new Error(`Workflow submission ${submissionId} cannot be revived`);
       }
       this.setRunState(runId, "running", "persona_review", null, now);
-      this.appendEvent(runId, "manual_infrastructure_retry", {
+      this.appendEvent(runId, recoveryPhase === "command_action_required"
+        ? "manual_command_retry"
+        : "manual_infrastructure_retry", {
         requestId,
         nodeAttemptId: latest.id,
         reactivatedNodeAttemptIds: errored.map((attempt) => attempt.id),
@@ -9332,12 +9683,15 @@ export class WorkflowStore {
         triggerSource: input.automatic ? "session" : "manual", triggerKey: key, mode: parent.mode,
         context: workflowJson(recovered), evidence: workflowJson(context.evidence), reserveEvidence: false, now: input.now,
       });
+      // Keep the parent's frozen proof, but honor withdrawals committed before this recovery.
+      const generation = Math.max(parent.stagedImageGeneration ?? 0,
+        this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
+      this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
+        .run(generation, input.id);
       this.inheritSubmissionEvidenceInTransaction({
         submissionId: input.id, sourceSubmissionId: parent.id,
         stagingIds: this.listInheritableSubmissionEvidence(parent.id).map((item) => item.stagingId), now: input.now,
       });
-      this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
-        .run(parent.stagedImageGeneration ?? 0, input.id);
       this.db.prepare(`UPDATE workflow_deliveries SET state = 'cancelled', error = 'superseded_by_evidence_recovery', updated_at = ?
         WHERE run_id = ? AND state = 'prepared'`).run(input.now, run.id);
       this.setRunState(run.id, "capturing", "evidence_readiness_capture", null, input.now);
@@ -10037,6 +10391,11 @@ export class WorkflowStore {
               ) AND availability = 'retained'`,
           ).run(input.now, runId);
           this.db.prepare(
+            `UPDATE workflow_command_artifacts
+                SET availability = 'pruned', pruned_at = ?
+              WHERE run_id = ? AND availability = 'retained'`,
+          ).run(input.now, runId);
+          this.db.prepare(
             `UPDATE workflow_deliveries
                 SET payload = '', payload_pruned_at = ?,
                     error = CASE
@@ -10123,6 +10482,8 @@ export class WorkflowStore {
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               )`,
           ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
           this.db.prepare(
             `DELETE FROM workflow_node_attempts
               WHERE submission_id IN (
@@ -10761,6 +11122,8 @@ export class WorkflowStore {
         `SELECT id FROM workflow_bindings WHERE note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
+        this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
         ).run(runId);
@@ -10799,6 +11162,12 @@ export class WorkflowStore {
       ).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_bindings WHERE note_key = ?`).run(noteKey);
       this.db.prepare(`DELETE FROM workflow_evidence_staging WHERE note_key = ?`).run(noteKey);
+      this.db.prepare(`DELETE FROM workflow_evidence_coverage_retirements WHERE
+        (note_key = ? OR NOT EXISTS (SELECT 1 FROM workflow_evidence_owners owner
+          WHERE owner.note_key = workflow_evidence_coverage_retirements.note_key)) AND NOT EXISTS (
+        SELECT 1 FROM json_each(staging_ids_json) version
+        JOIN workflow_submission_evidence_coverage c ON c.staging_id = version.value
+      )`).run(noteKey);
       this.db.prepare(
         `DELETE FROM workflow_evidence_coverage_staging WHERE note_key = ?`,
       ).run(noteKey);
@@ -10962,6 +11331,8 @@ export class WorkflowStore {
         input.status ?? "capturing",
         input.now,
       );
+      this.db.prepare("UPDATE workflow_submissions SET coverage_retirement_sequence = ? WHERE id = ?")
+        .run(this.coverageRetirementSequence(), input.id);
       if (input.reserveEvidence !== false) this.reserveWorkflowEvidenceInTransaction(
         input.id,
         input.evidenceGroupKey ?? input.triggerKey,
@@ -10978,32 +11349,37 @@ export class WorkflowStore {
   ): void {
     const owner = this.db.prepare(
       `SELECT b.note_key,
-              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root,
-              MAX(COALESCE(o.all_generation, 0), COALESCE(g.generation, 0)) AS generation
+              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
          FROM workflow_submissions s
          JOIN workflow_runs r ON r.id = s.run_id
          JOIN workflow_bindings b ON b.id = r.binding_id
-         LEFT JOIN workflow_evidence_owners o ON o.note_key = b.note_key
-         LEFT JOIN workflow_evidence_scope_generations g
-           ON g.note_key = b.note_key
-          AND g.source_root = CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END
         WHERE s.id = ?`,
     ).get(submissionId) as {
       note_key: string;
       checkout_root: string | null;
-      generation: number;
     } | undefined;
     if (!owner) throw new Error(`Workflow submission ${submissionId} has no evidence owner`);
+    const checkoutRoot = owner.checkout_root ? canonicalWorktreePath(owner.checkout_root) : "";
     this.db.prepare(
       `UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?`,
-    ).run(owner.generation, submissionId);
+    ).run(this.workflowEvidenceGeneration(owner.note_key, owner.checkout_root ?? ""), submissionId);
+    const coverageRows = this.applicableCoverageRows(owner.note_key, groupKey, owner.checkout_root ?? "", submissionId);
+    // A current replacement can share the retained sibling version's proof. Reuse only
+    // that shared proof here; ordinary ancestor evidence still goes through inheritance.
+    const retainedItemIds = new Set((this.db.prepare(`SELECT * FROM workflow_evidence_coverage_staging
+      WHERE note_key = ? AND is_current = 0`).all(owner.note_key) as unknown[])
+      .map(parseWorkflowEvidenceCoverageStagingRow)
+      .flatMap(row => coverageClaimFromRow(row).links.map(link => link.clientItemId)));
+    const linkedItemIds = new Set(coverageRows
+      .flatMap(row => coverageClaimFromRow(row).links.map(link => link.clientItemId))
+      .filter(id => retainedItemIds.has(id)));
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_staging
         WHERE note_key = ?
-          AND (state = 'staged' OR reserved_group_key = ?)
-          AND (repository_scope = 'all' OR source_root = ?)
+          AND (state = 'staged' OR reserved_group_key = ? OR client_item_id IN (SELECT value FROM json_each(?)))
+          AND (repository_scope = 'all' OR source_root IN (?, ?))
         ORDER BY created_at ASC, id ASC`,
-    ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
+    ).all(owner.note_key, groupKey, JSON.stringify([...linkedItemIds]), owner.checkout_root ?? "", checkoutRoot) as unknown[])
       .map(parseWorkflowEvidenceStagingRow);
     const imageRows = rows.filter((row) => row.evidence_kind === "image");
     const textRows = rows.filter((row) => row.evidence_kind === "text");
@@ -11033,8 +11409,11 @@ export class WorkflowStore {
         WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ?)`,
     );
     rows.forEach((row, ordinal) => {
-      const marked = mark.run(groupKey, now, row.id, groupKey);
-      if (Number(marked.changes) !== 1) {
+      // The per-submission reservation grants access without stealing the staging row's
+      // original reservation from another repository or rewriting its frozen snapshot.
+      const reused = row.state === "reserved" && linkedItemIds.has(row.client_item_id);
+      const marked = reused ? null : mark.run(groupKey, now, row.id, groupKey);
+      if (marked && Number(marked.changes) !== 1) {
         throw new Error(`Workflow evidence item ${row.client_item_id} was reserved concurrently`);
       }
       reserve.run(row.id, submissionId, ordinal, now);
@@ -11043,14 +11422,6 @@ export class WorkflowStore {
       repositoryScope: row.repository_scope,
       sourceRoot: row.source_root,
     }] as const));
-    const coverageRows = (this.db.prepare(
-      `SELECT * FROM workflow_evidence_coverage_staging
-        WHERE note_key = ?
-          AND (state = 'staged' OR reserved_group_key = ?)
-          AND (repository_scope = 'all' OR source_root = ?)
-        ORDER BY created_at ASC, id ASC`,
-    ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
-      .map(parseWorkflowEvidenceCoverageStagingRow);
     if (coverageRows.length > WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims) {
       throw new Error(
         `At most ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims} workflow coverage claims apply to a submission`,
@@ -11097,8 +11468,8 @@ export class WorkflowStore {
           && coverageLinkSatisfiesScope(item, claim.repositoryScope, row.source_root);
       });
       if (!coherent) continue;
-      const marked = markCoverage.run(groupKey, now, row.id, groupKey);
-      if (Number(marked.changes) !== 1) {
+      const marked = row.is_current === 1 ? markCoverage.run(groupKey, now, row.id, groupKey) : null;
+      if (marked && Number(marked.changes) !== 1) {
         throw new Error(
           `Workflow coverage claim ${row.client_criterion_id} was reserved concurrently`,
         );
@@ -11126,7 +11497,7 @@ export class WorkflowStore {
    * `inheritSubmissionEvidence` has run, so it is answering about an incomplete submission. A
    * refinement child reserves under its own group key, which makes everything its parent holds
    * inapplicable, so a replacement claim citing round-1 proof was judged incoherent and left
-   * staged - the exact repair `coverage_reserved` instructs an author to make, refused for a
+   * staged, refusing a replacement registration for a
    * reason that had already stopped being true by the time anybody could read the result.
    *
    * Deliberately a second pass rather than a reordering. A submission's own capture must keep
@@ -11185,14 +11556,7 @@ export class WorkflowStore {
           sourceRoot: row.source_root,
         }] as const),
       );
-      const candidates = (this.db.prepare(
-        `SELECT * FROM workflow_evidence_coverage_staging
-          WHERE note_key = ?
-            AND (state = 'staged' OR reserved_group_key = ?)
-            AND (repository_scope = 'all' OR source_root = ?)
-          ORDER BY created_at ASC, id ASC`,
-      ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
-        .map(parseWorkflowEvidenceCoverageStagingRow);
+      const candidates = this.applicableCoverageRows(owner.note_key, groupKey, owner.checkout_root ?? "", input.submissionId);
       if (candidates.length === 0) return { frozen: [], unresolved: [] };
       const held = new Set(
         this.listSubmissionCoverage(input.submissionId).map((claim) => claim.clientCriterionId),
@@ -11211,9 +11575,9 @@ export class WorkflowStore {
       );
       const freezeCoverage = this.db.prepare(
         `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-           submission_id, staging_id, client_criterion_id, criterion, proof_class,
+           submission_id, staging_id, client_criterion_id, criterion, criterion_id, proof_class,
            repository_scope, links_json, generation, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const frozen: string[] = [];
       const unresolved: Array<{ clientCriterionId: string; unresolvedLinks: string[] }> = [];
@@ -11231,8 +11595,8 @@ export class WorkflowStore {
           unresolved.push({ clientCriterionId: claim.clientCriterionId, unresolvedLinks });
           continue;
         }
-        const marked = markCoverage.run(groupKey, now, row.id, groupKey);
-        if (Number(marked.changes) !== 1) {
+        const marked = row.is_current === 1 ? markCoverage.run(groupKey, now, row.id, groupKey) : null;
+        if (marked && Number(marked.changes) !== 1) {
           throw new Error(
             `Workflow coverage claim ${row.client_criterion_id} was reserved concurrently`,
           );
@@ -11242,6 +11606,7 @@ export class WorkflowStore {
           row.id,
           claim.clientCriterionId,
           claim.criterion,
+          claim.criterionId ?? null,
           claim.proofClass,
           claim.repositoryScope,
           JSON.stringify(claim.links),

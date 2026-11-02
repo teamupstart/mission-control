@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
@@ -10,7 +11,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT } from "./config.ts";
+import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
@@ -34,7 +35,7 @@ import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
-import { TaskManager } from "./tasks.ts";
+import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
@@ -50,9 +51,10 @@ import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
+import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
-import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
 import { setLlmSpendSink } from "./llm/spend.ts";
@@ -80,6 +82,8 @@ import {
 import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
+import { ResidentManager } from "./residents/manager.ts";
+import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
@@ -300,7 +304,8 @@ const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
-const checkRuntime = new CheckRuntime(checkLeases);
+const commandArtifacts = new WorkflowCommandArtifactService();
+const checkRuntime = new CheckRuntime(checkLeases, { artifacts: commandArtifacts });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
@@ -352,6 +357,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  commandArtifacts,
   // The gate stops being a formality here. A configured, allowlisted check now leases a
   // pooled worktree pinned to the captured commit, runs the operator's argv in it, and a
   // non-zero exit FAILS the submission - where before it recorded "not run" and passed.
@@ -383,6 +389,26 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+// Resident profiles and the one resident launch path. It creates its tasks through
+// `TaskManager.create` with the resident capability, and the dispatcher asks it for each
+// resident's standing instructions, so both directions are installed here, after both exist.
+// Its startup reconciliation writes durable rows and starts after the port is won, below.
+const residents = new ResidentManager({
+  registry,
+  createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+  persona: (id) => personas.store.getPersona(id),
+  launchResponseWaitMs: residentLaunchWaitMs(),
+  hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
+  // The real harness configuration, read only - never written.
+  mcpCatalog: new ResidentMcpCatalogCache(readGlobalMcp),
+});
+const residentLoop = new ResidentLoop({ registry, sdk: sdkSessions, refreshSession: (session) => refreshRuntimeMeta(registry, session) });
+tasks.registerResidentLaunch(
+  (task, repository, runtime) => residents.composeLaunch(task, repository, runtime),
+  (task) => residents.mcpLaunchForTask(task),
+);
+// A resumed resident renders its MCP servers from its run's snapshot, through the same reader.
+sdkSessions.registerResidentMcp((task) => residents.mcpLaunchForTask(task));
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.
@@ -686,6 +712,8 @@ const app = buildApp({
   personas,
   workflows,
   schedules,
+  residents,
+  residentLoop,
   ensembles,
   sdkSessions,
   sessionActions,
@@ -727,7 +755,11 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // so it cannot launch a driver.
   void startDiscoveryAfterSdkRestore(
     sdkSessions.restore(),
-    () => startPoller(registry),
+    () => {
+      // Every native session must be restored before claim reconciliation reads its transcript.
+      residentLoop.start();
+      return startPoller(registry);
+    },
     () => shutdownStarted,
     (err) => console.error("[sdk] could not restore embedded sessions:", err),
   ).then((stop) => {
@@ -754,6 +786,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
+  // Settle resident runs a previous process left pending, from session-start evidence, then
+  // follow run ends. After the port for the reason the schedules above are: it writes rows.
+  residents.start();
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
@@ -901,6 +936,7 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
@@ -926,6 +962,8 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  await stoppingResidentLoop;
+  await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.

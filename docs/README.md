@@ -13,6 +13,7 @@ Mission Control's product reference is organized by feature below.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)
+- [Residents](residents.md): long-running agents launched from resident profiles.
 - [Pipelines (external SDLC engines)](pipelines.md)
 - [Archives](archives.md)
 - [Attention, alerts, and away mode](attention-and-alerts.md)
@@ -48,6 +49,7 @@ Mission Control's product reference is organized by feature below.
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
 - [Desktop shell and packaging](desktop-and-packaging.md)
+- [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)
 
 ## Contributing and setup

@@ -67,6 +67,8 @@ export const SettingsBackupCountsSchema = z.object({
   workflowCommands: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
   workflowDefinitions: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
   workflowVersions: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
+  /** Absent on a snapshot written before resident profiles were backed up. */
+  residentProfiles: z.number().int().nonnegative().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).optional(),
 }).strict();
 
 const SettingsBackupEnvelopeV1BaseSchema = z.object({
@@ -143,6 +145,8 @@ export const SettingsRestorePreviewSchema = z.object({
   workflowCommandsChanged: z.number().int().nonnegative(),
   workflows: SettingsRestoreCatalogChangesSchema,
   workflowVersions: SettingsRestoreVersionChangesSchema,
+  /** All zero for a snapshot that predates resident profiles: restoring it leaves them as they are. */
+  residentProfiles: SettingsRestoreCatalogChangesSchema,
   externalEffects: z.array(z.enum(["skills", "cost"])).max(2),
   exclusions: z.array(z.string().max(200)).max(SETTINGS_BACKUP_LIMITS.previewItems),
   warnings: z.array(z.string().max(SETTINGS_BACKUP_LIMITS.errorCharacters))

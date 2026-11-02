@@ -1,3 +1,7 @@
+import { codeRabbitReadiness, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
+import { scrubCheckEnv } from "../workflows/check-env.ts";
+import { readToken } from "../../shared/harness-runtime.mjs";
+import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
 import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
@@ -41,6 +45,7 @@ import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
+import { servingRuntime } from "../owned-runtime.ts";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -141,6 +146,7 @@ async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
   const version = result.stdout.trim();
   if (result.outcomeUnknown || result.overflowed || result.code !== 0 || !/^\d+\.\d+\.\d+$/.test(version)) {
     return {
+      ...status,
       state: "unknown",
       why: `Mission Control could not verify the selected Node.js version. ${guidance}`,
       evidence: status.evidence,
@@ -148,8 +154,9 @@ async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
   }
   if (nodePrerequisiteMessage(version)) {
     return {
+      ...status,
       state: "needs-setup",
-      why: `Node.js ${version} is too old; Mission Control requires Node.js ${MIN_NODE_MAJOR} or newer. ${guidance}`,
+      why: `Node.js ${version} is too old for source development, which requires Node.js ${MIN_NODE_MAJOR} or newer. Independent tools have their own version requirements. ${guidance}`,
       evidence: status.evidence,
     };
   }
@@ -297,7 +304,17 @@ async function cmuxStatus(deps: SetupDeps): Promise<SetupProbeResult> {
   return { status: { state: "needs-setup", why: control.error, evidence: installed.evidence } };
 }
 
+async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const status = await present("coderabbit", deps, "coderabbit");
+  if (status.state !== "satisfied") return status;
+  let version = "";
+  const problem = await codeRabbitReadiness((args) => deps.runCommand(status.evidence, args, CODERABBIT_MANAGED_ENV), (value) => { version = value; });
+  return problem ? { state: "needs-setup", why: problem, evidence: status.evidence }
+    : { ...status, evidence: `${status.evidence} (CodeRabbit ${version}; stored authentication ready)` };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
+  "coderabbit-cli": codeRabbitStatus,
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
@@ -353,6 +370,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     executableDiagnostic: async (id) => {
@@ -371,7 +389,12 @@ export function defaultSetupDeps(): SetupDeps {
     cmuxControl: () => cmuxControlProbe(),
     ghBin,
     resolveBinPath,
-    runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),
+    runCommand: async (bin, argv, managedEnv) => {
+      if (!managedEnv) return run(bin, argv, { timeoutMs: 5000 });
+      const env = { ...scrubCheckEnv(process.env, readToken()), ...managedEnv };
+      try { return await run(bin, argv, { env, timeoutMs: 7000, maxBuffer: 64 * 1024 }); }
+      finally { cleanupAgentSubprocessEnv(env); }
+    },
     installedPlugins: () => installedPluginsRead(claudePluginsDir(environment.homeDir)),
     skills: (): SetupSkillsRead => {
       const config = getSkillsConfig();
@@ -437,6 +460,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    ...(deps.runtime ? { runtime: deps.runtime() } : {}),
     piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
     piExtensionInstallAvailable: (deps.canInstallPiExtension?.() ?? false) && environment.find((check) => check.id === "pi-extension")?.ready !== true,
     piExtensionReady:

@@ -75,12 +75,16 @@ against any repository. This shelf is where *this machine* says what each slot r
   so, and CI is what still runs the command against the merge commit.
   [Workflows](workflows.md#command-nodes) describes what spends a run and what starts the
   count over.
+- **timeout** - either the shipped slot default, or a configured value from one minute through
+  two hours;
+- **if unavailable** and **when the run budget is exhausted** - skip with a note by default,
+  or block for operator action until the operator corrects the condition and retries.
 
 A slot with neither passes with a note rather than failing, which is what lets a shipped
 workflow name `typecheck` on a machine that has never configured one.
 
-Saving replaces a slot's default, its complete override list and its run budget in one
-compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
+Saving replaces a slot's default, complete override list, run budget, timeout, and both
+skip-or-block policies in one compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
 rather than silently overwriting your unsaved typing. Commands are stored as argv and executed without a
 shell: there are no pipes, no redirection, no environment interpolation and no shell-mode
 toggle, and the editor shows the exact split under every rule before you save.
@@ -298,8 +302,10 @@ it was offered only for the rule you were already reading back as you typed it.
 
 ![The Command detail screen: the closed rail carrying each slot's stored state, the default pinned as the first rule of the table, two saved overrides with their parsed argv, and the add row below them](images/library-commands.png)
 
-Nothing about how a Command runs is decided here. Resolution order, the machine-wide switch,
-the Trust grant and the compare-and-swap save are exactly as described above.
+The policy controls sit above the rule table because they belong to the slot, not to one
+repository rule. Saving them still runs nothing and grants no execution authority. Resolution
+order, the machine-wide switch, the Trust grant and the compare-and-swap save are exactly as
+described above.
 
 ### The Ship log
 
@@ -352,3 +358,11 @@ put them out of step about which pull requests exist.
 Reach it with `⌘K` (search for "shipped", "merged" or "pull request"), by opening the hash, or
 from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](ui.md#the-stage-drawers) over the
 fleet, and its **Ship log →** header action lands here.
+
+The built-in `coderabbit` Command uses typed repository-root tuning in the existing Commands
+editor. YAML owns enablement: `.coderabbit.yaml` must explicitly contain boolean
+`reviews.auto_review.enabled: true`; no override is required. Tuning changes base ref/severity,
+not enablement, and removing it restores defaults. The editor previews the committed-review
+argv and shows derived policies: enabled unavailability blocks; exhausted allowance warns and
+skips. The initial allowance is ten executions shared across nodes per workflow run. See
+[local CodeRabbit Command](workflows.md#local-coderabbit-command) for scope and retained findings.

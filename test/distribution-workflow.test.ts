@@ -122,7 +122,7 @@ test('distribution pins the operator-approved identity, rejects incomplete crede
   assert.equal(config.forceCodeSigning, true);
   assert.equal(config.mac?.identity, `Fixture (${teamId})`, 'builder selects certificate type, and rejects a type prefix');
   assert.equal(config.mac?.hardenedRuntime, true);
-  assert.equal(config.mac?.notarize, true);
+  assert.equal(config.mac?.notarize, false);
   assert.equal(config.electronFuses?.runAsNode, true);
   assert.equal(config.electronFuses?.onlyLoadAppFromAsar, false);
   assert.deepEqual(config.extraMetadata?.missionBinary, metadata);
@@ -159,7 +159,12 @@ test('workflow keeps secrets behind canonical push checks, exact checkout, envir
   assert.match(job.concurrency.group, /== 'alpha' && 'distribution-alpha'/);
   assert.equal(job.steps[0].with.ref, '${{ needs.input.outputs.commit }}');
   assert.equal(job.steps[0].with['persist-credentials'], false);
-  const packageStep = job.steps.findIndex((s: any) => s.run === 'npm run package:distribution');
+  const packageStep = job.steps.findIndex((s: any) => s.id === 'qualification');
+  assert.equal(job.steps[packageStep].shell, 'bash');
+  assert.match(job.steps[packageStep].run, /^npm run package:distribution 2>&1 \| tee /);
+  const diagnostics = job.steps.find((s: any) => s.name === 'Retain safe packaging diagnostics');
+  assert.equal(diagnostics.if, "always() && steps.qualification.outcome != 'skipped'");
+  assert.match(diagnostics.with.path, /distribution-diagnostics\.log$/);
   const tokenStep = job.steps.findIndex((s: any) => s.id === 'release-app-token');
   const publishStep = job.steps.findIndex((s: any) => s.run === 'npm run publish:distribution');
   assert.ok(packageStep > 0 && tokenStep > packageStep && publishStep > tokenStep);

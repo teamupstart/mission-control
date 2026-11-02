@@ -124,7 +124,7 @@ function pinnedCheckout(): { dir: string; checkout: string; shimDir: string } {
 
 test("an Electron daemon launches the MCP server on its own binary in node mode", () => {
   const electronApp = "/Applications/Mission Control.app/Contents/MacOS/Mission Control";
-  assert.deepEqual(resolveMissionMcpRuntime(electronApp), {
+  assert.deepEqual(resolveMissionMcpRuntime(electronApp, "electron"), {
     command: electronApp,
     env: { ELECTRON_RUN_AS_NODE: "1" },
   });
@@ -229,6 +229,18 @@ test("the tool vocabulary matches what the MCP server actually registers", () =>
   const registered = [...source.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]!);
   assert.ok(registered.length > 0, "the scrape found nothing - has registerTool been renamed?");
   assert.deepEqual([...MISSION_MCP_TOOLS].sort(), [...registered].sort());
+});
+
+test("retired tools stay retired", () => {
+  // `share_plan` offered the human reply controls on a call that never waited for them, so a
+  // typed note went nowhere; `request_plan_decisions` with no decisions shows a plan and
+  // returns the answer. `report_product_feedback` published a public issue with no dashboard
+  // confirmation; `report_product_issue` covers the same draft behind one.
+  const source = readFileSync(fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url)), "utf8");
+  for (const retired of ["share_plan", "report_product_feedback"]) {
+    assert.ok(!(MISSION_MCP_TOOLS as readonly string[]).includes(retired), `${retired} is still in the vocabulary`);
+    assert.ok(!source.includes(`"${retired}"`), `${retired} is still registered`);
+  }
 });
 
 test("create_task publishes bounded repository selectors and never falls back to legacy", () => {

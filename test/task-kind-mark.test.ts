@@ -42,6 +42,7 @@ const { ConsoleDetail } = await import("../src/web/components/layouts/ConsoleDet
 const { SessionTile } = await import("../src/web/components/layouts/SessionTile.tsx");
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { TaskKindIcon } = await import("../src/web/components/TaskKindMark.tsx");
+const { ConversationHeaderPreview } = await import("../src/web/components/ConversationHeaderPreview.tsx");
 const { DISPLAY_CHOICES, setDisplayChoice } = await import("../src/web/lib/board-card.ts");
 const { updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
 const { TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES, UI_CONFIG_DEFAULTS } = await import(
@@ -134,6 +135,48 @@ test("each header style puts the mark in its own place, and only there", async (
     const [from, to] = where[style];
     assert.ok(region(html, from, to).includes(`tk-mark tk-${style}`), `${style} is not where it belongs`);
   }
+});
+
+test("the Display preview puts each header style where the console header puts it", async () => {
+  // The preview draws the console header in its own classes rather than mounting
+  // `ConsoleDetail`, so this is what stops the two from drifting apart: every style is looked
+  // for in the same region of both renders. The tab strip's region ends at its first tab's
+  // label, because the console's tabs are buttons and the preview's are not.
+  const where: Record<Exclude<HeaderStyle, "off">, [string, string]> = {
+    badge: ['class="detail-title-line"', "</h2>"],
+    eyebrow: ['class="detail-title"', 'class="detail-title-line"'],
+    tile: ['class="detail-head tk-edge"', 'class="detail-title"'],
+    tabs: ['class="detail-tabs"', "Conversation"],
+  };
+  const session = shipSession();
+  for (const style of TASK_KIND_HEADER_STYLES) {
+    const console = await withStyles({ header: style }, () => detail(session));
+    const preview = renderToStaticMarkup(
+      createElement(ConversationHeaderPreview, {
+        session,
+        kindStyle: style,
+        showPath: true,
+        showBranch: true,
+      }),
+    );
+    const marks = preview.match(/class="tk-mark /g) ?? [];
+    if (style === "off") {
+      assert.equal(marks.length, 0, "off still marks the kind in the preview");
+      continue;
+    }
+    assert.equal(marks.length, 1, `${style} marks the kind ${marks.length} times in the preview`);
+    const [from, to] = where[style];
+    for (const [surface, html] of [["console", console], ["preview", preview]] as const) {
+      assert.ok(region(html, from, to).includes(`tk-mark tk-${style}`), `${style} is misplaced in the ${surface}`);
+    }
+  }
+  const tile = renderToStaticMarkup(
+    createElement(ConversationHeaderPreview, { session, kindStyle: "tile", showPath: true, showBranch: true }),
+  );
+  assert.ok(
+    region(tile, 'class="tk-mark tk-tile"', 'class="detail-title"').includes('class="agent-dot"'),
+    "the preview's tile dropped which harness this is",
+  );
 });
 
 test("the tile style keeps the agent dot, riding the tile's corner", async () => {

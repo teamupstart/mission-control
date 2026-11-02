@@ -44,12 +44,12 @@ You may associate a specific skill to be invoked for an action (recommended).
 ## A Command slot
 <!-- stage: command-slot -->
 
-Fixed slots ship with the product - test, lint, typecheck, build, and documentation - so there is no New card here. A workflow's Command node names a portable slot and never an argv, which is what lets the same workflow run against any repository; this screen is where THIS machine says what the slot runs.
+Six fixed slots ship with the product - test, lint, typecheck, build, documentation, and CodeRabbit - so there is no New card here. A workflow's Command node names a portable slot, letting one workflow run against different repositories. This screen configures this machine's ordinary commands and optional CodeRabbit review tuning.
 
 ## Overrides, and saving one
 <!-- stage: command-overrides -->
 
-A repository path plus an override command writes one exception into the rules table above; everything else keeps the machine-wide default. Then Save Command - and the point is that saving executes nothing. A workflow reaching this slot, later, in a repository granted the Workflows cell in Trust, is what runs it, and Settings → Workflows → Allow workflow Commands is the machine-wide switch above that.
+Ordinary slots use a repository command override or the machine-wide default. CodeRabbit offers optional repository tuning for base ref and severity; root .coderabbit.yaml enables it when reviews.auto_review.enabled is boolean true, even without a Library override. Removing tuning restores defaults and leaves YAML enablement unchanged. Save Command executes nothing. A later workflow run needs the repository's Workflows grant in Trust and Settings > Workflows > Allow workflow Commands.
 
 ## The builder
 <!-- stage: workflow-builder -->
@@ -64,7 +64,7 @@ Pipeline and Graph are two views of one workflow, and the toolbar offers both fo
 ## No-Mistakes Review
 <!-- stage: workflow-no-mistakes -->
 
-Five stages, in order: typecheck, test, and lint together; Intent Conformance and Test Coverage together as the first review gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End and the final GitHub Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
+Six stages, in order: typecheck, test, and lint together; optional YAML-enabled CodeRabbit review; Intent Conformance and Test Coverage together as the first review gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End and the final GitHub Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
 
 ## Binding it
 <!-- stage: workflow-bind -->
@@ -74,7 +74,7 @@ Binding attaches a published version to one session's work in one repository. Th
 ## A run, moving
 <!-- stage: run-moving -->
 
-The same five stages, now carrying real state from a finished run of your own. Under the strip, the review worklist sorts what the reviewers actually said: Blocking is what is still open, Passed is what cleared, and an individual verdict opens in place.
+The stages pinned by that run, now carrying real state from a finished run of your own. Earlier versions keep their original pipeline; version 22 adds optional CodeRabbit. Under the strip, the review worklist sorts what the reviewers actually said: Blocking is what is still open, Passed is what cleared, and an individual verdict opens in place.
 
 ## Where a run is watched
 <!-- stage: run-watched -->

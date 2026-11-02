@@ -26,6 +26,13 @@ own state. An exited process alone is not durable cleanup.
 - Durable task and workflow records survive restarts, while live sessions are rebuilt from
   observation.
 
+An SDK session's native conversation identity comes from its owned driver, including the
+first binding and explicit context resets. Hooks can supplement that session only when
+they carry its current native conversation ID. Sharing its working directory or inherited
+pane coordinates does not let an auxiliary CLI replace the owner, rotate its task episode,
+or detach its workflow and evidence. Terminal sessions retain their hook-based binding and
+clear behavior.
+
 For the exact startup ordering, eviction requirements, and task-binding rules, read the
 authoritative [session ownership](agent-guides/architecture.md#session-ownership) and
 [session removal](agent-guides/architecture.md#a-session-going-away) contracts. The related

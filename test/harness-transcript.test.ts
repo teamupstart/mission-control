@@ -656,8 +656,27 @@ test("a Codex clear cannot reuse the prior rollout cache binding", () => {
   assert.equal(codexTranscript.locate(before), oldRollout);
 
   const rebound = { ...before, agentSessionId: "after-clear", transcriptPath: oldRollout };
-  assert.equal(codexTranscript.locate(rebound), null);
+  assert.equal(codexTranscript.locate(rebound), newRollout);
   assert.equal(codexTranscript.locate({ ...rebound, transcriptPath: null }), newRollout);
+  // The stale explicit hint persists across polls. It must not discard the replacement
+  // binding and repeat the directory walk on every lookup.
+  rmSync(newRollout);
+  assert.equal(codexTranscript.locate(rebound), newRollout);
+});
+
+test("a stale explicit path preserves the discovery miss backoff", (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  const day = join(home, "codex", "sessions", "2026", "07", "15");
+  mkdirSync(day, { recursive: true });
+  const s = session({ id: "cx-missing-explicit", agent: "codex", cwd: "/repo/missing",
+    agentSessionId: "new-thread", transcriptPath: join(day, "missing.jsonl") });
+  assert.equal(codexTranscript.locate(s), null);
+  const path = join(day, "rollout-new-thread.jsonl");
+  writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id: "new-thread", cwd: s.cwd } }) + "\n");
+  assert.equal(codexTranscript.locate(s), null, "a persistent stale hint does not force another directory walk");
+  now += 30_000;
+  assert.equal(codexTranscript.locate(s), path, "discovery retries when its existing backoff expires");
 });
 
 test("an unidentified Codex session cannot reuse a retained rollout path", () => {

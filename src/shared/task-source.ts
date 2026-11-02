@@ -8,10 +8,10 @@ import {
 } from "./types.ts";
 import {
   MAX_LABELS,
-  TASK_KIND_BACKLOG_REFUSAL,
   TASK_PRIORITIES,
   normalizeLabels,
   taskKindAllowsBacklog,
+  taskKindBacklogRefusal,
 } from "./task.ts";
 
 // A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
@@ -629,7 +629,7 @@ export function clampSweepInterval(ms: number): number {
 export const TaskSourceDefaultsSchema = z.object({
   kind: z
     .enum(TASK_KINDS)
-    .refine(taskKindAllowsBacklog, TASK_KIND_BACKLOG_REFUSAL)
+    .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
     .default("ship"),
   /**
    * `null` inherits the kind's agent from Settings -> Models, resolved as each swept row is

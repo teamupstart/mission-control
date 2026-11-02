@@ -5,6 +5,7 @@ export type LocalDistributionAsset = Omit<BinaryAsset, 'id'>;
 export function distributionMetadata(input: {channel: string; tag?: string; commit: string; versions: ReleaseVersions}): BinaryBuildMetadata;
 export function assertBuildMetadata(metadata: unknown): void;
 export function distributionNames(metadata: BinaryBuildMetadata): DistributionFiles;
+export function publishedAssetNames(tag: string): string[];
 export function distributionManifest(metadata: BinaryBuildMetadata, assets: BinaryAsset[]): BinaryManifest;
 export function fingerprintFile(path: string): Promise<{bytes: number; sha256: string}>;
 export function localDistributionAssets(metadata: BinaryBuildMetadata, files: DistributionFiles): Promise<LocalDistributionAsset[]>;

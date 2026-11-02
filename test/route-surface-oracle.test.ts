@@ -82,6 +82,11 @@ const HOST_PROBING = new Set([
   // configured directory itself is pinned by MISSION_WORKSPACE_DIRS and does appear.
   "GET /api/repo-index",
   "POST /api/repo-index/rescan",
+  // The resident catalog enumerates installed global and operator-registered skills.
+  // Scanner values and bounds are pinned separately with disposable source fixtures.
+  "GET /api/residents/skills",
+  "POST /api/residents/skills/rescan",
+  "PUT /api/residents/skill-sources",
   // Carries provider probes that look for a local `conduct-ts` install. This one passed on the
   // Node 24 runner and failed on the Node 26 one, which is the clearest possible evidence that
   // what it reports is the machine and not the route.

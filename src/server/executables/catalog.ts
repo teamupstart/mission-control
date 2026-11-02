@@ -67,6 +67,9 @@ function spec(
  * Workflow commands are resolved inside the same environment but are not built-in ids.
  */
 export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
+  coderabbit: spec("coderabbit", "CodeRabbit", "coderabbit", "CODERABBIT_BIN", {
+    candidates: ({ home }) => [join(home, ".local/bin/coderabbit"), join(home, ".coderabbit/bin/coderabbit")],
+  }),
   claude: spec("claude", "Claude Code", "claude", "CLAUDE_BIN", {
     legacyEnv: ["FOREMAN_CLAUDE_BIN"],
   }),

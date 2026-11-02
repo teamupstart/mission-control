@@ -257,8 +257,8 @@ export function isMissionHookCommand(command: string): boolean {
  * and tell the operator it is missing, so "not sure" has to be null rather than a guess.
  */
 export function missionHookScriptPath(command: string): string | null {
-  for (const match of command.matchAll(/"([^"]*)"/g)) {
-    const value = match[1] ?? "";
+  for (const match of command.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+    const value = (match[1] ?? "").replace(/\\([\\"$`])/g, "$1");
     if (value.startsWith("/") && HOOK_SCRIPT.test(value)) return value;
   }
   for (const token of command.split(/\s+/)) {

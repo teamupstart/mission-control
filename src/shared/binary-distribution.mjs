@@ -7,6 +7,21 @@ export const BINARY_RECEIPT_SCHEMA = 2;
 export const BINARY_REPO = 'teamupstart/mission-control';
 export const BINARY_BUNDLE_ID = 'com.mission-control.app';
 export const MAX_BINARY_ASSET_BYTES = 4 * 1024 ** 3;
+// Everything a published DMG may hold at its root besides the app bundle: the Read Me the
+// `dmg:` contents in electron-builder.yml place beside it, the window background and volume
+// icon electron-builder writes, and the bookkeeping macOS adds to any mounted volume. The
+// installer's root check is rendered from this list and producer qualification enforces it,
+// so a layout change fails the Signed distribution job instead of every user's install.
+// Exact names only: the root is the one place a DMG could carry a file nobody reviewed.
+export const DMG_ROOT_EXTRAS = Object.freeze(['Read Me.txt', '.DS_Store', '.background', '.background.tiff',
+  '.VolumeIcon.icns', '.fseventsd', '.Trashes']);
+
+export function dmgRootProblem(entries, appBundleName) {
+  const unexpected = entries.filter((entry) => entry !== appBundleName && !DMG_ROOT_EXTRAS.includes(entry));
+  if (unexpected.length > 0) return `Unexpected DMG root entries: ${unexpected.map((entry) => JSON.stringify(entry)).join(', ')}`;
+  if (!entries.includes(appBundleName)) return `DMG root does not contain ${appBundleName}`;
+  return null;
+}
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})(?:-[a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*)?$/;

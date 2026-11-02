@@ -46,8 +46,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
-    runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
+    resolveBinPath: async (bin) => bin === "coderabbit" ? "/tools/coderabbit" : bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
+    runCommand: async (bin, argv) => stubRun({ stdout: bin === "/tools/coderabbit" ? argv[0] === "--version" ? "0.9.1" : JSON.stringify({type:"status", authenticated:true}) : bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
       plugins: [{ plugin: "one", marketplace: "official", version: "1", installPath: "/plugins/one" }],
@@ -406,4 +406,24 @@ test("the required terminal pair follows usable composition, not backend presenc
   assert.equal(tmux?.status.state, "satisfied");
   assert.equal(pair?.status.state, "missing");
   assert.equal(pair?.requirement, "required");
+});
+
+test("external Node gaps remain feature-scoped, preserve acknowledgements, and cannot hide required gaps", async () => {
+  const acknowledgement = {source:"dependency" as const,id:"node-runtime" as const};
+  let writes = 0;
+  const view = await setupChecksView(deps({
+    runtime: () => ({origin:"bundled",node:"24.1.0",electron:"43.0.0",executable:"/app/engine"}),
+    executableDiagnostic: async id => id === "node" ? null : {path:`/tools/${id}`,source:"configured"},
+    terminalTargets: () => [],
+    readBannerDismissal: () => ({firstLaunchAcknowledged:true,acknowledged:[acknowledgement]}),
+    writeBannerDismissal: () => writes++,
+  }));
+  assert.equal(view.runtime?.origin,"bundled");
+  assert.equal(view.rows.find(row => row.rowId.id === "node-runtime")?.status.state,"needs-setup");
+  assert.ok(!view.banner.attentionRowIds.some(row=>row.id==="node-runtime"));
+  assert.ok(view.banner.attentionRowIds.some(row=>row.id==="terminal-pair"));
+  assert.equal(view.banner.visible,true);
+  assert.equal(writes,0,"existing node dismissal remains readable without resetting other records");
+  const first = await setupChecksView(deps({resolveBinPath:async bin=>bin === "node" ? null : bin}));
+  assert.equal(first.banner.visible,true,"first-launch guidance remains present");
 });

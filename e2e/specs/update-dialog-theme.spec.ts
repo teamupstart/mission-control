@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -76,6 +77,7 @@ async function installDialogBridge(dashboard: Page): Promise<void> {
     });
   });
   await dashboard.reload();
+  await expectDashboardReady(dashboard);
 }
 
 test("a menu preparation notice follows live download, verification, cancellation and completion", async ({dashboard}) => {

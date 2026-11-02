@@ -1,7 +1,7 @@
 # Pi live model catalog: phased implementation
 
 Source plan: [plan.md](plan.md) ([rendered](plan.html)). Supporting evidence:
-[investigation report](../../reports/pi-model-catalog-source/report.html) and
+investigation report (`docs/reports/pi-model-catalog-source/report.html`, removed from the repository in #1213) and
 [planned request sequence](../../../.docs/architecture/sequences/pi-model-catalog.md).
 
 The implementation is divided into two serial merge units. Phase 1 makes the daemon able to

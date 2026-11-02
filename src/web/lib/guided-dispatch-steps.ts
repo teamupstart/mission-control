@@ -214,6 +214,9 @@ export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
   plan: "l",
   pipeline: "e",
   chat: "c",
+  // Never asked: Single agent Dispatch does not offer resident (`DISPATCH_TASK_KINDS`). The
+  // key is still reserved so the record stays total and no later kind can take `r` by accident.
+  resident: "r",
 };
 
 /**

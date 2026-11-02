@@ -1,3 +1,4 @@
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { mkdirSync } from "node:fs";
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
@@ -29,6 +30,7 @@ async function pin(daemon: DaemonHandle, patch: object) {
   expect(response.ok).toBe(true);
 }
 async function browse(page: Page) {
+  await expectDashboardReady(page);
   await page.keyboard.press("Meta+k");
   const palette = page.getByRole("dialog", { name: "Search everything" });
   await palette.getByRole("combobox").fill("Browse tours");
@@ -241,6 +243,7 @@ for (const startDirectly of [false, true]) {
     const held = new Promise<void>((resolve) => { release = resolve; });
     await page.route("**/api/ui/config", async (route) => { await held; await route.continue(); });
     await page.goto(`${daemon.baseURL}/#/fleet`);
+    await expectDashboardReady(page);
     await page.keyboard.press("Meta+k");
     const palette = page.getByRole("dialog", { name: "Search everything" });
     await expect(palette).toBeVisible();
@@ -463,11 +466,16 @@ test("development StrictMode replay offers only once per document", async ({ pag
   const dev = await startDevDashboard(daemon);
   try {
     await page.goto(`${dev.origin}/#/fleet`);
+    // Navigation now finishes at the small bootstrap, before Vite's cold application
+    // transform and module graph have loaded. Give startup its own bounded budget;
+    // the picker assertions below keep the ordinary interaction timeout.
+    await expectDashboardReady(page, { timeout: 90_000 });
     await expect(picker(page)).toHaveCount(1);
     await picker(page).getByRole("button", { name: "Dismiss", exact: true }).click();
     await page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ }).click();
     await expect(picker(page)).toBeHidden();
     await page.reload();
+    await expectDashboardReady(page);
     await expect(picker(page)).toHaveCount(1);
   } finally { dev.stop(); }
 });

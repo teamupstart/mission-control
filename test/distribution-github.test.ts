@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { githubDistributionTransport } from '../scripts/distribution-github.mjs';
-import { distributionMetadata } from '../scripts/distribution-contract.mjs';
+import { distributionMetadata, distributionNames } from '../scripts/distribution-contract.mjs';
 
 const commit = 'a'.repeat(40);
 const versions = {packageVersion: '1.26.0', lockVersion: '1.26.0', lockPackageVersion: '1.26.0'};
@@ -134,6 +134,26 @@ for (const mode of ['retire', 'retire-fail-once']) test(`alpha ${mode} removes r
   assert.deepEqual(await tombstone.transport.listAlphaReleases(), []);
   assert.ok(!tombstone.calls().some((call) => call.args.includes('POST')), 'a retained tag cannot create a replacement release');
   await assert.rejects(f.transport.retireAlphaRelease({id: 7, tag: 'v1.26.0'}), /Only an exact-commit alpha/);
+});
+
+test('alpha retirement removes alphas published under the renamed and the pre-rename asset names', async (t) => {
+  const tag = `alpha-${commit}`;
+  // Literal names as observed on live releases, independent of the contract's prefix table.
+  const current = {'app-zip': `Agent-Mission-Control-${tag}-darwin-arm64.zip`, dmg: `Agent-Mission-Control-${tag}-darwin-arm64.dmg`};
+  const legacy = {'app-zip': `Mission-Control-${tag}-darwin-arm64.zip`, dmg: `Mission-Control-${tag}-darwin-arm64.dmg`};
+  assert.deepEqual(distributionNames(metadata('alpha')), current, 'new alphas publish the renamed asset names');
+  assert.deepEqual(distributionNames({...metadata('alpha'), appBundleName: undefined}), legacy);
+  for (const names of [current, legacy]) {
+    const f = fakeGh(t, {[`${prefix}/releases/7`]: {...release, tag_name: tag, prerelease: true},
+      [`${prefix}/commits/${tag}`]: {sha: commit},
+      [`${prefix}/releases/7/assets?per_page=100&page=1`]: [
+        {id: 11, name: names['app-zip'], size: 4, state: 'uploaded'},
+        {id: 12, name: names.dmg, size: 4, state: 'uploaded'},
+        {id: 13, name: 'mission-control-manifest.json', size: 4, state: 'uploaded'},
+      ]}, 'retire');
+    await f.transport.retireAlphaRelease({id: 7, tag});
+    assert.deepEqual(await f.transport.listAssets({id: 7, tag}), []);
+  }
 });
 
 test('alpha retirement refuses unexpected assets before changing readiness', async (t) => {

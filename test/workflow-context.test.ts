@@ -30,9 +30,10 @@ const {
   WORKFLOW_TRANSCRIPT_LIMITS,
 } = await import("../src/server/workflows/context.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
+const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
-const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
+const { evaluateWorkflowEvidenceReadiness, WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -389,7 +390,7 @@ test("intent fingerprints include only goals and genuine decision content", () =
   );
 });
 
-test("replacement claim ids reconcile by stable criterion text and fail closed on ambiguity", () => {
+test("replacement claim ids reconcile by stable text and still require proof", () => {
   const canonical = [{
     id: "criterion-stable",
     text: "Tests remain green",
@@ -437,7 +438,7 @@ test("replacement claim ids reconcile by stable criterion text and fail closed o
       coverage: ambiguousCoverage,
       evidence: [],
     }).gapCodes,
-    ["ambiguous_mapping"],
+    ["missing_execution"],
   );
   assert.deepEqual(
     reconcileWorkflowCriterionMappings(
@@ -526,6 +527,50 @@ test("stable capture retries one changed boundary and blocks a second change", a
   );
   assert.equal(stale, null);
   assert.equal(reads, 2);
+});
+
+test("only the pinned CodeRabbit graph captures ignored YAML and includes it in boundary checks", async () => {
+  const repo = join(home, "coderabbit-scope");mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");git("config", "user.name", "Fixture");git("config", "user.email", "fixture@example.com");git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, ".gitignore"), ".coderabbit.yaml\n");
+  git("add", ".");git("commit", "-qm", "base");
+  writeFileSync(join(repo, ".coderabbit.yaml"), "reviews: {auto_review: {enabled: true}}\n");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "coderabbit-scope", agent: "claude", name: "scope", nameSource: "process",
+    cwd: repo, gitBranch: "main", gitRoot: repo, repoRoot: repo, pid: 1, tty: "ttys-scope", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
+  const session = registry.getSession("coderabbit-scope")!;
+  const binding = { id: "scope-binding", sessionId: session.id, noteKey: noteKeyFor(session) } as WorkflowBinding;
+  const versions = BUILTIN_WORKFLOWS.find(w => w.definition.id === "builtin-workflow:no-mistakes-review")!.versions;
+  const oldGraph = versions.find(v => v.id.endsWith("@21"))!.graph;
+  const codeRabbitGraph = versions.find(v => v.id.endsWith("@22"))!.graph;
+  const old = await readWorkflowContextRaw(registry, binding, [], [], null, oldGraph);
+  const enabled = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  assert.equal(old.context.evidence.coderabbit, undefined);
+  assert.equal(enabled.context.evidence.coderabbit!.enabled, true);
+  assert.equal(enabled.context.evidence.coderabbit!.committed, false);
+  assert.equal(await captureBoundaryChanged(registry, binding, old.boundary), false);
+  assert.equal(await captureBoundaryChanged(registry, binding, enabled.boundary), false);
+  writeFileSync(join(repo, ".coderabbit.yaml"), "reviews: {auto_review: {enabled: false}}\n");
+  assert.equal(await captureBoundaryChanged(registry, binding, old.boundary), false);
+  assert.equal(await captureBoundaryChanged(registry, binding, enabled.boundary), true);
+  const refreshedOld = await readWorkflowContextRaw(registry, binding, [], [], null, oldGraph);
+  assert.equal(refreshedOld.boundary.repositoryFingerprint, old.boundary.repositoryFingerprint);
+  assert.equal(refreshedOld.context.evidence.contentTreeOid, enabled.context.evidence.contentTreeOid);
+
+  // The pinned graph and reserved retention budget are independent capture inputs.
+  const report = "docs/reports/combined-capture/report.html";
+  mkdirSync(join(repo, "docs/reports/combined-capture"), { recursive: true });
+  writeFileSync(join(repo, report), "<!doctype html><title>Proof</title><p>Retained locally.</p>");
+  const available = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  const reserved = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph,
+    [{ bytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes }]);
+  assert.equal(available.context.evidence.publication!.localArtifacts.length, 1);
+  assert.equal(reserved.context.evidence.publication!.localArtifacts.length, 0);
+  assert.ok(reserved.context.evidence.publication!.unpublishedPaths.includes(report));
+  assert.deepEqual(reserved.context.evidence.coderabbit, available.context.evidence.coderabbit);
 });
 
 test("repository capture fails closed and detects worktree evidence changes", async (t) => {

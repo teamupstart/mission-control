@@ -168,3 +168,63 @@ test("a shipped version reports its provenance where a row would print a date", 
   // flagship workflow.
   assert.doesNotMatch(html, /1970/);
 });
+
+test("a built-in's settings rail leaves only the repair rounds editable", async () => {
+  const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
+  const { WorkflowSettingsFields, parseRoundLimit } = await import("../src/web/workflows/WorkflowProperties.tsx");
+  const shipped = BUILTIN_WORKFLOWS[0]!.definition;
+  const roundLimit = { disabled: false, saving: false, onSave: async () => true };
+  const render = (workflow: WorkflowDefinition) => renderToStaticMarkup(createElement(WorkflowSettingsFields, {
+    workflow,
+    readOnly: true,
+    onUpdate: () => {},
+    roundLimit,
+  }));
+
+  const html = render(shipped);
+  const inputs = [...html.matchAll(/<(input|select|textarea)\b[^>]*>/g)].map((match) => match[0]);
+  const live = inputs.filter((tag) => !/\bdisabled=""/.test(tag));
+  assert.equal(live.length, 1, "exactly one field is live");
+  assert.match(live[0]!, /type="number"/);
+  assert.match(live[0]!, new RegExp(`value="${shipped.bindingDefaults.maxRepairRounds}"`));
+  assert.match(html, /Save rounds/);
+  assert.doesNotMatch(html, /Reset to/, "an unchanged built-in has nothing to reset");
+
+  const changed = render({
+    ...shipped,
+    bindingDefaults: { ...shipped.bindingDefaults, maxRepairRounds: 9 },
+    shippedMaxRepairRounds: shipped.bindingDefaults.maxRepairRounds,
+  });
+  assert.match(changed, /value="9"/);
+  assert.match(changed, new RegExp(`Reset to ${shipped.bindingDefaults.maxRepairRounds}`));
+
+  // While the hook reports a request in flight, nothing in the field can start another one.
+  const inFlight = renderToStaticMarkup(createElement(WorkflowSettingsFields, {
+    workflow: {
+      ...shipped,
+      bindingDefaults: { ...shipped.bindingDefaults, maxRepairRounds: 9 },
+      shippedMaxRepairRounds: shipped.bindingDefaults.maxRepairRounds,
+    },
+    readOnly: true,
+    onUpdate: () => {},
+    roundLimit: { ...roundLimit, saving: true },
+  }));
+  assert.match(inFlight, /Saving…/);
+  assert.equal(
+    [...inFlight.matchAll(/<(input|select|textarea|button)\b[^>]*>/g)]
+      .filter((match) => !/\bdisabled=""/.test(match[0])).length,
+    0,
+    "every control, Reset included, is disabled while a save is in flight",
+  );
+
+  // A custom workflow keeps the ordinary draft field and no separate Save.
+  const custom = renderToStaticMarkup(createElement(WorkflowSettingsFields, {
+    workflow: { ...shipped, builtin: false },
+    readOnly: false,
+    onUpdate: () => {},
+  }));
+  assert.doesNotMatch(custom, /Save rounds/);
+
+  assert.equal(parseRoundLimit("8"), 8);
+  for (const bad of ["", "0", "21", "2.5", "-1", "x"]) assert.equal(parseRoundLimit(bad), null, bad);
+});

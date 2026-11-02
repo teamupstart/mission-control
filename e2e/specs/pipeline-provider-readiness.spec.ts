@@ -144,17 +144,19 @@ test("typed failure refuses task completion and retries once on a fresh host", a
       id: string;
       intent: string;
       sessionId: string | null;
+      status: string;
+      error: string | null;
     }>;
     const task = tasks.find((candidate) => candidate.intent === intent);
     taskId = task?.id ?? "";
     sessionId = task?.sessionId ?? "";
-    if (!sessionId) return null;
+    if (!sessionId) return { task: task ?? null, state: null };
     const sessions = await (await request(daemon, "/api/sessions")).json() as Array<{
       id: string;
       state: string;
     }>;
-    return sessions.find((session) => session.id === sessionId)?.state ?? null;
-  }, { timeout: 60_000 }).toBe("idle");
+    return { task, state: sessions.find((session) => session.id === sessionId)?.state ?? null };
+  }, { timeout: 60_000 }).toMatchObject({ state: "idle" });
 
   const card = dashboard.locator(".tile").filter({ hasText: /Expose Typed Provider Failure/i });
   await expect(card).toHaveClass(/tone-idle/);

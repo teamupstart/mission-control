@@ -181,6 +181,19 @@ export const DISPLAY_ITEMS = [
     description:
       "How long ago the session last did anything, or how long it has been up. Hidden, a stalled card looks the same as a busy one.",
   },
+  {
+    /**
+     * A resident's border glow and label chip, in its profile's color. Like `cardShortcut` it
+     * governs a surface outside the card too: the Console rail row draws the same accent edge
+     * and chip off this one switch. It hides ink only - a pinned resident still sorts first in
+     * its column, and the Console band and the Residents dock still name it.
+     */
+    id: "residentMarker",
+    group: "card",
+    label: "Resident marker",
+    description:
+      "A glowing outline and label chip, in its profile's color, on every resident's card and Console rail row - the quickest way to find a long-running agent on a busy board. Hidden, a resident looks like any other session, though a pinned one still sorts to the top of its column and the Residents dock still lists it.",
+  },
   /**
    * The console detail's `PATH`/`BRANCH` band.
    *

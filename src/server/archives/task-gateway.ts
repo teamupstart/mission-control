@@ -335,6 +335,7 @@ const CAPTURE_KIND: Record<TaskKind, ArchiveKind | null> = {
   plan: "plan",
   pipeline: null,
   chat: null,
+  resident: null,
 };
 
 /**

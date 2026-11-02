@@ -135,6 +135,13 @@ test("only the Overlay primitive renders a backdrop", () => {
  * It owns its own Escape and returns focus to the trigger, and it carries NO action - the
  * only controls are Close and the form behind it - so a shortcut reaching through it reaches
  * the review it is already about.
+ *
+ * `residents/ResidentsDock.tsx` is the Residents dock beside Foreman - the fifth topbar
+ * popover, and it joins for ForemanBar's reason: anchored to its button rather than owning the
+ * screen, its Escape and outside-click dismissal pinned by `topbar-popover-dismiss.test.ts`,
+ * and a backdrop would give a dropdown a modal posture it should not have. Its controls open a
+ * session, launch a profile, or navigate; none acts on the selected session, so a shortcut
+ * reaching through hits the same session it would have hit with the dock shut.
  */
 const UNREGISTERED_DIALOGS = [
   "components/AlertBar.tsx",
@@ -144,6 +151,7 @@ const UNREGISTERED_DIALOGS = [
   "components/SpendChip.tsx",
   "components/line/NextUpPlanner.tsx",
   "components/session-bits.tsx",
+  "residents/ResidentsDock.tsx",
 ];
 
 test("every role=\"dialog\" surface is registered, or is a declared exception", () => {

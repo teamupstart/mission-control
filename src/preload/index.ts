@@ -7,7 +7,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
-import type { SessionControlAuthorization } from "../shared/session-control-authorization.ts";
+import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "../shared/session-control-authorization.ts";
 
 interface ProductIssueAuthorizationInput {
   requestId: string;
@@ -66,6 +66,13 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
       || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
     return ipcRenderer.sendSync("mission:session-control-click", input) === true;
+  },
+  // The same private capability and the same trusted-click rule as the menu above: both arm
+  // session-control authority, and the renderer module that claimed it owns both.
+  authorizeResidentLaunch: (capability: string, input: ResidentLaunchAuthorization): boolean => {
+    if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
+      || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
+    return ipcRenderer.sendSync("mission:resident-launch-click", input) === true;
   },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),

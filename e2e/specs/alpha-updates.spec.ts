@@ -17,6 +17,7 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
   const controller = new UpdateController({
     launchPreflight: async () => {},
     packaged: true, arch: "arm64", currentVersion: () => "1.2.3", currentCommit: () => installedCommit,
+    readSnoozes: () => ({}), writeSnoozes: () => {},
     readAlpha: () => readUpdatePreferences(preferences).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(preferences, { alpha }); },
     installSnapshot: () => ({ receipt: { schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home, appPath: join(daemon.home, "fixture.app"), installedVersion: "1.2.3", installedCommit, releaseTag: "v1.2.3", installedAt: "2026-09-14T00:00:00.000Z" }, problem: null }),

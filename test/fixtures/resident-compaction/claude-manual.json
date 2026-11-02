@@ -1,0 +1,15 @@
+[
+  {
+    "type": "system",
+    "subtype": "compact_boundary",
+    "compact_metadata": {
+      "trigger": "manual",
+      "pre_tokens": 54678,
+      "post_tokens": 494
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success"
+  }
+]

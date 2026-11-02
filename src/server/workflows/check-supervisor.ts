@@ -62,6 +62,7 @@ export interface SupervisedCheckRequest {
   /** Where inside that tree the command runs, RELATIVE. `""` is the root. */
   workingSubpath: string;
   timeoutMs?: number;
+  capture?: { push(kind: "stdout" | "stderr", chunk: Buffer): void };
 }
 
 export interface SupervisedCheckDeps {
@@ -117,6 +118,7 @@ export async function runSupervisedCheck(
       cwd: cwd.path,
       env,
       timeoutMs: request.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+      capture: request.capture,
       maxOutputBytes: deps.maxOutputBytes,
       readyMs: deps.readyMs,
       teardown: deps.teardown,

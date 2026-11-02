@@ -19,8 +19,12 @@ New binaries install **Agent Mission Control.app**. Existing managed installatio
 the same folder, preserving their state and receipt scope. Older saved installers must be
 replaced with the current command above; see [app-name migration and compatibility](docs/app-name-migration.md).
 
-**Release qualification is still pending.** Until a signed ready manifest is published, this
-command refuses installation. It never falls back to compilation. The explicit developer route
+The plain command installs the newest stable release whose tag's Signed distribution run has
+published a ready manifest, so a release still publishing never blocks an install. Until any
+stable release has one, it installs the newest alpha instead and the app offers stable releases
+as they publish. Each eligible `main` commit publishes a signed, notarized alpha automatically;
+`--channel alpha` installs `main`'s newest published one, and `--channel stable` never falls
+back. The installer never falls back to compilation. The explicit developer route
 remains `scripts/install-source.sh` or `make install` with Node.js 24+, npm, Git and Xcode tools.
 See [binary installation and recovery](docs/desktop-and-packaging.md#binary-installation-and-manual-recovery)
 for manually copied DMGs, enrollment, legacy replacement and current qualification limits.
@@ -94,6 +98,9 @@ answers what is working, what is idle, and what needs a decision. Cards group by
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
 context. The signals that need a person can never be hidden.
 
+The [model badge](docs/sessions.md#status-line-optional) follows the latest observed turn;
+large Codex logs do not substitute an older model from the start of the conversation.
+
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
 
@@ -156,6 +163,14 @@ Mission Control supports five kinds of work:
 - **Plan** produces a reviewable plan that can become ordered follow-up tasks.
 - **Pipeline** hands the work to an external SDLC engine while keeping it visible here.
 - **Chat** opens a conversation with no required deliverable or ceremony.
+
+**Residents** are long-running agents with a standing role. Author a resident profile once - a
+Persona, instructions, a harness, model and effort - on the Residents page, then launch it from
+**Dispatch > Resident**. It runs in the Agent SDK with its persona as standing instructions and ends
+only when you choose **Complete & close**. Choose a repository for a task worktree, or **No repository**
+for a private working directory removed when the run ends. A profile can also let its resident
+control your other sessions; only a Launch click in the desktop app grants that, to that run. Read
+more in [Residents](docs/residents.md).
 
 ![Mission Control dispatch](docs/images/dispatch.png)
 
@@ -267,7 +282,9 @@ Personas each own one reviewing concern. Session actions can send authored instr
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
-round, with applicable evidence carried forward between submissions.
+round, with applicable evidence carried forward between submissions. Canonical criterion IDs bind
+claims directly; authors can replace or withdraw claims without losing prior proof. Duplicate
+valid coverage produces a warning while missing or invalid proof still blocks readiness.
 You can retry failed criterion mapping from the dashboard. See
 [workflow evidence recovery](docs/workflows.md) for retry and recovery behavior.
 
@@ -289,6 +306,11 @@ Signed session identity, existing server checks, and explicit acknowledgements s
 
 ![Mission Control workflow run](docs/images/workflows.png)
 
+Local CodeRabbit reviews are available as a reusable Library Command and in the optional
+No-Mistakes review stage. Root YAML enables review without a Library override; the default
+allowance is ten executions, with warning skips on exhaustion. See
+[CodeRabbit workflow reviews](docs/workflows.md#local-coderabbit-command).
+
 Read more in [Workflows and Personas](docs/workflows.md) and
 [The Library](docs/library-and-line.md).
 
@@ -297,6 +319,11 @@ Read more in [Workflows and Personas](docs/workflows.md) and
 The GitHub Inspector reviews pull requests Mission Control can prove it opened. It comments inline,
 answers replies in its own threads, re-reviews every pushed head, and resolves findings when the
 code fixes them. Dry run records what it would say without publishing anything.
+
+Settings > Shipping also offers **Follow up on CodeRabbit comments**, off by default. It prompts
+eligible owning sessions about unresolved CodeRabbit review threads on known PRs, including
+attached repositories. It works with Inspector reviews and YOLO off, requires Foreman Live,
+invitation and repository trust, and waits while a workflow owns the session.
 
 Optional shipping automation can merge only after the current head has a clean published review,
 CI is green, every review thread is resolved, no human veto remains, the soak window has elapsed,
@@ -374,8 +401,7 @@ and control surface stay coherent.
 
 Release maintainers: [signed binary production and verification](docs/release-verification.md)
 documents stable and exact-commit alpha assets. Distribution remains gated on approved Apple
-credentials and real signed qualification. The binary installer is implemented ahead of that
-qualification; automatic binary updates remain a later phase.
+credentials and real signed qualification. Binary installation, automatic updates and owned integrations are implemented; the complete signed journey remains release qualification.
 
 The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
 install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
@@ -383,17 +409,21 @@ the optional ones, and keep the app current. The short version is two paths thro
 repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and supports manual binary replacement. Binary receipts disable the source
-  updater and link to the signed installer. Existing source installations retain their Node/npm
-  update preflight. See the
+  the window closed, and installs verified stable or exact-SHA alpha binaries. Desktop installation,
+  updates and Mission-owned integrations use Electron's bundled Node, without host Node/npm/npx.
+  Independent agents, project commands and source development keep their own prerequisites. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   A local **Starting Mission Control** screen stays visible during startup. After 60 seconds
   it offers **Retry now** and keeps checking readiness, so a slow restart recovers automatically.
-  **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
-  command in a visible terminal, with **Re-check** to confirm the repair.
-  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  **Settings → Setup → Runtime** identifies the serving daemon and shows external Node as an
+  optional source/tool prerequisite. An adopted standalone daemon retains its own runtime.
+  **Agent extensions → Install Claude integrations** repairs owned hooks, statusline wrappers and
+  MCP registrations while preserving custom commands. See the [runtime inventory](docs/owned-runtimes.md).
+  To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
+  You can still check for updates manually at any time.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
@@ -478,9 +508,10 @@ and build contracts.
 ## Community participation
 
 Sessions can [report product feedback](docs/sessions.md) with the
-`report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
-issue in `teamupstart/mission-control` by default and returns its GitHub URL, without a second
-dashboard approval. The dashboard feedback form uses the same destination.
+`report_product_issue` MCP tool. After an explicit user request, it shows the exact public issue
+in the dashboard and publishes it in `teamupstart/mission-control` by default only when you select
+Submit public issue, then returns its GitHub URL. The dashboard feedback form uses the same
+destination.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository

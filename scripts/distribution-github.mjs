@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { BINARY_REPO } from '../src/shared/binary-distribution.mjs';
 import { binaryReleaseTag, BINARY_MANIFEST_NAME } from '../src/shared/binary-publisher-policy.mjs';
-import { assertBuildMetadata } from './distribution-contract.mjs';
+import { assertBuildMetadata, publishedAssetNames } from './distribution-contract.mjs';
 
 const ALPHA_TAG = /^alpha-([a-f0-9]{40})$/;
 const RETIRED_ALPHA = 'Mission Control alpha retired. Request a new explicit offer; this exact identity must not be republished.';
@@ -96,7 +96,7 @@ export function githubDistributionTransport({command = 'gh', env = process.env} 
       const found = json(`${repo}/releases/${release.id}`);
       if (found.tag_name !== release.tag || found.draft || found.prerelease !== true ||
           json(`${repo}/commits/${release.tag}`).sha !== release.tag.slice(6)) throw new Error('Alpha retirement identity changed');
-      const allowed = new Set([BINARY_MANIFEST_NAME, ...['zip', 'dmg'].map((ext) => `Mission-Control-${release.tag}-darwin-arm64.${ext}`)]);
+      const allowed = new Set([BINARY_MANIFEST_NAME, ...publishedAssetNames(release.tag)]);
       const checkedAssets = async () => {
         const assets = await transport.listAssets(release);
         if (assets.some((asset) => !allowed.has(asset.name) || !/^[1-9]\d{0,31}$/.test(String(asset.id))) ||

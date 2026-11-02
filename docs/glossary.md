@@ -73,6 +73,12 @@ tasks over time, including catch-up behavior after the machine was away.
 A persona is a reusable review role with authored guidance. Workflow stages use personas
 to judge one immutable submission and return a verdict.
 
+## [Resident](residents.md)
+
+A resident is a long-running agent launched from a resident profile - a Persona, instructions,
+a harness, model and effort - into the Agent SDK. Its role travels as standing instructions,
+and it ends only on **Complete & close**.
+
 ## [Session](sessions.md#session-runtimes-terminal-or-the-agent-sdk)
 
 A session is one running agent conversation shown on the fleet. It can be a terminal

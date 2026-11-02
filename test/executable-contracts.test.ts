@@ -52,7 +52,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
   ],
   "src/pi/mcp-client.ts": [
-    { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
+    { operation: "spawn", command: "runtime.command", contract: "current-runtime", reason: "Pi runs Mission's bridge with the daemon-owned runtime descriptor; explicit custom bridge overrides retain Pi's runtime" },
   ],
   "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
@@ -115,6 +115,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
+  ],
+  "src/server/residents/mcp-catalog.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the locator, listing MCP auth status read-only in a neutral directory" },
+  ],
+  "src/server/residents/mcp-launcher.ts": [
+    { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "the operator's MCP server command, from the run's daemon-private snapshot, started by the scoped launcher with its own secrets" },
   ],
   "src/server/terminal/resume-guard.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
@@ -276,7 +282,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "bootstrap-login-shell":
       return boundary.command === "shell";
     case "current-runtime":
-      return ["descriptor.command", "request.node", "process.execPath"].includes(boundary.command)
+      return ["descriptor.command", "runtime.command", "request.node", "process.execPath"].includes(boundary.command)
         || (boundary.operation === "fork" && boundary.command === "options.worker");
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
     // into a variable, so a literal never reaches the call and the declaration above names the

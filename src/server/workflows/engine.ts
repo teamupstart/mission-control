@@ -1,4 +1,7 @@
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -34,7 +37,6 @@ import {
   type WorkflowRunPhase,
 } from "@shared/workflow-lifecycle.ts";
 import {
-  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
   checkRunBudgetSpent,
@@ -289,6 +291,7 @@ export function personaCheckEvidence(
       omittedBytes: parsed.data.truncatedBytes + retained.droppedBytes,
       headSha,
       note: parsed.data.note,
+      artifacts: parsed.data.artifacts,
     }));
   }
   return evidence;
@@ -328,7 +331,11 @@ export function sessionActionCompleteEdges(
  * A build log with an empty tail would otherwise produce an empty `rationale`, which the
  * strict schema refuses.
  */
-function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): PersonaVerdict | null {
+function checkVerdict(
+  outcome: WorkflowCheckOutcome,
+  runId: string,
+  attemptId: string,
+): PersonaVerdict | null {
   const summary = outcome.note;
   if (checkOutcomePasses(outcome)) {
     return normalizePersonaVerdict({
@@ -341,18 +348,24 @@ function checkVerdict(outcome: WorkflowCheckOutcome, attemptId: string): Persona
   const tail = tailBounded(outcome.output, WORKFLOW_EXECUTION_LIMITS.checkVerdictOutput);
   const quote = tail.text.trim() || "The command printed nothing before it failed.";
   const dropped = tail.droppedBytes + outcome.truncatedBytes;
-  const rationale = dropped > 0
+  const reader = outcome.artifacts
+    .filter((artifact) => artifact.availability === "retained")
+    .map((artifact) =>
+      `read_workflow_command_output({ runId: ${JSON.stringify(runId)}, attemptId: `
+      + `${JSON.stringify(attemptId)}, artifactId: ${JSON.stringify(artifact.id)} })`)
+    .join("\n");
+  const rationale = (dropped > 0
     ? `${quote}\n\n(${dropped} earlier bytes of output omitted.)`
-    : quote;
+    : quote) + (reader ? `\n\nRetained output:\n${reader}` : "");
   return normalizePersonaVerdict({
     verdict: "fail",
     summary,
     requestedChanges: [{
-      title: `Fix the failing ${outcome.slot} check`,
-      rationale,
+      title: outcome.slot === "coderabbit" ? "Verify all retained CodeRabbit findings and repair valid issues" : `Fix the failing ${outcome.slot} check`,
+      rationale: outcome.slot === "coderabbit" ? `${rationale}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.` : rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
-    confidence: 1,
+    confidence: outcome.slot === "coderabbit" ? 0.8 : 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }
 
@@ -968,7 +981,7 @@ export class WorkflowEngine {
     );
     return checkRunBudgetSpent(
       spent,
-      command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+      command?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
     );
   }
 
@@ -1341,7 +1354,18 @@ export class WorkflowEngine {
       return;
     }
 
+    const catalogCommand = this.workflowCommand(node.slot);
+    let frozenComparison: import("@shared/workflow.ts").CodeRabbitComparison | null = null;
+    if (node.slot === "coderabbit") {
+      try { frozenComparison = this.store.getCodeRabbitComparison(submission.id); }
+      catch { /* The comparison callback below reports corruption after YAML/budget gating. */ }
+    }
+    const commandView = node.slot === "coderabbit"
+      ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
+          ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
+      : catalogCommand;
     const attemptRef = {
+      runId: run.id,
       attemptId: claimed.id,
       submissionId: submission.id,
       nodeId: node.id,
@@ -1359,7 +1383,23 @@ export class WorkflowEngine {
     try {
       result = await runCheck({
         slot: node.slot,
-        command: this.workflowCommand(node.slot),
+        coderabbit: node.slot === "coderabbit" ? {
+          yaml: context.data.evidence.coderabbit,
+          dirty: context.data.evidence.workingTreeDirty,
+          retryAt: this.store.listAttempts(submission.id)
+            .map((attempt) => {
+              const output = attempt.output;
+              if (!output || typeof output !== "object" || Array.isArray(output)) return 0;
+              const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+              return parsed.success ? parsed.data.retryAt ?? 0 : 0;
+            }).reduce((a, b) => Math.max(a, b), 0),
+          comparison: async () => this.store.getCodeRabbitComparison(submission.id)
+            ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
+              repoRoot: binding.sessionRepoRoot!, headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+              yaml: context.data.evidence.coderabbit!, command: commandView!,
+            })),
+        } : undefined,
+        command: commandView,
         policy: this.workflowPolicy(),
         /*
          * Handed as a claim rather than a count, because the budget belongs to the COMMAND:
@@ -1371,13 +1411,21 @@ export class WorkflowEngine {
          * Called only if the ladder gets as far as spawning - resolution, authorization and
          * locatability are all asked first, and none of them may spend a run.
          */
-        reserveRun: () => this.store.reserveCheckRun(
-          run.id,
-          claimed.id,
-          node.slot,
-          this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
-          run.checkBudgetEpochRound ?? null,
-        ),
+        reserveRun: () => {
+          const reservation = this.store.reserveCheckRun(
+            run.id,
+            claimed.id,
+            node.slot,
+            commandView?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
+            run.checkBudgetEpochRound ?? null,
+          );
+          return reservation.granted
+            ? {
+                ...reservation,
+                release: () => { this.store.releaseCheckRun(claimed.id, node.slot); },
+              }
+            : reservation;
+        },
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
         headSha: submission.prHeadSha ?? context.data.evidence.headSha,
@@ -1392,13 +1440,17 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, error instanceof Error ? error.message : String(error));
       return;
     }
+    if (result.kind === "action_required") {
+      this.handleCheckActionRequired(claimed, run.id, result.reason, result);
+      return;
+    }
     if (result.kind === "infrastructure") {
       this.handleInfrastructureFailure(claimed, run.id, result.reason);
       return;
     }
 
     const { outcome: checkOutcome } = result;
-    const verdict = checkVerdict(checkOutcome, claimed.id);
+    const verdict = checkVerdict(checkOutcome, run.id, claimed.id);
     if (!verdict) {
       this.handleInfrastructureFailure(
         claimed,
@@ -1587,6 +1639,39 @@ export class WorkflowEngine {
     this.store.appendEvent(runId, "persona_infrastructure_exhausted", {
       nodeId: attempt.nodeId,
       attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.onRunChanged(runId);
+  }
+
+  /** Configuration or consent needs a human correction, never an automatic retry or code fix. */
+  private handleCheckActionRequired(
+    attempt: WorkflowNodeAttempt,
+    runId: string,
+    reason: string,
+    details?: { setup?: boolean; review?: import("@shared/workflow.ts").CodeRabbitReviewSummary; artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[] },
+  ): void {
+    const run = this.store.getRun(runId);
+    const submission = this.store.getSubmission(attempt.submissionId);
+    if (run?.status !== "running" || submission?.status !== "running") {
+      this.store.finishAttempt(attempt.id, { state: "cancelled", error: reason }, this.now());
+      this.onRunChanged(runId);
+      return;
+    }
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason, output: details ? jsonValue({
+      ...(details.setup ? { setup: true } : {}),
+      ...(details.review ? { review: details.review } : {}),
+      ...(details.artifacts ? { artifacts: details.artifacts } : {}),
+    }) : undefined }, this.now());
+    this.store.setSubmissionState(submission.id, "failed", this.now());
+    this.store.setRunState(runId, "blocked", "command_action_required", {
+      nodeId: attempt.nodeId,
+      attempts: attempt.attempt,
+      error: reason,
+    }, this.now());
+    this.store.appendEvent(runId, "command_action_required", {
+      nodeId: attempt.nodeId,
+      attemptId: attempt.id,
       error: reason,
     }, this.now());
     this.onRunChanged(runId);

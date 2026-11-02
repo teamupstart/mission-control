@@ -27,6 +27,12 @@ export const PlanReviewInputSchema = z.object({
 }).strict();
 export const PLAN_APPROVAL_DECISION = "approve-final-bundle";
 export const PLAN_APPROVAL_OPTION = "approve";
+
+/** Did this submitted form choose "Approve final bundle", and nothing else, for the bundle question? */
+export function approvesFinalBundle(selections: readonly { decisionId: string; selected: string[]; other: string | null }[] | null | undefined): boolean {
+  return Boolean(selections?.some((answer) => answer.decisionId === PLAN_APPROVAL_DECISION
+    && answer.selected.length === 1 && answer.selected[0] === PLAN_APPROVAL_OPTION && !answer.other));
+}
 export const PlanPublicationReceiptSchema = PlanIdentitySchema.extend({
   version: z.literal(2), storage: z.literal("local"),
   id: z.string().uuid(), reviewId: z.string().min(1), sessionId: z.string().min(1),

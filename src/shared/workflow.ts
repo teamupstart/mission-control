@@ -196,6 +196,15 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   checkVerdictOutput: 2_000,
 } as const;
 
+/** Browser-safe bounds shared by capture, persistence, HTTP and MCP readers. */
+export const WORKFLOW_COMMAND_OUTPUT_LIMITS = {
+  retainedBytesPerAttempt: 2 * 1_024 * 1_024,
+  retainedBytesPerRun: 64 * 1_024 * 1_024,
+  readBytesMin: 4,
+  readBytesMax: 64 * 1_024,
+  cursorChars: 1_024,
+} as const;
+
 /**
  * Workflow evidence inherits Phase 1's provider limits and adds bounds for durable metadata.
  * These are browser-safe because every intake surface and every retained row must agree.
@@ -283,13 +292,12 @@ export interface WorkflowEvidenceCoverageClaim {
    * there is nothing to cite yet. A repair packet names them, so a repair claim can bind
    * deterministically instead of being matched back by prose.
    *
-   * An id this submission's author wrote that names no criterion of the run is REFUSED, not
-   * downgraded: the claim is matched by nothing, including its own text, and readiness reports
-   * the citation by name. A claim carried from an earlier submission is the exception and
-   * keeps the pre-citation behaviour, because its author cannot withdraw the id from here.
-   * `classifyWorkflowCoverageCitation` owns that distinction; nothing else decides it.
+   * Unknown citations never match by text, including inherited claims. Registration rejects
+   * them; readiness reports historical invalid citations so their author can withdraw them.
    */
   criterionId?: string | null;
+  /** Registration-only caller ids retired atomically by this replacement. */
+  supersedes?: string[];
   proofClass: WorkflowEvidenceProofClass;
   repositoryScope: WorkflowEvidenceRepositoryScope;
   links: WorkflowEvidenceCoverageLink[];
@@ -357,6 +365,7 @@ export type WorkflowEvidenceReadinessGapCode =
 
 export const WORKFLOW_EVIDENCE_READINESS_WARNING_CODES = [
   "model_proof_class_disagreement",
+  "ambiguous_mapping",
 ] as const;
 export type WorkflowEvidenceReadinessWarningCode =
   (typeof WORKFLOW_EVIDENCE_READINESS_WARNING_CODES)[number];
@@ -384,6 +393,20 @@ export interface WorkflowCriterionReconciliation {
   cause: "transport" | "parse" | "cancelled" | null;
 }
 
+/** Explicit citations outrank all text proposals, including persisted legacy mappings. */
+export function workflowCriterionClaimIds(
+  criterionId: string,
+  mappings: readonly WorkflowCriterionMapping[],
+  coverage: readonly WorkflowEvidenceCoverageClaim[],
+): string[] {
+  const pinned = coverage.filter((claim) => claim.criterionId === criterionId);
+  if (pinned.length) return pinned.map((claim) => claim.clientCriterionId).sort();
+  const proposed = new Set(mappings.filter((row) => row.criterionId === criterionId)
+    .flatMap((row) => row.matchedClientCriterionIds));
+  return coverage.filter((claim) => !claim.criterionId && proposed.has(claim.clientCriterionId))
+    .map((claim) => claim.clientCriterionId).sort();
+}
+
 /** Daemon-owned declaration selection; absent claims stay selected so history cannot revive them. */
 export interface WorkflowCoverageSelection {
   version: 1;
@@ -403,15 +426,18 @@ export function selectWorkflowCoverageClaims(input: {
     version: 1,
     sourceSubmissionId: input.sourceSubmissionId ?? null,
     criteria: input.canonicalCriteria.map((criterion) => {
-      const mapped = [...new Set(input.criterionMappings
-        .filter((mapping) => mapping.criterionId === criterion.id)
-        .flatMap((mapping) => mapping.matchedClientCriterionIds))].filter((id) => claims.has(id));
+      const mapped = workflowCriterionClaimIds(criterion.id, input.criterionMappings, input.coverage);
       const declared = mapped.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
       const previous = input.previous?.criteria.find((row) => row.criterionId === criterion.id);
+      // Explicit bindings also displace absent saved selections. Without a binding, preserve
+      // absent ids so losing evidence cannot revive an older semantic declaration.
+      const priorIds = previous?.matchedClientCriterionIds.filter((id) =>
+        !mapped.some((candidate) => claims.get(candidate)!.criterionId === criterion.id)
+        || mapped.includes(id)) ?? [];
       return {
         criterionId: criterion.id,
         matchedClientCriterionIds: [...new Set(declared.length > 0
-          ? declared : previous?.matchedClientCriterionIds.length ? previous.matchedClientCriterionIds : mapped)].sort(),
+          ? declared : priorIds.length > 0 ? priorIds : mapped)].sort(),
       };
     }),
   };
@@ -431,12 +457,8 @@ export interface WorkflowEvidenceReadinessCriterion {
   /**
    * Every claim that matched this criterion, populated only when more than one did.
    *
-   * `matchedClientCriterionId` is null in exactly that case, so without this the repair
-   * packet could say a criterion was contested but never say by what, and an author cannot
-   * withdraw a claim it was not told about.
-   *
-   * Absent rather than empty when nothing is contested, which is every criterion of every
-   * readiness row written before this field existed.
+   * A representative complete claim supplies links and proof class while the competing ids
+   * remain visible with an ambiguity warning. Historical rows may have no representative.
    */
   contestedClientCriterionIds?: string[];
   authorProofClass: WorkflowEvidenceProofClass | null;
@@ -446,30 +468,8 @@ export interface WorkflowEvidenceReadinessCriterion {
   warnings: WorkflowEvidenceReadinessWarningCode[];
 }
 
-/**
- * What a claim's `criterionId` means for this run, decided in one place.
- *
- * Three paths act on a citation: mapping binds or refuses it, reconciliation decides whether
- * the model is even asked about the claim, and readiness reports the refusal. They had the
- * rule written out three times, including the inherited-claim exemption, and nothing made
- * them agree - a later edit could have excluded a claim from mapping while leaving it out of
- * `rejectedCitations`, or sent a citation the author was promised is authoritative to
- * semantic inference. They consume this instead.
- *
- * - `absent`: no citation. Matched by its text, and the model may be asked about it.
- * - `resolved`: names a criterion of this run. Bound to that criterion and no other, and
- *   never sent to the model, because the author already answered the question.
- * - `rejected`: names nothing, and this submission's author wrote it. Matched by nothing,
- *   including its own text, and reported by name.
- * - `inherited_unresolved`: names nothing, but was carried from an earlier submission. Its
- *   author cannot withdraw it from here, so it keeps the pre-citation behaviour and is
- *   matched by its text rather than parking the run on an impossible correction.
- */
-export type WorkflowCoverageCitation =
-  | "absent"
-  | "resolved"
-  | "rejected"
-  | "inherited_unresolved";
+/** A citation is authoritative regardless of whether its claim was inherited. */
+export type WorkflowCoverageCitation = "absent" | "resolved" | "rejected";
 
 export function classifyWorkflowCoverageCitation(
   claim: Pick<WorkflowEvidenceCoverageClaim, "criterionId" | "inheritedFromSubmissionId">,
@@ -477,12 +477,12 @@ export function classifyWorkflowCoverageCitation(
 ): WorkflowCoverageCitation {
   if (!claim.criterionId) return "absent";
   if (canonicalCriterionIds.has(claim.criterionId)) return "resolved";
-  return claim.inheritedFromSubmissionId ? "inherited_unresolved" : "rejected";
+  return "rejected";
 }
 
 /** Whether a claim is matched by its own prose, which is also what the model is asked about. */
 export function workflowCoverageCitationAllowsText(citation: WorkflowCoverageCitation): boolean {
-  return citation === "absent" || citation === "inherited_unresolved";
+  return citation === "absent";
 }
 
 /** One claim whose `criterionId` names no criterion of this run. */
@@ -621,38 +621,6 @@ function resolveCoverageClaimProof(
 }
 
 /**
- * Among declared claims for ONE criterion that share its exact wording, prefer the one that
- * proves it.
- *
- * A reserved claim cannot be amended, so the only repair open to an author is to re-register
- * under a new criterion id - which `coverage_reserved` instructs and this function honours.
- * Without it, following that instruction produced two declared claims matched to one criterion
- * and therefore `ambiguous_mapping`, a gap no further registration could close: the author was
- * told to do the one thing that wedged the run.
- *
- * Narrow on purpose. Identical wording from one author in one conversation is a revision, not a
- * disagreement, and the complete one is unambiguously the live one. Everything else still reads
- * as ambiguous: differing wording is two different assertions, and two claims that BOTH satisfy
- * their class is a genuine choice between author statements that nothing here is entitled to
- * make. Cross-criterion ambiguity is a separate question and is decided elsewhere.
- */
-function selectSupersedingDeclaration(
-  declaredIds: readonly string[],
-  claims: ReadonlyMap<string, WorkflowEvidenceCoverageClaim>,
-  evidence: ReadonlyMap<string, WorkflowFrozenEvidenceIdentity>,
-): readonly string[] {
-  if (declaredIds.length < 2) return declaredIds;
-  const wordings = new Set(declaredIds.map(
-    (id) => normalizedWorkflowCriterionText(claims.get(id)!.criterion),
-  ));
-  if (wordings.size !== 1) return declaredIds;
-  const satisfied = declaredIds.filter(
-    (id) => resolveCoverageClaimProof(claims.get(id)!, evidence).gaps.length === 0,
-  );
-  return satisfied.length === 1 ? satisfied : declaredIds;
-}
-
-/**
  * Reconcile one immutable coverage packet with daemon-assigned canonical criteria.
  * Semantic sufficiency remains entirely with the Persona workflow.
  */
@@ -698,37 +666,20 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       clientCriterionId: claim.clientCriterionId,
       criterionId: claim.criterionId!,
     }));
+  const selection = selectWorkflowCoverageClaims({ canonicalCriteria,
+    criterionMappings: input.criterionMappings, coverage: input.coverage, previous: input.selection });
   const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
-    const mappedIds = [...new Set(input.criterionMappings
-      .filter((mapping) => mapping.criterionId === canonical.id)
-      .flatMap((mapping) => mapping.matchedClientCriterionIds))]
-      .filter((id) => claims.has(id))
-      .sort();
-    const declaredIds = selectSupersedingDeclaration(
-      mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId),
-      claims,
-      evidence,
-    );
-    const selected = input.selection?.criteria.find((row) => row.criterionId === canonical.id);
-    const matchedIds = declaredIds.length > 0 ? declaredIds
-      : selected ? selected.matchedClientCriterionIds : mappedIds;
-    /**
-     * One claim may answer several criteria, and that is not a defect.
-     *
-     * Linking one evidence item from several claims has always been legal and is what the
-     * evidence guidance asks for, so a claim that covers two criteria is the same proof a
-     * compliant author would have written as two claims linking one screenshot. Discarding it
-     * proved nothing and cost its evidence: the criterion it did answer reported no links at
-     * all. What stays undecidable is the other direction - two claims matched to ONE criterion,
-     * where a single `authorProofClass` cannot name both - and that is what remains a gap.
-     */
-    const claim = matchedIds.length === 1 && mappedIds.includes(matchedIds[0]!)
-      ? claims.get(matchedIds[0]!)!
-      : null;
+    const mappedIds = workflowCriterionClaimIds(canonical.id, input.criterionMappings, input.coverage);
+    const matchedIds = selection.criteria.find((row) => row.criterionId === canonical.id)!.matchedClientCriterionIds;
+    const candidates = matchedIds.filter((id) => mappedIds.includes(id)).map((id) => claims.get(id)!);
+    // Pick a complete proof without merging roles from different author declarations. A stable
+    // caller-id order makes the representative reproducible; Personas still see every claim.
+    const claim = candidates.find((candidate) => resolveCoverageClaimProof(candidate, evidence).gaps.length === 0)
+      ?? candidates[0] ?? null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
-    if (canonical.material && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
-    if (matchedIds.length > 1) gaps.push("ambiguous_mapping");
+    if (canonical.material && !claim) gaps.push("missing_coverage");
+    if (matchedIds.length > 1) warnings.push("ambiguous_mapping");
     const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
     const links = proof?.links ?? [];
     if (proof) gaps.push(...proof.gaps);
@@ -1973,7 +1924,7 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation"] as const;
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
 /**
@@ -2845,6 +2796,47 @@ export interface WorkflowCheckCommand {
 export interface WorkflowCommandOverride {
   repoRoot: string;
   command: string[];
+  review?: CodeRabbitTuning;
+}
+
+export const CODERABBIT_SEVERITIES = ["critical", "major", "minor", "trivial", "info"] as const;
+export type CodeRabbitSeverity = (typeof CODERABBIT_SEVERITIES)[number];
+export interface CodeRabbitTuning {
+  kind: "coderabbit";
+  baseRef: string | null;
+  severity: CodeRabbitSeverity;
+}
+export interface CodeRabbitConfigSnapshot {
+  source: ".coderabbit.yaml";
+  committed?: boolean;
+  digest: string | null;
+  enabled: boolean;
+  state: "enabled" | "disabled" | "missing" | "invalid" | "unreadable";
+  diagnostic: string;
+}
+export interface CodeRabbitComparison {
+  interpreterVersion: 1;
+  yaml: CodeRabbitConfigSnapshot;
+  baseRef: string | null;
+  baseTip: string | null;
+  mergeBase: string | null;
+  head: string | null;
+  empty: boolean;
+  severity: CodeRabbitSeverity;
+  ruleRevision: number;
+  timeoutMs: number;
+  maxRuns: number;
+  error: string | null;
+}
+export interface CodeRabbitReviewSummary {
+  comparison: CodeRabbitComparison;
+  status: "complete" | "incomplete" | "skipped";
+  counts: Record<CodeRabbitSeverity | "none", number>;
+  diagnostic: string;
+  titles: string[];
+  remainingRuns?: number;
+  retryAt?: number;
+  expectedDuration?: string;
 }
 
 /**
@@ -2902,6 +2894,12 @@ export interface WorkflowCommandView {
    * again and is bounded separately by `MAX_INFRA_ATTEMPTS`.
    */
   maxRuns: number;
+  /** Null uses the slot's shipped default. */
+  timeoutMs: number | null;
+  /** What to do when an otherwise configured Command cannot execute. */
+  onUnavailable: WorkflowCommandFailurePolicy;
+  /** What to do after the Command has spent its per-run allowance. */
+  onBudgetExhausted: WorkflowCommandFailurePolicy;
   /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
   revision: number;
   createdAt: number;
@@ -2919,6 +2917,38 @@ export interface WorkflowCommandView {
  * `1` repeated in three files is three chances to disagree.
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
+export function defaultWorkflowCommandMaxRuns(slot: WorkflowCheckSlot): number {
+  return slot === "coderabbit" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+}
+
+/** Browser-safe result selection; server interpreters consume this descriptor. */
+export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit"> = {
+  test: "exit_code", lint: "exit_code", typecheck: "exit_code", build: "exit_code",
+  documentation: "exit_code", coderabbit: "coderabbit",
+};
+
+export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
+export type WorkflowCommandFailurePolicy =
+  (typeof WORKFLOW_COMMAND_FAILURE_POLICIES)[number];
+
+export const WORKFLOW_COMMAND_TIMEOUT_MIN_MS = 60_000;
+export const WORKFLOW_COMMAND_TIMEOUT_MAX_MS = 2 * 60 * 60_000;
+
+/** Existing slots retain their pre-policy runtime defaults. */
+export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, number> = {
+  test: 60 * 60_000,
+  lint: 10 * 60_000,
+  typecheck: 10 * 60_000,
+  build: 10 * 60_000,
+  documentation: 10 * 60_000,
+  coderabbit: 45 * 60_000,
+};
+
+export function effectiveWorkflowCommandTimeoutMs(
+  view: Pick<WorkflowCommandView, "slot" | "timeoutMs">,
+): number {
+  return view.timeoutMs ?? WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[view.slot];
+}
 
 /** The projected state of a slot nobody has configured yet. */
 export function emptyWorkflowCommandView(
@@ -2929,7 +2959,10 @@ export function emptyWorkflowCommandView(
     slot,
     defaultCommand: null,
     overrides: [],
-    maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    maxRuns: defaultWorkflowCommandMaxRuns(slot),
+    timeoutMs: null,
+    onUnavailable: slot === "coderabbit" ? "block" : "skip",
+    onBudgetExhausted: "skip",
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -2973,6 +3006,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  coderabbit: "Committed CodeRabbit review, enabled only by root .coderabbit.yaml reviews.auto_review.enabled: true.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
@@ -3006,6 +3040,9 @@ export const WORKFLOW_COMMAND_UNKNOWN = "Waiting for the daemon";
  */
 export const COMMAND_AUTHORIZATION_NOTE =
   "Running one also needs Commands allowed and the repository granted in Trust.";
+export const CODERABBIT_COMMAND_STATUS_NOTE =
+  "Root .coderabbit.yaml boolean true enables built-in defaults without a Library override. "
+  + "Enabled unavailability or incomplete review blocks; exhausted allowance skips with a warning.";
 
 /**
  * The DURABLE configuration state of one Command slot, as the line a card or a list row
@@ -3025,9 +3062,10 @@ export const COMMAND_AUTHORIZATION_NOTE =
  * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `YAML-enabled defaults${view.overrides.length ? ` · ${view.overrides.length} tuning ${view.overrides.length === 1 ? "rule" : "rules"}` : ""}`;
   if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
   const plural = overrides === 1 ? "override" : "overrides";
@@ -3060,9 +3098,10 @@ export function workflowCommandFact(
  * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
   if (!view && !hasSnapshot) {
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
   }
@@ -3103,6 +3142,7 @@ export function legacyCheckCommands(
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   const rows: WorkflowCheckCommand[] = [];
   for (const slot of WORKFLOW_CHECK_SLOTS) {
+    if (slot === "coderabbit") continue;
     for (const override of bySlot.get(slot)?.overrides ?? []) {
       rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
     }
@@ -3506,6 +3546,9 @@ export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
   status: WorkflowCheckStatus;
+  review?: CodeRabbitReviewSummary;
+  warning?: string;
+  diagnosticError?: string;
   slot: WorkflowCheckSlot;
   /**
    * Null whenever no command was resolved, which is every `skipped` outcome.
@@ -3520,8 +3563,37 @@ export interface WorkflowCheckOutcome {
   output: string;
   /** Bytes of streamed output dropped to honour that bound, or 0 when nothing was. */
   truncatedBytes: number;
+  /** Bounded bodies captured outside output_json. Empty on historical/non-executed attempts. */
+  artifacts: WorkflowCommandArtifactDescriptor[];
+  /** The frozen timeout used by this attempt, null when no process was launched. */
+  timeoutMs: number | null;
   /** Always a complete sentence, including on a pass. */
   note: string;
+}
+
+export const WORKFLOW_COMMAND_ARTIFACT_KINDS = ["stdout", "stderr", "findings"] as const;
+export type WorkflowCommandArtifactKind =
+  (typeof WORKFLOW_COMMAND_ARTIFACT_KINDS)[number];
+export const WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY = [
+  "retained", "pruned", "unavailable",
+] as const;
+
+export interface WorkflowCommandArtifactDescriptor {
+  id: string;
+  kind: WorkflowCommandArtifactKind;
+  retainedBytes: number;
+  observedBytes: number;
+  droppedBytes: number;
+  sha256: string | null;
+  captureState: "complete" | "partial";
+  availability: (typeof WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY)[number];
+  unavailableReason: string | null;
+}
+
+export interface WorkflowCommandOutputPage {
+  artifact: WorkflowCommandArtifactDescriptor;
+  text: string;
+  nextCursor: string | null;
 }
 
 /**
@@ -3699,8 +3771,17 @@ export interface WorkflowDefinition {
    * A built-in workflow is app data, not operator data: it is not a row, it arrives already
    * published, and it can be neither edited, archived, nor published again. Duplicate is the
    * path to a customized copy, and that copy is an ordinary workflow like any other.
+   *
+   * The one exception is `bindingDefaults.maxRepairRounds`, which an operator may change in
+   * place. See `shippedMaxRepairRounds`.
    */
   builtin: boolean;
+  /**
+   * What this build ships as the built-in's maximum repair rounds, present only while the
+   * operator's own value replaces it. `bindingDefaults` (here and on every version of the
+   * built-in) already carries the operator's value; this is what Reset returns to.
+   */
+  shippedMaxRepairRounds?: number;
 }
 
 export interface WorkflowVersion {
@@ -4347,6 +4428,8 @@ export interface WorkflowNodeAttempt {
   model: string | null;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
+  /** Attempt-owned retained Command bodies, including on infrastructure failures. */
+  commandArtifacts?: WorkflowCommandArtifactDescriptor[];
   retryAt: number | null;
   inputFingerprint: string;
   error: string | null;
@@ -4484,6 +4567,7 @@ export interface WorkflowCheckEvidence {
   omittedBytes: number;
   headSha: string | null;
   note: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type WorkflowContextSnapshot = WorkflowSteeringContext & {
@@ -4531,6 +4615,7 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;
+    coderabbit?: CodeRabbitConfigSnapshot;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
     workingTreeStatusTruncated: boolean;

@@ -253,7 +253,8 @@ if (uninstall) {
         mkdirSync(dirname(statuslineInnerPath), { recursive: true });
         writeFileSync(statuslineInnerPath, existing + "\n");
       } catch {
-        // couldn't record - forwarder falls back to ccstatusline
+        // Preserve the original status line if its delegation cannot be saved.
+        throw new Error("Could not save the existing status line; settings were preserved.");
       }
     }
     text = edit(text, ["statusLine"], { type: "command", command: ourCommand });

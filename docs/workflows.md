@@ -16,6 +16,11 @@ An orphaned or historical binding that cannot establish current ownership requir
 (1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
 `get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
 submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+Command attempts in that detail carry bounded artifact descriptors, never full output bodies.
+Read one stream with
+`read_workflow_command_output({runId, attemptId, artifactId, cursor?, limit?})`, using the
+opaque ids from run detail and following `nextCursor` until it is null. A page is at most 64
+KiB. The same owning-session and **Control other sessions** authorization applies.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:
@@ -54,7 +59,8 @@ the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery
 `DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
 review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
 
-These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`,
+`/read-command-output`, and `/act` authorization
 routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
 use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
 They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
@@ -96,7 +102,7 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 21 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -302,7 +308,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its six stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -321,10 +327,12 @@ pass while preserving the deterministic stage in the graph. The
 slots.
 
 Behind it are the eight built-in Personas wired the way they were written to compose. From version
-15 onward, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+15 through 21, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
+Version 22 inserts optional YAML-enabled CodeRabbit at stage 2, moving these Persona groups to
+stages 3, 4 and 5. Earlier versions retain their original numbering.
 Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
 repair, and the Pull Request action does not run until all three Persona stages pass.
 
@@ -397,6 +405,19 @@ there is a line saying why. **Duplicate** is the way to a version you own - the 
 ordinary workflow with its own name, editable, publishable, archivable, and never touched by
 an upgrade. Duplicating changes nothing about the built-in, which stays listed and stays
 bindable.
+
+The one exception is **Maximum repair rounds**. On any built-in, that field stays live in the
+settings rail of both the Pipeline and Graph views, with its own **Save rounds** button. Saving
+it changes the round budget for that built-in on this installation and leaves its graph,
+policies, trigger and delivery as they were. The new value is shown on the workflow and on
+every one of its versions. Every new binding starts from it, including the bindings Foreman
+creates for dispatched tasks. A binding or run that already exists keeps the budget it copied
+when it was created; use the binding dialog or **Grant rounds** on a blocked run to change
+those. **Reset to** returns to the value this build ships, and a later build's new default is
+then followed again. The value is stored in the daemon's database through
+`PUT /api/workflows/:id/round-limit`, which accepts only `{ "maxRepairRounds": 1-20 | null }`
+and refuses a workflow you own (edit and publish its draft instead). Settings backups do not
+carry it yet.
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
 `No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
@@ -785,9 +806,14 @@ repository override, then the slot's global default, then *skipped*. Everything 
 consent, Trust, the run budget, the platform floor, the runtime - is unchanged, and a
 configured default still runs only in a repository that holds the Workflows grant.
 
-Saving a slot replaces its default, its complete override list and its run budget in one
-compare-and-swap, so the parts are never stored apart and a second window's save is refused
-rather than silently overwriting unsaved typing.
+Saving a slot replaces its default, complete override list, run budget, timeout, and
+skip-or-block policies in one compare-and-swap, so the parts are never stored apart and a
+second window's save is refused rather than silently overwriting unsaved typing.
+
+Each slot also carries a timeout from one minute through two hours. A null setting keeps the
+existing slot default: sixty minutes for `test`, and ten minutes for every other shipped slot.
+The effective value is frozen when an attempt starts. A later catalog edit cannot change a
+running process or rewrite a completed result.
 
 **A Command runs once per workflow run by default.** Beside the command itself, each slot
 carries **how often this Command may run** - how many times it may actually execute inside a
@@ -798,7 +824,7 @@ means "every round, without ever being skipped".
 This exists because a slow gate is slow in every round. A twenty-minute test suite that
 re-runs on each repair round is the largest fixed cost in a long workflow, and the rounds after
 the first are usually re-proving the same passing paths. Once a run has spent the budget, the
-gate is *skipped* with a note naming the limit, the graph advances, and the remaining coverage
+gate is *skipped* by default with a note naming the limit, the graph advances, and the remaining coverage
 comes from CI, which runs the full suite against the merge commit anyway. Raising the number
 buys re-validation of a repair at the cost of running the command again.
 
@@ -826,13 +852,20 @@ checkout's `packages/web` resolves the command configured for the repository's
 `examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
-**An unrun gate passes, with a note saying why.** A slot with no override for this repository
+**An unrun gate passes by default, with a note saying why.** A slot with no override for this repository
 and no global default is *skipped*; a repository that has not been authorized is *not run*; a
 platform that cannot run Commands, or an executable that is not there, is *not run* too; and a
 Command that has already run as often as this run allows is *skipped* with its own distinct
 reason. All of them pass, because a workflow that failed on every unconfigured machine would be
 broken by default, and each says which of them happened so it is never mistaken for a gate that
 ran. Only a command that ran and exited non-zero fails.
+
+For a configured Command, the slot can instead set **If the command is unavailable** or
+**When the run budget is exhausted** to **Block for operator action**. A block parks the run
+without an automatic infrastructure retry, a repair round, or a code-fix packet. Correct the
+authorization, executable, platform, or allowance and use the run's Retry action. Both
+policies default to **Skip with a note**, preserving existing Command behavior. An
+unconfigured slot and an operator-disabled node remain skips regardless of these policies.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block
@@ -862,9 +895,17 @@ does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 
-Run detail draws a Command as its own card: the slot, the configured argv, the exit code, and the
-last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
-the sentence saying which of the reasons above applied.
+Run detail draws a Command as its own card: the slot, configured argv, exit code, effective
+timeout, and the last few kilobytes of combined output with a count of anything dropped. Each
+attempt also retains separate stdout and stderr bodies up to 2 MiB combined, within a 64 MiB
+per-run quota. The dashboard and attributed MCP reader fetch those bodies in bounded pages;
+they are never placed in SSE or ordinary run-detail payloads. Retained byte counts and SHA-256
+describe raw bytes, while display strips terminal control sequences and rejects invalid UTF-8.
+Pruned, partial, unavailable, and historical-not-captured states remain explicit. Raw-output
+truncation never changes the exit-code verdict. For a gate that did not run, the card shows
+the sentence saying which reason above applied. When a launched Command ends as infrastructure
+rather than producing a check outcome, its attempt card keeps the same retained-output reader,
+including for timeout, signal, cancellation, and cleanup failures.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -1201,14 +1242,15 @@ Every carried claim is retained even when a limit refused some of the evidence i
 the link pointing at the absent item is dropped, because citing evidence that is not there
 invents a gap rather than finding one.
 
-Every frozen coverage claim of the previous submission is retained whole, with its own claim id,
+Each active coverage claim of the previous submission is retained whole, with its own claim id,
 proof class, repository scope, and link set, marked with the submission it came from. The one
 bound is the frozen-coverage limit: a submission's coverage is read through a schema capped at
 `maxClaims`, so a carry that ignored it would make that coverage unreadable rather than larger.
 It binds only when a parent already at the cap meets a child that declared claims of its own, and
 reaching it is recorded as `evidence_carry_truncated` alongside the evidence counts. A claim
 re-declared under the same id is the same claim, and the author's current wording wins; a
-different id for the same criterion is a different claim and is retained beside it.
+new caller id bound to the same canonical `criterionId` replaces the older claims.
+Explicitly superseded and withdrawn claims are excluded before the carry budget is spent.
 
 A claim whose links do not all resolve inside the submission is left in the tray rather than
 frozen, because freezing a claim beside evidence the submission does not hold would be a
@@ -1221,13 +1263,16 @@ claim and the exact links that would not resolve, so a claim the author register
 find is inspectable rather than silent.
 
 Readiness persists the effective claim selection separately from retained ancestry. A new
-unique declaration replaces the selected claim for that criterion. Two current declarations
-remain ambiguous, with one exception: where they share a criterion's exact wording and exactly
-one of them satisfies its declared proof class, that one supersedes the other. A reserved claim
-cannot be amended, so re-registering under a new criterion id is the only repair open to an
-author, and this is what keeps following that instruction from wedging the run. Differing
-wording, or two declarations that both satisfy their class, stay ambiguous: the first are two
-assertions and the second is a choice between author statements.
+explicit binding takes priority over semantic matches. Re-registering a claim under the same
+`clientCriterionId` updates its mutable registration, including its canonical binding, while
+past submissions remain immutable. Identical updates are idempotent.
+
+Use `coverage[].supersedes: ["old-client-id"]` to replace differently worded claims atomically,
+or `withdrawClientCriterionIds: ["old-client-id"]` to retire claims without registering a
+replacement. Withdrawal is idempotent and applies to reserved and inherited claims as well as
+staged claims. A call cannot both register and retire the same caller id. Retirement markers
+are scoped to the conversation and reservation generation, so later rounds cannot revive an
+old claim and replaying a prior capture cannot apply a future withdrawal.
 
 A later repair of another criterion retains the earlier selection. Missing
 selected claims or links become gaps instead of reviving an older claim. Each new snapshot
@@ -1264,21 +1309,50 @@ including its own text, readiness records the citation under `rejectedCitations`
 `unknown_criterion_id`, and the repair packet names the claim and the id it cited before listing
 the criteria that went uncovered because of it.
 
-A claim CARRIED from an earlier submission is the one exception. Its cited id may no longer
-resolve, and the author of the repair in front of it cannot withdraw an id they did not write, so
-it keeps the pre-citation behaviour: matched by its own text, and eligible for semantic
-reconciliation like any uncited claim. `classifyWorkflowCoverageCitation` in
-`src/shared/workflow.ts` decides which of those four cases a citation is, and criterion mapping,
-the reconciliation provider filter and readiness all read it rather than re-deriving the rule.
-The field is optional on the wire and absent from every historical row, so an older daemon strips
-it and matches by text as before.
+Inherited claims follow the same citation rules. New registrations with an unknown id return
+`unknown_criterion_id` immediately and atomically, before staging any evidence. Registration
+validates citations against the runs that receive their repository scope: a scoped claim
+cannot borrow an id from a sibling repository's run, and an `all` claim's id must exist in every
+receiving run. Legacy frozen unknown citations remain visible as readiness gaps until withdrawn
+or corrected. For legacy runs without frozen criteria, registration follows failed capture
+ancestry to the last captured criteria instead of treating an empty failed context as authoritative.
+The tool checks `workflow-coverage-mutations-v1` before sending canonical bindings, supersession, or
+withdrawal, so an older daemon cannot silently strip those fields. Restart Mission Control
+when the tool reports an incompatible daemon.
 
-One claim may answer several criteria, and each of them counts it. Linking one evidence item from
-several claims has always been allowed, so a claim covering two criteria is the same proof a
-compliant author would have written as two claims citing one item; discarding it proved nothing
-and cost the criterion it did answer every one of its links. Two claims matched to ONE criterion
-remains `ambiguous_mapping`, because a criterion carries a single author proof class and there is
-nothing to choose between them. The repair packet names the competing claim ids.
+One uncited claim may answer several criteria. Replacing one criterion with an id-bound claim
+preserves a prior uncited claim that still answers another criterion; explicit `supersedes`
+retires the whole claim. Replacement follows the receiving repository even when scope changes:
+an `all` replacement retires prior scoped claims, while a scoped replacement displaces a shared
+claim only in that repository. Siblings keep their shared proof, and withdrawing the replacement
+does not revive its predecessor in the replaced repository. A changed same-`clientCriterionId`
+registration creates a new claim version and retires its predecessor for the receiving scope,
+even if the new claim's links later drift and prevent it from freezing. Identical replays retain
+their version and generation. When scope narrows, the earlier staged version remains available
+under the same caller id for siblings that have not captured yet. Freezing selects one applicable,
+unretired version per caller id; an all-scope update or explicit withdrawal retires every earlier
+version. When several claims still answer one
+criterion, `ambiguous_mapping` is a warning. Readiness uses a complete claim's own proof class and links,
+selected in stable caller-id order, and displays the competing ids. It never combines incomplete
+claims to manufacture a complete proof. If none is complete, the representative's invalid links,
+scope conflicts, or missing required roles still block. Missing coverage also remains a hard gap.
+
+Existing runs require a recheck, not a rewrite of their immutable submissions. The Runs view's
+**Recover inherited coverage** action (or `recover-evidence` via MCP) creates a new snapshot and
+re-evaluates legacy ambiguity with the current rules. Claims whose canonical ids were stripped
+must be re-registered with the intended id; no text heuristic can reconstruct author intent.
+Recovery honors claim retirements committed before it starts while retaining the parent's frozen
+evidence; it does not capture later staged proof into that recovered snapshot.
+The database upgrade creates the retirement ledger and records retired registration versions and
+each submission's retirement cutoff. Historical claims remain unchanged. Retirement records have
+optional receiving-repository roots; existing records remain global. Retirement follows a
+claim version across conversation reattachment; a fresh registration with the same caller id is
+a new version. Resetting the old conversation retains retirement records still needed by that run.
+Schema v9 preserves existing registrations while allowing retained staged versions alongside the
+single current registration. It does not reconstruct shared versions already overwritten by an
+older daemon; those claims must be registered again for any sibling that never captured them.
+A resubmit after an image capture failure walks past the incomplete capture to retain earlier
+coverage and evidence, while preserving verification across changed repository snapshots.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including
@@ -2680,3 +2754,64 @@ on hover and focus, failure paths are dashed and text-labelled, state changes us
 focus returns after dialogs, and reduced-motion preferences disable canvas and panel animation.
 At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
 drawers.
+
+## Local CodeRabbit Command
+
+The `coderabbit` Library Command works in any custom workflow evaluation stage, including
+stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and before Personas.
+Bindings keep their published version until explicitly upgraded. Earlier versions and other
+built-ins are unchanged.
+
+Enable it in the reviewed repository's root `.coderabbit.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  auto_review:
+    enabled: true
+```
+
+Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
+Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
+Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
+skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
+Submission capture freezes the decision; retries reuse it and new submissions refresh it.
+
+No Library override is needed. Optional repository-root tuning selects a base ref and severity
+(default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
+the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
+these defaults. The command previews its owned argv, never an editable shell recipe.
+
+The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
+Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
+ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
+Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
+mean a clean review. YAML-enabled reviews with
+remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
+and stored authentication under the daemon's effective `HOME`. Unavailability or incomplete
+review blocks with an error and a **Settings > Setup** link, without spending a repair round or
+sending code-fix instructions. Correct the problem and explicitly retry. No install, login,
+CLI update, remote-ref fetch or paid-credit continuation happens automatically.
+
+Only committed content is reviewed. Dirty submissions must be committed and submitted again.
+The first successful comparison pins the full captured head, configured base, resolved base tip
+and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
+same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
+in the existing commit-pinned supervised lease with `review --agent --gate <severity>
+--committed --base-commit <merge-base>`.
+
+A complete gate, an explicit zero unreviewed-file count and matching exit code pass or return
+findings for repair. Missing completion or coverage count, reused review, incomplete coverage,
+contradictory output, semantic limits or lost findings
+storage block. Raw-log truncation alone does not invalidate independently retained findings.
+Run detail shows comparison provenance, severity counts, remaining allowance and diagnostics.
+**Load findings** pages the complete retained normalized findings, including advisory severities;
+the attributed `read_workflow_command_output` tool uses the same bounded authorized reader.
+Personas receive compact upstream evidence, not an assertion that they read the whole artifact.
+
+Repair instructions require the owning session to read all retained findings and verify each
+claim before changing code. Valid repairs are committed for a new submission. A false positive
+requires an explicit operator decision through the existing node-disable/recovery controls;
+clearing vendor findings or silently lowering severity does not earn approval. This local CLI
+review is independent of GitHub CodeRabbit comment/thread follow-up.

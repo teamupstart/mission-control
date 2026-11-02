@@ -12,7 +12,7 @@ This phase is grounded in:
 - [`phased-plan.md`](phased-plan.md)
 - [`phase-1-coverage-foundation.md`](phase-1-coverage-foundation.md)
 - [`phase-2-enforced-preflight.md`](phase-2-enforced-preflight.md)
-- [`../../reports/test-evidence-auditor-first-pass/report.html`](../../reports/test-evidence-auditor-first-pass/report.html)
+- `docs/reports/test-evidence-auditor-first-pass/report.html` (removed from the repository in #1213)
 - `AGENTS.md`
 - `docs/workflows.md`
 - `docs/agent-guides/change-contracts.md`

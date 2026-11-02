@@ -30,7 +30,7 @@ import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
-import { armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
@@ -235,6 +235,7 @@ function registerIpc(updateController: UpdateController): void {
   const dashboard = () => getMainWindow()?.webContents;
   serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
   serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
+  serveDashboardClick(ipcMain, "mission:resident-launch-click", dashboard, armResidentLaunchAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
   ipcMain.handle("mission:update-set-alpha", (event, alpha: boolean) => {

@@ -24,3 +24,8 @@ export function setShippingConfig(patch: ShippingConfigPatch): ShippingConfig {
   setAppConfig(CONFIG_ENTRY, next);
   return next;
 }
+
+/** An unavailable or malformed setting cannot authorize observation or delivery. */
+export function codeRabbitEnabled(): boolean {
+  try { return getShippingConfig().codeRabbitAutoResolve; } catch { return false; }
+}

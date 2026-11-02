@@ -43,6 +43,188 @@ secret values cannot be read back; only a real signing/notarization run can esta
 the exported certificate, password and API key work together. Environment configuration is
 complete; real signed-release qualification and controlled publication remain outstanding.
 
+## Packaging failure diagnostics (2026-10-28 UTC)
+
+[Run 39854793560](https://github.com/teamupstart/mission-control/actions/runs/39854793560/job/120090269790)
+for stable v1.27.1 (`c0a78a371`) reached Developer ID signing after a successful build.
+It then printed the old generic failure message. GitHub recorded the packaging step as
+successful, ran Bundle smoke, and failed artifact retention because no archives or JSON
+existed. This was not a successful signed qualification. The discarded exception cannot
+be reconstructed from the log, so the elapsed signing time does not establish whether
+codesign, notarization or a later verifier failed.
+
+A complete run inventory also found
+[alpha run 38918357329](https://github.com/teamupstart/mission-control/actions/runs/38918357329/job/117031718971):
+it logged signing at 11:58:21 UTC on October 28 and the same generic failure at 12:00:27,
+again with a successful packaging step and failed artifact retention. Thus the supplied
+"only one executed run" observation was incomplete: at least these two reached signing.
+Neither log contains the discarded underlying exception.
+
+Two code defects are verified independently:
+
+- The locked `temp-file@3.4.0` installs `async-exit-hook@2.0.1`, whose
+  `add.hookEvent('beforeExit', 0)` calls `process.exit(0)` after cleanup. That overwrites
+  the producer's `process.exitCode = 1`. A child-process reproduction exits zero without
+  the fix. The producer now pins failure again in an `exit` listener, matching
+  electron-builder's own `out/cli/cli-util.js` workaround for
+  [upstream #2940](https://github.com/electron-userland/electron-builder/issues/2940).
+  Asynchronous temporary-file/keychain cleanup still gets to finish.
+- `app-builder-lib@26.15.3`, used by that run, creates a random temporary-keychain
+  password but passes the certificate import password to `security set-key-partition-list
+  -k`. Those are different credentials. The dependency is now pinned to
+  `electron-builder@26.16.1`, which contains the
+  [v26 keychain fix](https://github.com/electron-userland/electron-builder/pull/10172).
+  A focused test intercepts every security call and checks that create, unlock and
+  partition-list use the same generated password while import uses the fake `.p12`
+  password. It fails on 26.15.3 and passes on 26.16.1 without accessing a keychain.
+  This removes a real signing defect; it does not prove which error the historical run hid.
+
+`package:distribution` reports the failing stage: preflight, build, sign (including
+identity/keychain preparation after packaging), notarize (app), verifyDistributionApp,
+qualifySignedRuntime, dmg build (including DMG signing), notarize (dmg), ditto, archive
+verification or metadata. Error records retain the class/code, child status/signal and
+bounded redacted details. Explicit `notarytool submit` and `wait` calls report submission
+IDs and statuses; failed submissions also retrieve Apple's issue list when available.
+Accepted submissions are stapled before verification. A wait timeout retains the ID so
+the release operator can inspect that submission before deciding whether to retry.
+
+The original builder app notarization and explicit DMG notarization were **different
+artifacts**, not duplicate submissions. The producer now owns both explicit notarization
+stages and disables builder's implicit notarization. Each artifact is submitted once.
+Builder still owns certificate import, identity selection and signing; hardened runtime,
+entitlements, fuses, publisher policy, immutable bytes and approval gates stay enforced.
+
+Raw builder retry logs are suppressed because they can contain credential arguments.
+Build children receive no Apple/signing credentials; debug logging is disabled. Only the
+bounded diagnostic projection emits third-party failures. It redacts provisioned values,
+PEM private keys, private-key paths and credential-bearing command lines, including
+generated keychain passwords. Do not enable `DEBUG`, shell tracing, dump environments,
+upload raw error objects or attach a private key to investigate a failure.
+The workflow retains `distribution-diagnostics-<commit>` for 14 days even on failure.
+Its explicit Bash shell preserves the producer's failure through `tee`; smoke, qualified
+asset retention and publication remain success-only, while private-key removal always runs.
+
+Local fixture verification includes:
+
+```sh
+node --import ./test/setup-state.mjs --import tsx test/helpers/distribution-failure-runs.ts
+```
+
+This executes the actual `npm run package:distribution` entry point in disposable fixtures,
+forces every stage to fail, and checks exit 1 plus the redacted stage/status record. It
+does not access real credentials, Apple services or the operator's keychain, and it is
+not evidence of real signed qualification.
+
+**Release follow-up and PR handoff:** the operator must obtain `developer-platform`
+approval for the next eligible Signed distribution run on a commit containing this fix.
+Do not claim that run passed until its real signature, notarization, archive and runtime
+checks pass. The pending stable runs
+[39439350935](https://github.com/teamupstart/mission-control/actions/runs/39439350935) and
+[40014670460](https://github.com/teamupstart/mission-control/actions/runs/40014670460), and
+alpha [40679134880](https://github.com/teamupstart/mission-control/actions/runs/40679134880),
+were still waiting for `desktop-distribution` approval at this check; their commits do not
+contain this fix. No deployment was approved, rejected or rerun, and no release was published.
+PR #1214 is closed and superseded by #1216; it is not a repair target.
+
+If the next diagnostic points to credentials or Apple account state, the release operator
+must privately check that the exported `.p12` includes the matching private key, its password
+matches `CSC_KEY_PASSWORD`, and its Developer ID Application certificate for `S2FPCQK39Z`
+is valid, unexpired and unrevoked. For notarization authentication failures, check that the
+team API key is active, its Key ID and Issuer ID match the provisioned `.p8`, and its App
+Manager permission, team membership and required Apple agreements remain valid. For an
+Invalid submission, use the reported submission ID and issue list to identify the exact
+binary/signature failure. None of these secret/account facts was inspected or established
+by this repair; do not rotate credentials merely because the old log masked an error.
+
+## Requirement text repair (2026-10-28 UTC)
+
+The operator supplied the retained diagnostic from
+[run 40718182516](https://github.com/teamupstart/mission-control/actions/runs/40718182516)
+at `4a2739023f61a30f5bd70bd973cc26f4843473f7`: build and signing passed, app notarization
+was Accepted (`ba422e3e-7da8-4233-928c-1315ddff8d68`), then `verifyDistributionApp`
+failed with `No such file or directory / invalid requirement specification`.
+`codesign -R` treats an argument as a filename unless the requirement begins with `=`.
+All app and DMG requirement arguments now carry that prefix, including the standalone
+bootstrap and its generated `install.sh`. Apple anchor, bundle identifier where present,
+and team OU remain identical. The shared app/image requirement helpers supply both the
+JavaScript verifiers and rendered bootstrap arguments. The binary updater, preparation worker
+and detached installer reach the same repaired `verifyBinaryPublisher` boundary.
+
+`test/codesign-requirements.test.ts` statically discovers requirement calls throughout
+shipped source, checks their prefix and publisher semantics, and verifies installer generation.
+On macOS it also calls **real `/usr/bin/codesign`**, without mocks: `/bin/ls` satisfies
+`=anchor apple` (exit 0); wrong identifier and team requirements return exit 3 with
+`failed to satisfy`, never a file or parse error. Both production verifiers and the rendered
+bootstrap requirements are exercised against that real system binary. The unpatched code
+failed these tests with exit 1 and the observed file error. These native cases skip on other
+platforms; macOS must execute them, not merely report a skipped Linux run. Under the Codex
+Seatbelt sandbox, use scoped outside-sandbox execution so macOS trust services are reachable.
+
+`test/distribution-native-tools.test.ts` checks the downstream argument forms with real
+macOS tools and disposable fixtures: `cp -R` and quarantine retention; `ditto` ZIP creation,
+extraction and installation copy; read-only `hdiutil` attach/detach and exact bundle digests;
+the shipped Bash `plutil`/`openssl` helpers; `spctl` assessment forms; and `stapler validate`
+refusal for a system binary without a ticket. Installed `notarytool` help confirms the
+submit/wait/log authentication flags, JSON output and `20m` timeout syntax without submitting
+anything. Review of the locked builder confirms prepackaged DMG creation skips app packaging
+and uses the selected signing identity/keychain for DMG signing. No further real-tool argument
+defect was confirmed. These checks do not establish Developer ID signing, accepted notarization,
+stapling success or the signed Electron runtime journey.
+
+The review check also exposed an intermittent detached rename rollback. Concurrent real
+Electron fixtures reproduced a launch-conflict refusal for a runningboard application job;
+the helper checked launch state before waiting for its own parent to exit. Detached migration
+now waits for the identified parent first, retaining both source/target conflict scans and
+bundle-exit waits before staging. A regression with a real disposable parent checks that
+ordering, and receipt assertions retain fixture diagnostics in the failure itself. These
+fixtures still simulate publisher trust and do not qualify signed updates.
+
+**PR and release handoff:** real signed qualification requires the next approved **Signed
+distribution** run on a commit containing this repair. It has not passed in this task.
+`qualifySignedRuntime`, signed DMG build/notarization, accepted Gatekeeper assessments and
+final signed archive verification remain that run's obligations. No protected deployment was
+approved, rejected or rerun, no release was published, and no credential, publisher policy,
+environment protection or immutable-asset rule was changed.
+
+## Apple ticket validation connection loss (2026-10-29 UTC)
+
+[Run 40788261287, package job 123166921765](https://github.com/teamupstart/mission-control/actions/runs/40788261287/job/123166921765)
+at `40d47a45d0c9872ba45b520257d6750d5c04e45f` completed signing, received Accepted for
+app notarization submission `3f71dbd3-082c-495d-9307-c18fd5ddeea7`, and passed the first
+`verifyDistributionApp`. It then failed in `qualifySignedRuntime` while validating
+`Parent.app`: `stapler validate` returned 68 with `NSURLErrorDomain Code=-1005` from
+Apple's CloudKit ticket lookup. This is a lost network connection, not evidence of a bad
+signing identity or a rejected notarization. Apple documents that meaning in
+[QA1941](https://developer.apple.com/library/archive/qa/qa1941/_index.html).
+
+The shared app/DMG ticket validator now repeats this specific transport failure at most
+eight times, after 1, 2, 4, 8 and 16 seconds and then three times after 30 seconds, about
+two minutes of backoff in all. The first bound of three retries after 1, 2 and 4 seconds
+exhausted in [run 41049955795](https://github.com/teamupstart/mission-control/actions/runs/41049955795)
+at `d96187d1a`: four `-1005` failures spanning 30 seconds on the copied `Runtime.app`, after
+app notarization was Accepted. Each run validates four bundles, so one brief CloudKit outage
+cost the whole alpha. Each native invocation retains its 60-second timeout.
+Validation must actually succeed before qualification continues. Missing, invalid or revoked
+tickets, unknown failures, TLS errors and process failures remain immediate refusals; a
+persistent connection loss also fails closed. Retry diagnostics contain only the operation,
+attempt, status and delay; exhausted failures retain the existing redacted stage diagnostic.
+Copied runtimes, archive verification and retained-asset publication all use this boundary.
+No app is re-signed, re-stapled or re-submitted by a validation retry.
+
+Focused fixture tests reproduce the reported failure, recovery for app and DMG validation,
+the retry limit and continued refusal of unqualified publication inputs. They do not prove
+Apple service availability or a completed signed runtime journey. The linked run never reached
+DMG creation, final archive qualification or publication.
+
+For recovery, use the next eligible protected Signed distribution run containing the fix;
+it starts without approval under the automatic distribution policy below. Re-running the failed job at its old SHA can
+recover if the network is healthy, but does not pick up this repair. If the bounded retries
+also exhaust, retain the diagnostic and investigate connectivity from the runner to
+`api.apple-cloudkit.com` before retrying through the existing release procedure. This error
+alone does not call for rotating credentials. Do not bypass ticket validation, strip
+quarantine or replace already published immutable assets. A successful protected run is
+still required to establish real signed-release qualification.
+
 ## App-name transition observation (2026-10-27 UTC)
 
 The rename task rechecked PR #1214: it remains OPEN, draft, and DO NOT MERGE at
@@ -78,6 +260,54 @@ qualification contract. Registered workflow evidence contains the focused runtim
 logs, inspected UI images, package inspection, exact legacy-validator compatibility check,
 publication observation and complete plan Markdown. These gitignored artifacts do not enter Git.
 
+## Automatic distribution policy (2026-10-29 UTC)
+
+The operator requested automatic signing without per-build human approval and chose to
+retain full successful push CI as a prerequisite. Newer main pushes may still cancel older
+CI candidates, and alpha publication retains its existing latest-complete-build policy.
+Release Please merges continue through stable tag CI; ordinary eligible main commits
+continue through alpha signing. No workflow trigger or concurrency change is needed.
+
+The reported `57d2bcf` offer had no signed binary because its
+[main CI run](https://github.com/teamupstart/mission-control/actions/runs/40806860980)
+failed the development-dashboard telemetry scenario in E2E shard 13. The failed trace
+shows cold Vite module loading consuming the assertion's 20-second budget; on retry,
+React started about 18 seconds after the dev connection opened, leaving almost no time
+for settings hydration. The spec now waits for the dashboard's initial SSE snapshot before
+asserting telemetry behavior. The same shard's plaintext-endpoint scenario saved its
+checkbox change successfully but failed the immediate checkbox assertion; it now clicks
+once and asserts the settled checked and enabled states.
+
+The local shard verification exposed another intermittent failure in product analytics
+enrollment: a configuration refresh could erase a newly typed endpoint before saving.
+That form now uses the same synchronous dirty guard and edit generation as the personal
+destination form. A deterministic browser regression also reproduced a save response
+discarding edits made while the request was pending; those later endpoint, temporality
+and export-shape edits now remain in the draft while storage retains the submitted values.
+
+The subsequent [manual distribution run](https://github.com/teamupstart/mission-control/actions/runs/40808719475)
+refused that exact commit at input validation. This was the CI gate, not a signing failure.
+The [successful alpha run](https://github.com/teamupstart/mission-control/actions/runs/40794864493)
+published `alpha-01749ab64862aa442ee7b76d6ded102b03561cce` with ZIP, DMG, and ready manifest.
+That inventory establishes publication availability, not the R1/R2 signed installation
+and recovery qualification. An alpha offer still names the current main commit exactly;
+an older available publication is not silently substituted for a failed or pending one.
+
+**Environment change applied (2026-10-29 22:45 UTC):** an earlier attempt as `Jordan7265`
+returned HTTP 403, "Must have admin rights to Repository." A repository administrator then
+removed **Required reviewers** from `desktop-distribution`. Selected branch `main`, tag
+pattern `v*`, admin bypass and every signing secret and variable were retained. This operator
+instruction supersedes the earlier per-build reviewer policy recorded above; it does not relax
+CI, signer, notarization, source-identity, or manifest verification.
+
+GitHub failed the jobs that had been waiting for hours when the rule was removed, without
+running a step. A job that had entered `waiting` minutes earlier kept an empty reviewer list
+that nobody could approve, and it held the `distribution-alpha` concurrency group until it was
+cancelled. Check for such a job after any later environment change.
+[Run 40974755792](https://github.com/teamupstart/mission-control/actions/runs/40974755792)
+then started without approval and published `alpha-5d9ede07d199fc47949c2b9659dd03d502181890`,
+retiring the three older alphas. Later `main` commits have signed and published on their own.
+
 ## Ownership and prerequisites
 
 Release Please still owns stable versions, tags, changelogs and GitHub Releases.
@@ -99,9 +329,10 @@ Their main CI run skips packaging; their stable tag CI owns binary production.
 A matching stable version tag on the exact commit also suppresses alpha packaging, including
 retries after a PR label has been removed.
 
-The protected `desktop-distribution` environment must be created and restricted to trusted
-release operators/default-branch workflow execution, with approval controls appropriate to
-the repository. Provision credentials in GitHub's encrypted secrets, never in a checkout,
+The `desktop-distribution` environment must be restricted to branch `main` and tags `v*`,
+with no required reviewers or approval wait timer under the automatic distribution policy.
+The administrator must apply this policy in GitHub; workflow YAML cannot remove an
+environment's reviewer rule. Provision credentials in GitHub's encrypted secrets, never in a checkout,
 task comment, evidence, or a manifest:
 
 | Setting | Storage | Meaning |
@@ -148,9 +379,9 @@ GitHub destroys the hosted job's virtual machine afterward. See
    the checkout. This team key is not limited to one app; do not reuse a personal key or
    share its contents in chat. See [Apple's key management guide](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api).
 4. A repository **admin** creates **Settings > Environments > desktop-distribution** and
-   configures its protections before adding secrets. Require approval by a designated
-   release reviewer. Enable **Prevent self-review** only when another reviewer
-   is available. Select deployment branches/tags explicitly: branch `main` and tags `v*`.
+   configures its protections before adding secrets. Leave **Required reviewers** and
+   **Wait timer** disabled so eligible builds can sign automatically. Select deployment
+   branches/tags explicitly: branch `main` and tags `v*`.
    The workflow's input checks still enforce the exact source identity; the environment
    alone does not validate the commit checked out by a `workflow_run` job. Maintain access
    does not permit configuring this environment. See [GitHub's environment requirements](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
@@ -168,7 +399,8 @@ base64 -i '/absolute/path/AuthKey_KEYID.p8' | gh secret set APPLE_API_KEY_BASE64
 
 After provisioning, verify secret **names** and environment protection rules, confirm the
 certificate belongs to the pinned team, and run qualification on the final exact commit through the
-normal reviewed workflow. Configuration alone does not satisfy the release exit gate.
+automatic Signed distribution workflow and its protected `desktop-distribution` environment.
+Configuration alone does not satisfy the release exit gate.
 The existing release App remains the publication owner; do not replace it with a personal
 token to work around missing admin access.
 
@@ -200,6 +432,13 @@ arm64 executable, version, full commit, helper inventory and fuse state. A separ
 DMG is made with `--prepackaged`, notarized and stapled. The app ZIP is generated by `ditto`
 with its framework links and resources preserved. Both archives are opened read-only or
 extracted privately, and their app digests and signatures must match the original app.
+The mounted DMG's root must also hold exactly what the standalone installer accepts: the app
+bundle plus only the names in `DMG_ROOT_EXTRAS` in
+[`binary-distribution.mjs`](../src/shared/binary-distribution.mjs) (the Read Me, the
+`.background`/`.background.tiff` window background, `.VolumeIcon.icns`, and the `.DS_Store`,
+`.fseventsd` and `.Trashes` macOS adds). The installer's root check is rendered from that same
+list, so a layout change in `electron-builder.yml` fails this qualification, and the Signed
+distribution job, instead of every user's install. Names are exact; no pattern widens the set.
 Archive hashes are computed afterward and never inserted back into signed metadata.
 
 The signed-runtime probe copies the complete final app, preserves quarantine, starts its
@@ -231,8 +470,8 @@ node scripts/publish-distribution.mjs /absolute/path/to/retained-distribution
 ```
 
 The CLI verifies `build-metadata.json` and `qualification.json` against the final local
-archive bytes and the pinned team, then rechecks DMG signing/notarization and both archived
-apps with Apple tools, validates their signed metadata/fuses and matching bundle digests,
+archive bytes and the pinned team, then rechecks DMG signing/notarization, the DMG root
+inventory and both archived apps with Apple tools, validates their signed metadata/fuses and matching bundle digests,
 and reruns the copied-runtime probe. Recovery therefore runs on macOS with the same
 verification tools as production. Editing the local JSON and hashes cannot bypass these
 checks. These local files are producer evidence, not client trust roots. It resolves the
@@ -270,7 +509,9 @@ Stable recovery releases remain available indefinitely. Alpha publication keeps 
 newest complete ready build by Git ancestry, not release creation time. After verifying the
 replacement's actual archive bytes, the publisher marks each older ancestor release retired,
 removes its ready manifest, confirms readiness is gone, deletes its ZIP/DMG, and removes
-the empty release record. The tag remains as the retirement marker; a tag without a release
+the empty release record. The ZIP/DMG names come from the distribution contract and cover
+every app name it has shipped, so an alpha published before or after the app rename
+(`Mission-Control-` or `Agent-Mission-Control-`) is equally retirable. The tag remains as the retirement marker; a tag without a release
 refuses republication so an old retry cannot recreate a different asset identity.
 Unrelated assets, stable releases, divergent commits, and unverified newer
 builds are never deletion targets. Interrupted cleanup is resumable; it can temporarily retain
@@ -401,3 +642,17 @@ verification covers both dark and light OS preferences without introducing anoth
 [^producer-20261026]: `phase4-oct26-producer-command-output.txt`, artifact
     `txt_955a514cc0334ceb8f871b629cf8cf11`: latest-five distribution workflow query, exit 0,
     five completed runs with `conclusion: skipped`.
+
+## Phase 5 owned-runtime handoff to R2
+
+The [owned-runtime inventory and combined NC-1 through NC-6 checklist](owned-runtimes.md)
+are the Phase 5 inputs to R2. In the implementation checks recorded on **2026-10-28 UTC**,
+local Electron executed shipped integration helpers with host runtimes absent and with
+invocation traps; focused config tests and browser fixtures passed for repair and Setup.
+The [dated execution record](owned-runtimes.md#observed-implementation-checks-2026-10-28-utc)
+identifies the workflow runs, immutable submissions, exact supporting artifacts and fixture
+limits. These are observations of those executions, not guarantees for later commits. They do
+not qualify a signed install, stable/alpha update or recovery.
+R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
+include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
+protection policy are unchanged.

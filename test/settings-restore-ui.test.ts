@@ -64,6 +64,7 @@ const preview = {
   workflowCommandsChanged: 1,
   workflows: { added: 0, changed: 1, archived: 0, reactivated: 0 },
   workflowVersions: { inserted: 1, retained: 2 },
+  residentProfiles: { added: 0, changed: 0, archived: 0, reactivated: 0 },
   externalEffects: ["skills" as const],
   exclusions: ["Tasks, runs, sessions, reviews, repositories, credentials, and archives"],
   warnings: ["One skill will be reconciled after commit"],

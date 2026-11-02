@@ -8,6 +8,7 @@ import { UPDATE_HELPER_FILES } from './update-helper-files.mjs';
 import { inspectBundle, requireInstallSpace } from './install-staged-app.mjs';
 import { atomicMigrationJson, readMigrationJson, readMigrationJournal, migrationIsCommitted, migrationReceipt, withMigrationLock } from './install-migration.mjs';
 import { processIdentity, processIsAlive, claimIsLive } from './update-lock.mjs';
+import { BUNDLE_COPY_ARGUMENTS } from './app-bundle-swap.mjs';
 import { resolveOwnedRuntime } from '../src/shared/owned-runtime.mjs';
 import { stagedBundleRevision } from '../src/shared/staged-bundle.mjs';
 import { boundedMigrationWait } from './migration-runtime.mjs';
@@ -77,7 +78,7 @@ export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, sta
     try {
       atomicMigrationJson(join(directory, 'owner.json'), {protocol: 1, nonce, transactionNonce, path: realpathSync(directory), parent, helper: null});
       const snapshot = join(directory, 'Runtime.app');
-      execFileSync('/bin/cp', ['-R', runtimeBundle, snapshot], {timeout: 10 * 60 * 1000});
+      execFileSync('/bin/cp', [...BUNDLE_COPY_ARGUMENTS, runtimeBundle, snapshot], {timeout: 10 * 60 * 1000});
       if (inspectBundle(snapshot).digest !== runtime.digest || inspectBundle(runtimeBundle).digest !== runtime.digest) throw new Error('The helper runtime changed while copying');
       if (realpathSync(helperSource) !== join(runtimePath, 'Contents/Resources/app/scripts/apply-update.mjs')) throw new Error('The helper scripts must belong to the copied runtime');
       const root = join(snapshot, 'Contents/Resources/app');

@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import path from "node:path";
 import type { Task } from "@shared/types.ts";
 import { PlanPublicationReceiptSchema, TaskPlanInputsSchema, type PlanIdentity, type PlanPublicationReceipt, type TaskPlanInput } from "@shared/managed-plans.ts";
@@ -61,6 +62,7 @@ export function taskPlanInputProblem(task: Task): string | null {
 
 /** Read-only discovery at both delivery seams, independent of the current default or task kind. */
 export async function taskPlanDiscovery(task: Task, fallbackRoot?: string | null): Promise<string> {
+  if (!taskHasRepository(task)) return "";
   const repositories = [{ repoRoot: task.repoRoot, checkout: task.worktreePath ?? fallbackRoot ?? task.repoRoot },
     ...task.extraRepos.map((r) => ({ repoRoot: r.repoRoot, checkout: r.worktreePath ?? r.repoRoot }))];
   const lines = ["## Plan inputs and discovery", "Check both plan locations for each repository. If historical names are ambiguous, report the ambiguity instead of choosing a plan."];

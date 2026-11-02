@@ -198,6 +198,18 @@ A later **Needs revision** answer or dismissal blocks publication until another 
 conflicting resolutions at the same timestamp also block. Renewed approval needs its own
 workflow validation when a workflow is bound.
 
+The final-bundle form also offers **Approve all future bundles for this task** beside
+Submit. When the operator approves the bundle with it checked, the daemon records a standing
+approval for the task. Choosing **Needs revision** with it checked records nothing. Every later final-bundle request for that task is then approved at creation,
+without a prompt, and logged in the session's conversation as auto-approved rather than as the
+operator's answer. The agent's tool result says it was approved automatically. When a request
+also carries other open choices, the bundle is still auto-approved and logged, and only those
+remaining choices are asked, as their own review; the agent's answer to it begins by stating the
+bundle is already approved. Only the operator's own submitted answer
+can grant this: Foreman, a delegated session, a dismissal and a review without a managed plan
+task are refused. The publication gate accepts a standing approval exactly as it accepts a
+direct one, so workflow binding and validation rules are unchanged.
+
 New local plan tasks default to the appended **Local Plan Validation** workflow. Explicit
 None is allowed; explicit incompatible choices are refused. Compatible workflows have no
 session actions and no Inspector/PR completion policy. Their ordinary Persona/check graph

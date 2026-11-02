@@ -7,7 +7,9 @@ import { pathToFileURL } from "node:url";
 import {
   inspectAppLaunch, parseAppProcesses, parseLaunchServices, waitForBundleExit,
   prepareAppLaunch, verifyAppLaunch, launchConflictMessage,
-  stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, type MacAppOps,
+  stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, assertSafeAppLaunch,
+  inspectAppLaunches, assertSafeAppLaunches,
+  COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
 
 const bundle = "/Users/test/Applications/Mission Control.app";
@@ -181,6 +183,123 @@ test("a slow probe gets the rest of its caller's deadline, not a fixed two-secon
   budgets.clear();
   await assert.rejects(inspectAppLaunch(bundle, f.ops, 0), /before the time limit/);
   assert.equal(budgets.size, 0);
+});
+
+test("the launch-conflict preflight takes its caller's deadline, not a fixed inspection cap", async () => {
+  // The same regression one level out: capping each PROBE at the caller's remaining deadline
+  // fixed nothing while the sweep itself was pinned to a fixed default, because
+  // `assertSafeAppLaunch` took no timeout at all.
+  const f = fixture();
+  f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  const budgets: number[] = [];
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    budgets.push(timeout ?? -1);
+    return run(command, args, timeout);
+  };
+  await assertSafeAppLaunch(bundle, f.ops, 120_000);
+  assert.deepEqual(budgets, [120_000, 120_000, 120_000, 120_000],
+    "lsappinfo, ps, launchctl list and launchctl print each get the caller's deadline");
+
+  // A caller with no deadline of its own still gets a bound, and it is the named one.
+  budgets.length = 0;
+  await assertSafeAppLaunch(bundle, f.ops);
+  assert.deepEqual(new Set(budgets), new Set([LAUNCH_INSPECTION_TIMEOUT_MS]));
+  assert.ok(LAUNCH_INSPECTION_TIMEOUT_MS > 15_000,
+    "the no-deadline fallback must clear the loaded-machine cost that made 15s a coin flip");
+
+  // And it is still a refusal, never a pass, when the deadline really is gone.
+  await assert.rejects(assertSafeAppLaunch(bundle, f.ops, 0), /before the time limit/);
+});
+
+test("one launchd sweep answers for several bundles, exactly as one sweep per bundle would", async () => {
+  // The sweep is machine-wide and only its last step depends on the bundle, so one sweep must
+  // answer for several bundles exactly as a sweep per bundle would - and cost one sweep.
+  const other = "/Users/test/Applications/Other.app";
+  const f = fixture();
+  const respawner = "com.example.respawner";
+  f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${respawner}\n-\t0\tcom.example.quiet\n`);
+  f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
+  f.outputs.set("print gui/501/com.example.quiet", "type = Submitted\nprogram = /bin/true\n");
+
+  const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
+  f.calls.length = 0;
+  const together = await inspectAppLaunches([bundle, other], f.ops);
+
+  assert.deepEqual(together, separately, "the same answer for every bundle as a sweep of its own");
+  assert.deepEqual(together[0]?.jobs, [respawner], "the respawn job is still found for its bundle");
+  assert.deepEqual(together[1]?.jobs, [], "and is not misattributed to the other bundle");
+  assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "ONE sweep");
+  assert.equal(f.calls.filter((call) => call.startsWith("/bin/launchctl print")).length, 2,
+    "one print per label, not one per label per bundle");
+});
+
+test("several bundles refuse on the first conflict in order, from one sweep", async () => {
+  const other = "/Users/test/Applications/Other.app";
+  const otherBinary = `${other}/Contents/MacOS/Other`;
+  // A DIFFERENT respawn job for each bundle, so the refusal names which bundle it came from. With
+  // only one bundle conflicting this test could not tell "first conflict in order" from "last".
+  const conflicting = () => {
+    const f = fixture();
+    f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.respawn-main\n-\t0\tcom.example.respawn-other\n");
+    f.outputs.set("print gui/501/com.example.respawn-main", `type = Submitted\nprogram = ${binary}\n`);
+    f.outputs.set("print gui/501/com.example.respawn-other", `type = Submitted\nprogram = ${otherBinary}\n`);
+    return f;
+  };
+  for (const [order, reported, withheld] of [
+    [[bundle, other], /com\.example\.respawn-main/, /com\.example\.respawn-other/],
+    [[other, bundle], /com\.example\.respawn-other/, /com\.example\.respawn-main/],
+  ] as const) {
+    const f = conflicting();
+    await assert.rejects(assertSafeAppLaunches([...order], f.ops), (error: unknown) => {
+      const message = (error as Error).message;
+      assert.match(message, reported, `the first bundle's conflict is the one reported: ${order.join(" then ")}`);
+      assert.doesNotMatch(message, withheld, "and the later bundle's is not folded into it");
+      return true;
+    });
+    assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "one sweep for both");
+  }
+
+  // A clean first bundle does not mask a later one's conflict.
+  const later = fixture();
+  later.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.respawn-main\n");
+  later.outputs.set("print gui/501/com.example.respawn-main", `type = Submitted\nprogram = ${binary}\n`);
+  await assert.rejects(assertSafeAppLaunches([other, bundle], later.ops), /com\.example\.respawn-main/);
+  // And a launch with no conflict for any bundle proceeds.
+  await assertSafeAppLaunches([other, bundle], fixture().ops);
+});
+
+test("an unregistered process is attributed to its own bundle in a combined inspection", async () => {
+  // The other conflict kind. `unregistered` is computed per bundle from the same `ps` and
+  // LaunchServices reads, so a combined sweep could drop or misattribute it while every
+  // launchd-job assertion above still passed.
+  const other = "/Users/test/Applications/Other.app";
+  const f = fixture();
+  // `bundle`'s pid 42 stays a registered Foreground app; `other` gains a running main process
+  // that LaunchServices knows nothing about.
+  f.outputs.set("ps", `42 1 S ${binary}\n43 42 S ${bundle}/Contents/Frameworks/Helper.app/Contents/MacOS/Helper\n77 1 S ${other}/Contents/MacOS/Other\n`);
+
+  const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
+  const together = await inspectAppLaunches([bundle, other], f.ops);
+  assert.deepEqual(together, separately, "the same answer as a sweep per bundle");
+  assert.deepEqual(together[0], {jobs: [], unregistered: []}, "the registered bundle stays clean");
+  assert.deepEqual(together[1], {jobs: [], unregistered: [77]}, "the unregistered process is the other bundle's");
+
+  // And it is a refusal from the combined check, in either order, naming that process.
+  for (const order of [[bundle, other], [other, bundle]]) {
+    await assert.rejects(assertSafeAppLaunches(order, f.ops), /Mission Control process 77 is not registered/);
+  }
+});
+
+test("a timed-out probe names which macOS command ran out, and never its arguments", async () => {
+  // update.log carried one sentence for six different probes, so a loaded-machine failure could
+  // not be attributed. The executable is safe to name; its arguments carry a launchd job label
+  // and a bundle path, which this module never prints.
+  await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "sleep 5; echo /Users/secret.app"], 200), (error: unknown) => {
+    assert.match((error as Error).message, /within the time limit \(sh\)\./);
+    assert.doesNotMatch((error as Error).message, /secret|-c|sleep/);
+    return true;
+  });
 });
 
 test("a real command with no caller deadline is not killed at the old two-second default", async () => {

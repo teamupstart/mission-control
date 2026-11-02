@@ -20,6 +20,7 @@ import {
 } from "../lib/foreman-review.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { useTourTaskTargetRef } from "../tour/target-context.tsx";
+import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -93,12 +94,16 @@ export function ReviewCard({
   review: ReviewItem;
   note?: SessionNoteSummary | null;
 }): React.JSX.Element {
-  const [note, setNote] = useState("");
-  const [answer, setAnswer] = useState("");
+  // Everything typed or picked lives in the review-draft map, not in this mount, so closing
+  // the modal, folding the inbox or reloading the page brings it back on the next open.
+  const [draft, updateDraft] = useReviewDraft(review.id);
+  const { note, answer, approveFuture } = draft;
+  const setNote = (next: string) => updateDraft((d) => ({ ...d, note: next }));
+  const setAnswer = (next: string) => updateDraft((d) => ({ ...d, answer: next }));
+  const setApproveFuture = (next: boolean) => updateDraft((d) => ({ ...d, approveFuture: next }));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [foremanOpen, setForemanOpen] = useState(false);
-  const [approveFuture, setApproveFuture] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
@@ -146,6 +151,8 @@ export function ReviewCard({
     );
     setBusy(false);
     if (!r.ok) setErr(r.error ?? "failed");
+    // Delivered: the draft has nothing left to come back for. A failed resolve keeps it.
+    else clearReviewDraft(review.id);
   }
 
   const dismissButton = (
@@ -225,6 +232,10 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
+          answers={draft.decisions}
+          onAnswersChange={(change) =>
+            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
+          }
           besideSubmit={
             finalBundle && (
               <label className="decisions-standing-approval">

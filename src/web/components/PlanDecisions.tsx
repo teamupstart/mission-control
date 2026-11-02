@@ -4,10 +4,7 @@ import { formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-
-/** Per-decision answer state: chosen option ids, any free-text "Other", and any note. */
-type Answer = { selected: string[]; other: string; note: string };
-type Answers = Record<string, Answer>;
+import type { DecisionAnswer as Answer, DecisionAnswers as Answers } from "../lib/review-drafts.ts";
 
 const EMPTY: Answer = { selected: [], other: "", note: "" };
 
@@ -88,6 +85,8 @@ export function DecisionForm({
   allowNote = false,
   foremanRecommended,
   besideSubmit,
+  answers: heldAnswers,
+  onAnswersChange,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
@@ -112,8 +111,19 @@ export function DecisionForm({
   foremanRecommended?: ReadonlySet<string>;
   /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
   besideSubmit?: React.ReactNode;
+  /**
+   * The answers, held by the caller instead of by this mount.
+   *
+   * A review card passes its parked draft here so picks and typed text survive the form
+   * unmounting - the modal closing, the inbox folding, the page reloading. Left out, the form
+   * keeps its own state, as a standalone form with nothing to outlive has always done.
+   */
+  answers?: Answers;
+  onAnswersChange?: (change: (prev: Answers) => Answers) => void;
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Answers>({});
+  const [ownAnswers, setOwnAnswers] = useState<Answers>({});
+  const answers = heldAnswers ?? ownAnswers;
+  const setAnswers = onAnswersChange ?? setOwnAnswers;
 
   function get(id: string): Answer {
     return answers[id] ?? EMPTY;

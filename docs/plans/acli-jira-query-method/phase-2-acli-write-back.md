@@ -79,12 +79,18 @@ are exercised only against the fake. The operator verifies one real write after 
    size is a concern for long outcomes, use `--body-file` with a private temp file that is removed
    afterwards. Success is exit 0. Failure goes through `acliFault`: `no-answer` is
    `outcomeUnknown: true` with `UNKNOWN_OUTCOME`; anything else is a refusal quoting acli.
-3. **Annotate.** `acliAnnotate(cfg, notice)`: `writeTarget` checks, then the gate, then by
-   `cfg.linkVia`: a wanted remote link is pushed to `unavailable` with a sentence saying acli
-   cannot post a remote link and that the comment carries the pull request link; a wanted comment
-   is posted. Return values follow `annotate`'s existing done/idle/unavailable rules exactly, so a
-   `linkVia: "remote-link"` source on acli is a refusal ("nothing could be written") rather than a
-   silent success.
+3. **Annotate.** `acliAnnotate(cfg, notice)`: `writeTarget` checks, then the gate. On acli the
+   comment is ALWAYS posted, whatever `cfg.linkVia` says, because it is the only place the pull
+   request link can go (adopted decision: report the remote link as unavailable and still post
+   the comment). Then by `cfg.linkVia`: `comment` posts the comment and nothing else; `both` and
+   `remote-link` post the comment and add the remote link to `unavailable` with a sentence saying
+   acli cannot post a remote link and that the comment carries the pull request link. The result
+   follows `annotate`'s existing done/idle/unavailable shape: a posted comment is a delivery
+   (`commented; the remote link ...unavailable...`), and only a failed comment is a refusal or an
+   unknown outcome. So a `linkVia: "remote-link"` source on acli delivers the comment instead of
+   refusing with nothing written, and the ledger does not retry it. With no pull request URL
+   there is still a comment to post (the finish notice); the remote link is then `idle`, exactly
+   as `annotate` treats it today.
 4. **Resolve.** `acliResolve(cfg, notice)`:
    - empty `resolveTransition` refuses first (`NO_TARGET_STATUS`), then `writeTarget`, then the
      gate;
@@ -139,7 +145,8 @@ are exercised only against the fake. The operator verifies one real write after 
 ## 7. Tests and verification
 
 - `test/jira-acli.test.ts` (extend): comment argv carries valid ADF with the link mark; annotate
-  with `linkVia` both / comment / remote-link (refusal); the gate refuses on failed status, unknown
+  with `linkVia` `comment` (comment only), `both` and `remote-link` (comment posted AND the
+  remote link reported unavailable, a delivery rather than a refusal); the gate refuses on failed status, unknown
   site and mismatched site without spawning comment or transition; resolve already-there, moved,
   refused (current status and acli's reason in the sentence), `no-answer` as `outcomeUnknown`,
   failed status read as a refusal, empty target refused first; transition exit 0 with a per-issue
@@ -189,3 +196,6 @@ acli release that adds remote links would extend `acliAnnotate` behind the same 
   confirmed by a second status read before it counts as a move, because acli may exit 0 for a
   per-issue failure; and every write is followed by a site re-check, because acli 1.3.40 has no
   per-command site selector that could bind the write to the checked site.
+- Review round 4 (Inspector, PR #1282): a `remote-link` source on acli posts the comment and
+  reports the remote link unavailable instead of refusing, matching the adopted decision and this
+  phase's outcome.

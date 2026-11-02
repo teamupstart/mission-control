@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { writeFakeAgents } from "../e2e/fixtures/fake-agents.ts";
 import { cmuxControlProbe } from "../src/server/terminal/cmux.ts";
 import { createHerdrClient } from "../src/server/terminal/herdr-client.ts";
-import { run } from "../src/server/util/exec.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 
 const root = mkdtempSync(join(tmpdir(), "native-probe-fakes-"));
@@ -24,12 +25,17 @@ function fixture(name: string) {
 }
 
 // This tests native fixture execution and response classification, not host scheduling.
-// Keep the production deadline assertion, but give real child startup/collection its own
-// bounded budget so a busy full-suite worker does not turn a valid response into a timeout.
-function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv, onSpawn?: () => void): TerminalExec {
-  return (_bin, args, options) => {
+// An async execFile timer can expire before a starved worker collects an already-finished
+// child's pipes. Even a ten-second budget did that under full-suite contention. Collect
+// these shell-only responses synchronously, keeping a bounded child timeout and asserting
+// the unchanged production deadline. Production execution still uses the async executor.
+function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv): TerminalExec {
+  return async (_bin, args, options) => {
     assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
-    return run(bin, args, { ...options, env, timeoutMs: 10_000, onSpawn });
+    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: 10_000 });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, "the native fixture must report its own exit");
+    return stubRun({ code: result.status, stdout: result.stdout, stderr: result.stderr });
   };
 }
 
@@ -59,15 +65,3 @@ for (const mode of ["stable", "newer", "incompatible"]) {
     });
   }
 }
-
-test("native Herdr classification survives a test-worker stall beyond the production deadline", async () => {
-  const { home, fake, env } = fixture("herdr-starved");
-  writeFileSync(join(home, "fake-herdr.sock"), "fixture socket presence");
-  const execute = nativeProbeExec(fake.bins.herdr, { ...env, MC_E2E_HERDR_MODE: "incompatible" }, () => {
-    // Model the full-suite worker not servicing child events for longer than one second.
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_250);
-  });
-  const result = await createHerdrClient(execute, { env: null, candidates: [fake.bins.herdr], dropEnv: [] }).probe();
-  assert.equal(result.state, "failed");
-  if (result.state === "failed") assert.match(result.error, /incompatible|protocol|restart/i);
-});

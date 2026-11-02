@@ -36,6 +36,7 @@ function conductor(found = true): PipelineProbe {
 
 function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
   return {
+    mcpTrust: () => ({ state: "satisfied", evidence: "fixture MCP trust" }),
     environment: {
       homeDir: "/home/operator",
       readText: async () => ({ ok: false, missing: true, reason: "missing" }),

@@ -414,6 +414,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
     // agent would write conversations into the operator's real ~/.claude.
     HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CLAUDE_SETTINGS_PATH: join(home, ".claude", "settings.json"),
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,

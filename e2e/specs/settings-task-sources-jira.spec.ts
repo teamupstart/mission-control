@@ -236,6 +236,9 @@ test("a Jira source survives a repository rename and remains repairable", async 
 
   await expect(page.getByText(/That change didn't stick: not a git repository:/)).toHaveCount(0);
   await expect(page.locator(".ts-metric").first().locator("strong")).toHaveText("4");
+  // The count is optimistic; finishing Add also selects the new source. Wait for
+  // that selection before choosing an existing source to repair.
+  await expect(addForm).toHaveCount(0);
 
   const directory = page.getByRole("list", { name: "Configured task sources" });
   await directory.getByRole("button").filter({ hasText: "Renamed Jira 1" }).click();

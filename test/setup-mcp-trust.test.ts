@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,48 @@ test("Claude merges its scoped allow rule, preserves restrictions and is idempot
   assert.equal(withMcpTrust("claude", result), result);
   assert.equal(hasMcpTrust("claude", result), true);
   assert.deepEqual(parseJson(withMcpTrust("claude", "")).permissions.allow, [CLAUDE_MCP_ALLOW]);
+});
+
+test("Claude appends to an existing allow array without removing its comments", () => {
+  for (const allow of ['["Read",\n // keep between entries\n "Bash(git status)"]', '[/* keep empty array comment */]']) {
+    const original = `{"permissions":{"allow":${allow}}}`;
+    const result = withMcpTrust("claude", original);
+    const expected = parseJson(original);
+    expected.permissions.allow.push(CLAUDE_MCP_ALLOW);
+    assert.deepEqual(parseJson(result), expected);
+    const comment = allow.includes("between") ? "// keep between entries" : "/* keep empty array comment */";
+    assert.ok(result.includes(comment), `must retain ${comment}`);
+    assert.equal(withMcpTrust("claude", result), result);
+  }
+});
+
+test("symlinked settings refuse repair without recovery files and allow satisfied no-ops", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mcp-trust-symlink-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const agent of ["claude", "codex"] as const) {
+    const dir = join(root, agent);
+    mkdirSync(dir);
+    const path = join(dir, "settings");
+    const target = join(dir, "target");
+    const original = agent === "claude" ? "{}" : codex;
+    writeFileSync(target, original);
+    symlinkSync("target", path);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = enableMcpTrust(agent, path);
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /cannot update a symlinked settings file/);
+      assert.equal(readFileSync(target, "utf8"), original);
+      assert.equal(readlinkSync(path), "target");
+      assert.deepEqual(readdirSync(dir).sort(), ["settings", "target"]);
+    }
+    const trusted = withMcpTrust(agent, original);
+    writeFileSync(target, trusted);
+    assert.deepEqual(enableMcpTrust(agent, path), { ok: true, outcomeUnknown: false });
+    assert.equal(mcpTrustStatus(agent, path).state, "satisfied");
+    assert.equal(readFileSync(target, "utf8"), trusted);
+    assert.equal(lstatSync(path).isSymbolicLink(), true);
+    assert.deepEqual(readdirSync(dir).sort(), ["settings", "target"]);
+  }
 });
 
 test("Codex changes only the server default, preserving other servers, overrides and comments", () => {

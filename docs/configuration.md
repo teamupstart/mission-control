@@ -409,6 +409,8 @@ the user-level default is present, not that every effective policy permits every
 Repairs preserve comments and unrelated settings and keep the previous file in a private
 `<settings-file>.mission-migration-<id>/attempt-*/original` recovery copy. Repeating a
 satisfied repair writes nothing. Invalid files are reported as Unknown and left untouched.
+Repairs that would change a symlinked settings file are refused before creating recovery files;
+an already satisfied symlinked file remains Ready.
 Codex TOML with a custom dotted or inline server layout may require setting the value
 manually in the server table.
 

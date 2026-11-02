@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -48,5 +48,19 @@ for (const [agent, label, directory, filename, initial] of [
     await row.getByRole("button", { name: `Trust Mission Control in ${label}` }).click();
     await expect(row).toContainText("Fix the file and retry.");
     expect(readFileSync(path, "utf8")).toBe(invalid);
+
+    const target = join(dir, "linked-settings");
+    writeFileSync(target, initial);
+    unlinkSync(path);
+    symlinkSync("linked-settings", path);
+    const beforeRepair = readdirSync(dir).sort();
+    await page.reload();
+    await openSetupFamily(page, "extensions");
+    await expectRowStatus(page, anchor, "Needs setup");
+    await row.getByRole("button", { name: `Trust Mission Control in ${label}` }).click();
+    await expect(row).toContainText("cannot update a symlinked settings file");
+    expect(readFileSync(target, "utf8")).toBe(initial);
+    expect(readlinkSync(path)).toBe("linked-settings");
+    expect(readdirSync(dir).sort()).toEqual(beforeRepair);
   });
 }

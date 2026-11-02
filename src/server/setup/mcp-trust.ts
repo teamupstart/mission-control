@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -65,14 +65,14 @@ export function withMcpTrust(agent: TrustAgent, original: string): string {
   if (agent === "claude") {
     const settings = claudeConfig(original);
     const source = original.trim() ? original : "{}";
-    return applyEdits(source, modify(source, ["permissions", "allow"],
-      [...(settings.permissions?.allow ?? []), CLAUDE_MCP_ALLOW], {
-        formattingOptions: {
-          insertSpaces: !/^\t/m.test(source),
-          tabSize: /\n( +)\S/.exec(source)?.[1]?.length ?? 2,
-          eol: original.includes("\r\n") ? "\r\n" : "\n",
-        },
-      }));
+    const formattingOptions = {
+      insertSpaces: !/^\t/m.test(source),
+      tabSize: /\n( +)\S/.exec(source)?.[1]?.length ?? 2,
+      eol: original.includes("\r\n") ? "\r\n" : "\n",
+    };
+    return applyEdits(source, settings.permissions?.allow
+      ? modify(source, ["permissions", "allow", -1], CLAUDE_MCP_ALLOW, { isArrayInsertion: true, formattingOptions })
+      : modify(source, ["permissions", "allow"], [CLAUDE_MCP_ALLOW], { formattingOptions }));
   }
   const desired = codexConfig(original);
   const server = desired.mcp_servers?.["mission-control"];
@@ -122,7 +122,12 @@ export function enableMcpTrust(agent: TrustAgent, path = mcpTrustPath(agent)): T
     const text = withMcpTrust(agent, original);
     // Reuse integration publication: private recovery copy, concurrent-edit checks and
     // atomic no-replace publication. No backup or rewrite for an already satisfied setting.
-    if (text !== original) publishIntegrationText(path, randomBytes(32).toString("hex"), original, text);
+    if (text !== original) {
+      if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error("Mission Control cannot update a symlinked settings file. Replace the symlink with a regular file, then retry.");
+      }
+      publishIntegrationText(path, randomBytes(32).toString("hex"), original, text);
+    }
     return { ok: true, outcomeUnknown: false };
   } catch (error) {
     return { ok: false, outcomeUnknown: false, error: error instanceof Error ? error.message : "Could not write MCP trust settings." };

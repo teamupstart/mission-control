@@ -32,7 +32,7 @@ function fixture(name: string) {
 function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv): TerminalExec {
   return async (_bin, args, options) => {
     assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
-    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: 10_000 });
+    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: options?.timeoutMs });
     assert.ifError(result.error);
     assert.equal(result.signal, null, "the native fixture must report its own exit");
     return stubRun({ code: result.status, stdout: result.stdout, stderr: result.stderr });

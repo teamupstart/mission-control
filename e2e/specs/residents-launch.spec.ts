@@ -509,6 +509,62 @@ test.describe("a launch the daemon accepts while its resident is still starting"
     await expect(dialog.getByRole("status")).toHaveCount(0);
     await capture(dialog, "resident-dispatch-reopened-after-accepted-launch");
   });
+
+  test("an answer that arrives before the resident's task exists keeps Dispatch open and replays the same launch until it is accepted", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await authorProfile(dashboard, daemon);
+    const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    const sent: Array<Record<string, unknown>> = [];
+    dashboard.on("request", (request) => {
+      if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(request.url())) {
+        sent.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    // The daemon's first answer is restated as arriving before the run's task existed - the
+    // acceptance wait expiring - and is the only one: until `release`, every replay is held, so
+    // the open form and its status are asserted, not raced.
+    const launchRoute = /\/api\/residents\/profiles\/[^/]+\/launch$/;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let launches = 0;
+    await dashboard.route(launchRoute, async (route) => {
+      launches += 1;
+      if (launches === 1) {
+        const response = await route.fetch();
+        const body = await response.json() as { state: string; accepted?: boolean };
+        expect(body.state).toBe("pending");
+        await route.fulfill({ response, json: { ...body, accepted: false } });
+        return;
+      }
+      await held;
+      await route.continue();
+    });
+
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    // Not accepted: no task could show a failure, so the form stays and says what it waits for.
+    await expect(dialog.getByRole("status")).toContainText("This form closes once its task is created");
+    await expect(dialog.getByRole("button", { name: "Preparing…" })).toBeDisabled();
+    await expect.poll(() => launches).toBe(2);
+    await expect(dialog).toBeVisible();
+    await capture(dialog, "resident-dispatch-awaiting-task");
+
+    // The replay - the same request - answers accepted, and the form closes.
+    release();
+    await expect(dialog).toBeHidden();
+    await dashboard.unroute(launchRoute);
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(sent.map((body) => JSON.stringify(body))).size, "every request identical").toBe(1);
+    await expect.poll(async () =>
+      (await api<Array<{ kind: string }>>(daemon, "/api/tasks")).filter((task) => task.kind === "resident").length,
+    { timeout: 30_000 }).toBe(1);
+  });
 });
 
 test.describe("a changed launch after a lost response", () => {

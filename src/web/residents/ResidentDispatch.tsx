@@ -22,6 +22,9 @@ import { residentMcpRefLabel, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
 
+/** How often a launch not yet accepted is replayed - the same request id - to read its outcome. */
+const ACCEPTANCE_REPLAY_MS = 1_500;
+
 /**
  * Dispatch > Resident: choose a profile, a repository and optional run instructions, read
  * what the launch will carry, and launch it.
@@ -33,7 +36,9 @@ type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
  *
  * Like a task dispatch, the form closes once the daemon accepts the launch - the run's task
  * exists - rather than once its session has started. A resident still starting answers
- * `pending`; how its startup ends is shown on its task, as a dispatched task's is.
+ * `pending`; how its startup ends is shown on its task, as a dispatched task's is. A `pending`
+ * answer that is not yet accepted has no task to show a failure on, so the form stays open
+ * and replays it until it is accepted or answers definitively.
  */
 export function ResidentDispatch({
   mode,
@@ -47,6 +52,12 @@ export function ResidentDispatch({
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The daemon answered before the run's task existed; the form replays the launch until it
+   * does. Closable meanwhile: the draft keeps the outstanding launch and its request id, so
+   * Launch again resumes it rather than starting another.
+   */
+  const [awaitingTask, setAwaitingTask] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -114,14 +125,21 @@ export function ResidentDispatch({
       },
     };
     mode.onResidentChange(submitted);
+    const request = { ...input, repoRoot: input.repoRoot || null, answerWhen: "accepted" as const };
     // Still inside the Launch click: the one call that may arm session control for this run.
     // Answered on acceptance, so the form closes as soon as the run's task exists.
-    const answer = await launchResident(
-      profileId,
-      { ...input, repoRoot: input.repoRoot || null, answerWhen: "accepted" },
-      { profile },
-    );
+    let answer = await launchResident(profileId, request, { profile });
+    // Answered before its task existed: keep the SAME request id and replay it. The replay is
+    // idempotent - it reads the one run this id reserved and never starts another.
+    while (answer.state === "pending" && !answer.accepted) {
+      if (!mounted.current) return;
+      setAwaitingTask(true);
+      await new Promise((resolve) => setTimeout(resolve, ACCEPTANCE_REPLAY_MS));
+      if (!mounted.current) return;
+      answer = await launchResident(profileId, request);
+    }
     if (!mounted.current) return;
+    setAwaitingTask(false);
     setBusy(false);
     switch (answer.state) {
       case "pending":
@@ -159,13 +177,18 @@ export function ResidentDispatch({
       role="dialog"
       ariaLabel="Dispatch an agent"
       ariaModal
-      closable={!busy}
+      // Closable while awaiting the task: nothing is lost, the draft keeps its request id.
+      closable={!busy || awaitingTask}
     >
       <header className="modal-head">
         <h2>Dispatch an agent</h2>
         <DispatchModeToggle mode="resident" onChange={mode.onLaunchModeChange} />
-        <Tooltip label={busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}>
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+        <Tooltip
+          label={awaitingTask
+            ? "Close; launching again resumes this same launch"
+            : busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}
+        >
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy && !awaitingTask}>
             ✕
           </button>
         </Tooltip>
@@ -301,11 +324,17 @@ export function ResidentDispatch({
             </div>
           </div>
         )}
-        {archivedRetry && (
+        {archivedRetry && !awaitingTask && (
           <p className="field-hint resident-archived-retry" role="status">
             {archivedRetry.profileName} was archived after this launch was sent, and its answer never
             arrived, so its resident may already be running. Launch resident retries exactly that
             launch; it never starts a second resident.
+          </p>
+        )}
+        {awaitingTask && (
+          <p className="field-hint resident-starting" role="status">
+            Preparing the resident… This form closes once its task is created. You can close it;
+            launching again resumes this same launch rather than starting another.
           </p>
         )}
         {error && <p className="resident-error" role="alert">{error}</p>}
@@ -313,7 +342,7 @@ export function ResidentDispatch({
       <footer className="modal-foot">
         <span className="actions-spacer" />
         <Tooltip label="Close without launching (Escape)">
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy && !awaitingTask}>
             Cancel
           </button>
         </Tooltip>
@@ -327,7 +356,7 @@ export function ResidentDispatch({
             disabled={blocked !== null || changedAfterUncertain}
             onClick={() => void launch()}
           >
-            {busy ? "Launching…" : "Launch resident"}
+            {awaitingTask ? "Preparing…" : busy ? "Launching…" : "Launch resident"}
           </button>
         </Tooltip>
       </footer>

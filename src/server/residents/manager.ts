@@ -112,6 +112,13 @@ function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: strin
  */
 const DEFAULT_LAUNCH_RESPONSE_WAIT_MS = 120_000;
 
+/**
+ * How long a launch that asked to be answered on acceptance waits for its task to exist. Its own
+ * bound, not `launchResponseWaitMs`: acceptance is quick, and lowering the session wait must not
+ * turn every accepted launch into one answered before its task exists.
+ */
+const DEFAULT_ACCEPTANCE_WAIT_MS = 120_000;
+
 /** Retries of an uncertain settlement before it is left to startup reconciliation. */
 const SETTLEMENT_RETRIES = 6;
 const DEFAULT_SETTLEMENT_RETRY_MS = 2_000;
@@ -161,6 +168,8 @@ export interface ResidentManagerDeps {
   removeWorkspace?: typeof removeResidentWorkspace;
   /** A task as SQLite holds it, for startup reconciliation of rows the board did not load. */
   durableTask?: (taskId: string) => Task | undefined;
+  /** Bound on waiting for acceptance; `DEFAULT_ACCEPTANCE_WAIT_MS` unless a test shortens it. */
+  acceptanceWaitMs?: number;
   now?: () => number;
   launchResponseWaitMs?: number;
   /** The first delay before an uncertain settlement is retried; later attempts back off. */
@@ -217,6 +226,7 @@ export class ResidentManager {
   private readonly sessionRowsForTask: (taskId: string) => string[];
   private readonly durableTask: (taskId: string) => Task | undefined;
   private readonly launchResponseWaitMs: number;
+  private readonly acceptanceWaitMs: number;
   /** In-process launch settlements, so a concurrent replay can wait on the same outcome. */
   private readonly settling = new Map<string, Promise<void>>();
   /**
@@ -254,6 +264,7 @@ export class ResidentManager {
     this.sessionRowsForTask = deps.sessionRowsForTask ?? sdkSessionIdsForTask;
     this.durableTask = deps.durableTask ?? getDurableTask;
     this.launchResponseWaitMs = deps.launchResponseWaitMs ?? DEFAULT_LAUNCH_RESPONSE_WAIT_MS;
+    this.acceptanceWaitMs = deps.acceptanceWaitMs ?? DEFAULT_ACCEPTANCE_WAIT_MS;
     this.settlementRetryMs = deps.settlementRetryMs ?? DEFAULT_SETTLEMENT_RETRY_MS;
     this.mcpCatalog = deps.mcpCatalog ?? new ResidentMcpCatalogCache(noGlobalMcp);
   }
@@ -516,7 +527,8 @@ export class ResidentManager {
       this.settling.delete(runId);
       this.accepting.delete(runId);
     });
-    await this.awaitBriefly(input.answerWhen === "accepted" ? acceptance : settlement);
+    if (input.answerWhen === "accepted") await this.awaitBriefly(acceptance, this.acceptanceWaitMs);
+    else await this.awaitBriefly(settlement);
     return this.answer(runId);
   }
 
@@ -744,12 +756,12 @@ export class ResidentManager {
     });
   }
 
-  private async awaitBriefly(settlement: Promise<void>): Promise<void> {
+  private async awaitBriefly(settlement: Promise<void>, ms = this.launchResponseWaitMs): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
       settlement,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, this.launchResponseWaitMs);
+        timer = setTimeout(resolve, ms);
         timer.unref?.();
       }),
     ]);
@@ -775,8 +787,13 @@ export class ResidentManager {
         error: "this launch request id was already used for a different launch; start a new launch",
       };
     }
-    const inFlight = (answerWhen === "accepted" ? this.accepting : this.settling).get(identity.id);
-    if (inFlight) await this.awaitBriefly(inFlight);
+    if (answerWhen === "accepted") {
+      const accepting = this.accepting.get(identity.id);
+      if (accepting) await this.awaitBriefly(accepting, this.acceptanceWaitMs);
+    } else {
+      const settling = this.settling.get(identity.id);
+      if (settling) await this.awaitBriefly(settling);
+    }
     return this.answer(identity.id);
   }
 
@@ -790,8 +807,12 @@ export class ResidentManager {
     switch (run.launchState) {
       case "launched":
         return { ok: true, status: 200, result: { state: "launched", run, taskId: run.taskId } };
-      case "pending":
-        return { ok: true, status: 202, result: { state: "pending", run } };
+      case "pending": {
+        // Accepted once its task exists, read from the task itself, so a replay after a restart
+        // answers the same as the request that created it.
+        const accepted = (this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId)) !== undefined;
+        return { ok: true, status: 202, result: { state: "pending", run, accepted } };
+      }
       case "failed":
         return {
           ok: false,

@@ -53,7 +53,8 @@ Like a task dispatch, Dispatch closes as soon as Mission Control accepts the lau
 resident's task exists, without waiting for its session to start. The resident keeps starting on
 its task, and a launch that fails from there shows its reason on that task. A launch refused
 before its task exists, such as an MCP set that cannot be pinned, keeps Dispatch open with the
-reason.
+reason. If Mission Control answers before the task exists, Dispatch stays open and checks on
+that same launch until it does; you can close it, and launching again resumes that launch.
 
 A launch is a task of kind `resident`:
 

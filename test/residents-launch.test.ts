@@ -127,6 +127,7 @@ function harness(options: {
   registry?: Registry;
   resolve?: typeof resolveRepoRoot;
   waitMs?: number;
+  acceptanceWaitMs?: number;
   start?: boolean;
   hasLiveDriver?: (id: string) => boolean;
   removeWorkspace?: ConstructorParameters<typeof ResidentManager>[0]["removeWorkspace"];
@@ -162,6 +163,7 @@ function harness(options: {
       return (options.resolve ?? resolveRepoRoot)(path);
     },
     launchResponseWaitMs: options.waitMs ?? 5_000,
+    acceptanceWaitMs: options.acceptanceWaitMs,
     hasLiveDriver: options.hasLiveDriver,
     removeWorkspace: options.removeWorkspace,
   });
@@ -352,7 +354,8 @@ test("a launch answered on acceptance returns once its task exists, without wait
   assert.ok(Date.now() - startedAt < 5_000, "answered on acceptance, not on the session");
   if (!("result" in first)) assert.fail(JSON.stringify(first));
   assert.equal(first.status, 202);
-  assert.equal(first.result.state, "pending");
+  if (first.result.state !== "pending") assert.fail(JSON.stringify(first.result));
+  assert.equal(first.result.accepted, true, "accepted: its task exists");
   assert.equal(h.registry.getTask(first.result.run.taskId)?.status, "dispatching", "the task exists and is dispatching");
   assert.deepEqual(h.dispatched, [first.result.run.taskId]);
 
@@ -367,6 +370,35 @@ test("a launch answered on acceptance returns once its task exists, without wait
   const settled = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted" });
   if (!("result" in settled)) assert.fail(JSON.stringify(settled));
   assert.equal(settled.result.state, "launched");
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
+});
+
+test("a launch whose acceptance wait expires before its task exists answers not accepted, and a replay answers once it is", async (t) => {
+  // A short session wait must not shorten the acceptance wait; only the acceptance bound can.
+  const h = harness({ waitMs: 0, acceptanceWaitMs: 20 });
+  const profile = profileIn(h);
+  let releaseCatalog: () => void = () => {};
+  const catalogHeld = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  const read = h.residents.mcpCatalog.read.bind(h.residents.mcpCatalog);
+  t.mock.method(h.residents.mcpCatalog, "read", async (...args: Parameters<typeof read>) => {
+    await catalogHeld;
+    return read(...args);
+  });
+
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-not-yet-accepted", answerWhen: "accepted" });
+  if (!("result" in first) || first.result.state !== "pending") assert.fail(JSON.stringify(first));
+  assert.equal(first.result.accepted, false, "answered before the run's task exists");
+  assert.equal(h.registry.getTask(first.result.run.taskId), undefined);
+
+  releaseCatalog();
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-not-yet-accepted", answerWhen: "accepted" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.ok(replay.result.state === "launched" || (replay.result.state === "pending" && replay.result.accepted), JSON.stringify(replay.result));
+  assert.equal(replay.result.run.id, first.result.run.id);
+  assert.notEqual(h.registry.getTask(first.result.run.taskId), undefined, "the task now exists");
   assert.equal(runCount(), 1);
   assert.equal(h.dispatched.length, 1);
 });

@@ -73,7 +73,13 @@ for (const agent of ["claude", "codex"] as const) {
     ]);
     expect(request.postDataJSON().repoRoot).toBeNull();
     await expect(dialog).toBeHidden({ timeout: 60_000 });
-    const task = (await read<Task[]>("/api/tasks")).find((candidate) => candidate.kind === "resident")!;
+    // Dispatch closes once the launch is accepted; the resident keeps starting on its task.
+    let task: Task | undefined;
+    await expect.poll(async () => {
+      task = (await read<Task[]>("/api/tasks")).find((candidate) => candidate.kind === "resident");
+      return task?.status ?? null;
+    }, { timeout: 60_000 }).toBe("running");
+    if (!task) throw new Error("the resident task disappeared");
     expect(task).toMatchObject({ status: "running", workspaceKind: "resident-workspace", worktreePath: null, branch: null, provider: null });
     expect(task.repoRoot).toContain("/residents/runs/");
     expect(existsSync(task.repoRoot)).toBeTruthy();

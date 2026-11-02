@@ -19,6 +19,7 @@ export function realMacAppOps(directory?: string): MacAppOps;
 export function parseAppProcesses(output: string): AppProcess[];
 export function parseLaunchServices(output: string): AppRegistration[];
 export function jobLaunchesBundle(text: string, bundle: string): boolean;
+export function parseGuiJobs(dump: string, uid: number): Map<string, string> | null;
 export function inspectAppLaunch(bundle: string, ops?: MacAppOps, timeout?: number): Promise<{jobs: string[]; unregistered: number[]}>;
 export function inspectAppLaunches(bundles: string[], ops?: MacAppOps, timeout?: number): Promise<Array<{jobs: string[]; unregistered: number[]}>>;
 export function launchConflictMessage(conflicts: {jobs: string[]; unregistered: number[]}, uid: number): string | null;

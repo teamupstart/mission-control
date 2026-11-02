@@ -17,7 +17,7 @@ process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;
 process.env.MISSION_PI_BIN = process.execPath;
 await managedResumeFixture(home);
-const { prepareTerminalResume, managedResumeRoot } = await import("../src/server/harness/resume.ts");
+const { prepareTerminalResume, managedResumeRoot, RESUME_GUARD_CHECK_TIMEOUT_MS } = await import("../src/server/harness/resume.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
 const { MISSION_MCP_TOOLS, verifyMissionMcpTools } = await import("../src/server/mission-mcp.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
@@ -176,6 +176,26 @@ test("an unusable guard fails before provisioning any lease", async () => {
   writeFileSync(process.env.MISSION_RESUME_GUARD, "process.exit(0);");
   try { await assert.rejects(prepareTerminalResume(session("bad-guard"), context), /guard is unusable/); }
   finally { process.env.MISSION_RESUME_GUARD = prior; }
+});
+
+test("the guard check admits a sound guard slower than 5s and still refuses one slower than its bound", async () => {
+  // At the old 5s bound a loaded Mac's Node startup ran past it and a sound guard was reported as
+  // unusable. A guard that only answers after each delay shows which side of the bound it is on.
+  const prior = process.env.MISSION_RESUME_GUARD;
+  const slowGuard = (name: string, delayMs: number) => {
+    const path = join(home, `${name}.mjs`);
+    writeFileSync(path, `await new Promise((resolve) => setTimeout(resolve, ${delayMs}));\nif (process.argv[2] === "--check") process.stdout.write("mission-resume-guard-v1\\n");\n`);
+    return path;
+  };
+  try {
+    process.env.MISSION_RESUME_GUARD = slowGuard("slow-guard", 5_500);
+    const prepared = await prepareTerminalResume(session("slow-guard"), context);
+    prepared.dispose();
+    process.env.MISSION_RESUME_GUARD = slowGuard("hung-guard", RESUME_GUARD_CHECK_TIMEOUT_MS + 1_500);
+    const start = Date.now();
+    await assert.rejects(prepareTerminalResume(session("hung-guard"), context), /guard is unusable/);
+    assert.ok(Date.now() - start < RESUME_GUARD_CHECK_TIMEOUT_MS + 1_500, "refused at the bound, not after the guard answered");
+  } finally { process.env.MISSION_RESUME_GUARD = prior; }
 });
 
 test("selected 504 with no wrapper expires across restart and fences every late claim", async () => {

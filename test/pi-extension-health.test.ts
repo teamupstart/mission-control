@@ -1,4 +1,4 @@
-import { loadPiExtensionMetadata } from "../src/server/extensions/pi-candidate.ts";
+import { loadPiExtensionMetadata, PI_EXTENSION_LOAD_TIMEOUT_MS } from "../src/server/extensions/pi-candidate.ts";
 // Health is read-only, bounded, and uses the same manifest and bridge as publication.
 import assert from "node:assert/strict";
 import { after, beforeEach, test } from "node:test";
@@ -80,6 +80,23 @@ test("timeout uses SIGKILL even for a module ignoring SIGTERM", async () => {
   const start = Date.now();
   assert.equal((await loadPiExtensionMetadata(realpathSync(installed), 200)).loaded, false);
   assert.ok(Date.now() - start < 3000);
+});
+test("the default load bound admits a healthy extension slower than 3s and still refuses one slower than 15s", async () => {
+  // At the old 3s default a loaded Mac's Node startup alone ran past the bound, and a healthy
+  // candidate was refused as one that "could prevent Pi sessions from starting". A module that
+  // only becomes loadable after each delay shows which side of the bound it falls on.
+  const slow = (name: string, delayMs: number) => {
+    const path = join(root, name, "extension.js");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `await new Promise((resolve) => setTimeout(resolve, ${delayMs})); export default function () {}`);
+    return realpathSync(path);
+  };
+  assert.equal((await loadPiExtensionMetadata(slow("slow-healthy", 3_500))).loaded, true,
+    "a module ready after 3.5s loads under the default bound");
+  const start = Date.now();
+  assert.equal((await loadPiExtensionMetadata(slow("too-slow", PI_EXTENSION_LOAD_TIMEOUT_MS + 1_500))).loaded, false,
+    "a module that would only be ready after 16.5s is refused at the default bound");
+  assert.ok(Date.now() - start < PI_EXTENSION_LOAD_TIMEOUT_MS + 1_500, "refused at the bound, not after the module finished");
 });
 test("loads canonical target and probes the MCP child with daemon secrets scrubbed", async () => {
   process.env.MISSION_API_TOKEN = "must-not-leak"; process.env.MISSION_API_TOKEN_FILE = "/must-not-leak";

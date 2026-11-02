@@ -3240,6 +3240,11 @@ export class Registry extends EventEmitter {
     // hooks may still supply instrumentation; only driver events can replace the owner.
     if (target?.runtime === "sdk" && (!evt.sessionId || evt.sessionId !== target.agentSessionId)) return;
 
+    // A query/context ending is not the owned driver's final exit. Only the supervisor
+    // can close an SDK session durably; late hooks must not revive its closing card either.
+    if (target?.runtime === "sdk" &&
+      (state === "exited" || target.state === "exited" || target.state === "stopping")) return;
+
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
     //
@@ -6690,11 +6695,12 @@ export class Registry extends EventEmitter {
    * reclaims the worktree once the agent's home is gone, so clearing them here to settle
    * the barrier would leak the lease instead.
    *
-   * Only prompt delivery reads this. Handing the agent a DIFFERENT task is a separate
-   * question - `assign` still refuses, because reusing an agent whose last outcome left
+   * Prompt delivery and SDK restoration share this ownership boundary. Handing the agent
+   * a DIFFERENT task is a separate question - `assign` still refuses, because reusing an
+   * agent whose last outcome left
    * resources behind is exactly the reset it is guarding.
    */
-  private outcomePrecedesSessionWork(task: Task, sessionId: string): boolean {
+  outcomePrecedesSessionWork(task: Task, sessionId: string): boolean {
     if (task.completedAt === null) return false;
     const episode = sessionWorkEpisodeFor(sessionId);
     return episode !== null && episode.startedAt >= task.completedAt;

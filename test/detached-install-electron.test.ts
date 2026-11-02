@@ -41,7 +41,9 @@ function fixtureDiagnostic(state: string): string {
     if (parsed) journal = JSON.stringify({stage: parsed.stage, ownerRole: parsed.ownerRole, targetProcess: parsed.targetProcess});
   } catch (error) { journal = `(unreadable: ${String(error)})`; }
   return [`journal: ${journal}`, `fixture-target-waiting: ${read('fixture-target-waiting')}`,
-    `fixture-error.txt: ${read('fixture-error.txt')}`, `update-outcome.json: ${read('update-outcome.json')}`,
+    `fixture-error.txt: ${read('fixture-error.txt')}`,
+    `parent-stdout.log: ${read('parent-stdout.log')}`, `parent-stderr.log: ${read('parent-stderr.log')}`,
+    `update-outcome.json: ${read('update-outcome.json')}`,
     `update.log: ${read('update.log')}`].join('\n');
 }
 
@@ -243,10 +245,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   const env: NodeJS.ProcessEnv = {...process.env, MISSION_HOME: state, MISSION_PORT: '59999', PATH: `${traps}:/usr/bin:/bin`,
     MISSION_RUNTIME_TRAPS: join(root, 'trap-hits')};
   delete env.ELECTRON_RUN_AS_NODE;
-  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
+  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--stdout', join(state, 'parent-stdout.log'),
+    '--stderr', join(state, 'parent-stderr.log'), '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
     env, stdio: ['ignore', 'pipe', 'pipe']});
   let output = ''; parent.stdout.on('data', (v) => {output += v;}); parent.stderr.on('data', (v) => {output += v;});
   assert.equal(await new Promise((done) => parent.once('exit', done)), 0, output);
+  assert.ok(existsSync(join(state, 'handoff.json')), `parent launch returned without a handoff at ${state}\n${output}\n${fixtureDiagnostic(state)}`);
   const handed = JSON.parse(readFileSync(join(state, 'handoff.json'), 'utf8'));
   if (mode === 'preparation-retry') assert.equal(handed.runtime,
     JSON.parse(readFileSync(join(state, 'fixture-preparation-retry.json'), 'utf8')).attempt,

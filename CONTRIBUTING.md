@@ -156,6 +156,21 @@ bundle smoke tests, and the browser suite. Pull request jobs run on ephemeral Gi
 runners. Review `.github/workflows/ci.yml` before changing runner labels, worker counts, or shard
 counts.
 
+The ordinary CI job target is four minutes of execution, including checkout, cache restore,
+tests, build, and smoke where applicable. Queue time and release-only macOS packaging are
+separate. Unit tests use twelve shards per Node release; browser tests use sixty shards.
+Both keep four workers per runner, and both derive the shard denominator from the matrix.
+More jobs add runner setup cost and can increase queue time when account capacity is full.
+Compiler mutation tests live in separate files so a single serial file cannot dominate a
+unit shard. Keep the clean-copy probe and every negative compiler assertion when regrouping.
+
+The allocation was sized against [successful run 41478674815](https://github.com/teamupstart/mission-control/actions/runs/41478674815):
+its slowest unit job took 373 seconds and its slowest browser job took 447 seconds. Replaying
+recorded browser durations across the new shard listings, with four worker lanes and a
+60-second setup/teardown allowance, projects a 218-second maximum. This is a sizing estimate,
+not a hosted timing guarantee. Check whole-job durations after CI runs the change, especially
+on cold caches or retries. Timeouts remain generous to preserve failure diagnostics.
+
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section
 records the goal, design decisions, implementation details, tests, and deliberate

@@ -219,6 +219,11 @@ export class ResidentManager {
   private readonly launchResponseWaitMs: number;
   /** In-process launch settlements, so a concurrent replay can wait on the same outcome. */
   private readonly settling = new Map<string, Promise<void>>();
+  /**
+   * The same launches' acceptance: resolves once the run's task exists, or the launch settled
+   * without one. What a request that asks to be answered on acceptance waits for.
+   */
+  private readonly accepting = new Map<string, Promise<void>>();
   private readonly settlementRetryMs: number;
   /** Pending retry waits, each with the resolver that ends it early when the manager stops. */
   private readonly retryTimers = new Map<NodeJS.Timeout, (proceed: boolean) => void>();
@@ -451,7 +456,7 @@ export class ResidentManager {
       knownRepoForSpelling(known, spelling) ?? (resolved.ok ? resolved.repoRoot : spelling),
       input.instructions,
     );
-    if (known) return this.replay(known, profileId, request);
+    if (known) return this.replay(known, profileId, request, input.answerWhen);
     if (!resolved.ok) return { ok: false, status: 400, code: "invalid", error: resolved.error };
 
     const profile = getResidentProfile(profileId);
@@ -493,16 +498,25 @@ export class ResidentManager {
       if (!winner) {
         return { ok: false, status: 409, code: "conflict", error: "this launch request could not be reserved" };
       }
-      return this.replay(winner, profileId, request);
+      return this.replay(winner, profileId, request, input.answerWhen);
     }
     const stored = getResidentRun(runId);
     if (!stored) throw new Error(`resident run ${runId} vanished after its reservation`);
     this.publishRun(runId);
 
-    const settlement = this.authorizeAndSettle(stored.run, request, options.mayConsumeControlClick === true);
+    let accept: () => void = () => {};
+    const accepted = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    const settlement = this.authorizeAndSettle(stored.run, request, options.mayConsumeControlClick === true, accept);
+    const acceptance = Promise.race([accepted, settlement]);
     this.settling.set(runId, settlement);
-    void settlement.finally(() => this.settling.delete(runId));
-    await this.awaitBriefly(settlement);
+    this.accepting.set(runId, acceptance);
+    void settlement.finally(() => {
+      this.settling.delete(runId);
+      this.accepting.delete(runId);
+    });
+    await this.awaitBriefly(input.answerWhen === "accepted" ? acceptance : settlement);
     return this.answer(runId);
   }
 
@@ -511,18 +525,20 @@ export class ResidentManager {
    *
    * After the reservation, so only the request that reserved the run consumes a click: a racing
    * duplicate is answered as this one's replay and never asks. Before the task, so the session
-   * cannot exist before its grant is decided. Never rejects.
+   * cannot exist before its grant is decided. `accepted` is called once the run's task exists.
+   * Never rejects.
    */
   private async authorizeAndSettle(
     run: ResidentRun,
     request: ResidentLaunchInput,
     mayConsumeControlClick: boolean,
+    accepted: () => void,
   ): Promise<void> {
     // Authority comes from the run's pinned revision, never the profile as it reads now.
     if (mayConsumeControlClick && run.settings.authority.controlOtherSessions) {
       await this.consumeLaunchClick(run);
     }
-    await this.createAndSettle(run, request);
+    await this.createAndSettle(run, request, accepted);
     // The launch answers with the grant's outcome - applied or not - rather than with a consumed
     // click, so Dispatch and the dock can say which. Bounded like the launch itself: a session
     // that never gets an identity leaves the click recorded and the outcome pending.
@@ -579,9 +595,13 @@ export class ResidentManager {
    * `pending` for startup reconciliation, which applies the same evidence rule. Only a
    * definitive outcome is ever written, so a live session is never reported as a failed launch.
    */
-  private async createAndSettle(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
+  private async createAndSettle(
+    run: ResidentRun,
+    request: ResidentLaunchInput,
+    accepted: () => void,
+  ): Promise<void> {
     try {
-      await this.createAndSettleUnguarded(run, request);
+      await this.createAndSettleUnguarded(run, request, accepted);
       return;
     } catch (error) {
       console.error(`[residents] could not settle resident run ${run.id}; it stays pending and is retried:`, error);
@@ -611,7 +631,11 @@ export class ResidentManager {
     });
   }
 
-  private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
+  private async createAndSettleUnguarded(
+    run: ResidentRun,
+    request: ResidentLaunchInput,
+    accepted: () => void,
+  ): Promise<void> {
     const execution = run.settings.execution;
     try {
       // The run's effective MCP set, resolved once from the revision it pinned and the
@@ -646,6 +670,8 @@ export class ResidentManager {
       this.cleanupEndedWorkspaces();
       return;
     }
+    // The task exists and its dispatch is under way: from here its outcome surfaces on the task.
+    accepted();
     await this.dispatchSettled(run.taskId);
     this.settleFromEvidence(run, this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId));
   }
@@ -739,6 +765,7 @@ export class ResidentManager {
     identity: ResidentRunIdentity,
     profileId: string,
     request: ResidentLaunchInput,
+    answerWhen: LaunchResident["answerWhen"],
   ): Promise<ResidentLaunchOutcome> {
     if (identity.profileId !== profileId || !launchInputsMatch(identity.launchInput, request)) {
       return {
@@ -748,7 +775,7 @@ export class ResidentManager {
         error: "this launch request id was already used for a different launch; start a new launch",
       };
     }
-    const inFlight = this.settling.get(identity.id);
+    const inFlight = (answerWhen === "accepted" ? this.accepting : this.settling).get(identity.id);
     if (inFlight) await this.awaitBriefly(inFlight);
     return this.answer(identity.id);
   }

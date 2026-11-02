@@ -539,6 +539,14 @@ export const LaunchResidentSchema = z
       .min(1)
       .max(RESIDENT_LIMITS.requestIdLength)
       .regex(/^[A-Za-z0-9._:-]+$/, "request id must be a token"),
+    /**
+     * When the daemon answers. `settled` (the default) waits for the session to start or fail.
+     * `accepted` answers once the run's task exists - or the launch failed before it could - so
+     * a launch surface can close as quickly as a task dispatch; a still-starting run answers
+     * `pending`, and its later outcome surfaces on its task. Not part of the launch input: a
+     * replay may ask either way and still names the same launch.
+     */
+    answerWhen: z.enum(["accepted", "settled"]).optional(),
   })
   .strict();
 export type LaunchResident = z.infer<typeof LaunchResidentSchema>;

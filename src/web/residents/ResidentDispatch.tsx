@@ -16,14 +16,11 @@ import {
   selectResidentProfile,
   type ResidentDispatchDraft,
 } from "./dispatch-draft.ts";
-import { launchResident, residentLaunchCanGrantControl, residentLaunchControlReport } from "./launch.ts";
+import { launchResident, residentLaunchCanGrantControl } from "./launch.ts";
 import { residentProfileFact } from "./ResidentsPage.tsx";
 import { residentMcpRefLabel, useResidentMcpCatalog } from "./mcp-catalog.ts";
 
 type ResidentMode = Extract<DispatchMode, { kind: "resident" }>;
-
-/** How often a still-starting launch is replayed - the same request id - to read its outcome. */
-const PENDING_REPLAY_MS = 1_500;
 
 /**
  * Dispatch > Resident: choose a profile, a repository and optional run instructions, read
@@ -33,6 +30,10 @@ const PENDING_REPLAY_MS = 1_500;
  * toggle - with a body of its own, because a resident launch has no task text, kind, crew or
  * after-work to choose: its profile decides them. The submit is `launchResident`, the one
  * browser launch call.
+ *
+ * Like a task dispatch, the form closes once the daemon accepts the launch - the run's task
+ * exists - rather than once its session has started. A resident still starting answers
+ * `pending`; how its startup ends is shown on its task, as a dispatched task's is.
  */
 export function ResidentDispatch({
   mode,
@@ -46,15 +47,6 @@ export function ResidentDispatch({
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The launch was accepted and is still starting; the form replays it until it settles. */
-  const [starting, setStarting] = useState(false);
-  /**
-   * The resident that just launched without the session control its profile asked for, or with it
-   * still pending. The form stays open to say so: a desktop app attached to a daemon it did not
-   * start has no channel to consume the click over, and a session that has no full identity yet
-   * has not received the grant - only the run's answer knows either happened.
-   */
-  const [controlReport, setControlReport] = useState<{ name: string; outcome: "pending" | "not-granted" } | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -78,7 +70,6 @@ export function ResidentDispatch({
     : null;
   const choose = (next: ResidentProfile): void => {
     setError(null);
-    setControlReport(null);
     mode.onResidentChange(selectResidentProfile(draft, next));
   };
   const repoRoot = residentDispatchRepo(draft, profile);
@@ -104,7 +95,6 @@ export function ResidentDispatch({
     if (!profileId || blocked) return;
     setBusy(true);
     setError(null);
-    setControlReport(null);
     const input = {
       repoRoot: residentDispatchRepo(from, profile).trim(),
       ...(from.instructions.trim() ? { instructions: from.instructions } : {}),
@@ -125,31 +115,21 @@ export function ResidentDispatch({
     };
     mode.onResidentChange(submitted);
     // Still inside the Launch click: the one call that may arm session control for this run.
-    let answer = await launchResident(profileId, { ...input, repoRoot: input.repoRoot || null }, { profile });
-    // Still starting: keep the SAME request id and replay it until the launch settles. The
-    // replay is idempotent - it reads the one run this id reserved and never starts another -
-    // so closing the form here keeps the id in the draft, and Launch again resumes this launch.
-    while (answer.state === "pending") {
-      if (!mounted.current) return;
-      setStarting(true);
-      await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
-      if (!mounted.current) return;
-      answer = await launchResident(profileId, { ...input, repoRoot: input.repoRoot || null });
-    }
+    // Answered on acceptance, so the form closes as soon as the run's task exists.
+    const answer = await launchResident(
+      profileId,
+      { ...input, repoRoot: input.repoRoot || null, answerWhen: "accepted" },
+      { profile },
+    );
     if (!mounted.current) return;
-    setStarting(false);
     setBusy(false);
     switch (answer.state) {
+      case "pending":
       case "launched":
-        {
-          // The browser already said, before launch, that its click cannot grant control.
-          const report = residentLaunchControlReport(answer.run, !residentLaunchCanGrantControl());
-          if (report) {
-            setControlReport({ name: answer.run.settings.identity.name, outcome: report });
-            mode.onResidentLaunched(submitted, { keepOpen: true });
-            return;
-          }
-        }
+        // Accepted: the daemon owns this run now, so a later Launch is a new resident, and the
+        // form closes whatever the run's session control turns out to be. Whether control was
+        // granted is read on the resident's Console band and in the dock, as it is for a
+        // launch from either; the note above already said what this click can ask for.
         mode.onResidentLaunched(submitted);
         return;
       case "failed":
@@ -179,18 +159,13 @@ export function ResidentDispatch({
       role="dialog"
       ariaLabel="Dispatch an agent"
       ariaModal
-      // Closable while a launch is starting: nothing is lost, the draft keeps its request id.
-      closable={!busy || starting}
+      closable={!busy}
     >
       <header className="modal-head">
         <h2>Dispatch an agent</h2>
         <DispatchModeToggle mode="resident" onChange={mode.onLaunchModeChange} />
-        <Tooltip
-          label={starting
-            ? "Close; launching again resumes this same launch"
-            : busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}
-        >
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy && !starting}>
+        <Tooltip label={busy ? "Waiting for the launch to answer" : "Close without launching (Escape)"}>
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
             ✕
           </button>
         </Tooltip>
@@ -282,7 +257,7 @@ export function ResidentDispatch({
             {profile?.settings.authority.controlOtherSessions && (
               <p className="field-hint resident-control-note" role="note">
                 {residentLaunchCanGrantControl()
-                  ? "Control other sessions is on: this Launch click asks for session control for this run, kept through a restart until its conversation changes or you turn it off. If it cannot be granted, Dispatch says so once the resident starts."
+                  ? "Control other sessions is on: this Launch click asks for session control for this run, kept through a restart until its conversation changes or you turn it off. The resident's Console band reads control granted once it is applied, or control not granted if it cannot be."
                   : "Control other sessions is on, but only a Launch click in the Mission Control desktop app grants it. Launched from here, this resident starts without session control."}
               </p>
             )}
@@ -326,67 +301,35 @@ export function ResidentDispatch({
             </div>
           </div>
         )}
-        {archivedRetry && !starting && (
+        {archivedRetry && (
           <p className="field-hint resident-archived-retry" role="status">
             {archivedRetry.profileName} was archived after this launch was sent, and its answer never
             arrived, so its resident may already be running. Launch resident retries exactly that
             launch; it never starts a second resident.
           </p>
         )}
-        {starting && (
-          <p className="field-hint resident-starting" role="status">
-            Starting the resident… This form updates when its session has started. You can close
-            it; launching again resumes this same launch rather than starting another.
-          </p>
-        )}
-        {controlReport?.outcome === "not-granted" && (
-          <p className="resident-control-outcome" role="alert">
-            {controlReport.name} launched without session control. Only a Launch click in the
-            Mission Control desktop app, running its own daemon, grants it; its Console band reads
-            control not granted.
-          </p>
-        )}
-        {controlReport?.outcome === "pending" && (
-          <p className="resident-control-outcome" role="status">
-            {controlReport.name} launched, but its session control is not granted yet: it is given
-            once the resident's session is ready. Its Console band reads control granted when it
-            is, and control not granted until then.
-          </p>
-        )}
         {error && <p className="resident-error" role="alert">{error}</p>}
       </div>
       <footer className="modal-foot">
         <span className="actions-spacer" />
-        {controlReport ? (
-          <Tooltip label={controlReport.outcome === "pending"
-            ? "Close; the Console band shows when session control is granted"
-            : "Close; the resident keeps running without session control"}>
-            <button className="btn btn-primary" onClick={onClose}>
-              Done
-            </button>
-          </Tooltip>
-        ) : (
-          <>
-            <Tooltip label="Close without launching (Escape)">
-              <button className="btn btn-ghost" onClick={onClose} disabled={busy && !starting}>
-                Cancel
-              </button>
-            </Tooltip>
-            <Tooltip
-              label={changedAfterUncertain
-                ? "An earlier launch may be running; choose above"
-                : blocked ?? "Launch this resident in the Agent SDK"}
-            >
-              <button
-                className="btn btn-primary"
-                disabled={blocked !== null || changedAfterUncertain}
-                onClick={() => void launch()}
-              >
-                {starting ? "Starting…" : busy ? "Launching…" : "Launch resident"}
-              </button>
-            </Tooltip>
-          </>
-        )}
+        <Tooltip label="Close without launching (Escape)">
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+        </Tooltip>
+        <Tooltip
+          label={changedAfterUncertain
+            ? "An earlier launch may be running; choose above"
+            : blocked ?? "Launch this resident in the Agent SDK"}
+        >
+          <button
+            className="btn btn-primary"
+            disabled={blocked !== null || changedAfterUncertain}
+            onClick={() => void launch()}
+          >
+            {busy ? "Launching…" : "Launch resident"}
+          </button>
+        </Tooltip>
       </footer>
     </Overlay>
   );

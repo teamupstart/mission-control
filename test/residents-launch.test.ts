@@ -343,6 +343,75 @@ test("a replay of a pending launch answers in progress and creates nothing; laun
   assert.equal(h.dispatched.length, 1);
 });
 
+test("a launch answered on acceptance returns once its task exists, without waiting for the session", async () => {
+  // A long wait: only acceptance can answer this launch quickly.
+  const h = harness({ mode: "hold", waitMs: 60_000 });
+  const profile = profileIn(h);
+  const startedAt = Date.now();
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted", answerWhen: "accepted" });
+  assert.ok(Date.now() - startedAt < 5_000, "answered on acceptance, not on the session");
+  if (!("result" in first)) assert.fail(JSON.stringify(first));
+  assert.equal(first.status, 202);
+  assert.equal(first.result.state, "pending");
+  assert.equal(h.registry.getTask(first.result.run.taskId)?.status, "dispatching", "the task exists and is dispatching");
+  assert.deepEqual(h.dispatched, [first.result.run.taskId]);
+
+  // A replay asking the same way names the same launch, answers at once, and starts nothing.
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted", answerWhen: "accepted" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.state, "pending");
+  assert.equal(replay.result.run.id, first.result.run.id);
+
+  // The run still settles from its session, exactly as a launch that waited would.
+  h.release();
+  const settled = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted" });
+  if (!("result" in settled)) assert.fail(JSON.stringify(settled));
+  assert.equal(settled.result.state, "launched");
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
+});
+
+test("a launch answered on acceptance that then fails to start records the reason on its task and its run", async () => {
+  const h = harness({ mode: "hold", waitMs: 60_000 });
+  const profile = profileIn(h);
+  const accepted = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-then-fail", answerWhen: "accepted" });
+  if (!("result" in accepted) || accepted.result.state !== "pending") assert.fail(JSON.stringify(accepted));
+  const { taskId } = accepted.result.run;
+  assert.equal(h.registry.getTask(taskId)?.status, "dispatching", "answered while the startup is still under way");
+
+  // The held startup now fails, after Dispatch has already closed on the accepted answer.
+  h.mode.current = "fail";
+  h.release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const task = h.registry.getTask(taskId);
+  assert.equal(task?.status, "failed");
+  assert.equal(task?.error, `agent binary "claude" not found on PATH`, "the task carries the failure reason");
+  const stored = store.getResidentRun(accepted.result.run.id)?.run;
+  assert.equal(stored?.launchState, "failed");
+  assert.equal(stored?.launchError, task?.error, "the run records the same reason");
+
+  // The same launch replayed now answers the failure, and never starts a second resident.
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-then-fail", answerWhen: "accepted" });
+  if (!("result" in replay) || replay.result.state !== "failed") assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.error, task?.error);
+  assert.equal(runCount(), 1);
+  assert.deepEqual(h.dispatched, [taskId]);
+});
+
+test("a launch answered on acceptance still answers a failure that left no task", async (t) => {
+  const h = harness({ waitMs: 60_000 });
+  const profile = profileIn(h);
+  t.mock.method(h.tasks, "create", () => {
+    throw new Error("the task could not be created");
+  });
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-fail", answerWhen: "accepted" });
+  if (!("result" in outcome) || outcome.result.state !== "failed") assert.fail(JSON.stringify(outcome));
+  assert.equal(outcome.status, 409);
+  assert.equal(outcome.result.error, "the task could not be created");
+  assert.deepEqual(h.dispatched, []);
+});
+
 test("a dispatch that fails before its session starts fails the run with the task's error, and a replay returns it", async () => {
   const h = harness({ mode: "fail" });
   const profile = profileIn(h);

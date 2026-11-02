@@ -49,6 +49,12 @@ profile's default), optional **Instructions for this run**, and a read-only summ
 launch carries. **Launch resident** starts it; the profile's **Launch** button opens the same
 form on that profile.
 
+Like a task dispatch, Dispatch closes as soon as Mission Control accepts the launch and the
+resident's task exists, without waiting for its session to start. The resident keeps starting on
+its task, and a launch that fails from there shows its reason on that task. A launch refused
+before its task exists, such as an MCP set that cannot be pinned, keeps Dispatch open with the
+reason.
+
 A launch is a task of kind `resident`:
 
 - With a repository it runs in a task worktree. **No repository** creates a private working
@@ -142,16 +148,17 @@ control for one conversation, as it can for any session, and that grant ends at 
   on the same work episode and task. A clear or a new conversation ends it, and a new launch of the profile
   needs its own Launch click.
 - **Once the session is ready.** The grant is given when the resident's session has its
-  conversation. If the launch answers before that, Dispatch and the dock say session control is
-  not granted yet, and the Console band reads **control granted** once it is. If Mission Control
+  conversation. Dispatch closes before that, and the Console band reads **control granted** once
+  it is given. If the dock's launch answers before that, the dock says session control is not
+  granted yet. If Mission Control
   restarts first, that launch is not granted and needs a new Launch click.
 - **Until you turn it off.** Choose **Off** in the session control menu to revoke it. A restart
   does not bring it back.
 - **Launched anywhere else, it starts without control.** Before you launch from the browser
   dashboard, Dispatch says the launch will not carry control. A desktop app attached to a daemon
-  it did not start cannot pass the click on either: Dispatch stays open after that launch to say
-  the resident launched without session control. A Launch from the dock reports *Started without
-  session control*, and the Console band reads **control not granted**. The
+  it did not start cannot pass the click on either. Dispatch still closes as soon as that launch
+  is accepted, and the resident's Console band reads **control not granted**. A Launch from the
+  dock reports *Started without session control*. The
   session control menu in the desktop app can still grant it for that conversation, the way it
   can for any session; that grant ends at the next restart.
 

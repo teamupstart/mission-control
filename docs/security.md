@@ -207,8 +207,9 @@ in the desktop app.
   record, so a restart cannot restore it.
 
 A launch from the standalone browser, from a desktop app that adopted a standalone daemon, or
-from any caller other than that click starts without control. Dispatch, the Residents dock and
-the Console band say so, and the session's menu stays the only way to grant control afterwards.
+from any caller other than that click starts without control. Dispatch says so before a launch
+from the standalone browser, the Residents dock and the Console band say so after any launch, and
+the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
 are available without the grant; cross-session access requires **Control other sessions** on

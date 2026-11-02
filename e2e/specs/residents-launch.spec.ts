@@ -418,8 +418,8 @@ test.describe("a launch that is still starting when the daemon answers", () => {
     await expect(dialog).toBeVisible();
 
     // Close and reopen: the lost launch is still recorded, with its id and input. Launching again
-    // replays it - whether the daemon still reports it starting (the form waits it out, as the
-    // next test pins) or it has already started - and never starts a second resident. The
+    // replays it - whether the daemon still reports it starting (accepted, so the form closes, as
+    // the next test pins) or it has already started - and never starts a second resident. The
     // replay's answer is deliberately not assumed: how fast the agent starts is the runner's.
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toBeHidden();
@@ -444,10 +444,11 @@ test.describe("a launch that is still starting when the daemon answers", () => {
   });
 });
 
-test.describe("a pending launch closed while its profile's default changes", () => {
+test.describe("a launch the daemon accepts while its resident is still starting", () => {
+  // Every launch answers "still starting" at once, so the accepted-but-starting path is taken.
   test.use({ daemonEnv: { MISSION_RESIDENT_LAUNCH_WAIT_MS: "0" } });
 
-  test("reopening replays the launch in the repository it was sent with - one resident, no conflict", async ({
+  test("closes Dispatch on the accepted answer, like a task dispatch, without waiting for the session or replaying", async ({
     dashboard,
     daemon,
   }) => {
@@ -455,37 +456,58 @@ test.describe("a pending launch closed while its profile's default changes", () 
     const editor = dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` });
     const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
     const sent: Array<Record<string, unknown>> = [];
+    const answered: string[] = [];
     dashboard.on("request", (request) => {
       if (request.method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(request.url())) {
         sent.push(request.postDataJSON() as Record<string, unknown>);
       }
     });
+    dashboard.on("response", async (response) => {
+      if (response.request().method() === "POST" && /\/api\/residents\/profiles\/[^/]+\/launch$/.test(response.url())) {
+        answered.push(((await response.json()) as { state: string }).state);
+      }
+    });
+
+    // Only the first launch request is answered; any later one - a form that keeps replaying
+    // until the session has started - is held. A form that waits for the session therefore
+    // never closes, which is the slow modal this pins.
+    const launchRoute = /\/api\/residents\/profiles\/[^/]+\/launch$/;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let launches = 0;
+    await dashboard.route(launchRoute, async (route) => {
+      launches += 1;
+      if (launches > 1) await held;
+      await route.continue();
+    });
 
     await editor.getByRole("button", { name: "Launch" }).click();
-    await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
     await dialog.getByRole("button", { name: "Launch resident" }).click();
-    await expect(dialog.getByRole("status")).toContainText("Starting the resident");
-    await dialog.getByRole("button", { name: "Close" }).click();
+    // No session-start timeout: the form closes on the daemon's acceptance.
     await expect(dialog).toBeHidden();
+    await expect.poll(() => answered).toEqual(["pending"]);
+    release();
+    await dashboard.unroute(launchRoute);
 
-    // The default changes while the launch is outstanding.
-    await writeElsewhere(daemon, "PATCH", (settings) => ({ ...settings, workspace: { defaultRepoRoot: `${daemon.repo}-moved` } }));
-    await expect(editor).toContainText("Revision 2");
+    // One request, asking to be answered on acceptance, and no replay of a still-starting launch.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ repoRoot: daemon.repo, answerWhen: "accepted" });
 
-    // Reopening shows, and replays, the repository the launch was sent with.
-    await editor.getByRole("button", { name: "Launch" }).click();
-    await expect(dialog.getByLabel("Repository")).toHaveValue(daemon.repo);
-    await expect(dialog.getByRole("alert")).toHaveCount(0);
-    await dialog.getByRole("button", { name: "Launch resident" }).click();
-    await expect(dialog).toBeHidden({ timeout: 60_000 });
-
-    expect(sent.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(sent.map((body) => JSON.stringify(body))).size, "every request identical").toBe(1);
-    expect(sent[0]).toMatchObject({ repoRoot: daemon.repo });
+    // The resident keeps starting on its task, and reaches running.
     await expect.poll(async () =>
-      (await api<Array<{ kind: string; repoRoot: string }>>(daemon, "/api/tasks"))
-        .filter((task) => task.kind === "resident").map((task) => task.repoRoot),
-    { timeout: 30_000 }).toEqual([daemon.repo]);
+      (await api<Array<{ kind: string; status: string }>>(daemon, "/api/tasks"))
+        .filter((task) => task.kind === "resident").map((task) => task.status),
+    { timeout: 60_000 }).toEqual(["running"]);
+    expect(sent).toHaveLength(1);
+
+    // The accepted launch is not outstanding: reopening offers a fresh launch, not a retry.
+    await editor.getByRole("button", { name: "Launch" }).click();
+    await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeEnabled();
+    await expect(dialog.getByRole("alert")).toHaveCount(0);
+    await expect(dialog.getByRole("status")).toHaveCount(0);
+    await capture(dialog, "resident-dispatch-reopened-after-accepted-launch");
   });
 });
 

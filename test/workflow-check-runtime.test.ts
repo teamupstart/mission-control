@@ -1248,3 +1248,75 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
   );
   store.cancelRun("run-gate-block", "test_cleanup", 99);
 });
+
+// ---- CodeRabbit coverage is checked against the pinned diff ----------------
+
+/**
+ * CLI 0.9.2 stopped printing `unreviewedFileCount` and prints `reviewedFiles` instead, and every
+ * real review then blocked as "Invalid CodeRabbit completion/gate". A fake CLI prints that
+ * exact completion shape here, so the runtime has to list the pinned diff and accept it.
+ */
+function codeRabbitRun(id: string, reviewedFiles: string[]) {
+  const f = fixture();
+  const git = (...args: string[]) => execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString().trim();
+  const base = f.headSha;
+  // A modification, an addition and a deletion: the deletion is allowed but never required.
+  writeFileSync(join(f.repoRoot, "root.txt"), "changed\n");
+  writeFileSync(join(f.repoRoot, "added.ts"), "export const added = 1;\n");
+  git("rm", "-q", "packages/web/marker.txt");
+  git("add", "-A");
+  git("commit", "-qm", "feature");
+  const head = git("rev-parse", "HEAD");
+  const store = seedCheckRun(id, f.repoRoot, head, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}`, nodeId: "gate" };
+  store.insertAttempt({ id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4 });
+  const complete = { type: "complete", status: "review_completed", findings: 0,
+    gate: { threshold: "major", status: "passed", blockingFindings: 0 },
+    reviewedFiles, outcome: "completed", message: "Review completed" };
+  const stdout = [{ type: "status", phase: "setup", status: "setting_up" }, { type: "heartbeat", status: "reviewing" }, complete]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  return { f, ref, store, request: {
+    slot: "coderabbit" as const,
+    command: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(stdout)})`],
+    repoRoot: f.repoRoot, workingSubpath: "", headSha: head,
+    coderabbit: { interpreterVersion: 1 as const,
+      yaml: { source: ".coderabbit.yaml" as const, digest: null, enabled: true, state: "enabled" as const, diagnostic: "fixture" },
+      baseRef: "main", baseTip: base, mergeBase: base, head, empty: false, severity: "major" as const,
+      ruleRevision: 1, timeoutMs: 30_000, maxRuns: 10, error: null },
+  } };
+}
+
+test("a reviewedFiles completion covering the pinned diff is a complete review", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files", ["added.ts", "root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.review?.status, "complete", outcome.review?.diagnostic);
+  assert.match(outcome.review!.diagnostic, /Complete CodeRabbit review: 0 findings/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("a reviewedFiles completion that skipped a changed file is incomplete", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files-missed", ["root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.review?.status, "incomplete");
+  assert.match(outcome.review!.diagnostic, /1 of 2 changed files not reviewed/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("changed paths that cannot be listed are infrastructure, before any tree is leased", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-changed-paths-unavailable", []);
+  const runtime = new CheckRuntime(f.leases, { leaseStore: leaseRows, teardown: TEARDOWN, timeoutMs: 30_000,
+    changedPaths: async () => { throw new Error("git refused"); } });
+  const outcome = await runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "infrastructure");
+  if (outcome.kind !== "infrastructure") return;
+  assert.equal(outcome.started, false);
+  assert.match(outcome.reason, /changed files could not be listed: git refused/);
+  assert.deepEqual(f.pool.calls.filter((call) => call.cmd === "get"), []);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});

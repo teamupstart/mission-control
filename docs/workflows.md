@@ -2745,10 +2745,12 @@ ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
 mean a clean review. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
-and stored authentication under the daemon's effective `HOME`. Unavailability or incomplete
-review blocks with an error and a **Settings > Setup** link, without spending a repair round or
-sending code-fix instructions. Correct the problem and explicitly retry. No install, login,
-CLI update, remote-ref fetch or paid-credit continuation happens automatically.
+and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
+or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
+returned a result Mission Control cannot accept blocks with an error that points at the attempt's
+retained output instead, since Setup would show a healthy CLI. Neither spends a repair round or
+sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
+update, remote-ref fetch or paid-credit continuation happens automatically.
 
 Only committed content is reviewed. Dirty submissions must be committed and submitted again.
 The first successful comparison pins the full captured head, configured base, resolved base tip
@@ -2757,10 +2759,14 @@ same submission. Later ref movement cannot rewrite a successfully pinned compari
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
 
-A complete gate, an explicit zero unreviewed-file count and matching exit code pass or return
-findings for repair. Missing completion or coverage count, reused review, incomplete coverage,
-contradictory output, semantic limits or lost findings
-storage block. Raw-log truncation alone does not invalidate independently retained findings.
+A complete gate, explicit full coverage and matching exit code pass or return findings for
+repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,
+which must be zero, and later CLIs print the list of reviewed files instead. Mission Control never
+trusts that list on its own word. Before the review starts it lists the pinned comparison's changed
+files with `git diff --name-status --no-renames <merge-base> <head>`, and the list must name every
+path that exists at the head and nothing outside the comparison. A deleted path, or the old side of
+a rename, may appear but is never required. Missing completion or coverage, reused review,
+incomplete coverage, contradictory output, semantic limits or lost findings storage block. Raw-log truncation alone does not invalidate independently retained findings.
 Run detail shows comparison provenance, severity counts, remaining allowance and diagnostics.
 **Load findings** pages the complete retained normalized findings, including advisory severities;
 the attributed `read_workflow_command_output` tool uses the same bounded authorized reader.

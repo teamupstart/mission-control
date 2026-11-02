@@ -9,13 +9,25 @@ const Finding = z.object({
   suggestions: z.union([z.string(), z.array(z.unknown())]).optional(),
   startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional(),
 }).refine((v) => Boolean(v.title || v.comment || v.codegenInstructions), "Finding has no content");
+// Coverage arrives in one of two shapes: an `unreviewedFileCount` (CLI 0.9.1), or the list
+// of `reviewedFiles` (later CLIs, which dropped the count). Either may be present; a
+// completion with neither proves nothing about coverage and is never a complete review.
 const Complete = z.object({
   type: z.literal("complete"), status: z.enum(["review_completed", "review_skipped"]),
   outcome: z.enum(["completed", "success", "completed_with_warnings", "failed"]).optional(),
-  unreviewedFileCount: z.number().int().nonnegative(), reused: z.boolean().optional(),
+  unreviewedFileCount: z.number().int().nonnegative().optional(),
+  reviewedFiles: z.array(z.string().min(1).max(4000)).optional(), reused: z.boolean().optional(),
   findings: z.number().int().nonnegative().optional(),
   gate: z.object({ threshold: z.enum(CODERABBIT_SEVERITIES), status: z.enum(["passed", "blocked", "incomplete"]), blockingFindings: z.number().int().nonnegative() }),
 });
+/**
+ * What the pinned comparison changes, from git rather than from the vendor. `required` is
+ * every path that exists at the head and so must be reviewed; `allowed` adds deleted paths,
+ * which a review may mention but cannot be required to cover.
+ */
+export interface CodeRabbitChangedPaths { required: readonly string[]; allowed: readonly string[] }
+/** The one result diagnostic whose remedy is the CLI's installation or stored login. */
+export const CODERABBIT_OPERATOR_ACTION = "CodeRabbit requires operator action (authentication, service, usage limit or interruption). Check stored login and vendor wait guidance in retained output; do not authorize credits automatically";
 export type CodeRabbitFinding = z.infer<typeof Finding> & { id: string; displayPath: string | null };
 export interface CodeRabbitResult {
   status: "passed" | "failed" | "skipped" | "incomplete";
@@ -38,7 +50,9 @@ export class CodeRabbitResultParser {
   private finished = false;
   private retryAt: number | undefined;
   private expectedDuration: string | undefined;
-  constructor(private readonly attemptId: string, private readonly threshold: CodeRabbitSeverity) {}
+  /** `paths` is null only when the caller could not resolve the comparison's changed files. */
+  constructor(private readonly attemptId: string, private readonly threshold: CodeRabbitSeverity,
+    private readonly paths: CodeRabbitChangedPaths | null) {}
 
   push(chunk: Buffer): void {
     if (this.finished || this.error) return; // The supervisor continues draining both pipes.
@@ -90,7 +104,7 @@ export class CodeRabbitResultParser {
       if (typeof event.retryAfterSeconds === "number" && Number.isFinite(event.retryAfterSeconds) && event.retryAfterSeconds > 0) {
         this.retryAt = Date.now() + Math.min(event.retryAfterSeconds, 24 * 60 * 60) * 1000;
       }
-      this.error = "CodeRabbit requires operator action (authentication, service, usage limit or interruption). Check stored login and vendor wait guidance in retained output; do not authorize credits automatically";
+      this.error = CODERABBIT_OPERATOR_ACTION;
     }
   }
   finish(exitCode: number, emptyComparison: boolean): CodeRabbitResult {
@@ -104,8 +118,9 @@ export class CodeRabbitResultParser {
     const blocking = severities.slice(0, severities.indexOf(this.threshold) + 1).reduce((n, s) => n + counts[s], 0);
     const terminal = this.terminal;
     let diagnostic = this.error;
-    if (!diagnostic && (!terminal || exitCode === 1 || terminal.outcome === "failed" || terminal.unreviewedFileCount > 0 || terminal.reused
+    if (!diagnostic && (!terminal || exitCode === 1 || terminal.outcome === "failed" || (terminal.unreviewedFileCount ?? 0) > 0 || terminal.reused
       || terminal.gate.status === "incomplete")) diagnostic = "CodeRabbit review did not complete with full fresh coverage";
+    if (!diagnostic && terminal) diagnostic = this.coverageGap(terminal);
     if (!diagnostic && terminal && (terminal.gate.threshold !== this.threshold || terminal.gate.blockingFindings !== blocking
       || terminal.findings !== undefined && terminal.findings !== this.findings.length
       || terminal.gate.status !== (blocking ? "blocked" : "passed") || exitCode !== (blocking ? 2 : 0))) diagnostic = "CodeRabbit gate, findings and process exit disagree";
@@ -116,5 +131,17 @@ export class CodeRabbitResultParser {
       ...(this.retryAt ? { retryAt: this.retryAt } : {}),
       ...(this.expectedDuration ? { expectedDuration: this.expectedDuration } : {}),
       body: Buffer.from(this.findings.map((f) => JSON.stringify(f)).join("\n") + (this.findings.length ? "\n" : "")), };
+  }
+  /** Counts only: reviewed paths are repository content, not something compact SSE repeats. */
+  private coverageGap(terminal: z.infer<typeof Complete>): string | null {
+    if (terminal.unreviewedFileCount === undefined && terminal.reviewedFiles === undefined) return "CodeRabbit completion reported no review coverage";
+    if (terminal.reviewedFiles === undefined) return null;
+    if (!this.paths) return "CodeRabbit reported reviewed files, but the pinned comparison's changed files are unavailable to check them against";
+    const reviewed = new Set(terminal.reviewedFiles);
+    const allowed = new Set(this.paths.allowed);
+    const missed = this.paths.required.filter((path) => !reviewed.has(path)).length;
+    const outside = [...reviewed].filter((path) => !allowed.has(path)).length;
+    if (!missed && !outside) return null;
+    return `CodeRabbit review coverage disagrees with the pinned comparison: ${missed} of ${this.paths.required.length} changed files not reviewed, ${outside} reviewed files outside the comparison`;
   }
 }

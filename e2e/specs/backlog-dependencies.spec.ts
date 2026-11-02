@@ -96,6 +96,7 @@ test("a pinned revision protects its exact merged origin but permits unrelated r
   await expect(dialog).toContainText("Required by pinned plan dependency-plan revision 1");
   await expect(dialog).toContainText("exact originating work episode");
   await expect(dialog.getByRole("link", { name: "dependency-plan revision 1" })).toHaveAttribute("href", `/?plan=${input.planId}&revision=1`);
+  await expect(dialog.getByRole("link", { name: "dependency-plan revision 1" })).toHaveAccessibleDescription("Open pinned plan revision 1 in a new tab");
   await dialog.getByRole("button", { name: "Remove dependency: Optional completed work" }).click();
   await shoot(dashboard, "pinned-origin-protected");
   await dialog.getByRole("button", { name: "Save" }).click();

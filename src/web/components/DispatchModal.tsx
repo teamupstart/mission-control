@@ -3211,9 +3211,11 @@ function DispatchModal({
                   {hasPlanPins && <div className="field-hint">
                     Pinned plan inputs:
                     {editing?.planInputs?.map(input => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
-                      <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
-                        {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
-                      </a>{" · "}{input.files.join(", ")}
+                      <Tooltip label={`Open pinned plan revision ${input.revision} in a new tab`}>
+                        <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
+                          {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
+                        </a>
+                      </Tooltip>{" · "}{input.files.join(", ")}
                     </div>)}
                   </div>}
                   <div className="dep-chips">

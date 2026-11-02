@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,13 +9,27 @@ import {
   inspectAppLaunch, parseAppProcesses, parseLaunchServices, waitForBundleExit,
   prepareAppLaunch, verifyAppLaunch, launchConflictMessage,
   stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, assertSafeAppLaunch,
-  inspectAppLaunches, assertSafeAppLaunches,
+  inspectAppLaunches, assertSafeAppLaunches, parseGuiJobs,
   COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
 
 const bundle = "/Users/test/Applications/Mission Control.app";
 const binary = `${bundle}/Contents/MacOS/Mission Control`;
 const registration = (pid = 42, type = "Foreground") => `1) "Mission Control" ASN:0x0-0x123:\n    bundleID="com.mission-control.app"\n    bundle path="${bundle}"\n    executable path="${binary}"\n    pid = ${pid} type="${type}"\n    checkin time = today\n`;
+/**
+ * A `launchctl dumpstate` in the real shape (tab-indented service blocks after the domain's own
+ * summary), holding exactly the GUI jobs `launchctl print` would have answered for.
+ */
+function dumpOf(jobs: Map<string, string>, uid = 501) {
+  const block = (name: string, text: string) =>
+    `${name} = {\n${text.split("\n").filter((line, index, all) => line || index < all.length - 1).map((line) => `\t${line}`).join("\n")}\n}\n\n`;
+  const listing = [...jobs.keys()].map((label) => `\t\t       0      - \t${label}`).join("\n");
+  return `system = {\n\ttype = system\n\tservice count = 1\n}\n\nsystem/com.apple.fixture = {\n\tprogram = /usr/libexec/fixture\n}\n\n`
+    + block(`gui/${uid}`, `type = login\nservice count = ${jobs.size}\n\nservices = {\n${listing}${listing ? "\n" : ""}}\n`)
+    + [...jobs].map(([label, text]) => block(`gui/${uid}/${label}`, text)).join("")
+    + `pid/1 = {\n\ttype = pid\n}\n`;
+}
+
 function fixture() {
   let now = 0;
   const calls: string[] = [];
@@ -23,17 +38,25 @@ function fixture() {
     ["apps", registration()],
     ["ps", `42 1 S ${binary}\n43 42 S ${bundle}/Contents/Frameworks/Helper.app/Contents/MacOS/Helper\n`],
   ]);
+  // The dump is built from the same `print` fixtures, so a test describes each job once and the
+  // primary path and the per-label fallback answer about identical jobs.
+  const state = {dump: true};
+  const guiJobs = () => new Map([...outputs].flatMap(([key, text]) => {
+    const label = /^print gui\/501\/(.+)$/.exec(key)?.[1];
+    return label ? [[label, text] as const] : [];
+  }));
   const ops: MacAppOps = {
     uid: 501, now: () => now, sleep: async (ms) => { now += ms; },
     run: async (command, args) => {
       calls.push(`${command} ${args.join(" ")}`);
+      if (args[0] === "dumpstate") return state.dump ? {code: 0, stdout: dumpOf(guiJobs())} : {code: 1, stdout: ""};
       const key = command.endsWith("lsappinfo") ? "apps" : command.endsWith("ps") ? "ps" : args[0] === "list" ? "list" : args.join(" ");
       return {code: 0, stdout: outputs.get(key) ?? ""};
     },
     identity: () => "start-42", kill: () => { throw new Error("must not kill"); },
     readAck: () => ({identity: "start-42", nonce: "a".repeat(32), pid: 42, bundle}),
   };
-  return {ops, outputs, calls};
+  return {ops, outputs, calls, state};
 }
 
 test("reads actual macOS process and LaunchServices field shapes including spaced paths", () => {
@@ -161,6 +184,7 @@ test("a slow probe gets the rest of its caller's deadline, not a fixed two-secon
   // (and then its recovery) long before the caller's own deadline.
   const f = fixture();
   f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  f.outputs.set("print gui/501/com.example.one", "type = Submitted\nprogram = /bin/true\n");
   const budgets = new Map<string, number[]>();
   const run = f.ops.run;
   f.ops.run = async (command, args, timeout) => {
@@ -168,11 +192,18 @@ test("a slow probe gets the rest of its caller's deadline, not a fixed two-secon
     budgets.set(name, [...(budgets.get(name) ?? []), timeout ?? -1]);
     return run(command, args, timeout);
   };
-  await inspectAppLaunch(bundle, f.ops, 15_000);
-  // The fake clock does not advance during a probe, so each one is offered the whole budget.
-  assert.deepEqual(budgets.get("lsappinfo"), [15_000]);
-  assert.deepEqual(budgets.get("ps"), [15_000]);
-  assert.deepEqual(budgets.get("launchctl"), [15_000, 15_000], "list, then print for the one label");
+  for (const [dump, launchctl, note] of [
+    [true, [15_000, 15_000], "one dumpstate, then a print of the run's last job"],
+    [false, [15_000, 15_000, 15_000], "dumpstate, then the fallback's list and one print"],
+  ] as const) {
+    budgets.clear();
+    f.state.dump = dump;
+    await inspectAppLaunch(bundle, f.ops, 15_000);
+    // The fake clock does not advance during a probe, so each one is offered the whole budget.
+    assert.deepEqual(budgets.get("lsappinfo"), [15_000]);
+    assert.deepEqual(budgets.get("ps"), [15_000]);
+    assert.deepEqual(budgets.get("launchctl"), launchctl, note);
+  }
 
   budgets.clear();
   f.outputs.set("ps", "1 0 S /sbin/launchd\n");
@@ -191,6 +222,7 @@ test("the launch-conflict preflight takes its caller's deadline, not a fixed ins
   // `assertSafeAppLaunch` took no timeout at all.
   const f = fixture();
   f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  f.outputs.set("print gui/501/com.example.one", "type = Submitted\nprogram = /bin/true\n");
   const budgets: number[] = [];
   const run = f.ops.run;
   f.ops.run = async (command, args, timeout) => {
@@ -199,7 +231,13 @@ test("the launch-conflict preflight takes its caller's deadline, not a fixed ins
   };
   await assertSafeAppLaunch(bundle, f.ops, 120_000);
   assert.deepEqual(budgets, [120_000, 120_000, 120_000, 120_000],
-    "lsappinfo, ps, launchctl list and launchctl print each get the caller's deadline");
+    "lsappinfo, ps, launchctl dumpstate and the last job's print each get the caller's deadline");
+  budgets.length = 0;
+  f.state.dump = false;
+  await assertSafeAppLaunch(bundle, f.ops, 120_000);
+  assert.deepEqual(budgets, [120_000, 120_000, 120_000, 120_000, 120_000],
+    "and so do the fallback's launchctl list and launchctl print");
+  f.state.dump = true;
 
   // A caller with no deadline of its own still gets a bound, and it is the named one.
   budgets.length = 0;
@@ -222,16 +260,197 @@ test("one launchd sweep answers for several bundles, exactly as one sweep per bu
   f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
   f.outputs.set("print gui/501/com.example.quiet", "type = Submitted\nprogram = /bin/true\n");
 
-  const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
-  f.calls.length = 0;
-  const together = await inspectAppLaunches([bundle, other], f.ops);
+  for (const dump of [true, false]) {
+    f.state.dump = dump;
+    const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
+    f.calls.length = 0;
+    const together = await inspectAppLaunches([bundle, other], f.ops);
 
-  assert.deepEqual(together, separately, "the same answer for every bundle as a sweep of its own");
-  assert.deepEqual(together[0]?.jobs, [respawner], "the respawn job is still found for its bundle");
-  assert.deepEqual(together[1]?.jobs, [], "and is not misattributed to the other bundle");
-  assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "ONE sweep");
-  assert.equal(f.calls.filter((call) => call.startsWith("/bin/launchctl print")).length, 2,
-    "one print per label, not one per label per bundle");
+    assert.deepEqual(together, separately, "the same answer for every bundle as a sweep of its own");
+    assert.deepEqual(together[0]?.jobs, [respawner], "the respawn job is still found for its bundle");
+    assert.deepEqual(together[1]?.jobs, [], "and is not misattributed to the other bundle");
+    assert.equal(f.calls.filter((call) => call === "/bin/launchctl dumpstate").length, 1, "ONE sweep");
+    if (dump) {
+      assert.ok(!f.calls.includes("/bin/launchctl list"), "the dump replaces the job list");
+      assert.deepEqual(f.calls.filter((call) => call.startsWith("/bin/launchctl print")), ["/bin/launchctl print gui/501/com.example.quiet"],
+        "and one print, of the run's last job only");
+    } else {
+      assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "ONE fallback sweep");
+      assert.equal(f.calls.filter((call) => call.startsWith("/bin/launchctl print")).length, 2,
+        "one print per label, not one per label per bundle");
+    }
+  }
+});
+
+test("one dumpstate reads every GUI job in the shape launchctl print gives it", () => {
+  const spaced = "com.example.Google Chrome H.14142";
+  const jobs = parseGuiJobs(dumpOf(new Map([
+    ["com.example.one", `type = Submitted\nprogram = ${binary}\n`],
+    [spaced, "type = Submitted\nprogram = /bin/true\n"],
+  ])), 501);
+  assert.deepEqual([...(jobs?.keys() ?? [])], ["com.example.one", spaced]);
+  assert.ok(jobLaunchesBundle(jobs!.get("com.example.one")!, bundle), "a dumped block is what jobLaunchesBundle reads");
+  assert.ok(!jobLaunchesBundle(jobs!.get(spaced)!, bundle));
+  assert.equal(parseGuiJobs(dumpOf(new Map()), 501)?.size, 0, "an empty GUI domain is a complete answer");
+  assert.equal(parseGuiJobs(dumpOf(new Map([["com.example.one", "program = /bin/true\n"]]), 502), 501), null,
+    "another user's GUI domain is not this one");
+});
+
+test("a job block runs to the next header, so an argument's own closing brace cannot truncate it", () => {
+  // launchctl prints an argument's embedded newline verbatim, so a `}` can land at column 0 in
+  // the middle of a job. Ending the block there would hand the rest of the job to nobody.
+  const label = "com.fixture.brace-launcher";
+  const dump = dumpOf(new Map([[label, "type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\nx\n"], ["com.example.after", "program = /bin/true\n"]]))
+    .replace("\t-c\n\tx\n", `\t-c\n\tf() {\n}\n\texec "${binary}"\n`);
+  const jobs = parseGuiJobs(dump, 501);
+  assert.ok(jobs?.get(label)?.includes(`exec "${binary}"`), "the text after the brace stays with its job");
+  assert.ok(!jobs?.get(label)?.includes("com.example.after"), "and the next job's block is its own");
+});
+
+test("an argument that prints a header-shaped line sends the sweep to per-job prints, which still find the launch", async (t) => {
+  // An embedded newline followed by `fixture = {` would end the job's block there and hand the
+  // `exec` after it to a section nobody reads - while the GUI count and listing still match.
+  const label = "com.fixture.header-launcher";
+  // Only the forged header sits at column 0: the source's first line is an argv entry launchd
+  // indents, and the lines after the header keep a tab so they pass as section contents.
+  const source = (header: string) => `sleep 1\n${header}\n\texec "${binary}"`;
+  // `pid/1/...` names a service beneath a domain the dump really prints (and does not count).
+  for (const header of ["fixture = {", "config = {", "pid/1/com.example.forged = {", "pid/99999/com.example.forged = {",
+    "system/com.example.forged = {", "user/501/com.example.forged = {"]) {
+    await t.test(header, async () => {
+      const f = fixture();
+      f.outputs.set("apps", "");
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+      const printed = `type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\n${source(header)}\n}\n`;
+      f.outputs.set(`print gui/501/${label}`, printed);
+      // launchctl prints the embedded newline verbatim, so the forged header lands at column 0.
+      const dump = dumpOf(new Map([[label, printed]])).replace(`\n\t${header}\n`, `\n${header}\n`);
+      assert.ok(dump.includes(`\n${header}\n\t\texec "${binary}"\n`), "the fixture prints the forged header at column 0");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return {code: 0, stdout: dump};
+      };
+      assert.equal(parseGuiJobs(dump, 501), null, "the dump is refused, not read with the job cut short");
+      const result = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(result.jobs, [label], "the per-job print reports the conflict");
+      assert.match(launchConflictMessage(result, 501)!, /launchctl bootout 'gui\/501\/com\.fixture\.header-launcher'/);
+      assert.ok(f.calls.includes(`/bin/launchctl print gui/501/${label}`), "through the fallback");
+    });
+  }
+});
+
+test("a forged domain header cannot hide a launch in any GUI job, the last one included", async (t) => {
+  // A domain header is the one forgery a service-count rule cannot see. Inside any GUI job but
+  // the run's last it interrupts the run, so the dump is refused; after the last job it reads like
+  // the next domain, so that job alone is re-read with `launchctl print`.
+  const label = "com.fixture.domain-launcher";
+  const forged = "pid/99999 = {";
+  const source = `sleep 1\n${forged}\n\texec "${binary}"`;
+  const printed = `type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\n${source}\n}\n`;
+  for (const position of ["last", "not last"] as const) {
+    await t.test(position, async () => {
+      const f = fixture();
+      f.outputs.set("apps", "");
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+      const others = position === "last" ? [] : ["com.example.after"];
+      f.outputs.set("list", `PID\tStatus\tLabel\n${[label, ...others].map((name) => `-\t0\t${name}`).join("\n")}\n`);
+      f.outputs.set(`print gui/501/${label}`, printed);
+      for (const other of others) f.outputs.set(`print gui/501/${other}`, "type = Submitted\nprogram = /bin/true\n");
+      const dump = dumpOf(new Map([[label, printed], ...others.map((other) => [other, "type = Submitted\nprogram = /bin/true\n"] as const)]))
+        .replace(`\n\t${forged}\n`, `\n${forged}\n`);
+      assert.ok(dump.includes(`\n${forged}\n\t\texec "${binary}"\n`), "the fixture prints the forged header at column 0");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return {code: 0, stdout: dump};
+      };
+      const parsed = parseGuiJobs(dump, 501);
+      if (position === "last") {
+        assert.ok(parsed, "a forged domain after the run's last job is indistinguishable in the dump");
+        assert.ok(!parsed.get(label)!.includes("exec"), "and the dump's block for that job really is cut short");
+      } else assert.equal(parsed, null, "inside the run it interrupts the run and the dump is refused");
+      const result = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(result.jobs, [label], "the launch is reported either way");
+      assert.ok(f.calls.includes(`/bin/launchctl print gui/501/${label}`), "from that job's own print");
+      assert.equal(f.calls.includes("/bin/launchctl list"), position !== "last",
+        position === "last" ? "while the dump still answers for every other job" : "through the per-job fallback");
+    });
+  }
+});
+
+test("a dump that does not match its own service listing is refused, never read in part", async (t) => {
+  const jobs = new Map([["com.example.one", "program = /bin/true\n"], ["com.example.two", "program = /bin/true\n"]]);
+  const complete = dumpOf(jobs);
+  assert.ok(parseGuiJobs(complete, 501));
+  for (const [name, dump] of [
+    ["a listed job with no block", complete.replace(/^gui\/501\/com\.example\.two = \{\n[\s\S]*?^\}\n/m, "")],
+    ["a block that was never listed", complete.replace("pid/1 = {", "gui/501/com.example.forged = {\n\tprogram = /bin/true\n}\n\npid/1 = {")],
+    ["a duplicated block", complete.replace("pid/1 = {", "gui/501/com.example.one = {\n\tprogram = /bin/true\n}\n\npid/1 = {")],
+    ["a service count that disagrees", complete.replace("service count = 2", "service count = 3")],
+    ["no service count", complete.replace("\tservice count = 2\n", "")],
+    ["no service listing", complete.replace(/\tservices = \{\n[\s\S]*?\t\}\n/, "")],
+    ["a listing line with no label", complete.replace("\t\t       0      - \tcom.example.two", "\t\tgarbage")],
+    ["no GUI domain at all", "system = {\n}\n"],
+    ["nothing", ""],
+    ["an unindented line that is not a header", complete.replace("\tprogram = /bin/true\n", "\tprogram = /bin/true\nconfig = {\n")],
+    ["a service in a counted domain beyond its count", complete.replace("pid/1 = {", "system/com.example.forged = {\n}\n\npid/1 = {")],
+    ["a service whose domain was never printed", complete.replace("pid/1 = {", "user/501/com.example.forged = {\n}\n\npid/1 = {")],
+  ] as const) {
+    await t.test(name, () => assert.equal(parseGuiJobs(dump, 501), null));
+  }
+});
+
+test("an unreadable or incomplete dump falls back to printing each job, which still finds respawners", async (t) => {
+  for (const [name, answer] of [
+    ["dumpstate exits non-zero", async () => ({code: 1, stdout: ""})],
+    ["dumpstate rejects", async () => { throw new Error("macOS launch state was larger than this inspection reads (launchctl)."); }],
+    ["dumpstate is incomplete", async () => ({code: 0, stdout: "system = {\n}\n"})],
+  ] as const) {
+    await t.test(name, async () => {
+      const f = fixture();
+      const label = "com.example.respawner";
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+      f.outputs.set(`print gui/501/${label}`, `type = Submitted\nprogram = ${binary}\n`);
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return answer();
+      };
+      assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).jobs, [label]);
+      assert.deepEqual(f.calls.slice(2), ["/bin/launchctl dumpstate", "/bin/launchctl list", `/bin/launchctl print gui/501/${label}`]);
+    });
+  }
+});
+
+test("a dump that spends the whole deadline refuses rather than starting the fallback", async () => {
+  const f = fixture();
+  const run = f.ops.run;
+  let now = 0;
+  f.ops.now = () => now;
+  f.ops.run = async (command, args, timeout) => {
+    if (args[0] === "dumpstate") { now += timeout ?? 0; throw new Error("Could not inspect macOS launch state within the time limit (launchctl)."); }
+    return run(command, args, timeout);
+  };
+  await assert.rejects(inspectAppLaunch(bundle, f.ops, 10_000), /before the time limit/);
+  assert.ok(!f.calls.includes("/bin/launchctl list"));
+});
+
+test("this Mac's own launchctl dumpstate proves itself complete", {skip: process.platform !== "darwin"}, () => {
+  // The fixture's dump is modeled on a real one; this pins that the real one still parses, so a
+  // macOS that changed the format shows up here rather than as every sweep quietly falling back.
+  // A login item starting or exiting mid-dump could make one read disagree with itself; that is
+  // the refusal working, not a format change, so only a mismatch on every one of three reads fails.
+  let jobs: ReturnType<typeof parseGuiJobs> = null;
+  for (let attempt = 0; attempt < 3 && !jobs; attempt++) {
+    jobs = parseGuiJobs(execFileSync("/bin/launchctl", ["dumpstate"], {encoding: "utf8", maxBuffer: 128 * 1024 * 1024}), process.getuid!());
+  }
+  assert.ok(jobs, "the GUI domain's job blocks match its service count and listing on at least one of three reads");
+  assert.ok(jobs.size > 0);
 });
 
 test("several bundles refuse on the first conflict in order, from one sweep", async () => {
@@ -257,7 +476,7 @@ test("several bundles refuse on the first conflict in order, from one sweep", as
       assert.doesNotMatch(message, withheld, "and the later bundle's is not folded into it");
       return true;
     });
-    assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "one sweep for both");
+    assert.equal(f.calls.filter((call) => call === "/bin/launchctl dumpstate").length, 1, "one sweep for both");
   }
 
   // A clean first bundle does not mask a later one's conflict.
@@ -310,6 +529,19 @@ test("a real command with no caller deadline is not killed at the old two-second
   assert.deepEqual(result, {code: 0, stdout: "done\n"});
   // Still a bound: a caller's own budget is honored and a hung command is refused.
   await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "sleep 5"], 200), /within the time limit/);
+});
+
+test("a real command reads output past the old 8MB cap, and refuses past its own with a named error", async () => {
+  // `launchctl dumpstate` is 6.5MB on a developer Mac and grows with its job count; the old 8MB
+  // cap would have made a larger host's dump fail as a "time limit" it never hit.
+  const nineMegabytes = 9 * 1024 * 1024;
+  const read = await realMacAppOps().run("/bin/sh", ["-c", `head -c ${nineMegabytes} /dev/zero | tr '\\0' x`]);
+  assert.equal(read.code, 0);
+  assert.equal(read.stdout.length, nineMegabytes);
+  await assert.rejects(
+    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`]),
+    {message: "macOS launch state was larger than this inspection reads (sh)."},
+  );
 });
 
 test("lsregister gets the whole launch budget, not the former five-second cap", async () => {
@@ -732,10 +964,46 @@ test("unreadable host inventory fails closed without echoing command output", as
   await assert.rejects(inspectAppLaunch(bundle, f.ops), /Could not inspect/);
 });
 
+test("on the dump path, the last job's own print skips a vanished job and refuses any other failure", async (t) => {
+  // The dump path re-reads the run's last GUI job with `launchctl print`; that read keeps the
+  // fallback's rules - 113 is a job that left mid-read, anything else refuses - and neither
+  // outcome discards or re-sweeps what the dump already answered for the other jobs.
+  for (const code of [113, 1]) {
+    await t.test(`launchctl print exit ${code}`, async () => {
+      const f = fixture();
+      const respawner = "com.example.respawner";
+      const last = "com.fixture.vanishing";
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${respawner}\n-\t0\t${last}\n`);
+      f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
+      f.outputs.set(`print gui/501/${last}`, "type = Submitted\nprogram = /bin/true\n");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        const result = await run(command, args, timeout);
+        return args[0] === "print" ? {code, stdout: "private-fixture-secret"} : result;
+      };
+      assert.deepEqual([...parseGuiJobs(dumpOf(new Map([[respawner, ""], [last, ""]])), 501)!.keys()].at(-1), last,
+        "the fixture's last job in dump order is the one re-printed");
+      if (code === 113) {
+        assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [respawner], unregistered: []},
+          "the vanished job is skipped, and the dump's own answer for the other job stands");
+      } else {
+        await assert.rejects(inspectAppLaunch(bundle, f.ops), {
+          message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
+        });
+      }
+      assert.deepEqual(f.calls, [
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=", "/bin/launchctl dumpstate",
+        `/bin/launchctl print gui/501/${last}`,
+      ], "one print, of the last job only, and no fallback sweep");
+    });
+  }
+});
+
 test("preflight skips a vanished GUI job but refuses other launchctl print failures", async (t) => {
   for (const code of [113, 1]) {
     await t.test(`launchctl print exit ${code}`, async () => {
       const f = fixture();
+      f.state.dump = false;
       f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.fixture.unreadable\n");
       const run = f.ops.run;
       f.ops.run = async (command, args, timeout) => {
@@ -747,7 +1015,7 @@ test("preflight skips a vanished GUI job but refuses other launchctl print failu
         message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
       });
       assert.deepEqual(f.calls, [
-        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=",
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=", "/bin/launchctl dumpstate",
         "/bin/launchctl list", "/bin/launchctl print gui/501/com.fixture.unreadable",
       ]);
     });

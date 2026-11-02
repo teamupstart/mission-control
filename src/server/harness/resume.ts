@@ -46,6 +46,14 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
   return `${session.agent}:${session.agentSessionId}`;
 }
 
+/**
+ * How long the resume guard's `--check` may take. A bound on a hung guard, not a guess at a
+ * healthy one: at 5s a loaded Mac's Node startup ran past it and a sound guard was reported as
+ * unusable, refusing the resume with a false "run: npm run build". Matches the MCP handshake
+ * bound in `mission-mcp.ts`.
+ */
+export const RESUME_GUARD_CHECK_TIMEOUT_MS = 15_000;
+
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
 export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
@@ -54,7 +62,7 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
   const guard = resumeGuardPath();
   if (!existsSync(guard)) throw new Error("Mission Control's managed resume guard is not built - run: npm run build");
   const runtime = resolveMissionMcpRuntime();
-  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: 5_000 });
+  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: RESUME_GUARD_CHECK_TIMEOUT_MS });
   if (guardCheck.code !== 0 || guardCheck.stdout.trim() !== "mission-resume-guard-v1") {
     throw new Error("Mission Control's managed resume guard is unusable - run: npm run build");
   }

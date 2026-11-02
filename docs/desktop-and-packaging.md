@@ -593,8 +593,18 @@ The app checks launch ownership before handing off an update. The detached helpe
 under the existing helper lock before waiting for shutdown and immediately before installing.
 `scripts/mac-app-lifecycle.mjs` owns the same read-only macOS inspection for both processes:
 
-- Enumerate `launchctl list`, then inspect each job in `gui/<uid>` with `launchctl print`.
-  Inspect its program and argument block, including shell wrappers that execute this bundle's
+- Read every job in `gui/<uid>` from one `launchctl dumpstate`, which prints each job exactly as
+  `launchctl print` does and answers in well under a second where printing hundreds of jobs one
+  at a time took tens of seconds on a loaded Mac. The dump is used only when all of it is
+  accounted for: every unindented line is a launchd section header or a closing brace, no
+  header repeats, every service appears in the unbroken run directly after its own domain, every
+  domain that states a service count holds exactly that many, and the GUI domain's jobs are
+  exactly the labels it lists. A header-shaped line printed by a job argument's embedded newline
+  therefore interrupts the run and is refused, except after the run's last job, where a forged
+  domain header reads like the next domain. That one job is always read with its own
+  `launchctl print` instead of from the dump. Otherwise inspection falls back to enumerating
+  `launchctl list` and running `launchctl print` for each job.
+  Inspect each job's program and argument block, including shell wrappers that execute this bundle's
   `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
   inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
   Executable positions are inspected, so an app path passed as ordinary data to a fixed executable

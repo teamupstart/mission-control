@@ -5,7 +5,7 @@ import { WORKFLOW_TEXT_EVIDENCE_LIMITS, type WorkflowContextSnapshot,
   type WorkflowEvidenceTextArtifact } from "@shared/workflow.ts";
 import { scoutReportDirectory } from "@shared/scouts.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
-import { captureWorktreeTree, isolatedGitEnvironment } from "../git/worktree-tree.ts";
+import { captureWorktreeTree, isolatedGitEnvironment, LocalArtifactChangedError } from "../git/worktree-tree.ts";
 import { run } from "../util/exec.ts";
 import { inspectCheckoutTextArtifact } from "./images.ts";
 
@@ -95,10 +95,21 @@ export async function captureWorkflowPublication(
     bytes += groupBytes;
     artifacts.push(...group);
   }
-  const localArtifacts = artifacts.map((item) => ({
+  let localArtifacts = artifacts.map((item) => ({
     path: item.displayName, sha256: item.sha256, bytes: item.bytes,
   }));
-  const tree = await captureWorktreeTree(root, { localArtifacts });
+  let tree: Awaited<ReturnType<typeof captureWorktreeTree>>;
+  try {
+    tree = await captureWorktreeTree(root, { localArtifacts });
+  } catch (error) {
+    if (!(error instanceof LocalArtifactChangedError)) throw error;
+    // Validation raced a writer. Discard all exemptions and stale retained bytes, and
+    // capture required content once without receipts. Other Git failures still fail capture.
+    problem(error.path, error.message);
+    localArtifacts = [];
+    artifacts.length = 0;
+    tree = await captureWorktreeTree(root);
+  }
   return {
     contentTreeOid: tree.treeOid,
     publication: {

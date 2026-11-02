@@ -199,6 +199,35 @@ test("snapshot rejects artifact bytes that changed after validation", async () =
   await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath, sha256 }] }), /changed during capture/);
 });
 
+test("a report edited after validation falls back to required publication content", async () => {
+  const root = repo();
+  git(root, "config", "filter.edit-report.clean", "node .git/edit-report.cjs");
+  writeFileSync(join(root, ".gitattributes"), "*.html filter=edit-report\n");
+  git(root, "add", ".gitattributes");
+  git(root, "commit", "-qm", "report filter");
+  // The clean filter runs during temporary-index capture, after report validation. Mutate
+  // once so the fallback can capture the new bytes without any report exemption.
+  writeFileSync(join(root, ".git/edit-report.cjs"), `
+    const fs = require("node:fs");
+    const input = fs.readFileSync(0);
+    if (!fs.existsSync(".git/report-edited")) {
+      fs.writeFileSync(".git/report-edited", "done");
+      fs.appendFileSync(${JSON.stringify(reportPath)}, "changed");
+    }
+    process.stdout.write(input);
+  `);
+  report(root, html + '<a href="evidence.csv">Evidence</a>');
+  writeFileSync(join(root, "docs/reports/result/evidence.csv"), "check,result\npassed,true\n");
+  const before = readFileSync(join(root, ".git/index"));
+  const capture = await captureWorkflowPublication(root);
+  assert.deepEqual(capture.artifacts, []);
+  assert.deepEqual(capture.publication.localArtifacts, []);
+  assert.deepEqual(capture.publication.unpublishedPaths.sort(), [reportPath, "docs/reports/result/evidence.csv"].sort());
+  assert.match(capture.publication.artifactProblems!.join("\n"), /changed during capture/);
+  assert.equal(capture.publication.treeOid, (await captureWorktreeTree(root)).treeOid);
+  assert.deepEqual(readFileSync(join(root, ".git/index")), before);
+});
+
 for (const filter of ["CRLF normalization", "clean filter"]) {
   test(`retained report receipts use raw bytes with ${filter}`, async () => {
     const root = repo();

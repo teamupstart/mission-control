@@ -4636,6 +4636,8 @@ export class WorkflowManager {
     }
     // Compare the complete published commit tree, never a filtered remote view. This
     // refuses both missing deliverables and unexpected committed artifacts.
+    // A missing repositoryRoot already returns through !submittedHead above, including
+    // shipping continuations. Keeping the root condition here also narrows its type.
     if (fullContext?.success && fullContext.data.evidence.publication && repositoryRoot) {
       const publishedTree = await (this.options.resolveCommitTree ?? resolveCommitTree)(
         repositoryRoot, submittedHead,

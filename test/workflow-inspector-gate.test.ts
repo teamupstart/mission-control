@@ -1789,9 +1789,10 @@ test("Inspector completes with retained local artifacts but refuses missing or e
   const treeOid = "a".repeat(40);
   const path = "docs/reports/result/report.html";
   const sha256 = "b".repeat(64);
-  for (const scenario of ["retained", "missing-receipt", "uncommitted-source", "extra-published", "unreadable-tree"] as const) {
+  for (const scenario of ["retained", "missing-receipt", "uncommitted-source", "extra-published", "unreadable-tree", "missing-root"] as const) {
     const seeded = await seed({
       dirty: true,
+      ...(scenario === "missing-root" ? { bindingRepoRoot: null, inspectorRepoRoot: null } : {}),
       evidence: {
         contentTreeOid: "c".repeat(40),
         publication: {
@@ -1806,6 +1807,7 @@ test("Inspector completes with retained local artifacts but refuses missing or e
         }],
       },
       resolveCommitTree: async () => {
+        assert.notEqual(scenario, "missing-root", "a missing root must be refused before tree resolution");
         if (scenario === "unreadable-tree") throw new Error("missing commit");
         return scenario === "extra-published" ? "d".repeat(40) : treeOid;
       },
@@ -1817,10 +1819,10 @@ test("Inspector completes with retained local artifacts but refuses missing or e
       }, Date.now());
       signal(seeded, seeded.head);
       await waitFor(() => seeded.store.getRun(seeded.ids.run)?.status ===
-        (scenario === "retained" ? "completed" : "waiting_for_session"), scenario);
+        (scenario === "retained" ? "completed" : scenario === "missing-root" ? "blocked" : "waiting_for_session"), scenario);
       if (scenario !== "retained") assert.equal(
         (seeded.store.getRun(seeded.ids.run)?.gateState as unknown as WorkflowInspectorGateState | undefined)?.waitReason,
-        "working_tree_not_pushed",
+        scenario === "missing-root" ? "head_mismatch" : "working_tree_not_pushed",
       );
     } finally {
       await seeded.manager.stop();

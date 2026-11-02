@@ -54,6 +54,13 @@ export interface CaptureWorktreeTreeOptions {
   localArtifacts?: readonly { path: string; sha256: string }[];
 }
 
+export class LocalArtifactChangedError extends Error {
+  constructor(readonly path: string) {
+    super(`Local artifact changed during capture: ${path}`);
+    this.name = "LocalArtifactChangedError";
+  }
+}
+
 /**
  * Hash the complete worktree through a temporary index without changing its branch, files,
  * or real index. The returned tree id is the content-semantic identity used by snapshots
@@ -106,9 +113,9 @@ export async function captureWorktreeTree(
       // representation after clean filters or line-ending normalization.
       const rawOid = requireObjectId("raw artifact object", requireOk("git hash-object",
         await git(worktreePath, ["hash-object", "-w", "--no-filters", "--", artifact.path], env)));
-      const blob = await git(worktreePath, ["cat-file", "blob", rawOid], env);
-      if (blob.code !== 0 || createHash("sha256").update(blob.stdout).digest("hex") !== artifact.sha256) {
-        throw new Error(`Local artifact changed during capture: ${artifact.path}`);
+      const blob = requireOk("git cat-file", await git(worktreePath, ["cat-file", "blob", rawOid], env), false);
+      if (createHash("sha256").update(blob).digest("hex") !== artifact.sha256) {
+        throw new LocalArtifactChangedError(artifact.path);
       }
       requireOk("git update-index", await git(worktreePath,
         ["update-index", "--force-remove", "--", artifact.path], env));

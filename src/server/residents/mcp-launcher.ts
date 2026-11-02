@@ -10,12 +10,14 @@
 //    only, handing it this process's stdin and stdout; for an HTTP server, acts as a stdio
 //    bridge that adds the secret headers and query values itself.
 //
+// Its entry starts the runtime with `RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS` (`mcp-launch.ts`), so
+// the bridge also trusts the operating system's certificate store.
+//
 // A missing, spent or expired ticket starts nothing. Nothing here logs a ticket, a definition
 // or a value. Deliberately standalone: no import reaches the daemon's server graph.
 
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
-import * as tls from "node:tls";
 import { pathToFileURL } from "node:url";
 import {
   plaintextCredentialProblem,
@@ -142,34 +144,6 @@ export async function fetchOnOrigin(
   throw new Error("the MCP server redirected too many times");
 }
 
-type CertificateStore = Pick<typeof tls, "getCACertificates" | "setDefaultCACertificates">;
-
-/**
- * Trust the operating system's certificate store on top of Node's own roots, for every request
- * this process makes.
- *
- * The bridge runs under the daemon's runtime with only that runtime's environment, so the
- * operator's shell configuration never reaches it - `NODE_EXTRA_CA_CERTS` from `~/.zshrc`
- * included, because a daemon started from the Finder imports only `PATH` from the login shell.
- * Behind a TLS-inspecting proxy the certificate a remote server presents is signed by a root that
- * lives in the system keychain and nowhere in Node's bundled set, so without this every request
- * fails with `SELF_SIGNED_CERT_IN_CHAIN` - while the same server works in the operator's own
- * Claude Code, which trusts the system store. Verification is never relaxed: this only widens
- * the roots to the ones the machine itself already trusts. `default` keeps the bundled roots
- * and any `NODE_EXTRA_CA_CERTS` that did arrive.
- */
-export function trustSystemCertificates(store: CertificateStore = tls): void {
-  try {
-    const system = store.getCACertificates("system");
-    if (system.length === 0) return;
-    store.setDefaultCACertificates([...new Set([...store.getCACertificates("default"), ...system])]);
-  } catch {
-    // A runtime that cannot read the store, or cannot apply roots at all (`engines` admits
-    // Node 24.0-24.4, which has no `setDefaultCACertificates`), keeps the roots it already has
-    // rather than stopping the bridge.
-  }
-}
-
 /**
  * Why a forwarded request failed, for the harness's MCP log. Node's message for every transport
  * failure is the same two words, "fetch failed"; the cause's code is what says a certificate was
@@ -182,7 +156,6 @@ export function bridgeFailure(error: unknown): string {
 }
 
 async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { transport: "http" | "sse" }>): Promise<void> {
-  trustSystemCertificates();
   const [{ StdioServerTransport }, { StreamableHTTPClientTransport }, { SSEClientTransport }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/stdio.js"),
     import("@modelcontextprotocol/sdk/client/streamableHttp.js"),

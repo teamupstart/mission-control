@@ -483,6 +483,15 @@ function seedRun(runId: string, servers: Resolved[]): void {
   mcpStore.writeRunMcpSnapshot(runId, servers, 1);
 }
 
+/**
+ * A launcher entry's argv for the test runtime: the entry's own runtime flags, then the launcher
+ * from source through tsx in place of the built bundle, then the entry's script arguments.
+ */
+function launcherArgv(entry: { args: string[] }): string[] {
+  const flags = launch.RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS.length;
+  return [...entry.args.slice(0, flags), "--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(flags + 1)];
+}
+
 const GLOBAL_SERVER: Resolved = {
   source: "global", name: "foo.bar",
   transport: { type: "stdio", command: "/opt/private/bin/server", args: ["--root", "/srv/global-only-root"], env: {}, secretEnv: ["TOKEN"], cwd: "/srv" },
@@ -510,8 +519,11 @@ test("entries carry no secret: global and secret-bearing servers are launcher en
   for (const entry of [entries[0]!, entries[2]!]) {
     assert.equal(entry.shape, "launcher");
     if (entry.shape !== "launcher") continue;
-    assert.deepEqual(entry.args.filter((_, at) => at % 2 === 1), ["--run", "--server", "--credential"], "only identifiers ride the arguments");
-    assert.deepEqual(entry.args.slice(1, 5), ["--run", runId, "--server", entry.name]);
+    const flags = launch.RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS;
+    assert.deepEqual(entry.args.slice(0, flags.length), ["--use-system-ca"], "the runtime trusts the system certificate store, ahead of the script");
+    const script = entry.args.slice(flags.length);
+    assert.deepEqual(script.filter((_, at) => at % 2 === 1), ["--run", "--server", "--credential"], "only identifiers ride the arguments");
+    assert.deepEqual(script.slice(1, 5), ["--run", runId, "--server", entry.name]);
   }
   const rendered = JSON.stringify(entries);
   assert.ok(!rendered.includes(SECRET), "no secret value in any entry");
@@ -839,7 +851,7 @@ test("a Claude global SSE server starts through the scoped launcher with its own
   writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
   try {
     const answer = await new Promise<{ id: number; result?: { serverInfo?: { name: string } } }>((resolveAnswer, reject) => {
-      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+      const child = spawn(process.execPath, launcherArgv(entry), {
         env: { PATH: process.env.PATH },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -876,24 +888,6 @@ test("a Claude global SSE server starts through the scoped launcher with its own
 });
 
 // ---- the bridge behind a TLS-inspecting proxy ----
-
-test("the bridge trusts the system certificate store on top of Node's own roots, once each", async () => {
-  const { trustSystemCertificates } = await import("../src/server/residents/mcp-launcher.ts");
-  const set: string[][] = [];
-  const store = (system: () => string[]) => ({
-    getCACertificates: ((type?: string) => (type === "system" ? system() : ["bundled-root", "extra-root"])) as typeof import("node:tls").getCACertificates,
-    setDefaultCACertificates: (certs: ReadonlyArray<string | NodeJS.ArrayBufferView>) => { set.push(certs as string[]); },
-  });
-  trustSystemCertificates(store(() => ["proxy-root", "bundled-root"]));
-  assert.deepEqual(set, [["bundled-root", "extra-root", "proxy-root"]], "the bundled and extra roots are kept and the system's added");
-  trustSystemCertificates(store(() => []));
-  trustSystemCertificates(store(() => { throw new Error("no keychain"); }));
-  assert.equal(set.length, 1, "a runtime with no readable store keeps the roots it has");
-  // Node 24.0-24.4, which `engines` admits: the store reads, but no setter exists. The bridge
-  // must still start, on the roots it already has.
-  const noSetter = { getCACertificates: store(() => ["proxy-root"]).getCACertificates } as unknown as Parameters<typeof trustSystemCertificates>[0];
-  assert.doesNotThrow(() => trustSystemCertificates(noSetter), "a runtime that cannot apply roots does not stop the bridge");
-});
 
 test("a failed forward names its cause's code, which is what tells a refused certificate from an unreachable host", async () => {
   const { bridgeFailure } = await import("../src/server/residents/mcp-launcher.ts");
@@ -951,21 +945,8 @@ test("a Claude global HTTPS server behind a private root connects through the sc
   assert.ok(resolved.ok && resolved.servers);
   const runId = crypto.randomUUID();
   seedRun(runId, resolved.servers);
-  // The operating system's store as the launcher reads it, holding the fixture root: the one
-  // place a TLS-inspecting proxy's root lives on an operator's machine. Patched at `node:tls`
-  // itself, so only a launcher that asks for the system store at all can see it.
-  const systemStore = join(certs, "system-store.mjs");
-  writeFileSync(systemStore, [
-    `import tls from "node:tls";`,
-    `import { readFileSync } from "node:fs";`,
-    `import { syncBuiltinESMExports } from "node:module";`,
-    `const root = readFileSync(${JSON.stringify(cert)}, "utf8");`,
-    `const read = tls.getCACertificates;`,
-    `tls.getCACertificates = (type) => (type === "system" ? [...read("system"), root] : read(type));`,
-    `syncBuiltinESMExports();`,
-  ].join("\n"));
   /** One `initialize` through a freshly started launcher, with only the environment given. */
-  const initialize = async (env: NodeJS.ProcessEnv, preload: string[] = []) => {
+  const initialize = async (env: NodeJS.ProcessEnv) => {
     const entry = launch.residentMcpLaunchForRun(runId)!.forStart()[0]!;
     assert.equal(entry.shape, "launcher");
     if (entry.shape !== "launcher") throw new Error("not a launcher entry");
@@ -973,7 +954,7 @@ test("a Claude global HTTPS server behind a private root connects through the sc
     const file = JSON.parse(readFileSync(credential, "utf8")) as { redeemUrl: string };
     writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
     return new Promise<{ id: number; result?: { serverInfo?: { name: string } }; error?: { message: string } }>((answer, reject) => {
-      const child = spawn(process.execPath, [...preload, "--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+      const child = spawn(process.execPath, launcherArgv(entry), {
         env, stdio: ["pipe", "pipe", "pipe"],
       });
       let out = "";
@@ -997,10 +978,17 @@ test("a Claude global HTTPS server behind a private root connects through the sc
     assert.match(untrusted.error?.message ?? "", /\((SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE)\)$/, "and the refusal names the certificate");
     // The fix itself: the root is in the system store only, and no `NODE_EXTRA_CA_CERTS` reached
     // the launcher, exactly as for a daemon started from the Finder behind a TLS-inspecting proxy.
-    const viaSystem = await initialize({ PATH: process.env.PATH }, ["--import", systemStore]);
-    assert.equal(viaSystem.error, undefined, `a root the system store trusts is trusted: ${viaSystem.error?.message}`);
-    assert.equal(viaSystem.result?.serverInfo?.name, "https-fixture", "initialization succeeded with the system store's root alone");
-    // Widening the roots to the system store keeps any `NODE_EXTRA_CA_CERTS` that did arrive.
+    // Linux reads the system store from OpenSSL's files, which `SSL_CERT_FILE` names, so the
+    // fixture root can be placed there and nowhere else. Without the entry's `--use-system-ca`
+    // this is refused on every Node 24. macOS reads the keychain, which a test cannot seed.
+    if (process.platform === "linux") {
+      const viaSystem = await initialize({ PATH: process.env.PATH, SSL_CERT_FILE: cert });
+      assert.equal(viaSystem.error, undefined, `a root the system store trusts is trusted: ${viaSystem.error?.message}`);
+      assert.equal(viaSystem.result?.serverInfo?.name, "https-fixture", "initialization succeeded with the system store's root alone");
+    } else {
+      t.diagnostic(`the system-store case needs a store a test can seed; ${process.platform} reads the OS keychain`);
+    }
+    // Trusting the system store keeps any `NODE_EXTRA_CA_CERTS` that did arrive.
     const trusted = await initialize({ PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: cert });
     assert.equal(trusted.id, 7);
     assert.equal(trusted.result?.serverInfo?.name, "https-fixture", "initialization succeeded over the HTTPS bridge");
@@ -1066,7 +1054,7 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
       writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
     }
     return new Promise<{ code: number | null; stderr: string }>((resolveStart) => {
-      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+      const child = spawn(process.execPath, launcherArgv(entry), {
         env: { PATH: process.env.PATH, ...entry.env },
         stdio: ["ignore", "ignore", "pipe"],
       });

@@ -110,6 +110,50 @@ npm run test:e2e -- e2e/specs/dispatch-and-converse.spec.ts   # one spec file
 npx playwright show-trace test-results/<dir>/trace.zip
 ```
 
+## Stable fixture startup
+
+The `dashboard` fixture seeds browser preferences on the daemon's health document before it
+opens the application. Booting the dashboard and immediately reloading it left the first
+boot's Setup and model-catalog probes running in the daemon, multiplying subprocess startup
+work across four workers. `fixture-startup.spec.ts` measures one application navigation while
+checking that the ordinary dashboard preferences still apply.
+
+cmux `capabilities` and Herdr `status server --json` are native CLI health reads. Their fixture
+entry points answer through a small shell launcher; recorded terminal commands and Herdr's
+socket server still run through the existing Node runtime. Herdr's runtime and health reply
+share generated version/protocol metadata. Production probe deadlines remain unchanged.
+`test/e2e-native-terminal-probes.test.ts` drives the production adapters with JavaScript
+startup deliberately refused, covering ready, stopped, denied and incompatible states.
+
+An SDK invocation count must be attributed to the selected conversation's checkout. A model
+catalog refresh also starts an SDK subprocess in the temporary directory; it is not a session
+relaunch. The auth-recovery spec deliberately refreshes that catalog while recovering.
+Worktree-return setup waits for the session's first turn to settle before selecting it, and
+the spent-command queue spec waits for capture before measuring admission to occupied slots.
+
+The fake pipeline provider publishes Engineer history by atomic rename. Its read-only CLI
+calls do not take the writer lock, so overwriting the live JSON file could briefly erase the
+history seen by dispatch. The state-lock regression pauses a write halfway through and
+checks that inspection still sees the previous complete reservation. Failed browser tests
+attach their daemon log before the isolated fixture home is removed.
+
+The native-probe fixture test asserts the production one-second probe request separately from
+its bounded child execution budget. It verifies JavaScript refusal and status classification,
+including a stalled test worker, without making host scheduling part of that contract.
+
+## Diff loading performance
+
+`diff-performance.spec.ts` opens a real checkout with one tracked edit and 80 new files,
+checks the complete file list and first/last file contents, and verifies fresh reads on tab
+re-entry. To compare builds on an otherwise idle host, build the baseline, then run
+`MC_DIFF_BENCHMARK=baseline npm run test:e2e -- e2e/specs/diff-performance.spec.ts --workers=1`.
+Build the changed version and repeat with `MC_DIFF_BENCHMARK=result`. Each run records seven
+click-to-paint samples for the first diff and complete navigation list. Result mode requires
+the median to be at most half the saved baseline. This timing gate is opt-in; ordinary CI
+checks behavior without a host-dependent time limit. Logs, JSON and screenshots belong in
+gitignored `e2e/.artifacts/diff-performance/`. This workload emphasizes untracked-file reads;
+it is not a guarantee of the same speedup for every repository or patch size.
+
 ## Evidence
 
 Successful-path artifacts go to gitignored `e2e/.artifacts/<topic>/` because a green Playwright

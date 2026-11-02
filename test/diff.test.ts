@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computePinnedRefDiff, computeSessionDiff } from "../src/server/diff.ts";
+import { computePinnedRefDiff, computeSessionDiff, sourceRef } from "../src/server/diff.ts";
 import { parsePatch } from "../src/web/lib/diff.ts";
 
 function mkRepo(): string {
@@ -19,6 +19,26 @@ function mkRepo(): string {
   git("commit", "-qm", "base");
   return repo;
 }
+
+test("sourceRef retains preference order when fallback refs resolve concurrently", async (t) => {
+  const repo = mkRepo();
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  git("branch", "-m", "work");
+  assert.equal(await sourceRef(repo), null);
+  for (const [ref, expected] of [
+    ["refs/heads/master", "master"],
+    ["refs/heads/main", "main"],
+    ["refs/remotes/origin/master", "origin/master"],
+    ["refs/remotes/origin/main", "origin/main"],
+  ]) {
+    git("update-ref", ref!, "HEAD");
+    assert.equal(await sourceRef(repo), expected);
+  }
+  git("update-ref", "refs/remotes/origin/custom", "HEAD");
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/custom");
+  assert.equal(await sourceRef(repo), "origin/custom", "the remote default still wins over every fallback");
+});
 
 test("computeSessionDiff captures committed, uncommitted, and untracked changes vs main", async () => {
   const repo = mkRepo();

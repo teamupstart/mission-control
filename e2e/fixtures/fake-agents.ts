@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeNativeTerminalProbe } from "./native-terminal-probes.ts";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
@@ -263,33 +264,13 @@ export function writeGhWritebackScript(home: string, script: FakeGhWritebackScri
  * command the workspace would run, which is where a resumed conversation's argv - and the
  * permission mode it must carry - either shows up or provably does not.
  *
- * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
- * and an `import` here would crash the fake at spawn time in a way that reads as a
- * launch failure rather than a broken fixture.
+ * The runtime is explicit CommonJS. Its extension-less shell entry answers native health
+ * probes without booting Node, then execs this runtime for recorded terminal commands.
  */
 const FAKE_CMUX = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
-
-// Answered BEFORE the record is written, and deliberately not recorded. Setup probes the
-// control socket every time the panel is read, so recording this would turn "how many
-// commands did a click run" - which several specs count - into a function of how often a
-// browser looked at a page. \`MC_E2E_CMUX_CONTROL\` reproduces the two states that stand
-// between an installed cmux and a working one, in cmux's own words.
-if (argv[0] === "capabilities") {
-  const control = process.env.MC_E2E_CMUX_CONTROL;
-  if (control === "stopped") {
-    process.stderr.write("Error: Socket not found at " + join(process.env.MISSION_HOME || "/tmp", "cmux.sock") + "\\n");
-    process.exit(1);
-  }
-  if (control === "refused") {
-    process.stderr.write("Error: ERROR: Access denied - only processes started inside cmux can connect\\n");
-    process.exit(1);
-  }
-  process.stdout.write(JSON.stringify({ access_mode: "allowAll", methods: [] }) + "\\n");
-  process.exit(0);
-}
 
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
@@ -327,12 +308,12 @@ const argv = process.argv.slice(2);
 const home = process.env.MISSION_HOME;
 const socketPath = join(home, "fake-herdr.sock");
 const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
-const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
 // "newer" is a Herdr past the supported floor on both axes, which is what a real 0.9.0 is.
 // Mission Control pins a minimum, not an equality, so this must be as ordinary as the floor.
 const newer = process.env.MC_E2E_HERDR_MODE === "newer";
-const VERSION = newer ? "0.9.0" : "0.8.2";
-const PROTOCOL = newer ? 22 : 20;
+const { version: VERSION, protocol: PROTOCOL } = JSON.parse(readFileSync(
+  join(__dirname, "herdr-" + (newer ? "newer" : "stable") + "-true.json"), "utf8",
+));
 // 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
 // without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
 // it quietly stops standing in for the server it names.
@@ -342,15 +323,6 @@ const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
 // answering with its login shell and nothing else, so a launch has something to actually fail
 // against rather than only a passing path to confirm.
 const stuck = process.env.MC_E2E_HERDR_MODE === "stuck";
-if (argv[0] === "status" && argv[1] === "server") {
-  if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
-    status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
-  } else {
-    const running = existsSync(socketPath);
-    status({ status: running ? "running" : "not_running", running, version: running ? VERSION : null, protocol: running ? PROTOCOL : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
-  }
-  process.exit(0);
-}
 if (argv[0] === "server") {
   if (!existsSync(socketPath)) {
     const child = spawn(process.execPath, [__filename, "serve", String(process.ppid)], {
@@ -862,13 +834,8 @@ export function writeFakeAgents(home: string): FakeAgents {
   // so a spec can widen it without restarting the daemon.
   writeFileSync(piSdkModelsPath(home), JSON.stringify(FAKE_PI_SDK_MODELS, null, 2));
 
-  const cmux = join(binDir, "fake-cmux");
-  writeFileSync(cmux, FAKE_CMUX);
-  chmodSync(cmux, 0o755);
-
-  const herdr = join(binDir, "fake-herdr");
-  writeFileSync(herdr, FAKE_HERDR);
-  chmodSync(herdr, 0o755);
+  const cmux = writeNativeTerminalProbe(binDir, "cmux", FAKE_CMUX);
+  const herdr = writeNativeTerminalProbe(binDir, "herdr", FAKE_HERDR);
 
   const wezterm = join(binDir, "fake-wezterm");
   writeFileSync(wezterm, FAKE_WEZTERM);

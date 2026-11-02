@@ -32,6 +32,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "iterm",
   "herdr",
   "node-runtime",
+  "coderabbit-cli",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -402,6 +403,11 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       argv: ["brew", "install", "node"],
       note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
     },
+  },
+  "coderabbit-cli": {
+    id: "coderabbit-cli", label: "CodeRabbit CLI", family: "extensions", requirement: "optional",
+    enables: "Local committed workflow reviews require CLI >=0.9.1 and stored authentication in the daemon effective HOME. Only root YAML boolean true enables review. Run coderabbit auth login there, then Re-check. No review or sign-in starts during detection.",
+    remedy: { kind: "link", url: "https://docs.coderabbit.ai/cli", label: "Install and authenticate CodeRabbit" },
   },
 };
 

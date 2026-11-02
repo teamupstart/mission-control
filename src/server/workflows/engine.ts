@@ -1,3 +1,6 @@
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -33,7 +36,6 @@ import {
   type WorkflowRunPhase,
 } from "@shared/workflow-lifecycle.ts";
 import {
-  WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
   checkRunBudgetSpent,
@@ -358,11 +360,11 @@ function checkVerdict(
     verdict: "fail",
     summary,
     requestedChanges: [{
-      title: `Fix the failing ${outcome.slot} check`,
-      rationale,
+      title: outcome.slot === "coderabbit" ? "Verify all retained CodeRabbit findings and repair valid issues" : `Fix the failing ${outcome.slot} check`,
+      rationale: outcome.slot === "coderabbit" ? `${rationale}\nRead ALL retained findings, including advisory severities, before modifying code. Verify each claim. For false positives, explain your reasoning and request an explicit operator decision through node-disable/recovery controls. Do not clear findings or change the threshold to bypass the gate. Commit repairs and submit a fresh captured head.` : rationale,
       evidence: [{ kind: "check", path: attemptId, quote }],
     }],
-    confidence: 1,
+    confidence: outcome.slot === "coderabbit" ? 0.8 : 1,
   }, new Set(), new Set(), new Set([attemptId]));
 }
 
@@ -978,7 +980,7 @@ export class WorkflowEngine {
     );
     return checkRunBudgetSpent(
       spent,
-      command?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+      command?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
     );
   }
 
@@ -1351,6 +1353,16 @@ export class WorkflowEngine {
       return;
     }
 
+    const catalogCommand = this.workflowCommand(node.slot);
+    let frozenComparison: import("@shared/workflow.ts").CodeRabbitComparison | null = null;
+    if (node.slot === "coderabbit") {
+      try { frozenComparison = this.store.getCodeRabbitComparison(submission.id); }
+      catch { /* The comparison callback below reports corruption after YAML/budget gating. */ }
+    }
+    const commandView = node.slot === "coderabbit"
+      ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
+          ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
+      : catalogCommand;
     const attemptRef = {
       runId: run.id,
       attemptId: claimed.id,
@@ -1370,7 +1382,23 @@ export class WorkflowEngine {
     try {
       result = await runCheck({
         slot: node.slot,
-        command: this.workflowCommand(node.slot),
+        coderabbit: node.slot === "coderabbit" ? {
+          yaml: context.data.evidence.coderabbit,
+          dirty: context.data.evidence.workingTreeDirty,
+          retryAt: this.store.listAttempts(submission.id)
+            .map((attempt) => {
+              const output = attempt.output;
+              if (!output || typeof output !== "object" || Array.isArray(output)) return 0;
+              const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+              return parsed.success ? parsed.data.retryAt ?? 0 : 0;
+            }).reduce((a, b) => Math.max(a, b), 0),
+          comparison: async () => this.store.getCodeRabbitComparison(submission.id)
+            ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
+              repoRoot: binding.sessionRepoRoot!, headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+              yaml: context.data.evidence.coderabbit!, command: commandView!,
+            })),
+        } : undefined,
+        command: commandView,
         policy: this.workflowPolicy(),
         /*
          * Handed as a claim rather than a count, because the budget belongs to the COMMAND:
@@ -1387,7 +1415,7 @@ export class WorkflowEngine {
             run.id,
             claimed.id,
             node.slot,
-            this.workflowCommand(node.slot)?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+            commandView?.maxRuns ?? defaultWorkflowCommandMaxRuns(node.slot),
             run.checkBudgetEpochRound ?? null,
           );
           return reservation.granted
@@ -1410,7 +1438,7 @@ export class WorkflowEngine {
       return;
     }
     if (result.kind === "action_required") {
-      this.handleCheckActionRequired(claimed, run.id, result.reason);
+      this.handleCheckActionRequired(claimed, run.id, result.reason, result);
       return;
     }
     if (result.kind === "infrastructure") {
@@ -1618,6 +1646,7 @@ export class WorkflowEngine {
     attempt: WorkflowNodeAttempt,
     runId: string,
     reason: string,
+    details?: { setup?: boolean; review?: import("@shared/workflow.ts").CodeRabbitReviewSummary; artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[] },
   ): void {
     const run = this.store.getRun(runId);
     const submission = this.store.getSubmission(attempt.submissionId);
@@ -1626,7 +1655,11 @@ export class WorkflowEngine {
       this.onRunChanged(runId);
       return;
     }
-    this.store.finishAttempt(attempt.id, { state: "error", error: reason }, this.now());
+    this.store.finishAttempt(attempt.id, { state: "error", error: reason, output: details ? jsonValue({
+      ...(details.setup ? { setup: true } : {}),
+      ...(details.review ? { review: details.review } : {}),
+      ...(details.artifacts ? { artifacts: details.artifacts } : {}),
+    }) : undefined }, this.now());
     this.store.setSubmissionState(submission.id, "failed", this.now());
     this.store.setRunState(runId, "blocked", "command_action_required", {
       nodeId: attempt.nodeId,

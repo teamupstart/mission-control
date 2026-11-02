@@ -630,3 +630,18 @@ test("neither helper claims durable state without the catalog to back it", () =>
   assert.equal(workflowCommandFact(null, true), "Not configured");
   assert.match(workflowCommandStatusSentence(null, true), /skips and passes with a note/);
 });
+test("CodeRabbit authoring explains YAML defaults and conditional blocking without requiring an override",()=>{
+ const view=emptyWorkflowCommandView("coderabbit");
+ assert.match(workflowCommandStatusSentence(view,true),/without a Library override/);
+ assert.match(workflowCommandStatusSentence(view,true),/incomplete review blocks/);
+ assert.match(workflowCommandFact(view,true),/YAML-enabled defaults/);
+ assert.doesNotMatch(workflowCommandStatusSentence(view,true),/Nothing is configured/);
+});
+test("restoring CodeRabbit tuning to its saved values clears dirty state regardless of property order",()=>{
+ const view={...emptyWorkflowCommandView("coderabbit"),overrides:[{repoRoot:"/repo",command:[],review:{kind:"coderabbit" as const,baseRef:"main",severity:"major" as const}}]};
+ const draft=commandDraftFrom(view);
+ draft.overrides[0]!.review={kind:"coderabbit",severity:"major",baseRef:"main"};
+ assert.equal(commandDraftDirty(draft,view),false);
+ draft.overrides[0]!.review.baseRef="other";
+ assert.equal(commandDraftDirty(draft,view),true);
+});

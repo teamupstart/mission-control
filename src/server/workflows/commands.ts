@@ -1,3 +1,4 @@
+import { gitInfo } from "../util/git.ts";
 import type { UpdateWorkflowCommand } from "@shared/protocol.ts";
 import type { WorkflowCommandView } from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
@@ -47,6 +48,9 @@ export class WorkflowCommandManager {
     input: UpdateWorkflowCommand,
     now = Date.now(),
   ): WorkflowCommandMutation {
+    if (slot === "coderabbit" && input.overrides.some((rule) => gitInfo(rule.repoRoot).root !== rule.repoRoot)) {
+      return { ok: false, reason: "invalid_recipe", current: this.get(slot) };
+    }
     return this.publish(this.store.replaceWorkflowCommandCas(
       slot,
       input.expectedRevision,

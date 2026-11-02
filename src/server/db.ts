@@ -1173,6 +1173,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       evidence_json        TEXT NOT NULL,
       readiness_json       TEXT,
       pr_head_sha          TEXT,
+      coderabbit_json      TEXT,
       status               TEXT NOT NULL,
       created_at           INTEGER NOT NULL,
       updated_at           INTEGER NOT NULL,
@@ -3655,6 +3656,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_submissions", "coderabbit_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 
   // Where an imported Persona was read from, so an upstream edit can be SEEN rather than

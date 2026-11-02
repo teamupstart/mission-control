@@ -92,6 +92,21 @@ test("an unknown slot is 404 on read and on write, rather than minting a fifth s
   assert.equal((await written.json() as { code: string }).code, "workflow_command_not_found");
 });
 
+test("invalid ordinary recipes name their own slot rather than CodeRabbit", async () => {
+  const { request } = fixture();
+  for (const slot of ["test", "lint"]) {
+    const response = await request(`/api/workflow-commands/${slot}`, { method: "PUT", body: body({
+      ...executionPolicy, expectedRevision: 1, defaultCommand: null, maxRuns: 1,
+      overrides: [{ repoRoot: "/repo", command: [], review: { kind: "coderabbit", baseRef: null, severity: "major" } }],
+    }) });
+    assert.equal(response.status, 400);
+    const result = await response.json() as { error: string; code: string };
+    assert.equal(result.code, "workflow_command_invalid_recipe");
+    assert.match(result.error, new RegExp(slot));
+    assert.doesNotMatch(result.error, /CodeRabbit/);
+  }
+});
+
 test("one update replaces the default and the complete override list atomically", async () => {
   const { request, registry } = fixture();
   const emitted: unknown[] = [];
@@ -274,6 +289,19 @@ test("every invalid write is a visible refusal rather than a silently repaired o
   };
   assert.equal(view.revision, 1);
   assert.equal(view.defaultCommand, null);
+});
+
+test("ordinary override argv exceeding the total bound is refused before advancing the catalog", async () => {
+  const { request } = fixture();
+  const command = Array.from({ length: 5 }, () => "x".repeat(WORKFLOW_LIMITS.checkCommandArg));
+  const response = await request("/api/workflow-commands/test", { method: "PUT", body: body({
+    ...executionPolicy, expectedRevision: 1, defaultCommand: null, maxRuns: 1,
+    overrides: [{ repoRoot: "/repo", command }],
+  }) });
+  assert.equal(response.status, 400);
+  const current = await (await request("/api/workflow-commands/test")).json() as { revision: number; overrides: unknown[] };
+  assert.equal(current.revision, 1);
+  assert.deepEqual(current.overrides, []);
 });
 
 test("a catalog at its ceiling in non-ASCII characters is accepted, not refused unread", async () => {

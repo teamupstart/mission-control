@@ -189,6 +189,7 @@ export class WorkflowCommandOutputCapture {
     readonly submissionId: string,
     readonly attemptId: string,
     readonly capacity: number,
+    readonly semanticBytes = 0,
   ) {
     for (const kind of ["stdout", "stderr"] as const) {
       this.hashes.set(kind, createHash("sha256"));
@@ -304,10 +305,11 @@ export class WorkflowCommandArtifactService {
     this.reconcile();
   }
 
-  beginCapture(input: { runId: string; submissionId: string; attemptId: string }): WorkflowCommandOutputCapture {
-    const capacity = this.reserve(input.runId, input.attemptId);
+  beginCapture(input: { runId: string; submissionId: string; attemptId: string; semanticBytes?: number }): WorkflowCommandOutputCapture {
+    const reserved = this.reserve(input.runId, input.attemptId, input.semanticBytes ?? 0);
+    const capacity = Math.min(reserved, WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt);
     return new WorkflowCommandOutputCapture(
-      this, input.runId, input.submissionId, input.attemptId, capacity,
+      this, input.runId, input.submissionId, input.attemptId, capacity, input.semanticBytes ?? 0,
     );
   }
 
@@ -335,7 +337,7 @@ export class WorkflowCommandArtifactService {
     this.activeTempPaths.delete(path);
   }
 
-  private reserve(runId: string, attemptId: string): number {
+  private reserve(runId: string, attemptId: string, semanticBytes = 0): number {
     const existing = this.db.prepare(
       `SELECT reserved_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?`,
     ).get(attemptId) as { reserved_bytes: number } | undefined;
@@ -347,7 +349,7 @@ export class WorkflowCommandArtifactService {
            FROM workflow_command_artifact_reservations WHERE run_id = ?`,
       ).get(runId) as { n: number };
       const capacity = Math.max(0, Math.min(
-        WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt,
+        WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt + semanticBytes,
         WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerRun - Number(used.n),
       ));
       const now = Date.now();
@@ -433,14 +435,73 @@ export class WorkflowCommandArtifactService {
       const retained = rows.reduce((sum, row) => sum + row.retained_bytes, 0);
       this.db.prepare(
         `UPDATE workflow_command_artifact_reservations
-            SET retained_bytes = ?, state = 'finalized', updated_at = ? WHERE attempt_id = ?`,
-      ).run(retained, now, capture.attemptId);
+            SET retained_bytes = ?, state = ?, updated_at = ? WHERE attempt_id = ?`,
+      ).run(retained, capture.semanticBytes > 0 ? 'reserved' : 'finalized', now, capture.attemptId);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
     return rows.map(descriptor);
+  }
+
+  /** Independent complete semantic body; capacity was reserved before spawning the review. */
+  publishFindings(input: { runId: string; submissionId: string; attemptId: string }, body: Buffer, complete: boolean): WorkflowCommandArtifactDescriptor {
+    const existing = this.listForAttempt(input.attemptId).find((a) => a.kind === "findings");
+    if (existing) return existing;
+    const reservation = this.db.prepare("SELECT reserved_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?").get(input.attemptId) as { reserved_bytes: number } | undefined;
+    const raw = this.listForAttempt(input.attemptId).reduce((n, a) => n + a.retainedBytes, 0);
+    const id = randomUUID();
+    const key = `${id}.findings.log`;
+    let temp: string | null = null;
+    let available = false;
+    const digest = createHash("sha256").update(body).digest("hex");
+    try {
+      if (!reservation || body.length + raw > reservation.reserved_bytes) throw new Error("Semantic output quota exceeded");
+      temp = this.tempPath(`${id}.tmp`);
+      const fd = openSync(temp, "wx", 0o600);
+      try { this.writeFully(fd, body); } finally { closeSync(fd); }
+      renameSync(temp, this.bodyPath(key));
+      available = true;
+    } catch { /* An unavailable descriptor prevents a successful reviewer outcome. */ }
+    finally {
+      if (temp) { this.releaseTempPath(temp); try { rmSync(temp, { force: true }); } catch { /* reconciled later */ } }
+    }
+    const now = Date.now();
+    let transactionOpen = false;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transactionOpen = true;
+      this.db.prepare(`INSERT INTO workflow_command_artifacts
+        (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes, dropped_bytes,
+         sha256, capture_state, availability, unavailable_reason, storage_key, created_at, finalized_at)
+         VALUES (?, ?, ?, ?, 'findings', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, input.runId, input.submissionId, input.attemptId, available ? body.length : 0, body.length,
+          available ? 0 : body.length, available ? digest : null, complete && available ? "complete" : "partial",
+          available ? "retained" : "unavailable", available ? null : "Complete findings could not be retained within the run quota", available ? key : null, now, now);
+      this.db.prepare("UPDATE workflow_command_artifact_reservations SET retained_bytes = ?, state = 'finalized', updated_at = ? WHERE attempt_id = ?")
+        .run(raw + (available ? body.length : 0), now, input.attemptId);
+      this.db.exec("COMMIT");
+      transactionOpen = false;
+    } catch (error) {
+      if (transactionOpen) this.db.exec("ROLLBACK");
+      if (available) { try { rmSync(this.bodyPath(key), { force: true }); } catch { /* startup reconciles unreferenced bodies */ } }
+      try {
+        this.db.prepare(`INSERT OR IGNORE INTO workflow_command_artifacts
+          (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes, dropped_bytes,
+           sha256, capture_state, availability, unavailable_reason, storage_key, created_at, finalized_at)
+          VALUES (?, ?, ?, ?, 'findings', 0, ?, ?, NULL, 'partial', 'unavailable', ?, NULL, ?, ?)`)
+          .run(id, input.runId, input.submissionId, input.attemptId, body.length, body.length,
+            "Findings publication was interrupted", now, now);
+      } finally {
+        // Release only this attempt's unused capacity, even if its unavailable descriptor
+        // cannot be inserted. Other reviews may still be collecting their semantic output.
+        this.db.prepare("UPDATE workflow_command_artifact_reservations SET retained_bytes = ?, state = 'interrupted', updated_at = ? WHERE attempt_id = ? AND state = 'reserved'")
+          .run(raw, now, input.attemptId);
+      }
+      throw error;
+    }
+    return this.listForAttempt(input.attemptId).find((a) => a.kind === "findings")!;
   }
 
   listForAttempt(attemptId: string): WorkflowCommandArtifactDescriptor[] {
@@ -537,11 +598,11 @@ export class WorkflowCommandArtifactService {
   recoverInterrupted(): void {
     const now = Date.now();
     const interrupted = this.db.prepare(
-      `SELECT r.attempt_id, r.run_id, a.submission_id
+      `SELECT r.attempt_id, r.run_id, a.submission_id, a.check_run_slot
          FROM workflow_command_artifact_reservations r
          JOIN workflow_node_attempts a ON a.id = r.attempt_id
         WHERE r.state = 'reserved'`,
-    ).all() as Array<{ attempt_id: string; run_id: string; submission_id: string }>;
+    ).all() as Array<{ attempt_id: string; run_id: string; submission_id: string; check_run_slot: string | null }>;
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_command_artifacts
          (id, run_id, submission_id, attempt_id, kind, retained_bytes, observed_bytes,
@@ -550,7 +611,8 @@ export class WorkflowCommandArtifactService {
        VALUES (?, ?, ?, ?, ?, 0, 0, 0, NULL, 'partial', 'unavailable', ?, NULL, ?, ?, NULL)`,
     );
     for (const row of interrupted) {
-      for (const kind of ["stdout", "stderr"] as const) {
+      const kinds = row.check_run_slot === "coderabbit" ? ["stdout", "stderr", "findings"] : ["stdout", "stderr"];
+      for (const kind of kinds) {
         insert.run(
           randomUUID(), row.run_id, row.submission_id, row.attempt_id, kind,
           "Capture was interrupted before retained output could be published", now, now,
@@ -558,8 +620,9 @@ export class WorkflowCommandArtifactService {
       }
     }
     this.db.prepare(
-      `UPDATE workflow_command_artifact_reservations
-          SET state = 'interrupted', retained_bytes = 0, updated_at = ? WHERE state = 'reserved'`,
+      `UPDATE workflow_command_artifact_reservations AS r
+          SET state = 'interrupted', retained_bytes = (SELECT COALESCE(SUM(a.retained_bytes), 0)
+            FROM workflow_command_artifacts a WHERE a.attempt_id = r.attempt_id), updated_at = ? WHERE state = 'reserved'`,
     ).run(now);
   }
 

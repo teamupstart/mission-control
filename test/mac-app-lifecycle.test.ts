@@ -443,9 +443,13 @@ test("a dump that spends the whole deadline refuses rather than starting the fal
 test("this Mac's own launchctl dumpstate proves itself complete", {skip: process.platform !== "darwin"}, () => {
   // The fixture's dump is modeled on a real one; this pins that the real one still parses, so a
   // macOS that changed the format shows up here rather than as every sweep quietly falling back.
-  const dump = execFileSync("/bin/launchctl", ["dumpstate"], {encoding: "utf8", maxBuffer: 128 * 1024 * 1024});
-  const jobs = parseGuiJobs(dump, process.getuid!());
-  assert.ok(jobs, "the GUI domain's job blocks match its service count and listing");
+  // A login item starting or exiting mid-dump could make one read disagree with itself; that is
+  // the refusal working, not a format change, so only a mismatch on every one of three reads fails.
+  let jobs: ReturnType<typeof parseGuiJobs> = null;
+  for (let attempt = 0; attempt < 3 && !jobs; attempt++) {
+    jobs = parseGuiJobs(execFileSync("/bin/launchctl", ["dumpstate"], {encoding: "utf8", maxBuffer: 128 * 1024 * 1024}), process.getuid!());
+  }
+  assert.ok(jobs, "the GUI domain's job blocks match its service count and listing on at least one of three reads");
   assert.ok(jobs.size > 0);
 });
 

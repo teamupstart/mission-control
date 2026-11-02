@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
+import { withAgentTraceContext, type AgentTraceContext } from "../../agent-trace-context.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -130,14 +131,30 @@ export interface CodexSdkDeps {
   /**
    * Start one connection. `args` are the launch-scoped `-c` config overrides. `codexHome` is a
    * resident run's private overlay home (`resident-home.ts`), set as this one server's
-   * `CODEX_HOME`; every other launch keeps the operator's.
+   * `CODEX_HOME`; every other launch keeps the operator's. `traceContext` is the session's W3C
+   * parent, carried in the environment because `codex app-server` reads `TRACEPARENT` once at
+   * startup and parents every request span that has no `trace` of its own under it. One server
+   * per session makes that process-wide value session-scoped.
    */
   connect(
     args: readonly string[],
     cwd: string,
     stateHome?: string,
-    options?: { codexHome?: string },
+    options?: { codexHome?: string; traceContext?: AgentTraceContext | null },
   ): Promise<AppServerTransport>;
+}
+
+/**
+ * The app-server's environment: the shared SDK subprocess environment, carrying this
+ * session's trace context and no other telemetry setting.
+ */
+export function codexAppServerEnv(
+  base: NodeJS.ProcessEnv,
+  cwd: string,
+  stateHome?: string,
+  traceContext?: AgentTraceContext | null,
+): Record<string, string | undefined> {
+  return withAgentTraceContext(sdkSubprocessEnv(base, cwd, stateHome), traceContext);
 }
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
@@ -147,7 +164,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
     // environment, not about either harness.
-    const env = sdkSubprocessEnv(process.env, cwd, stateHome);
+    const env = codexAppServerEnv(process.env, cwd, stateHome, options?.traceContext);
     if (options?.codexHome) env.CODEX_HOME = options.codexHome;
     return spawnAppServer(await codexExecutable(), args, cwd, env);
   },

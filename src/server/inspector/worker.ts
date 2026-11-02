@@ -580,7 +580,7 @@ async function processPr(
   // and it is the only way a parked PR can notice that its input changed. A failure of
   // this probe does not extend the wait, or the cheap check would inflate a penalty it
   // was not the cause of.
-  const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
+  const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number, codeRabbitEnabled());
   if (!snap.ok || !snap.value) {
     if (codeRabbitEnabled()) failCodeRabbit(pr.key, snap.error ?? "Could not read PR", now);
     if (!cfg.enabled) return false;

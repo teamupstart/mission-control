@@ -41,6 +41,7 @@ import type {
   ClaudeSdkUserMessage,
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
+import { withAgentTraceContext } from "../../agent-trace-context.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
@@ -1406,7 +1407,10 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
-        env: withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
+        // This session's trace context, which also clears any `TRACEPARENT` the daemon
+        // inherited. Claude Code reads it at each interaction span in an SDK session; it
+        // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
+        env: withAgentTraceContext(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.traceContext),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),

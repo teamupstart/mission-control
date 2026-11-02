@@ -34,6 +34,7 @@ import type { MissionSchedule } from "@shared/schedules.ts";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { dropSessionView } from "./lib/conversation-view.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
+import { settleReviewDrafts } from "./lib/review-drafts.ts";
 import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
@@ -329,6 +330,8 @@ export function useEventStream(): MissionState {
       } catch {
         return;
       }
+      // A review resolved anywhere takes its parked draft with it; see `settleReviewDrafts`.
+      settleReviewDrafts(msg);
       switch (msg.type) {
         case "session_transfers":
           setSessionTransfers(msg.page);

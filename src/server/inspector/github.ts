@@ -208,6 +208,8 @@ export interface PrSnapshot {
   threads: ThreadSnapshot[];
   /** Pagination state for the first review-thread page. */
   threadsPageInfo?: ThreadPageInfo;
+  /** Requested only for enabled CodeRabbit follow-up, in the shared PR read. */
+  issueComments?: IssueCommentPage;
   /** Latest top-level reviews, used to recover an interrupted clean-review post. */
   reviews: ReviewSnapshot[];
   reviewsPageInfo: ReviewPageInfo;
@@ -272,7 +274,21 @@ export interface ThreadPage {
   pageInfo: ThreadPageInfo;
 }
 
-const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+const IssueCommentSchema = z.object({
+  id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+  author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+});
+export type IssueCommentSnapshot = z.infer<typeof IssueCommentSchema>;
+export interface IssueCommentPage {
+  comments: IssueCommentSnapshot[];
+  pageInfo: ThreadPageInfo;
+  error?: string | null;
+  responseBytes?: number;
+}
+const ISSUE_COMMENT_FIELDS = `nodes{ id url body updatedAt author{ __typename login } }
+  pageInfo{ hasNextPage endCursor }`;
+
+const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
@@ -286,6 +302,7 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
         }
         pageInfo{ hasNextPage endCursor }
       }
+      ${includeCodeRabbitComments ? `comments(first:100){ ${ISSUE_COMMENT_FIELDS} }` : ""}
       reviews(last:100){
         nodes{ body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
@@ -316,6 +333,12 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
   }
 }`;
 
+const ISSUE_COMMENT_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    comments(first:100,after:$after){ ${ISSUE_COMMENT_FIELDS} }
+  } }
+}`;
+
 /**
  * One read per PR per tick: state, head sha, every review thread, and everything the
  * auto-merge gate weighs (CI rollup, mergeability, review decision, when it was opened).
@@ -333,6 +356,7 @@ export async function fetchPr(
   owner: string,
   repo: string,
   number: number,
+  includeCodeRabbitComments = false,
 ): Promise<GhResult<PrSnapshot>> {
   const res = await run(
     ghBin(),
@@ -340,7 +364,7 @@ export async function fetchPr(
       "api",
       "graphql",
       "-f",
-      `query=${PR_QUERY}`,
+      `query=${PR_QUERY(includeCodeRabbitComments)}`,
       "-F",
       `owner=${owner}`,
       "-F",
@@ -362,7 +386,9 @@ export async function fetchPr(
     }
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: { ...toSnapshot(pr), responseBytes: utf8Bytes(res.stdout) } };
+    return { ok: true, value: { ...toSnapshot(pr),
+      ...(includeCodeRabbitComments ? { issueComments: issueCommentPage(pr.comments) } : {}),
+      responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh output: ${String(err)}` };
   }
@@ -437,6 +463,16 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
     hasNextPage: pageInfo?.hasNextPage === true,
     endCursor: typeof pageInfo?.endCursor === "string" ? pageInfo.endCursor : null,
   };
+}
+
+function issueCommentPage(raw: unknown): IssueCommentPage {
+  const parsed = z.object({
+    nodes: z.array(IssueCommentSchema),
+    pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
+  }).safeParse(raw);
+  return parsed.success
+    ? { comments: parsed.data.nodes, pageInfo: parsed.data.pageInfo }
+    : { comments: [], pageInfo: { hasNextPage: false, endCursor: null }, error: "Incomplete issue-comment connection or identity" };
 }
 
 const ThreadConnectionSchema = z.object({
@@ -572,6 +608,26 @@ export async function fetchThreadPage(
     return { ok: true, value: { ...threadPage(pr.reviewThreads), responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh review-thread output: ${String(err)}` };
+  }
+}
+
+export async function fetchIssueCommentPage(
+  cwd: string | null, owner: string, repo: string, number: number, after: string,
+  timeoutMs = GH_TIMEOUT_MS,
+): Promise<GhResult<IssueCommentPage>> {
+  const res = await run(ghBin(), [
+    "api", "graphql", "-f", `query=${ISSUE_COMMENT_PAGE_QUERY}`, "-F", `owner=${owner}`,
+    "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
+  ], { cwd: cwd ?? undefined, timeoutMs: Math.min(timeoutMs, GH_TIMEOUT_MS), maxBuffer: 8 * 1024 * 1024 });
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (issue comments)", res);
+  try {
+    const json = JSON.parse(res.stdout);
+    if (json.errors?.length) return { ok: false, error: "graphql: could not read issue comments" };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    return { ok: true, value: { ...issueCommentPage(pr.comments), responseBytes: utf8Bytes(res.stdout) } };
+  } catch {
+    return { ok: false, error: "could not parse gh issue-comment output" };
   }
 }
 

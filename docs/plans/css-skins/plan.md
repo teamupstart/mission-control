@@ -1,6 +1,6 @@
 # CSS skins for Mission Control
 
-Status: revision 2 (2026-11-02), decisions adopted. Six candidate skins were mocked up and
+Status: revision 4 (2026-11-02), decisions adopted; repaired after plan validation round 1. Six candidate skins were mocked up and
 reviewed; four ship. The mock-ups of the four shipped skins are in `plan.html`.
 
 ## Adopted decisions
@@ -56,8 +56,10 @@ hides or reorders a control, and every session-state colour keeps its meaning.
 The current look stays as **Default** and remains the default for every existing and new
 install. The four skins below are additions. Each is a set of token overrides plus, at
 most, a small block of decoration scoped to that skin. The mock-ups in `plan.html` are drawn
-from exactly these values; every pairing of a text or state tone against `--bg`, `--panel`
-and `--panel-2` measured at least 4.5:1 in a WCAG contrast check of these drafts.
+from exactly these values. In a WCAG contrast check of these drafts, every pairing of `--fg`,
+`--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger` and `--purple` (which
+`--held` aliases) against `--bg`, `--panel` and `--panel-2` measured at least 4.5:1, and
+`--exited` measured between 3.4:1 and 5.1:1 (it is held to 3:1; see Contracts).
 
 | Id | Name | Scheme | One line |
 |---|---|---|---|
@@ -84,6 +86,7 @@ and `--panel-2` measured at least 4.5:1 in a WCAG contrast check of these drafts
 | `--attention` | `#f6a733` | `#9e5400` | `#9a5300` | `#ffc857` | `#ffb13d` |
 | `--danger` | `#f85149` | `#cf222e` | `#ad2a1f` | `#ff8a8a` | `#ff5c86` |
 | `--purple` | `#a371f7` | `#7c4dd6` | `#74468a` | `#c9adff` | `#ff6ad5` |
+| `--exited` | `#707a88` | `#6e7781` | `#7d7262` | `#7f97b8` | `#7a6a96` |
 | `--radius` | `13px` | `10px` | `6px` | `3px` | `14px` |
 | `--font-display` (new) | `var(--sans)` | `var(--sans)` | Iowan Old Style, Palatino, Georgia, serif | `var(--mono)` | `var(--sans)` |
 
@@ -166,6 +169,9 @@ tokens:
   its colour follows the skin instead of a stroke baked into a data URI.
 - Theme the `react-diff-view` and `@xyflow/react` overrides and the syntax palette
   (`--syntax-*`) through tokens, and give the Mermaid renderer the skin's `colorScheme`.
+- Colour the workflow canvas minimap nodes through CSS classes whose `fill` reads tokens,
+  replacing the two literals passed to React Flow's `nodeColor`, so the minimap follows a
+  skin change through the cascade like every other element, with no re-render.
 - Add a guard test that fails when `styles.css` gains a raw hex or `rgba()` colour outside
   `:root` and an explicit allowlist, so the audit stays finished.
 
@@ -190,8 +196,16 @@ you pick it - the dashboard behind this page repaints live."
 
 ### Contracts every skin must meet
 
-- Text tones `--fg`, `--muted`, `--dim` and the state tones each clear 4.5:1 against
+- Text tones `--fg`, `--muted`, `--dim` and the state tones `--working`, `--idle`,
+  `--attention`, `--danger` and `--held` (an alias of `--purple`) each clear 4.5:1 against
   `--bg`, `--panel` and `--panel-2`.
+- `--exited` clears 3:1 against the same three surfaces. It marks finished sessions and is
+  meant to recede, and Default's own value measures 3.94:1 on `--panel-2`, so a 4.5:1 bar
+  would force a change to today's look, which the token audit forbids.
+- Decoration (the non-token rules a skin adds) uses only backgrounds, `text-shadow`,
+  `box-shadow` and `text-transform` on headings and labels. It never changes box metrics
+  (padding, margin, border width, font size or line height), and never uses `filter`,
+  `backdrop-filter` or animation.
 - `--working`, `--idle`, `--attention`, `--danger`, `--held` and `--exited` stay mutually
   distinguishable; a skin may retune their hue but never swap their meanings.
 - `--agent-accent` still arrives inline from `AGENT_IDENTITY`; skins do not override agent
@@ -223,8 +237,12 @@ you pick it - the dashboard behind this page repaints live."
   computed `background-color` of the app body changed to that skin's `--bg`; reload and
   assert the skin persisted; dismiss settings and confirm the Fleet board renders in the
   skin. Selected by role and label only, no `data-testid`.
-- Electron geometry tests rerun under each shipped skin, since a font-family change
-  (Paper's serif and Blueprint's monospace headings) can shift measured widths.
+- Electron geometry: `test/line-strip-electron.test.ts` iterates the skin registry and
+  asserts the same Line strip band heights under every shipped skin (Default, Daylight,
+  Paper, Blueprint and Neon Dusk), since a font-family change (Paper's serif and Blueprint's
+  monospace headings) or decoration could shift laid-out size.
+- The e2e spec also opens a workflow canvas after a skin change and asserts its minimap nodes
+  are painted in that skin's tokens.
 
 ## Docs
 
@@ -238,8 +256,9 @@ required tokens, contrast test).
 - **Literal colours missed by the audit** show as dark patches under light skins. The
   guard test and an e2e screenshot pass per light skin are the mitigation.
 - **Glow and grid decoration** can cost paint time on large boards. Decoration is
-  limited to backgrounds and `text-shadow`; no `filter` or `backdrop-filter` on scrolling
-  content.
+  limited to backgrounds, `text-shadow`, `box-shadow` (the Neon Dusk glow) and
+  `text-transform` (Blueprint's uppercase labels); no `filter`, `backdrop-filter` or
+  animation, and no change to box metrics.
 - **Font changes** in Paper and Blueprint headings can push measured ladders across a breakpoint.
   Mitigated by re-measuring under each skin.
 

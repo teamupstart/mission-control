@@ -23,7 +23,8 @@ In scope:
 - `src/web/skins/paper.css`, `blueprint.css`, `neon-dusk.css`, imported from
   `src/web/skins/index.css`.
 - Each skin's scoped decoration as specified in the source plan.
-- E2E and Electron geometry coverage for the new skins. Docs listing all shipped skins.
+- E2E coverage and Electron geometry confirmation for the new skins. Docs listing all
+  shipped skins.
 
 Non-goals:
 
@@ -36,20 +37,26 @@ Non-goals:
 
 Inherited from Phase 2: `SKINS` registry and append-only ids; `ui.skin` schema; `lib/skin.ts`
 as the only writer of `data-skin`; skin files select on `:root[data-skin="<id>"]`;
-`test/skins.test.ts` enforces 4.5:1 for text and state tones; `e2e/specs/settings-skins.spec.ts`
-iterates shipped skins. Inherited from Phase 1: all chrome colours are tokens, including role
+`test/skins.test.ts` enforces 4.5:1 for text and state tones including `--held`, and 3:1 for
+`--exited`; `test/line-strip-electron.test.ts` iterates `SKINS`;
+`e2e/specs/settings-skins.spec.ts` iterates shipped skins. Inherited from the source plan: the
+decoration limit (backgrounds, `text-shadow`, `box-shadow` and `text-transform` on headings
+and labels only; no change to box metrics; no `filter`, `backdrop-filter` or animation). Inherited from Phase 1: all chrome colours are tokens, including role
 tokens for shadows, scrims, on-accent text and tinted surfaces.
 
 Findings:
 
 - `test/line-strip-electron.test.ts` renders `LineStrip` with `renderToStaticMarkup` into a
   shell it builds with the real stylesheet and asserts the expanded and condensed band
-  heights (86px and 38.5px). Stage names are where `--font-display` lands on the Line, so
-  this is the geometry test to extend.
+  heights (86px and 38.5px), once per registered skin since Phase 2. Stage names are where
+  `--font-display` lands on the Line, so this test is what proves Paper and Blueprint fonts
+  and Neon Dusk's decoration leave the band heights alone.
 - Measured ladders (`src/web/topbarLadder.ts`, `detailHeadLadder.ts`, `detailTabsLadder.ts`,
   `measuredLadder.ts`) measure laid-out widths; a font-family change can move a breakpoint.
-- The source plan's palettes for these three skins passed a WCAG 4.5:1 check for every text and
-  state tone on `--bg`, `--panel` and `--panel-2`.
+- The source plan's palettes for these three skins passed a WCAG 4.5:1 check for every text
+  tone and for `--working`, `--idle`, `--attention`, `--danger` and `--purple` (`--held`) on
+  `--bg`, `--panel` and `--panel-2`. Their `--exited` values measured 3.4:1 to 5.1:1, inside
+  the 3:1 bar; Neon Dusk's `#7a6a96` is the lowest (3.44:1 on `--panel-2`).
 
 ## 5. Implementation steps
 
@@ -70,10 +77,14 @@ Findings:
    grid is a background on the app shell only, not on scrolling lists.
 5. **Neon Dusk** (`neon-dusk.css`): token values with `--purple` as magenta (so Foreman, cost
    and held read magenta), `--radius: 14px`; decoration: a violet-to-indigo radial backdrop on
-   the app shell, a magenta glow (`box-shadow`) on focused and attention surfaces, and a
-   magenta-to-cyan gradient on the Dispatch button with dark text that clears 4.5:1 on both
-   gradient ends.
-6. Every decoration selector is prefixed with `:root[data-skin="<id>"]`. Use tokens or
+   the app shell, a magenta glow (`box-shadow`, with no spread that changes layout) on
+   focused and attention surfaces, and a magenta-to-cyan gradient on the Dispatch button with
+   dark text that clears 4.5:1 on both gradient ends.
+6. Keep every decoration inside the source plan's limit: backgrounds, `text-shadow`,
+   `box-shadow` and `text-transform` on headings and labels only; no change to box metrics
+   (padding, margin, border width, font size, line height); no `filter`, `backdrop-filter` or
+   animation. Every decoration selector is prefixed with
+   `:root[data-skin="<id>"]`. Use tokens or
    `color-mix()` of tokens inside the skin file where possible; literal colours are allowed in
    skin files.
 7. **Docs.** Add the three skins to `docs/ui.md` and `docs/skills-and-settings.md`.
@@ -87,8 +98,9 @@ the Phase 2 `.catch`.
 ## 7. Tests and verification
 
 - `test/skins.test.ts` passes unchanged for the three new files (it iterates the registry).
-- `test/line-strip-electron.test.ts`: add cases that set `data-skin="paper"` and
-  `data-skin="blueprint"` on the shell and assert the same expanded and condensed heights.
+- `test/line-strip-electron.test.ts`: no new case is needed, because it iterates `SKINS`;
+  confirm in the run output that it executed and passed for Paper, Blueprint and Neon Dusk,
+  and quote that output in the pull request.
 - `e2e/specs/settings-skins.spec.ts`: extend the iteration to Paper, Blueprint and Neon Dusk
   with the same live-apply and persistence assertions; assert the topbar, the Line strip and
   the Dispatch button stay visible and unclipped under each (the measured ladders still fit).
@@ -102,7 +114,10 @@ the Phase 2 `.catch`.
 ## 8. Merge and exit criteria
 
 - All five skins apply live, persist, and pass the contrast test.
-- Line strip heights are unchanged under Paper and Blueprint; no ladder clips the topbar.
+- Line strip heights are unchanged under Paper, Blueprint and Neon Dusk; no ladder clips the
+  topbar.
+- Every decoration stays within the source plan's limit (backgrounds, `text-shadow`,
+  `box-shadow`, `text-transform` on headings and labels).
 - Screenshots of each new skin are attached to the pull request.
 - All gates in section 7 pass.
 
@@ -124,3 +139,8 @@ This is the last phase. After it, `SKINS` holds five ids in the order `default`,
   Neon Dusk, decoration, geometry re-checks: Phase 3). The graph is serial with no concurrent
   phases. The final state matches the source plan with Phosphor, High Contrast and Match
   system excluded as decided.
+- 2026-11-02, plan validation round 1: the source plan's decoration limit now includes
+  `box-shadow` (the Neon Dusk glow) and `text-transform` (Blueprint's uppercase labels); the contrast bar names `--held` and holds
+  `--exited` to 3:1; Line strip geometry covers all three skins, Neon Dusk included, through
+  Phase 2's registry iteration rather than per-skin cases. The final audit's ownership map is
+  unchanged.

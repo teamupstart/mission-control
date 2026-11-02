@@ -1,7 +1,7 @@
 # CSS skins - phased implementation plan
 
 Source plan: `docs/plans/css-skins/plan.md` (managed plan `64a51be3-81d8-4274-9152-ee13d2ef19fd`,
-revision 2). This index splits that plan into merge units. The source plan owns the goal, the
+revision 4, repaired after plan validation round 1). This index splits that plan into merge units. The source plan owns the goal, the
 token values and the per-skin decoration; the phase files own the route.
 
 ## Incorporated human decisions
@@ -24,7 +24,12 @@ Verified against the checkout on 2026-11-02. Each is a decision the phases follo
    are `#fff` (12), `#a878ff` (8), `#ef5f63`, `#e5877f`, `#e5534b` (7 each). Two
    `color-scheme: dark` declarations exist (line 2 in `:root`, and `select:not([multiple])`).
 2. **Non-CSS literals.** `src/web/workflows/WorkflowCanvas.tsx` passes `#d34f4f` / `#76849b` to
-   the React Flow minimap `nodeColor`; Phase 1 resolves them from tokens.
+   the React Flow minimap `nodeColor`. Phase 1 replaces them with `nodeClassName` classes
+   whose CSS `fill` reads tokens (`var()` works in a CSS property, not in an SVG presentation
+   attribute), so a skin change repaints the minimap through the cascade with no re-render.
+   Settings is its own route (`SettingsPage` in `App.tsx`), so the canvas is not on screen
+   while a skin is chosen; Phase 2's e2e spec proves the minimap shows the new skin when the
+   operator returns to it.
    `src/web/lib/htmlPreview.ts` injects fixed comment-mode and find-highlight styles into the
    sandboxed artifact preview, which renders operator content rather than app chrome; it is out
    of scope and stays literal. `src/web/lib/repo-color.ts` is an identity-hue palette with a
@@ -53,8 +58,11 @@ Verified against the checkout on 2026-11-02. Each is a decision the phases follo
    `test/settings-search.test.ts`.
 8. **Geometry.** `test/line-strip-electron.test.ts` builds its own shell from
    `renderToStaticMarkup` plus the real stylesheet and asserts the 86px and 38.5px band
-   heights. Phase 3, which changes stage-label fonts, extends it to render under
-   `data-skin="paper"` and `data-skin="blueprint"`.
+   heights. Phase 2 makes it iterate the skin registry, so it covers Default and Daylight
+   there and Paper, Blueprint and Neon Dusk automatically once Phase 3 registers them.
+9. **Contrast of `--exited`.** `--exited` measures 3.94:1 on `--panel-2` in Default and 3.4:1
+   to 5.1:1 in the drafts. The contrast test holds it to 3:1 and every other text and state
+   tone, `--held` included, to 4.5:1, as the source plan's Contracts section states.
 
 ## Sizing
 
@@ -126,9 +134,19 @@ order is 1, 2, 3.
   `:root[data-skin="<id>"]` only.
 - **Skin file shape** (Phase 2 owns): `src/web/skins/<id>.css`, imported by
   `src/web/skins/index.css`, imported once from `main.tsx` after `styles.css`.
-- **Contrast test** (Phase 2 owns): `test/skins.test.ts` parses every skin file and enforces
-  4.5:1 for `--fg`, `--muted`, `--dim` and the state tones on `--bg`, `--panel`, `--panel-2`.
-  Phase 3 skins must pass it unchanged.
+- **Contrast test** (Phase 2 owns): `test/skins.test.ts` parses every skin file and enforces,
+  against `--bg`, `--panel` and `--panel-2`, 4.5:1 for `--fg`, `--muted`, `--dim`,
+  `--working`, `--idle`, `--attention`, `--danger` and `--held` (resolved through `--purple`),
+  and 3:1 for `--exited`. Phase 3 skins must pass it unchanged.
+- **Geometry test** (Phase 2 owns): `test/line-strip-electron.test.ts` iterates `SKINS` and
+  asserts identical band heights under each. Phase 3 adds no per-skin case; registering a
+  skin enrols it.
+- **Decoration limit** (Phase 3 applies, source plan owns): backgrounds, `text-shadow`,
+  `box-shadow` and `text-transform` on headings and labels only; no change to box metrics
+  (padding, margin, border width, font size, line height); no `filter`, `backdrop-filter` or
+  animation.
+- **Minimap colours** (Phase 1 owns): minimap nodes are coloured by CSS classes reading
+  tokens; Phase 2 verifies the live skin in the browser.
 - **E2E spec** (Phase 2 owns): `e2e/specs/settings-skins.spec.ts`, iterating the shipped skins.
   Phase 3 adds its skins to the same spec rather than a second file.
 - **`--font-display`** (Phase 3 owns): declared on `:root` as `var(--sans)`, adopted on
@@ -138,6 +156,6 @@ order is 1, 2, 3.
 
 After Phase 3 merges: `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`,
 `npm run smoke`, `npm run test:e2e` (including `settings-skins.spec.ts` over all five skins),
-and `npm run test:electron` on macOS (including the Line strip under Paper and Blueprint).
+and `npm run test:electron` on macOS (including the Line strip under every shipped skin).
 A manual pass in the packaged app switches through all five skins with settings open and
 confirms the window opens in the last chosen skin after a restart.

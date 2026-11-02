@@ -24,7 +24,8 @@ In scope:
 - Make the `select:not([multiple])` chevron follow a token.
 - Change the `select:not([multiple])` `color-scheme: dark` to `color-scheme: inherit`. The
   `:root` declaration stays `color-scheme: dark` (Default is dark), so this is a no-op today.
-- Replace the two literals in `src/web/workflows/WorkflowCanvas.tsx` minimap `nodeColor`.
+- Replace the two literals in `src/web/workflows/WorkflowCanvas.tsx` minimap `nodeColor`
+  with token-driven CSS classes.
 - Add `test/style-literals.test.ts`.
 
 Non-goals:
@@ -77,11 +78,15 @@ Non-goals:
    `::after` pseudo-element with `mask`) whose paint is `background-color: var(--muted)`, so
    it renders identically today and follows the token later. Keep the right padding.
 4. Set `color-scheme: inherit` on `select:not([multiple])`.
-5. `WorkflowCanvas.tsx`: resolve the two minimap colours from tokens. React Flow writes
-   `nodeColor` into an SVG attribute, where `var()` is not reliable; read the computed values
-   of `--danger` and `--muted` (or new tokens with the exact current values) from
-   `document.documentElement` once per render, falling back to the current literals when
-   `document` is absent (server render in tests).
+5. `WorkflowCanvas.tsx`: replace the `nodeColor` callback with React Flow's `nodeClassName`
+   (for example `wf-minimap-node is-fail` and `wf-minimap-node`), and add CSS in
+   `styles.css` that sets `fill` from tokens (new role tokens such as `--minimap-fail` and
+   `--minimap-node`, Default values `#d34f4f` and `#76849b`, or existing tokens if they match
+   exactly). React Flow writes `nodeColor` as an SVG presentation attribute, where `var()` is
+   not reliable, but a CSS `fill` property overrides the attribute and resolves `var()`. This
+   way the minimap follows any later skin change through the cascade, with no re-render and
+   no JavaScript colour reads. Check the rendered node elements and React Flow's default
+   minimap styles so the CSS rule wins without `!important` where possible.
 6. Add `test/style-literals.test.ts`: read `src/web/styles.css`, strip comments, cut the
    leading `:root { ... }` block, and fail on any remaining `#rgb`, `#rrggbb`, `#rrggbbaa`,
    `rgb(` or `rgba(` occurrence, except an explicit allowlist array with a reason per entry
@@ -134,3 +139,8 @@ request.
   without new tokens.
 - 2026-11-02, after writing Phases 2 and 3: confirmed Phase 2's contrast test reads only skin
   files and the `:root` block; it does not need the guard test's allowlist. No change.
+- 2026-11-02, plan validation round 1: the minimap previously read computed token values once
+  per render, which would keep a mounted minimap on the previous skin because nothing
+  re-renders the canvas on a skin change. Moved to token-driven CSS classes here, the
+  earliest phase that owns the minimap colours, so Phase 2 needs no canvas subscription; Phase
+  2 adds the browser verification.

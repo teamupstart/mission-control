@@ -26,7 +26,8 @@ In scope:
 - Skin picker in `AppearancePanel`, settings-search entry, picker CSS.
 - `src/web/skins/index.css` and `src/web/skins/daylight.css`.
 - Mermaid diagrams re-render on skin change and get the skin's colour scheme.
-- Tests: unit, markup, e2e. Docs for the feature and the "Adding a skin" contract.
+- Tests: unit, markup, e2e, and the registry-driven Line strip geometry test. Docs for the
+  feature and the "Adding a skin" contract.
 
 Non-goals:
 
@@ -38,7 +39,9 @@ Non-goals:
 ## 4. Repository findings and inherited contracts
 
 Inherited from Phase 1: every chrome colour in `styles.css` is a `:root` token, including the
-role tokens Phase 1 introduced; `test/style-literals.test.ts` forbids literals in `styles.css`.
+role tokens Phase 1 introduced; `test/style-literals.test.ts` forbids literals in `styles.css`;
+the workflow canvas minimap colours its nodes through CSS classes that read tokens, so it
+follows a skin change through the cascade without a re-render.
 
 Findings:
 
@@ -66,6 +69,10 @@ Findings:
   `ipcMain.handle("mission:...")` in `src/main/index.ts`; types in
   `src/web/mission-desktop.d.ts`. `src/main/update-preferences.ts` is the existing persisted
   main-process preference pattern.
+- Settings is its own route (`SettingsPage` in `src/web/App.tsx`), so no workflow canvas is on
+  screen while the operator picks a skin; the minimap is checked when they return to it.
+- `test/line-strip-electron.test.ts` renders the Line strip into a shell built from the real
+  stylesheet and asserts the 86px and 38.5px band heights.
 
 ## 5. Implementation steps
 
@@ -137,10 +144,15 @@ Findings:
 
 - `test/skins.test.ts`: ids unique, kebab-case, `default` first; every non-default registry id
   has `src/web/skins/<id>.css` and `index.css` imports it; each skin file declares every
-  required colour token; WCAG contrast of `--fg`, `--muted`, `--dim`, `--working`, `--idle`,
-  `--attention`, `--danger`, `--purple` against `--bg`, `--panel`, `--panel-2` is at least
-  4.5:1 (parse the hex values from the file; Default from `styles.css` `:root`); swatches
-  equal the file's token values.
+  required colour token; against `--bg`, `--panel` and `--panel-2`, WCAG contrast is at least
+  4.5:1 for `--fg`, `--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger` and
+  `--held` (resolved through `--purple` when it is an alias), and at least 3:1 for `--exited`
+  (parse the hex values from the file, falling back to `styles.css` `:root` for tokens a skin
+  does not override; Default is `:root` itself); swatches equal the file's token values.
+- `test/line-strip-electron.test.ts`: make the existing band-height assertions iterate `SKINS`,
+  setting `data-skin` on the shell's `<html>` for each non-default id and loading
+  `src/web/skins/index.css` after the stylesheet, so Default and Daylight are covered now and
+  every later registered skin is covered without a new case.
 - `test/ui-config-*.test.ts` (extend the existing files): schema default, unknown stored id
   falls back, strict patch rejects, cache round-trips `skin`.
 - `test/settings-search.test.ts`: the `display/skin` anchor resolves and keywords find it.
@@ -152,7 +164,10 @@ Findings:
   `html[data-skin="daylight"]` and that the computed `background-color` of `body` (or the app
   root) equals Daylight's `--bg`; reload and assert it persisted; select "Default" and assert
   the attribute is gone and the background is Default's; close settings and assert the Fleet
-  board renders in the chosen skin. Select by role, label or placeholder only, no
+  board renders in the chosen skin. Then open a built-in workflow on the Workflows page so its
+  canvas minimap renders, read a minimap node's computed `fill`, go to Settings and choose
+  Daylight, return to the same workflow, and assert the node's computed `fill` now equals
+  Daylight's minimap token (and differs from Default's). Select by role, label or placeholder only, no
   `data-testid`. Capture a Daylight screenshot of the Fleet board and of Settings into
   `e2e/.artifacts/` and attach them to the pull request (never commit them).
 - Single-file runs use `node --test --import ./test/setup-state.mjs --import tsx <file>`.
@@ -169,6 +184,8 @@ Findings:
 - Daylight passes the contrast test and shows no dark patches on the Fleet board, a
   conversation with code and diff, Settings, the workflow canvas and a modal (screenshots in
   the pull request).
+- The workflow minimap shows Daylight's colours after a skin change, and the Line strip keeps
+  its band heights under Default and Daylight.
 - All gates in section 7 pass.
 
 ## 9. Downstream handoff
@@ -179,7 +196,10 @@ Phase 3 may rely on, and must not change:
 - `ui.skin` schema semantics (catch on read, strict on patch) and `parseSkin`.
 - `lib/skin.ts` as the only writer of `data-skin` and the window background.
 - The skin file shape, `src/web/skins/index.css`, and the import order in `main.tsx`.
-- `test/skins.test.ts` contract and threshold; Phase 3 skins must pass it, not relax it.
+- `test/skins.test.ts` contract and thresholds (4.5:1, and 3:1 for `--exited`); Phase 3 skins
+  must pass it, not relax it.
+- `test/line-strip-electron.test.ts` iterating `SKINS`; Phase 3 skins are enrolled by
+  registering them.
 - `e2e/specs/settings-skins.spec.ts`; Phase 3 extends it with its skins.
 
 ## 10. Cross-phase audit record
@@ -191,3 +211,9 @@ Phase 3 may rely on, and must not change:
   declare; kept in Phase 3 because only Phase 3 skins change fonts and Default is unaffected.
   The contrast test here already iterates all registry entries, so Phase 3 needs no test
   change beyond its skin files. No edit required.
+- 2026-11-02, plan validation round 1: the contrast test now names `--held` and holds
+  `--exited` to 3:1, matching the source plan's reconciled Contracts section (Default's
+  `--exited` is 3.94:1 on `--panel-2`, so 4.5:1 would break Phase 1's pixel parity). The Line
+  strip geometry test now iterates the registry here, so Neon Dusk and the other Phase 3 skins
+  are covered without a Phase 3 case. Added the minimap browser check; Phase 1 owns the
+  token-driven minimap CSS that makes it pass without a canvas subscription.

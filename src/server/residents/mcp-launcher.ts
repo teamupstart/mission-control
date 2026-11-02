@@ -159,15 +159,15 @@ type CertificateStore = Pick<typeof tls, "getCACertificates" | "setDefaultCACert
  * and any `NODE_EXTRA_CA_CERTS` that did arrive.
  */
 export function trustSystemCertificates(store: CertificateStore = tls): void {
-  let system: string[];
   try {
-    system = store.getCACertificates("system");
+    const system = store.getCACertificates("system");
+    if (system.length === 0) return;
+    store.setDefaultCACertificates([...new Set([...store.getCACertificates("default"), ...system])]);
   } catch {
-    // A runtime that cannot read the store keeps the roots it already has.
-    return;
+    // A runtime that cannot read the store, or cannot apply roots at all (`engines` admits
+    // Node 24.0-24.4, which has no `setDefaultCACertificates`), keeps the roots it already has
+    // rather than stopping the bridge.
   }
-  if (system.length === 0) return;
-  store.setDefaultCACertificates([...new Set([...store.getCACertificates("default"), ...system])]);
 }
 
 /**

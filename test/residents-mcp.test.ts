@@ -889,6 +889,10 @@ test("the bridge trusts the system certificate store on top of Node's own roots,
   trustSystemCertificates(store(() => []));
   trustSystemCertificates(store(() => { throw new Error("no keychain"); }));
   assert.equal(set.length, 1, "a runtime with no readable store keeps the roots it has");
+  // Node 24.0-24.4, which `engines` admits: the store reads, but no setter exists. The bridge
+  // must still start, on the roots it already has.
+  const noSetter = { getCACertificates: store(() => ["proxy-root"]).getCACertificates } as unknown as Parameters<typeof trustSystemCertificates>[0];
+  assert.doesNotThrow(() => trustSystemCertificates(noSetter), "a runtime that cannot apply roots does not stop the bridge");
 });
 
 test("a failed forward names its cause's code, which is what tells a refused certificate from an unreachable host", async () => {

@@ -164,6 +164,10 @@ function recordResumePhase(phase) {
  * proved the list came from here rather than from `MODEL_CATALOG`.
  */
 const CATALOG_ROWS = [
+  // Opt-in discovery row: profile tests must see an unpriced normal choice before selection.
+  ...(process.env.MC_E2E_CODEX_UNPRICED_CATALOG === "1"
+    ? [["gpt-e2e-unpriced-live", "Unpriced live model", "Discovered test model.", false]]
+    : []),
   ["gpt-6-astra", "GPT-6-Astra", "Our most capable model for complex, demanding work.", false],
   ["gpt-6-sol", "GPT-6-Sol", "Strong model for complex coding and agentic workflows.", false],
   ["gpt-6-luna", "GPT-6-Luna", "Efficient model for focused tasks.", false],

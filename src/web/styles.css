@@ -11410,6 +11410,17 @@ button.dispatch-guided-rung .dispatch-guided-num {
   align-items: center;
   gap: 6px;
 }
+.dep-entry {
+  max-width: 100%;
+}
+.dep-requirement {
+  display: block;
+  margin: 4px 0;
+}
+.dep-chip-x:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .dep-chip {
   display: inline-flex;
   align-items: center;

@@ -101,3 +101,14 @@ export interface ManagedPlanCatalog {
   nextCursor: string | null;
 }
 export const managedPlanPreview = (id: string, revision: number): string => `/?plan=${id}&revision=${revision}`;
+
+/** Editor guidance derived from the same exact-origin rule enforced on save. */
+export interface TaskPlanDependencyRequirement {
+  input: TaskPlanInput;
+  title: string;
+  dependencyKeys: string[];
+}
+export interface TaskPlanDependencyRequirements {
+  requirements: TaskPlanDependencyRequirement[];
+  error: string | null;
+}

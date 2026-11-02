@@ -506,7 +506,13 @@ dependency](#resolve-a-stopped-dependency)). Active sessions without observable 
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
 their next work episode from an earlier merged PR. The board and Sitrep name what a task is
 waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
-Reopen the backlog task to add or remove dependencies; cycles are refused.
+Reopen the backlog task to add or remove dependencies; cycles are refused. Recorded merge
+completion remains visible even after the originating session disappears. A prerequisite
+required by a retained exact plan input names that plan and revision in the editor and cannot
+be removed while it is the pin's only matching prerequisite. Change the plan input and its
+prerequisite together through the task API to replace the pair. The editor keeps the pin intact.
+A rejected save leaves the draft open; if Dispatch now triggered the save, the error says that
+dispatch was not attempted. A launch refusal after a successful save is reported separately.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the

@@ -34,7 +34,7 @@ import {
   standingBundleAnswer,
   STANDING_FOLLOW_UP_NOTE,
 } from "./plans/publication.ts";
-import { validatePlanInputs } from "./plans/inputs.ts";
+import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
@@ -4020,6 +4020,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
+  app.get("/api/tasks/:id/plan-dependencies", (c) => {
+    const task = tasks.get(c.req.param("id"));
+    return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
+  });
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
 

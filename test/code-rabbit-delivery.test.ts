@@ -6,6 +6,8 @@ import { adoptPr } from "../src/server/inspector/worker.ts";
 import { claimCodeRabbit, codeRabbitSummary, failCodeRabbit, finishCodeRabbit, openDb, readCodeRabbit, recordCodeRabbit } from "../src/server/db.ts";
 import { ShippingConfigSchema } from "../src/shared/protocol.ts";
 import { setShippingConfig, getShippingConfig } from "../src/server/shipping/config.ts";
+import { preMergeBody, preMergeComment } from "./helpers/code-rabbit-pre-merge.ts";
+import { preMergeFindings } from "../src/server/inspector/code-rabbit-pre-merge.ts";
 
 const owner = { noteKey: "conversation", episodeKey: "intent" };
 const finding = (id: string, identity = "initial", resolved = false) => ({ id, rootId: `root-${id}`, identity, resolved, url: `https://github.com/a/b/pull/1#discussion_r${id}`, path: "a.ts" });
@@ -14,7 +16,7 @@ function setup() {
   const n = next++;
   adoptPr(`https://github.com/a/b/pull/${n}`, { sessionId: "s", cwd: "/tmp", repoRoot: "/tmp" }, "hook", Date.now());
   const key = `a/b#${n}`;
-  const observe = (findings = [finding("a")], headSha = "head") => recordCodeRabbit(key, { findings, headSha, state: "OPEN", draft: false });
+  const observe = (findings: Parameters<typeof recordCodeRabbit>[1]["findings"] = [finding("a")], headSha = "head") => recordCodeRabbit(key, { findings, headSha, state: "OPEN", draft: false });
   const claim = () => claimCodeRabbit(key, owner, readCodeRabbit(key)!.observationId);
   const pending = () => codeRabbitSummary(key, owner).pending;
   return { key, observe, claim, pending };
@@ -49,6 +51,23 @@ test("only root edits and observed reopen transitions create new generations", (
   s.observe([finding("a", "edit", true)]); assert.equal(s.pending(), 0);
   s.observe([finding("a", "edit")]); assert.equal(s.pending(), 1);
   assert.equal(readCodeRabbit(s.key)!.findings[0]!.generation, 3);
+});
+
+test("pre-merge checks claim errors and warnings once, then re-arm only the changed or reopened check", () => {
+  const s = setup();
+  const observe = (body: string) => s.observe(preMergeFindings(preMergeComment(body)).value!);
+  observe(preMergeBody());
+  assert.equal(s.pending(), 3);
+  finishCodeRabbit(s.key, s.claim()!, "delivered");
+  observe(preMergeBody().replace("Unrelated review summary", "Updated review summary"));
+  assert.equal(s.pending(), 0);
+  observe(preMergeBody("Error", "Changed full resolution."));
+  assert.equal(s.pending(), 1);
+  finishCodeRabbit(s.key, s.claim()!, "delivered");
+  observe(preMergeBody("Passed", "Changed full resolution."));
+  assert.equal(s.pending(), 0);
+  observe(preMergeBody("Error", "Changed full resolution."));
+  assert.equal(s.pending(), 1);
 });
 
 test("positive refusal releases only that claim; lost response stays uncertain and old results cannot clear new generations", () => {

@@ -15400,7 +15400,7 @@ export function codeRabbitSummary(prKey: string, owner?: { noteKey: string; epis
     delivery: uncertain ? "Delivery uncertain; manual messaging remains available"
       : !fresh ? "Waiting for a complete fresh observation"
       : record?.state !== "OPEN" || record.draft ? "PR is closed or draft"
-      : !threads.length ? "No unresolved CodeRabbit threads"
+      : !threads.length ? "No unresolved CodeRabbit findings"
       : !owner ? "Waiting for an eligible owning session"
       : pending ? "Waiting for an eligible session" : "Feedback delivered",
   };

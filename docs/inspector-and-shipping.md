@@ -275,10 +275,12 @@ included in settings snapshots. It works while Inspector reviews and YOLO are of
 daemon poll observes only adopted PRs, including attached repositories, normally every 90 seconds.
 It reads GitHub but neither calls a review model nor replies to or resolves threads itself.
 
-A finding must be an unresolved review thread whose first comment belongs to the exact
-CodeRabbit Bot account. Human threads with bot replies, top-level summaries and issue comments
-are excluded. An outdated unresolved thread still counts. Shipping shows the unresolved count,
-unknown/provider errors, and delivery status beside the existing merge status.
+A finding is either an unresolved review thread whose first comment belongs to the exact
+CodeRabbit Bot account, or an error or warning in that bot's marked pre-merge checks section
+in a PR summary issue comment. Both review threads and issue comments are paginated. Passed
+and skipped checks, ordinary summary prose, other bots, and human threads with bot replies
+are excluded. An outdated unresolved thread still counts. Shipping shows the combined
+unresolved finding count, unknown/provider errors, and delivery status beside the merge status.
 
 Foreman must be enabled and Live, invited into the owning session, and trusted for both the
 session and the PR's repository. A busy session, human input, queued work, unknown ownership,
@@ -287,7 +289,15 @@ The session is asked to assess findings, fix valid in-scope defects, explain inv
 run focused checks and push to the same PR branch under its task and repository instructions.
 This setting grants no merge permission and changes none of the merge gates below.
 
-Each root finding has a durable generation. New roots, root edits and observed reopening can
+The repair prompt asks the session to read both inline threads and summary comments, including
+each check's full explanation and resolution. Warnings are considered for repair even when
+CodeRabbit labels them optional. The session verifies their validity and scope before acting.
+This is separate from the [local CodeRabbit workflow Command](workflows.md#local-coderabbit-command):
+enabling local review through YAML does not enable PR follow-up or import cloud pre-merge checks.
+
+Each root finding has a durable generation. Each named pre-merge check has its own identity;
+its status, explanation and full resolution determine changes, so an unrelated summary edit
+does not re-arm it. New roots, root edits and observed reopening can
 prompt again; replies, pushes, reordered results, fewer unresolved threads, toggles and restarts
 cannot replay handled findings. The daemon claims before sending. Only confirmed non-delivery
 releases a claim; a lost response or interrupted send remains **Delivery uncertain**. Manual
@@ -297,7 +307,7 @@ Observations must complete within 20 pages, 8 MiB total and 60 seconds, with an 
 provider response. Missing identities, malformed connections, cursor loops and exceeded limits
 are unknown, never zero. A newer error immediately disables the prior success for delivery.
 A new daemon requires a successful fresh observation. Freshness lasts three poll intervals
-(with a one-second minimum for test/development cadences). At most 12 thread links appear in
+(with a one-second minimum for test/development cadences). At most 12 finding links appear in
 the prompt, which always asks the session to load the complete list.
 
 ### What has to be true

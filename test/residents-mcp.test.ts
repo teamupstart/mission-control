@@ -908,8 +908,12 @@ test("a Claude global HTTPS server behind a private root connects through the sc
   try {
     execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1",
       "-subj", "/CN=mission-proxy-root", "-addext", "subjectAltName=IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:true"], { stdio: "ignore" });
-  } catch {
-    t.skip("openssl is not available to mint a fixture root");
+  } catch (error) {
+    // Only a missing binary skips. Any other failure - an unsupported flag, a version
+    // difference - is a broken fixture, and would otherwise silently drop the one test that
+    // proves the launcher trusts the system store.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    t.skip("openssl is not installed, so no fixture root can be minted");
     return;
   }
   const header = `https-header-${crypto.randomUUID()}`;

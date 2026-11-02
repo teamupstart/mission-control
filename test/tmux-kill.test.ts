@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -24,9 +24,11 @@ const unavailable = spawnSync(tmuxBin, ["-V"], {stdio: "ignore"}).status !== 0;
 class Fixture {
   dir = mkdtempSync(join(tmpdir(), "mc-tmux-kill-"));
   socket = join(this.dir, "server.sock");
-  // Ubuntu's uutils sleep rejects a renamed argv[0]. These tests supply the agent
-  // session themselves, so the harmless process can keep its real executable name.
-  fakeAgent = sleepBin;
+  fakeAgent = join(this.dir, "claude");
+  // A script, not a symlink: a multicall coreutils (uutils, Ubuntu 26.04's default) picks
+  // the utility from argv[0], so a `claude` link to sleep exits at once and every session
+  // started on it collapses before the test can measure anything.
+  constructor() { writeFileSync(this.fakeAgent, `#!/bin/sh\nexec ${sleepBin} "$@"\n`, { mode: 0o755 }); }
   raw(args: string[]) {
     const env = { ...process.env }; delete env.TMUX; delete env.TMUX_PANE;
     return spawnSync(tmuxBin, ["-S", this.socket, "-f", "/dev/null", ...args], {

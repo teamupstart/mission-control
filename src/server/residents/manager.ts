@@ -112,6 +112,13 @@ function knownRepoForSpelling(known: ResidentRunIdentity | null, spelling: strin
  */
 const DEFAULT_LAUNCH_RESPONSE_WAIT_MS = 120_000;
 
+/**
+ * How long a launch that asked to be answered on acceptance waits for its task to exist. Its own
+ * bound, not `launchResponseWaitMs`: acceptance is quick, and lowering the session wait must not
+ * turn every accepted launch into one answered before its task exists.
+ */
+const DEFAULT_ACCEPTANCE_WAIT_MS = 120_000;
+
 /** Retries of an uncertain settlement before it is left to startup reconciliation. */
 const SETTLEMENT_RETRIES = 6;
 const DEFAULT_SETTLEMENT_RETRY_MS = 2_000;
@@ -161,6 +168,8 @@ export interface ResidentManagerDeps {
   removeWorkspace?: typeof removeResidentWorkspace;
   /** A task as SQLite holds it, for startup reconciliation of rows the board did not load. */
   durableTask?: (taskId: string) => Task | undefined;
+  /** Bound on waiting for acceptance; `DEFAULT_ACCEPTANCE_WAIT_MS` unless a test shortens it. */
+  acceptanceWaitMs?: number;
   now?: () => number;
   launchResponseWaitMs?: number;
   /** The first delay before an uncertain settlement is retried; later attempts back off. */
@@ -217,8 +226,14 @@ export class ResidentManager {
   private readonly sessionRowsForTask: (taskId: string) => string[];
   private readonly durableTask: (taskId: string) => Task | undefined;
   private readonly launchResponseWaitMs: number;
+  private readonly acceptanceWaitMs: number;
   /** In-process launch settlements, so a concurrent replay can wait on the same outcome. */
   private readonly settling = new Map<string, Promise<void>>();
+  /**
+   * The same launches' acceptance: resolves once the run's task exists, or the launch settled
+   * without one. What a request that asks to be answered on acceptance waits for.
+   */
+  private readonly accepting = new Map<string, Promise<void>>();
   private readonly settlementRetryMs: number;
   /** Pending retry waits, each with the resolver that ends it early when the manager stops. */
   private readonly retryTimers = new Map<NodeJS.Timeout, (proceed: boolean) => void>();
@@ -249,6 +264,7 @@ export class ResidentManager {
     this.sessionRowsForTask = deps.sessionRowsForTask ?? sdkSessionIdsForTask;
     this.durableTask = deps.durableTask ?? getDurableTask;
     this.launchResponseWaitMs = deps.launchResponseWaitMs ?? DEFAULT_LAUNCH_RESPONSE_WAIT_MS;
+    this.acceptanceWaitMs = deps.acceptanceWaitMs ?? DEFAULT_ACCEPTANCE_WAIT_MS;
     this.settlementRetryMs = deps.settlementRetryMs ?? DEFAULT_SETTLEMENT_RETRY_MS;
     this.mcpCatalog = deps.mcpCatalog ?? new ResidentMcpCatalogCache(noGlobalMcp);
   }
@@ -451,7 +467,7 @@ export class ResidentManager {
       knownRepoForSpelling(known, spelling) ?? (resolved.ok ? resolved.repoRoot : spelling),
       input.instructions,
     );
-    if (known) return this.replay(known, profileId, request);
+    if (known) return this.replay(known, profileId, request, input.answerWhen);
     if (!resolved.ok) return { ok: false, status: 400, code: "invalid", error: resolved.error };
 
     const profile = getResidentProfile(profileId);
@@ -493,16 +509,26 @@ export class ResidentManager {
       if (!winner) {
         return { ok: false, status: 409, code: "conflict", error: "this launch request could not be reserved" };
       }
-      return this.replay(winner, profileId, request);
+      return this.replay(winner, profileId, request, input.answerWhen);
     }
     const stored = getResidentRun(runId);
     if (!stored) throw new Error(`resident run ${runId} vanished after its reservation`);
     this.publishRun(runId);
 
-    const settlement = this.authorizeAndSettle(stored.run, request, options.mayConsumeControlClick === true);
+    let accept: () => void = () => {};
+    const accepted = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    const settlement = this.authorizeAndSettle(stored.run, request, options.mayConsumeControlClick === true, accept);
+    const acceptance = Promise.race([accepted, settlement]);
     this.settling.set(runId, settlement);
-    void settlement.finally(() => this.settling.delete(runId));
-    await this.awaitBriefly(settlement);
+    this.accepting.set(runId, acceptance);
+    void settlement.finally(() => {
+      this.settling.delete(runId);
+      this.accepting.delete(runId);
+    });
+    if (input.answerWhen === "accepted") await this.awaitBriefly(acceptance, this.acceptanceWaitMs);
+    else await this.awaitBriefly(settlement);
     return this.answer(runId);
   }
 
@@ -511,18 +537,20 @@ export class ResidentManager {
    *
    * After the reservation, so only the request that reserved the run consumes a click: a racing
    * duplicate is answered as this one's replay and never asks. Before the task, so the session
-   * cannot exist before its grant is decided. Never rejects.
+   * cannot exist before its grant is decided. `accepted` is called once the run's task exists.
+   * Never rejects.
    */
   private async authorizeAndSettle(
     run: ResidentRun,
     request: ResidentLaunchInput,
     mayConsumeControlClick: boolean,
+    accepted: () => void,
   ): Promise<void> {
     // Authority comes from the run's pinned revision, never the profile as it reads now.
     if (mayConsumeControlClick && run.settings.authority.controlOtherSessions) {
       await this.consumeLaunchClick(run);
     }
-    await this.createAndSettle(run, request);
+    await this.createAndSettle(run, request, accepted);
     // The launch answers with the grant's outcome - applied or not - rather than with a consumed
     // click, so Dispatch and the dock can say which. Bounded like the launch itself: a session
     // that never gets an identity leaves the click recorded and the outcome pending.
@@ -579,9 +607,13 @@ export class ResidentManager {
    * `pending` for startup reconciliation, which applies the same evidence rule. Only a
    * definitive outcome is ever written, so a live session is never reported as a failed launch.
    */
-  private async createAndSettle(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
+  private async createAndSettle(
+    run: ResidentRun,
+    request: ResidentLaunchInput,
+    accepted: () => void,
+  ): Promise<void> {
     try {
-      await this.createAndSettleUnguarded(run, request);
+      await this.createAndSettleUnguarded(run, request, accepted);
       return;
     } catch (error) {
       console.error(`[residents] could not settle resident run ${run.id}; it stays pending and is retried:`, error);
@@ -611,7 +643,11 @@ export class ResidentManager {
     });
   }
 
-  private async createAndSettleUnguarded(run: ResidentRun, request: ResidentLaunchInput): Promise<void> {
+  private async createAndSettleUnguarded(
+    run: ResidentRun,
+    request: ResidentLaunchInput,
+    accepted: () => void,
+  ): Promise<void> {
     const execution = run.settings.execution;
     try {
       // The run's effective MCP set, resolved once from the revision it pinned and the
@@ -646,6 +682,8 @@ export class ResidentManager {
       this.cleanupEndedWorkspaces();
       return;
     }
+    // The task exists and its dispatch is under way: from here its outcome surfaces on the task.
+    accepted();
     await this.dispatchSettled(run.taskId);
     this.settleFromEvidence(run, this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId));
   }
@@ -718,12 +756,12 @@ export class ResidentManager {
     });
   }
 
-  private async awaitBriefly(settlement: Promise<void>): Promise<void> {
+  private async awaitBriefly(settlement: Promise<void>, ms = this.launchResponseWaitMs): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([
       settlement,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, this.launchResponseWaitMs);
+        timer = setTimeout(resolve, ms);
         timer.unref?.();
       }),
     ]);
@@ -739,6 +777,7 @@ export class ResidentManager {
     identity: ResidentRunIdentity,
     profileId: string,
     request: ResidentLaunchInput,
+    answerWhen: LaunchResident["answerWhen"],
   ): Promise<ResidentLaunchOutcome> {
     if (identity.profileId !== profileId || !launchInputsMatch(identity.launchInput, request)) {
       return {
@@ -748,8 +787,13 @@ export class ResidentManager {
         error: "this launch request id was already used for a different launch; start a new launch",
       };
     }
-    const inFlight = this.settling.get(identity.id);
-    if (inFlight) await this.awaitBriefly(inFlight);
+    if (answerWhen === "accepted") {
+      const accepting = this.accepting.get(identity.id);
+      if (accepting) await this.awaitBriefly(accepting, this.acceptanceWaitMs);
+    } else {
+      const settling = this.settling.get(identity.id);
+      if (settling) await this.awaitBriefly(settling);
+    }
     return this.answer(identity.id);
   }
 
@@ -763,8 +807,12 @@ export class ResidentManager {
     switch (run.launchState) {
       case "launched":
         return { ok: true, status: 200, result: { state: "launched", run, taskId: run.taskId } };
-      case "pending":
-        return { ok: true, status: 202, result: { state: "pending", run } };
+      case "pending": {
+        // Accepted once its task exists, read from the task itself, so a replay after a restart
+        // answers the same as the request that created it.
+        const accepted = (this.deps.registry.getTask(run.taskId) ?? this.durableTask(run.taskId)) !== undefined;
+        return { ok: true, status: 202, result: { state: "pending", run, accepted } };
+      }
       case "failed":
         return {
           ok: false,

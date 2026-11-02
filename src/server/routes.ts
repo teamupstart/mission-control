@@ -8312,7 +8312,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // The ONE resident launch route. Idempotent on the body's `requestId`: 200 launched,
   // 202 still starting (replay the same request to read the outcome), 409 for a failed launch
-  // (with its recorded reason) or a request id reused for a different launch.
+  // (with its recorded reason) or a request id reused for a different launch. A body with
+  // `answerWhen: "accepted"` is answered once the run's task exists, so Dispatch closes as
+  // quickly as a task dispatch; its still-starting run answers 202.
   //
   // It is also the one place a desktop Launch click can be consumed for session control. A
   // tool, an agent or a foreign origin still launches, but never consumes a click: its run

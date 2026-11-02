@@ -362,15 +362,18 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
 });
 
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
-  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 20_000 }, async () => {
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async () => {
   const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
   const p = await prepareTerminalResume(session(nativeId), context);
   const marker = join(home, `${nativeId}.json`);
   const check = `${marker}.check`, result = `${marker}.result`, stop = `${marker}.stop`;
   const descendantScript = join(home, `descendant-${doubleFork}.mjs`);
+  // Keep the signal case slower than the old three-second startup assumption. Signal
+  // delivery must wait for readiness, including cold inventory and process startup.
   writeFileSync(descendantScript, `import {writeFileSync,renameSync,existsSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
+${signal ? "await new Promise(resolve=>setTimeout(resolve,4000));" : ""}
 writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME}));
 renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});
 const t=setInterval(()=>{
@@ -403,7 +406,8 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   const exited = new Promise((resolve) => guard.once("exit", resolve));
   try {
     if (signal) {
-      for (let i = 0; i < 100 && !existsSync(marker) && guard.exitCode === null; i++) await delay(30);
+      const readyDeadline = Date.now() + 15_000;
+      while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
       assert.ok(existsSync(marker), stderr);
       process.kill(-guard.pid!, signal);
     }
@@ -424,6 +428,10 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
     writeFileSync(stop, "stop");
     if (guard.exitCode === null) guard.kill("SIGTERM");
     await exited;
+    // A signalled wrapper can exit before its agent. Reap this fixture's remaining
+    // foreground group so inherited stdout/stderr cannot keep the test worker alive.
+    try { process.kill(-guard.pid!, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     if (existsSync(marker)) {
       const { pid } = JSON.parse(readFileSync(marker, "utf8"));
       for (let i = 0; i < 100; i++) {

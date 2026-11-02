@@ -25,6 +25,7 @@ import { defaultEnvironmentDeps } from "../environment/index.ts";
 import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
+import { acliPreflight, readAcli } from "./jira-acli.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -35,7 +36,9 @@ import type { RunResult } from "../util/exec.ts";
 // falls back to Jira's REST API with `JIRA_API_TOKEN` + `JIRA_EMAIL` read from the daemon's
 // own environment - the convention those same operators already have exported. A source can
 // instead explicitly select UpstartClaw, which runs the same JQL through the installed Jira
-// skill and its read-only Atlassian MCP search tool. Nothing is written to `app_config`, so
+// skill and its read-only Atlassian MCP search tool, or acli with its own OAuth login. Both
+// explicit methods keep their credential boundary and never fall back to the local ladder.
+// No credential is written to `app_config`, so
 // there is no token in this app's database to leak.
 //
 // The rule the whole file is arranged around: a credential that is missing, half-set or
@@ -87,7 +90,7 @@ const REST_SEARCH_PATH = "/rest/api/3/search/jql";
  * may exceed it - which is why `appendCapped` clips a page on the way in rather than letting
  * `nextPage` notice one page too late.
  */
-const MAX_SWEEP_ISSUES = 1000;
+export const MAX_SWEEP_ISSUES = 1000;
 
 /**
  * Most PAGE requests one sweep may spend, whatever page size is configured.
@@ -910,12 +913,14 @@ function cliCannotPage(cfg: JiraConfig): string {
  * Two fixes, because there are two bounds. A genuinely enormous filter needs narrowing; a
  * filter that merely outran a small page size needs a bigger page.
  */
-function tooBroad(cfg: JiraConfig): string {
+export function tooBroad(cfg: JiraConfig): string {
+  const bound = cfg.queryVia === "acli"
+    ? `${MAX_SWEEP_ISSUES} issues`
+    : `${MAX_SWEEP_ISSUES} issues or ${MAX_SWEEP_PAGES} requests, whichever comes first`;
   return (
-    `this filter is larger than one sweep can read (${MAX_SWEEP_ISSUES} issues or ` +
-    `${MAX_SWEEP_PAGES} requests, whichever comes first), so its tail can never be filed - ` +
+    `this filter is larger than one sweep can read (${bound}), so its tail can never be filed - ` +
     "narrow the JQL with a status, a project or a date bound" +
-    (cfg.limit < 50 ? ", or raise Issues per page" : "")
+    (cfg.queryVia !== "acli" && cfg.limit < 50 ? ", or raise Issues per page" : "")
   );
 }
 
@@ -1377,9 +1382,11 @@ async function sweep(cfg: JiraConfig, ctx: SweepContext): Promise<SweepResult> {
   if (site) return { items: [], error: site };
 
   const walk =
-    cfg.queryVia === "upstartclaw"
-      ? await readUpstartClaw(cfg, ctx, MAX_SWEEP_ISSUES)
-      : await ladder(cfg, ctx, sweepPages(cfg));
+    cfg.queryVia === "acli"
+      ? await readAcli(cfg, ctx, MAX_SWEEP_ISSUES)
+      : cfg.queryVia === "upstartclaw"
+        ? await readUpstartClaw(cfg, ctx, MAX_SWEEP_ISSUES)
+        : await ladder(cfg, ctx, sweepPages(cfg));
   return sweepResultFromWalk(walk, cfg, ctx);
 }
 
@@ -1404,6 +1411,8 @@ async function preflight(cfg: JiraConfig, ctx: SweepContext): Promise<string | n
   if (!cfg.jql.trim()) return NO_JQL;
   const site = siteProblem(cfg.site);
   if (site) return site;
+
+  if (cfg.queryVia === "acli") return acliPreflight(cfg, ctx);
 
   if (cfg.queryVia === "upstartclaw") {
     return (await readUpstartClaw({ ...cfg, limit: 1 }, ctx, 1)).error;
@@ -1453,6 +1462,9 @@ const NO_WRITE_PATH =
 const UPSTARTCLAW_READ_ONLY =
   "the UpstartClaw connection is read-only - write-back needs the jira CLI, or " +
   "JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
+
+export const ACLI_WRITE_PENDING =
+  "write-back through acli is not available in this build - select the local Jira query method to write back today";
 
 /**
  * What to say when this machine cannot meet the refusal contract a resolve is held to.
@@ -1913,6 +1925,7 @@ function writeTarget(
   cfg: JiraConfig,
   notice: WritebackNotice,
 ): { key: string } | { problem: string } {
+  if (cfg.queryVia === "acli") return { problem: ACLI_WRITE_PENDING };
   if (cfg.queryVia === "upstartclaw") return { problem: UPSTARTCLAW_READ_ONLY };
   const site = siteProblem(cfg.site);
   if (site) return { problem: site };
@@ -2094,7 +2107,8 @@ async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<Writeb
   const wanted = cfg.resolveTransition.trim();
   // First, and without a subprocess or a round trip: a resolve with nowhere to go is a
   // misconfiguration, and no amount of asking Jira will discover what the operator meant.
-  if (!wanted) return writebackRefusal(NO_TARGET_STATUS);
+  // acli's build-level refusal takes precedence over an unconfigured future write setting.
+  if (!wanted && cfg.queryVia !== "acli") return writebackRefusal(NO_TARGET_STATUS);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);

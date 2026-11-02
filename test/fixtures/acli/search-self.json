@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "jira",
+    "workitem",
+    "search",
+    "--jql",
+    "key in (MC-2, MC-1, MC-6, MC-5, MC-4, MC-3) ORDER BY key ASC",
+    "--fields",
+    "self",
+    "--json",
+    "--limit",
+    "1"
+  ],
+  "code": 1,
+  "stdout": "",
+  "stderr": "✗ Error: field 'self' is not allowed\n"
+}

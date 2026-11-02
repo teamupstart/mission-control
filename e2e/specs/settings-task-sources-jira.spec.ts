@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * Adding a Jira task source, in the panel an operator actually uses.
@@ -18,7 +19,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  * click reaches the config route, the daemon writes it, and the panel reads back what it
  * stored.
  *
- * Two claims:
+ * Core claims:
  *
  *  1. The kind is REACHABLE - offered by the add control with its own blurb, arriving
  *     switched off (and filing parked tasks) with the Jira fields (not the GitHub ones), and
@@ -30,7 +31,11 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  *     operator is that it renders the daemon's answer rather than swallowing it, and
  *     reaching a real Jira for that would put a token and a VPN in the test's path.
  *
- * No model tokens: nothing here dispatches an agent, and nothing here sweeps.
+ *  3. acli crosses the config, preflight and sweep routes through its recording fake;
+ *     login failures and active-site switches reach the UI and file no wrong-site work.
+ *
+ * No model tokens: nothing here dispatches an agent. Jira subprocesses use recording fakes;
+ * the acli case manually sweeps one canned issue.
  */
 
 /** Enough of a JQL query to be a real one, and recognisable in a stored blob. */
@@ -735,4 +740,104 @@ test("Check it works accepts the Claude.ai Rovo Jira registration", async ({ pag
   await expect(note).not.toHaveClass(/settings-error/);
   await note.scrollIntoViewIfNeeded();
   await shoot(page, "upstartclaw-structured-result");
+});
+
+test.describe("acli read method", () => {
+  test.use({ daemonEnv: { JIRA_API_TOKEN: "", JIRA_EMAIL: "" } });
+
+  test("Atlassian CLI uses OAuth, files its issue, and refuses login and active-site failures", async ({ page, daemon }) => {
+    const stateFile = join(daemon.recordDir, "fake-acli-state.json");
+    const issue = {
+      key: "MC-41", self: "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/10041",
+      fields: {
+        summary: "Read Jira through Atlassian CLI",
+        description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "OAuth description" }] }] },
+        priority: { name: "High" },
+      },
+    };
+    writeFileSync(stateFile, JSON.stringify({ issues: [issue] }));
+    const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
+      data: { sources: [{
+        id: "jira-acli", kind: "jira", label: "Atlassian queue", repoRoot: daemon.repo, enabled: false,
+        config: { site: "example.atlassian.net", jql: "project = MC" },
+      }] },
+    });
+    expect(seeded.ok(), await seeded.text()).toBe(true);
+    await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+    await page.getByRole("combobox", { name: "How Jira queries are authenticated" }).selectOption("acli");
+    const login = page.getByText(/Log in once with/);
+    await expect(login).toContainText("acli jira auth login --web");
+    await expect(page.getByRole("spinbutton", { name: "Issues per page" })).toBeDisabled();
+    await expect(login).toContainText("Write-back through acli is not available in this build");
+    await login.scrollIntoViewIfNeeded();
+    await shoot(page, "acli-login-note");
+    // A reload proves that the choice crossed the config route and survived storage.
+    await expect.poll(async () => {
+      const data = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
+      return data.sources[0].config.queryVia;
+    }).toBe("acli");
+    await page.reload();
+    await expect(page.getByRole("combobox", { name: "How Jira queries are authenticated" })).toHaveValue("acli");
+    const check = page.getByRole("button", { name: "Check it works" });
+    const note = page.locator("p.ts-note");
+    await check.click();
+    await expect(note).toHaveText("Looks good - Jira answered, and this JQL filter runs.");
+    await shoot(page, "acli-preflight");
+
+    const sweep = async () => {
+      const response = page.waitForResponse((r) => r.url().endsWith("/jira-acli/sweep") && r.request().method() === "POST");
+      await page.getByRole("button", { name: "Sweep now", exact: true }).click();
+      const result = await response;
+      expect(result.ok()).toBe(true);
+      return result.json();
+    };
+    expect((await sweep()).filed).toBe(1);
+    await expect(note).toContainText("filed 1");
+    const tasks = await (await page.request.get(`${daemon.baseURL}/api/tasks`)).json();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      title: issue.fields.summary, priority: "high",
+      source: { externalId: "MC-41", url: "https://example.atlassian.net/browse/MC-41" },
+    });
+    expect(tasks[0].intent).toContain("OAuth description");
+    const board = await page.context().newPage();
+    await page.request.put(`${daemon.baseURL}/api/ui/config`, { data: { layout: "board" } });
+    await board.goto(`${daemon.baseURL}/#/fleet`);
+    await expect(board.locator("section.board-backlog .bl-title")).toHaveText(issue.fields.summary);
+    await shoot(board, "acli-filed-card");
+    await board.locator("section.board-backlog .bl-title").click();
+    await expect(board.getByRole("link", { name: /MC-41/ })).toHaveAttribute("href", "https://example.atlassian.net/browse/MC-41");
+    await expectContentClearsBorder(board.getByRole("dialog"));
+    await shoot(board, "acli-filed-link");
+    await board.close();
+
+    writeFileSync(stateFile, JSON.stringify({ unauthorized: true }));
+    await check.click();
+    await expect(note).toContainText("acli jira auth login --web");
+    await expect(note).toHaveClass(/settings-error/);
+    await expect(note).toBeInViewport({ ratio: 1 });
+    await shoot(page, "acli-login-required");
+
+    // Internal service hosts carry no tenant identity. A changed post-search login must
+    // discard otherwise valid results, including the issue that would be newly filed.
+    writeFileSync(stateFile, JSON.stringify({ afterSearchSite: "other.atlassian.net", issues: [{ ...issue, key: "MC-42" }] }));
+    expect((await sweep()).filed).toBe(0);
+    await expect(note).toContainText("other.atlassian.net");
+    await expect(note).toContainText("acli jira auth switch");
+    expect(await (await page.request.get(`${daemon.baseURL}/api/tasks`)).json()).toHaveLength(1);
+    await shoot(page, "acli-during-search-site-mismatch");
+
+    writeFileSync(stateFile, JSON.stringify({ site: "other.atlassian.net", issues: [{ ...issue, key: "MC-42" }] }));
+    const refused = await sweep();
+    expect(refused.filed).toBe(0);
+    await expect(note).toContainText("other.atlassian.net");
+    await expect(note).toContainText("example.atlassian.net");
+    await expect(note).toContainText("acli jira auth switch");
+    await expect(note).toBeInViewport({ ratio: 1 });
+    await expect.poll(() => note.evaluate((el) => innerHeight - el.getBoundingClientRect().bottom))
+      .toBeGreaterThanOrEqual(12);
+    expect(await (await page.request.get(`${daemon.baseURL}/api/tasks`)).json()).toHaveLength(1);
+    await shoot(page, "acli-site-mismatch");
+  });
+
 });

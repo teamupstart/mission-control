@@ -67,6 +67,7 @@ function spec(
  * Workflow commands are resolved inside the same environment but are not built-in ids.
  */
 export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
+  acli: spec("acli", "Atlassian CLI", "acli", "ACLI_BIN"),
   coderabbit: spec("coderabbit", "CodeRabbit", "coderabbit", "CODERABBIT_BIN", {
     candidates: ({ home }) => [join(home, ".local/bin/coderabbit"), join(home, ".coderabbit/bin/coderabbit")],
   }),

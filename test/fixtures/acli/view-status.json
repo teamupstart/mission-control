@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "jira",
+    "workitem",
+    "view",
+    "MC-2",
+    "--fields",
+    "status",
+    "--json"
+  ],
+  "code": 0,
+  "stdout": "{\n  \"changelog\": null,\n  \"editmeta\": null,\n  \"expand\": \"Synthetic value\",\n  \"fields\": {\n    \"status\": {\n      \"description\": \"\",\n      \"iconUrl\": \"https://example.atlassian.net/resource\",\n      \"id\": \"10004\",\n      \"name\": \"To Do\",\n      \"self\": \"https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/status/10004\",\n      \"statusCategory\": {\n        \"colorName\": \"Synthetic value\",\n        \"id\": 1,\n        \"key\": \"MC\",\n        \"name\": \"Synthetic value\",\n        \"self\": \"https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/statuscategory/10005\"\n      }\n    }\n  },\n  \"fieldsToInclude\": null,\n  \"id\": \"10002\",\n  \"key\": \"MC-2\",\n  \"names\": null,\n  \"operations\": null,\n  \"properties\": null,\n  \"renderedFields\": null,\n  \"schema\": null,\n  \"self\": \"https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/10002\",\n  \"transitions\": null,\n  \"versionedRepresentations\": null\n}\n",
+  "stderr": ""
+}

@@ -489,6 +489,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // every run that reaches the write path. `jiraBin()` is the single seam every `jira`
     // subprocess resolves through, so this one variable covers the sweep and both verbs.
     MISSION_JIRA_BIN: bins.jira,
+    // All acli reads stay inside the fixture, regardless of the host's OAuth login.
+    MISSION_ACLI_BIN: bins.acli,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR

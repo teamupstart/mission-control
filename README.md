@@ -242,7 +242,8 @@ hold individual items, express dependencies, or let backlog autopilot schedule e
 the concurrency you allow.
 
 Task sources pull from GitHub issues and Jira without starting agents behind your back. Imported
-work arrives parked by default for triage. Enable **Keep imported backlog tasks updated** on a source
+work arrives parked by default for triage. Jira sources can select **Atlassian CLI (acli)** to
+read through acli's own OAuth login, without Jira environment variables. Enable **Keep imported backlog tasks updated** on a source
 to refresh unstarted tasks on each sweep, preserving local edits and showing conflicts for review.
 Recurring missions and agent-created follow-up tasks feed
 the same queue, so planned work, discovered work, and scheduled work share one lifecycle.

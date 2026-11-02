@@ -53,7 +53,7 @@ async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boun
   }
 }
 
-for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: mode === 'readiness-failure' ? 300_000 : 180_000}, async (t) => {
   const binary = mode.startsWith('binary-');
   const rename = mode === 'binary-rename';
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
@@ -306,6 +306,14 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     await new Promise<void>((done, reject) => {retry.once('spawn', done); retry.once('error', reject);});
     ownedProcesses.push({pid: retry.pid!, identity: processIdentity(retry.pid!)});
     assert.equal(await new Promise((done) => retry.once('exit', done)), 0, 'ordinary startup handed off recovery');
+  }
+  if (mode === 'readiness-failure') {
+    // This mode must first fail readiness and restore the app, then run a second real
+    // LaunchServices preflight/relaunch. Give each phase its own bounded wait, as the
+    // interruption case above does, instead of spending the relaunch budget on rollback.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'update-outcome.json'))
+      && JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result === 'failure',
+    'failed readiness did not record recovery', {timeout: 120_000});
   }
   await boundedMigrationWait(() => {
     if (mode !== 'readiness-failure' && existsSync(join(state, 'fixture-error.txt'))) throw new Error(readFileSync(join(state, 'fixture-error.txt'), 'utf8'));

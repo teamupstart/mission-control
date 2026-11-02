@@ -14,7 +14,7 @@ const unused = async () => {
 };
 
 function starters(result: Awaited<ReturnType<SetupServiceStarters["herdr-server"]>>): SetupServiceStarters {
-  return { "herdr-server": async () => result, "cmux-app": unused, "cmux-socket-control": unused };
+  return { "claude-mcp-trust": unused, "codex-mcp-trust": unused, "herdr-server": async () => result, "cmux-app": unused, "cmux-socket-control": unused };
 }
 
 test("every service id has exactly one daemon-owned starter", () => {
@@ -63,6 +63,8 @@ test("a repair that starts no process never reports one running", async () => {
   // `The ${label} is running.` is true of a server and false of a file edit, and it reached
   // an operator as "The cmux socket control is running." about a config value.
   const response = await startSetupService("cmux-socket-control", {
+    "claude-mcp-trust": unused,
+    "codex-mcp-trust": unused,
     "herdr-server": unused,
     "cmux-app": unused,
     "cmux-socket-control": async () => ({ ok: true, outcomeUnknown: false }),
@@ -80,6 +82,8 @@ test("a failure with nothing to say falls back to the service's own refusal", as
   // socket never answered - so the catalog carries one per service rather than one built
   // around the label.
   const response = await startSetupService("cmux-app", {
+    "claude-mcp-trust": unused,
+    "codex-mcp-trust": unused,
     "herdr-server": unused,
     "cmux-app": async () => ({ ok: false, outcomeUnknown: false }),
     "cmux-socket-control": unused,

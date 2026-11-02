@@ -442,6 +442,9 @@ repository:
 
 Either way, **Settings → Setup** is where Mission Control reports what this machine can already do
 and what is still missing. The [setup guide](docs/setup-guide.html) reads that panel row by row.
+Under **Agent extensions**, the Claude Code and Codex Mission Control MCP trust rows allow
+Mission Control tools by default in each agent, including auto mode. See the
+[MCP trust settings](docs/configuration.md#mission-control-mcp-trust).
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:

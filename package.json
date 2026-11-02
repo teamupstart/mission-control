@@ -121,6 +121,7 @@
     "rehype-highlight": "^7.0.2",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.9.1",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0",
     "zod": "^3.24.1",

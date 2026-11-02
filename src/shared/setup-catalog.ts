@@ -33,6 +33,8 @@ export const SETUP_DEPENDENCY_IDS = [
   "herdr",
   "node-runtime",
   "coderabbit-cli",
+  "claude-mcp-trust",
+  "codex-mcp-trust",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -108,7 +110,7 @@ export interface SetupGuideLink {
  * fact about this machine right now, and it is the one an operator with Herdr installed is
  * far more likely to be missing.
  */
-export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control"] as const;
+export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control", "claude-mcp-trust", "codex-mcp-trust"] as const;
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
@@ -124,6 +126,18 @@ export const SETUP_SERVICE_INFO: Record<
   SetupServiceId,
   { id: SetupServiceId; label: string; started: string; refused: string }
 > = {
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Claude Code. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Claude Code MCP trust setting could not be written.",
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    started: "Mission Control MCP is allowed by default in Codex. Explicit restrictions still apply. Restart sessions to apply.",
+    refused: "The Codex MCP trust setting could not be written.",
+  },
   "herdr-server": {
     id: "herdr-server",
     label: "Herdr server",
@@ -136,7 +150,7 @@ export const SETUP_SERVICE_INFO: Record<
     started: "cmux is open, and its control socket is answering.",
     refused: "cmux could not be opened.",
   },
-  // Not a process, and the only entry here that is not. It is in this union because it is
+  // A configuration repair belongs in this union because it is
   // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
   // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
   "cmux-socket-control": {
@@ -408,6 +422,32 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     id: "coderabbit-cli", label: "CodeRabbit CLI", family: "extensions", requirement: "optional",
     enables: "Local committed workflow reviews require CLI >=0.9.1 and stored authentication in the daemon effective HOME. Only root YAML boolean true enables review. Run coderabbit auth login there, then Re-check. No review or sign-in starts during detection.",
     remedy: { kind: "link", url: "https://docs.coderabbit.ai/cli", label: "Install and authenticate CodeRabbit" },
+  },
+  "claude-mcp-trust": {
+    id: "claude-mcp-trust",
+    label: "Claude Code Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedy: {
+      kind: "service",
+      service: "claude-mcp-trust",
+      label: "Trust Mission Control in Claude Code",
+      note: "Add mcp__mission-control__* to permissions.allow in ~/.claude/settings.json, preserving other settings and a recovery copy. Restart Claude Code sessions to apply. Install the Mission Control MCP integration first.",
+    },
+  },
+  "codex-mcp-trust": {
+    id: "codex-mcp-trust",
+    label: "Codex Mission Control MCP trust",
+    family: "extensions",
+    requirement: "recommended",
+    enables: "Allows Mission Control MCP tools by default, including in auto mode. Existing explicit restrictions still apply.",
+    remedy: {
+      kind: "service",
+      service: "codex-mcp-trust",
+      label: "Trust Mission Control in Codex",
+      note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Install the Mission Control MCP integration first.",
+    },
   },
 };
 

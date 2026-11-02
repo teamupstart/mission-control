@@ -387,3 +387,32 @@ Library repository-root base/severity tuning shares the normal CAS catalog, sett
 and legacy-write preservation. Defaults are major, observed origin/HEAD, 45 minutes and ten
 executions. Enabled unavailable reviews block with Setup diagnostics; exhausted allowance
 always warns and skips. See [workflow behavior](workflows.md#local-coderabbit-command).
+
+## Mission Control MCP trust
+
+After installing the Mission Control MCP integration, open **Settings > Setup > Agent
+extensions** and use **Trust Mission Control in Claude Code** or **Trust Mission Control in
+Codex**. Each row reads the current user settings; viewing Setup never changes them.
+
+- Claude Code adds `mcp__mission-control__*` to `permissions.allow` in
+  `~/.claude/settings.json` (honoring `CLAUDE_CONFIG_DIR` and the installer's
+  `CLAUDE_SETTINGS_PATH` override). Existing allow, ask and deny rules remain.
+- Codex sets `default_tools_approval_mode = "approve"` in the existing
+  `[mcp_servers.mission-control]` table in `~/.codex/config.toml`, honoring `CODEX_HOME`.
+  It requires an installed server registration and preserves per-tool overrides.
+
+These are server-specific defaults, including for auto mode. They do not change sandboxing,
+global approval policies, other MCP servers or explicit restrictions. Managed and project
+settings can take precedence. Restart agent sessions after applying the change. Ready means
+the user-level default is present, not that every effective policy permits every tool.
+
+Repairs preserve comments and unrelated settings and keep the previous file in a private
+`<settings-file>.mission-migration-<id>/attempt-*/original` recovery copy. Repeating a
+satisfied repair writes nothing. Invalid files are reported as Unknown and left untouched.
+Repairs that would change a symlinked settings file are refused before creating recovery files;
+an already satisfied symlinked file remains Ready.
+Codex TOML with a custom dotted or inline server layout may require setting the value
+manually in the server table.
+
+The settings follow the upstream [Claude MCP permission syntax](https://code.claude.com/docs/en/permissions#mcp)
+and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).

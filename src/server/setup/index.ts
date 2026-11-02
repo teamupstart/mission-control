@@ -1,3 +1,4 @@
+import { mcpTrustStatus } from "./mcp-trust.ts";
 import { codeRabbitReadiness, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
@@ -314,6 +315,8 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
+  "claude-mcp-trust": async (deps) => deps.mcpTrust?.("claude") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
+  "codex-mcp-trust": async (deps) => deps.mcpTrust?.("codex") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
   "coderabbit-cli": codeRabbitStatus,
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
@@ -370,6 +373,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    mcpTrust: mcpTrustStatus,
     runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },

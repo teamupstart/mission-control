@@ -35,6 +35,7 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  mcpTrust?(agent: "claude" | "codex"): SetupStatus;
   runtime?(): SetupRuntimeView;
   canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */

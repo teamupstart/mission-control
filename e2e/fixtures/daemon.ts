@@ -414,6 +414,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
     // agent would write conversations into the operator's real ~/.claude.
     HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    // Keep Claude's global MCP catalog at the fixture's ~/.claude.json. An explicit
+    // config directory relocates that file too, so clear any inherited override.
+    CLAUDE_CONFIG_DIR: undefined,
+    CLAUDE_SETTINGS_PATH: join(home, ".claude", "settings.json"),
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,

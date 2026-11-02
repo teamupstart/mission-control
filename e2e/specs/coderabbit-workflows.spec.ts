@@ -180,10 +180,41 @@ test("a passing gate without an explicit coverage count remains incomplete", asy
  expect(attempt.verdict).toBeNull();
  expect(attempt.output).toMatchObject({ review: { status: "incomplete" } });
  await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
- await expect(dashboard.getByRole("main")).toContainText("incomplete");
- await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toBeVisible();
- await dashboard.getByRole("link", { name: "Settings > Setup" }).scrollIntoViewIfNeeded();
+ await expect(dashboard.getByRole("main")).toContainText("CodeRabbit completion reported no review coverage");
+ // The CLI is installed and signed in, so Setup would show nothing wrong. Point at the output.
+ await expect(dashboard.getByRole("main")).toContainText("Inspect this attempt's retained CodeRabbit output");
+ await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toHaveCount(0);
+ await dashboard.getByText(/Inspect this attempt's retained CodeRabbit output/).first().scrollIntoViewIfNeeded();
  await shot(dashboard, "missing-coverage-incomplete-r2");
+});
+
+test("a CLI 0.9.2 completion that lists reviewed files passes when it covers the pinned comparison", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ reviewedFiles: "all" }));
+ const r = await start(dashboard, daemon);
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")?.output,
+  { timeout: 60_000 }).toMatchObject({ status: "passed", review: { status: "complete" } });
+ expect((await detail(daemon, r.id)).run.status).toBe("completed");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review: 0 findings");
+ await expect(dashboard.getByRole("main")).not.toContainText("Invalid CodeRabbit completion/gate");
+ await shot(dashboard, "reviewed-files-complete");
+});
+
+test("a CLI 0.9.2 completion that skipped a changed file blocks with its coverage gap, not a Setup link", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ reviewedFiles: "missing-one" }));
+ const r = await start(dashboard, daemon);
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")?.state,
+  { timeout: 60_000 }).toBe("error");
+ const attempt = (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")!;
+ expect(attempt.verdict).toBeNull();
+ expect(attempt.output).toMatchObject({ review: { status: "incomplete" } });
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await expect(dashboard.getByRole("main")).toContainText(/CodeRabbit review coverage disagrees with the pinned comparison: 1 of \d+ changed files not reviewed/);
+ await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toHaveCount(0);
+ await dashboard.getByText(/Inspect this attempt's retained CodeRabbit output/).first().scrollIntoViewIfNeeded();
+ await shot(dashboard, "reviewed-files-gap");
 });
 
 

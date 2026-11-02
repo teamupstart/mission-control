@@ -1,17 +1,18 @@
-// Fixtures follow https://docs.coderabbit.ai/cli/agent-mode, verified with CLI 0.9.1 help.
+// Fixtures follow https://docs.coderabbit.ai/cli/agent-mode, verified with CLI 0.9.1 help. The
+// `reviewedFiles` fixtures below are copied from a real CLI 0.9.2 completion line.
 // No fixture invokes a real reviewer. Complete stdout and exit must agree independently.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS } from "../src/server/workflows/coderabbit-result.ts";
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "../src/server/workflows/coderabbit-result.ts";
 const finding = { type: "finding", severity: "major", fileName: "src/🙂.ts", title: "Verify this claim", comment: "Details", codegenInstructions: "Inspect before fixing", suggestions: ["untrusted snippet"], startLine: 1, endLine: 2 };
 const complete = { type: "complete", status: "review_completed", outcome: "completed", unreviewedFileCount: 0, findings: 1, gate: { threshold: "major", status: "blocked", blockingFindings: 1 } };
-function parse(events: unknown[], exit = 2, empty = false) {
-  const parser = new CodeRabbitResultParser("attempt", "major");
+function parse(events: unknown[], exit = 2, empty = false, paths: CodeRabbitChangedPaths | null = null) {
+  const parser = new CodeRabbitResultParser("attempt", "major", paths);
   parser.push(Buffer.from(events.map(e=>JSON.stringify(e)).join("\n")+"\n"));
   return parser.finish(exit, empty);
 }
 test("split UTF-8 findings retain all text, stable ids and advisory severities", () => {
-  const parser = new CodeRabbitResultParser("attempt", "major");
+  const parser = new CodeRabbitResultParser("attempt", "major", null);
   const bytes = Buffer.from([finding, {...finding,severity:"info"}, {...complete,findings:2}].map(e=>JSON.stringify(e)).join("\n"));
   for (const byte of bytes) parser.push(Buffer.from([byte]));
   const result = parser.finish(2, false);
@@ -65,7 +66,7 @@ test("no-change skip requires an empty pinned comparison", () => {
 });
 test("malformed JSON/UTF-8, oversized records and finding count overflow block", () => {
   for(const bytes of [Buffer.from("oops\n"),Buffer.from([0xff]),Buffer.from("x".repeat(CODERABBIT_RESULT_LIMITS.recordBytes+1))]) {
-    const p=new CodeRabbitResultParser("a","major");p.push(bytes);p.push(Buffer.from(JSON.stringify(complete)));assert.equal(p.finish(0,false).status,"incomplete");
+    const p=new CodeRabbitResultParser("a","major",null);p.push(bytes);p.push(Buffer.from(JSON.stringify(complete)));assert.equal(p.finish(0,false).status,"incomplete");
   }
   const r=parse([...Array.from({length:1001},()=>finding),{...complete,findings:1001,gate:{...complete.gate,blockingFindings:1001}}]);
   assert.equal(r.status,"incomplete");assert.equal(r.counts.major,1000);
@@ -82,4 +83,58 @@ test("a vendor wait survives a later superficial completion as an action-require
 test("unknown events after completion remain additive, while duration stays diagnostic",()=>{
  const r=parse([{type:"review_context",expectedDuration:"15 minutes"},finding,complete,{type:"new_vendor_event"},{type:"heartbeat"}]);
  assert.equal(r.status,"failed");assert.equal(r.expectedDuration,"15 minutes");
+});
+
+// CLI 0.9.2 dropped `unreviewedFileCount` and reports `reviewedFiles` instead. This is the
+// completion line a real 0.9.2 review printed, with its file list shortened.
+const reviewedFilesComplete = { type: "complete", status: "review_completed", findings: 0,
+  gate: { threshold: "major", status: "passed", blockingFindings: 0 },
+  reviewedFiles: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"],
+  outcome: "completed", message: "Review completed" };
+const changed: CodeRabbitChangedPaths = { required: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"],
+  allowed: ["docs/task-read.md", "internal/service/task_read.go", "openapi/openapi.yaml"] };
+test("a reviewedFiles completion that covers exactly the pinned comparison passes", () => {
+  const r = parse([{ type: "heartbeat", status: "reviewing" }, reviewedFilesComplete], 0, false, changed);
+  assert.equal(r.status, "passed", r.diagnostic);
+  const listedInAnotherOrder = { ...reviewedFilesComplete, reviewedFiles: [...reviewedFilesComplete.reviewedFiles].reverse() };
+  assert.equal(parse([listedInAnotherOrder], 0, false, changed).status, "passed");
+});
+test("a reviewedFiles completion still fails on blocking findings", () => {
+  const blocked = { ...reviewedFilesComplete, findings: 1, gate: { threshold: "major", status: "blocked", blockingFindings: 1 } };
+  assert.equal(parse([finding, blocked], 2, false, changed).status, "failed");
+});
+test("reviewedFiles that miss a changed file, or name one outside the comparison, are incomplete", () => {
+  const missed = parse([{ ...reviewedFilesComplete, reviewedFiles: ["docs/task-read.md", "openapi/openapi.yaml"] }], 0, false, changed);
+  assert.equal(missed.status, "incomplete");
+  assert.match(missed.diagnostic, /1 of 3 changed files not reviewed, 0 reviewed files outside/);
+  assert.ok(!missed.diagnostic.includes("task_read.go"), "repository paths never reach the compact diagnostic");
+  const outside = parse([{ ...reviewedFilesComplete, reviewedFiles: [...reviewedFilesComplete.reviewedFiles, "src/other.ts"] }], 0, false, changed);
+  assert.equal(outside.status, "incomplete");
+  assert.match(outside.diagnostic, /0 of 3 changed files not reviewed, 1 reviewed files outside/);
+});
+test("deleted and renamed-away paths may be reviewed but are never required", () => {
+  const paths: CodeRabbitChangedPaths = { required: ["src/new.ts"], allowed: ["src/new.ts", "src/old.ts"] };
+  for (const reviewedFiles of [["src/new.ts"], ["src/new.ts", "src/old.ts"]]) {
+    assert.equal(parse([{ ...reviewedFilesComplete, reviewedFiles }], 0, false, paths).status, "passed");
+  }
+  assert.equal(parse([{ ...reviewedFilesComplete, reviewedFiles: ["src/old.ts"] }], 0, false, paths).status, "incomplete");
+});
+test("reviewedFiles cannot be trusted without the pinned comparison's changed files", () => {
+  const r = parse([reviewedFilesComplete], 0, false, null);
+  assert.equal(r.status, "incomplete"); assert.match(r.diagnostic, /changed files are unavailable/);
+});
+test("a completion with neither coverage shape is incomplete, and malformed reviewedFiles are rejected", () => {
+  const { reviewedFiles: _files, ...bare } = reviewedFilesComplete;
+  assert.match(parse([bare], 0, false, changed).diagnostic, /no review coverage/);
+  for (const reviewedFiles of [null, "docs/task-read.md", [""], [42]]) {
+    assert.equal(parse([{ ...reviewedFilesComplete, reviewedFiles }], 0, false, changed).status, "incomplete");
+  }
+});
+test("both coverage shapes together must both agree", () => {
+  assert.equal(parse([{ ...reviewedFilesComplete, unreviewedFileCount: 0 }], 0, false, changed).status, "passed");
+  assert.equal(parse([{ ...reviewedFilesComplete, unreviewedFileCount: 1 }], 0, false, changed).status, "incomplete");
+});
+test("a no-change skip with an empty reviewedFiles list matches an empty comparison", () => {
+  const skipped = { ...reviewedFilesComplete, status: "review_skipped", reviewedFiles: [] };
+  assert.equal(parse([skipped], 0, true, { required: [], allowed: [] }).status, "skipped");
 });

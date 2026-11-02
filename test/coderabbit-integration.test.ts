@@ -12,7 +12,8 @@ import { withProcessEnv } from "./helpers/process-env.ts";
 const home=mkdtempSync(join(tmpdir(),"mc-cr-integration-"));process.env.MISSION_HOME=home;
 after(()=>rmSync(home,{recursive:true,force:true}));
 const { runCheck }=await import("../src/server/workflows/checks.ts");
-const { codeRabbitReadiness, resolveCodeRabbitComparison }=await import("../src/server/workflows/coderabbit.ts");
+const { codeRabbitReadiness, resolveCodeRabbitComparison, codeRabbitChangedPaths }=await import("../src/server/workflows/coderabbit.ts");
+const { CODERABBIT_OPERATOR_ACTION }=await import("../src/server/workflows/coderabbit-result.ts");
 const { parseCodeRabbitConfig }=await import("../src/server/workflows/coderabbit-config.ts");
 const { WorkflowCommandArtifactService }=await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowCommandManager }=await import("../src/server/workflows/commands.ts");
@@ -112,10 +113,17 @@ for(const [name,change] of [
  ["uncommitted YAML",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};}],
  ["ambiguous base",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>({...comparison,error:"ambiguous base"});}],
  ["corrupt frozen comparison",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>{throw new Error("corrupt comparison metadata");};}],
- ["incomplete review",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"exited",exitCode:1,output:"",truncatedBytes:0,review:{...summary,status:"incomplete"}});}],
+ ["vendor action required",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"exited",exitCode:1,output:"",truncatedBytes:0,review:{...summary,status:"incomplete",diagnostic:CODERABBIT_OPERATOR_ACTION}});}],
  ["timeout or cancellation",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"infrastructure",reason:"timeout"});}],
 ] as const) test(`${name} blocks with visible error/Setup action, never a repair verdict`,async()=>{
  const i=input(),d=deps();change(i,d);const r=await runCheck(i,d);assert.equal(r.kind,"action_required");if(r.kind==="action_required"){assert.equal(r.setup,true);assert.match(r.reason,/Error:.*Settings > Setup/);}
+});
+test("a review that ran but returned an unusable result points at its output, not Setup",async()=>{
+ for(const review of [{...summary,status:"incomplete" as const,diagnostic:"Invalid CodeRabbit completion/gate"},{...summary,status:"incomplete" as const,diagnostic:"CodeRabbit review coverage disagrees with the pinned comparison"}]){
+  const d=deps();d.execute=async()=>({kind:"exited",exitCode:0,output:"",truncatedBytes:0,review});
+  const r=await runCheck(input(),d);assert.equal(r.kind,"action_required");
+  if(r.kind==="action_required"){assert.equal(r.setup,undefined);assert.doesNotMatch(r.reason,/Settings > Setup/);assert.match(r.reason,/^Error: .*Inspect this attempt's retained CodeRabbit output\.$/);}
+ }
 });
 test("prelaunch failures release allowance, completed findings fail and keep all artifacts",async()=>{
  const i=input();let releases=0;i.reserveRun=()=>({granted:true,spent:9,release:()=>{releases++;}});
@@ -143,6 +151,20 @@ test("observed default base and full head resolve in correct repo; retries freez
   f.git("update-ref","refs/remotes/origin/main",c.head!);assert.equal(c.baseTip,f.base);
   const refreshed=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:c.head,yaml:enabled,command});assert.equal(refreshed.empty,true);
  }
+});
+test("changed paths come from git: renames and deletions are allowed, only head paths are required",async()=>{
+ const f=repo("changed-paths");
+ // `file` is modified by the fixture. Add, rename and delete beyond it, with names git would quote.
+ writeFileSync(join(f.root,"keep me.txt"),"kept\n");writeFileSync(join(f.root,"to-delete"),"gone soon\n");writeFileSync(join(f.root,"old-name.ts"),"export const renamed = 1;\n");
+ f.git("add",".");f.git("commit","-qm","more base");const mergeBase=f.git("rev-parse","HEAD");
+ f.git("mv","old-name.ts","new-name.ts");f.git("rm","-q","to-delete");writeFileSync(join(f.root,"caf\u00e9\nline.md"),"unicode and newline\n");writeFileSync(join(f.root,"keep me.txt"),"edited\n");
+ f.git("add",".");f.git("commit","-qm","rename delete add");const head=f.git("rev-parse","HEAD");
+ const paths=await codeRabbitChangedPaths(f.root,mergeBase,head);
+ assert.deepEqual([...paths.required].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts"]);
+ assert.deepEqual([...paths.allowed].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts","old-name.ts","to-delete"]);
+ assert.deepEqual(await codeRabbitChangedPaths(f.root,head,head),{required:[],allowed:[]});
+ await assert.rejects(codeRabbitChangedPaths(f.root,"main",head),/not pinned to full commits/);
+ await assert.rejects(codeRabbitChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
 });
 test("missing origin/HEAD requires explicit base tuning and resolves its tip and merge-base",async()=>{
  const f=repo("explicit-base"),head=f.git("rev-parse","HEAD");

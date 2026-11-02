@@ -1494,7 +1494,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
         [...args, ...extraDirArgs, ...compactArgs],
         opts.cwd,
         opts.stateHome,
-        overlay ? { codexHome: overlay } : undefined,
+        {
+          ...(overlay ? { codexHome: overlay } : {}),
+          traceContext: opts.traceContext ?? null,
+        },
       );
       const config: LaunchConfig = {
         residentCompactionTokenLimit: compactLimit,

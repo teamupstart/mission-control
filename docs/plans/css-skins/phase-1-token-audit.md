@@ -61,17 +61,22 @@ Non-goals:
 1. Inventory: list every literal after `:root` with its selector, and group them by meaning
    (state tone, text on a solid accent, shadow, scrim, tinted dark surface, brand-adjacent).
 2. Map each group:
-   - A literal equal to or within a rounding step of an existing token becomes that token.
-   - A literal that is a tint of a token (for example the red family `#ef5f63`, `#e5534b`,
-     `#e5877f` near `--danger`, the green family near `--idle` or `--pr-open`) becomes a new
-     named token whose Default value is the exact current literal, so nothing shifts. Prefer
-     names that say the role (`--danger-strong`, `--danger-soft`, `--on-accent`), not the hue.
+   - A literal becomes an existing token only when it equals that token's Default value
+     exactly (same resolved colour and alpha). A near match is not enough: substituting it
+     would shift Default and break this phase's pixel-identical criterion.
+   - Every other literal, including near matches and tints of a token (for example the red
+     family `#ef5f63`, `#e5534b`, `#e5877f` near `--danger`, the green family near `--idle` or
+     `--pr-open`), becomes a new named role token whose Default value is the exact current
+     literal, so nothing shifts. Prefer names that say the role (`--danger-strong`,
+     `--danger-soft`, `--on-accent`), not the hue.
    - `#fff` / `#000` used as text on a solid accent become `--on-accent` (Default `#fff`) or
      a similar role token.
    - Black shadows and scrims become role tokens such as `--shadow-strong` and `--scrim`,
      each declared as a complete colour or shadow value equal to the current literal.
    - Tinted dark surfaces become role tokens such as `--surface-warn`, `--surface-code`, with
      the exact current value.
+   - A `color-mix()` of tokens may replace a literal only when it resolves to exactly the same
+     colour; otherwise use a role token.
    Keep the number of new tokens small, about 15. Declare each on `:root` with a one-line
    comment on what it is for, matching the file's comment style.
 3. Rewrite the chevron: replace the `background-image` data URI with a `mask-image` (or a
@@ -144,3 +149,7 @@ request.
   re-renders the canvas on a skin change. Moved to token-driven CSS classes here, the
   earliest phase that owns the minimap colours, so Phase 2 needs no canvas subscription; Phase
   2 adds the browser verification.
+- 2026-11-02, PR #1298 review: step 2 previously allowed a literal "within a rounding step" of
+  a token to become that token, which would shift Default and contradict the pixel-identical
+  outcome. Replacement now requires an exact match; anything else becomes a role token with
+  the exact literal as its Default value. No later phase is affected.

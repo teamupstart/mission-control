@@ -1,6 +1,6 @@
 # CSS skins for Mission Control
 
-Status: revision 4 (2026-11-02), decisions adopted; repaired after plan validation round 1. Six candidate skins were mocked up and
+Status: revision 5 (2026-11-02), decisions adopted; repaired after plan validation round 1 and PR review. Six candidate skins were mocked up and
 reviewed; four ship. The mock-ups of the four shipped skins are in `plan.html`.
 
 ## Adopted decisions

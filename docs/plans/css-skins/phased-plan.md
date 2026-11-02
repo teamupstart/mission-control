@@ -1,7 +1,7 @@
 # CSS skins - phased implementation plan
 
 Source plan: `docs/plans/css-skins/plan.md` (managed plan `64a51be3-81d8-4274-9152-ee13d2ef19fd`,
-revision 4, repaired after plan validation round 1). This index splits that plan into merge units. The source plan owns the goal, the
+revision 5, repaired after plan validation round 1 and PR review). This index splits that plan into merge units. The source plan owns the goal, the
 token values and the per-skin decoration; the phase files own the route.
 
 ## Incorporated human decisions

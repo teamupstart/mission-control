@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import {
@@ -29,6 +30,8 @@ export interface ResidentEditorSectionProps {
   update: <K extends ResidentProfileSectionId>(id: K, value: ResidentProfileRevision[K]) => void;
   personas: readonly PersonaView[];
   disabled: boolean;
+  /** Resolved by the editor using the same default ladder as launch. */
+  spendUnavailable?: string | null;
   /** Open the Library's blank Persona editor. Absent where the editor cannot navigate. */
   onCreatePersona?: () => void;
 }
@@ -143,7 +146,7 @@ function InstructionsSection({ draft, update, disabled }: ResidentEditorSectionP
   );
 }
 
-function ExecutionSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+function ExecutionSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const { agent, model, effort } = draft.execution;
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const levels = capabilitiesFor(agent).effort?.levels ?? [];
@@ -170,12 +173,16 @@ function ExecutionSection({ draft, update, disabled }: ResidentEditorSectionProp
         <Tooltip label="The model this resident launches with; the harness default when unset">
           <select
             className="field-input"
+            id="resident-model"
+            aria-describedby={spendUnavailable ? "resident-model-spend" : undefined}
+            aria-invalid={!!spendUnavailable && draft.loop.spendCapUsd !== null}
             value={model ?? ""}
             disabled={disabled}
             onChange={(event) => update("execution", { ...draft.execution, model: event.target.value || null })}
           >
             <option value="">harness default</option>
-            <ModelCatalogOptions catalog={resolveModels(agent, model ?? "")} />
+            <ModelCatalogOptions catalog={resolveModels(agent, model ?? "")}
+              optionSuffix={(choice) => residentModelSpendAvailable(agent, choice.id) ? null : "spend cap unavailable"} />
           </select>
         </Tooltip>
       </label>
@@ -196,6 +203,9 @@ function ExecutionSection({ draft, update, disabled }: ResidentEditorSectionProp
           </select>
         </Tooltip>
       </label>
+      {spendUnavailable && <p id="resident-model-spend" className="field-hint resident-problem" role="status">
+        {spendUnavailable}
+      </p>}
       <ModelCatalogNotice agent={agent} />
     </div>
   );
@@ -442,7 +452,7 @@ function McpSection({ draft, update, disabled }: ResidentEditorSectionProps): Re
  * The editor's sections, in order. Phase 1 registers the core five; later phases append
  * theirs (marker, loop, skills, MCP servers, authority) beside the schema section they add.
  */
-function ResidentLoopSection({ draft, update, disabled }: ResidentEditorSectionProps): React.JSX.Element {
+function ResidentLoopSection({ draft, update, disabled, spendUnavailable }: ResidentEditorSectionProps): React.JSX.Element {
   const loop = draft.loop;
   const numeric = [
     ["delaySeconds", "Wake cadence (seconds)"], ["minDelaySeconds", "Minimum requested delay (seconds)"],
@@ -454,12 +464,23 @@ function ResidentLoopSection({ draft, update, disabled }: ResidentEditorSectionP
       <textarea className="field-input" value={loop.prompt} disabled={disabled}
         onChange={(e) => update("loop", { ...loop, prompt: e.target.value })} />
     </label>
-    {numeric.map(([key, label]) => <label className="field" key={key}>
+    {numeric.map(([key, label]) => <Fragment key={key}><label className="field">
       <span className="field-label">{label}</span>
       <input className="field-input" type="number" min="1" step={key === "spendCapUsd" ? "0.01" : "1"}
+        id={key === "spendCapUsd" ? "resident-spend-cap" : undefined}
+        aria-describedby={key === "spendCapUsd" && spendUnavailable ? "resident-cap-spend" : undefined}
+        aria-invalid={key === "spendCapUsd" && !!spendUnavailable && loop.spendCapUsd !== null}
         value={loop[key] ?? ""} disabled={disabled}
         onChange={(e) => update("loop", { ...loop, [key]: e.target.value === "" && (key === "iterationCap" || key === "spendCapUsd") ? null : Number(e.target.value) })} />
-    </label>)}
+    </label>
+    {key === "spendCapUsd" && spendUnavailable && <div className="field">
+      <p id="resident-cap-spend" className="field-hint resident-problem" role="status">{spendUnavailable}</p>
+      {loop.spendCapUsd !== null && <Tooltip label="Disable the spend guardrail for future launches; keep the selected model">
+        <button type="button" className="btn btn-ghost" disabled={disabled}
+          onClick={() => update("loop", { ...loop, spendCapUsd: null })}>Clear spend cap</button>
+      </Tooltip>}
+    </div>}
+    </Fragment>)}
     <p className="field-hint">Compaction before wakes is active. Native backstop: {capabilitiesFor(draft.execution.agent).residentCompaction?.nativeBackstop ? "active" : "unavailable on this harness"}.</p>
     <p className="field-hint">Guardrails pause the resident. Clear a cap to disable it. Profile edits apply on the next launch.</p>
     <label className="field"><span className="field-label">Compaction focus</span>

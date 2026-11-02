@@ -247,7 +247,18 @@ positively refused sends do not. Rows exactly 24 hours old no longer count. Spen
 reported costs and Codex's estimated Standard API costs, including human and maintenance turns
 in the same resident conversation. It is a between-turn limit, not an interruption of spend
 inside a running turn. Unpriced models cannot retain a spend cap at save or launch, and unpriced
-usage pauses a capped run instead of treating it as free.
+usage pauses a capped run instead of treating it as free. The profile's Model picker marks
+unpriced choices as **spend cap unavailable**. Guidance beside Model and **Spend per 24 hours
+(USD)** names both ways to recover: select a priced model or use **Clear spend cap**. The form
+preserves your model and cap until you change them; clearing a cap disables that guardrail for
+future launches only. When Model is **harness default**, a capped profile cannot be saved until
+the harness settings load and its price availability is known. Pending or failed reads show
+guidance beside both fields; select an explicit priced model or clear the cap to proceed without
+that lookup, or reload to retry a failed read. GPT-6.1 Sol and Terra have verified Standard API pricing, including cached input,
+cache writes and long-context rates ([Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+[Terra model reference](https://developers.openai.com/api/docs/models/gpt-6.1-terra)).
+Claude uses harness-reported costs, including for Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5;
+its spend-cap availability is independent of the smaller shipped model picker list.
 
 Reaching a cap pauses and appears in the attention inbox. Resume is refused until the rolling
 window has room; the refusal names the earliest release time. Editing the profile cannot lift

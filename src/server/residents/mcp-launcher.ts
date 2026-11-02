@@ -15,6 +15,7 @@
 
 import { spawn } from "node:child_process";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
+import * as tls from "node:tls";
 import { pathToFileURL } from "node:url";
 import {
   plaintextCredentialProblem,
@@ -141,7 +142,47 @@ export async function fetchOnOrigin(
   throw new Error("the MCP server redirected too many times");
 }
 
+type CertificateStore = Pick<typeof tls, "getCACertificates" | "setDefaultCACertificates">;
+
+/**
+ * Trust the operating system's certificate store on top of Node's own roots, for every request
+ * this process makes.
+ *
+ * The bridge runs under the daemon's runtime with only that runtime's environment, so the
+ * operator's shell configuration never reaches it - `NODE_EXTRA_CA_CERTS` from `~/.zshrc`
+ * included, because a daemon started from the Finder imports only `PATH` from the login shell.
+ * Behind a TLS-inspecting proxy the certificate a remote server presents is signed by a root that
+ * lives in the system keychain and nowhere in Node's bundled set, so without this every request
+ * fails with `SELF_SIGNED_CERT_IN_CHAIN` - while the same server works in the operator's own
+ * Claude Code, which trusts the system store. Verification is never relaxed: this only widens
+ * the roots to the ones the machine itself already trusts. `default` keeps the bundled roots
+ * and any `NODE_EXTRA_CA_CERTS` that did arrive.
+ */
+export function trustSystemCertificates(store: CertificateStore = tls): void {
+  let system: string[];
+  try {
+    system = store.getCACertificates("system");
+  } catch {
+    // A runtime that cannot read the store keeps the roots it already has.
+    return;
+  }
+  if (system.length === 0) return;
+  store.setDefaultCACertificates([...new Set([...store.getCACertificates("default"), ...system])]);
+}
+
+/**
+ * Why a forwarded request failed, for the harness's MCP log. Node's message for every transport
+ * failure is the same two words, "fetch failed"; the cause's code is what says a certificate was
+ * refused rather than a host being unreachable. Never the request, which carries the headers.
+ */
+export function bridgeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  return typeof cause?.code === "string" ? `${message} (${cause.code})` : message;
+}
+
 async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { transport: "http" | "sse" }>): Promise<void> {
+  trustSystemCertificates();
   const [{ StdioServerTransport }, { StreamableHTTPClientTransport }, { SSEClientTransport }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/stdio.js"),
     import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
@@ -183,7 +224,7 @@ async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { tr
       void local.send({
         jsonrpc: "2.0",
         id: request.id,
-        error: { code: -32000, message: `the MCP server did not answer: ${error instanceof Error ? error.message : String(error)}` },
+        error: { code: -32000, message: `the MCP server did not answer: ${bridgeFailure(error)}` },
       }).catch(() => {});
     });
   };

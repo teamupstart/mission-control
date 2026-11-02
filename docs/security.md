@@ -264,7 +264,11 @@ the run, the server's name and a credential file:
 - A stdio server is started with its values in its own environment only. For an HTTP server the
   launcher is a stdio bridge that adds the headers and query values to every request itself,
   an SSE server's message endpoint included, only to the configured origin: a redirect within it is
-  followed, one to another origin is refused.
+  followed, one to another origin is refused. The bridge verifies the server's certificate against
+  Node's own roots, any `NODE_EXTRA_CA_CERTS` it inherited, and the operating system's certificate
+  store, so a server reached through a TLS-inspecting proxy whose root the machine already trusts
+  connects even though the operator's shell configuration never reaches the daemon. Verification
+  is never turned off.
 - Secret headers and query values travel only over `https`, or over plain `http` to this machine's
   loopback. A custom server that would send them elsewhere in the clear is refused at save, a
   global one is unavailable to residents, and the launcher refuses either before any request.

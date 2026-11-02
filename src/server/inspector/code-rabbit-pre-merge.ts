@@ -18,6 +18,7 @@ export function preMergeFindings(comment: IssueCommentSnapshot): GhResult<Omit<C
   }
   const section = comment.body.slice(start + START.length, end);
   const details = new Map<string, string>();
+  const bodyRanges: [number, number][] = [];
   const nodes = [...parseFragment(section, { sourceCodeLocationInfo: true }).childNodes];
   while (nodes.length) {
     const node = nodes.pop()!;
@@ -37,13 +38,22 @@ export function preMergeFindings(comment: IssueCommentSnapshot): GhResult<Omit<C
     if (details.has(name)) return { ok: false, error: "Repeated CodeRabbit pre-merge details" };
     // Source locations preserve the entire body, including nested details and text after them.
     details.set(name, section.slice(source.endTag.endOffset, parent.sourceCodeLocation.endTag.startOffset).trim());
+    bodyRanges.push([source.endTag.endOffset, parent.sourceCodeLocation.endTag.startOffset]);
   }
   if ((label(section).match(/\bFull details\s*:/gi)?.length ?? 0) !== details.size) {
     return { ok: false, error: "Unreadable CodeRabbit pre-merge details" };
   }
   const names = new Set<string>();
   const findings: Omit<CodeRabbitFinding, "generation">[] = [];
-  for (const line of section.split(/\r?\n/)) {
+  // Keep detail content in the identity, but out of the check-table scan. Advancing
+  // the cursor by the furthest end also handles overlapping or nested body ranges.
+  let rowText = "", cursor = 0;
+  for (const [from, to] of bodyRanges.sort((a, b) => a[0] - b[0])) {
+    if (from > cursor) rowText += section.slice(cursor, from);
+    cursor = Math.max(cursor, to);
+  }
+  rowText += section.slice(cursor);
+  for (const line of rowText.split(/\r?\n/)) {
     if (!line.trim().startsWith("|")) continue;
     const cells = line.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((cell) => cell.trim());
     const name = label(cells[0] ?? "");

@@ -91,6 +91,21 @@ test("edits after nested details remain part of the owning check identity", () =
   assert.equal(original.value?.[1]?.identity, edited.value?.[1]?.identity);
 });
 
+test("Markdown tables inside Full details are content rather than check rows", () => {
+  for (const detail of [
+    "| example | text |\nOriginal resolution.",
+    "<details><summary>Technical context</summary>\n| Example check | ![Error](example.svg) | Example only |\n</details>\nOriginal resolution.",
+  ]) {
+    const original = preMergeFindings(preMergeComment(preMergeBody("Error", detail)));
+    const edited = preMergeFindings(preMergeComment(preMergeBody("Error", detail.replace("Original", "Updated"))));
+    assert.equal(original.ok, true);
+    assert.equal(edited.ok, true);
+    assert.equal(original.value?.length, 4, "detail tables add no check findings");
+    assert.notEqual(original.value?.[0]?.identity, edited.value?.[0]?.identity);
+    assert.equal(original.value?.[1]?.identity, edited.value?.[1]?.identity);
+  }
+});
+
 test("pre-merge format changes, partial markers and duplicate checks fail closed", () => {
   const comment = preMergeComment();
   for (const body of [

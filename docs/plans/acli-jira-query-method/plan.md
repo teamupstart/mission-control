@@ -102,10 +102,13 @@ flowchart LR
   No failure becomes an empty sweep.
 - **Site identity.** acli acts on its active login, not on the source's `site` field. Reads
   derive browse links from each issue's own `self` host when present (as `browseUrlFor` already
-  does) and otherwise from the configured site. Every write requires positive proof that acli's
-  active site is the configured site; when it cannot be established the write is refused before
-  any subprocess that could mutate. Issue keys are not unique across sites, so a write on the
-  wrong site would change somebody else's ticket.
+  does) and otherwise from the configured site. Every acli operation, read or write, requires
+  positive proof that acli's active site is the configured site, checked with `acli jira auth
+  status` immediately before it runs rather than once at preflight, because acli's active profile
+  can change at any time. When it cannot be established, a sweep or linked read files nothing and
+  a write is refused before any subprocess that could mutate. Issue keys are not unique across
+  sites, so a sweep against the wrong site would file somebody else's issues and a write would
+  change somebody else's ticket.
 - **Sweep bounds.** One sweep reads at most `MAX_SWEEP_ISSUES` (1000) issues within the sweeper's
   60 s cap (`src/server/task-sources/sweeper.ts:28`). Asking acli for one more than the bound
   answers "is there a tail" exactly, as the CLI rung already does with `limit + 1`; a tail is the
@@ -142,7 +145,8 @@ the acli preflight unchanged.
 acli's logged-in JSON shapes are not documented, and the logged-out and bad-flag failures above
 are the only outputs verified so far. Implementation starts by having the operator run
 `acli jira auth login --web` on this machine, then running read-only commands and recording
-sanitized outputs (no emails, account ids or tokens) as test fixtures: `acli jira auth status`,
+outputs as test fixtures, rewritten so that no operator data is committed (synthetic hosts,
+project and issue keys, people and text, with structure and relationships preserved): `acli jira auth status`,
 a one-issue search, a paginated search, a no-results search, `view --json` with `status` and with
 `*all`. No write command is ever run against a real Jira site; write-path fixtures come from the
 fake. Child processes get an empty stdin so any unexpected prompt reads end-of-file instead of
@@ -178,7 +182,8 @@ for Upstart Jira).
    same title, intent, browse link and priority mapping as the local method, on a daemon with no
    Jira environment variables.
 2. "Check it works" names the fix for each of: acli missing, acli not logged in, acli logged in
-   to a different site, empty JQL, and a JQL Jira rejects.
+   to a different site, empty JQL, and a JQL Jira rejects; a sweep that finds acli logged in to a
+   different site files nothing and says so.
 3. A filter larger than one sweep files what was read and shows the existing too-broad advisory.
 4. Write-back on an acli source posts the comment, reports the remote link as unavailable, and
    resolves to the configured status; a refused resolve names the current status and acli's

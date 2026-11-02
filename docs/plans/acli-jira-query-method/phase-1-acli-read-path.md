@@ -71,8 +71,16 @@ acli's login from Mission Control.
    - `acli jira workitem view <KEY> --fields status --json` and `--fields "*all" --json` (record
      whether anything resembling transitions appears; Phase 2 needs to know);
    - a search with `--fields self` or the default fields, to learn whether `self` is present.
-   Replace emails, display names, account ids, avatar URLs and any token-like value with
-   placeholders; keep keys, hosts and structure. Never run `comment`, `transition`, `edit`,
+   Before anything is saved, rewrite every operator value as synthetic data: emails, display
+   names, account ids, avatar URLs and token-like values become placeholders; the real site host
+   becomes `example.atlassian.net` everywhere it appears (including inside `self` URLs); project
+   keys and issue keys become synthetic ones such as `MC-1`, `MC-2`, mapped consistently so a key
+   that appears twice still matches itself; summaries and descriptions become neutral text of the
+   same shape (a plain string stays a string, an ADF tree stays a tree). Preserve the JSON
+   structure, field names, value types and the relationships the tests rely on. The raw captures
+   stay in a gitignored scratch location and are never committed; only the rewritten files go
+   under `test/fixtures/acli/`, and a final `grep` for the real host and the real project key
+   before committing must return nothing. Never run `comment`, `transition`, `edit`,
    `create`, `delete`, `assign`, `link create`, or anything without `--help`/`view`/`search`/
    `status` in it. Save the outputs under `test/fixtures/acli/` with a `README.md` naming the acli
    version and each command. Record in the pull request what the captures established.
@@ -99,11 +107,22 @@ acli's login from Mission Control.
      adapt it to `{key, self?, fields:{summary, description, priority:{name}}}` here, in one place.
    - `acliActiveSite(res)`: the host acli is logged in to, read from `acli jira auth status`
      output as captured, or `null` when it cannot be established. Exported for Phase 2.
-   - `readAcli(cfg, ctx, maxIssues): Promise<JiraWalk>`: one search, `issues` capped at the bound,
-     `advisory: tooBroad(cfg)` when the extra row came back, `error` sentence otherwise.
-   - `acliPreflight(cfg, ctx)`: run `acli jira auth status`; on failure return its sentence. When an
-     active site is readable and differs from `siteHost(cfg.site)`, refuse naming both hosts and
-     `acli jira auth switch`. Then run the real JQL with a bound of 1 and return its error.
+   - `acliSiteGate(cfg, ctx)`: run `acli jira auth status` and return `null` only when
+     `acliActiveSite` positively equals `siteHost(cfg.site)`. Otherwise return a sentence: the
+     `acliFailure` sentence when the status run fails, "cannot confirm which Jira site acli is
+     logged in to" when the site is `null`, and a mismatch sentence naming both hosts and
+     `acli jira auth switch` when they differ. acli's active profile can change at any time
+     (`acli jira auth switch`, a fresh login), so this gate runs on every acli operation, not once
+     at preflight. Exported for Phase 2.
+   - `readAcli(cfg, ctx, maxIssues): Promise<JiraWalk>`: run `acliSiteGate` first and return its
+     sentence as the walk's `error` (so nothing is filed) when it refuses; then one search,
+     `issues` capped at the bound, `advisory: tooBroad(cfg)` when the extra row came back, `error`
+     sentence otherwise. As a second check against a profile switch between the gate and the
+     search, when the captured search output carries `self` URLs, any issue whose `self` host is
+     not the configured site fails the whole walk with the mismatch sentence rather than filing
+     part of it. `readLinked` reaches acli only through `sweep`, so it gets both checks.
+   - `acliPreflight(cfg, ctx)`: run `acliSiteGate`; on refusal return its sentence. Then run the
+     real JQL with a bound of 1 and return its error.
    - Every `run` call passes `input: ""` and a timeout that keeps a whole sweep inside the
      sweeper's 60 s cap (the local method uses 20 s per request).
 5. **Dispatch in `jira.ts`.** `sweep` and `preflight` call the acli functions when
@@ -138,7 +157,9 @@ acli's login from Mission Control.
 
 - New `test/jira-acli.test.ts`: argv construction (including the probe row), the fault classifier
   against the captured logged-out and unknown-flag stderr, the no-results case, the output reader
-  against every captured search fixture, the tail advisory, site mismatch in preflight, and that
+  against every captured search fixture, the tail advisory, `acliSiteGate` refusing (status failure, unknown site, mismatched site) in
+  preflight and in every sweep with no search spawned and nothing filed, a search result whose
+  `self` host differs from the configured site failing the walk, and that
   an acli sweep never touches `jiraBin()` or `JIRA_API_TOKEN` (stub `run` through a seam the
   module exposes, as the UpstartClaw deps do).
 - Extend `test/task-source-contract.test.ts` or `test/jira-writeback.test.ts` so an acli source's
@@ -150,7 +171,8 @@ acli's login from Mission Control.
 - Playwright, extending `e2e/specs/settings-task-sources-jira.spec.ts`: select Atlassian CLI
   (acli), see the login note, "Check it works" passes against the fake, a sweep files a card from
   the fake's canned issue with the expected title and browse link, and an unusable acli (fake
-  answering unauthorized) shows the login sentence.
+  answering unauthorized) shows the login sentence, and a sweep after the fake's active site is
+  switched to another host files nothing and shows the mismatch sentence.
 - Commands: the single-file form
   `node --test --import ./test/setup-state.mjs --import tsx test/jira-acli.test.ts` while
   iterating; then `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`,
@@ -163,8 +185,10 @@ acli's login from Mission Control.
 
 - Source plan acceptance criteria 1, 2, 3, 5 and 6 hold for the read path.
 - An acli source's write-back refuses with `ACLI_WRITE_PENDING`, spawning nothing.
-- Fixtures under `test/fixtures/acli/` are sanitized and their `README.md` names the acli version
-  and commands.
+- Fixtures under `test/fixtures/acli/` contain only synthetic hosts, keys and people (no value
+  from the operator's real site), and their `README.md` names the acli version and commands.
+- Every acli sweep, preflight and linked read runs `acliSiteGate` before it searches, and files
+  nothing when the active site cannot be proven to be the configured one.
 - All commands in section 7 pass; the pull request records what the capture established,
   especially the `--paginate`/`--limit` semantics, whether `self` is present, the `auth status`
   site format, and whether `view --fields "*all"` exposes transitions.
@@ -173,14 +197,18 @@ acli's login from Mission Control.
 
 Phase 2 may rely on, and must not rename or reshape: the `"acli"` enum value and option label;
 `acliBin()` and the `"acli"` executable id; `jira-acli.ts` and its exported `acliFault`,
-`acliFailure` and `acliActiveSite`; the fixture directory and its README; the fake `acli`, its
+`acliFailure`, `acliActiveSite` and `acliSiteGate`; the fixture directory and its README; the fake `acli`, its
 record format and its `MISSION_ACLI_BIN` wiring; the empty-stdin rule. Phase 2 removes
 `ACLI_WRITE_PENDING` and replaces the refusal with real write-back.
 
 ## 10. Cross-phase audit record
 
-- Written first. The site-identity reader is placed here, not in Phase 2, because preflight needs
-  it for the mismatch sentence and Phase 2 needs the same answer for its write gate; one owner
-  prevents two parsers of `auth status`.
+- Written first. The site-identity reader and the site gate are placed here, not in Phase 2,
+  because every read needs them and Phase 2's writes need the same answer; one owner prevents two
+  parsers of `auth status` and two definitions of "the right site".
+- Review round 1 (Inspector, PR #1282): the site check moved from preflight-only to every sweep
+  and linked read, because acli's active profile can change after preflight and a sweep would
+  otherwise file another site's issues; and fixtures became fully synthetic, because real keys
+  and hosts are operator data.
 - The `view --fields "*all"` capture is placed here because Phase 2's resolve contract depends on
   its result and Phase 2 has no logged-in capture step of its own.

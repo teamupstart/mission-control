@@ -88,7 +88,7 @@ flowchart LR
 ```
 
 No phases run concurrently: Phase 2 consumes Phase 1's seam, fake, captured fixtures, fault
-classifier and site-identity helper.
+classifier, site-identity helper and site gate.
 
 ## Merge order
 
@@ -103,9 +103,12 @@ Owned by Phase 1, relied on by Phase 2, and not to be renamed or reshaped by it:
 - `queryVia` value `"acli"` and the panel option label "Atlassian CLI (acli)".
 - `acliBin()` in `src/server/config.ts`, env suffix `ACLI_BIN`, executable id `"acli"`.
 - Module `src/server/task-sources/jira-acli.ts`, with an exported fault classifier
-  (`acliFault`, `acliFailure`) over a `run` result, and an exported active-site reader that
-  returns the host acli is logged in to or `null` when it cannot be established.
-- Fixture directory `test/fixtures/acli/` holding sanitized captured outputs, plus a short
+  (`acliFault`, `acliFailure`) over a `run` result, an exported active-site reader
+  (`acliActiveSite`) that returns the host acli is logged in to or `null` when it cannot be
+  established, and an exported `acliSiteGate` that refuses unless that host positively equals the
+  configured site. The gate runs before every acli read (Phase 1) and every acli write (Phase 2).
+- Fixture directory `test/fixtures/acli/` holding captured outputs rewritten with synthetic
+  hosts, keys and people (no operator data is committed), plus a short
   `README.md` there recording the acli version and the exact commands used.
 - The fake `acli` program in `e2e/fixtures/fake-agents.ts`, wired through `MISSION_ACLI_BIN`,
   which records every invocation as a JSON file the way the fake `jira` does.

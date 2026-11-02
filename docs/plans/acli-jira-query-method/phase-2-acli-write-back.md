@@ -15,7 +15,8 @@ write is ever attempted unless acli is provably logged in to the source's config
 ## 2. Entry criteria and dependencies
 
 - Phase 1 has merged: the `"acli"` query method, `acliBin()`, the `"acli"` executable id,
-  `src/server/task-sources/jira-acli.ts` with `acliFault`, `acliFailure` and `acliActiveSite`,
+  `src/server/task-sources/jira-acli.ts` with `acliFault`, `acliFailure`, `acliActiveSite` and
+  `acliSiteGate`,
   the captured fixtures under `test/fixtures/acli/`, and the fake `acli` wired as
   `MISSION_ACLI_BIN`.
 - Read Phase 1's pull request for what the capture established, in particular the `auth status`
@@ -54,11 +55,11 @@ are exercised only against the fake. The operator verifies one real write after 
 
 ## 5. Implementation steps, in order
 
-1. **Write site gate.** In `jira-acli.ts`, `acliWriteGate(cfg)`: run `acli jira auth status`;
-   refuse with the `acliFailure` sentence when it fails; refuse when `acliActiveSite` returns
-   `null` ("cannot confirm which Jira site acli is logged in to, so nothing was written"); refuse
-   when it differs from `siteHost(cfg.site)`, naming both hosts and `acli jira auth switch`. Every
-   refusal here is `outcomeUnknown: false`, and nothing that can mutate has been spawned.
+1. **Write site gate.** Reuse Phase 1's `acliSiteGate` immediately before every write
+   (comment, view-then-transition), never a cached answer from an earlier sweep or preflight,
+   because acli's active profile can change between them. Its refusal becomes a write-back
+   refusal with "so nothing was written" appended. Every refusal here is
+   `outcomeUnknown: false`, and nothing that can mutate has been spawned.
 2. **Comment.** `acliCommentArgs(key, notice)`:
    `workitem comment create --key <KEY> --body <JSON.stringify(commentBodyAdf(notice))>`. If argv
    size is a concern for long outcomes, use `--body-file` with a private temp file that is removed
@@ -148,9 +149,11 @@ acli release that adds remote links would extend `acliAnnotate` behind the same 
 ## 10. Cross-phase audit record
 
 - Checked against Phase 1's handoff: consumes `acliBin`, `acliFault`, `acliFailure`,
-  `acliActiveSite`, the fixtures, the fake and the empty-stdin rule without renaming them; removes
+  `acliActiveSite`, `acliSiteGate`, the fixtures, the fake and the empty-stdin rule without renaming them; removes
   `ACLI_WRITE_PENDING` as Phase 1 specified.
 - The transition probe depends on a Phase 1 capture result rather than a Phase 2 capture, because
   this phase forbids live acli runs that could write and the probe's evidence is a read Phase 1
   already performs.
 - No concurrency with Phase 1: this phase edits the same module, fake and panel.
+- Review round 1 (Inspector, PR #1282): the write gate now reuses Phase 1's `acliSiteGate`
+  instead of defining its own, since the site check became a Phase 1 contract for every read.

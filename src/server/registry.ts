@@ -6695,11 +6695,12 @@ export class Registry extends EventEmitter {
    * reclaims the worktree once the agent's home is gone, so clearing them here to settle
    * the barrier would leak the lease instead.
    *
-   * Only prompt delivery reads this. Handing the agent a DIFFERENT task is a separate
-   * question - `assign` still refuses, because reusing an agent whose last outcome left
+   * Prompt delivery and SDK restoration share this ownership boundary. Handing the agent
+   * a DIFFERENT task is a separate question - `assign` still refuses, because reusing an
+   * agent whose last outcome left
    * resources behind is exactly the reset it is guarding.
    */
-  private outcomePrecedesSessionWork(task: Task, sessionId: string): boolean {
+  outcomePrecedesSessionWork(task: Task, sessionId: string): boolean {
     if (task.completedAt === null) return false;
     const episode = sessionWorkEpisodeFor(sessionId);
     return episode !== null && episode.startedAt >= task.completedAt;

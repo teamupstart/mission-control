@@ -227,9 +227,11 @@ export class SdkSupervisor {
       }
       if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
       const launchTask = row.taskId ? getDurableTask(row.taskId) : null;
-      if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)) {
+      if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)
+        && !this.registry.outcomePrecedesSessionWork(launchTask, row.id)) {
         // task_id is launch provenance, not current ownership. Reuse by another task
-        // wins over that history, as does a retained pointer on the cancelled task.
+        // wins over that history, as does a retained pointer or a newer work episode
+        // (Reset & clear cancels the old task while keeping the replacement agent).
         // A detached cancellation with no owner must not launch or receive continuation.
         setSdkSessionTurnInProgress(row.id, false);
         this.registerAndEvict(row, "cancelled task no longer owns this session", "exited");

@@ -1963,7 +1963,7 @@ test("the driver's own turn_done reconciles an interrupted turn, with no help fr
   }
 });
 
-test("a cleared Codex replacement conversation is durably idle", async () => {
+test("a cleared Codex replacement conversation survives its old task cancellation and stays durably idle", async () => {
   const handle = fakeHandle();
   handle.clearContext = async () => {
     handle.push({
@@ -1980,8 +1980,12 @@ test("a cleared Codex replacement conversation is durably idle", async () => {
   const handles = [handle, restored];
   const fake = withFakeCodexDriver(async () => handles.shift()!);
   try {
-    const supervisor = new SdkSupervisor(new Registry());
-    const session = await supervisor.start({ ...START, agent: "codex" });
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const taskId = "task-before-clear";
+    registry.upsertTask(mkTask({ id: taskId, status: "running", sessionId: null }));
+    const session = await supervisor.start({ ...START, agent: "codex", taskId });
+    registry.upsertTask({ ...getTask(taskId)!, sessionId: session.id });
     handle.push({
       kind: "bound",
       agentSessionId: "agent-original",
@@ -1995,10 +1999,15 @@ test("a cleared Codex replacement conversation is durably idle", async () => {
     assert.equal(await supervisor.clearContext(session.id), true);
     await waitFor(() => getSdkSession(session.id)?.agentSessionId === "agent-cleared");
     assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+    assert.equal(getTask(taskId)?.status, "cancelled");
+    assert.equal(getTask(taskId)?.sessionId, null);
 
     await supervisor.stopAll();
-    await new SdkSupervisor(new Registry()).restore();
+    const next = new SdkSupervisor(new Registry());
+    await next.restore();
+    assert.equal(next.handleFor(session.id), restored, "the replacement conversation remains available after the old task was cancelled");
     assert.deepEqual(restored.sent, []);
+    await next.stopAll();
   } finally {
     fake.restore();
   }

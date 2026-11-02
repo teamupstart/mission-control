@@ -39,7 +39,9 @@ hooks cannot reopen a closing card. Explicit stop stays closed across restart, w
 shutdown suspends the row for restoration.
 
 Startup retires a live SDK row whose original task is cancelled and detached only when no
-other task currently owns that session. It uses the ordinary eviction lifecycle without
+other task currently owns that session and no replacement work episode began at or after
+the cancellation. Reset & clear can cancel the old task while retaining the replacement
+conversation. Startup uses the ordinary eviction lifecycle for stale rows without
 launching a driver or sending a continuation. Completed tasks may retain or reuse their
 agents; task completion alone does not exclude an SDK session from restoration.
 

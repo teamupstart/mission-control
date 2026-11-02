@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Registry } from "../src/server/registry.ts";
+import { preMergeComment } from "./helpers/code-rabbit-pre-merge.ts";
 const dir = mkdtempSync(join(tmpdir(), "mission-coderabbit-worker-"));
 const gh = join(dir, "gh"), calls = join(dir, "calls"), snapshot = join(dir, "snapshot.json");
 const model = join(dir, "model"), modelCalls = join(dir, "model-calls");
@@ -26,6 +27,7 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { readCodeRabbit, getInspectorPr } = await import("../src/server/db.ts");
+const { fetchPr, fetchIssueCommentPage } = await import("../src/server/inspector/github.ts");
 after(() => rmSync(dir, { force: true, recursive: true }));
 const pause = () => new Promise((r) => setTimeout(r, 20));
 async function until(check: () => boolean) { const end = Date.now() + 5000; while (!check() && Date.now() < end) await pause(); assert.ok(check()); }
@@ -35,6 +37,7 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
   adoptPr("https://github.com/a/b/pull/1", { cwd: dir, repoRoot: dir, sessionId: "owner" }, "hook", Date.now());
   const data = { data: { repository: { pullRequest: {
     state: "OPEN", headRefOid: "sha", headRefName: "fix", isDraft: false,
+    comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviewThreads: { nodes: [{ id: "thread", isResolved: false, path: "a.ts", comments: { nodes: [{
       id: "root", url: "https://github.com/a/b/pull/1#discussion_r1", databaseId: 1,
       body: "finding", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
@@ -57,16 +60,51 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
     for (const args of invocations) {
       assert.deepEqual(args.slice(0, 2), ["api", "graphql"]);
       assert.ok(args.some((a) => a.startsWith("query=query(")));
+      assert.ok(args.some((a) => a.includes("comments(first:100){ nodes{ id url body")));
       assert.ok(!args.some((a) => /mutation|--method/.test(a)));
     }
-    // A malformed newer read invalidates delivery without writing an Inspector failure.
+    const withChecks = { ...data.data.repository.pullRequest,
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      comments: { nodes: [preMergeComment(undefined, "https://github.com/a/b/pull/1#issuecomment-70")], pageInfo: { hasNextPage: false, endCursor: null } },
+    };
+    writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: withChecks } } }));
+    await until(() => readCodeRabbit("a/b#1")?.findings.filter((f) => f.present && !f.resolved).length === 3);
+    // A malformed issue-comment read invalidates delivery and preserves prior check history.
+    writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...withChecks, comments: null } } } }));
+    await until(() => !!readCodeRabbit("a/b#1")?.error);
+    assert.equal(readCodeRabbit("a/b#1")!.findings.filter((f) => f.present && !f.resolved).length, 3);
+    // A malformed newer thread read also invalidates delivery without an Inspector failure.
     writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...data.data.repository.pullRequest, reviewThreads: null } } } }));
     await until(() => !!readCodeRabbit("a/b#1")?.error);
-    assert.equal(readCodeRabbit("a/b#1")!.findings.length, 1);
+    assert.equal(readCodeRabbit("a/b#1")!.findings.filter((f) => f.present && !f.resolved).length, 3);
     assert.equal(getInspectorPr("a/b#1")!.lastError, null);
     setShippingConfig({ codeRabbitAutoResolve: false });
     await new Promise((r) => setTimeout(r, 150));
     const before = readFileSync(calls, "utf8"); await new Promise((r) => setTimeout(r, 150));
     assert.equal(readFileSync(calls, "utf8"), before);
   } finally { stop(); }
+});
+
+test("provider requests issue comments only when enabled and validates paginated comment metadata", async () => {
+  const comments = { nodes: [preMergeComment(undefined, "https://github.com/a/b/pull/1#issuecomment-70")],
+    pageInfo: { hasNextPage: false, endCursor: null } };
+  const pr = { state: "OPEN", headRefOid: "sha", isDraft: false, comments,
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+  writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: pr } } }));
+  const disabled = await fetchPr(dir, "a", "b", 1);
+  assert.equal(disabled.value?.issueComments, undefined);
+  const lastCall = () => JSON.parse(readFileSync(calls, "utf8").trim().split("\n").at(-1)!) as string[];
+  assert.equal(lastCall().some((arg) => arg.includes("comments(first:100){ nodes{ id url body")), false);
+  assert.equal((await fetchPr(dir, "a", "b", 1, true)).value?.issueComments?.comments.length, 1);
+  const page = await fetchIssueCommentPage(dir, "a", "b", 1, "next");
+  assert.equal(page.value?.comments.length, 1);
+  assert.ok(lastCall().includes("after=next"));
+  for (const malformed of [null, { ...comments, pageInfo: {} },
+    { ...comments, nodes: [{ ...comments.nodes[0], author: null }] }]) {
+    writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...pr, comments: malformed } } } }));
+    assert.ok((await fetchPr(dir, "a", "b", 1, true)).value?.issueComments?.error);
+    assert.ok((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).value?.error);
+  }
+  writeFileSync(snapshot, JSON.stringify({ errors: [{ message: "denied" }], data: { repository: { pullRequest: pr } } }));
+  assert.equal((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).ok, false);
 });

@@ -2770,4 +2770,7 @@ Repair instructions require the owning session to read all retained findings and
 claim before changing code. Valid repairs are committed for a new submission. A false positive
 requires an explicit operator decision through the existing node-disable/recovery controls;
 clearing vendor findings or silently lowering severity does not earn approval. This local CLI
-review is independent of GitHub CodeRabbit comment/thread follow-up.
+review is independent of [GitHub CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+It does not fetch PR summary comments or cloud pre-merge checks. Enable **Follow up on CodeRabbit
+comments** in Settings > Shipping to have eligible Foreman sessions assess those errors and
+warnings as well as inline review findings; YAML enablement alone does not enable that setting.

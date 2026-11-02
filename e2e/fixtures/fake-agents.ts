@@ -108,6 +108,7 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
 export interface FakePullRequest {
   headRefName?: string;
   reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  issueComments?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
   reviewError?: boolean;
   /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
   cwd: string;
@@ -690,6 +691,7 @@ if (argv[0] === "--version") {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
   } : null } } }));
 } else if (command.startsWith("pr view")) {

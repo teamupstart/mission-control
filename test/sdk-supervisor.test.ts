@@ -20,7 +20,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure } = await import("../src/server/db.ts");
+const { openDb, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure, getTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
@@ -2271,5 +2271,114 @@ for (const scenario of ["restored", "rollback refused", "previous unknown"] as c
       openDb().exec("DROP TRIGGER IF EXISTS reject_model_write");
       fake.restore();
     }
+  });
+}
+
+test("a matching nonterminal hook cannot revive an SDK card while stop is in progress", async (t) => {
+  const handle = fakeHandle();
+  const normalStop = handle.stop;
+  let releaseStop!: () => void;
+  const heldStop = new Promise<void>((resolve) => { releaseStop = resolve; });
+  handle.stop = async () => { await heldStop; await normalStop(); };
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const session = await supervisor.start(START);
+  t.after(async () => { releaseStop(); await supervisor.stop(session.id); });
+  handle.push({ kind: "bound", agentSessionId: "native-stopping", transcriptPath: null, modelId: null, pid: null });
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+
+  assert.equal(supervisor.requestStop(session.id), true);
+  assert.equal(registry.getSession(session.id)?.state, "stopping");
+  registry.applyHook({ agent: "claude", event: "Stop", sessionId: "native-stopping",
+    transcriptPath: null, cwd: START.cwd, env: {} });
+  assert.equal(registry.getSession(session.id)?.state, "stopping", "a matching idle hook cannot undo an accepted stop");
+  assert.equal(supervisor.handleFor(session.id), handle, "the driver has not finished closing");
+  assert.equal(getSdkSession(session.id)?.status, "running", "final closure has not been persisted yet");
+
+  releaseStop();
+  await supervisor.stop(session.id);
+  assert.equal(registry.getSession(session.id)?.state, "exited");
+  assert.equal(getSdkSession(session.id)?.status, "exited");
+  assert.equal(supervisor.handleFor(session.id), null);
+});
+
+for (const ending of ["driver exit", "explicit stop"] as const) {
+  test(`matching SessionEnd preserves the SDK owner; ${ending} stays closed across restarts`, async (t) => {
+    const handle = fakeHandle();
+    const fake = withFakeDriver(async () => handle);
+    t.after(fake.restore);
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    handle.push({ kind: "bound", agentSessionId: "native-closure", transcriptPath: null, modelId: null, pid: null });
+    handle.push({ kind: "turn_done", usage: null });
+    await drain();
+    const hook = { agent: "claude" as const, event: "SessionEnd", sessionId: "native-closure", transcriptPath: null, cwd: START.cwd, env: {}, reason: "clear" };
+    registry.applyHook(hook);
+    assert.equal(registry.getSession(session.id)?.state, "idle", "a query/context hook cannot close the reusable driver");
+    assert.equal(getSdkSession(session.id)?.status, "running");
+    await supervisor.send(session.id, { text: "follow-up after context end" });
+    assert.equal(handle.sent.at(-1)?.text, "follow-up after context end");
+    if (ending === "explicit stop") await supervisor.stop(session.id);
+    else {
+      handle.push({ kind: "exited", reason: "final exit", resumable: true });
+      handle.end();
+    }
+    await drain();
+    assert.equal(getSdkSession(session.id)?.status, "exited");
+    registry.applyHook({ ...hook, event: "Stop" });
+    assert.equal(registry.getSession(session.id)?.state, "exited", "late hooks cannot revive a closing card");
+    for (let restart = 0; restart < 2; restart++) {
+      const next = new Registry();
+      await new SdkSupervisor(next).restore();
+      assert.equal(next.getSession(session.id), undefined);
+    }
+    assert.equal(fake.calls.length, 1, "closed drivers are never relaunched");
+  });
+}
+
+for (const { scenario, status, pointer, reused, retire, turnInProgress } of [
+  { scenario: "cancelled detached idle", status: "cancelled", pointer: null, retire: true, turnInProgress: false },
+  { scenario: "cancelled detached interrupted", status: "cancelled", pointer: null, retire: true, turnInProgress: true },
+  { scenario: "cancelled replaced", status: "cancelled", pointer: "sdk:replacement", retire: true, turnInProgress: false },
+  { scenario: "cancelled reused", status: "cancelled", pointer: null, reused: true, turnInProgress: false },
+  { scenario: "cancelled attached", status: "cancelled", pointer: "sdk:ownership-restore", turnInProgress: false },
+  { scenario: "done detached", status: "done", pointer: null, turnInProgress: false },
+  { scenario: "done retained", status: "done", pointer: "sdk:ownership-restore", turnInProgress: false },
+] satisfies Array<{ scenario: string; status: "cancelled" | "done"; pointer: string | null;
+  reused?: boolean; retire?: boolean; turnInProgress: boolean }>) {
+  test(`restore reconciles ownership: ${scenario}`, async (t) => {
+    const fake = withFakeDriver(async () => fakeHandle());
+    t.after(fake.restore);
+    const id = "sdk:ownership-restore";
+    const taskId = "original-owner";
+    const registry = new Registry();
+    registry.upsertTask(mkTask({ id: taskId, kind: "chat", status, sessionId: pointer }));
+    if (reused) registry.upsertTask(mkTask({ id: "new-owner", status: "running", sessionId: id }));
+    upsertSdkSession({ id, agent: "claude", agentSessionId: "native-ownership", cwd: START.cwd, taskId,
+      model: null, effort: null, permissionMode: null, status: "suspended", turnInProgress });
+    for (let restart = 0; restart < 2; restart++) {
+      // Deliberately use a fresh Registry: durable ownership must not depend on cached tasks.
+      const next = new Registry();
+      const supervisor = new SdkSupervisor(next);
+      await supervisor.restore();
+      await supervisor.restore();
+      if (retire) {
+        assert.equal(fake.calls.length, 0);
+        assert.equal(getSdkSession(id)?.status, "exited");
+        assert.equal(getSdkSession(id)?.turnInProgress, false);
+        assert.equal(next.getSession(id)?.state, restart === 0 ? "exited" : undefined);
+      } else {
+        assert.equal(fake.calls.length, restart + 1);
+        assert.ok(supervisor.handleFor(id));
+        await supervisor.stopAll();
+      }
+    }
+    const task = getTask(taskId)!;
+    assert.equal(task.status, status);
+    assert.equal(task.sessionId, pointer);
   });
 }

@@ -35,7 +35,7 @@ import {
   releaseInjection,
   reserveInjection,
 } from "../injections.ts";
-import { getStandingInstructions, getTask as getDurableTask, taskSessionClosureForSession } from "../db.ts";
+import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
@@ -226,6 +226,15 @@ export class SdkSupervisor {
         continue;
       }
       if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
+      const launchTask = row.taskId ? getDurableTask(row.taskId) : null;
+      if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)) {
+        // task_id is launch provenance, not current ownership. Reuse by another task
+        // wins over that history, as does a retained pointer on the cancelled task.
+        // A detached cancellation with no owner must not launch or receive continuation.
+        setSdkSessionTurnInProgress(row.id, false);
+        this.registerAndEvict(row, "cancelled task no longer owns this session", "exited");
+        continue;
+      }
       const closure = taskSessionClosureForSession(row.id);
       const completedTask = closure ? getDurableTask(closure.taskId) : null;
       if (completedTask?.status === "done" && completedTask.sessionId === row.id) {

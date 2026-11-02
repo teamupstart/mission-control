@@ -3240,6 +3240,11 @@ export class Registry extends EventEmitter {
     // hooks may still supply instrumentation; only driver events can replace the owner.
     if (target?.runtime === "sdk" && (!evt.sessionId || evt.sessionId !== target.agentSessionId)) return;
 
+    // A query/context ending is not the owned driver's final exit. Only the supervisor
+    // can close an SDK session durably; late hooks must not revive its closing card either.
+    if (target?.runtime === "sdk" &&
+      (state === "exited" || target.state === "exited" || target.state === "stopping")) return;
+
     // Passive PID/open-file identity is exact. A conflicting hook belongs to another
     // process/pane and must not move this card or poison its pane overlay.
     //

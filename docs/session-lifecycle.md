@@ -33,6 +33,16 @@ pane coordinates does not let an auxiliary CLI replace the owner, rotate its tas
 or detach its workflow and evidence. Terminal sessions retain their hook-based binding and
 clear behavior.
 
+For SDK sessions, a matching end-of-query or context hook cannot mark the card Gone.
+Only the owned driver's final exit closes the durable SDK row and begins eviction; late
+hooks cannot reopen a closing card. Explicit stop stays closed across restart, while daemon
+shutdown suspends the row for restoration.
+
+Startup retires a live SDK row whose original task is cancelled and detached only when no
+other task currently owns that session. It uses the ordinary eviction lifecycle without
+launching a driver or sending a continuation. Completed tasks may retain or reuse their
+agents; task completion alone does not exclude an SDK session from restoration.
+
 For the exact startup ordering, eviction requirements, and task-binding rules, read the
 authoritative [session ownership](agent-guides/architecture.md#session-ownership) and
 [session removal](agent-guides/architecture.md#a-session-going-away) contracts. The related

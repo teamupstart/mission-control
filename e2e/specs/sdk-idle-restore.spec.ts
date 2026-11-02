@@ -1,4 +1,7 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+
+import { join } from "node:path";
+import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
 
 import type { Page } from "@playwright/test";
 
@@ -164,5 +167,60 @@ test("an idle SDK session remains idle on the Board and outside the working coun
     console.log(
       "CAPTURED e2e/.artifacts/sdk-idle-restore/restored-idle-board-and-sitrep.png",
     );
+  }
+});
+
+
+test("matching SessionEnd never moves a reusable SDK card to Gone, including after restart", async ({ dashboard, daemon }) => {
+  await useBoardLayout(dashboard, daemon);
+  await dispatch(dashboard, daemon);
+  const idle = dashboard.locator("section.board-col.tone-idle .tile");
+  await expect(idle).toHaveCount(1, { timeout: 60_000 });
+  const identity = await dispatchedSdkHookIdentity(daemon);
+  const response = await fetch(`${daemon.baseURL}/hooks/SessionEnd`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim() },
+    body: JSON.stringify({ agent: "claude", ...identity, env: {}, reason: "clear" }),
+  });
+  expect(response.status).toBe(204);
+  // The hook handler has returned: assert once so a later update cannot hide a false Gone.
+  expect((await sdkSessions(daemon))[0]?.state).toBe("idle");
+  await dashboard.reload();
+  await expect(idle).toHaveCount(1);
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({ path: `${EVIDENCE}session-end-stays-idle.png` });
+  }
+  await daemon.crash();
+  await daemon.restart();
+  await dashboard.reload();
+  await expect(idle).toHaveCount(1);
+});
+
+test("a detached cancelled SDK row is retired and never returns to Idle on repeated restart", async ({ dashboard, daemon }) => {
+  await useBoardLayout(dashboard, daemon);
+  await dispatch(dashboard, daemon);
+  await expect(dashboard.locator("section.board-col.tone-idle .tile")).toHaveCount(1, { timeout: 60_000 });
+  const id = (await sdkSessions(daemon))[0]!.id;
+  await daemon.crash();
+  // Recreate the historical inconsistency in the stopped disposable daemon only.
+  const taskId = withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT task_id FROM sdk_sessions WHERE id = ?").get(id) as { task_id: string };
+    db.prepare("UPDATE tasks SET status = 'cancelled', session_id = NULL WHERE id = ?").run(row.task_id);
+    return row.task_id;
+  });
+  for (let restart = 0; restart < 2; restart++) {
+    await daemon.restart();
+    await expect.poll(() => withDaemonDb(daemon, (db) => db.prepare("SELECT status FROM sdk_sessions WHERE id = ?").get(id))).toEqual({ status: "exited" });
+    await expect.poll(async () => (await sdkSessions(daemon)).filter((s) => s.id === id)).toEqual([]);
+    await dashboard.reload();
+    await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
+    await expect(dashboard.locator("section.board-col.tone-idle .tile")).toHaveCount(0);
+    expect(withDaemonDb(daemon, (db) => db.prepare("SELECT status, session_id FROM tasks WHERE id = ?").get(taskId))).toEqual({ status: "cancelled", session_id: null });
+    if (restart === 1 && process.env.MC_E2E_EVIDENCE) {
+      mkdirSync(EVIDENCE, { recursive: true });
+      await dashboard.screenshot({ path: `${EVIDENCE}cancelled-stays-closed.png` });
+    }
+    await daemon.crash();
   }
 });

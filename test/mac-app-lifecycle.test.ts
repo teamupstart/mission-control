@@ -960,6 +960,41 @@ test("unreadable host inventory fails closed without echoing command output", as
   await assert.rejects(inspectAppLaunch(bundle, f.ops), /Could not inspect/);
 });
 
+test("on the dump path, the last job's own print skips a vanished job and refuses any other failure", async (t) => {
+  // The dump path re-reads the run's last GUI job with `launchctl print`; that read keeps the
+  // fallback's rules - 113 is a job that left mid-read, anything else refuses - and neither
+  // outcome discards or re-sweeps what the dump already answered for the other jobs.
+  for (const code of [113, 1]) {
+    await t.test(`launchctl print exit ${code}`, async () => {
+      const f = fixture();
+      const respawner = "com.example.respawner";
+      const last = "com.fixture.vanishing";
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${respawner}\n-\t0\t${last}\n`);
+      f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
+      f.outputs.set(`print gui/501/${last}`, "type = Submitted\nprogram = /bin/true\n");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        const result = await run(command, args, timeout);
+        return args[0] === "print" ? {code, stdout: "private-fixture-secret"} : result;
+      };
+      assert.deepEqual([...parseGuiJobs(dumpOf(new Map([[respawner, ""], [last, ""]])), 501)!.keys()].at(-1), last,
+        "the fixture's last job in dump order is the one re-printed");
+      if (code === 113) {
+        assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [respawner], unregistered: []},
+          "the vanished job is skipped, and the dump's own answer for the other job stands");
+      } else {
+        await assert.rejects(inspectAppLaunch(bundle, f.ops), {
+          message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
+        });
+      }
+      assert.deepEqual(f.calls, [
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=", "/bin/launchctl dumpstate",
+        `/bin/launchctl print gui/501/${last}`,
+      ], "one print, of the last job only, and no fallback sweep");
+    });
+  }
+});
+
 test("preflight skips a vanished GUI job but refuses other launchctl print failures", async (t) => {
   for (const code of [113, 1]) {
     await t.test(`launchctl print exit ${code}`, async () => {

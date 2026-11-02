@@ -25,7 +25,7 @@ const { openDb, closeDb, loadActiveTasks } = await import("../src/server/db.ts")
 const { savePlan, planContext, readPlanFile, reserveTaskPlans } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
-const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
+const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
 afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
@@ -649,4 +649,50 @@ test("local defaults are pinned before dispatch; incompatible explicit workflows
   const newBinding = f.workflows.store.insertBinding({ id: randomUUID(), workflowVersionId: binding.workflowVersionId, noteKey: binding.noteKey, sessionId: f.id, sessionAgent: "claude", sessionName: f.id, sessionCwd: f.repo, sessionRepoRoot: f.repo, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
   assert.throws(() => freezeLocalPlanSubmission(f.registry, f.workflows, newBinding, submission), /explicit human approval/);
   assert.equal(publicationReceipt(f.input), null);
+});
+
+
+test("dependency editor guidance retains exact merged origins and names every pinned revision", async () => {
+  const f = await fixture(false, "ship");
+  const next = await savePlan(f.authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files: f.files });
+  const inputs = [1, next.manifest.revision].map(revision => ({ ...f.input, revision, files: ["plan.md"] }));
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Editor guidance", intent: "Keep exact pins", backlog: true, workflowId: null,
+    planInputs: inputs, dependencies: [{ type: "task", taskId: f.task.id }] });
+  const merged = { ...dependent, dependencies: dependent.dependencies.map(edge => ({ ...edge, satisfiedAt: 10 })) };
+  assert.deepEqual(taskPlanDependencyRequirements(merged), {
+    requirements: inputs.map(input => ({ input, title: "local-plan", dependencyKeys: [`task:${f.task.id}`] })), error: null,
+  });
+  const refused = await f.tasks.update(dependent.id, { dependencies: [] });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /local-plan.*revision 1.*originating.*episode/);
+  const wrongEpisode = { ...merged, dependencies: merged.dependencies.map(edge => edge.type === "plan" ? edge : ({ ...edge, episodeId: "different-episode" })) };
+  assert.match(taskPlanDependencyRequirements(wrongEpisode).error!, /revision 1/);
+  assert.deepEqual(taskPlanDependencyRequirements({ ...merged, planInputs: [], planInputError: "Corrupt inputs" }), { requirements: [], error: "Corrupt inputs" });
+});
+
+test("dependency guidance follows bare session origins and exact artifact alternatives", async () => {
+  const f = await fixture(false, "ship");
+  // A taskless writer is a supported origin, independent of source-session liveness.
+  openDb().prepare("UPDATE managed_plan_revisions SET task_id = NULL WHERE plan_id = ?").run(f.input.planId);
+  const input = { ...f.input, files: ["plan.md"] };
+  const sessionEdge = { type: "session" as const, sessionId: f.id, title: "Prior planning session", episodeId: f.authority.episodeId,
+    agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: 2 };
+  const artifactEdge = { ...f.input, type: "plan" as const, title: "Exact artifact", episodeId: null, sessionId: null,
+    agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null };
+  const task = mkTask({ planInputs: [input], dependencies: [sessionEdge, artifactEdge] });
+  assert.deepEqual(taskPlanDependencyRequirements(task).requirements[0]?.dependencyKeys,
+    [`session:${f.id}`, `plan:${input.repoKey}:${input.planId}:1`]);
+  assert.equal(taskPlanDependencyRequirements({ ...task, dependencies: [{ ...sessionEdge, episodeId: "wrong" }] }).requirements.length, 0);
+});
+
+test("published local inputs no longer require their origin edge for editor removal", async () => {
+  const f = await fixture();
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Published input", intent: "Read local plan", backlog: true, workflowId: null,
+    planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }] });
+  assert.equal(taskPlanDependencyRequirements(dependent).requirements.length, 1);
+  await f.review();
+  const published = await f.post("/mcp/plans/publish", { repoSlot: "repo-01", planId: f.input.planId, revision: 1 });
+  assert.equal(published.status, 200, await published.clone().text());
+  assert.deepEqual(taskPlanDependencyRequirements(f.tasks.get(dependent.id)!), { requirements: [], error: null });
+  assert.equal((await f.tasks.update(dependent.id, { dependencies: [] })).ok, true);
 });

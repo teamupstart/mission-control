@@ -1,3 +1,4 @@
+import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1318,7 +1319,30 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
+  const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
+  const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
+  useEffect(() => {
+    if (!editing || !hasPlanPins) return;
+    let cancelled = false;
+    void api.taskPlanDependencies(editing.id).then((result) => {
+      if (!cancelled) setPlanRequirements({ task: editing, result: result ?? { requirements: [], error: "Could not verify pinned plan prerequisites. Reopen the editor to retry." } });
+    });
+    return () => { cancelled = true; };
+  }, [editing, hasPlanPins]);
+  const planRequirementsResult = planRequirements?.task === editing ? planRequirements.result : null;
+  const planRequirementsProblem = hasPlanPins
+    ? planRequirementsResult?.error ?? (planRequirementsResult ? null : "Checking pinned plan prerequisites…")
+    : null;
   const dependencyKey = dependencyInputKey;
+  function removalReason(key: string): string | null {
+    if (planRequirementsProblem) return planRequirementsProblem;
+    const required = planRequirementsResult?.requirements.filter(requirement =>
+      requirement.dependencyKeys.includes(key) && !draft.dependencies.some(candidate =>
+        dependencyKey(candidate) !== key && requirement.dependencyKeys.includes(dependencyKey(candidate))));
+    if (!required?.length) return null;
+    return required.map(requirement => `Required by pinned plan ${requirement.title} revision ${requirement.input.revision}.`).join(" ")
+      + " Retain this prerequisite to preserve the exact originating work episode or local publication artifact. Changing it requires updating the plan input and dependency together.";
+  }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -1349,12 +1373,16 @@ function DispatchModal({
         group: "session",
       });
     }
-    // Keep disappeared targets visible in an edit. They remain blocking until removed,
-    // but hiding them from the select would also make them impossible to remove.
+    // Durable completion takes precedence over current source availability or a newer episode.
+    // Keep unresolved disappeared targets visible so they can still be removed.
     for (const dependency of editing?.dependencies ?? []) {
       const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (!out.has(key)) out.set(key, { input, label: dependency.type === "plan" ? `${dependency.title} (${dependency.satisfiedAt === null ? "waiting for publication" : "published"})` : `${dependency.title} (unavailable)`, group: "session" });
+      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, {
+        input,
+        label: `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`,
+        group: "session",
+      });
     }
     return out;
   }, [editing, sessions, tasks]);
@@ -2375,7 +2403,9 @@ function DispatchModal({
     // terminal home are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
     // keeps the modal open with the fields intact so you can retry.
-    if (!r.ok) fail(r.error ?? (editing ? "could not save the task" : "dispatch failed"), r.fix);
+    if (!r.ok) fail(editing
+      ? `${dispatchNow ? "Could not save task; dispatch was not attempted" : "Could not save task"}: ${r.error ?? "save rejected"}`
+      : r.error ?? "dispatch failed", r.fix);
     else if (launched && !launched.ok) {
       fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
     }
@@ -3178,29 +3208,44 @@ function DispatchModal({
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
                       and the picker only offers what is not already chosen. */}
+                  {hasPlanPins && <div className="field-hint">
+                    Pinned plan inputs:
+                    {editing?.planInputs?.map(input => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
+                      <Tooltip label={`Open pinned plan revision ${input.revision} in a new tab`}>
+                        <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
+                          {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
+                        </a>
+                      </Tooltip>{" · "}{input.files.join(", ")}
+                    </div>)}
+                  </div>}
                   <div className="dep-chips">
                     {draft.dependencies.map((dependency) => {
                       const key = dependencyKey(dependency);
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
+                      const reason = removalReason(key);
                       return (
-                        <span key={key} className="dep-chip">
-                          {label}
-                          <Tooltip label="Remove this dependency">
-                            <button
-                              type="button"
-                              className="dep-chip-x"
-                              aria-label={`Remove dependency: ${label}`}
-                              onClick={() =>
-                                updateDependencies(
-                                  draft.dependencies.filter(
-                                    (candidate) => dependencyKey(candidate) !== key,
-                                  ),
-                                )
-                              }
-                            >
-                              ✕
-                            </button>
-                          </Tooltip>
+                        <span key={key} className="dep-entry">
+                          <span className="dep-chip">
+                            {label}
+                            <Tooltip label={reason ?? "Remove this dependency"}>
+                              <button
+                                type="button"
+                                className="dep-chip-x"
+                                aria-label={`Remove dependency: ${label}`}
+                                disabled={Boolean(reason)}
+                                onClick={() =>
+                                  updateDependencies(
+                                    draft.dependencies.filter(
+                                      (candidate) => dependencyKey(candidate) !== key,
+                                    ),
+                                  )
+                                }
+                              >
+                                ✕
+                              </button>
+                            </Tooltip>
+                          </span>
+                          {reason && <span className="field-hint dep-requirement">{reason}</span>}
                         </span>
                       );
                     })}

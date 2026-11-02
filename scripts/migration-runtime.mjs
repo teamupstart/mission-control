@@ -25,8 +25,18 @@ export async function boundedMigrationWait(predicate, message, { timeout = MIGRA
   throw new Error(message);
 }
 
+/** kill(0) also succeeds for an exited child until its parent reaps it. */
+function migrationProcessIsAlive(pid) {
+  if (!processIsAlive(pid)) return false;
+  const state = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: COMMAND_TIMEOUT_MS,
+  });
+  // Only a positive zombie observation proves exit. An unreadable state remains live.
+  return state.status !== 0 || !/^Z/.test(state.stdout.trim());
+}
+
 export function sameMigrationProcess(record) {
-  if (!record || !processIsAlive(record.pid)) return false;
+  if (!record || !migrationProcessIsAlive(record.pid)) return false;
   const current = processIdentity(record.pid);
   return current === null || !record.identity || current === record.identity;
 }
@@ -99,8 +109,11 @@ export function migrationRuntimePorts({ parent, port, inventory, checkpoint, tim
         record = readMigrationJson(path);
         if (record.nonce !== journal.plan.nonce || record.bundle !== journal.plan.target || record.commit !== journal.plan.targetIdentity.commit || record.stateDirectory !== journal.plan.stateDirectory || !Number.isInteger(record.pid) || record.pid < 1 || typeof record.identity !== "string" || !record.identity) throw new Error("The personal app launch identity does not match this attempt.");
       }
-      if (!record || !processIsAlive(record.pid)) return;
+      if (!record || !migrationProcessIsAlive(record.pid)) return;
       const identity = processIdentity(record.pid);
+      // The target may exit while ps reads its identity. Positive exit proof needs no
+      // signal; an unreadable identity on a still-live process remains a refusal.
+      if (!identity && !migrationProcessIsAlive(record.pid)) return;
       if (!identity || !record.identity) throw new Error("The personal app process identity could not be verified for recovery.");
       if (identity !== record.identity) return;
       if (record.pid === process.pid) throw new Error("Close the personal app, then reopen the retained system app to recover.");

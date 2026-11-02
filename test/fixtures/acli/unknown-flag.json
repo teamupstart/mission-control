@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "jira",
+    "workitem",
+    "search",
+    "--bogus"
+  ],
+  "code": 1,
+  "stdout": "",
+  "stderr": "✗ Error: unknown flag: --bogus\n"
+}

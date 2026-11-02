@@ -374,12 +374,15 @@ function JiraFields({
             because a filter read only as its first page can never reach its own tail. What is
             actually FILED is bounded by "Most tasks per sweep" above. */}
         <span className="ts-field-label">Issues per page</span>
-        <Tooltip label="How many issues one request asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds">
+        <Tooltip label={cfg.queryVia === "acli"
+          ? "acli chooses its page size automatically and reads up to the sweep ceiling. Narrow the JQL to reduce the work it reads"
+          : "How many issues one request asks Jira for. A sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds"}>
           <input
             className="field-input"
             type="number"
             min={1}
             max={200}
+            disabled={cfg.queryVia === "acli"}
             value={cfg.limit}
             onChange={(e) => onChange({ ...cfg, limit: Number(e.target.value) || cfg.limit })}
           />
@@ -388,7 +391,7 @@ function JiraFields({
 
       <label className="ts-field ts-field-wide">
         <span className="ts-field-label">Query via</span>
-        <Tooltip label="Choose whether Jira queries use local Jira credentials or the UpstartClaw Claude skill">
+        <Tooltip label="Choose local Jira credentials, Atlassian CLI OAuth, or the UpstartClaw Claude skill">
           <select
             className="field-input"
             aria-label="How Jira queries are authenticated"
@@ -399,9 +402,17 @@ function JiraFields({
           >
             <option value="local">Jira CLI or API token</option>
             <option value="upstartclaw">UpstartClaw Claude skill</option>
+            <option value="acli">Atlassian CLI (acli)</option>
           </select>
         </Tooltip>
       </label>
+
+      {cfg.queryVia === "acli" && (
+        <p className="settings-hint ts-upstartclaw-note">
+          Log in once with <code>acli jira auth login --web</code>. The active acli site must
+          match this source's Jira site. Write-back through acli is not available in this build.
+        </p>
+      )}
 
       {cfg.queryVia === "upstartclaw" && (
         <p className="settings-warn ts-upstartclaw-note">
@@ -831,6 +842,10 @@ export function SourceCard({
    * reassurance.
    */
   const [note, setNote] = useState<{ say: string; problem: boolean } | null>(null);
+  const noteRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (note) noteRef.current?.scrollIntoView({ block: "nearest" });
+  }, [note]);
 
   async function run(
     what: string,
@@ -1213,7 +1228,7 @@ export function SourceCard({
           that has to be read: preflight naming the credential to go and fix. `lastError`
           stays up with the status line, since that is health rather than an answer. */}
       {note && (
-        <p className={`${note.problem ? "settings-error" : "settings-hint"} ts-note`}>{note.say}</p>
+        <p ref={noteRef} className={`${note.problem ? "settings-error" : "settings-hint"} ts-note`}>{note.say}</p>
       )}
 
       {/* Through `<Overlay>` rather than `window.confirm`, for the reason the workflow

@@ -41,6 +41,7 @@ export interface FakeAgents {
     keepAwake: string;
     gh: string;
     jira: string;
+    acli: string;
   };
 }
 
@@ -758,6 +759,44 @@ if (command.startsWith("issue list")) {
 }
 `;
 
+/** Read-only acli contract. Mutable canned state lets specs model a profile switch. */
+const FAKE_ACLI = `#!/usr/bin/env node
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`acli-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+}
+const file = dir && join(dir, "fake-acli-state.json");
+const state = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+const command = argv.slice(0, 3).join(" ");
+if (argv[0] === "--version") {
+  process.stdout.write("acli version 0.0.0 (fake)\\n");
+} else if (state.unauthorized) {
+  process.stderr.write("✗ Error: unauthorized: use 'acli jira auth login' to authenticate\\n");
+  process.exitCode = 1;
+} else if (command === "jira auth status") {
+  process.stdout.write(\`✓ Authenticated\\n  Site: \${state.site || "example.atlassian.net"}\\n  Email: operator@example.invalid\\n  Authentication Type: oauth\\n\`);
+} else if (command === "jira workitem search") {
+  if (state.searchError) {
+    process.stderr.write("✗ Error: " + state.searchError + "\\n");
+    process.exitCode = 1;
+  } else {
+    const limit = Number(argv[argv.indexOf("--limit") + 1]);
+    process.stdout.write(JSON.stringify((state.issues || []).slice(0, limit)) + "\\n");
+    if (file && state.afterSearchSite) {
+      writeFileSync(file, JSON.stringify({ ...state, site: state.afterSearchSite }));
+    }
+  }
+} else {
+  process.stderr.write("fake acli refuses unsupported commands\\n");
+  process.exitCode = 1;
+}
+`;
+
 /**
  * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
  * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
@@ -803,7 +842,7 @@ setInterval(() => {
 `;
 
 /**
- * Write the three fakes into `home` and return their paths.
+ * Write the recording fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
  * place, because the vendored Agent SDK spawns `node <path>` for anything ending in
@@ -855,5 +894,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(jira, FAKE_JIRA);
   chmodSync(jira, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
+  const acli = join(binDir, "fake-acli");
+  writeFileSync(acli, FAKE_ACLI);
+  chmodSync(acli, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira, acli } };
 }

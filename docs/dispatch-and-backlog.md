@@ -1154,7 +1154,7 @@ turning it on is consent. Per source:
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
-| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential, acli OAuth login, or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 | **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
@@ -1330,7 +1330,7 @@ else, it never dispatches, and a task you delete stays deleted.
 | Field | Meaning |
 |---|---|
 | **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
-| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
+| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **Atlassian CLI (acli)** uses acli's own OAuth login, with no Jira environment variables. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
 | **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
@@ -1365,7 +1365,7 @@ issue more than the page size, which is an exact test for whether anything follo
   saying the tail is out of reach and naming the two ways to change that (set the variables, or
   narrow the JQL). Work still arrives; it is just bounded, and it says so.
 
-**The query method is explicit, and neither method stores a secret.**
+**The query method is explicit, and no method stores a secret.**
 
 The local method uses this ladder:
 
@@ -1375,6 +1375,40 @@ The local method uses this ladder:
 2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
+
+The **Atlassian CLI (acli)** method needs a one-time install and login:
+
+```sh
+brew tap atlassian/homebrew-acli && brew install acli
+acli jira auth login --web
+```
+
+The contract behavior below was verified on **2026-11-02** with `acli version 1.3.40-stable`;
+see the [read-only capture record](../test/fixtures/acli/README.md). These are version-specific
+observations to recheck when updating acli.
+
+Select **Atlassian CLI (acli)** in **Query via**, set **Jira site** to the site acli is
+logged in to, and press **Check it works**. Every check, sweep and linked read first proves
+that `acli jira auth status` names that site. A missing, unknown or different active site
+files nothing and names the fix (`acli jira auth login --web` or `acli jira auth switch`).
+Search results carrying another public site's `self` URL also refuse the whole sweep. Captured
+[search responses](../test/fixtures/acli/search-one.json) instead carry internal
+`jira-prod-<region>-<number>-<number>.prod.atl-paas.net` HTTPS issue URLs. Those exact-format API links are normalized to the configured public site
+for browse links. They do not identify a tenant, so every search checks auth status again
+before returning any results; a changed, failed or unknown site discards the entire result.
+The CLI has no per-command site flag: switching to another site and back entirely during a
+search cannot be detected. Keep the active login stable while reads run. This method
+uses acli only, with no fallback to `jira` or `JIRA_API_TOKEN`, and Mission Control never
+reads acli's keychain entry or stores its OAuth credential.
+
+acli reads with `--paginate --limit 1001`: up to 1000 issues plus one probe row. The
+[paginated capture](../test/fixtures/acli/search-paginate.json) shows `--paginate` honoring the
+total `--limit` in the verified version; **Issues per page** does not change this acli bound.
+A larger filter files the bounded results and shows the
+existing too-broad advisory so you can narrow the JQL. Empty results are healthy. The
+same summary, ADF description, browse link and priority mapper serves every query method.
+Write-back through acli is not available in this build; select the local method to write
+back today. acli comment and resolve support belongs to the next phase.
 
 The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
 exposes only `Skill`, `ToolSearch`, and the five exact read-only `searchJiraIssuesUsingJql`

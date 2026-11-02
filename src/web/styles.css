@@ -21260,6 +21260,9 @@ button.wf-carried.is-link:focus-visible {
   margin: 6px 0 0;
   font-size: 11.5px;
 }
+.ts-note {
+  scroll-margin-block: 14px;
+}
 /* Two columns on a comfortable pane, one when the modal is narrow. `.ts-field-wide`
    spans both, for the repo picker and the labels field - the two whose values are long
    enough that a half-width box truncates what you typed. */

@@ -11,6 +11,10 @@ the full comparison and the boundaries this section summarizes.
 **Nothing here is required to run Mission Control**, and a machine without UpstartClaw
 installed behaves exactly as the rest of this README describes.
 
+For Upstart Jira without daemon environment variables, use **Atlassian CLI (acli)** with
+its own OAuth login. See [Jira task sources](dispatch-and-backlog.md#jira) for setup and
+supported behavior.
+
 Jira task sources can also select **UpstartClaw Claude skill** as their query method. That
 background path invokes `upstartclaw-core:working-with-jira`, discovers the Atlassian JQL search
 tool, and calls it directly with the stored JQL. It is read-only, limited to Upstart Jira, and

@@ -296,6 +296,15 @@ export function jiraBin(): string {
   return envVar("JIRA_BIN") || "jira";
 }
 
+/**
+ * Every Atlassian CLI subprocess uses this seam. Tests redirect MISSION_ACLI_BIN at a
+ * recording fake so a logged-in operator's Jira is never reached. Read per call, with
+ * an empty override treated as unset, just like jiraBin().
+ */
+export function acliBin(): string {
+  return envVar("ACLI_BIN") || "acli";
+}
+
 export const DEFAULT_PRODUCT_ISSUES_REPO = "teamupstart/mission-control";
 
 export type ProductIssuesRepoConfig =

@@ -505,8 +505,8 @@ export const DEFAULT_JIRA_SITE = "upstartnetwork.atlassian.net";
  *
  * No credential lives here, and that is the design rather than an omission. The local method
  * reads the operator's own `jira` CLI first and falls back to `JIRA_API_TOKEN` + `JIRA_EMAIL`.
- * The UpstartClaw method uses the operator's completed Claude plugin setup. Neither stores a
- * token or opens a second OAuth flow in Mission Control.
+ * The UpstartClaw method uses the operator's completed Claude plugin setup. The acli method
+ * uses Atlassian CLI's own OAuth login. None stores a token or opens an OAuth flow here.
  */
 export const JiraConfigSchema = z.object({
   /** The Jira Cloud host, e.g. `your-org.atlassian.net`. A URL is accepted and reduced. */
@@ -521,8 +521,8 @@ export const JiraConfigSchema = z.object({
    * indistinguishable from a filter with no matching issues.
    */
   jql: z.string().max(1000).default(""),
-  /** Which credential boundary executes the JQL. Existing sources retain their local path. */
-  queryVia: z.enum(["local", "upstartclaw"]).default("local"),
+  /** Local Jira credentials, acli OAuth, or UpstartClaw. Existing sources retain local. */
+  queryVia: z.enum(["local", "upstartclaw", "acli"]).default("local"),
   /** How many issues one sweep asks Jira for. */
   limit: z.number().int().min(1).max(200).default(50),
   /**
@@ -588,7 +588,7 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     kind: "jira",
     label: "Jira",
     blurb:
-      "Files the issues a JQL filter matches as backlog tasks, through local Jira credentials or UpstartClaw.",
+      "Files the issues a JQL filter matches as backlog tasks, through local Jira credentials, Atlassian CLI (acli), or UpstartClaw.",
     preflightOk: "Looks good - Jira answered, and this JQL filter runs.",
     // Inbound only, and that is a decision rather than a gap: creating a Jira issue means
     // a project key, an issue type and whatever fields that project marks required, which

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,7 +25,13 @@ class Fixture {
   dir = mkdtempSync(join(tmpdir(), "mc-tmux-kill-"));
   socket = join(this.dir, "server.sock");
   fakeAgent = join(this.dir, "claude");
-  constructor() { symlinkSync(sleepBin, this.fakeAgent); }
+  // A script that execs sleep by its real path, not a symlink to it: a multicall coreutils
+  // (uutils on Ubuntu 26.04) dispatches on argv[0] and refuses to run as `claude`, which
+  // ended every fixture session the moment it started. `exec` keeps pane_pid the sleep.
+  constructor() {
+    writeFileSync(this.fakeAgent, `#!/bin/sh\nexec '${sleepBin}' "$@"\n`);
+    chmodSync(this.fakeAgent, 0o755);
+  }
   raw(args: string[]) {
     const env = { ...process.env }; delete env.TMUX; delete env.TMUX_PANE;
     return spawnSync(tmuxBin, ["-S", this.socket, "-f", "/dev/null", ...args], {

@@ -241,7 +241,9 @@ function parse(source: string): Parsed {
       const text = buffer.trim();
       const colon = text.indexOf(":");
       const selector = stack[stack.length - 1] ?? "";
-      if (colon > 0 && stack.length > 0 && !selector.startsWith("@")) {
+      // At-rule blocks hold declarations too - `@property`'s `initial-value`, `@font-face`,
+      // `@page` - and those paint like any other; a rule nested in `@media` reports its own.
+      if (colon > 0 && stack.length > 0) {
         declarations.push({
           line: bufferLine + (buffer.slice(0, buffer.search(/\S|$/)).split("\n").length - 1),
           selector,
@@ -370,6 +372,9 @@ test("the scanner reports each kind of literal it guards against", () => {
     [`.a { background: url("data:image/svg+xml,%3Csvg fill='rgb%28200 53 44%29'/%3E"); }`, "rgb("],
     [`.a { background-image: url("data:image/png;base64,iVBORw0KGgo="); }`, "data:image/png;base64"],
     ["@media (max-width: 700px) {\n  .a { color: white; }\n}", "white"],
+    // A declaration directly inside an at-rule block is scanned like any other.
+    ["@property --accent {\n  syntax: \"<color>\";\n  inherits: true;\n  initial-value: red;\n}", "red"],
+    ["@font-face {\n  font-family: Probe;\n  src: url(\"data:image/svg+xml,%3Csvg fill='%23c8352c'/%3E\");\n}", "#c8352c"],
     [".a { --local: #123456; }", "#123456"],
     // `content` and `list-style` take images, and an image can be painted in named colours.
     [".btn::before { content: linear-gradient(red, blue); }", ["red", "blue"]],
@@ -413,6 +418,8 @@ test("the scanner leaves tokens, mixes of tokens, non-paint names and the :root 
     `.a::before { content: "white"; }`,
     `.a::before { content: counter(item) ". " attr(data-label); }`,
     ".a { list-style-type: square; counter-reset: item; }",
+    "@media (max-width: 700px) {\n  .a { color: var(--fg); }\n}\n@keyframes pulse {\n  from { opacity: 0; }\n  to { opacity: 1; }\n}",
+    "@property --accent {\n  syntax: \"<color>\";\n  inherits: true;\n  initial-value: transparent;\n}",
     `.a { background-image: image-set("icons/red.png" 1x, "icons/white.png" 2x); }`,
     ".a { transition: background 0.14s ease, color 0.14s ease; will-change: background; }",
     `.a::before { content: "\\72 ed"; }`,

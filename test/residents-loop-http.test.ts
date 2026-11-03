@@ -57,9 +57,10 @@ test("pacing resolves only the signed caller; no session-control grant or body i
 
 // Issue #1324, end to end across the agent-facing boundary. Two request_input questions are
 // raised on the real ReviewManager and answered through the dashboard's resolve path. The
-// resident then paces itself through the MCP tool's own client, `scheduleResidentIteration`,
-// over the signed `/mcp/residents/schedule-next-iteration` route. Before the fix, that call
-// answered `not_recorded: needs-you` for ever.
+// resident paces itself through the MCP tool's own client, `scheduleResidentIteration`, over
+// the signed `/mcp/residents/schedule-next-iteration` route. An open question holds wakes
+// without pausing the run, so pacing is recorded while it is open and after it is answered.
+// Before the fix, that call answered `not_recorded: needs-you` for ever.
 test("after two answered request_input questions, schedule_next_iteration is recorded through the signed MCP route", async () => {
   const registry = new Registry();
   const stopCredentials = maintainScoutSessionCredentials(registry);
@@ -97,15 +98,17 @@ test("after two answered request_input questions, schedule_next_iteration is rec
       const review = ask(question, [...labels]);
       await settle();
       assert.equal(registry.getSession(resident.id)!.pendingReviews, 1);
-      assert.equal(run().loopState, "paused"); assert.equal(run().pauseReason, "needs-you");
-      // While the question is open the refusal is still correct, and says so.
+      // The open question holds wakes; it never pauses the run.
+      assert.notEqual(run().loopState, "paused"); assert.equal(run().pauseReason, null);
       const whileOpen = await scheduleNextIteration({ delaySeconds: 1800, reason: "while open", callId: `open-${review.id}` });
-      assert.equal("code" in whileOpen && whileOpen.code, "not_recorded");
-      log.push(`asked: open review -> loop ${run().loopState} (${run().pauseReason}); schedule_next_iteration -> ${JSON.stringify(whileOpen)}`);
+      assert.ok(!("code" in whileOpen), `recorded while held: ${JSON.stringify(whileOpen)}`);
+      assert.equal(whileOpen.pending, true);
+      log.push(`asked: open review -> loop ${run().loopState} (pause_reason ${run().pauseReason}); schedule_next_iteration -> ${JSON.stringify(whileOpen)}`);
       const answered = reviews.resolve(review.id, "answer", null, "human", [{ decisionId: "q", selected: [pick], other: null }]);
       assert.equal(answered?.status, "answered");
       await settle();
       assert.equal(registry.getSession(resident.id)!.pendingReviews, 0);
+      assert.equal(run().pauseReason, null);
       log.push(`answered ${pick}: loop ${run().loopState}, pause_reason ${run().pauseReason}`);
     }
     const receipt = await scheduleNextIteration({ delaySeconds: 1800, reason: "wait for the migration window", callId: "after-answers" });

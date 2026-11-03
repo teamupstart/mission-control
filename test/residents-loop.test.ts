@@ -113,7 +113,7 @@ function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
     refreshContext: (value: number) => { refreshedContext = value; },
     patch: (value: Partial<Session>) => { session = { ...session, ...value }; emit(); },
     complete: (generation = session.workCycle!.generation) => { session = { ...session, state: "idle", workCycle: { ...session.workCycle!, generation, active: false, completedAt: now, updatedAt: now } }; emit(); },
-    human: () => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId: "human", deliveredAt: now }); emit(); },
+    human: (turnId = "human") => { session = { ...session, state: "working", workCycle: { ...session.workCycle!, active: true, generation: session.workCycle!.generation + 1 } }; for (const fn of humans) fn({ sessionId: session.id, turnId, deliveredAt: now }); emit(); },
     transcript: (text: string) => { transcript = text; }, unreadable: () => { unreadable = true; },
   };
 }
@@ -166,66 +166,14 @@ test("pending pacing survives restart and continuation under a later generation"
   f.advance(1000); f.loop(); f.complete(4); await flush(); assert.equal(f.run().nextWakeAt, f.now + 1_200_000);
 });
 
-test("human precedence cancels pacing and uses a fresh default cadence; needs-you clears requests and pauses", async () => {
+test("human precedence cancels pacing and uses a fresh default cadence", async () => {
   const f = fixture(); const loop = f.loop(); await flush();
   loop.schedule(f.session, { callId: "late", delaySeconds: 60, reason: "old" });
   f.human(); await flush(); assert.equal(f.run().nextWakeAt, null); await assert.rejects(loop.runNow("run"), /human message or active turn/); assert.equal(f.calls.length, 0);
   f.complete(); await flush(); assert.equal(f.run().nextWakeAt, f.now + 300_000);
   f.human(); loop.schedule(f.session, { callId: "human", delaySeconds: 600, reason: "new" }); f.complete(); await flush();
   assert.equal(f.run().nextWakeAt, f.now + 600_000);
-  f.patch({ state: "awaiting_input" }); await flush(); assert.equal(f.run().loopState, "paused");
-  assert.throws(() => loop.schedule(f.session, { callId: "paused", delaySeconds: 60, reason: "" }), /needs-you/);
-  assert.throws(() => loop.resume("run"), /Resolve/);
-});
 
-test("an answered request_input lifts the needs-you hold, so the resident schedules again", async () => {
-  const f = fixture(); const loop = f.loop(); await flush();
-  await loop.runNow("run");
-  // The agent asks mid-turn: an open review is what paints the session needs-you.
-  f.patch({ pendingReviews: 1 }); await flush();
-  assert.equal(f.run().loopState, "paused"); assert.equal(f.run().pauseReason, "needs-you");
-  const attention = () => foldAttention({ sessions: [f.session], reviews: [], ensembles: [], residentRuns: [residentRunSummary(f.run())!] });
-  // The answer reaches the agent and the turn carries on.
-  f.patch({ pendingReviews: 0 }); await flush();
-  assert.equal(f.run().loopState, "working"); assert.equal(f.run().pauseReason, null);
-  assert.equal(attention().total, 0, "no 'Waiting on you: needs-you' card is left with nothing to answer");
-  const receipt = loop.schedule(f.session, { callId: "after-answer", delaySeconds: 1800, reason: "wait for CI" });
-  assert.equal(receipt.pending, true);
-  f.complete(); await flush();
-  assert.equal(f.run().nextWakeAt, f.now + 1_800_000); assert.equal(f.run().wakeReason, "wait for CI");
-});
-
-test("schedule_next_iteration lifts a needs-you hold the loop has not observed clearing yet", async () => {
-  const f = fixture(); const loop = f.loop(); await flush();
-  await loop.runNow("run");
-  f.patch({ pendingReviews: 1 }); await flush();
-  assert.equal(f.run().pauseReason, "needs-you");
-  await loop.stop(); // no observation can run, as in the window before the next event
-  f.patch({ pendingReviews: 0 });
-  const restarted = f.loop();
-  // Restoring re-observes open runs, so do the call before that microtask runs.
-  const receipt = restarted.schedule(f.session, { callId: "race", delaySeconds: 600, reason: "race" });
-  assert.equal(receipt.delaySeconds, 600); assert.equal(f.run().pauseReason, null);
-});
-
-test("a needs-you hold persisted by an older daemon heals on restart once nothing is open", async () => {
-  const f = fixture(); f.loop(); await flush();
-  state.pauseResident("run", "needs-you");
-  for (const loop of loops.splice(0)) await loop.stop();
-  f.loop(); await flush();
-  assert.equal(f.run().loopState, "waiting"); assert.equal(f.run().pauseReason, null);
-  assert.equal(f.run().nextWakeAt, f.now + 300_000);
-});
-
-test("only the needs-you hold lifts by itself: operator and guardrail pauses wait for Resume", async () => {
-  const f = fixture({ iterationCap: 1 }); const loop = f.loop(); await flush();
-  loop.pause("run"); f.patch({ state: "idle" }); await flush();
-  assert.equal(f.run().pauseReason, "Paused by operator");
-  loop.pause("run", "Spend guardrail reached"); f.patch({}); await flush();
-  assert.equal(f.run().pauseReason, "Spend guardrail reached");
-  // A hold whose request was answered after the cap tripped reports the cap, not a resume.
-  state.pauseResident("run", "needs-you"); f.patch({}); await flush();
-  assert.equal(f.run().loopState, "paused"); assert.match(f.run().pauseReason ?? "", /Iteration guardrail/);
 });
 
 for (const working of [false, true]) test(`resuming an ${working ? "active" : "idle"} resident preserves completion pacing`, async () => {
@@ -426,4 +374,107 @@ for (const contextPct of [null, NaN, Infinity, -1]) test(`unmeasured context (${
   await loop.runNow("run");
   assert.equal(f.calls.length, 1);
   assert.equal(f.run().iteration, 2);
+});
+
+for (const hold of [{ pendingReviews: 1 }, { state: "awaiting_input" as const }, { paneDialog: { options: [], highlighted: 0 } }]) test(`human request holds overdue wakes without pausing: ${JSON.stringify(hold)}`, async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  const due = f.run().nextWakeAt;
+  f.patch(hold); await flush();
+  assert.equal(f.run().loopState, "waiting");
+  assert.equal(f.run().nextWakeAt, due);
+  await loop.stop(); f.advance(400_000); f.loop(); await flush();
+  assert.equal(f.calls.length, 0);
+  f.patch({ pendingReviews: 0, state: "idle", paneDialog: null }); await flush();
+  assert.equal(f.calls.length, 1);
+});
+
+test("pacing before and during a review survives resolution and completes with the requested delay", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); await loop.runNow("run");
+  loop.schedule(f.session, { callId: "before", delaySeconds: 900, reason: "before review" });
+  f.patch({ pendingReviews: 2 }); await flush();
+  const receipt = loop.schedule(f.session, { callId: "during", delaySeconds: 1200, reason: "during review" });
+  assert.equal(receipt.pending, true);
+  f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, null);
+  f.patch({ pendingReviews: 1 }); await flush(); assert.equal(f.run().nextWakeAt, null);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 1_200_000);
+  assert.equal(f.run().pauseReason, null);
+});
+
+test("operator Pause remains paused after requests resolve and pacing explains how to resume", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ pendingReviews: 1 }); await flush(); loop.pause("run");
+  f.patch({ pendingReviews: 0 }); f.complete(); await flush();
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().nextWakeAt, null);
+  assert.throws(() => loop.schedule(f.session, { callId: "paused", delaySeconds: 60, reason: "" }), /Resume/);
+});
+
+test("detached review continuation preserves pending pacing across restart", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); await loop.runNow("run");
+  loop.schedule(f.session, { callId: "before-detach", delaySeconds: 900, reason: "review pacing" });
+  f.patch({ pendingReviews: 1 }); await flush(); await loop.stop();
+  f.loop(); await flush(); f.patch({ pendingReviews: 0 });
+  f.human("review-continuation:resolved"); f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 900_000);
+});
+
+test("legacy needs-you pauses recover without undoing other pauses", async () => {
+  const f = fixture(); state.pauseResident("run", "needs-you");
+  f.patch({ pendingReviews: 1 }); const loop = f.loop(); await flush();
+  assert.notEqual(f.run().loopState, "paused"); assert.equal(f.calls.length, 0);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 300_000);
+  loop.pause("run", "Context cannot be measured."); f.complete(); await flush();
+  assert.equal(f.run().loopState, "paused");
+  assert.throws(() => loop.schedule(f.session, { callId: "guardrail", delaySeconds: 60, reason: "" }), /paused.*Context cannot be measured.*Resume/);
+});
+
+test("scheduling directly clears a stale needs-you pause before observation runs", async () => {
+  const f = fixture(); state.pauseResident("run", "needs-you");
+  const loop = f.loop();
+  // Do not yield: startup observation must not clear the pause before schedule sees it.
+  assert.equal(f.session.state, "idle");
+  assert.equal(f.session.pendingReviews, 0);
+  assert.equal(f.run().loopState, "paused");
+  assert.equal(f.run().pauseReason, "needs-you");
+  assert.equal(f.run().nextWakeAt, null);
+
+  const receipt = loop.schedule(f.session, { callId: "stale-pause", delaySeconds: 900, reason: "reviews resolved" });
+  assert.deepEqual(receipt, { callId: "stale-pause", delaySeconds: 900, pending: true, nextWakeAt: null });
+  assert.equal(f.run().pauseReason, null);
+  assert.notEqual(f.run().loopState, "paused");
+  await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 900_000);
+  assert.equal(f.run().wakeReason, "reviews resolved");
+  assert.equal(f.calls.length, 0, "recording pacing does not send an immediate wake");
+});
+
+test("pacing during an idle review hold records pending and applies when resolved", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ pendingReviews: 1 }); await flush();
+  const receipt = loop.schedule(f.session, { callId: "idle-held", delaySeconds: 900, reason: "held" });
+  assert.equal(receipt.pending, true); assert.equal(receipt.nextWakeAt, null);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 900_000);
+});
+
+test("a fresh idle pacing call supersedes a held request before observation catches up", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  f.patch({ pendingReviews: 1 }); await flush();
+  loop.schedule(f.session, { callId: "held-old", delaySeconds: 900, reason: "held" });
+  f.patch({ pendingReviews: 0 });
+  loop.schedule(f.session, { callId: "idle-new", delaySeconds: 600, reason: "new" });
+  await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 600_000);
+  assert.equal(f.run().wakeReason, "new");
+});
+
+test("a review without agent pacing uses the profile default after turn completion", async () => {
+  const f = fixture(); const loop = f.loop(); await flush(); await loop.runNow("run");
+  f.patch({ pendingReviews: 1 }); f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, null);
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 300_000);
 });

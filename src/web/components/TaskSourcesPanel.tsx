@@ -410,7 +410,7 @@ function JiraFields({
       {cfg.queryVia === "acli" && (
         <p className="settings-hint ts-upstartclaw-note">
           Log in once with <code>acli jira auth login --web</code>. The active acli site must
-          match this source's Jira site. Write-back through acli is not available in this build.
+          match this source's Jira site.
         </p>
       )}
 
@@ -643,6 +643,12 @@ function JiraWritebackFields({
           </select>
         </Tooltip>
       </label>
+
+      {cfg.queryVia === "acli" && cfg.linkVia !== "comment" && (
+        <p className="settings-hint ts-field-wide">
+          acli cannot post a remote link. The comment carries the pull request link instead.
+        </p>
+      )}
 
       {/* Said here rather than left to the first delivery, for the reason the empty-JQL
           warning is said above: a stored-but-empty target status is a switch that looks

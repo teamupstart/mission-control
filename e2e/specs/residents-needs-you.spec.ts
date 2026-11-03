@@ -13,8 +13,9 @@ import type { ResidentProfile } from "../../src/shared/residents.ts";
  * with nothing to answer, while `schedule_next_iteration` refused every call with
  * "Nothing was recorded: needs-you".
  *
- * The loop pauses a resident while its session needs you, and nothing lifted that pause once
- * the question was answered. These specs drive the real built daemon: two back-to-back questions
+ * The loop used to pause a resident while its session needed you, and nothing lifted that pause
+ * once the question was answered. An open question now holds wakes without pausing the run, and
+ * a pause older daemons left behind is released. These specs drive the real built daemon: two back-to-back questions
  * posted on the `request_input` HTTP channel and answered on two different surfaces (the
  * attention inbox, then the session's review card), an ask its card could not carry, which is
  * refused before it reaches the dashboard, and a hold left behind by an older daemon, restored
@@ -98,6 +99,16 @@ async function askResident(daemon: DaemonHandle, ask: Record<string, unknown>): 
   });
 }
 
+/** The question is open on the session, and it holds the loop without pausing it. */
+async function openQuestionHeld(daemon: DaemonHandle): Promise<void> {
+  await expect.poll(async () => {
+    const sessions = await request<Array<{ pendingReviews: number; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
+    return sessions.find(s => s.task?.kind === "resident")?.pendingReviews;
+  }).toBe(1);
+  expect(live(daemon)?.loop_state).not.toBe("paused");
+  expect(live(daemon)?.pause_reason).toBeNull();
+}
+
 /** The issue's second call: another detailed choice, asked straight after the first answer. */
 const FOLLOW_UP = {
   ...ASK,
@@ -123,7 +134,7 @@ test("two back-to-back questions answered on two different surfaces resume the l
   // First question, answered from the attention inbox rather than the session.
   const first = await askResident(daemon, ASK);
   expect(first.status, await first.clone().text()).toBe(200);
-  await expect.poll(() => live(daemon)?.pause_reason).toBe("needs-you");
+  await openQuestionHeld(daemon);
   await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   // While it is open, the inbox offers the question itself, never the loop's hold.
@@ -139,7 +150,7 @@ test("two back-to-back questions answered on two different surfaces resume the l
   // Second question straight after, answered on the session's own review card.
   const second = await askResident(daemon, FOLLOW_UP);
   expect(second.status, await second.clone().text()).toBe(200);
-  await expect.poll(() => live(daemon)?.pause_reason).toBe("needs-you");
+  await openQuestionHeld(daemon);
   const band = await openBand(page, daemon, profile);
   await page.locator(".console-detail").getByRole("button", { name: /to review/ }).click();
   const modal = page.locator(".review-modal");

@@ -1,6 +1,7 @@
 import type { Session, Task } from "@shared/types.ts";
 import { kindMissionMcpRequirement, type MissionMcpTool } from "./mission-mcp.ts";
 import type { ResumeContext } from "./harness/resume.ts";
+import { resolveDispatchAdvisor } from "./harnesses.ts";
 
 /** Owners resolve durable facts; harness adapters receive only these plain values. */
 export function resumeContext(
@@ -15,5 +16,6 @@ export function resumeContext(
   const extraDirs = task ? [task.worktreePath, ...task.extraRepos.map((repo) => repo.worktreePath)]
     .filter((path): path is string => Boolean(path && path !== session.cwd)) : [];
   return { managed: session.runtime === "sdk" || task !== null || evidence || ensembleMember,
-    requiredTools: [...tools], extraDirs: [...new Set(extraDirs)] };
+    requiredTools: [...tools], extraDirs: [...new Set(extraDirs)],
+    advisorModel: task ? resolveDispatchAdvisor(task) : null };
 }

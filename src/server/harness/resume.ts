@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Session } from "@shared/types.ts";
+import type { AdvisorChoice, Session } from "@shared/types.ts";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../agent-subprocess-env.ts";
 import { STATE_DIR, resumeGuardPath } from "../config.ts";
 import { missionToolsAvailability } from "../mission-tools.ts";
@@ -18,6 +18,12 @@ export interface ResumeContext {
   managed: boolean;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
+  /**
+   * The owning task's advisor pin, rendered exactly as its first terminal launch rendered
+   * it, so a reopened conversation keeps the advisor it was dispatched with. Omitted or null
+   * inherits.
+   */
+  advisorModel?: AdvisorChoice | null;
 }
 export interface PreparedResume {
   cwd: string;
@@ -98,7 +104,11 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
     }
     const scope = harness.multiRepoDispatch;
     if (context.extraDirs.length && scope?.kind === "flags") argv.push(...scope.launchArgs([...context.extraDirs]));
-    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd });
+    const advisor = context.advisorModel && harness.advisor
+      ? { args: harness.advisor.launchArgs(context.advisorModel), env: harness.advisor.launchEnv(context.advisorModel) }
+      : { args: [], env: {} };
+    argv.push(...advisor.args);
+    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd, extraEnv: advisor.env });
     dropPaneIdentityEnv(env);
     delete env.MISSION_SESSION_ID;
     env.MISSION_AGENT_SESSION_ID = session.agentSessionId;

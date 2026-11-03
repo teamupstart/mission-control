@@ -245,7 +245,6 @@ export function Overlay({
   ariaLabel,
   ariaModal,
   closable = true,
-  ignoreBackdropDrag = false,
   onEscape,
   onKeyDown,
   surfaceRef,
@@ -269,8 +268,6 @@ export function Overlay({
    * one guard rather than two is what keeps them from drifting apart.
    */
   closable?: boolean;
-  /** Opt in to ignoring backdrop clicks from a drag across the panel boundary. */
-  ignoreBackdropDrag?: boolean;
   /**
    * Keys the overlay wants beyond Escape (the diff viewer walks its file list). Only
    * fires while this overlay is topmost. Memoise it, or the listener re-subscribes on
@@ -334,8 +331,13 @@ export function Overlay({
     <div
       className="modal-backdrop"
       data-overlay-top={isTop ? "true" : undefined}
-      // A drag across the panel boundary can produce a click targeted at the backdrop.
-      // Capture both endpoints, even when a child stops propagation, before dismissing.
+      // Only a complete press AND release on the backdrop dismisses. A drag that crosses
+      // the panel boundary in either direction - most often selecting text inside the panel
+      // and letting go past its edge - still produces a `click`, and the browser targets it
+      // at the nearest common ancestor, which is this backdrop. Dismissing on that click
+      // throws away whatever the operator was reading or typing. Both endpoints are taken
+      // in the CAPTURE phase so a child that stops propagation cannot hide either one.
+      // Every overlay gets this; it is not a per-modal opt-in.
       onPointerDownCapture={(e) => {
         backdropPress.current = e.button === 0 && e.target === e.currentTarget;
       }}
@@ -346,7 +348,7 @@ export function Overlay({
         backdropPress.current = false;
       }}
       onClick={(e) => {
-        const dismiss = !ignoreBackdropDrag || (backdropPress.current && e.target === e.currentTarget);
+        const dismiss = backdropPress.current && e.target === e.currentTarget;
         backdropPress.current = false;
         if (closable && dismiss) onClose();
       }}

@@ -248,6 +248,15 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
+ * A per-task advisor override for a Claude dispatch: the model aliases Claude Code's
+ * `advisorModel` setting accepts, plus `off`, which disables the advisor tool outright.
+ * Inherit is not a value here - it is `null` on the task, and the launch renders nothing.
+ * Fable is deliberately absent; see `docs/dispatch-and-backlog.md#advisor`.
+ */
+export const ADVISOR_CHOICES = ["opus", "sonnet", "off"] as const;
+export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
+
+/**
  * A harness's live permission posture.
  *
  * The first six values are Claude's exact hook/footer strings. The remaining four
@@ -2192,6 +2201,12 @@ export interface Task {
    * follow a default changed while it waited unless somebody explicitly pinned it.
    */
   effort: ThinkingLevel | null;
+  /**
+   * Advisor override for this task, or null to inherit whatever the operator's Claude
+   * Code settings say. Unlike `model` and `effort` there is no Mission Control default
+   * to resolve: null renders nothing at launch, so the CLI's own settings decide.
+   */
+  advisorModel: AdvisorChoice | null;
   /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *

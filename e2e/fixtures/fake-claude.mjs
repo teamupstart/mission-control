@@ -1237,12 +1237,96 @@ function answerAuthenticationFailure() {
 
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
 function beginScoutTurn(prompt) {
+  beginHeldTurn(runScout(prompt));
+}
+
+// ---------------------------------------------------------------------------
+// The report-bug scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * The first sentence of the brief the DAEMON writes for a Report bug session
+ * (`launchFailureReportBrief`). Recognised from the daemon's own words, as the scout is, so the
+ * brief's delivery is part of what a spec proves rather than something the spec scripted.
+ */
+const REPORT_BUG_MARKER = "The operator pressed Report bug on a Mission Control dispatch that did not start.";
+
+/** This session's Mission Control MCP descriptor: inline JSON from the SDK, a file path from a terminal. */
+function missionMcpDescriptor() {
+  const raw = argvValue("--mcp-config");
+  if (!raw) return null;
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch {
+    config = JSON.parse(readFileSync(raw, "utf8"));
+  }
+  return config.mcpServers?.["mission-control"] ?? null;
+}
+
+/**
+ * Do what the brief asks, with no model call: start the session's own bundled MCP server, the
+ * way the real CLI would from its `--mcp-config`, and call `report_product_issue`. That call
+ * blocks inside the real tool until a human submits or dismisses the public preview, which is
+ * the review-before-submit step a spec drives from the dashboard. Its answer becomes the turn.
+ *
+ * The draft is generalised from the brief rather than copied: the brief carries private paths,
+ * and the tool's issue is public.
+ */
+async function runReportBug(prompt) {
+  const descriptor = missionMcpDescriptor();
+  if (!descriptor) return "This session has no Mission Control MCP server, so nothing was reported.";
+  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
+  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
+  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  const child = spawn(descriptor.command, descriptor.args ?? [], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...descriptor.env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending = new Map();
+  let sequence = 0;
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (message.id) pending.get(message.id)?.(message);
+  });
+  // No deadline on purpose: the tool call is waiting on a person.
+  const request = (method, params) => new Promise((resolveRequest) => {
+    const id = ++sequence;
+    pending.set(id, (message) => { pending.delete(id); resolveRequest(message); });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+  try {
+    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-report-bug", version: "1" } });
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    const called = await request("tools/call", {
+      name: "report_product_issue",
+      arguments: {
+        type: "bug",
+        title: `A ${kind} dispatch did not start`,
+        details: [
+          `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
+          `${attempts} attempt(s) failed the same way.`,
+          "The base branch could not be fetched from <repository>'s origin.",
+        ].join("\n\n"),
+      },
+    });
+    const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    return `report_product_issue answered: ${text}`;
+  } finally {
+    child.stdin.end();
+  }
+}
+
+/** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
+function beginHeldTurn(work) {
   const held = { prompts: [] };
   openTurn = held;
   // Tracked so a stdin close cannot exit the process out from under a submission that is
   // already in flight - the answer would never be written and the card would go from
   // working straight to exited, which reads as a crash rather than as a race.
-  scoutTurn = runScout(prompt).then((text) => {
+  scoutTurn = work.then((text) => {
     openTurn = null;
     appendTurn("assistant", [{ type: "text", text }]);
     emit({
@@ -1415,6 +1499,13 @@ rl.on("line", (line) => {
     // card stays "working" until the archive exists, exactly as a real one would.
     if (prompt.includes(SCOUT_MARKER) || prompt === SCOUT_SUBMIT_STAGED || prompt.includes("E2E_REPORT_")) {
       beginScoutTurn(prompt);
+      return;
+    }
+
+    // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
+    // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes(REPORT_BUG_MARKER)) {
+      beginHeldTurn(runReportBug(prompt));
       return;
     }
 

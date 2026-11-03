@@ -33,6 +33,14 @@ import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
+import {
+  LaunchFailureProvider,
+  LaunchFailureToasts,
+  ReportLaunchFailureDialog,
+  revealLaunchFailure,
+  type LaunchFailureControls,
+} from "./components/LaunchFailures.tsx";
+import { openLaunchFailureGroups } from "@shared/launch-failure.ts";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
 import { KillModal } from "./components/KillModal.tsx";
@@ -1758,6 +1766,27 @@ export function App(): React.JSX.Element {
     },
     [navigate, layout],
   );
+  // The failure a Report bug press is confirming, or null.
+  const [reportingLaunchFailure, setReportingLaunchFailure] = useState<Task | null>(null);
+  const launchFailureControls = useMemo<LaunchFailureControls>(
+    () => ({
+      tasks,
+      openReport: setReportingLaunchFailure,
+      launchResident: (profileId) => openResidentLaunch(profileId),
+      openProfile: (profileId) => navigate({ page: "residents", profileId }),
+      openSession: openSessionOnFleet,
+    }),
+    [tasks, openResidentLaunch, navigate, openSessionOnFleet],
+  );
+  // "Show" from a toast or the top bar: back to the fleet, then to the surface drawing it once
+  // that page has painted. The failure is drawn from the task row, so it is there to find.
+  const showLaunchFailure = useCallback(
+    (taskId: string): void => {
+      navigate({ page: "fleet" });
+      requestAnimationFrame(() => requestAnimationFrame(() => revealLaunchFailure(tasks, taskId)));
+    },
+    [navigate, tasks],
+  );
   /**
    * Run a Line stage click.
    *
@@ -2180,6 +2209,12 @@ export function App(): React.JSX.Element {
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
   // and a filter left over from browsing the fleet must not make the reply look like "no".
   const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
+  // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
+  // and session-card notices, and the top bar's `did not start` count all read these groups.
+  const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
+  // and on the Board a returned one whose Backlog card is hidden becomes a tile.
+  const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
@@ -2699,6 +2734,7 @@ export function App(): React.JSX.Element {
   const layoutHasContent =
     visible.length > 0 ||
     dispatchingTasks.length > 0 ||
+    failedLaunchTiles > 0 ||
     (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length + (layout === "board" ? restoringSessions.length : 0);
@@ -3772,6 +3808,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <LaunchFailureProvider value={launchFailureControls}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -3794,6 +3831,11 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           onOpenInbox={() => setInboxOpen(true)}
+          didNotStart={launchFailureGroups.length}
+          onShowDidNotStart={() => {
+            const first = launchFailureGroups[0];
+            if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
@@ -4285,7 +4327,8 @@ export function App(): React.JSX.Element {
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
           (layout !== "board" || restoringSessions.length === 0) &&
-          dispatchingTasks.length === 0 && (
+          dispatchingTasks.length === 0 &&
+          failedLaunchTiles === 0 && (
           hasSnapshot ? (
             <div className="empty">
               <p className="empty-title">No agent sessions detected</p>
@@ -4534,8 +4577,21 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
+        {reportingLaunchFailure && (
+          <ReportLaunchFailureDialog
+            task={reportingLaunchFailure}
+            onClose={() => setReportingLaunchFailure(null)}
+          />
+        )}
+        <LaunchFailureToasts
+          tasks={tasks}
+          ready={hasSnapshot}
+          onShow={showLaunchFailure}
+          onReport={setReportingLaunchFailure}
+        />
       </div>
       </TourTargetHost>
+      </LaunchFailureProvider>
     </OverlayHost>
   );
 }

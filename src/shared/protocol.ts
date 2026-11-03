@@ -1257,6 +1257,33 @@ export const RescheduleTaskSchema = z.object({}).strict();
 export const RequeueTaskSchema = z.object({}).strict();
 
 /**
+ * Dismiss open launch failures (`POST /api/launch-failures/dismiss`). A list, because a failed
+ * tile stands for every attempt of the same work that failed the same way, and one Dismiss on
+ * it answers all of them. Bounded as a request body, not as a product limit.
+ */
+export const DismissLaunchFailuresSchema = z
+  .object({ taskIds: z.array(z.string().min(1)).min(1).max(100) })
+  .strict();
+
+/**
+ * Start a report session for one launch failure (`POST /api/launch-failures/report`).
+ *
+ * The daemon builds the session's brief from `taskId` alone, so the browser never carries the
+ * failure's facts. `repoRoot` is only where the report session runs: every session kind but a
+ * resident needs a checkout, and a failed resident has none of its own to offer.
+ */
+export const ReportLaunchFailureSchema = z
+  .object({ taskId: z.string().min(1), repoRoot: z.string().min(1) })
+  .strict();
+
+/**
+ * Try a failed launch again (`POST /api/launch-failures/retry`): a backlog kind is re-filed and
+ * dispatched as the same task, a chat is filed again as a new one. A resident is launched again
+ * from its profile instead, through the one resident launch call.
+ */
+export const RetryLaunchFailureSchema = z.object({ taskId: z.string().min(1) }).strict();
+
+/**
  * Move one backlog task in the operator's order - the ONE route that writes
  * `Task.backlogRank`, and the only way the order ever changes by hand.
  *

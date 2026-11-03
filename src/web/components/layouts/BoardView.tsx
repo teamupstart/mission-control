@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { provisioningTasks } from "@shared/session.ts";
+import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
+import { latestLaunchFailure } from "@shared/launch-failure.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
@@ -200,8 +202,20 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
    * placeholder closes.
    */
   const pending = provisioningTasks(props.tasks);
+  // Dispatches that failed before their session started, drawn where their placeholder was.
+  // From the full task list for the same reason: a filter must not hide a dispatch that failed.
+  // A returned failure is shown on its Backlog card and a kept one on its session card - when
+  // that card is on screen. A folded Backlog column or a fleet filter can hide it, and then the
+  // failure is drawn here instead, so the count and Show always have something to reach.
+  const backlogShown = columnWidthOf(widths, "backlog") !== "collapsed";
+  const failed = fleetFailureGroups(props.tasks, (group) => {
+    const latest = latestLaunchFailure(group);
+    if (group.outcome === "returned") return backlogShown && props.backlog.some((t) => t.id === latest.id);
+    return latest.sessionId !== null && props.sessions.some((s) => s.id === latest.sessionId);
+  });
+  const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null, pending.length);
+  const modes = boardColumnModes(groups, revealed, focusedTone != null, starters);
   // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
   // chip to bring them back from.
   const stashed = showEmptyColumnStash
@@ -375,7 +389,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           // to show its rows whatever the overview had folded. The fold is kept, so coming back
           // to the board finds the column as it was left.
           const collapsed = width === "collapsed" && !isRail;
-          const count = g.sessions.length + (g.tone === "working" ? pending.length : 0);
+          const count = g.sessions.length + (g.tone === "working" ? starters : 0);
           if (collapsed) {
             return (
               <section
@@ -498,6 +512,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {g.tone === "working" && (
                   <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
                 )}
+                {g.tone === "working" && (
+                  <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
+                )}
                 {/* The rail's body is this one element, filling it, so hovering anywhere
                     below the head gives the sentence the rail has no room to print. The
                     sentence is in the markup too, for a screen reader. */}
@@ -511,7 +528,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     </p>
                   </Tooltip>
                 ) : g.sessions.length === 0 ? (
-                  g.tone === "working" && pending.length > 0 ? null : (
+                  g.tone === "working" && starters > 0 ? null : (
                     <p className="board-col-empty">Nothing here</p>
                   )
                 ) : isRail ? (

@@ -156,6 +156,16 @@ WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
 Ghostty dispatches retain their verified pane UUID across daemon restarts and inventory failures.
 External Ghostty sessions without a proven pane association remain visible with input disabled.
 
+A dispatch that fails before its session starts stays where it was dispatched, as a **Did not
+start** tile with the full reason, or as a note on its Backlog card when it went back there. The
+top bar counts open failures. Every failure offers **Dismiss**, and every failure except a
+report session's own offers **Report bug**, which starts a session that catalogs the failure and
+drafts a public bug report for you to review and submit.
+The way back in depends on the failure: a dispatch that kept nothing offers **Retry**, a resident
+offers **Launch again**, a task back in the Backlog is dispatched from there, and a failure that
+kept its session offers **Open** when the task is bound to that session. See
+[when a dispatch does not start](docs/dispatch-and-backlog.md#when-a-dispatch-does-not-start).
+
 Mission Control supports five kinds of work:
 
 - **Ship** delivers a change and opens a pull request.

@@ -55,6 +55,12 @@ export interface TopbarProps {
   working: number;
   inbox: number;
   onOpenInbox: () => void;
+  /**
+   * Open launch failures, counted by group - the failed tiles and notices waiting on the
+   * operator. Optional so the Display preview, which has no fleet behind it, draws none.
+   */
+  didNotStart?: number;
+  onShowDidNotStart?: () => void;
   launcherFocusError?: string | null;
   fleetCost: FleetCost | null;
   costView: "usd" | "plan";
@@ -182,6 +188,8 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         working={isTopbarItemShown(layout, "working") ? props.working : 0}
         inbox={props.inbox}
         onOpenInbox={props.onOpenInbox}
+        didNotStart={props.didNotStart ?? 0}
+        onShowDidNotStart={props.onShowDidNotStart ?? (() => {})}
       />
       {props.launcherFocusError && (
         <span className="launch-flash is-error" role="status">
@@ -347,7 +355,8 @@ function PulseStat({
   n: number;
   label: string;
   tip: string;
-  tone?: Tone;
+  /** A session tone, or `failed` for the one segment that counts work that never started. */
+  tone?: Tone | "failed";
   onClick?: () => void;
 }): React.JSX.Element {
   const cls = `pulse-seg${tone ? ` pulse-${tone}` : ""}`;
@@ -394,6 +403,8 @@ function FleetPulse({
   working,
   inbox,
   onOpenInbox,
+  didNotStart,
+  onShowDidNotStart,
 }: {
   connected: boolean;
   /** The daemon's Keep Awake observation; null while unknown (pre-snapshot, or SSE down). */
@@ -419,6 +430,13 @@ function FleetPulse({
    */
   inbox: number;
   onOpenInbox: () => void;
+  /**
+   * Dispatches that never started, by group. Like `to answer`, not an optional item: it renders
+   * only while something is waiting, and it is the way back to a failure drawn on a page the
+   * operator is not on.
+   */
+  didNotStart: number;
+  onShowDidNotStart: () => void;
 }): React.JSX.Element {
   return (
     <div className={`pulse${connected ? "" : " is-down"}`}>
@@ -457,6 +475,15 @@ function FleetPulse({
           tone="attention"
           onClick={onOpenInbox}
           tip={`${inbox} thing${inbox === 1 ? " is" : "s are"} waiting on you - agents' questions, ensemble decisions and parked gates. Open the inbox`}
+        />
+      )}
+      {didNotStart > 0 && (
+        <PulseStat
+          n={didNotStart}
+          label="did not start"
+          tone="failed"
+          onClick={onShowDidNotStart}
+          tip={`${didNotStart} dispatch${didNotStart === 1 ? "" : "es"} did not start. Show the newest`}
         />
       )}
     </div>

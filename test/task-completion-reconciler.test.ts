@@ -1035,3 +1035,68 @@ test("recording an active head revalidates one task without scanning the fleet",
   assert.equal(scan.mock.callCount(), 0, "recording N targets must not rescan all N tasks each time");
   assert.equal(taskWorkEpisodeForTask(f.taskId)!.workHeadSha, "f".repeat(40));
 });
+
+for (const boundary of ["completion", "rollover"] as const) {
+  test(`a PR created exactly at ${boundary} cannot satisfy an edge without a retained commit`, async () => {
+    const f = completedAfterUnobservedEpisode(`exact-end-${boundary}`);
+    const episode = boundary === "rollover" ? f.episode : f.next;
+    if (boundary === "completion") {
+      const dependent = f.registry.getTask(f.dependentId)!;
+      const edge = dependent.dependencies[0]!;
+      assert.equal(edge.type, "task");
+      f.registry.upsertTask({ ...dependent, dependencies: [{ ...edge,
+        sessionId: episode.sessionId, episodeId: episode.episodeId,
+        agentSessionId: episode.agentSessionId, branch: episode.branch,
+      }] });
+    }
+    await f.tasks.complete(f.taskId, "completed");
+    const end = boundary === "rollover" ? f.next.startedAt : f.registry.getTask(f.taskId)!.completedAt!;
+    const bindingBefore = taskWorkEpisodeForTask(f.taskId);
+    const historyBefore = historicalTaskWorkEpisodeBindingsForTask(f.taskId);
+    assert.equal(bindingBefore!.workHeadSha, null);
+    assert.ok(historyBefore.every(binding => binding.workHeadSha === null));
+    await pollAndReconcilePrs(f.registry, async (_cwd, branch) => branch !== episode.branch ? null : {
+      url: "https://github.com/example/repo/pull/1320", number: 1320, state: "merged", checks: "passing",
+      createdAt: end, mergedAt: end + 1, headSha: "unretained-head", worktreeHeadSha: null,
+    }, async () => null);
+    assert.deepEqual(taskWorkEpisodeForTask(f.taskId), bindingBefore);
+    assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(f.taskId), historyBefore);
+    assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, null);
+    assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.prUrl, null);
+  });
+}
+
+for (const failure of ["command-failure", "invalid-json", "non-array"] as const) {
+  test(`production episode search preserves bindings and dependency edges on ${failure}`, async () => {
+    const f = completedAfterUnobservedEpisode(`search-${failure}`);
+    f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: home });
+    await f.tasks.complete(f.taskId, "completed");
+    const bindingBefore = taskWorkEpisodeForTask(f.taskId);
+    const historyBefore = historicalTaskWorkEpisodeBindingsForTask(f.taskId);
+    const dependentBefore = f.registry.getTask(f.dependentId)!;
+    const sourceBefore = f.registry.getTask(f.taskId)!;
+    const bin = join(home, `gh-${failure}`);
+    const log = join(home, `gh-${failure}.log`);
+    // A failed command can still print plausible PR data. Its exit code must win.
+    const output = failure === "command-failure" ? JSON.stringify([{
+      url: "https://github.com/example/repo/pull/1321", number: 1321, state: "MERGED",
+      createdAt: new Date(f.episode.startedAt + 1).toISOString(),
+      mergedAt: new Date().toISOString(), headRefOid: "historical-head",
+    }]) : failure === "invalid-json" ? "{invalid-json" : "{}";
+    writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+process.stdout.write(${JSON.stringify(output)});
+process.exitCode = ${failure === "command-failure" ? 23 : 0};\n`, { mode: 0o755 });
+    await withProcessEnv({ MISSION_GH_BIN: bin }, async () => {
+      // Use the production branch search and parser, not an injected "error" result.
+      await pollAndReconcilePrs(f.registry, undefined, async () => null);
+    });
+    const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.ok(calls.some(args => args.includes("--search") && args.includes(f.episode.branch!)), "the real episode search must invoke the fake CLI");
+    assert.deepEqual(taskWorkEpisodeForTask(f.taskId), bindingBefore);
+    assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(f.taskId), historyBefore);
+    assert.deepEqual(f.registry.getTask(f.dependentId), dependentBefore);
+    assert.deepEqual(f.registry.getTask(f.taskId), sourceBefore);
+  });
+}

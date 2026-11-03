@@ -304,6 +304,15 @@ test("an inherited remote server Claude Code signs in to reaches the launch as c
   await page.goto(`${daemon.baseURL}/#/residents`);
   await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /OAuth Resident/ }).click();
   await launchResident();
+  // It started. Being live is not enough - a run is live from dispatch, before Claude reports its
+  // servers - so wait for its session to finish a turn and go idle, which happens only once the
+  // driver confirmed the MCP set. A start answers the earlier failure, so it leaves.
+  await page.getByRole("button", { name: /^Residents - \d+ live$/ }).click();
+  const dock = page.getByRole("dialog", { name: "Residents" });
+  const live = dock.getByRole("region", { name: "Live" }).getByRole("listitem").filter({ hasText: "OAuth Resident" });
+  await expect(live).toContainText("idle", { timeout: 60_000 });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /did not start/ })).toHaveCount(0);
 
   let servers: Record<string, Record<string, unknown>> = {};
   let argv: string[] = [];

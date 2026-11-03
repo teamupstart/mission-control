@@ -374,14 +374,15 @@ resident's agent inherits too, so it would not be private to the server; define 
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
 `:-default`, which is used as written.
 
-A Claude Code remote (`http` or `sse`) server with no headers and no query, user name or password
-in its URL is handed to Claude Code as configured, whether it is inherited or selected, rather than
-through the launcher. That is what lets a resident use a server you signed in to with OAuth in
+A Claude Code remote (`http` or `sse`) server with no headers, and no query, user name, password
+or fragment in its URL, reached over `https` or over plain `http` to this machine, is handed to
+Claude Code as configured, whether it is inherited or selected, rather than through the launcher. That is what lets a resident use a server you signed in to with OAuth in
 Claude Code: Claude Code keeps that login under the server's name, type, URL and headers exactly as
 configured, and only its own connection can present it. So such a server's URL appears in the
 agent's launch-scoped MCP configuration. Renaming the server or changing its URL, even by a
-trailing slash, asks for a new login. Every other global server, and any one with a header or a
-query value, still starts through the launcher.
+trailing slash, asks for a new login. Every other global server still starts through the launcher,
+which presents no login: any with a header, a query value or a fragment, and one on plain `http`
+to another host, because a login is a credential and travels in the clear only on this machine.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
@@ -422,8 +423,8 @@ of two ways:
   entry naming the run, the server and a credential file. The launcher then starts a stdio server
   with its configured command and arguments, so those ordinary arguments appear on that server's
   own process, as they would if the harness started it.
-- **Directly**, for a Claude Code remote (`http` or `sse`) server with no headers and no query,
-  user name or password in its URL (above). It carries no value, so Claude is handed the server
+- **Directly**, for a Claude Code remote (`http` or `sse`) server with no headers, no query, user
+  name, password or fragment in its URL, over `https` or loopback `http` (above). It carries no value, so Claude is handed the server
   itself: its name, type and URL as configured, an empty header table and its options. Its URL is
   therefore in the agent's launch-scoped MCP configuration, and Claude Code presents any OAuth
   login it holds for it.

@@ -41,7 +41,8 @@ export interface GlobalMcpDefinition {
   options: ResidentMcpOptions;
   /**
    * Whether the harness itself may hold a login for this server, which only its own transport
-   * can present: a Claude Code remote server with no header and no query value. A resident hands
+   * can present: a Claude Code remote server with no header, query or fragment, on `https` or
+   * loopback `http`, since the login is a credential. A resident hands
    * such a server to the harness as-is instead of through the scoped launcher, under its exact
    * name and URL, because those are what the harness's stored OAuth login is keyed by.
    */
@@ -277,7 +278,16 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     // stored OAuth login is keyed by the name and by the type, URL and headers exactly as
     // configured, so the URL is kept as written: `split.url` is normalized (`https://host`
     // gains a trailing slash) and would key a different, empty login.
-    harnessLogin = Object.keys(headers).length === 0 && split.secretQuery.length === 0;
+    //
+    // Two kinds stay on the launcher, which presents no login. A login is a credential, so it
+    // travels only over `https` or plain `http` to this machine, like every other resident
+    // credential. And a fragment, which the launcher drops, can carry a token of its own, so a
+    // URL with one is never copied into the agent's configuration as written.
+    const written = new URL(url);
+    harnessLogin = Object.keys(headers).length === 0
+      && split.secretQuery.length === 0
+      && written.hash === ""
+      && plaintextCredentialProblem(written) === null;
     transport = { type, url: harnessLogin ? url : split.url, headers: {}, secretHeaders: Object.keys(headers), secretQuery: split.secretQuery };
   }
   const options = claudeOptions(entry);

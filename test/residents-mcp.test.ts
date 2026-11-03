@@ -482,16 +482,25 @@ const LOGIN_SERVERS = {
   headed: { type: "http", url: "https://mcp.example.com/headed", headers: { "X-Api-Key": SECRET } },
   queried: { type: "http", url: `https://mcp.example.com/q?key=${SECRET}` },
   userinfo: { type: "http", url: "https://user:pw@mcp.example.com/u" },
+  // A login travels only over https or plain http to this machine, and a fragment is never copied.
+  plaintext: { type: "http", url: "http://mcp.example.com/plain" },
+  fragment: { type: "http", url: `https://mcp.example.com/f#access_token=${SECRET}` },
+  loopback: { type: "http", url: "http://127.0.0.1:8123/mcp" },
   local: { command: "local-mcp" },
 };
 
-test("only a Claude remote server with no header or query value may use Claude Code's own login, with its URL as written", () => {
+test("only a Claude remote server with no header, query or fragment, over https or loopback http, may use Claude Code's own login, with its URL as written", () => {
   const read = globalsOf("claude", LOGIN_SERVERS);
   const byName = new Map(read.servers.map((server) => [server.summary.name, server]));
   assert.deepEqual(
     read.servers.map((server) => [server.summary.name, server.harnessLogin]),
-    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["local", false]],
+    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["plaintext", false], ["fragment", false], ["loopback", true], ["local", false]],
   );
+  const loopback = byName.get("loopback")!.transport;
+  assert.ok(loopback?.type === "http" && loopback.url === "http://127.0.0.1:8123/mcp", "plain http to this machine may carry the login");
+  // On the launcher, the fragment is dropped: it never reaches a stored or rendered URL.
+  const fragment = byName.get("fragment")!.transport;
+  assert.ok(fragment?.type === "http" && fragment.url === "https://mcp.example.com/f" && !JSON.stringify(fragment).includes(SECRET));
   // Not `https://mcp.example.com/`, which keys a different, empty login.
   assert.deepEqual(byName.get("login")!.transport, { type: "http", url: "https://mcp.example.com", headers: {}, secretHeaders: [], secretQuery: [] });
   assert.equal(byName.get("login")!.secrets.size, 0);
@@ -506,7 +515,10 @@ test("only a Claude remote server with no header or query value may use Claude C
 
 test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {
   const globals = globalsOf("claude", LOGIN_SERVERS);
-  const expected = [["login", false], ["login-sse", false], ["headed", true], ["queried", true], ["userinfo", true], ["local", true]];
+  const expected = [
+    ["login", false], ["login-sse", false], ["headed", true], ["queried", true], ["userinfo", true],
+    ["plaintext", true], ["fragment", true], ["loopback", false], ["local", true],
+  ];
   const inherited = await resolve(profile(), globals);
   assert.ok(inherited.ok && inherited.servers);
   assert.deepEqual(inherited.servers.map((server) => [server.name, server.launcher]), expected);
@@ -527,9 +539,15 @@ test("an inherited or selected Claude login server goes to Claude directly; ever
   const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
   assert.deepEqual(entries[0], { name: "login", options: {}, shape: "http", transport: "http", url: "https://mcp.example.com", headers: {} });
   assert.deepEqual(entries[1], { name: "login-sse", options: { claude: { timeoutMs: 9000 } }, shape: "http", transport: "sse", url: "https://events.example.com/sse", headers: {} });
-  assert.deepEqual(entries.slice(2).map((entry) => [entry.name, entry.shape]), [["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["local", "launcher"]]);
+  assert.deepEqual(entries.slice(2).map((entry) => [entry.name, entry.shape]), [
+    ["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["plaintext", "launcher"], ["fragment", "launcher"],
+    ["loopback", "http"], ["local", "launcher"],
+  ]);
   const rendered = JSON.stringify(entries);
-  assert.ok(!rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("local-mcp"), "a launcher server's definition stays daemon-private");
+  assert.ok(
+    !rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("/plain") && !rendered.includes("/f#") && !rendered.includes("local-mcp"),
+    "a launcher server's definition stays daemon-private: no plain-http login URL, no fragment",
+  );
   assert.deepEqual(JSON.stringify(launch.residentMcpLaunchForRun(runId)!.preview().slice(0, 2)), JSON.stringify(entries.slice(0, 2)), "the preview renders them the same");
 });
 

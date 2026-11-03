@@ -51,12 +51,21 @@ const PALETTE_TOKENS: Readonly<Record<keyof MermaidPalette, string>> = Object.fr
   secondary: "--purple",
 });
 
+/** The skin's colour scheme, so the frame's canvas matches the page instead of painting an
+ *  opaque backdrop: a frame whose scheme differs from its embedder's is not transparent. */
+export type MermaidColorScheme = "dark" | "light";
+
 interface MermaidRenderRequest {
   type: typeof MERMAID_RENDER_MESSAGE;
   token: string;
   source: string;
   ordinal: number;
   palette: MermaidPalette;
+  colorScheme: MermaidColorScheme;
+}
+
+function colorSchemeOf(value: unknown): MermaidColorScheme | null {
+  return value === "dark" || value === "light" ? value : null;
 }
 
 export type MermaidRendererMessage =
@@ -120,6 +129,7 @@ export function createMermaidRenderRequest(
   source: string,
   ordinal: number,
   palette: MermaidPalette,
+  colorScheme: MermaidColorScheme = "dark",
 ): MermaidRenderRequest | null {
   if (
     !isMermaidInstanceToken(token) ||
@@ -130,8 +140,9 @@ export function createMermaidRenderRequest(
     ordinal > MERMAID_MAX_DIAGRAMS
   ) return null;
   const normalized = normalizeMermaidPalette(palette);
-  if (!normalized) return null;
-  return { type: MERMAID_RENDER_MESSAGE, token, source, ordinal, palette: normalized };
+  const scheme = colorSchemeOf(colorScheme);
+  if (!normalized || !scheme) return null;
+  return { type: MERMAID_RENDER_MESSAGE, token, source, ordinal, palette: normalized, colorScheme: scheme };
 }
 
 /** Reject source constructs that can create a loader or active destination before Mermaid sees them. */
@@ -155,13 +166,17 @@ export function parseMermaidRenderRequest(value: unknown, expectedToken: string)
     input.ordinal > MERMAID_MAX_DIAGRAMS
   ) return null;
   const palette = normalizeMermaidPalette(input.palette);
-  if (!palette) return null;
+  // A request from a dashboard built before skins carries no scheme; it meant dark. Kept in step
+  // with the renderer's own parser (`mermaid-renderer.ts`), which an older dashboard may talk to.
+  const colorScheme = input.colorScheme === undefined ? "dark" : colorSchemeOf(input.colorScheme);
+  if (!palette || !colorScheme) return null;
   return {
     type: MERMAID_RENDER_MESSAGE,
     token: input.token,
     source: input.source,
     ordinal: input.ordinal,
     palette,
+    colorScheme,
   };
 }
 

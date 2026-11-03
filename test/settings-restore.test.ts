@@ -664,6 +664,26 @@ test("restore preview and mutation preserve installed built-in catalog rows", as
   }), before.rows);
 });
 
+test("a restored skin decides the desktop window's next launch colour", async () => {
+  // Restore writes app_config inside its own transaction, never through `setUiConfig`, so the
+  // launch colour has to be reconciled after the commit or the next desktop launch would open
+  // on the pre-restore skin's background - a dark frame under a restored Daylight.
+  seedBaseline();
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight" });
+  const root = join(home, "skin");
+  const store = new SettingsBackupStore(root);
+  const original = snapshot();
+  store.write(original);
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "default" });
+  const launch = join(home, "state", "window-background.json");
+  writeFileSync(launch, `${JSON.stringify({ color: "#0a0c0f" })}\n`);
+
+  const result = await service(root).restore(original.id, original.digest);
+  assert.equal(result.status, "restored");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { skin: string }).skin, "daylight");
+  assert.deepEqual(JSON.parse(readFileSync(launch, "utf8")), { color: "#f5f7fa" });
+});
+
 test("a stale digest is refused before safety capture", async () => {
   seedBaseline();
   const root = join(home, "stale");

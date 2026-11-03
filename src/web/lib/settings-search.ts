@@ -181,6 +181,17 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "skin",
+    label: "Skin",
+    description: "Repaint the whole dashboard in another colour theme, live, such as the light Daylight skin.",
+    category: "display",
+    anchor: "display/skin",
+    // "theme", "dark" and "light" are what someone types who has never heard the word skin.
+    keywords: ["skin", "theme", "dark", "light", "daylight", "colour", "color", "appearance"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "format-messages",
     label: "Format messages",
     description: "Render transcripts as markdown rather than the literal text an agent emitted.",

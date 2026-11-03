@@ -103,6 +103,8 @@ large Codex logs do not substitute an older model from the start of the conversa
 
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
+**Settings > Display > Appearance** repaints the whole dashboard in another
+[skin](docs/ui.md#skins), such as the light Daylight theme, the moment you pick it.
 
 Read more in [The Line and fleet UI](docs/ui.md) and
 [Attention, alerts, and Away mode](docs/attention-and-alerts.md).

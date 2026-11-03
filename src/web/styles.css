@@ -25357,7 +25357,7 @@ button.sc-row:focus-visible {
   border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border));
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow);
 }
 .lf-toast-title {
   color: var(--fg);

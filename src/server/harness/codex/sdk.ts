@@ -19,11 +19,13 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkTurnFailure,
   SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
 import { AppServerClient } from "./app-server/client.ts";
+import { isProviderCapacityMessage } from "../../llm/provider-failure.ts";
 import type {
   AskForApproval,
   ApprovalsReviewer,
@@ -52,6 +54,7 @@ import type {
   ToolRequestUserInputParams,
   ToolRequestUserInputResponse,
   TurnCompletedNotification,
+  TurnError,
   TurnStartParams,
   TurnStartResponse,
   TurnSteerParams,
@@ -403,6 +406,12 @@ class CodexSdkSession implements SdkSessionHandle {
   private lastUsage: SdkUsage | null = null;
   /** A short backstop when a final answer is not followed by either lifecycle frame. */
   private finalAnswerCompletion: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A retryable provider failure an `error` notification announced for a turn, held until
+   * that turn closes. `turn/completed` carries the same error and wins; this is what still
+   * reports it when the turn closes through the idle-status or final-answer backstops.
+   */
+  private turnFailure: { turnId: string; failure: SdkTurnFailure } | null = null;
   private modelId: string | null = null;
   /**
    * The sandbox the RUNNING thread resolved to, read off its own start response.
@@ -921,15 +930,23 @@ class CodexSdkSession implements SdkSessionHandle {
         if (this.activeTurnId !== turnId) {
           this.lastUsage = null;
           this.statusActiveTurnId = null;
+          this.turnFailure = null;
         }
         this.activeTurnId = turnId;
         this.out.emit({ kind: "state", state: "working", activity: null });
         return;
       }
-      case "turn/completed":
+      case "turn/completed": {
         if (!this.isCurrentThread(params)) return;
-        this.finishTurn((params as TurnCompletedNotification).turn.id);
+        const turn = (params as TurnCompletedNotification).turn;
+        // The turn's own status is authoritative: only a FAILED turn can owe a retry, and an
+        // interrupted one never does, whatever an earlier `error` frame said.
+        this.finishTurn(
+          turn.id,
+          turn.status === "failed" ? (codexCapacityFailure(turn.error) ?? undefined) : null,
+        );
         return;
+      }
       case "thread/status/changed": {
         if (!this.isCurrentThread(params)) return;
         const status = (params as ThreadStatusChangedNotification).status;
@@ -1016,6 +1033,10 @@ class CodexSdkSession implements SdkSessionHandle {
       case "error": {
         const err = params as ErrorNotification;
         const message = err.error?.message?.trim();
+        const failure = err.willRetry ? null : codexCapacityFailure(err.error);
+        if (failure && this.isCurrentThread(params) && err.turnId) {
+          this.turnFailure = { turnId: err.turnId, failure };
+        }
         if (message) {
           this.out.emit({ kind: "state", state: "working", activity: clip(message) });
         }
@@ -1152,15 +1173,21 @@ class CodexSdkSession implements SdkSessionHandle {
   }
 
   /** Close out a turn exactly once, whichever notification told us about it first. */
-  private finishTurn(turnId: string | null): boolean {
+  private finishTurn(turnId: string | null, reported?: SdkTurnFailure | null): boolean {
     if (!turnId || this.activeTurnId !== turnId) return false;
+    // `undefined` means the closing frame said nothing about failure, so the `error`
+    // notification held for this turn decides; `null` means it said the turn did not fail.
+    const failure = reported !== undefined
+      ? reported
+      : (this.turnFailure?.turnId === turnId ? this.turnFailure.failure : null);
+    this.turnFailure = null;
     if (this.finalAnswerCompletion) {
       clearTimeout(this.finalAnswerCompletion);
       this.finalAnswerCompletion = null;
     }
     if (this.statusActiveTurnId === turnId) this.statusActiveTurnId = null;
     this.activeTurnId = null;
-    this.out.emit({ kind: "turn_done", usage: this.lastUsage });
+    this.out.emit({ kind: "turn_done", usage: this.lastUsage, ...(failure ? { failure } : {}) });
     this.compaction.finish();
     return true;
   }
@@ -1274,6 +1301,22 @@ function pendingKind(method: string): Pending["kind"] | null {
   if (method === "item/commandExecution/requestApproval") return "commandExecution";
   if (method === "item/fileChange/requestApproval") return "fileChange";
   if (method === "item/tool/requestUserInput") return "userInput";
+  return null;
+}
+
+/**
+ * The capacity failure a Codex turn error describes, or null.
+ *
+ * `serverOverloaded` is the structured answer, and the one the 0.15x builds attach to
+ * "Selected model is at capacity. Please try a different model." The wording check covers a
+ * build that reports the same failure as `other` or with no info at all.
+ */
+export function codexCapacityFailure(error: TurnError | null | undefined): SdkTurnFailure | null {
+  if (!error) return null;
+  const message = error.message?.trim() || "Selected model is at capacity.";
+  if (error.codexErrorInfo === "serverOverloaded" || isProviderCapacityMessage(message)) {
+    return { kind: "capacity", message };
+  }
   return null;
 }
 

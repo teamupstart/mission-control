@@ -79,6 +79,14 @@ const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
   : null;
 const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
 const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
+/**
+ * Ends its turn the way Claude Code does once its own 529 retries are spent: an assistant
+ * API-error frame tagged `server_error`, then an error `result`. Only the prompt itself fails;
+ * Mission Control's continuation that follows is answered normally.
+ */
+const CAPACITY_TURN = "E2E_CLAUDE_AT_CAPACITY";
+const CAPACITY_ERROR =
+  "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
 let authenticationExpired = false;
 
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
@@ -1215,6 +1223,25 @@ function answer(prompts) {
   emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
 }
 
+function answerCapacityFailure() {
+  appendTurn("assistant", [{ type: "text", text: CAPACITY_ERROR }]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: CAPACITY_ERROR }] },
+  });
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    result: CAPACITY_ERROR,
+    session_id: SESSION_ID,
+    ...turnUsage(),
+  });
+}
+
 /** Emit the structured failure and visible transcript text produced by an expired login. */
 function answerAuthenticationFailure() {
   const text = "Not logged in · Please run /login";
@@ -1377,6 +1404,10 @@ rl.on("line", (line) => {
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
     if (authenticationExpired && !AUTHENTICATED_AT_START) {
       answerAuthenticationFailure();
+      return;
+    }
+    if (prompt === CAPACITY_TURN) {
+      answerCapacityFailure();
       return;
     }
 

@@ -1,0 +1,113 @@
+/* Blueprint: an engineering drawing - deep cobalt, a drafting grid, crisp white linework.
+
+   Tokens first, then the skin's decoration, every rule scoped to this skin. The decoration is
+   two things and stays inside the limit every skin is held to (backgrounds, `text-shadow`,
+   `box-shadow` and `text-transform`; no box metrics, no `filter`, `backdrop-filter` or
+   animation):
+
+   - a 20px drafting grid drawn on the app shell's own background. Panels and lists paint
+     their own surfaces over it, so it shows only in the gutters and never scrolls with a list;
+   - headings in `--mono` (through `--font-display`) and upper case. The Line's stage names are
+     already mono capitals in every skin.
+
+   The state tones are lifted so each clears 4.5:1 on the lightest cobalt surface
+   (`test/skins.test.ts` measures it). Those tones are light, so text on a solid accent fill
+   turns dark here, and the fills it rides on are light to match.
+
+   The swatches in `src/shared/skins.ts` must equal the values here. */
+
+:root[data-skin="blueprint"] {
+  color-scheme: dark;
+
+  /* Surfaces, lines and the text ramp. The borders are the drawing's linework, so they are
+     brighter than a dark skin's usually are. */
+  --bg: #0b2547;
+  --bg-2: #0d2a52;
+  --panel: #10315e;
+  --panel-2: #133869;
+  --border: #4673ad;
+  --border-soft: #24497b;
+  --border-strong: #5a86c0;
+  --fg: #eef5ff;
+  --fg-strong: #ffffff;
+  --muted: #b3cbec;
+  --dim: #9bb6dc;
+
+  /* Session states and the tones that ride on them. */
+  --working: #86ccff;
+  --idle: #62e8b4;
+  --attention: #ffc857;
+  --danger: #ff8a8a;
+  --exited: #7f97b8;
+  --neutral: #8ea6c8;
+  --select: #62e8b4;
+  --find: #ffd866;
+  --purple: #c9adff;
+  --delegated: #ff9ed2;
+  --syntax-type: #ffb38a;
+  --pr-open: #7ee787;
+
+  /* Resident markers: Default's eight hues, with the two that sat dimmest on cobalt lifted. */
+  --resident-violet: #c49cff;
+  --resident-rose: #ff8fb5;
+
+  --radius: 3px;
+  --shadow: 0 1px 2px rgba(2, 10, 24, 0.45), 0 8px 24px rgba(2, 10, 24, 0.32);
+  --font-display: var(--mono);
+
+  --shadow-ink: #020a18;
+  --scrim-ink: #04101f;
+
+  /* Text on solid fills: the primary, approve and destructive buttons are light here. */
+  --on-accent: #0b2547;
+  --on-attention: #2a1d00;
+  --on-wait: #2a1d00;
+  --on-select: #04241a;
+  --working-deep: #3d7fc0;
+  --attention-deep: #b07a10;
+
+  /* The failure family, stepped around this skin's light red. */
+  --danger-soft: #ffb0a8;
+  --danger-muted: #ff8a8a;
+  --danger-text: #ff9c94;
+  --danger-bright: #ffa8a8;
+  --danger-fill: #ff8a8a;
+  --danger-fill-hover: #ffa3a3;
+  --approve-fill: #62e8b4;
+  --approve-fill-hover: #86f0c6;
+  --diff-del: #ff8a8a;
+  --diff-del-count: #ff9c94;
+
+  --wf-action: #c9adff;
+  --wf-success: #62e8b4;
+
+  /* The app backdrop's two glows, a shade off the cobalt so the grid sits on an even sheet. */
+  --backdrop-glow-right: #11345f;
+  --backdrop-glow-left: #0e2c55;
+
+  /* The dropdown chevron, restated in this skin's --muted (#b3cbec). */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23b3cbec' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  /* The drafting grid's line: the linework colour, faint enough to read as paper texture. */
+  --blueprint-grid: color-mix(in oklab, var(--fg) 7%, transparent);
+}
+
+/* The drafting grid, on the shell only: the same layers `body` already paints, with two
+   20px line patterns laid over them. */
+:root[data-skin="blueprint"] body {
+  background:
+    linear-gradient(var(--blueprint-grid) 1px, transparent 1px) 0 0 / 20px 20px,
+    linear-gradient(90deg, var(--blueprint-grid) 1px, transparent 1px) 0 0 / 20px 20px,
+    radial-gradient(1200px 600px at 80% -10%, var(--backdrop-glow-right) 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, var(--backdrop-glow-left) 0%, transparent 50%),
+    var(--bg);
+}
+
+/* Headings read as a drawing's title block. Rendered Markdown is someone's prose, not chrome,
+   so its headings keep the case they were written in. */
+:root[data-skin="blueprint"] h1:not(.markdown *),
+:root[data-skin="blueprint"] h2:not(.markdown *),
+:root[data-skin="blueprint"] h3:not(.markdown *),
+:root[data-skin="blueprint"] h4:not(.markdown *) {
+  text-transform: uppercase;
+}

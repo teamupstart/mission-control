@@ -126,6 +126,16 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The face of headings, card titles and session tile names. Default draws them in --sans,
+     the face they inherited anyway, so this token changes nothing until a skin restates it
+     (Paper's serif, Blueprint's mono). A skin may change the FAMILY only: size, weight,
+     line height and letter spacing stay where they are declared, because the Line strip
+     geometry test and the measured topbar and detail-head ladders depend on them. */
+  --font-display: var(--sans);
+  /* The small uppercase labels on the Line - its stage names. Mono by default, which is why
+     they cannot simply read --font-display; a skin whose display face should reach them too
+     (Paper) points this at it. */
+  --font-label: var(--mono);
 
   /* ---- Role tokens: chrome below `:root` paints with these or a token above ----
      Each value is exactly the literal it replaced, so the default look is unchanged. Roles
@@ -3824,6 +3834,13 @@ body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Headings take the skin's display face. `:where()` keeps this at zero specificity, so a
+   heading whose own rule names a family (a mono eyebrow, say) keeps it, and under Default
+   `--font-display` is the --sans every heading already inherited. */
+:where(h1, h2, h3, h4) {
+  font-family: var(--font-display);
 }
 
 .app {
@@ -25493,8 +25510,13 @@ button.sc-row:focus-visible {
   color: var(--muted);
 }
 .ls-name {
-  font-family: var(--mono);
+  font-family: var(--font-label);
   font-size: 10px;
+  /* A 10px label inside a row the 17px count already sets, so it never adds height. Pinned
+     rather than `normal` because a skin may change its face (Paper's serif), and a normal
+     line height follows the face's ascent and descent: Paper's grew the condensed band by a
+     fraction of a pixel. At 1 the label sits inside the count's line box in any face. */
+  line-height: 1;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
@@ -29379,6 +29401,7 @@ span.line-run-prov {
 .bl-title {
   padding: 0;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
   line-height: 1.42;
   text-align: left;
@@ -30362,6 +30385,7 @@ span.line-run-prov {
 .tile-name {
   flex: 1;
   min-width: 0;
+  font-family: var(--font-display);
   font-size: 12.5px;
   font-weight: 640;
   white-space: nowrap;

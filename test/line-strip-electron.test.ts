@@ -385,7 +385,7 @@ test("a condensed shell still ends at the viewport, so the reply box stays reach
   assert.ok((m.bodyHeight ?? 0) > 600, `the condensed console body collapsed to ${m.bodyHeight}px`);
 });
 
-test("every registered skin keeps the strip's band heights, expanded and condensed", () => {
+test("every registered skin keeps the strip's band heights, expanded and condensed", (t) => {
   // Measured against Default's own cases rather than against the budgets alone: a skin that
   // grew the strip by a pixel would still sit inside a 70-110px band, and would still move
   // every fleet surface below it the moment an operator picked it.
@@ -394,6 +394,12 @@ test("every registered skin keeps the strip's band heights, expanded and condens
   for (const id of SKIN_IDS.filter((skin) => skin !== DEFAULT_SKIN)) {
     const e = at(`console@${id}`);
     const c = at(`condensed@${id}`);
+    // One line per skin in the run output, written before the asserts so a failing skin's
+    // numbers are on the page too, and a reader can see each skin was measured.
+    t.diagnostic(
+      `${id}: strip ${e.lineBoxHeight}/${c.lineBoxHeight}px, body ${e.bodyHeight}/${c.bodyHeight}px expanded/condensed ` +
+        `(Default ${expanded.lineBoxHeight}/${condensed.lineBoxHeight}px, ${expanded.bodyHeight}/${condensed.bodyHeight}px)`,
+    );
     assert.equal(e.stages, 6, `${id} dropped a stage`);
     assert.equal(e.lineBoxHeight, expanded.lineBoxHeight, `${id} changed the expanded strip's height`);
     assert.equal(c.lineBoxHeight, condensed.lineBoxHeight, `${id} changed the condensed strip's height`);

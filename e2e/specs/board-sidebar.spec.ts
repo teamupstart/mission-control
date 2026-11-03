@@ -138,6 +138,52 @@ test("Board sidebar opts into all state groups, persists, navigates and returns 
   await expect(page.locator(".board-col.is-rail .rail-row")).toHaveCount(1);
 });
 
+test("filtering an open session restores Board keyboard navigation until Enter opens a detail", async ({ dashboard: page, daemon }) => {
+  const hidden = await dispatch(page, daemon, "Hidden routing investigation");
+  const attention = await dispatch(page, daemon, "Keep prompt review");
+  await dispatch(page, daemon, "Keep working session");
+  await hook(daemon, hidden, "Notification");
+  await hook(daemon, attention, "Notification");
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.getByRole("radio", { name: /^Board/ }).check();
+  await page.getByRole("checkbox", { name: "Show all sessions in sidebar" }).check();
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.locator(".tile", { hasText: /Hidden routing investigation/i }).locator(".tile-name").click();
+  const rail = page.getByRole("navigation", { name: "Sessions", exact: true });
+  await expect(rail.locator(".rail-row")).toHaveCount(3);
+
+  await page.locator(".filter-box").click();
+  const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+  await filter.fill("Keep");
+  await expect(rail).toHaveCount(0);
+  // Clearing a filter without navigating still restores the original open detail.
+  await filter.fill("");
+  await expect(page.locator(".console-detail .detail-title")).toContainText(/Hidden Routing Investigation/i);
+  await filter.fill("Keep");
+  await expect(rail).toHaveCount(0);
+  await expect(page.locator(".board-col.tone-attention .tile")).toHaveCount(1);
+  await expect(page.locator(".board-col.tone-working .tile")).toHaveCount(1);
+  await capture(page, "filtered-overview");
+
+  // The hidden selection has no position in the filtered board. Arrow keys pick up and
+  // move its tile cursor; only Enter promotes the new selection into an open detail.
+  await page.locator("main.board").click({ position: { x: 4, y: 4 } });
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".board-col.tone-attention .tile.selected .tile-open")).toBeFocused();
+  await expect(rail).toHaveCount(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator(".board-col.tone-attention .tile.selected .tile-open")).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator(".board-col.tone-working .tile.selected .tile-open")).toBeFocused();
+  await capture(page, "filtered-keyboard-selection");
+  await page.keyboard.press("Enter");
+  await expect(rail.locator(".rail-row")).toHaveCount(2);
+  await expect(page.locator(".console-detail .detail-title")).toContainText(/Keep Working Session/i);
+  await page.keyboard.press("ArrowUp");
+  await expect(rail.locator(".rail-row").first()).toBeFocused();
+  await expect(page.locator(".console-detail .detail-title")).toContainText(/Keep Prompt Review/i);
+});
+
 test("Board-only setting stays hidden in Console and rolls back a failed save", async ({ dashboard: page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/display`);
   await page.getByRole("radio", { name: /^Board/ }).check();

@@ -10,9 +10,10 @@ import {
   prepareAppLaunch, verifyAppLaunch, launchConflictMessage,
   stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, assertSafeAppLaunch,
   inspectAppLaunches, assertSafeAppLaunches, parseGuiJobs,
-  COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, type MacAppOps,
+  COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, BUNDLE_HOLDERS_NAMED, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
 import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
+import { sanitizeDiagnostic } from "../scripts/update-diagnostic.mjs";
 
 const bundle = "/Users/test/Applications/Mission Control.app";
 const binary = `${bundle}/Contents/MacOS/Mission Control`;
@@ -198,6 +199,34 @@ test("a bundle-exit timeout names each blocking pid and its cause without printi
   assert.match(error.message, /pid 43 \(a workflow check whose parent already exited is still running\)/);
   assert.match(error.message, /pid 44 \(Mission Control Helper is still running\)/, "an unreadable command line still names the executable");
   assert.doesNotMatch(error.message, /secret-token|npm test|\/Users\//);
+});
+
+test("many blocking processes are summarized so every named pid and the advice survive the outcome's redaction bound", async () => {
+  const f = fixture();
+  const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  const pids = [99991, 99992, 99993, 99994, 99995, 99996];
+  f.outputs.set("ps", pids.map((pid) => `${pid} 1 S ${helper}`).join("\n") + "\n");
+  let inFlight = 0;
+  let peak = 0;
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && args.includes("args=")) {
+      inFlight += 1; peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight -= 1;
+      return {code: 0, stdout: `${helper} --type=renderer\n`};
+    }
+    return run(command, args, timeout);
+  };
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.equal(BUNDLE_HOLDERS_NAMED, 3);
+  for (const pid of pids.slice(0, 3)) assert.match(error.message, new RegExp(`pid ${pid} \\(Mission Control Helper whose parent already exited is still running\\)`));
+  for (const pid of pids.slice(3)) assert.doesNotMatch(error.message, new RegExp(String(pid)));
+  assert.match(error.message, /; and 3 more\. Close them before retrying; no further bundle replacement is safe while they remain\.$/);
+  // The rollback outcome redacts and bounds its cause at 500 characters; nothing may be cut.
+  assert.equal(sanitizeDiagnostic(error.message), error.message);
+  assert.equal(peak, 3, "holders were described one after another, so each added a command timeout");
 });
 
 test("a failed process probe is reported as itself, never blamed on an earlier tick's processes", async () => {

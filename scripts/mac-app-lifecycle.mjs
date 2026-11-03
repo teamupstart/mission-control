@@ -561,11 +561,18 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000) {
     }, () => { timedOut = true; return "Mission Control bundle processes did not exit."; });
   } catch (error) {
     if (!timedOut || !remaining.length) throw error;
-    const holders = [];
-    for (const row of remaining) holders.push(await describeBundleHolder(row, bundle, ops));
-    throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}. Close them before retrying; no further bundle replacement is safe while they remain.`);
+    // Named holders are capped so the whole sentence - every named pid and the advice - fits
+    // the 500-character redaction bound the rollback outcome applies. Described in parallel so
+    // each extra holder does not add a command timeout to an already-late failure.
+    const named = remaining.slice(0, BUNDLE_HOLDERS_NAMED);
+    const holders = await Promise.all(named.map((row) => describeBundleHolder(row, bundle, ops)));
+    const more = remaining.length - named.length;
+    throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}${more ? `; and ${more} more` : ""}. Close them before retrying; no further bundle replacement is safe while they remain.`);
   }
 }
+
+/** How many blocking processes a bundle-exit timeout describes by name. */
+export const BUNDLE_HOLDERS_NAMED = 3;
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
   await read(ops, LSREGISTER, ["-f", bundle], timeout);

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
@@ -194,7 +195,7 @@ function runSummary(over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary 
  * by a later pass. That is the production behaviour, not a testing artifact - which is why
  * this waits for it rather than reaching past it.
  */
-async function stallFor(sessionCwd: string | null): Promise<string> {
+async function stallFor(sessionCwd: string | null, signal: AbortSignal): Promise<string> {
   clearWorkflowTables(db);
   seedWorkflow();
   setAwayConfig({ detectStalls: true });
@@ -243,10 +244,11 @@ async function stallFor(sessionCwd: string | null): Promise<string> {
     // engine, and spinning that at 25ms for six tests is real CPU stolen from the
     // timing-sensitive files `npm test` runs alongside this one.
     w.tick();
-    for (let i = 0; i < 200 && !observer.snapshot().has("run"); i++) {
-      await new Promise((r) => setTimeout(r, 25));
+    // Four sequential Git reads each have a 15-second deadline. Bound the whole
+    // integration test instead of giving their combined duration five seconds.
+    while (!observer.snapshot().has("run")) {
+      await delay(25, undefined, { signal });
     }
-    assert.ok(observer.snapshot().has("run"), "git never answered for this checkout");
     // A second pass, so the sentence is built from the observation that just landed.
     w.tick();
     return w.stalls()[0]?.reason ?? "";
@@ -268,8 +270,8 @@ async function stallFor(sessionCwd: string | null): Promise<string> {
 // in both directions - a claim being made, and a claim being withheld - and leaves the
 // shape-by-shape enumeration where it already lives.
 
-test("a real unpushed commit reaches the parked-run stall through the real resolver", async () => {
-  const reason = await stallFor(seedCheckout("ahead-two", 2));
+test("a real unpushed commit reaches the parked-run stall through the real resolver", { timeout: 90_000 }, async (t) => {
+  const reason = await stallFor(seedCheckout("ahead-two", 2), t.signal);
   assert.equal(
     reason,
     "idle 30m - No-Mistakes Review is waiting for a pushed head"
@@ -277,11 +279,11 @@ test("a real unpushed commit reaches the parked-run stall through the real resol
   );
 });
 
-test("a branch that tracks NOTHING says nothing, however many commits it holds", async () => {
+test("a branch that tracks NOTHING says nothing, however many commits it holds", { timeout: 90_000 }, async (t) => {
   // The false accusation this whole tri-state exists to prevent, proved against a real branch
   // with real commits and no upstream rather than against a hand-written `unknown`. Paired
   // with the case above it also rules out the build that simply always appends a clause.
-  const reason = await stallFor(seedCheckout("no-remote", 2, false));
+  const reason = await stallFor(seedCheckout("no-remote", 2, false), t.signal);
   assert.equal(reason, "idle 30m - No-Mistakes Review is waiting for a pushed head");
 });
 

@@ -291,7 +291,14 @@ test("clearing a managed Pi session moves the durable driver id to the replaceme
   const sdk = new FakePiSdk();
   const scripted = withScriptedPi(sdk);
   const registry = new Registry();
-  const supervisor = new SdkSupervisor(registry);
+  // The scripted SDK runs in this process. Its binding test needs that lifetime,
+  // not a system-wide process scan before each bound event. Process observation
+  // and replacement invalidation are covered in sdk-supervisor.test.ts.
+  const supervisor = new SdkSupervisor(registry, { processSnapshot: async () => ({
+    processes: [{ pid: process.pid, ppid: process.ppid, tty: null, startRaw: "fixture", startMs: 1,
+      command: "scripted Pi", agent: null, agentNative: false }],
+    unknownReason: null, cwdScopePids: [], completedCollectorPids: [],
+  }) });
   try {
     const session = await supervisor.start(START);
     await waitFor(() => getSdkSession(session.id)?.agentSessionId === "pi-session-1");

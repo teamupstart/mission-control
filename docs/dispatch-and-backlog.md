@@ -498,9 +498,31 @@ forced into the backlog. Every task or standalone active session completes only 
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
 repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
-primary repository's pull request, but what releases it is the prerequisite's own
-completion, which is the stronger condition. The explicit completion override is the exception:
+ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
+edges are still checked for verified merges, including after a restart or session closure.
+An unresolved dependency also retains its earlier work episode's branch when the task moves
+on, so a PR first discovered on that historical branch can still release it. Branch discovery
+searches PR candidates within that episode's recorded ownership window, so a newer PR on a
+reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
+its source head exactly matches a branch commit retained while the episode was active. These
+late-opened PRs stay in branch discovery until merged, so a force-push after discovery cannot
+bypass the final head check. If a linked PR closes without merging, a confirmed closure
+reopens discovery for a replacement under the same episode checks. The comparison uses the
+PR's source head, which also supports squash merges. Without that retained match, an unknown historical end or a PR created after
+completion stays unresolved; a later episode's merge does not release an edge pinned to
+earlier unmerged work.
+When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
+unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+For multi-repository work, each episode retains its repositories' change evidence before
+cleanup clears checkout paths and baselines. An edge pinned to a retained episode waits for
+that episode's full changed-repository quorum; another episode's partial delivery cannot
+complete it. New edges use the current episode's evidence. Legacy edges without surviving
+episode provenance retain task-wide recovery from verified merge evidence, never from a bare
+done status or outcome text.
+A dependency edge names the prerequisite's primary pull request, or a merged secondary
+from the same episode when the primary was unchanged. Its release still requires the
+prerequisite's full merge quorum. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish

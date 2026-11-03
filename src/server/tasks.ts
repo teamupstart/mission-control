@@ -2069,12 +2069,19 @@ export class TaskManager {
   private mergeQuorumFor(t: Task): QuorumVerdict {
     const primary = primaryRepoPrForTask(t.id);
     const task = { ...t, extraRepos: taskReposFor(t.id) };
+    const changes = [taskWorkEpisodeForTask(t.id), ...historicalTaskWorkEpisodeBindingsForTask(t.id)]
+      .flatMap(binding => binding?.repoChanges ?? []);
     return taskMergeQuorum(task, (ref) => {
       const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
       return {
         prUrl: entry ? entry.prUrl : primary.prUrl,
         mergedAt: entry ? entry.mergedAt : primary.mergedAt,
         headSha: this.registry.worktreeHead(ref.worktreePath),
+        retainedChange: ref.worktreePath === null
+          ? changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "changed") ? "changed"
+            : changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "unknown") ? "unknown"
+              : changes.some(v => v.repoRoot === ref.repoRoot) ? "unchanged" : "unknown"
+          : undefined,
       };
     });
   }
@@ -2167,8 +2174,8 @@ export class TaskManager {
    * edge: terminal rows are eventually pruned, so a completion recorded only in this task's
    * row stops being readable and every dependent silently re-blocks.
    *
-   * Idempotent, and it must stay that way - it runs from four signals. A `done` task is
-   * never revisited, and a merge already recorded costs one indexed read per task.
+   * Done sources with unresolved dependents are revisited for edge repair only. Their
+   * outcome, completion time, writeback and cleanup obligations are never replayed.
    */
   reconcileMergedTasks(): void {
     // Completing re-enters here: `complete` upserts, which resyncs the bound session, which
@@ -2178,6 +2185,10 @@ export class TaskManager {
     if (this.reconcilingMergedTasks) return;
     this.reconcilingMergedTasks = true;
     try {
+      for (const source of this.registry.completedDependencySources()) {
+        const outcome = this.mergeOutcomeFor(source);
+        if (outcome) this.satisfyDeclaredEdgesTo(source.id, Date.now(), outcome.url, true);
+      }
       for (const { id } of this.registry.listTasks()) {
         // Re-read rather than trusting the snapshot: a completion mid-loop can settle
         // another row through that same re-entrancy, and can evict a terminal one entirely.
@@ -2655,7 +2666,8 @@ export class TaskManager {
           };
         }
       } else {
-        const target = this.registry.getTask(input.taskId);
+        const target = this.registry.getTask(input.taskId) ??
+          (existing.has(`task:${input.taskId}`) ? getDurableTask(input.taskId) : undefined);
         if (!target) {
           const kept = existing.get(`task:${input.taskId}`);
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
@@ -2667,6 +2679,16 @@ export class TaskManager {
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
+          const merged = target.status === "done" ? this.mergeOutcomeFor(target) : null;
+          const mergeCandidate: TaskDependency = previousEdge ?? {
+            type: "task", taskId: target.id, title: target.title,
+            sessionId: binding?.sessionId ?? null, episodeId: binding?.episodeId ?? null,
+            agentSessionId: binding?.agentSessionId ?? null, branch: binding?.branch ?? null,
+            prUrl: null, selectedAt, satisfiedAt: null,
+          };
+          const mergedUrl = merged && (previousEdge || binding)
+            ? this.mergeUrlForDependency(mergeCandidate, merged.url)
+            : null;
           const eligible = target.status === "backlog" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -2682,12 +2704,14 @@ export class TaskManager {
             episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
             agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
             branch: previousEdge?.branch ?? binding?.branch ?? null,
-            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
+            prUrl: previousEdge?.satisfiedAt != null
+              ? previousEdge.prUrl
+              : mergedUrl ?? previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              observedPr && activeSession?.prState === "merged"
+              previousEdge?.satisfiedAt ?? (mergedUrl || (target.status !== "done" && observedPr && activeSession?.prState === "merged")
                 ? Date.now()
-                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+                : null),
           };
         }
       }
@@ -5242,7 +5266,8 @@ export class TaskManager {
     } catch (err) {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
-    if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    const merged = this.mergeOutcomeFor(updated);
+    if (input.satisfyDependents || merged) this.satisfyDeclaredEdgesTo(id, now, merged?.url, !input.satisfyDependents);
     if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
       this.enqueueFinishedWorktreeReturn(updated, "complete");
       this.scheduleMissionSessionClosureSweep();
@@ -5296,7 +5321,36 @@ export class TaskManager {
    * by construction operator-started work with no task to complete - nothing this call
    * could be about.
    */
-  private satisfyDeclaredEdgesTo(taskId: string, at: number): void {
+  private mergeUrlForDependency(dependency: TaskDependency, fallback: string): string | null {
+    if (dependency.type !== "task" || dependency.episodeId === null) return fallback;
+    const bindings = [taskWorkEpisodeForTask(dependency.taskId), ...historicalTaskWorkEpisodeBindingsForTask(dependency.taskId)];
+    const bound = bindings.find((binding) => binding?.episodeId === dependency.episodeId &&
+      binding.sessionId === dependency.sessionId);
+    // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
+    // stale provenance without a surviving binding still uses the task's durable outcome.
+    if (!bound) return fallback;
+    const source = this.registry.getTask(dependency.taskId) ?? getDurableTask(dependency.taskId);
+    if (source && source.extraRepos.length > 0) {
+      const secondary = workEpisodeRepoPrsForTask(dependency.taskId).filter(row =>
+        row.episodeId === bound.episodeId && row.sessionId === bound.sessionId);
+      const quorum = taskMergeQuorum(source, ref => {
+        const row = secondary.find(row => row.repoRoot === ref.repoRoot);
+        return {
+          prUrl: ref.role === "primary" ? bound.prUrl : row?.prUrl ?? null,
+          mergedAt: ref.role === "primary" ? bound.mergedAt : row?.mergedAt ?? null,
+          retainedChange: bound.repoChanges?.find(v => v.repoRoot === ref.repoRoot)?.verdict ?? "unknown",
+        };
+      });
+      if (!quorum.satisfied) return null;
+    }
+    if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
+    // The primary can be unchanged. Once the task quorum passes, a merged secondary
+    // belonging to this same episode is delivery evidence for its dependent as well.
+    return workEpisodeRepoPrsForTask(dependency.taskId).find((row) =>
+      row.episodeId === bound.episodeId && row.sessionId === bound.sessionId && row.mergedAt !== null)?.prUrl ?? null;
+  }
+
+  private satisfyDeclaredEdgesTo(taskId: string, at: number, prUrl?: string, verifyEpisode = false): void {
     for (const task of this.registry.listTasks()) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -5307,8 +5361,10 @@ export class TaskManager {
         ) {
           return dependency;
         }
+        const verifiedUrl = verifyEpisode && prUrl ? this.mergeUrlForDependency(dependency, prUrl) : prUrl;
+        if (verifiedUrl === null) return dependency;
         changed = true;
-        return { ...dependency, satisfiedAt: at };
+        return { ...dependency, satisfiedAt: at, prUrl: verifiedUrl ?? dependency.prUrl };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });

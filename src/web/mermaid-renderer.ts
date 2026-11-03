@@ -102,7 +102,12 @@ function rendererRequest(value: unknown, token: string): RendererRequest | null 
     input.ordinal > MAX_DIAGRAMS
   ) return null;
   const palette = rendererPalette(input.palette);
-  const colorScheme = input.colorScheme === "light" || input.colorScheme === "dark" ? input.colorScheme : null;
+  // Absent is the dark scheme every request had before skins: a dashboard still running the
+  // previous build talks to this renderer, which the daemon serves fresh. Anything else invalid
+  // is refused.
+  const colorScheme = input.colorScheme === undefined
+    ? "dark"
+    : input.colorScheme === "light" || input.colorScheme === "dark" ? input.colorScheme : null;
   if (!palette || !colorScheme) return null;
   return {
     type: "mission:mermaid-render",

@@ -166,7 +166,9 @@ export function parseMermaidRenderRequest(value: unknown, expectedToken: string)
     input.ordinal > MERMAID_MAX_DIAGRAMS
   ) return null;
   const palette = normalizeMermaidPalette(input.palette);
-  const colorScheme = colorSchemeOf(input.colorScheme);
+  // A request from a dashboard built before skins carries no scheme; it meant dark. Kept in step
+  // with the renderer's own parser (`mermaid-renderer.ts`), which an older dashboard may talk to.
+  const colorScheme = input.colorScheme === undefined ? "dark" : colorSchemeOf(input.colorScheme);
   if (!palette || !colorScheme) return null;
   return {
     type: MERMAID_RENDER_MESSAGE,

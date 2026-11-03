@@ -63,11 +63,16 @@ test("renderer requests carry the skin's colour scheme, so a light skin gets a l
   assert.equal(light?.colorScheme, "light");
   assert.deepEqual(parseMermaidRenderRequest(light, TOKEN), light);
   assert.equal(parseMermaidRenderRequest({ ...light, colorScheme: "sepia" }, TOKEN), null);
-  assert.equal(parseMermaidRenderRequest({ ...light, colorScheme: undefined }, TOKEN), null);
+  // A request from a dashboard built before skins has no scheme, and meant dark. The renderer is
+  // served fresh by the daemon while an open tab may still run the old dashboard, so refusing it
+  // would hang that tab's diagrams until the timeout.
+  const { colorScheme: _omitted, ...legacy } = light!;
+  assert.deepEqual(parseMermaidRenderRequest(legacy, TOKEN), { ...light, colorScheme: "dark" });
   assert.equal(createMermaidRenderRequest(TOKEN, "flowchart LR", 1, PALETTE, "sepia" as never), null);
   // And the renderer applies it instead of keeping its pinned scheme.
   const renderer = readFileSync(fileURLToPath(new URL("../src/web/mermaid-renderer.ts", import.meta.url)), "utf8");
   assert.match(renderer, /document\.documentElement\.style\.colorScheme = request\.colorScheme/);
+  assert.match(renderer, /input\.colorScheme === undefined\s*\?\s*"dark"/, "the renderer refuses an older dashboard's request");
 });
 
 test("renderer requests reject external assets and active destinations before Mermaid sees them", () => {

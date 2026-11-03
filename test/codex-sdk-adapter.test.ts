@@ -1957,12 +1957,40 @@ test("a turn Codex failed at capacity reports the failure on turn_done; other en
     threadId: THREAD.id,
     turn: { id: "turn-4", status: "failed", error: { message: "Your access token could not be refreshed.", codexErrorInfo: "unauthorized", additionalDetails: null } },
   });
+  // An earlier capacity notice does not outlive a final error that says something else...
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-5" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-5",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-5", status: "failed", error: { message: "Bad request.", codexErrorInfo: "badRequest", additionalDetails: null } },
+  });
+  // ...but fills in for a failed turn that completed without a final error.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-6" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-6",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-6", status: "failed", error: null } });
   await settle();
 
   const done = events.filter((e) => e.kind === "turn_done");
   assert.deepEqual(
     done.map((e) => e.kind === "turn_done" ? e.failure ?? null : null),
-    [{ kind: "capacity", message: capacity }, null, { kind: "capacity", message: capacity }, null],
+    [
+      { kind: "capacity", message: capacity },
+      null,
+      { kind: "capacity", message: capacity },
+      null,
+      null,
+      { kind: "capacity", message: capacity },
+    ],
   );
   await handle.stop();
   await drained;

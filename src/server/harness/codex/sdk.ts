@@ -939,12 +939,13 @@ class CodexSdkSession implements SdkSessionHandle {
       case "turn/completed": {
         if (!this.isCurrentThread(params)) return;
         const turn = (params as TurnCompletedNotification).turn;
-        // The turn's own status is authoritative: only a FAILED turn can owe a retry, and an
-        // interrupted one never does, whatever an earlier `error` frame said.
-        this.finishTurn(
-          turn.id,
-          turn.status === "failed" ? (codexCapacityFailure(turn.error) ?? undefined) : null,
-        );
+        // The turn's own status and final error are authoritative: only a FAILED turn can owe
+        // a retry, an interrupted one never does, and a final error that is not capacity wins
+        // over an earlier capacity notice. The held `error` frame fills in only when the
+        // completed turn carries no error at all.
+        let failure: SdkTurnFailure | null | undefined = null;
+        if (turn.status === "failed") failure = turn.error ? codexCapacityFailure(turn.error) : undefined;
+        this.finishTurn(turn.id, failure);
         return;
       }
       case "thread/status/changed": {

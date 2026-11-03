@@ -133,14 +133,14 @@ export const SETUP_SERVICE_INFO: Record<
     label: "Claude Code Mission Control MCP trust",
     started: "Mission Control MCP is allowed by default in Claude Code. Explicit restrictions still apply. Restart sessions to apply.",
     refused: "The Claude Code MCP trust setting could not be written.",
-    retry: "Fix ~/.claude/settings.json as described, then press Re-check.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
   "codex-mcp-trust": {
     id: "codex-mcp-trust",
     label: "Codex Mission Control MCP trust",
     started: "Mission Control MCP is allowed by default in Codex. Explicit restrictions still apply. Restart sessions to apply.",
     refused: "The Codex MCP trust setting could not be written.",
-    retry: "Fix ~/.codex/config.toml as described, then press Re-check.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
   "herdr-server": {
     id: "herdr-server",
@@ -164,7 +164,7 @@ export const SETUP_SERVICE_INFO: Record<
     label: "cmux socket control",
     started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
     refused: "The cmux configuration could not be written.",
-    retry: "Fix ~/.config/cmux/cmux.json as described, then press Re-check.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
 };
 

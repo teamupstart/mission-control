@@ -47,7 +47,7 @@ for (const [agent, label, directory, filename, initial] of [
     const invalid = readFileSync(path, "utf8");
     await row.getByRole("button", { name: `Trust Mission Control in ${label}` }).click();
     await expect(row).toContainText("Fix the file and retry.");
-    await expect(row).toContainText("as described, then press Re-check.");
+    await expect(row).toContainText("Fix the file named above as described, then press Re-check.");
     await expect(row).not.toContainText("Start it yourself in a terminal");
     expect(readFileSync(path, "utf8")).toBe(invalid);
 

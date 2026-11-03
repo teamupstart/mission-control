@@ -70,6 +70,38 @@ test("comment argv carries ADF with a clickable PR link; every link style delive
   assert.equal((await acliAnnotate(cfg(), { ...notice, prUrl: null }, ctx, deps)).detail, "commented; no pull request to link");
 });
 
+test("acli keeps unsupported completion URLs as text without creating ADF links", async () => {
+  for (const prUrl of [
+    "javascript:alert(1)",
+    "data:text/html,untrusted",
+    "https://user:password@github.com/acme/demo/pull/9",
+    "https://untrusted.example/acme/demo/pull/9",
+    "https://github.com.untrusted.example/acme/demo/pull/9",
+    "https://untrusted.example/#https://github.com/acme/demo/pull/9",
+    "https://github.com/acme/demo/issues/9",
+    "not a URL",
+  ]) {
+    const args = acliCommentArgs("MC-2", { ...notice, prUrl });
+    const body = JSON.parse(args[7]!);
+    assert.ok(body.content.flatMap((paragraph: { content: { text?: string }[] }) => paragraph.content)
+      .some((node: { text?: string }) => node.text?.includes(prUrl)), "the original URL must remain readable");
+    assert.deepEqual(body.content.flatMap((paragraph: { content: { marks?: unknown[] }[] }) => paragraph.content)
+      .flatMap((node: { marks?: unknown[] }) => node.marks ?? []), [], prUrl);
+    const { deps } = scripted(auth(), ok(), auth());
+    const result = await acliAnnotate(cfg(), { ...notice, prUrl }, ctx, deps);
+    assert.equal(result.error, null);
+    assert.match(result.detail!, /supplied URL as plain text/);
+  }
+});
+
+test("acli retains clickable GitHub PR links with query strings, fragments and trailing slashes", () => {
+  for (const prUrl of [notice.prUrl!, `${notice.prUrl}?view=files#discussion`, `${notice.prUrl}/`]) {
+    const body = JSON.parse(acliCommentArgs("MC-2", { ...notice, prUrl })[7]!);
+    assert.ok(body.content.flatMap((paragraph: { content: { marks?: { attrs?: { href?: string } }[] }[] }) => paragraph.content)
+      .some((node: { marks?: { attrs?: { href?: string } }[] }) => node.marks?.some((mark) => mark.attrs?.href === prUrl)));
+  }
+});
+
 test("failed, unknown and mismatched site proof prevents every write, including repeat attempts", async () => {
   for (const gate of [fixture("logged-out"), ok(), otherSite(), { ...auth(), outcomeUnknown: true }]) {
     for (const operation of [acliAnnotate, acliResolve]) {

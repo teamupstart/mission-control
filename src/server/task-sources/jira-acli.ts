@@ -1,4 +1,5 @@
 import type { JiraConfig, SweepContext, WritebackNotice, WritebackResult } from "@shared/task-source.ts";
+import { PR_URL_RE } from "@shared/pr-command.mjs";
 import { acliBin } from "../config.ts";
 import { run, type RunResult } from "../util/exec.ts";
 import {
@@ -148,8 +149,22 @@ export async function acliPreflight(
   return (await readAcli(cfg, ctx, 1, deps)).error;
 }
 
+/** Only the canonical GitHub PR URLs Mission Control observes receive clickable marks. */
+function hasAcliPrLink(url: string | null): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password || parsed.port) return false;
+    const canonical = `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
+    return PR_URL_RE.exec(canonical)?.[0] === canonical;
+  } catch {
+    return false;
+  }
+}
+
 export function acliCommentArgs(key: string, notice: WritebackNotice): string[] {
-  return ["jira", "workitem", "comment", "create", "--key", key, "--body", JSON.stringify(commentBodyAdf(notice))];
+  const body = commentBodyAdf(notice, { linkPrUrl: hasAcliPrLink(notice.prUrl) });
+  return ["jira", "workitem", "comment", "create", "--key", key, "--body", JSON.stringify(body)];
 }
 
 function jsonBody(stdout: string): unknown {
@@ -229,7 +244,7 @@ export async function acliAnnotate(
   const failure = writeResponseFailure(jsonBody(res.stdout));
   if (failure) return writebackRefusal(`the comment could not be posted - acli said: ${failure}`);
   const link = cfg.linkVia === "comment" ? "" : notice.prUrl
-    ? "; the remote link is unavailable (acli cannot post one); the comment carries the pull request link"
+    ? `; the remote link is unavailable (acli cannot post one); the comment carries ${hasAcliPrLink(notice.prUrl) ? "the pull request link" : "the supplied URL as plain text"}`
     : "; no pull request to link";
   return writebackDone(`commented${link}`);
 }

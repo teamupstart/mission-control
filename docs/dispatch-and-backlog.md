@@ -1551,6 +1551,9 @@ and remote links are unaffected: `annotate` still works on the CLI alone.
 posts the Mission Control comment with a clickable pull request link. acli has no remote-link
 command: **Remote link and comment** and **Remote link only** report that link as unavailable
 while delivering the comment. A completion without a pull request still posts its comment.
+Only `https://github.com/<owner>/<repo>/pull/<number>` URLs receive a clickable link in an
+acli comment; query strings, fragments and a trailing slash are allowed. Other supplied
+completion URLs remain readable as plain text.
 No local CLI or REST credential fallback is attempted.
 
 Resolving reads the current status, moves to the configured **Target status**, and confirms it

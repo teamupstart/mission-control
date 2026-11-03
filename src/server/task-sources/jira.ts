@@ -1552,8 +1552,10 @@ export function commentBodyText(notice: WritebackNotice): string {
  * does NOT auto-link the way the older wiki-markup one did - a url posted as plain text
  * stays plain text, and the whole point of this comment is that somebody can click it.
  */
-export function commentBodyAdf(notice: WritebackNotice): unknown {
-  const url = notice.prUrl ?? "";
+export function commentBodyAdf(notice: WritebackNotice, options: { linkPrUrl?: boolean } = {}): unknown {
+  // Callers may retain an untrusted URL's words without making it a clickable link.
+  // The default preserves the existing local and UpstartClaw formatting contract.
+  const url = options.linkPrUrl === false ? "" : notice.prUrl ?? "";
   /**
    * Plain text as inline nodes, with every newline as a `hardBreak`.
    *

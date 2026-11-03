@@ -92,7 +92,7 @@ async function configureAcli(page: Page, daemon: DaemonHandle): Promise<void> {
   expect(res.ok()).toBe(true);
 }
 
-async function oweAcli(page: Page, daemon: DaemonHandle, actions: ("annotate" | "resolve")[]): Promise<void> {
+async function oweAcli(page: Page, daemon: DaemonHandle, actions: ("annotate" | "resolve")[], prUrl = PR_URL): Promise<void> {
   // Completion notices are revalidated against a live done task, even with a seeded ledger.
   const created = await page.request.post(`${daemon.baseURL}/api/tasks`, { data: {
     repoRoot: daemon.repo, title: "Fix the parser", intent: "Repair parser", backlog: true, enabled: false,
@@ -105,7 +105,7 @@ async function oweAcli(page: Page, daemon: DaemonHandle, actions: ("annotate" | 
     for (const action of actions) {
       const notice = { signal: "task-completed", action, externalId: "MC-2",
         externalUrl: "https://example.atlassian.net/browse/MC-2", taskTitle: "Fix the parser",
-        prUrl: PR_URL, repoRoot: daemon.repo, outcome: "Parser repaired", observedAt: Date.now() };
+        prUrl, repoRoot: daemon.repo, outcome: "Parser repaired", observedAt: Date.now() };
       db.prepare(`INSERT INTO task_source_writeback
         (source_id, external_id, signal, action, dedupe_key, task_id, payload, state, attempts, next_at, created_at, updated_at)
         VALUES (?, ?, 'task-completed', ?, ?, ?, ?, 'pending', 5, 0, ?, ?)`)
@@ -148,6 +148,21 @@ for (const withTransitions of [false, true]) test(`acli delivers a PR comment an
   ]);
   expect(records.filter((r) => r.argv[2] === "view")).toHaveLength(2);
   await shoot(page, withTransitions ? "acli-transitions-delivered" : "acli-delivered", page.getByText(/2 delivered\./));
+});
+
+test("acli posts untrusted completion URLs as plain text rather than clickable links", async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  const untrustedUrl = "javascript:alert(1)";
+  await oweAcli(page, daemon, ["annotate"], untrustedUrl);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 delivered\./)).toBeVisible({ timeout: 30_000 });
+  const comments = recordsIn<GhRecord>(daemon.recordDir, (file) => /^acli-\d/.test(file))
+    .filter((record) => record.argv[2] === "comment");
+  expect(comments).toHaveLength(1);
+  const body = JSON.parse(comments[0]!.argv[7]!);
+  expect(JSON.stringify(body)).toContain(untrustedUrl);
+  expect(body.content.flatMap((paragraph: { content: { marks?: unknown[] }[] }) => paragraph.content)
+    .flatMap((node: { marks?: unknown[] }) => node.marks ?? [])).toEqual([]);
 });
 
 test("acli exit-zero comment failures stay retryable in the write-back queue", async ({ page, daemon }) => {

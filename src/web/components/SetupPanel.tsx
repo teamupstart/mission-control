@@ -259,15 +259,19 @@ function ServiceRemedy({
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
 
-  async function start(): Promise<void> {
+  const [installDidNotRegister, setInstallDidNotRegister] = useState(false);
+
+  async function start(): Promise<SetupServiceStartResult> {
     setStarting(true);
     // A new attempt replaces the whole outcome, including an earlier inline install failure.
     setResult(null);
     setInstallError(null);
+    setInstallDidNotRegister(false);
     try {
       const next = await startSetupService({ service });
       setResult(next);
       if (next.ok) onRepaired();
+      return next;
     } finally {
       setStarting(false);
     }
@@ -283,7 +287,14 @@ function ServiceRemedy({
       const installed = await window.missionDesktop!.installIntegrations();
       if (!installed.ok) { setInstallError(installed.message); return; }
       onRepaired();
-      await start();
+      const retried = await start();
+      // The installer preserves an existing entry it does not own (a disabled or custom
+      // `mission-control` table) and still reports success. Offering the same install again
+      // would loop, so say what it did and what is left to fix by hand.
+      if (retried.prerequisite === "mission-integrations") {
+        setInstallDidNotRegister(true);
+        setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. Give its [mcp_servers.mission-control] table in config.toml a command or url, then press Trust again.`);
+      }
     } catch {
       setInstallError("Integration install could not finish. Check the app log and retry.");
     } finally {
@@ -313,14 +324,14 @@ function ServiceRemedy({
         <RemedyNotice
           tone={result.ok ? "attention" : "error"}
           detail={result.detail || result.error || `${label} did not finish.`}
-          hint={result.ok ? undefined : needsIntegrations
+          hint={result.ok || installDidNotRegister ? undefined : needsIntegrations
             ? canInstall
               ? "Install Claude integrations also registers the Mission Control MCP server with Codex, then this retries the trust automatically."
               : "Open Setup in the Mission Control desktop app and choose Install Claude integrations, which registers the MCP server with Codex too, then retry."
             : SETUP_SERVICE_INFO[service].retry}
         />
       )}
-      {needsIntegrations && canInstall && (
+      {needsIntegrations && canInstall && !installDidNotRegister && (
         <div className="setup-run-controls">
           <Tooltip label="Register Mission Control MCP with Claude Code and Codex using this app's runtime, then retry the trust.">
             <button type="button" className="btn" disabled={busy} onClick={() => void installThenStart()}>

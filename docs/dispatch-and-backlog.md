@@ -498,7 +498,21 @@ forced into the backlog. Every task or standalone active session completes only 
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
 repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
+ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
+edges are still checked for verified merges, including after a restart or session closure.
+An unresolved dependency also retains its earlier work episode's branch when the task moves
+on, so a PR first discovered on that historical branch can still release it. Branch discovery
+searches PR candidates within that episode's recorded ownership window, so a newer PR on a
+reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
+its source head exactly matches a branch commit retained while the episode was active. This
+compares the source head, not the target commit produced by a squash merge. Without that
+retained match, an unknown historical end or a PR created after completion stays unresolved;
+a later episode's merge does
+not release an edge pinned to earlier unmerged work.
+When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
+unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+A dependency edge itself names the prerequisite's
 primary repository's pull request, but what releases it is the prerequisite's own
 completion, which is the stronger condition. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped

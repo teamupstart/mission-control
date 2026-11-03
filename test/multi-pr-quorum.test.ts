@@ -575,3 +575,24 @@ test("a single-repo task still completes on its own merge, unchanged", async () 
   assert.equal(f.registry.worktreeHeadTargets().includes(f.cwd), false);
   assert.deepEqual(f.registry.extraRepoPrPollTargets().filter((t) => t.taskId === f.taskId), []);
 });
+
+test("a manually completed task keeps dependents blocked until every repository merges", async () => {
+  const f = fixture("manual-done-quorum");
+  const primary = "https://github.com/example/primary/pull/1303";
+  const secondary = "https://github.com/example/secondary/pull/1303";
+  primaryPr(f, primary);
+  extraPr(f, secondary);
+  f.registry.upsertTask(baseTask({ id: "manual-quorum-dependent", dependencies: [{
+    type: "task", taskId: f.taskId, title: "Prerequisite", sessionId: f.id,
+    episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId, branch: "feat/work",
+    prUrl: primary, selectedAt: 1, satisfiedAt: null,
+  }] }));
+  await f.tasks.complete(f.taskId, "completed");
+  departs(f);
+  await pollMerged(f, { [primary]: NOW });
+  assert.equal(f.registry.getTask("manual-quorum-dependent")!.dependencies[0]!.satisfiedAt, null);
+  assert.ok(f.registry.taskPrPollTargets().includes(secondary));
+  await pollMerged(f, { [primary]: NOW, [secondary]: NOW + 1 });
+  assert.notEqual(f.registry.getTask("manual-quorum-dependent")!.dependencies[0]!.satisfiedAt, null);
+  assert.equal(f.registry.getTask(f.taskId)!.outcome, "completed");
+});

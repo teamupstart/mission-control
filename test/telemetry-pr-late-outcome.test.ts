@@ -709,6 +709,8 @@ function stubRegistry(operational: string[]) {
     extraRepoPrPollTargets: () => [],
     worktreeHeadTargets: () => [],
     dependencyPrPollTargets: () => [],
+    completedDependencyBranchTargets: () => [],
+    dependencyWorkHeadTargets: () => [],
     taskPrPollTargets: () => operational,
     recordWorktreeHeads: () => {},
     reconcilePrs: () => {},

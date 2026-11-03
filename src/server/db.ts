@@ -505,6 +505,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -520,9 +521,11 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
+      ended_at         INTEGER,
       PRIMARY KEY (task_id, episode_id)
     );
     CREATE INDEX IF NOT EXISTS idx_historical_task_work_episode_session
@@ -3793,6 +3796,10 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
   addColumn(d, "session_work_episodes", "prompted_at", "INTEGER");
   addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
+  // Unknown historical end times stay null: a reused branch is not ownership evidence.
+  addColumn(d, "historical_task_work_episode_bindings", "ended_at", "INTEGER");
+  addColumn(d, "task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "work_head_sha", "TEXT");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -6021,6 +6028,8 @@ export interface TaskWorkEpisodeBinding {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  /** Branch commit observed while this task still owned the active episode. */
+  workHeadSha?: string | null;
   mergedAt: number | null;
   boundAt: number;
   updatedAt: number;
@@ -6079,6 +6088,7 @@ type TaskWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  work_head_sha: string | null;
   merged_at: number | null;
   bound_at: number;
   updated_at: number;
@@ -6110,6 +6120,7 @@ function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    workHeadSha: row.work_head_sha,
     mergedAt: row.merged_at,
     boundAt: row.bound_at,
     updatedAt: row.updated_at,
@@ -6380,31 +6391,31 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     // - and the pr_url / merged_at that are the only durable proof its work landed - would
     // be lost. `mergedPrFor` reads current AND historical bindings precisely so that a merge
     // on a rolled-past episode still completes the task; that read is inert unless the old
-    // binding is preserved here. Only a row that actually changes episode and carries a PR
-    // is worth keeping - a PR-less binding is no completion evidence, and
-    // `cleanupDependencyProvenance` prunes it anyway. (#167 archived here too, then dropped
-    // it when dependency provenance moved onto the edges; durable completion is the new
-    // reader that needs it back.) COALESCE keeps a merge already recorded on the historical
-    // row rather than letting a re-archival clear it.
+    // binding is preserved here. A branch without an observed PR also needs archival:
+    // unresolved dependencies may still need to discover that episode's PR after completion.
+    // Registry cleanup keeps only branch evidence those edges reference. COALESCE keeps
+    // a merge already recorded on the historical row rather than letting a re-archival clear it.
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha
        FROM task_work_episode_bindings
-       WHERE task_id = ? AND episode_id <> ? AND pr_url IS NOT NULL
+       WHERE task_id = ? AND episode_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.taskId, binding.episodeId);
-    // And archive any OTHER task's PR-carrying binding that the cross-task DELETE below is
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.taskId, binding.episodeId);
+    // And archive any OTHER task's PR- or branch-carrying binding that the cross-task DELETE below is
     // about to drop. A session rebound from task A to task B removes A's current binding
     // here; if A's PR had merged while A was still active, losing that row leaves A with
     // neither a current nor a historical merge, so a later departure fails it. This is the
@@ -6413,21 +6424,23 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha
        FROM task_work_episode_bindings
-       WHERE session_id = ? AND task_id <> ? AND pr_url IS NOT NULL
+       WHERE session_id = ? AND task_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.sessionId, binding.taskId);
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.sessionId, binding.taskId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);
@@ -6443,6 +6456,11 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.work_head_sha ELSE NULL END,
          merged_at        = excluded.merged_at,
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at`,
@@ -6465,6 +6483,16 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
   }
 }
 
+/** Persist only a still-active, unchanged binding; late poll results cannot rewrite history. */
+export function recordTaskWorkEpisodeHead(binding: TaskWorkEpisodeBinding, headSha: string): void {
+  openDb().prepare(`UPDATE task_work_episode_bindings SET work_head_sha = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+      AND branch IS ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ?
+        AND status NOT IN ('done', 'cancelled', 'backlog'))`)
+    .run(headSha, binding.taskId, binding.episodeId, binding.sessionId,
+      binding.agentSessionId, binding.branch, binding.taskId);
+}
+
 export function taskWorkEpisodeForSession(sessionId: string): TaskWorkEpisodeBinding | null {
   const row = openDb()
     .prepare(
@@ -6483,23 +6511,23 @@ export function taskWorkEpisodeForTask(taskId: string): TaskWorkEpisodeBinding |
   return row ? taskWorkEpisodeFromRow(row) : null;
 }
 
-export function historicalTaskWorkEpisodeBindings(): TaskWorkEpisodeBinding[] {
+export function historicalTaskWorkEpisodeBindings(): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(`SELECT * FROM historical_task_work_episode_bindings ORDER BY updated_at DESC`)
-    .all() as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all() as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 export function historicalTaskWorkEpisodeBindingsForTask(
   taskId: string,
-): TaskWorkEpisodeBinding[] {
+): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(
       `SELECT * FROM historical_task_work_episode_bindings
        WHERE task_id = ? ORDER BY bound_at DESC`,
     )
-    .all(taskId) as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all(taskId) as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 /** The retro task already reserved for this source episode, when one exists. */
@@ -6590,6 +6618,23 @@ export function deleteHistoricalTaskWorkEpisodeBinding(
        WHERE task_id = ? AND episode_id = ?`,
     )
     .run(taskId, episodeId);
+}
+
+/** Associate a newly discovered PR only with the exact retained historical task episode. */
+export function updateHistoricalTaskWorkEpisodePr(
+  binding: TaskWorkEpisodeBinding,
+  prUrl: string,
+  prHeadSha: string,
+  now: number,
+): boolean {
+  const result = openDb().prepare(
+    `UPDATE historical_task_work_episode_bindings
+     SET pr_url = ?, pr_head_sha = ?, updated_at = MAX(updated_at, ?)
+     WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+       AND branch = ? AND pr_url IS NULL`,
+  ).run(prUrl, prHeadSha, now, binding.taskId, binding.episodeId, binding.sessionId,
+    binding.agentSessionId, binding.branch);
+  return Number(result.changes) === 1;
 }
 
 export function updateWorkEpisodePr(

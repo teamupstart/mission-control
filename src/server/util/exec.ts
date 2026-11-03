@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { refreshLoginShellPath } from "./path-env.ts";
 import { executableLocator } from "../executables/locator.ts";
@@ -82,6 +82,24 @@ export interface RunResult {
   outcomeUnknown: boolean;
   /** stdout exceeded `maxBuffer`. Retrying the same command cannot produce less. */
   overflowed: boolean;
+  /**
+   * The `cwd` this run asked for, when it did not exist and nothing was spawned.
+   *
+   * Node reports a missing working directory as `spawn <binary> ENOENT` - the same code
+   * and message as a missing binary - so every caller that reads ENOENT as "not installed"
+   * told an operator with the tool installed to go and install it. This is the fact those
+   * classifiers check first. Absent on every other result, including hand-built stubs,
+   * which model a process that ran.
+   */
+  missingCwd?: string;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -192,15 +210,27 @@ export async function run(
           const e = err as { killed?: unknown; signal?: unknown } | null;
           const outcomeUnknown =
             !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
+          // Checked only after an ENOENT refusal, so the hot path pays no extra stat and the
+          // answer describes the directory at the moment the spawn actually failed.
+          const missingCwd =
+            spawnRefused &&
+            (err as { code?: unknown }).code === "ENOENT" &&
+            opts.cwd !== undefined &&
+            !isDirectory(opts.cwd)
+              ? opts.cwd
+              : undefined;
           resolve({
             stdout: stdout ?? "",
             stderr: overflowed
               ? (err.message ?? "maxBuffer exceeded")
-              : (stderr ?? "") || (spawnRefused ? err.message : ""),
+              : missingCwd !== undefined
+                ? `${bin} could not start because its working directory ${missingCwd} does not exist`
+                : (stderr ?? "") || (spawnRefused ? err.message : ""),
             code,
             childPid,
             outcomeUnknown,
             overflowed,
+            ...(missingCwd !== undefined ? { missingCwd } : {}),
           });
         },
       );

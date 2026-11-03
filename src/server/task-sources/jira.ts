@@ -26,6 +26,7 @@ import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 import { acliAnnotate, acliPreflight, acliResolve, readAcli } from "./jira-acli.ts";
+import { repoRootGone } from "./repo-root.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -568,7 +569,7 @@ export function issuesFrom(
 }
 
 /** First non-empty line of some output, for a one-line "why". */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   return text.trim().split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
 }
 
@@ -607,7 +608,7 @@ function looksUnconfigured(text: string): boolean {
 const CLI_EMPTY = /no result found/i;
 
 /** What one `jira` run reported, as much of it as any of these decisions need. */
-type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
+type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown" | "missingCwd">;
 
 /**
  * What a failed `jira` run says about the CLI ITSELF, rather than about the request.
@@ -624,6 +625,7 @@ type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
  */
 export type CliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unconfigured"
   | "unauthenticated"
@@ -633,6 +635,8 @@ export type CliFault =
 export function cliFault(res: CliRun): CliFault {
   // The child DIED rather than answering. Whether it did its work first is unknowable.
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   const said = `${res.stderr}\n${res.stdout}`;
   // `run` reports a missing binary through the callback with Node's own message, so this
   // covers a `jira` that vanished between the PATH check and the spawn. Matched narrowly:
@@ -683,6 +687,8 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
       return `the jira CLI did not answer within ${Math.round(JIRA_TIMEOUT_MS / 1000)}s${
         why ? ` - ${why}` : ""
       } - it may be waiting for input, which a background sweep cannot give it`;
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
       return "the jira CLI could not be run - reinstall it (`brew install ankitpokhrel/jira-cli/jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback";
     case "unconfigured":

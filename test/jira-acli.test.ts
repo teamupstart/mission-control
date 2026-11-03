@@ -172,7 +172,7 @@ test("comment refusals are retryable but killed writes and post-write site failu
     [refused(), auth(), false, /Workflow requires review/],
     [{ ...refused(), outcomeUnknown: true }, auth(), true, /check the issue in Jira before retrying/],
     [ok(), otherSite(), true, /MC-2.*example.atlassian.net.*other.atlassian.net.*check both sites/],
-    [ok(), fixture("logged-out"), true, /MC-2.*example.atlassian.net.*not logged in/],
+    [ok(), fixture("logged-out"), true, /MC-2.*example.atlassian.net.*not signed in/],
     [ok(), ok(), true, /cannot confirm which Jira site/],
     [ok({ self: "https://other.atlassian.net/rest/api/3/issue/2" }), auth(), true, /other.atlassian.net.*example.atlassian.net/],
     [ok({ operation: { self: "https://other.atlassian.net/rest/api/3/issue/2" } }), auth(), true, /other.atlassian.net.*example.atlassian.net/],
@@ -291,7 +291,14 @@ test("captured failures name the specific operator fix", () => {
   }
   const missing = stubRun({ code: 127, stdout: "", stderr: "spawn acli ENOENT" });
   assert.equal(acliFault(missing), "not-installed");
-  assert.match(acliFailure(missing), /brew tap atlassian\/homebrew-acli && brew install acli/);
+  assert.match(acliFailure(missing), /cannot find acli.*Settings > Setup > Jira.*brew install atlassian\/acli\/acli.*MISSION_ACLI_BIN/);
+  // Node refuses a spawn into a vanished checkout with the same ENOENT. `run` names the
+  // directory, and that fact outranks the ENOENT text: the CLI is installed and the fix is
+  // the source's checkout, never an install.
+  const gone = { ...missing, code: 1, stderr: "acli could not start because its working directory /gone/repo does not exist", missingCwd: "/gone/repo" };
+  assert.equal(acliFault(gone), "missing-repo");
+  assert.match(acliFailure(gone), /files tasks against \/gone\/repo, which no longer exists.*Files tasks against/);
+  assert.doesNotMatch(acliFailure(gone), /install/i);
   const killed = { ...missing, outcomeUnknown: true };
   assert.equal(acliFault(killed), "no-answer");
   assert.match(acliFailure(killed), /did not answer/);
@@ -492,7 +499,7 @@ test("production dispatch, linked reads and preflight use only the redirected ac
     process.env.JIRA_API_TOKEN = "synthetic-unused-token";
     process.env.JIRA_EMAIL = "operator@example.invalid";
     process.env.MISSION_ACLI_BIN = join(home, "missing-acli");
-    assert.match((await jira.preflight!(cfg(), ctx))!, /acli is not installed.*brew install acli/);
+    assert.match((await jira.preflight!(cfg(), ctx))!, /cannot find acli.*brew install atlassian\/acli\/acli/);
     process.env.MISSION_ACLI_BIN = agents.bins.acli;
     writeFileSync(join(agents.recordDir, "fake-acli-state.json"), JSON.stringify({ issues: JSON.parse(fixture("search-one").stdout) }));
     assert.equal(acliBin(), agents.bins.acli);
@@ -559,6 +566,34 @@ test("an exit-zero fake comment failure is a retryable refusal", async () => {
       .map((name) => JSON.parse(readFileSync(join(agents.recordDir, name), "utf8")).argv as string[]);
     assert.equal(calls.filter((args) => args.join(" ") === "jira auth status").length, 2);
     assert.equal(calls.filter((args) => args.slice(0, 3).join(" ") === "jira workitem comment").length, 1);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
+    Object.assign(process.env, old);
+  }
+});
+
+// The reported bug, end to end through the real `run`: acli installed and signed in, the
+// source's checkout deleted. Every operation used to say "acli is not installed".
+test("an installed acli under a vanished checkout names the checkout, on every operation", async () => {
+  const agents = writeFakeAgents(join(home, "vanished-checkout"));
+  const old = { ...process.env };
+  try {
+    process.env.MISSION_ACLI_BIN = agents.bins.acli;
+    process.env.MC_E2E_RECORD_DIR = agents.recordDir;
+    writeFileSync(join(agents.recordDir, "fake-acli-state.json"), JSON.stringify({ issues: JSON.parse(fixture("search-one").stdout) }));
+    const gone = join(home, "deleted-checkout");
+    const vanished: SweepContext = { ...ctx, repoRoot: gone };
+    const named = new RegExp(`files tasks against ${gone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which no longer exists`);
+    for (const message of [
+      await jira.preflight!(cfg(), vanished),
+      (await jira.sweep(cfg(), vanished)).error,
+      (await jira.annotate!(cfg(), notice, vanished)).error,
+    ]) {
+      assert.match(message ?? "", named);
+      assert.doesNotMatch(message ?? "", /not installed|cannot find acli|brew install/);
+    }
+    // And the same source works the moment its checkout is back.
+    assert.equal(await jira.preflight!(cfg(), ctx), null);
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
     Object.assign(process.env, old);

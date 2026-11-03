@@ -768,8 +768,9 @@ test.describe("acli read method", () => {
     expect(seeded.ok(), await seeded.text()).toBe(true);
     await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
     await page.getByRole("combobox", { name: "How Jira queries are authenticated" }).selectOption("acli");
-    const login = page.getByText(/Log in once with/);
+    const login = page.getByText(/Install acli and sign in from/);
     await expect(login).toContainText("acli jira auth login --web");
+    await expect(login.getByRole("link", { name: "Setup" })).toHaveAttribute("href", "#/settings/setup");
     await expect(page.getByRole("spinbutton", { name: "Issues per page" })).toBeDisabled();
     await expect(login).toContainText("match this source's Jira site");
     await login.scrollIntoViewIfNeeded();
@@ -841,6 +842,44 @@ test.describe("acli read method", () => {
       .toBeGreaterThanOrEqual(12);
     expect(await (await page.request.get(`${daemon.baseURL}/api/tasks`)).json()).toHaveLength(1);
     await shoot(page, "acli-site-mismatch");
+  });
+
+  // The reported bug: acli installed and signed in, the source's checkout renamed away. Node
+  // refuses a spawn into a missing directory with ENOENT, which used to read as "acli is not
+  // installed". The note must name the checkout, and repairing it must be the whole fix.
+  test("a vanished checkout is named as the checkout, never as a missing acli", async ({ page, daemon }) => {
+    const gone = `${daemon.repo}-renamed-away`;
+    withDaemonDb(daemon, (db) => {
+      db.prepare(
+        `INSERT INTO app_config (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+      ).run("taskSources", JSON.stringify({ sources: [{
+        id: "jira-acli-gone", kind: "jira", label: "Vanished queue", repoRoot: gone, enabled: false,
+        config: { site: "example.atlassian.net", jql: "project = MC", queryVia: "acli" },
+      }] }));
+    });
+    await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+    const check = page.getByRole("button", { name: "Check it works" });
+    const note = page.locator("p.ts-note");
+    await check.click();
+    await expect(note).toContainText(`this source files tasks against ${gone}, which no longer exists`);
+    await expect(note).toContainText('choose its current checkout under "Files tasks against"');
+    await expect(note).not.toContainText("not installed");
+    await expect(note).not.toContainText("brew");
+    await expect(note).toHaveClass(/settings-error/);
+    await note.scrollIntoViewIfNeeded();
+    await shoot(page, "acli-vanished-checkout");
+
+    const editor = page.locator(".ts-editor");
+    await editor.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+    await editor.getByRole("button", { name: "Set repo" }).click();
+    await expect.poll(async () => {
+      const data = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
+      return data.sources[0].repoRoot;
+    }).toBe(daemon.repo);
+    await check.click();
+    await expect(note).toHaveText("Looks good - Jira answered, and this JQL filter runs.");
+    await shoot(page, "acli-vanished-checkout-repaired");
   });
 
 });

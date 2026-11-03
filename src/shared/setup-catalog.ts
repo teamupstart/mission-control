@@ -35,6 +35,8 @@ export const SETUP_DEPENDENCY_IDS = [
   "coderabbit-cli",
   "claude-mcp-trust",
   "codex-mcp-trust",
+  "acli-cli",
+  "acli-auth",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -44,6 +46,7 @@ export const SETUP_FAMILY_IDS = [
   "agents",
   "terminals",
   "github",
+  "jira",
   "extensions",
   "pipelines",
   "runtime",
@@ -72,6 +75,11 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     id: "github",
     label: "GitHub",
     description: "The GitHub CLI carries pull requests, reviews, issues, and repository reads.",
+  },
+  jira: {
+    id: "jira",
+    label: "Jira",
+    description: "Jira task sources that read through the Atlassian CLI need it installed and signed in to their site.",
   },
   extensions: {
     id: "extensions",
@@ -189,9 +197,17 @@ export type SetupServicePrerequisite = (typeof SETUP_SERVICE_PREREQUISITES)[numb
  * how it runs. That is what keeps this union safe to widen: the wire contract grows a case,
  * not an execution surface.
  */
+/**
+ * What a `command` remedy does once it runs, which decides how the panel and the terminal
+ * describe it. Not a grammar switch the browser controls: the daemon checks an `install`
+ * against its package-manager grammar and a `sign-in` against its closed list of exact
+ * sign-in commands, and refuses anything that is neither.
+ */
+export type SetupCommandPurpose = "install" | "sign-in";
+
 export type SetupRemedy =
   | { kind: "link"; url: string; label: string }
-  | { kind: "command"; argv: readonly string[]; note: string }
+  | { kind: "command"; purpose: SetupCommandPurpose; argv: readonly string[]; note: string }
   | { kind: "provider-installer"; provider: PipelineProviderId }
   | { kind: "skill"; command: string }
   // The one remedy that is not an installation. It carries no argv for the same reason
@@ -269,6 +285,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Claude sessions and Claude-backed background jobs cannot launch.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@anthropic-ai/claude-code"],
       note: "Install the official Claude Code npm package without sudo. This installer requires external Node and npm; native CLI installations keep their own prerequisites.",
     },
@@ -293,6 +310,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Pi sessions cannot launch or resume, and Pi's Agent SDK runtime stays unavailable.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
       note: "Install the Pi coding agent package globally. This installer requires external Node and npm supported by Pi.",
     },
@@ -305,6 +323,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds durable detached sessions, provided an installed emulator can raise them.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "tmux"],
       note: "Install tmux with Homebrew.",
     },
@@ -329,6 +348,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds scriptable terminal windows and can raise detached tmux sessions.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "wezterm"],
       note: "Install WezTerm with Homebrew.",
     },
@@ -341,6 +361,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds native terminal windows that Mission Control can discover and focus on macOS.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "ghostty"],
       note: "Install Ghostty with Homebrew.",
     },
@@ -353,6 +374,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Without it, Mission Control cannot inspect, open, review, or merge GitHub work.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "gh"],
       note: "Install the GitHub CLI with Homebrew.",
     },
@@ -409,6 +431,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "Adds scriptable iTerm2 windows and can raise detached tmux sessions on macOS.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "--cask", "iterm2"],
       note: "Install iTerm2 with Homebrew.",
     },
@@ -433,6 +456,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     enables: "External Node.js is for source development and third-party Node tools. The installed desktop app, binary updates and Mission-owned helpers use bundled Node.",
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["brew", "install", "node"],
       note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
     },
@@ -466,6 +490,33 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       service: "codex-mcp-trust",
       label: "Trust Mission Control in Codex",
       note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Needs the MCP server registered in Codex; this offers Install Claude integrations when it is not.",
+    },
+  },
+  "acli-cli": {
+    id: "acli-cli",
+    label: "Atlassian CLI",
+    family: "jira",
+    requirement: "optional",
+    enables: "Without it, Jira task sources set to read through the Atlassian CLI (acli) cannot sweep, check, or write back.",
+    remedy: {
+      kind: "command",
+      purpose: "install",
+      // The tap-qualified name taps atlassian/homebrew-acli and installs from it in one step.
+      argv: ["brew", "install", "atlassian/acli/acli"],
+      note: "Install the Atlassian CLI from Atlassian's Homebrew tap, then press Re-check.",
+    },
+  },
+  "acli-auth": {
+    id: "acli-auth",
+    label: "Atlassian CLI sign-in",
+    family: "jira",
+    requirement: "optional",
+    enables: "acli reads Jira only while it is signed in, and only for the site it is signed in to. A source on another site is refused until acli switches to it.",
+    remedy: {
+      kind: "command",
+      purpose: "sign-in",
+      argv: ["acli", "jira", "auth", "login", "--web"],
+      note: "Sign acli in to Jira through your browser. Choose the site your Jira sources use, then press Re-check.",
     },
   },
 };
@@ -625,6 +676,7 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     // contract change for one row; naming both here costs a sentence.
     remedy: {
       kind: "command",
+      purpose: "install",
       argv: ["npm", "run", "install-hooks"],
       note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
     },

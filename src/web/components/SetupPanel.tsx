@@ -5,6 +5,7 @@ import {
   SETUP_SERVICE_INFO,
   homeRelative,
   setupRowAnchor,
+  type SetupCommandPurpose,
   type SetupDependencyId,
   type SetupFamilyId,
   type SetupRowView,
@@ -158,14 +159,21 @@ function RemedyNotice({
   );
 }
 
-function LaunchNotice({ result }: { result: SetupInstallerLaunchResult | null }): React.JSX.Element | null {
+function LaunchNotice({
+  result,
+  purpose = "install",
+}: {
+  result: SetupInstallerLaunchResult | null;
+  purpose?: SetupCommandPurpose;
+}): React.JSX.Element | null {
   if (!result) return null;
   const attention = result.outcome === "opened" || result.outcome === "maybe-opening";
+  const what = purpose === "sign-in" ? "sign-in" : "installer";
   return (
     <RemedyNotice
       tone={attention ? "attention" : "error"}
-      detail={result.detail || result.error || "The installer terminal was refused."}
-      hint={attention ? "When the installer finishes, press Re-check." : undefined}
+      detail={result.detail || result.error || `The ${what} terminal was refused.`}
+      hint={attention ? `When the ${what} finishes, press Re-check.` : undefined}
     />
   );
 }
@@ -174,13 +182,15 @@ function RunButton({
   disabled,
   opening,
   onClick,
+  purpose = "install",
 }: {
   disabled: boolean;
   opening: boolean;
   onClick(): void;
+  purpose?: SetupCommandPurpose;
 }): React.JSX.Element {
   return (
-    <Tooltip label="Open this daemon-owned install command in the selected visible terminal">
+    <Tooltip label={`Open this daemon-owned ${purpose === "sign-in" ? "sign-in" : "install"} command in the selected visible terminal`}>
       <button
         type="button"
         className="btn btn-primary"
@@ -196,11 +206,13 @@ function RunButton({
 function CommandRemedy({
   id,
   label,
+  purpose,
   argv,
   note,
 }: {
   id: SetupDependencyId;
   label: string;
+  purpose: SetupCommandPurpose;
   argv: readonly string[];
   note: string;
 }): React.JSX.Element {
@@ -228,9 +240,10 @@ function CommandRemedy({
           disabled={!terminal.selected || opening}
           opening={opening}
           onClick={() => void launch()}
+          purpose={purpose}
         />
       </div>
-      <LaunchNotice result={result} />
+      <LaunchNotice result={result} purpose={purpose} />
     </div>
   );
 }
@@ -485,7 +498,7 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
   }
   if (remedy.kind === "command") {
     return row.rowId.source === "dependency"
-      ? <CommandRemedy id={row.rowId.id} label={row.label} argv={remedy.argv} note={remedy.note} />
+      ? <CommandRemedy id={row.rowId.id} label={row.label} purpose={remedy.purpose} argv={remedy.argv} note={remedy.note} />
       : <CopyCommand argv={remedy.argv} note={remedy.note} />;
   }
   if (remedy.kind === "provider-installer") {

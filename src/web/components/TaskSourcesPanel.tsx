@@ -409,8 +409,13 @@ function JiraFields({
 
       {cfg.queryVia === "acli" && (
         <p className="settings-hint ts-upstartclaw-note">
-          Log in once with <code>acli jira auth login --web</code>. The active acli site must
-          match this source's Jira site.
+          Install acli and sign in from{" "}
+          <Tooltip label="Open Setup's Jira checks, which install acli and run its browser sign-in">
+            <a href="#/settings/setup">Setup</a>
+          </Tooltip>
+          , or run{" "}
+          <code>acli jira auth login --web</code> yourself. The active acli site must match this
+          source's Jira site.
         </p>
       )}
 

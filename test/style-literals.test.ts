@@ -186,9 +186,53 @@ interface Parsed {
   declarations: Declaration[];
 }
 
-/** Blank out comments, keeping every newline so reported line numbers stay true. */
+/**
+ * Blank out comments, keeping every newline so reported line numbers stay true. Only real
+ * comments: `/*` inside a quoted string or an unquoted `url(...)` is text, and an SVG data
+ * URI may carry it - blanking that span would hide whatever colour sits between the marks.
+ */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < source.length; ) {
+    const ch = source[i]!;
+    if (quote !== null) {
+      if (ch === "\\") {
+        out += source.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && source[i + 1] === "*") {
+      const close = source.indexOf("*/", i + 2);
+      const end = close < 0 ? source.length : close + 2;
+      out += source.slice(i, end).replace(/[^\n]/g, " ");
+      i = end;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // An unquoted url( runs to its closing parenthesis as one token, comment marks included.
+    const bareUrl = /^url\(\s*(?!["'])/i.exec(source.slice(i, i + 64));
+    if (bareUrl) {
+      const close = source.indexOf(")", i + bareUrl[0].length);
+      const end = close < 0 ? source.length : close + 1;
+      out += source.slice(i, end);
+      i = end;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 /**
@@ -392,6 +436,10 @@ test("the scanner reports each kind of literal it guards against", () => {
     [".a { color: \\23 c8352c; }", "#c8352c"],
     [".a { background: \\72 gb(200 53 44); }", "rgb("],
     [".a { background-color: \\000057hite; }", "White"],
+    // Comment marks inside a string or url() are text, so they cannot hide what sits between.
+    [`.a { background-image: url("data:image/svg+xml,%3Csvg%3E%3Ctext%3E/*%3C/text%3E%3Crect fill='red'/%3E%3Ctext%3E*/%3C/text%3E%3C/svg%3E"); }`, "red"],
+    [".a { background-image: url(data:image/svg+xml,%3Csvg%3E/*%3Crect%20fill=%27red%27/%3E*/%3C/svg%3E); }", "red"],
+    [`.a { mask-image: image-set('data:image/svg+xml,%3Csvg%3E/* %3Cpath stroke="%23c8352c"/%3E */%3C/svg%3E' 1x); }`, "#c8352c"],
     // Colour functions are case-insensitive.
     [".a { color: RGB(255, 0, 0); }", "RGB("],
     [".a { background: Hsl(0 100% 50%); border-color: OKLCH(60% 0.2 30); }", ["Hsl(", "OKLCH("]],
@@ -418,6 +466,7 @@ test("the scanner leaves tokens, mixes of tokens, non-paint names and the :root 
     `.a::before { content: "white"; }`,
     `.a::before { content: counter(item) ". " attr(data-label); }`,
     ".a { list-style-type: square; counter-reset: item; }",
+    "/* a comment's quote, \"and\" a red herring */ .a { color: var(--fg); /* white */ }",
     "@media (max-width: 700px) {\n  .a { color: var(--fg); }\n}\n@keyframes pulse {\n  from { opacity: 0; }\n  to { opacity: 1; }\n}",
     "@property --accent {\n  syntax: \"<color>\";\n  inherits: true;\n  initial-value: transparent;\n}",
     `.a { background-image: image-set("icons/red.png" 1x, "icons/white.png" 2x); }`,

@@ -808,3 +808,23 @@ test("every status probe drops all default-session selectors", async () => {
     }
   }
 });
+
+
+test("a status probe that outruns its one-second deadline is reported unfinished, not stopped", async () => {
+  // The executor enforces the deadline and reports an outcome it could not observe. The
+  // native-probe fixture test bounds its own child generously for host stability, so this is
+  // where the production deadline's classification is pinned, with no clock or scheduler.
+  const timeouts: number[] = [];
+  const exec: TerminalExec = async (_bin, _args, options) => {
+    timeouts.push(options?.timeoutMs ?? 0);
+    return run("", 1, true);
+  };
+  const result = await createHerdrClient(exec, HERDR_BIN).probe();
+  assert.deepEqual(timeouts, [1_000], "the status read asks for the production one-second deadline");
+  assert.equal(result.state, "failed");
+  if (result.state === "failed") {
+    assert.match(result.error, /Herdr server status did not finish/);
+    assert.equal(result.retryable, true, "a timed-out read is retryable, not a verdict on the server");
+  }
+});
+

@@ -104,8 +104,10 @@ test("the minimap colours its nodes by class, so a skin repaints them through to
 
 test("a run's failed node reaches the minimap as is-fail, through the canvas projection", () => {
   // A run hands the canvas node statuses as either a verdict ("fail") or an attempt state
-  // ("failed"); the canvas turns each into a `workflow-runtime-*` class and the minimap reads
-  // that class. Drive the whole path rather than the helper alone.
+  // (`WORKFLOW_NODE_ATTEMPT_STATES`, whose failure is "error"); the canvas turns each into a
+  // `workflow-runtime-*` class and the minimap reads that class. Drive the whole path rather
+  // than the helper alone. The minimap's `includes("fail")` test is the one this canvas
+  // shipped with, so an errored attempt stays on the base colour, exactly as before.
   const graph = {
     nodes: [
       { id: "session", kind: "session" as const, position: { x: 0, y: 0 } },
@@ -115,13 +117,13 @@ test("a run's failed node reaches the minimap as is-fail, through the canvas pro
     ],
     edges: [],
   };
-  const statuses = { judge: "fail", check: "failed", end: "completed" };
+  const statuses = { judge: "fail", check: "error", end: "completed" };
   const nodes = canvasNodes(graph, [], [], true, statuses, null, null);
   const minimap = Object.fromEntries(nodes.map((n) => [n.id, minimapNodeClassName(n)]));
   assert.deepEqual(minimap, {
     session: "workflow-minimap-node",
     judge: "workflow-minimap-node is-fail",
-    check: "workflow-minimap-node is-fail",
+    check: "workflow-minimap-node",
     end: "workflow-minimap-node",
   });
 });

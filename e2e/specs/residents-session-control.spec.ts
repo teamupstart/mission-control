@@ -13,9 +13,9 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 // A resident profile with Control other sessions on gets the existing session-control grant only
-// from the operator's Launch click in the desktop app: the shell arms that one launch, the daemon
-// consumes it over its private channel, and the grant survives a daemon restart for the same
-// conversation. Launched from the standalone browser it starts without control and says so, in
+// from the operator's Launch or Restart on new profile click in the desktop app: the shell arms
+// that one launch, the daemon consumes it over its private channel, and the grant survives a
+// daemon restart for the same conversation. A standalone browser launch starts without control and says so, in
 // Dispatch, in the dock and in the Console band. No model tokens are spent: every agent binary is
 // the fake from `fixtures/fake-agents.ts`.
 

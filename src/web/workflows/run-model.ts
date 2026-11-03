@@ -2428,6 +2428,17 @@ export function initialRunRecordPane<Pane extends string>(
  * never mentioned and the one where waiting is the wrong thing to do.
  */
 export function runParkedSentence(detail: WorkflowRunDetail): string | null {
+  const hold = detail.deliveryHold;
+  if (hold) {
+    const repository = hold.repoRoot?.split(/[\\/]/).filter(Boolean).at(-1) || "another repository";
+    const condition = hold.state === "sending" ? "sending its packet"
+      : hold.kind === "evidence_readiness" ? "waiting for evidence readiness"
+      : hold.kind === "evidence_capture_repair" ? "waiting for evidence capture repair"
+      : hold.kind === "session_action" ? "waiting for its session action to finish"
+      : "waiting for its repair round";
+    return `Queued behind ${repository} (run ${hold.runId}), ${condition}.`
+      + " This packet will be delivered when that run releases the conversation.";
+  }
   const resumption = detail.resumption;
   if (!resumption) return null;
   /*
@@ -2497,6 +2508,7 @@ const yoursPosture = (sentence: string): RunPosture => ({
 export function runPosture(detail: WorkflowRunDetail): RunPosture | null {
   const { status } = detail.run;
   if (!workflowRunIsOpen(status)) return null;
+  if (detail.deliveryHold) return autoPosture(runParkedSentence(detail)!);
   switch (status) {
     case "capturing":
       return autoPosture("Evidence is being captured from the session. Nothing is needed from you.");

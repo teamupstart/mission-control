@@ -728,7 +728,13 @@ through every rule here.
   non-empty `repo_root` reviews a secondary repository of the session's task, and its
   `session_cwd`/`session_repo_root` hold that repository's worktree and root - which is what
   scopes evidence capture, check execution, the capture root and the gate's adoption match
-  without any of them knowing why.
+  without any of them knowing why. Scoped evidence and coverage use `session_cwd`, never
+  the canonical repository identity in `repo_root`, for criterion recipients, reservations,
+  generation tracking, carry-forward and retirement. Filesystem realpath normalization does
+  not map a canonical Git checkout to a linked worktree. Automatic evidence preparation
+  validates conversation identity against the primary binding and a secondary checkout against
+  the owning task's current persisted repository assignment. A detached, released or reassigned
+  worktree cannot admit a repair merely because its old binding remains active.
 - **`activeBindingForNote` means the session's OWN binding** and must keep meaning it: the
   create conflict check, dispatch arming, the Foreman claim and reattach all ask that question.
   `activeBindingsForNote` sees the siblings.

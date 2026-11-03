@@ -528,7 +528,11 @@ test("a URL whose path is shaped like a key is a credential; ordinary MCP endpoi
     `https://actions.example.com/mcp/${SECRET}/sse`, "https://h.example.com/mcp/ghp_abc/sse", "https://h.example.com/xoxb-1-2/mcp",
     "https://mcp.example.com/server/3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d/mcp", "https://h.example.com/u/a1B2c3D4e5F6g7H8i9/mcp",
     `https://h.example.com/${"x".repeat(32)}`, "https://h.example.com/%E0%A4%A/mcp",
+    // A credential-named assignment, however short its value and with no digit in it.
+    "https://h.example.com/token=shortsecret/mcp", "https://h.example.com/mcp/API_KEY:abc", "https://h.example.com/mcp;access_token=abc/sse",
   ]) assert.equal(credentialShapedPath(new URL(url)), true, url);
+  // An assignment whose name is not a credential's is not, by itself, a key.
+  assert.equal(credentialShapedPath(new URL("https://h.example.com/mcp;version=2/sse")), false);
 });
 
 test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {

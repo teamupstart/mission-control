@@ -385,7 +385,8 @@ trailing slash, asks for a new login. Every other usable global server still sta
 which presents no login and keeps the URL private: any with a header, a query value or a fragment;
 one on plain `http` to another host, because a login is a credential and travels in the clear only
 on this machine; and one whose path has a segment shaped like a key (a known key prefix such as
-`sk-`, a long token mixing letters and digits, a UUID), because such a server authenticates by
+`sk-`, a credential-named assignment such as `token=…`, a long token mixing letters and digits, a
+UUID), because such a server authenticates by
 its URL and that URL must not reach the agent. The check is deliberately wide: a false match only
 keeps a server on the launcher.
 

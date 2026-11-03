@@ -306,9 +306,9 @@ function urlCredential(text: string): string | null {
 const SECRET_KEY_PREFIX = /^(sk|pk|rk|ak|ghp|gho|ghu|ghs|github_pat|glpat|xox[abpr]|key|tok|token|secret)[-_]/i;
 
 /**
- * Whether a URL's path carries a segment shaped like a credential: a known secret-key prefix, or
- * a long token mixing letters and digits (an API key, a UUID used as a capability), or any very
- * long segment. Services that authenticate by URL put the key in the path, and such a URL must
+ * Whether a URL's path carries a segment shaped like a credential: a known secret-key prefix, a
+ * credential-named assignment (`token=…`, `api_key:…`), a long token mixing letters and digits
+ * (an API key, a UUID used as a capability), or any very long segment. Services that authenticate by URL put the key in the path, and such a URL must
  * never be copied into a configuration the agent's processes can read.
  *
  * A guard, not a proof, and deliberately wide: a false positive only keeps a server on the scoped
@@ -323,6 +323,12 @@ export function credentialShapedPath(url: URL): boolean {
       return true;
     }
     if (SECRET_KEY_PREFIX.test(segment)) return true;
+    // A credential-named assignment, whatever its value's length: `token=…`, `api_key:…`, and the
+    // same as a `;`-separated path parameter.
+    if (segment.split(";").some((part) => {
+      const pair = /^([^=:]+)[=:]./s.exec(part);
+      return pair !== null && credentialName(pair[1]!);
+    })) return true;
     if (segment.length >= 32) return true;
     return segment.length >= 16 && /[0-9]/.test(segment) && /[A-Za-z]/.test(segment);
   });

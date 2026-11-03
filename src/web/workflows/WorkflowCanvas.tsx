@@ -178,7 +178,7 @@ function isPublishedSessionAction(
   return node.kind === "session_action" && "action" in node;
 }
 
-function canvasNodes(
+export function canvasNodes(
   graph: WorkflowDraftGraph | PublishedWorkflowGraph,
   personas: readonly PersonaView[],
   sessionActions: readonly SessionAction[],

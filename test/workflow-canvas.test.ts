@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { applyNodeChanges, type NodeChange } from "@xyflow/react";
-import { minimapNodeClassName, reconcileCanvasNodes } from "../src/web/workflows/WorkflowCanvas.tsx";
+import { canvasNodes, minimapNodeClassName, reconcileCanvasNodes } from "../src/web/workflows/WorkflowCanvas.tsx";
 import type { WorkflowCanvasNode } from "../src/web/workflows/WorkflowNode.tsx";
 
 const canvasSource = readFileSync(
@@ -100,4 +100,28 @@ test("the minimap colours its nodes by class, so a skin repaints them through to
   const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
   assert.match(css, /\.react-flow__minimap-node\.workflow-minimap-node \{ fill: var\(--canvas-minimap-node\); \}/);
   assert.match(css, /\.react-flow__minimap-node\.workflow-minimap-node\.is-fail \{ fill: var\(--canvas-minimap-fail\); \}/);
+});
+
+test("a run's failed node reaches the minimap as is-fail, through the canvas projection", () => {
+  // A run hands the canvas node statuses as either a verdict ("fail") or an attempt state
+  // ("failed"); the canvas turns each into a `workflow-runtime-*` class and the minimap reads
+  // that class. Drive the whole path rather than the helper alone.
+  const graph = {
+    nodes: [
+      { id: "session", kind: "session" as const, position: { x: 0, y: 0 } },
+      { id: "judge", kind: "persona" as const, personaId: "missing", position: { x: 220, y: 0 } },
+      { id: "check", kind: "persona" as const, personaId: "missing", position: { x: 220, y: 120 } },
+      { id: "end", kind: "end" as const, outcome: "Approved", position: { x: 440, y: 0 } },
+    ],
+    edges: [],
+  };
+  const statuses = { judge: "fail", check: "failed", end: "completed" };
+  const nodes = canvasNodes(graph, [], [], true, statuses, null, null);
+  const minimap = Object.fromEntries(nodes.map((n) => [n.id, minimapNodeClassName(n)]));
+  assert.deepEqual(minimap, {
+    session: "workflow-minimap-node",
+    judge: "workflow-minimap-node is-fail",
+    check: "workflow-minimap-node is-fail",
+    end: "workflow-minimap-node",
+  });
 });

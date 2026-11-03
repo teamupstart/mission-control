@@ -510,6 +510,25 @@ The app marks itself as quitting before the quit request, so the hide-on-close g
 normally. The helper checks competing launchers and waits for all bundle executables to exit
 before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
+Every quit, including the one an update requests, holds the app open until the daemon and
+Foreman have finished their own shutdown, for up to 30 seconds. The app sends them a plain
+`SIGTERM` rather than calling `UtilityProcess.kill()`, which force-kills a utility process about
+two seconds later. The daemon's shutdown is where workflow checks are cancelled and their leases
+released. Checks run detached from the app's own executable, so a check that outlived a cut-short
+shutdown kept the bundle busy until the update rolled back. If the bundle-exit wait still times
+out, the rollback outcome names each blocking pid and its cause, for example
+`pid 4321 (a workflow check whose parent already exited is still running)`. To find a check, the
+helper reads the process's command line only to match the supervisor marker. It never prints
+the command line.
+
+If the app is opened normally while an update helper still owns the transaction, it posts the
+notification "Mission Control is installing an update. It will reopen on its own when the update
+finishes." and exits. It doesn't throw a recovery error or wait for the helper. If notifications
+are unavailable, the post fails, or macOS doesn't confirm it within 2 seconds, the same text
+appears in a small "Update in progress" window that closes itself after 8 seconds. Before the
+swap, the helper is waiting for that same bundle to exit, so a modal dialog, which macOS can't
+close on a timer, or a wait would stall the update until it rolled back.
+
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
@@ -556,8 +575,14 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
+attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,

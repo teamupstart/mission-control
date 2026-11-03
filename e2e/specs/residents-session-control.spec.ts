@@ -160,7 +160,10 @@ test("a resident launched from the standalone browser starts without session con
   await dock.getByRole("button", { name: `Launch ${PROFILE}` }).click();
   await expect(dock.getByRole("status").filter({ hasText: "Started without session control" })).toBeVisible({ timeout: 60_000 });
   await idleResident(daemon, 2);
-  await expect(dock.getByRole("status").filter({ hasText: "control not granted" })).toHaveCount(2);
+  // Each live card's footer badge: one word, named by the band's full sentence.
+  const badges = dock.getByRole("status", { name: "control not granted", exact: true });
+  await expect(badges).toHaveCount(2);
+  await expect(badges).toHaveText(["No control", "No control"]);
   await capture(dashboard, "04-dock-control-not-granted");
   for (const session of await residentSessions(daemon)) expect(session.sessionControlEnabled).toBe(false);
 });
@@ -250,6 +253,15 @@ test("a desktop Launch click grants the resident session control, and a daemon r
     const toolbarControl = dashboard.locator(".console-detail").getByRole("button", { name: "Session control: On" });
     await expect(toolbarControl).toBeVisible();
     await capture(dashboard, "06-band-control-granted");
+    // The dock's live card reads the same grant on its footer badge, with no menu beside it.
+    await dashboard.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
+    const dock = dashboard.getByRole("dialog", { name: "Residents", exact: true });
+    await expect(dock.getByRole("status", { name: "control granted", exact: true })).toHaveText("Control");
+    await expect(dock.getByRole("button", { name: "Session control: Off" })).toHaveCount(0);
+    await dashboard.mouse.move(0, 0);
+    await capture(dock, "06b-dock-control-granted");
+    await dashboard.keyboard.press("Escape");
+    await expect(dock).toBeHidden();
 
     // Restart the daemon. The same conversation comes back through SDK restore, and its grant with it.
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());

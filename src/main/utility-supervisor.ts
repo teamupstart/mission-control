@@ -8,11 +8,17 @@ import {
 } from "./utility-log.ts";
 import {
   forkAndInitializeUtilityProcess,
+  stopChild,
   UtilityProcessInitializationError,
 } from "./utility-process-start.ts";
 
 export interface UtilityProcessController {
-  stop(): void;
+  /**
+   * Stop supervising and ask the current process to leave (`SIGTERM` on POSIX). Resolves when
+   * that process has exited, so an owner can hold the app open until the child's own orderly
+   * shutdown has run. Unbounded here on purpose: how long to wait is the owner's decision.
+   */
+  stop(): Promise<void>;
 }
 
 export interface UtilityProcessOptions {
@@ -35,6 +41,9 @@ export interface UtilityProcessOptions {
  */
 export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityProcessController {
   let child: UtilityProcess | null = null;
+  // Settles when `child` exits. Created in the same synchronous initialization that assigns
+  // `child`, so a stop can never observe a live child paired with an earlier child's promise.
+  let childExit: Promise<void> = Promise.resolve();
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   let restarts = 0;
@@ -68,6 +77,7 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
           }),
         (spawned) => {
           child = spawned;
+          childExit = new Promise<void>((resolve) => spawned.once("exit", () => resolve()));
           attachUtilityProcessOutput(spawned, log, opts.captureChildOutput);
           spawned.once("exit", (code) => {
             child = null;
@@ -105,11 +115,13 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
   spawn();
   return {
     stop() {
-      if (stopped) return;
-      stopped = true;
-      if (restartTimer) clearTimeout(restartTimer);
-      restartTimer = null;
-      child?.kill();
+      if (!stopped) {
+        stopped = true;
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = null;
+        stopChild(child);
+      }
+      return child ? childExit : Promise.resolve();
     },
   };
 }

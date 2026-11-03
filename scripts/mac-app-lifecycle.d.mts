@@ -25,6 +25,7 @@ export function inspectAppLaunches(bundles: string[], ops?: MacAppOps, timeout?:
 export function launchConflictMessage(conflicts: {jobs: string[]; unregistered: number[]}, uid: number): string | null;
 export function assertSafeAppLaunch(bundle: string, ops?: MacAppOps, timeout?: number): Promise<void>;
 export function assertSafeAppLaunches(bundles: string[], ops?: MacAppOps, timeout?: number): Promise<void>;
+export const BUNDLE_HOLDERS_NAMED: number;
 export function waitForBundleExit(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function prepareAppLaunch(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function verifyAppLaunch(bundle: string, nonce: string, ops: MacAppOps, timeout?: number): Promise<void>;

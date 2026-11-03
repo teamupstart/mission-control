@@ -2878,7 +2878,7 @@ for (const sameId of [true, false]) for (const leadCaptured of [false, true]) fo
       const { store, noteKey, binding, runId } = fixture(checkout);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-sibling-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       writeFileSync(join(checkout, "proof.log"), "shared proof");
       const original = { id: `${runId}-original`, clientCriterionId: "claim", criterion: "The result works",
         criterionId: "canonical-x", proofClass: "focused_execution" as const, repositoryScope: "all" as const,
@@ -2961,7 +2961,7 @@ for (const replacementScope of ["repo-01", "all"] as const) for (const aliasBind
       const { store, noteKey, binding, runId } = fixture(bindingRoot);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-sibling-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       const canonicalCriteria = [{ id: "canonical-x", text: "The result works", material: true, suggestedProofClass: null }];
       const proof = (clientItemId: string, root = checkout) => {
         writeFileSync(join(root, `${clientItemId}.log`), clientItemId);
@@ -3056,7 +3056,7 @@ for (const oldScope of ["repo-01", "all"] as const) for (const captured of [fals
       const { store, noteKey, binding, runId } = fixture(checkout);
       const sibling = store.insertBinding({ ...binding, id: `${binding.id}-sibling`, noteKey,
         sessionId: `${runId}-session`, sessionAgent: "codex", sessionName: "sibling",
-        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: siblingRoot, now: 1 });
+        sessionCwd: siblingRoot, sessionRepoRoot: siblingRoot, repoRoot: `${siblingRoot}-canonical`, now: 1 });
       const canonicalCriteria = [{ id: "canonical-x", text: "The result works", material: true, suggestedProofClass: null }];
       const old = { id: `${runId}-old`, clientCriterionId: "old", criterion: "The result works", criterionId: "canonical-x",
         proofClass: "focused_execution" as const, repositoryScope: oldScope, sourceRoot: checkout,

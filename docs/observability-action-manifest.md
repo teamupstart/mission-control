@@ -159,6 +159,7 @@ Each public callable below either reaches the method-specific owner above, reads
 | [`api.pushTaskToSource`](../src/web/lib/api.ts#L1900) | `/api/tasks/:id/push` |
 | [`api.setForemanConfig`](../src/web/lib/api.ts#L1904) | `/api/foreman/config` |
 | [`api.retryForemanPlanner`](../src/web/lib/api.ts#L1905) | `/api/foreman/planner/retry` |
+| [`api.dismissForemanErrors`](../src/web/lib/api.ts#L2006) | `/api/foreman/health/dismiss` |
 | [`api.setSkillsConfig`](../src/web/lib/api.ts#L1906) | `/api/skills/config` |
 | [`api.setHarnessesConfig`](../src/web/lib/api.ts#L1909) | `/api/harnesses/config` |
 | [`api.setTerminalsConfig`](../src/web/lib/api.ts#L1911) | `/api/terminals/config` |

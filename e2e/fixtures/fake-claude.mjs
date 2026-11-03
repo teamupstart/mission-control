@@ -255,6 +255,21 @@ const TOOL_TURN = "E2E_OBSERVED_TOOLS";
  * is a fold that never had to decide anything.
  */
 const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
+/**
+ * The prompt that leaves three calls to Claude's server-side advisor in the transcript, in
+ * the record shape a real Claude Code 2.1.317 turn writes (captured, sanitized, in
+ * `test/fixtures/claude-advisor/transcript.jsonl`): each content block is its own assistant
+ * record, every record of the turn carries a top-level `advisorModel`, and each call is a
+ * `server_tool_use` named `advisor` followed by an `advisor_tool_result`.
+ *
+ * The three results are the three shapes a reader has to tell apart: advice with words
+ * (`advisor_result`), the encrypted result the capture actually returned
+ * (`advisor_redacted_result`), and an error (`advisor_tool_result_error`). Phase 2 of the
+ * advisor plan relies on this output; extend it, do not change it.
+ */
+const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+const ADVISOR_MODEL = "claude-opus-5-5";
+const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (process.env.MC_E2E_RESUME_TOOLS === "1" && RESUME_ID && !process.argv.includes("--output-format")) {
@@ -822,7 +837,7 @@ const resumedRecordCount = resumedTranscript
   ? readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean).length
   : 0;
 let turn = resumedRecordCount;
-function appendTurn(role, content) {
+function appendTurn(role, content, record = {}) {
   turn += 1;
   const runtime = role === "assistant"
     ? {
@@ -850,6 +865,7 @@ function appendTurn(role, content) {
       // Top level, beside the record's own type - not inside `message`, where the model and
       // usage live. That is where the real CLI puts it, and where the daemon reads it.
       ...(role === "assistant" ? { effort } : {}),
+      ...record,
       message: { role, content, ...runtime },
     })}\n`,
   );
@@ -1210,10 +1226,10 @@ function turnUsage() {
  * One `result` however many prompts the turn took in, because that is the vendor's shape:
  * `result` means the CLI stopped, not that one message was retired.
  */
-function answer(prompts) {
+function answer(prompts, record = {}) {
   for (const prompt of prompts) {
     const text = replyTo(prompt);
-    appendTurn("assistant", [{ type: "text", text }]);
+    appendTurn("assistant", [{ type: "text", text }], record);
     emit({
       type: "assistant",
       session_id: SESSION_ID,
@@ -1440,10 +1456,19 @@ rl.on("line", (line) => {
     }
     // The configured MCP servers, as the real CLI reports them: what `--mcp-config` named. A
     // resident launch checks this against its snapshot, so answering with the argv keeps that
-    // check exercised without starting any server.
+    // check exercised without starting any server. A remote server on a `needs-login.` host
+    // stands for one behind an OAuth login Claude Code holds no usable token for, which the real
+    // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
+    // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
+    // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
-      ok(frame.request_id, { mcpServers: Object.keys(configured).map((name) => ({ name, status: "connected" })) });
+      const status = (server) => {
+        if (server?.url === undefined) return { status: "connected" };
+        if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
+        return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
+      };
+      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
@@ -1578,6 +1603,24 @@ rl.on("line", (line) => {
         { type: "tool_use", id: `run-${turn}-c`, name: "Read", input: { file_path: "src/server/registry.ts" } },
       ]);
       answer([prompt]);
+      return;
+    }
+
+    // Three advisor calls, then the echoed reply, all stamped with the advisor model as the
+    // real CLI stamps every record of an advisor-enabled request. See `ADVISOR_TURN`.
+    if (prompt === ADVISOR_TURN) {
+      const stamped = { advisorModel: ADVISOR_MODEL };
+      const advisorResults = [
+        { type: "advisor_result", text: ADVISOR_TEXT },
+        { type: "advisor_redacted_result", encrypted_content: "ENCRYPTED_CONTENT_REMOVED_FOR_FIXTURE" },
+        { type: "advisor_tool_result_error", error_code: "overloaded" },
+      ];
+      advisorResults.forEach((content, call) => {
+        const id = `srvtoolu_e2e_${turn}_${call}`;
+        appendTurn("assistant", [{ type: "server_tool_use", id, name: "advisor", input: {} }], stamped);
+        appendTurn("assistant", [{ type: "advisor_tool_result", tool_use_id: id, content }], stamped);
+      });
+      answer([prompt], stamped);
       return;
     }
 

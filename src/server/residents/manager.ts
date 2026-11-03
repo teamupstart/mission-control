@@ -914,10 +914,17 @@ export class ResidentManager {
 
   private endRunForTask(taskId: string): void {
     const stored = residentRunForTask(taskId);
-    if (stored && stored.run.launchState === "launched" && stored.run.endedAt === null) {
-      if (endResidentRun(stored.run.id, this.now())) this.publishRun(stored.run.id);
-      this.cleanupEndedWorkspaces();
-    }
+    if (stored && stored.run.launchState === "launched" && stored.run.endedAt === null) this.endRun(stored.run.id);
+  }
+
+  /**
+   * End one launched run while its task and session stay open - Restart on new profile, which
+   * leaves completing the replaced session to the operator. The run stops waking at once; its
+   * private workspace and MCP state wait, as always, until its runtime has stopped.
+   */
+  endRun(runId: string): void {
+    if (endResidentRun(runId, this.now())) this.publishRun(runId);
+    void this.cleanupEndedWorkspaces();
   }
 
   /** End every launched run whose task has settled or gone. */

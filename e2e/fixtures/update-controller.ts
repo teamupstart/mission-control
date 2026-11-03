@@ -1,8 +1,9 @@
 import type { Page } from "@playwright/test";
 import type { UpdateController } from "../../src/main/updater.ts";
-import type { UpdateSnapshot } from "../../src/shared/update.ts";
+import type { UpdateApplyOutcome, UpdateSnapshot } from "../../src/shared/update.ts";
 
 export async function connectUpdateController(page: Page, controller: UpdateController, managedBinary = false): Promise<() => void> {
+  await page.exposeFunction("dismissUpdateOutcome", (outcome: UpdateApplyOutcome) => controller.dismissOutcome(outcome));
   await page.exposeFunction("binaryUpdateCommand", async (command: string, alpha?: boolean) => {
     if (command === "check") await controller.check(true);
     if (command === "apply") await controller.apply();
@@ -27,7 +28,7 @@ export async function connectUpdateController(page: Page, controller: UpdateCont
     Object.defineProperty(window, "missionDesktop", {value: {
       isDesktop: true, onOpenSettings: () => () => {},
       ...(binary ? {binaryInstallation: {getState: async () => ({action: null, destination: "/Applications/Mission Control.app", message: "This destination is already managed."})}} : {}),
-      updates: {getState: () => command("state"), check: () => command("check"), apply: () => command("apply"),
+      updates: {dismissOutcome: (outcome: UpdateApplyOutcome) => (window as unknown as {dismissUpdateOutcome(outcome: UpdateApplyOutcome): Promise<boolean>}).dismissUpdateOutcome(outcome), getState: () => command("state"), check: () => command("check"), apply: () => command("apply"),
         install: () => command("install"), cancel: () => command("cancel"), defer: () => command("defer"), setAlpha: (alpha: boolean) => command("alpha", alpha),
         onState: (listener: (value: UpdateSnapshot) => void) => {listeners.add(listener); return () => listeners.delete(listener);},
         onDialog: (listener: (request: unknown) => void) => {dialogs.add(listener); return () => dialogs.delete(listener);},

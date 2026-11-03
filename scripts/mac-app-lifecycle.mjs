@@ -5,6 +5,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
+import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -523,13 +524,55 @@ async function poll(ops, timeout, check, message) {
   throw new Error(typeof message === "function" ? message() : message);
 }
 
+/**
+ * Why one process still inside the bundle is there, in words a person can act on.
+ *
+ * The command line is READ only to recognise the workflow-check supervisor marker and is never
+ * returned: the file header's rule against printing command lines still holds, and this text
+ * reaches update.log and the outcome dialog. An unreadable command line falls back to what the
+ * executable path alone can say.
+ */
+async function describeBundleHolder(row, bundle, ops) {
+  if (isMain(row.executable, bundle)) return `pid ${row.pid} (the Mission Control app is still running)`;
+  let args = "";
+  try {
+    const result = await ops.run("/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="], COMMAND_TIMEOUT_MS);
+    if (result.code === 0) args = result.stdout;
+  } catch { /* The executable still identifies a helper below. */ }
+  const orphaned = row.ppid === 1 ? " whose parent already exited" : "";
+  if (args.includes(CHECK_SUPERVISOR_MARKER)) return `pid ${row.pid} (a workflow check${orphaned} is still running)`;
+  return `pid ${row.pid} (${basename(row.executable)}${orphaned} is still running)`;
+}
+
+/**
+ * Wait until nothing executes from `bundle`. A timeout names each blocking pid and its cause.
+ *
+ * The cause is worked out once, after the deadline, so the steady-state wait still costs one
+ * `ps` per tick. A probe that failed is rethrown as itself: it says nothing about who holds the
+ * bundle, and labelling it with the previous tick's processes would blame the wrong thing.
+ */
 export async function waitForBundleExit(bundle, ops, timeout = 120_000) {
   let remaining = [];
-  await poll(ops, timeout, async (budget) => {
-    remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
-    return remaining.length === 0;
-  }, () => `Mission Control bundle processes did not exit: ${remaining.map((row) => row.pid).join(", ")}. Close them before retrying; no further bundle replacement is safe while they remain.`);
+  let timedOut = false;
+  try {
+    await poll(ops, timeout, async (budget) => {
+      remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
+      return remaining.length === 0;
+    }, () => { timedOut = true; return "Mission Control bundle processes did not exit."; });
+  } catch (error) {
+    if (!timedOut || !remaining.length) throw error;
+    // Named holders are capped so the whole sentence - every named pid and the advice - fits
+    // the 500-character redaction bound the rollback outcome applies. Described in parallel so
+    // each extra holder does not add a command timeout to an already-late failure.
+    const named = remaining.slice(0, BUNDLE_HOLDERS_NAMED);
+    const holders = await Promise.all(named.map((row) => describeBundleHolder(row, bundle, ops)));
+    const more = remaining.length - named.length;
+    throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}${more ? `; and ${more} more` : ""}. Close them before retrying; no further bundle replacement is safe while they remain.`);
+  }
 }
+
+/** How many blocking processes a bundle-exit timeout describes by name. */
+export const BUNDLE_HOLDERS_NAMED = 3;
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
   await read(ops, LSREGISTER, ["-f", bundle], timeout);

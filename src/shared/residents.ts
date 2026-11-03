@@ -25,6 +25,12 @@ import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
 export const RESIDENT_OPERATOR_PAUSE_REASON = "Paused by operator";
+/**
+ * The pause reason Restart on new profile records on the run it ends. Durable proof that the
+ * run was ended by a restart, which both an interrupted restart's retry and the replaced task's
+ * `residentRestart` record read back.
+ */
+export const RESIDENT_RESTART_PAUSE_REASON = "Restarting on new profile";
 
 /**
  * The harnesses a resident may run on, in picker order.
@@ -522,6 +528,11 @@ export interface ResidentRunSummary extends ResidentLoopStatus {
   /** The pinned revision's `RESIDENT_RUN_SUMMARY_SECTIONS`, never the profile's current one. */
   settings: ResidentRunSummarySettings;
   createdAt: number;
+}
+
+/** The launch request id Restart on new profile uses: one replacement per replaced run. */
+export function residentRestartRequestId(runId: string): string {
+  return `resident-restart:${runId}`;
 }
 
 /** Project a pinned revision to the sections a run summary carries. */

@@ -1340,7 +1340,9 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
     ...(claude.timeoutMs !== undefined ? { timeout: claude.timeoutMs } : {}),
     ...(claude.alwaysLoad !== undefined ? { alwaysLoad: claude.alwaysLoad } : {}),
   };
-  if (entry.shape === "http") return { type: "http", url: entry.url, headers: entry.headers, ...options };
+  // Type, URL and headers exactly as configured, `{}` included: Claude Code keys a stored OAuth
+  // login by the name and a hash of these three, so this is how a resident finds the operator's.
+  if (entry.shape === "http") return { type: entry.transport, url: entry.url, headers: entry.headers, ...options };
   return { type: "stdio", command: entry.command, args: entry.args, env: entry.env, ...options };
 }
 
@@ -1376,8 +1378,13 @@ const RESIDENT_MCP_POLL_MS = 200;
 /**
  * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
  * the set must be configured and must not have failed, be switched off, or wait on a login: a
- * resident never runs silently without one of its servers. A remote server behind an OAuth login
- * Claude Code holds lands here as failed, because the launcher's bridge cannot present that login.
+ * resident never runs silently without one of its servers.
+ *
+ * A remote server Claude Code connects to itself presents the operator's stored OAuth login. With
+ * no usable login - never signed in, or a token it could not refresh - Claude reports it
+ * `needs-auth` (measured on Claude Code 2.1.317), and caches that verdict by server name alone, so
+ * a later start may report it again without trying. A server behind a login that is reached through the
+ * launcher's bridge instead is reported `failed`, because the bridge cannot present one.
  */
 function residentMcpStatusProblem(
   statuses: ReadonlyArray<{ name: string; status: string }>,
@@ -1390,7 +1397,9 @@ function residentMcpStatusProblem(
     const state = reported.get(name);
     if (state === undefined) return `did not configure its MCP server ${name}`;
     if (state === "disabled") return `has its MCP server ${name} switched off`;
-    if (state === "needs-auth") return `cannot use its MCP server ${name}, which needs a login a resident cannot present`;
+    if (state === "needs-auth") {
+      return `cannot use its MCP server ${name}, which needs a login Claude Code does not have or could not refresh; sign in to ${name} with /mcp in Claude Code, then launch again`;
+    }
     if (state === "failed") return `could not connect to its MCP server ${name}`;
   }
   return null;

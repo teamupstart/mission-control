@@ -2124,6 +2124,12 @@ touches the other. Each run's own head-mismatch and fresh-observation machinery 
 and asks for a resubmission, and the per-pull-request merge verdict is the backstop that
 keeps anything stale from merging.
 
+When a sibling repository owns the conversation's turn, Runs names the holding repository,
+run and condition, such as waiting for evidence readiness. The packet stays prepared until
+that run releases the conversation. See the
+[per-repository binding contract](agent-guides/change-contracts.md#one-workflow-run-is-one-repository)
+for evidence-routing and automatic capture-repair admission rules.
+
 ### Runs Mission Control started for itself
 
 Almost every run is one an operator submitted. A run can also be started by Mission Control

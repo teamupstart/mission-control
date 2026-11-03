@@ -56,7 +56,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
-import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
+import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -341,6 +341,7 @@ import {
   getForemanConfig,
   recordForemanPlannerHealth,
   recordForemanHealth,
+  dismissForemanHealthIssues,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -6841,6 +6842,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return c.json({ ok: true });
   });
+  // The operator's acknowledgement. Filters the projection only; the worker's report is kept.
+  app.post("/api/foreman/health/dismiss", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ dismissed: dismissForemanHealthIssues(parsed.data.issues) });
+  });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
   app.get("/api/foreman/planner/control", (c) => c.json(foremanPlannerControl()));
@@ -8362,7 +8369,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ ok: true, task: filed });
   }
 
-  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);

@@ -120,17 +120,24 @@ test("the band says control granted, or control not granted beside the existing 
   assert.match(renderToStaticMarkup(createElement(ResidentBand, { mark: off, session: session(true) })), />control granted</);
 });
 
-test("the dock's live row carries the same status and menu", () => {
-  const html = renderToStaticMarkup(createElement(ResidentsDock, {
+test("the dock's live card carries the same status, as a footer badge, beside the same menu", () => {
+  const dock = (granted: boolean) => renderToStaticMarkup(createElement(ResidentsDock, {
     runs: [run(true)],
     profiles: [],
-    sessions: [session(false)],
+    sessions: [session(granted)],
     defaultOpen: true,
     onOpenSession: () => {},
     onOpenLaunch: () => {},
     onManage: () => {},
   }));
-  assert.match(html, /class="residents-pop-control"/);
-  assert.match(html, />control not granted</);
-  assert.match(html, /aria-label="Session control: Off"/);
+  const notGranted = dock(false);
+  assert.match(notGranted, /class="residents-pop-card-foot"/);
+  // One word on the badge; the band's full sentence is still what assistive tech hears.
+  assert.match(notGranted, /class="resident-control is-badge"/);
+  assert.match(notGranted, /aria-label="control not granted"[^>]*>.*No control</);
+  assert.match(notGranted, /aria-label="Session control: Off"/, "the existing session control menu");
+  const granted = dock(true);
+  assert.match(granted, /class="resident-control is-granted is-badge"/);
+  assert.match(granted, /aria-label="control granted"[^>]*>.*Control</);
+  assert.doesNotMatch(granted, /Session control: Off/);
 });

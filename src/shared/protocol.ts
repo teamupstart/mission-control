@@ -3524,6 +3524,8 @@ export const UI_CONFIG_DEFAULTS = {
    * the board spent those pixels on the columns that hold sessions.
    */
   showEmptyColumnStash: true,
+  /** Show every state group in the Board drill-in sidebar. */
+  boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
   /**
@@ -3681,6 +3683,7 @@ export const UiConfigSchema = z.object({
    * something needs you.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
+  boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *

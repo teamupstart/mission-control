@@ -60,6 +60,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.guidedTour, true);
   // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
   assert.equal(config.showEmptyColumnStash, true);
+  assert.equal(config.boardSidebarAllSessions, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -100,6 +101,7 @@ test("a written cache round-trips", () => {
     groupBoardByRepo: false,
     // FALSE for the same reason: it defaults to true.
     showEmptyColumnStash: false,
+    boardSidebarAllSessions: true,
     // Non-empty for the same reason: an empty list is the default, so only a fold that
     // survives the cache proves the field is copied at all.
     collapsedBoardColumns: ["backlog", "attention"],
@@ -125,6 +127,7 @@ test("a written cache round-trips", () => {
   assert.deepEqual(config.hiddenDisplayItems, ["cost"]);
   assert.equal(config.groupBoardByRepo, false);
   assert.equal(config.showEmptyColumnStash, false);
+  assert.equal(config.boardSidebarAllSessions, true);
   assert.deepEqual(config.collapsedBoardColumns, ["backlog", "attention"]);
   assert.deepEqual(config.hiddenTopbarItems, ["cost", "feedback"]);
   assert.deepEqual(config.compactTopbarItems, ["fleet", "foreman"]);

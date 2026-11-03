@@ -73,6 +73,11 @@ than by the checkout path used to reach it. Released slot directories remain in 
 dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
+The allocator serializes new Git worktree creation within each repository. Distinct slot
+paths still share Git registration metadata, and a concurrent creation can see a registration
+before its `commondir` file exists. Slot reservations remain short; resets and setup commands
+do not hold this creation lock.
+
 A slot never crosses a task boundary holding a branch. Reset detaches the checkout at the exact
 requested commit before it hard-resets and cleans, and both state transitions that hand a slot on
 - finalizing a lease and marking a returned slot available - independently prove path, repository,

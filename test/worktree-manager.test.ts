@@ -245,7 +245,21 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
 
 test("concurrent acquires receive different exact slots and respect capacity", async () => {
   const { clone, sha } = repository("mission-native-concurrent-");
+  let activeAdds = 0;
+  let peakAdds = 0;
+  class ObservedAddGit extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>): Promise<GitResult<void>> {
+      activeAdds++;
+      peakAdds = Math.max(peakAdds, activeAdds);
+      try {
+        return await super.add(...args);
+      } finally {
+        activeAdds--;
+      }
+    }
+  }
   const m = manager({
+    git: new ObservedAddGit(),
     resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
   });
   const results = await Promise.all([
@@ -253,6 +267,9 @@ test("concurrent acquires receive different exact slots and respect capacity", a
     acquire(m, clone, sha, "task-2"),
     acquire(m, clone, sha, "task-3"),
   ]);
+  // Distinct slot paths still share Git's worktrees metadata. A second add can read
+  // the first registration before its commondir file exists, so creation must serialize.
+  assert.equal(peakAdds, 1, "same-repository Git worktree adds must not overlap");
   const acquired = results.filter((result) => result.outcome === "acquired");
   // The refusals are named in the message, not just counted. This case failed once under a
   // loaded full-suite run with a bare `1 !== 2`, which says nothing about WHY a second slot

@@ -1,3 +1,4 @@
+import { useTourTargetRef } from "../../tour/target-context.tsx";
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { provisioningTasks } from "@shared/session.ts";
@@ -43,7 +44,10 @@ import {
  * shortcuts drive. Nothing selected means nothing to send into, so the pane says so
  * rather than silently swallowing a keystroke.
  */
-export function ConsoleView(props: SessionViewProps): React.JSX.Element {
+export function ConsoleView(props: SessionViewProps & {
+  onBackToBoard?: () => void;
+}): React.JSX.Element {
+  const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
   // The one fleet ordering, so the rail's rows come out in the order the arrow keys walk and
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
@@ -156,6 +160,16 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
         aria-label="Sessions"
         onFocusCapture={() => props.onConsoleZoneChange("rail")}
       >
+        {props.onBackToBoard && (
+          <header className="board-col-head">
+            <Tooltip label="Back to the board (Esc)">
+              <button className="board-back" aria-label="Back to the board" onClick={props.onBackToBoard}>
+                ‹
+              </button>
+            </Tooltip>
+            <h2>All sessions</h2>
+          </header>
+        )}
         {groups.map((g) => (
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
@@ -232,6 +246,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       </nav>
 
       <section
+        ref={active && props.onBackToBoard ? detailTourRef : undefined}
+        aria-label={active && props.onBackToBoard ? "Session detail workspace" : undefined}
         className="console-detail"
         onFocusCapture={() => props.onConsoleZoneChange("detail")}
       >

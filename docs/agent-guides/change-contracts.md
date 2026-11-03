@@ -1119,6 +1119,11 @@ Hook event vocabularies have one owner per harness. Launch-scoped Codex hooks an
 
 The two layouts are `console` and `board`. `App.tsx` owns session state; layouts arrange it.
 
+The optional `boardSidebarAllSessions` UI preference reuses `ConsoleView` for the Board's
+open detail, with a back control. Board still owns selection and dismissal; its overview and
+backlog remain unchanged. While that rail is open, vertical keyboard navigation uses the
+Console ordering across state groups. The setting is offered only with Board selected.
+
 A session appears in three components:
 
 - `layouts/ConsoleDetail.tsx`

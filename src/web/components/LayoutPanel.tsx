@@ -49,7 +49,7 @@ export function LayoutPanel({
   layout: LayoutMode;
   onLayoutChange: (mode: LayoutMode) => void;
 }): React.JSX.Element {
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash: showStash } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash: showStash, boardSidebarAllSessions } = useUiConfig();
   return (
     <section className="settings-section">
       <div className="settings-section-head">
@@ -137,6 +137,32 @@ export function LayoutPanel({
         you are looking at. Headings fold away for as long as you are looking at the board; that
         is a gesture rather than a setting, so it is not remembered.
       </p>
+
+      {layout === "board" && (
+        <>
+          <h4 className="settings-subhead">Board view settings</h4>
+          <label className={`settings-toggle${boardSidebarAllSessions ? " is-on" : ""}`}>
+            <Tooltip label={boardSidebarAllSessions
+              ? "Show only the selected session's state group"
+              : "Show sessions from every state in the Board sidebar"}>
+              <input
+                type="checkbox"
+                aria-label="Show all sessions in sidebar"
+                checked={boardSidebarAllSessions}
+                onChange={(e) => void updateUiConfig({ boardSidebarAllSessions: e.target.checked })}
+              />
+            </Tooltip>
+            <span className="settings-toggle-text">
+              <span className="settings-toggle-label">Show all sessions in sidebar</span>
+              <span className="settings-toggle-desc">
+                When a session is open, show sessions from every state grouped in the sidebar.
+                Backlog tasks stay on the board. Turn this off to show only the selected
+                session's state group.
+              </span>
+            </span>
+          </label>
+        </>
+      )}
 
       {/* Here for Grouping's reason: which columns the Board draws is arrangement, not a fact
           on a card. Named explicitly for the same accessible-name reason as the checkbox above. */}

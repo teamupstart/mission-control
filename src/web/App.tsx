@@ -2374,7 +2374,8 @@ export function App(): React.JSX.Element {
   // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
-  const collapsedColumns = useUiConfig().collapsedBoardColumns;
+  const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  const allSessionsRail = layout === "board" && boardOpen && boardSidebarAllSessions;
   const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
@@ -3375,7 +3376,7 @@ export function App(): React.JSX.Element {
             if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
-            mode: layout,
+            mode: allSessionsRail ? "console" : layout,
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
@@ -3385,7 +3386,7 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console") focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
@@ -3640,7 +3641,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

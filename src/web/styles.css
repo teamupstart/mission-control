@@ -26992,6 +26992,9 @@ span.line-run-prov {
   grid-template-columns: minmax(260px, 340px) 1fr;
   overflow: hidden;
 }
+.board-all-sessions > .console {
+  min-width: 0;
+}
 .console-rail {
   overflow-y: auto;
   border-right: 1px solid var(--border-soft);

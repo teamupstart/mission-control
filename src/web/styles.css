@@ -126,6 +126,93 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* ---- Role tokens: chrome below `:root` paints with these or a token above ----
+     Each value is exactly the literal it replaced, so the default look is unchanged. Roles
+     may share a default (several are #fff) and a skin can still tell them apart. A skin
+     repaints the app by overriding tokens alone, and `style-literals.test.ts` fails the
+     moment a raw colour reappears outside this block, bar the few non-chrome exceptions it
+     lists with their reasons. Name a new one for its role, never its hue: a skin will give
+     it a different hue.
+     Where an rgba() literal became `color-mix(..., transparent)`, its strength is written
+     `calc(n / 255 * 100%)`: a legacy rgba() alpha is rounded to 8 bits and color-mix() keeps
+     the float, so a plain percentage would move those pixels by a step. A gradient with
+     such a stop also says `in srgb`, the space a legacy stop interpolated in. New rules can
+     use plain percentages. */
+
+  /* The colour drop shadows and dark scrims are cast in, always used as a `color-mix()`
+     with `transparent` at the strength each surface needs. A skin may make it translucent
+     to soften every shadow at once. */
+  --shadow-ink: #000;
+  /* The near-black tint of a modal backdrop. */
+  --scrim-ink: #040609;
+  /* The colour a sheen or a lifted fill is mixed toward: progress stripes, an inset rim,
+     the hover step of a solid amber button. Stays light even where text goes dark. */
+  --highlight-ink: #fff;
+
+  /* Text one step louder than --fg: a hovered link, the active menu or combobox row. */
+  --fg-strong: #fff;
+  /* Text on a solid accent fill - the primary, approve and destructive buttons. */
+  --on-accent: #fff;
+  /* Dark text on a solid --attention fill (the persona-directive save). */
+  --on-attention: #1d1305;
+  /* Dark text on the deepened amber of a "wait" button. */
+  --on-wait: #1a1206;
+  /* Dark text on a solid --find highlight. */
+  --on-find: #10130a;
+  /* The tick on a solid --select checkbox. */
+  --on-select: #06140e;
+  /* The inks a solid tone is deepened with, so the button sits back until hovered. */
+  --working-deep: #1b2a44;
+  --attention-deep: #402c07;
+
+  /* The failure family, each a step off --danger. Soft is error and failed-status text;
+     muted is the base failure fills and tints are mixed from; text is inline danger text on
+     a panel; bright is a failed or blocked workflow member in a tile peek. */
+  --danger-soft: #e5877f;
+  --danger-muted: #e5534b;
+  --danger-text: #e5675f;
+  --danger-bright: #ff7b72;
+  /* A solid destructive button, at rest and hovered. */
+  --danger-fill: #c8352c;
+  --danger-fill-hover: #d94840;
+  /* A solid approve button, at rest and hovered. */
+  --approve-fill: #2f9e63;
+  --approve-fill-hover: #37b171;
+  /* Removed lines in a diff, and the removed-line count in a diff's stats. */
+  --diff-del: #ef5f63;
+  --diff-del-count: #e5695f;
+
+  /* A workflow session action and a completed edge - neither a judge nor a pass. */
+  --wf-action: #a878ff;
+  /* A valid workflow and its End node. */
+  --wf-success: #42c977;
+
+  /* The two glows the app backdrop is lit with, top right and top left. */
+  --backdrop-glow-right: #12202f;
+  --backdrop-glow-left: #1a1424;
+  /* One step above --border, for a rail that must stay visible on --panel-2. */
+  --border-strong: #2f3742;
+  /* The context menu's surface, a step under --panel so it separates from what it covers. */
+  --panel-deep: color-mix(in oklab, var(--panel) 94%, #000);
+
+  /* The dropdown chevron, stroked in --muted. A data URI cannot read a custom property, so
+     a skin that changes --muted restates this image with its own stroke colour. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939eae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  /* The workflow canvas. React Flow paints its own chrome from `--xy-*` variables whose
+     shipped defaults are its light theme; `.workflow-canvas` routes each through these, so
+     these values are React Flow's defaults and a skin can repaint the canvas like the rest. */
+  --canvas-dot: #91919a;
+  --canvas-edge: #b1b1b7;
+  --canvas-edge-selected: #555;
+  /* The fill behind an edge label, the ring around a port, the attribution tag. */
+  --canvas-chip: #fff;
+  --canvas-handle: #1a192b;
+  --canvas-selection: #0059dc;
+  --canvas-minimap-mask: rgb(240 240 240 / 60%);
+  --canvas-minimap-node: #76849b;
+  --canvas-minimap-fail: #d34f4f;
 }
 
 /* Driver.js comparison spike: Chapter 1, "See the work".
@@ -145,7 +232,7 @@
     linear-gradient(145deg, color-mix(in srgb, var(--attention) 7%, transparent), transparent 42%),
     var(--panel-2);
   color: var(--fg);
-  box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, .35);
+  box-shadow: var(--shadow), 0 0 0 1px color-mix(in srgb, var(--shadow-ink) calc(89 / 255 * 100%), transparent);
   font-family: inherit;
   -webkit-app-region: no-drag;
 }
@@ -1594,7 +1681,7 @@ button.wf-run-version:focus-visible {
   align-items: stretch;
   justify-content: flex-end;
   padding: 0;
-  background: rgb(0 0 0 / 44%);
+  background: color-mix(in srgb, var(--shadow-ink) calc(112 / 255 * 100%), transparent);
 }
 .wf-persona-directive-drawer {
   width: min(460px, 100vw);
@@ -1604,7 +1691,7 @@ button.wf-run-version:focus-visible {
   color: var(--fg);
   border-left: 1px solid var(--border);
   background: var(--bg-2);
-  box-shadow: -24px 0 70px rgb(0 0 0 / 42%);
+  box-shadow: -24px 0 70px color-mix(in srgb, var(--shadow-ink) calc(107 / 255 * 100%), transparent);
 }
 .wf-persona-directive-head {
   display: grid;
@@ -1780,15 +1867,15 @@ button.wf-run-version:focus-visible {
 /* `.btn` is declared later in this file, so the component modifier needs both classes to
    preserve this drawer's amber action instead of falling back to the generic button. */
 .btn.wf-persona-directive-save {
-  color: #1d1305;
+  color: var(--on-attention);
   border-color: var(--attention);
   background: var(--attention);
   font-weight: 700;
 }
 .btn.wf-persona-directive-save:hover:not(:disabled) {
-  color: #1d1305;
-  border-color: color-mix(in oklab, var(--attention) 88%, #fff);
-  background: color-mix(in oklab, var(--attention) 88%, #fff);
+  color: var(--on-attention);
+  border-color: color-mix(in oklab, var(--attention) 88%, var(--highlight-ink));
+  background: color-mix(in oklab, var(--attention) 88%, var(--highlight-ink));
 }
 
 @media (max-width: 700px) {
@@ -3240,7 +3327,7 @@ button.wf-run-version:focus-visible {
 /* The same hue the action's pipeline row and graph node carry, so one thing is one colour
    across three surfaces. The card's own heading and chip already name it, so the edge is a
    confirmation rather than the claim. */
-.wf-run-action { border-left-color: color-mix(in oklab, #a878ff 70%, var(--border)); }
+.wf-run-action { border-left-color: color-mix(in oklab, var(--wf-action) 70%, var(--border)); }
 /* The proven pull request reads as a fact rather than a call to action: it sits in the meta
    row with the rest of the lifecycle, and the commit beside it is monospaced because it is an
    object id somebody will compare against another one by eye. */
@@ -3731,8 +3818,8 @@ body {
   font-family: var(--sans);
   color: var(--fg);
   background:
-    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
-    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    radial-gradient(1200px 600px at 80% -10%, var(--backdrop-glow-right) 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, var(--backdrop-glow-left) 0%, transparent 50%),
     var(--bg);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
@@ -3792,7 +3879,7 @@ body {
   background:
     repeating-linear-gradient(
       115deg,
-      color-mix(in srgb, #fff 20%, transparent) 0 6px,
+      color-mix(in srgb, var(--highlight-ink) 20%, transparent) 0 6px,
       transparent 6px 12px
     ),
     var(--working);
@@ -3862,7 +3949,9 @@ body {
   gap: 12px 24px;
   padding: 18px 4px;
   margin-bottom: 22px;
-  background: linear-gradient(var(--bg), rgba(10, 12, 15, 0.72));
+  /* `in srgb` keeps the interpolation a legacy rgba() stop had: a color-mix() stop would
+     otherwise move the whole gradient into oklab and shift it by a step. */
+  background: linear-gradient(in srgb, var(--bg), color-mix(in srgb, var(--bg) calc(184 / 255 * 100%), transparent));
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-soft);
 }
@@ -3981,7 +4070,7 @@ body {
   display: block;
   width: 20px;
   height: 20px;
-  filter: drop-shadow(0 0 6px rgba(74, 158, 255, 0.35));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--working) calc(89 / 255 * 100%), transparent));
 }
 .brand h1 {
   font-size: 17px;
@@ -5244,7 +5333,7 @@ body {
 }
 .rt-think-xhigh,
 .rt-think-max {
-  --think-color: #e5877f;
+  --think-color: var(--danger-soft);
 }
 .rt-ctx {
   display: inline-flex;
@@ -5279,10 +5368,10 @@ body {
   color: var(--attention);
 }
 .rt-ctx-high .rt-meter-fill {
-  background: #e5534b;
+  background: var(--danger-muted);
 }
 .rt-ctx-high .rt-ctx-num {
-  color: #e5877f;
+  color: var(--danger-soft);
 }
 
 /* Cost sits on the Board tile runtime row, so both wrap together. */
@@ -5433,8 +5522,8 @@ body {
   background: color-mix(in oklab, var(--pr-merged) 14%, transparent);
 }
 .mode-bypass {
-  color: #e5675f;
-  background: color-mix(in oklab, #e5534b 16%, transparent);
+  color: var(--danger-text);
+  background: color-mix(in oklab, var(--danger-muted) 16%, transparent);
 }
 /* The chip doubles as the mode picker's trigger. It has to keep reading as a chip
    (the footer is a dense row of them) while still inviting a click, so the affordance
@@ -5861,7 +5950,7 @@ body.is-pane-resizing {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  box-shadow: 0 12px 32px rgb(0 0 0 / .45);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
 }
 .open-in-row {
   width: 100%;
@@ -5901,8 +5990,8 @@ body.is-pane-resizing {
   padding: 4px;
   border: 1px solid color-mix(in oklab, var(--working) 24%, var(--border));
   border-radius: 9px;
-  background: color-mix(in oklab, var(--panel) 94%, black);
-  box-shadow: 0 16px 38px rgb(0 0 0 / .52), 0 0 0 1px rgb(255 255 255 / .025) inset;
+  background: var(--panel-deep);
+  box-shadow: 0 16px 38px color-mix(in srgb, var(--shadow-ink) calc(133 / 255 * 100%), transparent), 0 0 0 1px color-mix(in srgb, var(--highlight-ink) calc(6 / 255 * 100%), transparent) inset;
 }
 .ctx-menu-row {
   display: flex;
@@ -5930,7 +6019,7 @@ body.is-pane-resizing {
 }
 .ctx-menu-row:hover,
 .ctx-menu-row:focus-visible {
-  color: white;
+  color: var(--fg-strong);
   background: color-mix(in oklab, var(--working) 17%, var(--panel-2));
   outline: none;
 }
@@ -6012,7 +6101,7 @@ body.is-pane-resizing {
   /* The panel behind this is `background: var(--panel)`, which is opaque; the shadow is what
      separates it from a rendered document that may be any colour at all - a preview iframe
      draws on white even in the dark theme. */
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
 }
 /* Below the phone breakpoint there is no room to float beside anything, so it spans the
    pane's foot instead of shrinking to a column nobody can type in. */
@@ -6667,7 +6756,7 @@ body.is-pane-resizing {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, .66);
+  box-shadow: 0 28px 80px color-mix(in srgb, var(--shadow-ink) calc(168 / 255 * 100%), transparent);
 }
 .file-window.is-maximized { inset: 16px; min-width: 0; min-height: 0; }
 .file-window-head {
@@ -6724,7 +6813,7 @@ body.is-pane-resizing {
   margin: 4px 6px 2px;
   font-size: 10.5px;
   line-height: 1.4;
-  color: #e5675f;
+  color: var(--danger-text);
 }
 .seen {
   font-variant-numeric: tabular-nums;
@@ -6797,8 +6886,8 @@ a.btn {
 }
 .btn-danger-ghost:hover {
   color: var(--exited);
-  border-color: color-mix(in oklab, #e5534b 55%, var(--border)) !important;
-  background: color-mix(in oklab, #e5534b 12%, var(--panel-2)) !important;
+  border-color: color-mix(in oklab, var(--danger-muted) 55%, var(--border)) !important;
+  background: color-mix(in oklab, var(--danger-muted) 12%, var(--panel-2)) !important;
 }
 /* The one move a stopped triage row offers, marked as the thing to do without being filled:
    a solid button on every stalled row would out-shout the coloured edge that says which rows
@@ -6812,12 +6901,12 @@ a.btn {
   border-color: var(--attention) !important;
 }
 .btn-danger {
-  color: #fff;
-  background: #c8352c;
-  border-color: #c8352c;
+  color: var(--on-accent);
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
 }
 .btn-danger:hover {
-  background: #d94840 !important;
+  background: var(--danger-fill-hover) !important;
 }
 
 /* ---- Settings restore ---- */
@@ -7178,7 +7267,7 @@ a.btn {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(4, 6, 9, 0.72);
+  background: color-mix(in srgb, var(--scrim-ink) calc(184 / 255 * 100%), transparent);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: flex-start;
@@ -7201,7 +7290,7 @@ a.btn {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-ink) calc(140 / 255 * 100%), transparent);
   overflow: hidden;
 }
 /* The opt-out. `.modal-bleed` is the bare marker for a band that already owns its own
@@ -7334,14 +7423,14 @@ a.btn {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
 }
 .btn-approve {
-  color: #fff;
-  background: #2f9e63;
-  border-color: #2f9e63;
+  color: var(--on-accent);
+  background: var(--approve-fill);
+  border-color: var(--approve-fill);
   font-weight: 600;
 }
 .btn-approve:hover:not(:disabled) {
-  background: #37b171 !important;
-  border-color: #37b171 !important;
+  background: var(--approve-fill-hover) !important;
+  border-color: var(--approve-fill-hover) !important;
 }
 .btn-reject {
   color: var(--attention);
@@ -7583,7 +7672,7 @@ a.btn {
   color: var(--idle);
 }
 .diff-stats .del {
-  color: #e5695f;
+  color: var(--diff-del-count);
 }
 .diff-file-head {
   padding: 7px 12px;
@@ -7625,7 +7714,7 @@ a.btn {
 }
 .diff-code-delete,
 .diff-gutter-delete {
-  background: color-mix(in oklab, #e5534b 15%, transparent) !important;
+  background: color-mix(in oklab, var(--danger-muted) 15%, transparent) !important;
 }
 .diff-code-delete {
   color: var(--fg) !important;
@@ -8033,7 +8122,7 @@ kbd {
   text-decoration: underline;
 }
 .link-btn:hover {
-  color: #fff;
+  color: var(--fg-strong);
 }
 
 .transcript {
@@ -8264,7 +8353,7 @@ kbd {
   background: color-mix(in oklab, var(--working) 16%, var(--panel));
   border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border));
   border-radius: 999px;
-  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
   cursor: pointer;
 }
 /* Display > Working indicator > Pin the working row holds that row on the same bottom edge.
@@ -8795,7 +8884,7 @@ mark.find-hit {
 }
 mark.find-hit.is-current {
   background: var(--find);
-  color: #10130a;
+  color: var(--on-find);
   font-weight: 600;
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--find) 40%, transparent);
 }
@@ -8951,7 +9040,7 @@ mark.find-hit.is-current {
 .find-beyond button {
   margin-left: auto;
   font: 600 11px/1 var(--sans);
-  color: #10130a;
+  color: var(--on-find);
   background: var(--find);
   border: none;
   border-radius: 6px;
@@ -9984,7 +10073,7 @@ mark.find-hit.is-current {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
 }
 .launch-head {
   display: block;
@@ -10270,7 +10359,7 @@ mark.find-hit.is-current {
     color 0.14s ease;
 }
 .dispatch-btn:hover {
-  color: #fff;
+  color: var(--fg-strong);
   background: color-mix(in oklab, var(--working) 24%, var(--panel-2));
   border-color: color-mix(in oklab, var(--working) 60%, var(--border));
 }
@@ -10380,10 +10469,10 @@ mark.find-hit.is-current {
   color: var(--attention);
 }
 .task-failed {
-  border-left-color: #e5534b;
+  border-left-color: var(--danger-muted);
 }
 .task-failed .task-status {
-  color: #e5877f;
+  color: var(--danger-soft);
 }
 .task-done {
   border-left-color: var(--idle);
@@ -11197,7 +11286,7 @@ button.dispatch-guided-rung .dispatch-guided-num {
   border: 1px solid color-mix(in oklab, var(--working) 50%, var(--border));
   border-radius: 8px;
   background: var(--bg-2);
-  box-shadow: var(--shadow), 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow), 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(128 / 255 * 100%), transparent);
   cursor: default;
   animation: guided-pop 0.16s ease;
 }
@@ -11563,13 +11652,13 @@ button.dispatch-guided-rung .dispatch-guided-num {
 /* The doubled class outranks .btn-primary's hover !important by specificity, whatever
    the source order. */
 .btn-primary.btn-wait {
-  color: #1a1206;
-  background: color-mix(in oklab, var(--attention) 88%, #402c07);
+  color: var(--on-wait);
+  background: color-mix(in oklab, var(--attention) 88%, var(--attention-deep));
   border-color: color-mix(in oklab, var(--attention) 70%, var(--border));
 }
 .btn-primary.btn-wait:hover:not(:disabled) {
   background: var(--attention) !important;
-  color: #1a1206 !important;
+  color: var(--on-wait) !important;
 }
 
 @media (max-width: 720px) {
@@ -11669,7 +11758,7 @@ button.dispatch-guided-rung .dispatch-guided-num {
 select:not([multiple]) {
   appearance: none;
   appearance: base-select;
-  color-scheme: dark;
+  color-scheme: inherit;
   font: inherit;
   font-size: 12px;
   color: var(--fg);
@@ -11678,7 +11767,7 @@ select:not([multiple]) {
   border-radius: 6px;
   padding: 6px 28px 6px 9px;
   background-color: var(--bg-2);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939eae' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: var(--select-chevron);
   background-repeat: no-repeat;
   background-position: right 10px center;
   /* A narrow track (the dispatch crew row) may hold a long option label; ellipsis beats
@@ -11814,11 +11903,11 @@ select:not([multiple]) option:focus-visible {
   text-overflow: ellipsis;
 }
 .combobox-option.is-active {
-  color: #fff;
+  color: var(--fg-strong);
   background: color-mix(in oklab, var(--working) 20%, var(--panel-2));
 }
 .combobox-option.is-active .combobox-option-hint {
-  color: color-mix(in oklab, #fff 70%, var(--muted));
+  color: color-mix(in oklab, var(--fg-strong) 70%, var(--muted));
 }
 /* Live preview of the labels the comma-separated field will actually store. Lives
    inside the Labels field so it reads as that input's output; the `.field` above it is
@@ -11833,7 +11922,7 @@ select:not([multiple]) option:focus-visible {
 .dispatch-error {
   margin: 0;
   font-size: 12.5px;
-  color: #e5877f;
+  color: var(--danger-soft);
 }
 /* The same borrowing `.settings-warn` does: a door offered inside a refusal is part of that
    sentence, so it takes the refusal's tone rather than the blue it wears in body copy. */
@@ -12073,7 +12162,7 @@ select:not([multiple]) option:focus-visible {
 .kill-error,
 .requeue-error {
   margin: 8px 0 0;
-  color: #e5877f;
+  color: var(--danger-soft);
 }
 /* A recoverable scout contract violation, presented as the question it now is. The second
    action turns danger-red; this copy stays amber so it reads as a warning, not a failure. */
@@ -12154,7 +12243,7 @@ select:not([multiple]) option:focus-visible {
 }
 .reset-error {
   margin: 0;
-  color: #e5877f;
+  color: var(--danger-soft);
 }
 .reset-clean {
   margin: 0;
@@ -12212,13 +12301,13 @@ select:not([multiple]) option:focus-visible {
   padding: 1px 5px;
 }
 .btn-primary {
-  color: #fff;
-  background: color-mix(in oklab, var(--working) 82%, #1b2a44);
+  color: var(--on-accent);
+  background: color-mix(in oklab, var(--working) 82%, var(--working-deep));
   border-color: color-mix(in oklab, var(--working) 70%, var(--border));
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--working) !important;
-  color: #fff !important;
+  color: var(--on-accent) !important;
 }
 
 /* ---- report button (topbar) ---- */
@@ -12264,7 +12353,7 @@ select:not([multiple]) option:focus-visible {
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  box-shadow: -24px 0 64px rgba(0, 0, 0, 0.5);
+  box-shadow: -24px 0 64px color-mix(in srgb, var(--shadow-ink) calc(128 / 255 * 100%), transparent);
 }
 .report-head {
   display: flex;
@@ -12495,8 +12584,8 @@ select:not([multiple]) option:focus-visible {
   background: color-mix(in oklab, var(--idle) 15%, transparent);
 }
 .status-failed {
-  color: #e5877f;
-  background: color-mix(in oklab, #e5534b 15%, transparent);
+  color: var(--danger-soft);
+  background: color-mix(in oklab, var(--danger-muted) 15%, transparent);
 }
 .status-cancelled {
   color: var(--exited);
@@ -12595,7 +12684,7 @@ select:not([multiple]) option:focus-visible {
   color: var(--idle);
 }
 .diff-del {
-  color: #ef5f63;
+  color: var(--diff-del);
 }
 .diff-body {
   flex: 1;
@@ -12663,8 +12752,8 @@ select:not([multiple]) option:focus-visible {
   background: color-mix(in oklab, var(--idle) 18%, transparent);
 }
 .diff-file-dot.status-deleted {
-  color: #ef5f63;
-  background: color-mix(in oklab, #ef5f63 18%, transparent);
+  color: var(--diff-del);
+  background: color-mix(in oklab, var(--diff-del) 18%, transparent);
 }
 .diff-file-dot.status-renamed {
   color: var(--working);
@@ -12850,8 +12939,8 @@ select:not([multiple]) option:focus-visible {
   background: color-mix(in oklab, var(--idle) 16%, transparent);
 }
 .diff-file-status.status-deleted {
-  color: #ef5f63;
-  background: color-mix(in oklab, #ef5f63 16%, transparent);
+  color: var(--diff-del);
+  background: color-mix(in oklab, var(--diff-del) 16%, transparent);
 }
 .diff-file-status.status-renamed {
   color: var(--working);
@@ -12978,11 +13067,11 @@ select:not([multiple]) option:focus-visible {
   color: color-mix(in oklab, var(--idle) 45%, var(--fg));
 }
 .dl-del {
-  background: color-mix(in oklab, #ef5f63 12%, transparent);
+  background: color-mix(in oklab, var(--diff-del) 12%, transparent);
 }
 .dl-del .dl-sign,
 .dl-del .dl-text {
-  color: color-mix(in oklab, #ef5f63 48%, var(--fg));
+  color: color-mix(in oklab, var(--diff-del) 48%, var(--fg));
 }
 .dl-hunk td {
   background: color-mix(in oklab, var(--working) 8%, transparent);
@@ -17447,7 +17536,7 @@ a.pipelines-chip.is-link:focus-visible {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 14px 36px rgb(0 0 0 / 34%);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-ink) calc(87 / 255 * 100%), transparent);
 }
 .lib-menu-row {
   width: 100%;
@@ -17586,7 +17675,7 @@ button.lib-chip:focus-visible {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 14px 36px rgb(0 0 0 / 34%);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-ink) calc(87 / 255 * 100%), transparent);
 }
 .lib-chip-host.is-trailing .lib-chip-pop {
   right: 0;
@@ -18760,7 +18849,26 @@ td.wf-command-rule-action {
   flex: 1;
   min-height: 560px;
   color: var(--fg);
+  /* React Flow's own chrome reads these before its shipped light-theme defaults. Each is a
+     token, so a skin repaints the canvas through the cascade like any other surface. */
+  --xy-background-pattern-color: var(--canvas-dot);
+  --xy-edge-stroke: var(--canvas-edge);
+  --xy-edge-stroke-selected: var(--canvas-edge-selected);
+  --xy-connectionline-stroke: var(--canvas-edge);
+  --xy-edge-label-background-color: var(--canvas-chip);
+  --xy-handle-background-color: var(--canvas-handle);
+  --xy-handle-border-color: var(--canvas-chip);
+  --xy-attribution-background-color: color-mix(in srgb, var(--canvas-chip) calc(128 / 255 * 100%), transparent);
+  --xy-selection-background-color: color-mix(in srgb, var(--canvas-selection) calc(20 / 255 * 100%), transparent);
+  --xy-selection-border: 1px dotted color-mix(in srgb, var(--canvas-selection) calc(204 / 255 * 100%), transparent);
+  --xy-controls-box-shadow: 0 0 2px 1px color-mix(in srgb, var(--shadow-ink) calc(20 / 255 * 100%), transparent);
+  --xy-minimap-mask-background-color: var(--canvas-minimap-mask);
 }
+/* Minimap rects carry a class rather than a colour prop: React Flow writes `nodeColor` as an
+   inline `fill`, which no stylesheet can repaint, while a class rule reads tokens and follows
+   a skin change with no re-render. */
+.workflow-canvas .react-flow__minimap-node.workflow-minimap-node { fill: var(--canvas-minimap-node); }
+.workflow-canvas .react-flow__minimap-node.workflow-minimap-node.is-fail { fill: var(--canvas-minimap-fail); }
 /* Read-only is an interaction state, not a size. Only embedded version/run previews opt in
    to this compact frame; a built-in or archived workflow still owns the builder's full
    working surface even though its graph cannot be edited. */
@@ -18790,7 +18898,7 @@ td.wf-command-rule-action {
 .workflow-canvas .workflow-edge-pass path { stroke: var(--working); }
 /* Its own hue, because a complete is not a pass: everything downstream of it reviews
    evidence captured after the action ran, and colouring the two alike hides that seam. */
-.workflow-canvas .workflow-edge-complete path { stroke: #a878ff; }
+.workflow-canvas .workflow-edge-complete path { stroke: var(--wf-action); }
 .workflow-node {
   position: relative;
   display: flex;
@@ -18806,9 +18914,9 @@ td.wf-command-rule-action {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 5px 18px color-mix(in oklab, black 16%, transparent);
+  box-shadow: 0 5px 18px color-mix(in oklab, var(--shadow-ink) 16%, transparent);
 }
-.workflow-node-session { border-color: color-mix(in oklab, #4a9eff 65%, var(--border)); }
+.workflow-node-session { border-color: color-mix(in oklab, var(--working) 65%, var(--border)); }
 .workflow-node-persona { border-color: color-mix(in oklab, var(--working) 60%, var(--border)); }
 .workflow-node-all_pass { border-style: double; }
 /* Dashed, so a deterministic gate is distinguishable from a judging one at a glance and
@@ -18822,10 +18930,10 @@ td.wf-command-rule-action {
    nodes that write to the conversation indistinguishable at a glance, which is the one
    confusion this node can actually cause. */
 .workflow-node-session_action {
-  border-color: color-mix(in oklab, #a878ff 65%, var(--border));
-  background: color-mix(in oklab, #a878ff 7%, var(--panel));
+  border-color: color-mix(in oklab, var(--wf-action) 65%, var(--border));
+  background: color-mix(in oklab, var(--wf-action) 7%, var(--panel));
 }
-.workflow-node-end { border-color: color-mix(in oklab, #42c977 65%, var(--border)); }
+.workflow-node-end { border-color: color-mix(in oklab, var(--wf-success) 65%, var(--border)); }
 .workflow-node-kind {
   font: 700 9px var(--mono);
   text-transform: uppercase;
@@ -18910,7 +19018,7 @@ td.wf-command-rule-action {
 /* The machine code is kept - it is what a bug report quotes - but it stops being the first
    thing an operator reads, which is what made the panel look like a compiler. */
 .workflow-diagnostic-code { justify-self: start; font: 9px var(--mono); color: var(--dim); }
-.workflow-valid { color: #42c977; }
+.workflow-valid { color: var(--wf-success); }
 .workflow-edge-list { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .workflow-edge-list ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .workflow-edge-list li { display: grid; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 7px; }
@@ -19261,8 +19369,8 @@ td.wf-command-rule-action {
    it, and it runs alone. It carries the same hue its graph node does, and keeps its own
    badge, so neither surface relies on colour alone to say what the row is. */
 .wf-pipeline-reviewer.is-session_action {
-  border-color: color-mix(in oklab, #a878ff 55%, var(--border));
-  background: color-mix(in oklab, #a878ff 6%, transparent);
+  border-color: color-mix(in oklab, var(--wf-action) 55%, var(--border));
+  background: color-mix(in oklab, var(--wf-action) 6%, transparent);
 }
 .wf-pipeline-check-mark,
 .wf-pipeline-action-mark {
@@ -19276,8 +19384,8 @@ td.wf-command-rule-action {
   border-radius: 5px;
 }
 .wf-pipeline-action-mark {
-  color: color-mix(in oklab, #a878ff 72%, var(--fg));
-  border-color: color-mix(in oklab, #a878ff 45%, var(--border));
+  color: color-mix(in oklab, var(--wf-action) 72%, var(--fg));
+  border-color: color-mix(in oklab, var(--wf-action) 45%, var(--border));
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
@@ -19743,7 +19851,7 @@ button.wf-carried.is-link:focus-visible {
     width: min(330px, 88%);
     max-height: none;
     border: 1px solid var(--border);
-    box-shadow: 0 14px 36px rgb(0 0 0 / 30%);
+    box-shadow: 0 14px 36px color-mix(in srgb, var(--shadow-ink) calc(77 / 255 * 100%), transparent);
   }
   .workflow-library-sidebar { left: 0; }
   .workflow-builder-right { right: 0; }
@@ -20729,8 +20837,8 @@ button.wf-carried.is-link:focus-visible {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.4),
-    0 24px 64px rgba(0, 0, 0, 0.55);
+    0 1px 2px color-mix(in srgb, var(--shadow-ink) calc(102 / 255 * 100%), transparent),
+    0 24px 64px color-mix(in srgb, var(--shadow-ink) calc(140 / 255 * 100%), transparent);
   overflow: hidden;
 }
 .pal-in {
@@ -22843,7 +22951,7 @@ select.sc-input {
 .sc-seg-opt.is-on {
   background: var(--panel);
   color: var(--fg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow-ink) calc(102 / 255 * 100%), transparent);
 }
 .sc-seg-opt:has(input:focus-visible) {
   outline: 2px solid var(--working);
@@ -29393,7 +29501,7 @@ span.line-run-prov {
   outline-offset: 1px;
 }
 .bl-check[aria-checked="true"] {
-  color: #06140e;
+  color: var(--on-select);
   background: var(--select);
   border-color: var(--select);
 }
@@ -29418,7 +29526,7 @@ span.line-run-prov {
   border-radius: 10px;
   background: color-mix(in oklab, var(--select) 14%, var(--panel));
   border: 1px solid color-mix(in oklab, var(--select) 55%, var(--border));
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-ink) calc(89 / 255 * 100%), transparent);
 }
 .bl-selbar-n {
   flex: 1 0 100%;
@@ -30683,7 +30791,7 @@ span.line-run-prov {
 }
 .wf-tile-peek-members > .workflow-failed,
 .wf-tile-peek-members > .workflow-blocked {
-  color: #ff7b72;
+  color: var(--danger-bright);
 }
 .wf-tile-peek-sentence {
   display: -webkit-box;
@@ -31711,7 +31819,7 @@ span.line-run-prov {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-ink) calc(140 / 255 * 100%), transparent);
   overflow: hidden;
 }
 .away-digest-head {
@@ -32082,7 +32190,7 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--fg);
   background: var(--panel-2);
   border-left: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
-  box-shadow: -14px 0 42px rgba(0, 0, 0, 0.46);
+  box-shadow: -14px 0 42px color-mix(in srgb, var(--shadow-ink) calc(117 / 255 * 100%), transparent);
 }
 .frs-head {
   flex: none;
@@ -32236,7 +32344,7 @@ body.foreman-sidecar-open .modal-backdrop {
     max-height: min(66dvh, 560px);
     border-top: 1px solid color-mix(in oklab, var(--foreman) 38%, var(--border));
     border-left: 0;
-    box-shadow: 0 -14px 42px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 -14px 42px color-mix(in srgb, var(--shadow-ink) calc(128 / 255 * 100%), transparent);
   }
   /* Here the panel is a bottom sheet spanning the full width, so the desktop rule would
      reserve a column that does not exist and squeeze the review to nothing. The sheet is
@@ -32872,7 +32980,7 @@ body.foreman-sidecar-open .modal-backdrop {
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.32);
+  box-shadow: -8px 0 24px color-mix(in srgb, var(--shadow-ink) calc(82 / 255 * 100%), transparent);
 }
 
 .fd-head {
@@ -33188,7 +33296,7 @@ body.foreman-sidecar-open .modal-backdrop {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-ink) calc(140 / 255 * 100%), transparent);
   overflow: hidden;
 }
 
@@ -33478,7 +33586,7 @@ body.foreman-sidecar-open .modal-backdrop {
   padding: 9px 10px;
   color: var(--muted);
   text-align: left;
-  background: rgba(10, 12, 15, 0.28);
+  background: color-mix(in srgb, var(--bg) calc(71 / 255 * 100%), transparent);
   border: 1px solid var(--border-soft);
   border-radius: 9px;
   cursor: pointer;
@@ -33773,7 +33881,7 @@ body.foreman-sidecar-open .modal-backdrop {
   margin-left: -0.5px;
   /* One step above --border: at #232a33 on --panel-2 the rail was invisible, and a rail you
      cannot see is one whose BREAK carries no meaning. */
-  background: #2f3742;
+  background: var(--border-strong);
 }
 /* The signature. Where an instant sat unclaimed the rail is not continuous. */
 .rm-sp-axis-gap::before {
@@ -34217,7 +34325,7 @@ body.foreman-sidecar-open .modal-backdrop {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(4, 6, 9, 0.6);
+  background: color-mix(in srgb, var(--scrim-ink) calc(153 / 255 * 100%), transparent);
   z-index: 2;
 }
 .rm-confirm-box {
@@ -34732,8 +34840,8 @@ body.foreman-sidecar-open .modal-backdrop {
   background:
     linear-gradient(var(--prompt-surface) 40%, transparent) center top,
     linear-gradient(transparent, var(--prompt-surface) 60%) center bottom,
-    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.45), transparent) center top,
-    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.45), transparent) center bottom;
+    radial-gradient(farthest-side at 50% 0 in srgb, color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent), transparent) center top,
+    radial-gradient(farthest-side at 50% 100% in srgb, color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent), transparent) center bottom;
   background-repeat: no-repeat;
   background-size: 100% 22px, 100% 22px, 100% 9px, 100% 9px;
   background-attachment: local, local, scroll, scroll;
@@ -36762,7 +36870,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .session-toolbar-btn svg { flex: none; }
 .session-toolbar-caret { font-size: 12px; color: var(--muted); }
 .session-control-btn.is-active { color: var(--working); border-color: color-mix(in oklab, var(--working) 45%, var(--border)); background: color-mix(in oklab, var(--working) 10%, var(--panel-2)); }
-.session-toolbar-menu { position: fixed; z-index: 40; width: min(272px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--fg); box-shadow: 0 10px 30px #0005; }
+.session-toolbar-menu { position: fixed; z-index: 40; width: min(272px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--fg); box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink) calc(100% / 3), transparent); }
 .session-toolbar-menu > .tt-anchor { display: block; width: 100%; }
 .session-toolbar-heading { display: block; padding: 7px 8px; font-size: 11px; font-weight: 600; color: var(--muted); }
 .session-toolbar-option { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }

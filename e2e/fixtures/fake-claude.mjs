@@ -1286,6 +1286,13 @@ async function runReportBug(prompt) {
   });
   const pending = new Map();
   let sequence = 0;
+  // A child that cannot start, or exits before answering, answers every request still waiting
+  // with an error - otherwise the held turn never ends and stdin close cannot finish it.
+  const settleAll = (reason) => {
+    for (const settle of pending.values()) settle({ error: { message: reason } });
+  };
+  child.on("error", (error) => settleAll(String(error)));
+  child.on("exit", (code) => settleAll(`MCP server exited with code ${code}`));
   createInterface({ input: child.stdout }).on("line", (line) => {
     let message;
     try { message = JSON.parse(line); } catch { return; }
@@ -1326,7 +1333,7 @@ function beginHeldTurn(work) {
   // Tracked so a stdin close cannot exit the process out from under a submission that is
   // already in flight - the answer would never be written and the card would go from
   // working straight to exited, which reads as a crash rather than as a race.
-  scoutTurn = work.then((text) => {
+  scoutTurn = work.catch((error) => `The turn failed: ${String(error)}`).then((text) => {
     openTurn = null;
     appendTurn("assistant", [{ type: "text", text }]);
     emit({

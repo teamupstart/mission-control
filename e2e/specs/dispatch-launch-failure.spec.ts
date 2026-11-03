@@ -410,3 +410,38 @@ test("scout, MCP, Foreman-route, recurring-mission and resident launches all rea
     restore();
   }
 });
+
+/**
+ * The two ways back to a failure must land somewhere, and the dialog they open must hand focus
+ * back. A folded Working column draws only its strip, so the count unfolds it before revealing
+ * the tile; and the Report bug dialog returns focus to the button that opened it, not to its
+ * own auto-focused Cancel, which is gone once it closes.
+ */
+test("Show unfolds a folded Working column, and the report dialog hands focus back", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/ui/config", { layout: "board", collapsedBoardColumns: ["working"] }, "PUT");
+  await dashboard.reload();
+  await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
+  const restore = breakOrigin(daemon);
+  const title = "Plan the folded column";
+  try {
+    await dispatch(daemon, "chat", title);
+    const tile = dashboard.getByRole("list", { name: "Did not start" }).getByRole("listitem").filter({ hasText: title });
+    await expect(dashboard.getByRole("button", { name: /1\s*did not start/ })).toBeVisible();
+    await expect(tile, "a folded Working column draws only its strip").toHaveCount(0);
+
+    await dashboard.getByRole("region", { name: "Launch failures" }).getByRole("button", { name: "Close" }).click();
+    await dashboard.getByRole("button", { name: /1\s*did not start/ }).click();
+    await expect(tile.getByLabel(`${title} did not start`)).toBeFocused();
+
+    const report = tile.getByRole("button", { name: "Report bug" });
+    await report.focus();
+    await dashboard.keyboard.press("Enter");
+    const dialog = dashboard.getByRole("dialog", { name: "Report this launch failure" });
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(report, "focus returns to the button that opened the dialog").toBeFocused();
+  } finally {
+    restore();
+  }
+});

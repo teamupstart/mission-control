@@ -16,9 +16,10 @@ import {
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
 import { repoColor } from "../../lib/repo-color.ts";
-import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
+import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
 import {
+  collapsedColumnSessionIds,
   columnWidthOf,
   setColumnWidth,
   useColumnWidths,
@@ -208,10 +209,20 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // that card is on screen. A folded Backlog column or a fleet filter can hide it, and then the
   // failure is drawn here instead, so the count and Show always have something to reach.
   const backlogShown = columnWidthOf(widths, "backlog") !== "collapsed";
+  // A session card is not on screen when its repository row or its column is folded, or when
+  // its column is the drilled-in rail - whose rows carry no failure notice.
+  const hiddenCards = new Set([
+    ...hiddenSessionIds(groups, repoCollapsed),
+    ...collapsedColumnSessionIds(groups, widths.collapsed),
+  ]);
   const failed = fleetFailureGroups(props.tasks, (group) => {
     const latest = latestLaunchFailure(group);
     if (group.outcome === "returned") return backlogShown && props.backlog.some((t) => t.id === latest.id);
-    return latest.sessionId !== null && props.sessions.some((s) => s.id === latest.sessionId);
+    const sessionId = latest.sessionId;
+    if (sessionId === null || hiddenCards.has(sessionId)) return false;
+    const onRail = focusedTone != null
+      && groups.some((g) => g.tone === focusedTone && g.sessions.some((s) => s.id === sessionId));
+    return !onRail && props.sessions.some((s) => s.id === sessionId);
   });
   const starters = pending.length + failed.length;
 

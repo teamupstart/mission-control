@@ -47,7 +47,7 @@ import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
 import { taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
-import { launchFailureGroupKey, launchFailureOutcome } from "@shared/launch-failure.ts";
+import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
 import {
   dismissLaunchFailures,
   launchFailureGroupFor,
@@ -8290,6 +8290,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
   });
 
+  /**
+   * Chat retries in flight, by work key. A chat is retried by filing a new task, and the failure
+   * it answers stays open until that task starts - so without this, a second press while the
+   * first replacement is still being filed or still starting would file a second one.
+   */
+  const retriesInFlight = new Set<string>();
+
   // Try a failed launch again. A backlog kind retries as the same task; a chat, which has no
   // backlog to come back through, is filed again as a new task with the same settings - and
   // when that one starts, the dispatcher dismisses this failure as answered.
@@ -8316,6 +8323,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const r = await tasks.dispatch(task.id, { overrideDisabled: true });
       return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
     }
+    const workKey = launchWorkKey(task);
+    const starting = registry.listTasks().some((other) =>
+      other.id !== task.id && isActiveTask(other.status) && launchWorkKey(other) === workKey);
+    if (starting || retriesInFlight.has(workKey)) {
+      return c.json({ error: "a retry of this is already starting" }, 409);
+    }
+    retriesInFlight.add(workKey);
+    try {
+      return await fileChatRetry(c, task);
+    } finally {
+      retriesInFlight.delete(workKey);
+    }
+  });
+
+  /** File a failed chat again as a new task with the same settings, keeping a report's identity. */
+  async function fileChatRetry(c: Context, task: Task): Promise<Response> {
     const input = DispatchSchema.safeParse({
       repoRoot: task.repoRoot,
       extraRepoRoots: task.extraRepos.map((extra) => extra.repoRoot),
@@ -8337,7 +8360,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       ? markLaunchFailureReport(registry, created.task.id, task.launchReportFor, Date.now()) ?? created.task
       : created.task;
     return c.json({ ok: true, task: filed });
-  });
+  }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));

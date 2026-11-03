@@ -98,7 +98,7 @@ import {
 } from "./lib/card-shortcuts.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
-import { collapsedColumnSessionIds } from "./lib/column-width.ts";
+import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -1783,9 +1783,18 @@ export function App(): React.JSX.Element {
   const showLaunchFailure = useCallback(
     (taskId: string): void => {
       navigate({ page: "fleet" });
-      requestAnimationFrame(() => requestAnimationFrame(() => revealLaunchFailure(tasks, taskId)));
+      const afterPaint = (then: () => void): void => {
+        requestAnimationFrame(() => requestAnimationFrame(then));
+      };
+      afterPaint(() => {
+        if (revealLaunchFailure(tasks, taskId) || layout !== "board") return;
+        // The Board draws failed tiles in Working; a folded Working column draws only its strip.
+        // Asking to see a failure is asking for that column, so unfold it and look again.
+        setColumnWidth("working", "normal");
+        afterPaint(() => revealLaunchFailure(tasks, taskId));
+      });
     },
-    [navigate, tasks],
+    [navigate, tasks, layout],
   );
   /**
    * Run a Line stage click.

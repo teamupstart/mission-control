@@ -178,5 +178,9 @@ export function newLaunchFailure(
   residentProfileId: string | null,
   sessionKept = false,
 ): TaskLaunchFailure {
-  return { at, phase: dispatchPhase(task), dismissedAt: null, reportTaskId: null, residentProfileId, sessionKept };
+  // A repo-less resident provisions no worktree, so `dispatchPhase` would read "prepare" for a
+  // failure that happened at launch - an MCP server that would not connect, a session that
+  // would not start. Nothing is provisioned for it, so its failures are launch failures.
+  const phase = !taskHasRepository(task) ? "launch" : dispatchPhase(task);
+  return { at, phase, dismissedAt: null, reportTaskId: null, residentProfileId, sessionKept };
 }

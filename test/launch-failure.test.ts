@@ -447,3 +447,29 @@ test("two Report bug presses for one reason at the same moment start one report 
   const reports = registry.listTasks().filter((t) => t.launchReportFor === "c1" || t.launchReportFor === "c2");
   assert.equal(reports.length, 1);
 });
+
+test("a repo-less resident's failure is recorded at launch, not while provisioning", () => {
+  // Nothing is provisioned for it, so the dispatch phase would otherwise always read "prepare" -
+  // and an MCP server that would not connect is a launch failure.
+  const repoLess = mkTask({ kind: "resident", workspaceKind: "resident-workspace", repoRoot: "/runs/r/workspace", worktreePath: null });
+  assert.equal(lf.newLaunchFailure(repoLess, 1, "p").phase, "launch");
+  const repoBacked = mkTask({ kind: "resident", repoRoot: "/repo", worktreePath: null });
+  assert.equal(lf.newLaunchFailure(repoBacked, 1, "p").phase, "prepare", "a repository-backed resident keeps the phase it reached");
+});
+
+test("a chat retry files one replacement, however many presses arrive before it starts", async () => {
+  const { registry, dispatched, post } = setup();
+  const repo = mkRepo("retry-once-repo");
+  registry.upsertTask(mkTask({ id: "chat-once", kind: "chat", status: "failed", repoRoot: repo, title: "Talk once", intent: "Talk", error: "boom", launchFailure: failure() }));
+  const [a, b] = await Promise.all([
+    post("/api/launch-failures/retry", { taskId: "chat-once" }),
+    post("/api/launch-failures/retry", { taskId: "chat-once" }),
+  ]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+  assert.equal(dispatched.length, 1);
+  // The replacement is still starting; a later press is refused too rather than filing another.
+  const again = await post("/api/launch-failures/retry", { taskId: "chat-once" });
+  assert.equal(again.status, 409);
+  assert.match(String(again.body.error), /already starting/);
+  assert.equal(dispatched.length, 1);
+});

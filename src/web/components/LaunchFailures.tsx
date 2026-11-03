@@ -111,8 +111,9 @@ export function LaunchFailureActions({ group }: { group: LaunchFailureGroup }): 
   return (
     <div
       className="lf-actions"
+      // Clicks only: a keyboard press on a button arrives as its click, and the Backlog
+      // column's Escape and select-all, and the app's shortcuts, must still hear keys.
       onClick={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
     >
       {group.outcome === "not-started" && resident && profileId && (
         <>
@@ -391,12 +392,12 @@ export function ReportLaunchFailureDialog({
       alive = false;
     };
   }, []);
-  useEffect(() => {
-    const previous = document.activeElement;
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, []);
+  // Read during the first render, before commit: by the time an effect runs, `autoFocus` has
+  // already moved focus to Cancel, which unmounts with the dialog and could not take it back.
+  const [invoker] = useState(() => document.activeElement);
+  useEffect(() => () => {
+    if (invoker instanceof HTMLElement && invoker.isConnected) invoker.focus();
+  }, [invoker]);
   const containTab = useCallback((event: KeyboardEvent) => {
     if (formRef.current) containTourTab(event, formRef.current);
   }, []);

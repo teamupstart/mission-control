@@ -115,7 +115,7 @@ test("the desktop window opens in the remembered skin background, and the dashbo
   try {
     // ---- the first frame is Daylight's, not the dark pre-skin colour ----
     expect(await firstPaint(application), "the window was constructed dark under a light skin").toBe(DAYLIGHT_BG);
-    // Read from the same file the handler writes, not one this spec guessed at.
+    // Read from the same file the daemon writes, not one this spec guessed at.
     expect(await application.evaluate(() => Reflect.get(globalThis, "windowBackgroundFile"))).toBe(file);
 
     const page = await application.firstWindow();
@@ -124,7 +124,7 @@ test("the desktop window opens in the remembered skin background, and the dashbo
     expect(await liveBackground(application)).toBe(DAYLIGHT_BG);
     await shoot(page, "desktop-daylight");
 
-    // ---- picking Default in the desktop dashboard repaints the window and remembers it ----
+    // ---- picking Default in the desktop dashboard repaints the window; the daemon records it ----
     await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("tab", { name: "Display" }).click();
     const picker = page.getByRole("radiogroup", { name: "Skin" });
@@ -140,15 +140,25 @@ test("the desktop window opens in the remembered skin background, and the dashbo
     expect(remembered()).toBe(DEFAULT_BG);
     expect(await liveBackground(application)).toBe(DEFAULT_BG);
 
-    // ---- back to Daylight, then quit: the dashboard, not the seed, decides the next launch ----
-    await picker.getByRole("radio", { name: "Daylight", exact: true }).check();
-    await expect.poll(() => liveBackground(application!)).toBe(DAYLIGHT_BG);
+    // ---- Daylight is stored elsewhere while this desktop page still shows Default ----
+    const elsewhere = await fetch(`${daemon.baseURL}/api/ui/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ skin: "daylight" }),
+    });
+    expect(elsewhere.ok).toBe(true);
     await expect.poll(remembered).toBe(DAYLIGHT_BG);
+    await expect(page.locator("html")).not.toHaveAttribute("data-skin", /.*/);
+    // The stale page reports the skin it is showing. That repaints its own window and nothing
+    // more: the stored skin, not a page's report, decides the next launch.
+    await page.evaluate((color) => window.missionDesktop!.setWindowBackground!(color), DEFAULT_BG);
+    expect(await liveBackground(application)).toBe(DEFAULT_BG);
+    expect(remembered(), "a stale desktop page overwrote the stored skin's launch colour").toBe(DAYLIGHT_BG);
     await application.close();
     application = undefined;
 
     application = await launch(daemon.baseURL, daemon.home, modules);
-    expect(await firstPaint(application), "the relaunch opened on a dark frame").toBe(DAYLIGHT_BG);
+    expect(await firstPaint(application), "the relaunch opened on the stale page's dark colour").toBe(DAYLIGHT_BG);
     const relaunched = await application.firstWindow();
     await expect(relaunched.getByRole("button", { name: "Dispatch", exact: true }).first()).toBeVisible();
     await expect(relaunched.locator("html")).toHaveAttribute("data-skin", "daylight");

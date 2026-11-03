@@ -19,7 +19,7 @@ app.whenReady().then(() => {
   }));
   ipcMain.handle("mission:card-jump-keys", () => undefined);
   ipcMain.handle("mission:version", () => "1.25.0");
-  registerWindowBackgroundIpc(ipcMain, getMainWindow, windowBackgroundFile);
+  registerWindowBackgroundIpc(ipcMain, getMainWindow);
   const window = createWindow(path.join(process.cwd(), "dist/preload/index.cjs"), null);
   // Read straight after construction, before any page has loaded: this is the first frame.
   globalThis.firstPaintBackground = window.getBackgroundColor();

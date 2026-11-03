@@ -1365,11 +1365,12 @@ dashboard document with the stored skin already on `<html>`, plus a `<meta name=
 seed (`src/server/dashboard-document.ts`). The preference store takes that seed over its local
 cache, so a profile with no cache paints the stored skin from its first frame, and `lib/skin.ts`
 keeps the served attribute instead of replacing it. The desktop window's launch colour
-lives in `window-background.json` in the state home (`src/server/window-background.ts`). The
-daemon's `syncWindowBackground` writes it from the stored skin's swatch on every skin write,
-after a settings restore and at startup, so a skin chosen in a browser still decides the next
-desktop launch. The shell's bridge handler writes the same value when the dashboard applies a
-skin. `createWindow` and the shell's startup page both paint from it.
+lives in `window-background.json` in the state home (`src/server/window-background.ts`), and the
+daemon is its only writer: `syncWindowBackground` records the stored skin's swatch on every skin
+write, after a settings restore and at startup, so a skin chosen in a browser still decides the
+next desktop launch. The shell's bridge handler only repaints the live window; it never persists,
+because a page that loaded before a change elsewhere would write a stale colour. `createWindow`
+and the shell's startup page both paint from the file.
 
 In Electron, the top bar is a drag region. New floating interactive layers need the desktop `no-drag` rule.
 

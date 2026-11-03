@@ -2,12 +2,13 @@ import { skinById, type SkinId } from "@shared/skins.ts";
 import { subscribeUiConfig, uiConfig } from "./uiConfig.ts";
 
 /**
- * Puts the chosen skin in force, and is the ONLY writer of `<html data-skin>`, the document's
- * `color-scheme`, and the desktop window's background.
+ * Puts the chosen skin in force: the only dashboard code that writes `<html data-skin>` and the
+ * document's `color-scheme`, and the one that repaints the live desktop window behind the page.
  *
  * Imported for its side effect from `main.tsx` before React renders. At that moment the
- * `uiConfig` store already holds the cached config (seeded synchronously from `localStorage`),
- * so the first frame paints in the chosen skin rather than a frame of Default that then snaps.
+ * `uiConfig` store already holds its first-paint seed - the skin the daemon served the document
+ * with, else the local cache - so the first frame paints in the chosen skin rather than a frame
+ * of Default that then snaps.
  * After that it follows the store: every commit - the optimistic one when a tile is picked,
  * the daemon's copy when hydration lands, and the rollback when the daemon refuses a write -
  * re-applies when `skin` changed. Nothing in React has to know a skin exists.
@@ -40,8 +41,9 @@ export function applySkin(id: SkinId, root: HTMLElement = document.documentEleme
   // Inline, so it outranks the `:root` declaration whatever a skin file says, and native
   // scrollbars, form controls and the `select` popup follow the skin.
   root.style.colorScheme = skin.colorScheme;
-  // The desktop shell paints its window before the page loads. Telling it this skin's
-  // background is what lets the NEXT launch open without a dark frame under a light skin.
+  // Repaint the desktop window behind the page in this skin's background. The NEXT launch's
+  // colour is not this call's business: the daemon records it from the stored skin, which a
+  // page that loaded before a change elsewhere could contradict.
   // Optional twice over: a browser tab has no bridge, and an older preload has no method.
   const bridge = typeof window === "undefined" ? undefined : window.missionDesktop;
   if (bridge?.setWindowBackground) {

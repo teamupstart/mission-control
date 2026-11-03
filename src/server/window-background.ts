@@ -7,13 +7,14 @@ import { z } from "zod";
 // launches in the state home, beside the database.
 //
 // The shell reads it in `createWindow` (`src/main/window.ts`), because the daemon may not be up
-// yet when the window is created, so the value cannot be read from `app_config`. Two writers
-// keep it, and both write the same value - the stored skin's `--bg`:
-//  - the daemon (`syncWindowBackground` in `ui-config.ts`), on every `ui.skin` write, after a
-//    settings restore and at startup, so a skin chosen in a browser tab with no desktop bridge
-//    still decides the next desktop launch;
-//  - the shell's `mission:set-window-background` handler, which the renderer's skin module
-//    (`src/web/lib/skin.ts`) calls with the computed `--bg`, so the live window repaints too.
+// yet when the window is created, so the value cannot be read from `app_config`.
+//
+// ONE writer: the daemon (`syncWindowBackground` in `ui-config.ts`), from the STORED skin, on
+// every `ui.skin` write, after a settings restore and at startup. A page reports only the skin
+// it happens to be showing, which can be stale - a desktop page loaded under Default while a
+// browser switched the machine to Daylight - so letting the shell persist what a page reports
+// would let that stale page overwrite the stored skin's colour and open the next launch dark.
+// The shell's `mission:set-window-background` handler therefore only repaints the live window.
 // Here rather than in `src/main` because both processes import it.
 
 /** The pre-skin window colour, used until a skin has ever been applied. */
@@ -92,24 +93,20 @@ export interface WindowBackgroundTarget {
 
 /**
  * Serve `mission:set-window-background`: the dashboard reports the applied skin's `--bg`
- * (`src/web/lib/skin.ts`). Only the main window's own contents may set it; anything but a
- * `#rrggbb` colour is refused before it reaches `BrowserWindow`. The live window repaints at
- * once, and the colour is written - only when it changed - so the next launch opens in it.
+ * (`src/web/lib/skin.ts`), and the live window behind the page repaints in it. Only the main
+ * window's own contents may set it; anything but a `#rrggbb` colour is refused before it
+ * reaches `BrowserWindow`. It never persists anything: the next launch's colour is the daemon's,
+ * from the stored skin (see the note at the top of this file).
  */
 export function registerWindowBackgroundIpc(
   ipc: WindowBackgroundIpc,
   mainWindow: () => WindowBackgroundTarget | null,
-  path: () => string,
 ): void {
-  let remembered: string | null = null;
   ipc.handle("mission:set-window-background", (event, color) => {
     const window = mainWindow();
     if (!window || event.sender !== window.webContents) return;
     const background = parseWindowBackground(color);
     if (!background) throw new Error("window background must be a #rrggbb colour");
     window.setBackgroundColor(background);
-    if (background === remembered) return;
-    writeWindowBackground(path(), background);
-    remembered = background;
   });
 }

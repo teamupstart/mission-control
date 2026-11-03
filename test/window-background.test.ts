@@ -60,8 +60,11 @@ test("the renderer converts a computed token to the #rrggbb main accepts", () =>
   assert.equal(toHexColor("rgb(300, 0, 0)"), null);
 });
 
-test("the main-process handler repaints and remembers only the dashboard's own valid colour", async () => {
-  // The handler `index.ts` registers, driven with stand-ins for ipcMain and the window.
+test("the main-process handler repaints the dashboard's own valid colour and persists nothing", async () => {
+  // The handler `index.ts` registers, driven with stand-ins for ipcMain and the window. It must
+  // never write the launch file: a page reports the skin it is SHOWING, which can be stale - a
+  // desktop page loaded under Default while a browser stored Daylight - and persisting that would
+  // open the next launch dark. The daemon writes the file, from the stored skin.
   type Listener = (event: { sender: unknown }, color: unknown) => unknown;
   let listener: Listener | undefined;
   const ipc = { handle: (channel: string, fn: Listener) => { assert.equal(channel, "mission:set-window-background"); listener = fn; } };
@@ -72,35 +75,29 @@ test("the main-process handler repaints and remembers only the dashboard's own v
     setBackgroundColor: (c) => void painted.push(c),
   };
   const path = windowBackgroundPath(join(dir, "ipc"));
-  registerWindowBackgroundIpc(ipc, () => window, () => path);
+  writeWindowBackground(path, "#f5f7fa"); // what the daemon recorded for the stored Daylight
+  registerWindowBackgroundIpc(ipc, () => window);
   assert.ok(listener, "nothing was registered on the channel");
   const send = (sender: unknown, color: unknown) => listener!({ sender }, color);
 
-  // The dashboard reports Daylight: the live window repaints and the next launch will open in it.
-  await send(contents, "#F5F7FA");
-  assert.deepEqual(painted, ["#f5f7fa"]);
-  assert.equal(readWindowBackground(path), "#f5f7fa");
+  // A stale page still showing Default reports it: the live window repaints, the file does not move.
+  await send(contents, "#0A0C0F");
+  assert.deepEqual(painted, ["#0a0c0f"]);
+  assert.equal(readWindowBackground(path), "#f5f7fa", "a page's report overwrote the stored skin's launch colour");
 
-  // The same colour again repaints but does not rewrite the file.
-  writeFileSync(path, '{"color":"#123456"}');
-  await send(contents, "#f5f7fa");
-  assert.deepEqual(painted, ["#f5f7fa", "#f5f7fa"]);
-  assert.equal(readWindowBackground(path), "#123456", "an unchanged colour was written again");
-  writeWindowBackground(path, "#f5f7fa");
-
-  // Anything but #rrggbb is refused before it reaches the window or the file.
+  // Anything but #rrggbb is refused before it reaches the window.
   assert.throws(() => send(contents, "url(evil)"), /#rrggbb/);
   assert.throws(() => send(contents, "#fff"), /#rrggbb/);
-  assert.deepEqual(painted, ["#f5f7fa", "#f5f7fa"]);
+  assert.deepEqual(painted, ["#0a0c0f"]);
 
   // Another sender - a second window, a preview, an iframe's contents - changes nothing.
-  assert.equal(await send({ id: "someone-else" }, "#0a0c0f"), undefined);
-  assert.deepEqual(painted, ["#f5f7fa", "#f5f7fa"]);
-  assert.equal(readWindowBackground(path), "#f5f7fa");
+  assert.equal(await send({ id: "someone-else" }, "#f5f7fa"), undefined);
+  assert.deepEqual(painted, ["#0a0c0f"]);
 
-  // And with no main window there is nothing to repaint or remember.
+  // And with no main window there is nothing to repaint.
   window = null;
-  await send(contents, "#0a0c0f");
+  await send(contents, "#f5f7fa");
+  assert.deepEqual(painted, ["#0a0c0f"]);
   assert.equal(readWindowBackground(path), "#f5f7fa");
 });
 

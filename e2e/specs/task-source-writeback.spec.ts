@@ -82,11 +82,11 @@ async function shoot(page: Page, name: string, anchor?: Locator): Promise<void> 
 const ISSUE = "acme/demo-repo#123";
 const PR_URL = "https://github.com/acme/demo-repo/pull/9";
 
-async function configureAcli(page: Page, daemon: DaemonHandle): Promise<void> {
+async function configureAcli(page: Page, daemon: DaemonHandle, resolveTransition = "Done"): Promise<void> {
   const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: {
     sources: [{ id: "src-writeback", kind: "jira", label: "acli issues", enabled: false,
       repoRoot: daemon.repo, writeback: { onPrOpened: true, onCompleted: true, resolve: true },
-      config: { queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", resolveTransition: "Done", linkVia: "both" },
+      config: { queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", resolveTransition, linkVia: "both" },
     }],
   } });
   expect(res.ok()).toBe(true);
@@ -148,6 +148,22 @@ for (const withTransitions of [false, true]) test(`acli delivers a PR comment an
   ]);
   expect(records.filter((r) => r.argv[2] === "view")).toHaveLength(2);
   await shoot(page, withTransitions ? "acli-transitions-delivered" : "acli-delivered", page.getByText(/2 delivered\./));
+});
+
+test("acli settles a transition-name target already at its supplied destination without moving", async ({ page, daemon }) => {
+  await configureAcli(page, daemon, "Finish work");
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({
+    status: "Done", transition: "refused",
+    transitions: [{ id: "31", name: "Finish work", to: { name: "Done" } }],
+  }));
+  await oweAcli(page, daemon, ["resolve"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 delivered\./)).toBeVisible({ timeout: 30_000 });
+  expect(await queue(page, daemon)).toMatchObject({ delivered: 1, failed: 0, unknown: 0 });
+  const records = recordsIn<GhRecord>(daemon.recordDir, (file) => /^acli-\d/.test(file));
+  expect(records.filter((record) => record.argv[2] === "transition")).toHaveLength(0);
+  expect(records.filter((record) => record.argv[2] === "view")).toHaveLength(1);
+  await shoot(page, "acli-already-destination", page.getByText(/1 delivered\./));
 });
 
 test("acli posts untrusted completion URLs as plain text rather than clickable links", async ({ page, daemon }) => {

@@ -357,6 +357,7 @@ async function resolveAcli(
     if ("problem" in match) return writebackRefusal(match.problem);
     const transition = transitionsFrom(read.body).find((t) => t.id === match.id)!;
     destination = transition.to || transition.name;
+    if (read.status.toLowerCase() === destination.toLowerCase()) return writebackDone(`already "${read.status}"`);
   }
   // readStatus's final gate is immediately before this write, with only pure parsing between.
   const res = await deps.run(acliBin(), ["jira", "workitem", "transition", "--key", key, "--status", destination, "--yes", "--json"], {

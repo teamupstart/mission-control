@@ -1567,7 +1567,8 @@ with another read. The Phase 1
 [`*all` view](../test/fixtures/acli/view-all.json). These captures cover one issue in that
 version; transition data may differ for other issues, workflows or releases. Recheck when
 updating acli. On this evidence Mission Control skips an extra transition probe and moves by
-status name. If a status response supplies a transition list, it constrains the move. A refusal
+status name. If a status response supplies a transition list, it constrains the move. A configured
+status or a matched transition destination that is already current settles without writing. A refusal
 names the current status and quotes acli's reason, which may list reachable statuses. Select a
 reachable status in the source settings.
 

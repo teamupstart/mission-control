@@ -203,6 +203,24 @@ test("resolve already there reads captured status without moving, and failed rea
   assert.equal(switched.calls.length, 3, "profile changed during read must not start a transition");
 });
 
+test("a transition-name target already at its known destination settles without a write", async () => {
+  const transitions = [{ id: "31", name: "Finish work", to: { name: "Done" } }];
+  const already = scripted(auth(), status("Done", { transitions }), auth());
+  const result = await acliResolve(cfg({ resolveTransition: "Finish work" }), notice, ctx, already.deps);
+  assert.equal(result.error, null);
+  assert.equal(result.detail, 'already "Done"');
+  assert.equal(already.calls.length, 3);
+
+  // An unavailable transition name supplies no destination proof. Do not guess at Done.
+  const absent = scripted(auth(), status("Done", { transitions: [] }), auth());
+  const refusal = await acliResolve(cfg({ resolveTransition: "Finish work" }), notice, ctx, absent.deps);
+  assert.match(refusal.error!, /offers no transitions/);
+  assert.equal(absent.calls.length, 3);
+  const direct = scripted(auth(), status("Done", { transitions: [] }), auth());
+  assert.equal((await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, direct.deps)).detail, 'already "Done"');
+  assert.equal(direct.calls.length, 3);
+});
+
 test("transition success needs a confirming status, even with unrecognized or non-JSON output", async () => {
   for (const result of [ok({ results: [{ key: "MC-2", success: true }] }), ok({ unexpected: "shape" }), stubRun({ code: 0, stdout: "not JSON", stderr: "" })]) {
     const { deps, calls } = scripted(auth(), status("In Review"), auth(), result, auth(), auth(), status("Done"), auth());

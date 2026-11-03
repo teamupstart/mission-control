@@ -22,10 +22,12 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkTurnFailure,
   SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
+import { isProviderCapacityMessage } from "../../llm/provider-failure.ts";
 import type { LlmSpendModelUsage } from "@shared/llm-spend.ts";
 import { claudeEnvelopeModels, claudeEnvelopeTurnId } from "./envelope.ts";
 import type {
@@ -395,6 +397,12 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * where the old counter had no path back to zero at all.
    */
   private turnActive = false;
+  /**
+   * The capacity failure the running turn's own API-error message reported, held until the
+   * `result` that closes the turn. Claude Code reports the error on an assistant frame and
+   * closes the turn on the next `result`, so the two have to be joined here.
+   */
+  private turnFailure: SdkTurnFailure | null = null;
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -1014,11 +1022,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // to dequeue after a `result` we had already read as the end of the work - re-arms the
       // flag here, on its own first frame, without the driver having to predict it.
       this.turnActive = true;
+      const failure = claudeCapacityFailure(message);
+      if (failure) this.turnFailure = failure;
       this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
       return;
     }
     if (message.type === "result") {
       this.turnActive = false;
+      const failure = this.turnFailure ?? claudeResultCapacityFailure(message);
+      this.turnFailure = null;
       const cumulative = claudeTurnUsage(message, this.modelId);
       const usage = cumulative ? claudeUsageDelta(cumulative, this.cumulativeUsage) : null;
       // Advance only from a snapshot the ledger can actually accept. Otherwise a result
@@ -1029,7 +1041,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (cumulative?.turnId && cumulative.models?.length) {
         this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
       }
-      this.out.emit({ kind: "turn_done", usage });
+      this.out.emit({ kind: "turn_done", usage, ...(failure ? { failure } : {}) });
       this.compaction.finish();
       this.refreshRateLimits();
       return;
@@ -1249,6 +1261,49 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
     }
   }
   return null;
+}
+
+/** The API-error categories Claude Code tags a capacity failure with. */
+const CLAUDE_CAPACITY_ERRORS = new Set(["overloaded", "server_error", "rate_limit"]);
+
+/**
+ * The capacity failure a top-level assistant frame reports, or null.
+ *
+ * Claude Code retries a 529 on its own and, once those retries are spent, ends the turn with
+ * a synthetic assistant message. Its `error` tag alone is not enough: "Repeated 529
+ * Overloaded errors" is tagged `server_error` and the "Opus is experiencing high load"
+ * off-switch is tagged `rate_limit`, tags that also cover failures waiting cannot fix. So
+ * `overloaded` is trusted outright and the other two only when the text says capacity. A
+ * subagent's error is ignored: it ends the subagent, not this turn.
+ */
+export function claudeCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.type !== "assistant" || message.parent_tool_use_id) return null;
+  const error = typeof message.error === "string" ? message.error : null;
+  if (!error || !CLAUDE_CAPACITY_ERRORS.has(error)) return null;
+  const text = assistantText(message);
+  if (error === "overloaded" || isProviderCapacityMessage(text)) {
+    return { kind: "capacity", message: text || "Claude's API is overloaded." };
+  }
+  return null;
+}
+
+/** The same verdict read off an error `result`, for a stream that carried no error frame. */
+function claudeResultCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.is_error !== true || typeof message.result !== "string") return null;
+  const text = message.result.trim();
+  return isProviderCapacityMessage(text) ? { kind: "capacity", message: text } : null;
+}
+
+function assistantText(message: ClaudeSdkMessage): string {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text"
+      ? String((block as { text?: unknown }).text ?? "")
+      : ""))
+    .join("\n")
+    .trim();
 }
 
 /**

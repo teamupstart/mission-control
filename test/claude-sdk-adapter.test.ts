@@ -1453,3 +1453,78 @@ test("the adapter refuses a duplicated question too, against its own request", a
     /answered twice/,
   );
 });
+
+test("a turn Claude ended at capacity reports the failure on turn_done; other API errors do not", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  const repeated529 = "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
+
+  // Claude Code tags its exhausted-529 message `server_error`, so the wording decides.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: repeated529 }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const first = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(first?.kind === "turn_done" && first.failure, { kind: "capacity", message: repeated529 });
+
+  // A server error that is not about capacity, and a subagent's overload, end nothing early.
+  assert.equal(await handle.sendIfIdle({ text: "again" }), "started");
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: "toolu_1",
+    error: "overloaded",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 529 Overloaded" }] },
+  });
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 500 Internal server error" }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: "API Error: 500 Internal server error", session_id: "agent-1" });
+  const second = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.equal(second?.kind === "turn_done" && second.failure, undefined);
+
+  // A stream with no assistant error frame: the error result alone still names the capacity.
+  assert.equal(await handle.sendIfIdle({ text: "once more" }), "started");
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const third = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(third?.kind === "turn_done" && third.failure, { kind: "capacity", message: repeated529 });
+
+  // The other two tags Claude Code ends a capacity turn with: `overloaded` is trusted whatever
+  // the text says, and `rate_limit` only when the text names capacity, never a usage limit.
+  const turnEndingWith = async (error: string, text: string) => {
+    assert.equal(await handle.sendIfIdle({ text: `try ${error}` }), "started");
+    query.emit({
+      type: "assistant",
+      session_id: "agent-1",
+      parent_tool_use_id: null,
+      error,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+    // A result with no text, so the verdict can only come from the tagged frame above and
+    // the result-only fallback cannot mask a tag the classifier stopped accepting.
+    query.emit({ type: "result", subtype: "success", is_error: true, session_id: "agent-1" });
+    const done = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+    return done?.kind === "turn_done" ? done.failure : null;
+  };
+  assert.deepEqual(
+    await turnEndingWith("overloaded", "API Error: 529"),
+    { kind: "capacity", message: "API Error: 529" },
+  );
+  const highLoad = "Opus is experiencing high load, please use /model to switch to Sonnet";
+  assert.deepEqual(await turnEndingWith("rate_limit", highLoad), { kind: "capacity", message: highLoad });
+  assert.equal(
+    await turnEndingWith("rate_limit", "You've hit your usage limit. Try again later."),
+    undefined,
+    "a usage limit is not capacity: waiting minutes does not refill a plan",
+  );
+  query.end();
+});

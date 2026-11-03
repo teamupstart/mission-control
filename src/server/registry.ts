@@ -2911,7 +2911,12 @@ export class Registry extends EventEmitter {
   applyDriverEvent(
     id: string,
     evt: SdkEvent,
-    options: { deferIdle?: boolean } = {},
+    options: {
+      deferIdle?: boolean;
+      retryPending?: string | null;
+      workCycleKey?: string;
+      holdWorkCycle?: boolean;
+    } = {},
   ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
@@ -2953,7 +2958,22 @@ export class Registry extends EventEmitter {
         // the session first is silently reverted by it - the ledger row survives, the card's
         // own figure does not, and the fleet total then disagrees with every chip on it.
         // Recording last means `applyDurableUsage` re-reads the session it is updating.
-        if (!options.deferIdle) {
+        if (options.retryPending) {
+          // The provider ended the turn at capacity and the supervisor will retry it. The
+          // work is unfinished, so the cycle must not complete and the card must not go
+          // idle: either would hand half-done work to whatever is waiting on this turn.
+          this.applyDriverState(s, "working", options.retryPending, now, null);
+        } else if (options.workCycleKey && options.workCycleKey !== noteKeyFor(s)) {
+          // The turn belonged to a conversation a clear has since replaced on this card. Its
+          // completion is recorded against that conversation, never the replacement, whose
+          // cycle has not started; the card itself is idle either way.
+          completeWorkCycle(options.workCycleKey, now, now);
+          this.applyDriverState(s, "idle", null, now, null);
+        } else if (options.holdWorkCycle) {
+          // A capacity failure with an accepted turn still queued: that turn continues the
+          // unfinished work, so this ending is neither idle nor a completed cycle. The queued
+          // turn's own completion settles both.
+        } else if (!options.deferIdle) {
           this.applyDriverState(s, "idle", null, now, "turn_completed");
         } else {
           // The next accepted turn keeps the card working, but the cycle that just ended

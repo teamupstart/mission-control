@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   claudeProviderFailure,
+  isProviderCapacityMessage,
   isTokenExhaustion,
   ProviderFailure,
 } from "../src/server/llm/provider-failure.ts";
@@ -29,4 +30,25 @@ test("Claude result frames establish provider origin; local failures do not", ()
   assert.equal(claudeProviderFailure({ type: "result", is_error: true, terminal_reason: "tool_error" }), null);
   assert.equal(claudeProviderFailure({ type: "result", is_error: true, terminal_reason: "tool_error", errors: ["prompt exceeds model token limit"] }), null);
   assert.equal(claudeProviderFailure({ type: "system", is_error: true, terminal_reason: "api_error" }), null);
+});
+
+test("capacity wording from each harness is recognized, and account limits are not", () => {
+  for (const message of [
+    "Selected model is at capacity. Please try a different model.",
+    "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary.",
+    "Opus is experiencing high load, please use /model to switch to Sonnet",
+    'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    "Server is temporarily limiting requests (not your usage limit)",
+  ]) {
+    assert.equal(isProviderCapacityMessage(message), true, message);
+  }
+  for (const message of [
+    "You've hit your usage limit. Upgrade or try again later.",
+    "usage_limit_reached",
+    "HTTP 429 from provider",
+    "Invalid API key",
+    "prompt is too long",
+  ]) {
+    assert.equal(isProviderCapacityMessage(message), false, message);
+  }
 });

@@ -367,6 +367,25 @@ their raw event vocabulary into `work_started` and `turn_completed`; SDK driver 
 same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
 raw hook event names to identify a completed turn.
 
+An SDK `turn_done` that carries a capacity `failure` is not a completion while the supervisor
+holds a retry for it: the Registry keeps the card working with the retry countdown as its
+activity and emits no `turn_completed`. When an accepted turn is already queued behind the
+failure, no retry is scheduled because that turn is the retry, and the cycle likewise stays
+open until it ends. Cancelling the retry timer does not by itself complete
+the cycle. The cycle completes when:
+
+- a later turn ends without a capacity failure. That turn can be the retry's own continuation,
+  a delivered message that replaced the retry, or a turn the driver was already running when
+  the retry came due;
+- the attempts are spent, on the last failed turn;
+- an operator interrupt cancels the waiting retry, or the driver refuses the retry's send;
+- a context clear the driver confirms. The completion is recorded against the replaced
+  conversation's logical key, never the replacement's.
+
+Stopping the session cancels the timer and leaves the cycle active, because the work was not
+finished. A clear, stop, or interrupt the driver refuses re-arms the retry at the same attempt
+and emits no completion.
+
 `session_work_cycles` stores one current projection per logical conversation key: generation,
 active state, completion time, and update time. It is separate from `session_events`, whose any-row
 query remains proof that terminal hooks were seen, and from `session_work_episodes`, which owns task,

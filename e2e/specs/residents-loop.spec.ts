@@ -432,3 +432,54 @@ test("a finished task's outcome reads from the left of its pill, whole", async (
   await expect(page.locator(".tooltip").filter({ hasText: `Outcome: ${outcome}` })).toBeVisible();
   await capture(page, "outcome-pill");
 });
+
+test("card: clicking the live loop status or the empty middle opens the session, the controls menu does not", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Card click" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+    workspace: { defaultRepoRoot: daemon.repo }, execution: { model: "claude-fable-5" },
+    loop: { delaySeconds: 1, minDelaySeconds: 1, iterationCap: 1 },
+  } });
+  await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await page.reload();
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "card-click" });
+  await expect.poll(() => live(daemon)?.loop_state, { timeout: 60_000 }).toBe("paused");
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const board = page.locator("main.board");
+  const card = page.locator(".tile.is-resident");
+  const status = card.getByLabel("Resident loop status");
+  await expect(status).toContainText("Native backstop: unavailable");
+  await expect(board).toHaveAttribute("data-focus", "none");
+
+  await card.getByRole("button", { name: "Resident controls" }).click();
+  await expect(page.getByRole("menu", { name: "Resident controls" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu", { name: "Resident controls" })).toHaveCount(0);
+  await expect(board).toHaveAttribute("data-focus", "none");
+
+  const conversation = page.getByRole("tab", { name: /Conversation$/ });
+  const expectOpened = async () => {
+    await expect(board).not.toHaveAttribute("data-focus", "none");
+    await expect(page.locator("section.board-col.is-rail")).toBeVisible();
+    await expect(conversation).toHaveAttribute("aria-selected", "true");
+  };
+
+  const statusBox = (await status.boundingBox())!;
+  const menuBox = (await card.getByRole("button", { name: "Resident controls" }).boundingBox())!;
+  expect(menuBox.x - (statusBox.x + statusBox.width), "the loop row leaves space between its status and menu").toBeGreaterThan(2);
+  const gap = { x: (statusBox.x + statusBox.width + menuBox.x) / 2, y: menuBox.y + menuBox.height / 2 };
+  expect(await page.evaluate(({ x, y }) => {
+    const hit = document.elementFromPoint(x, y);
+    return hit?.classList.contains("resident-card-loop") ?? false;
+  }, gap), "the click lands on the row's empty space, not on its text or menu").toBe(true);
+  await page.mouse.click(gap.x, gap.y);
+  await expectOpened();
+  await capture(page, "card-middle-opens-session");
+
+  await page.getByRole("button", { name: "Back to the board" }).click();
+  await expect(board).toHaveAttribute("data-focus", "none");
+
+  await status.click();
+  await expectOpened();
+  await capture(page, "card-status-opens-session");
+});

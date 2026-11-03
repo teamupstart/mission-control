@@ -89,6 +89,7 @@ export function foremanProfileCard(summary: ForemanProfileSummary): LibraryCard 
 function Shelf({
   id,
   cards,
+  filter,
   crossLink,
   crossLinkHint,
   onCrossLink,
@@ -99,6 +100,7 @@ function Shelf({
 }: {
   id: Parameters<typeof libraryShelfCopy>[0];
   cards: LibraryCard[];
+  filter: string;
   /**
    * Where this shelf's assets are running, or null on a shelf where that question has no
    * honest answer.
@@ -119,6 +121,13 @@ function Shelf({
   empty: string;
 }): React.JSX.Element {
   const copy = libraryShelfCopy(id);
+  const query = filter.trim().toLowerCase();
+  const matches = (text: string): boolean => text.toLowerCase().includes(query);
+  const visibleCards = cards.filter((card) => matches([
+    card.name, card.description || "No description", card.fact,
+    ...card.tags.map((tag) => tag.label),
+  ].join(" ")));
+  const showNewCard = newCard && matches(`${newCard.label} ${newCard.sub}`);
   return (
     <section className="lib-shelf" aria-labelledby={`lib-shelf-${id}`}>
       <div className="lib-shelf-top">
@@ -140,7 +149,7 @@ function Shelf({
       <h3 id={`lib-shelf-${id}`}>{copy.question}</h3>
       <p className="lib-shelf-why">{copy.why}</p>
       <div className="lib-shelf-row">
-        {cards.map((card) => (
+        {visibleCards.map((card) => (
           <ShelfCard
             key={card.id}
             card={card}
@@ -149,8 +158,10 @@ function Shelf({
             openHint={openHint(card)}
           />
         ))}
-        {cards.length === 0 && <p className="lib-shelf-empty">{empty}</p>}
-        {newCard && (
+        {visibleCards.length === 0 && (!query || !showNewCard) && (
+          <p className="lib-shelf-empty">{query ? "No matching cards." : empty}</p>
+        )}
+        {showNewCard && (
           <Tooltip label={newCard.hint}>
             <button className="lib-asset lib-asset-new" onClick={newCard.onClick}>
               <span className="lib-asset-new-label">{newCard.label}</span>
@@ -164,6 +175,7 @@ function Shelf({
 }
 
 export function LibraryPage({
+  filter = "",
   workflowSummaries = [],
   personas = [],
   foremanSummary = { runner: null, models: null },
@@ -183,6 +195,8 @@ export function LibraryPage({
   onOpenMissions,
   onOpenTaskSources,
 }: {
+  /** The app's top-bar filter, applied to every shelf's visible card text. */
+  filter?: string;
   workflowSummaries?: WorkflowSummary[];
   personas?: PersonaView[];
   /** App-owned Foreman execution summary for the fixed System card. */
@@ -248,6 +262,7 @@ export function LibraryPage({
 
       <Shelf
         id="missions"
+        filter={filter}
         cards={[...missions, taskSourcesCard()]}
         crossLink={missionsCrossLink(schedules)}
         crossLinkHint="Open recurring missions - cadence, preview, and run history"
@@ -272,6 +287,7 @@ export function LibraryPage({
 
       <Shelf
         id="workflows"
+        filter={filter}
         cards={workflows}
         crossLink={workflowRunsCrossLink(workflowRuns)}
         crossLinkHint="Watch the workflow runs these are bound to"
@@ -289,6 +305,7 @@ export function LibraryPage({
 
       <Shelf
         id="commands"
+        filter={filter}
         cards={commands}
         // No cross-link, and no ＋ New card. The slots ship with the product, and their
         // runs are the workflow runs the first shelf already links to.
@@ -305,6 +322,7 @@ export function LibraryPage({
 
       <Shelf
         id="personas"
+        filter={filter}
         cards={reviewers}
         crossLink={workflowRunsCrossLink(workflowRuns)}
         crossLinkHint="Watch the runs where these reviewers return verdicts"
@@ -324,6 +342,7 @@ export function LibraryPage({
 
       <Shelf
         id="actions"
+        filter={filter}
         cards={actions}
         crossLink={actionWaitsCrossLink(workflowRuns)}
         crossLinkHint="Watch the runs waiting on a session to carry out an action"
@@ -341,6 +360,7 @@ export function LibraryPage({
 
       <Shelf
         id="ensembles"
+        filter={filter}
         cards={strategies}
         crossLink={ensemblesCrossLink(ensembleSummaries, ensembleAttentionCount)}
         crossLinkHint="Watch ensembles, their evidence, and their decisions"

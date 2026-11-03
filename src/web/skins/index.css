@@ -3,3 +3,6 @@
    registry order; `test/skins.test.ts` fails when the two lists disagree. They ship in the
    main bundle, so switching skins never waits on a fetch. */
 @import "./daylight.css";
+@import "./paper.css";
+@import "./blueprint.css";
+@import "./neon-dusk.css";

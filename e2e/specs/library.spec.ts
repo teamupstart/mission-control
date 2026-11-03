@@ -88,6 +88,80 @@ async function seedAssets(daemon: DaemonHandle): Promise<{ workflowId: string; p
   return { workflowId: workflow.workflow.id, personaId: persona.id };
 }
 
+test("Library search filters cards across every shelf and clears without losing assets", async ({
+  dashboard,
+  daemon,
+}) => {
+  const { workflowId } = await seedAssets(daemon);
+  await api(daemon, "/api/schedules", {
+    name: "Shelf mission",
+    enabled: false,
+    expression: "0 3 * * *",
+    timezone: "UTC",
+    overlapPolicy: "skip-active",
+    missedPolicy: "coalesce-latest",
+    template: { title: "Scheduled audit", intent: "Audit dependencies", repoRoot: daemon.repo, kind: "ship" },
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  const search = dashboard.getByRole("textbox", { name: /^Filter / });
+  const cards = dashboard.locator(".lib-shelf-row").getByRole("button");
+  await expect(cards.filter({ hasText: "Shelf mission" })).toHaveCount(1);
+  await expect(cards.filter({ hasText: "Shelf workflow" })).toHaveCount(1);
+  const originalCount = await cards.count();
+
+  // The same query must narrow several shelves at once, including authored missions.
+  await dashboard.locator(".filter-box").click();
+  await search.fill("  sHeLf  ");
+  await expect(cards).toHaveCount(4);
+  for (const name of ["Shelf mission", "Shelf workflow", "Shelf reviewer", "Shelf action"]) {
+    await expect(cards.filter({ hasText: name })).toHaveCount(1);
+  }
+  await expect(search).toHaveAccessibleName("Filter Library cards");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("library-search");
+    mkdirSync(dir, { recursive: true });
+    const viewport = dashboard.viewportSize()!;
+    await dashboard.setViewportSize({ width: 1440, height: 1800 });
+    await dashboard.screenshot({ path: `${dir}filtered-shelves.png`, fullPage: true });
+    await dashboard.setViewportSize(viewport);
+  }
+
+  // Fixed and registry-backed cards participate, just like authored assets.
+  for (const [query, name] of [
+    ["task sources", "Task sources"],
+    ["type checker", "typecheck"],
+    ["foreman", "Foreman"],
+    ["best of n", "Best of N"],
+    ["pastes the output", "Shelf action"], // description
+    ["paused", "Shelf mission"], // tag
+    ["0 3 * * *", "Shelf mission"], // fact, treated as literal text
+    ["new persona", "＋ New Persona"], // creation cards filter too
+  ] as const) {
+    await search.fill(query);
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first()).toContainText(name);
+  }
+
+  await search.fill("no-library-card-matches-this");
+  await expect(cards).toHaveCount(0);
+  await expect(dashboard.getByText("No matching cards.", { exact: true })).toHaveCount(6);
+  await dashboard.getByRole("button", { name: "Clear filter", exact: true }).click();
+  await expect(cards).toHaveCount(originalCount);
+  await expect(search).toBeFocused();
+  await search.fill("   ");
+  await expect(cards).toHaveCount(originalCount);
+  await search.fill("Shelf workflow");
+  await expect(cards).toHaveCount(1);
+  await search.press("Escape");
+  await expect(cards).toHaveCount(originalCount);
+  await expect(search).toHaveValue("");
+
+  // Filtering changes visibility only; a matching card still opens the same editor.
+  await search.fill("Shelf workflow");
+  await cards.first().click();
+  await expect(dashboard).toHaveURL(new RegExp(`#/library/workflows/${workflowId}$`));
+});
+
 test("the Library shelves answer a question each, and name nothing that is running", async ({
   dashboard,
   daemon,

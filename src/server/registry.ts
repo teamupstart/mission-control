@@ -4833,6 +4833,14 @@ export class Registry extends EventEmitter {
     );
   }
 
+  private canAssociateCompletedPr(binding: TaskWorkEpisodeBinding, endedAt: number | null, match: PrMatch): boolean {
+    if (match.createdAt === null) return false;
+    if (endedAt !== null && match.createdAt < endedAt) return true;
+    // Keep late-opened PRs in branch discovery until merged, so the final source head
+    // is verified. Caching an open URL would hand it to a state-only merge poll later.
+    return match.state === "merged" && binding.workHeadSha != null && binding.workHeadSha === match.headSha;
+  }
+
   private acceptPrForEpisode(
     session: Session,
     match: PrMatch,
@@ -4858,6 +4866,10 @@ export class Registry extends EventEmitter {
     ) {
       return null;
     }
+    const binding = taskWorkEpisodeForSession(session.id);
+    const owner = binding && (this.tasks.get(binding.taskId) ?? getDurableTask(binding.taskId));
+    if (owner?.status === "done" && binding && binding.episodeId === episode.episodeId &&
+      !this.canAssociateCompletedPr(binding, owner.completedAt, match)) return null;
     if (
       !updateWorkEpisodePr(
         session.id,
@@ -5503,8 +5515,7 @@ export class Registry extends EventEmitter {
     // Compare the PR head, never its merge commit: squash merges produce a different target SHA.
     if (!current || match.branch !== target.binding.branch || !match.headSha ||
       match.createdAt === null || (match.state === "merged" && match.mergedAt === null)) return;
-    const retainedCommitMatches = current.binding.workHeadSha === match.headSha;
-    if (!retainedCommitMatches && (current.endedAt === null || match.createdAt >= current.endedAt)) return;
+    if (!this.canAssociateCompletedPr(current.binding, current.endedAt, match)) return;
     const at = Date.now();
     if (target.historical) {
       // The live session now describes B, not A. A's retained binding is its authority;

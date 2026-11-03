@@ -1100,3 +1100,90 @@ process.exitCode = ${failure === "command-failure" ? 23 : 0};\n`, { mode: 0o755 
     assert.deepEqual(f.registry.getTask(f.taskId), sourceBefore);
   });
 }
+
+for (const historical of [false, true]) {
+  for (const matchesAtMerge of [false, true]) {
+    test(`late-opened ${historical ? "historical" : "current"} PR ${matchesAtMerge ? "recovers matching work" : "rejects a force-pushed head"} at merge after restart`, async () => {
+      const id = `late-merge-head-${historical}-${matchesAtMerge}`;
+      const f = departed(id, { worktreePath: null, homeName: null });
+      const dependentId = `${id}-dependent`;
+      const sha = "a".repeat(40);
+      f.registry.upsertTask(baseTask({ id: dependentId, dependencies: [{
+        type: "task", taskId: f.taskId, title: "Earlier work", sessionId: f.id,
+        episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId,
+        branch: f.episode.branch, prUrl: null, selectedAt: 1, satisfiedAt: null,
+      }] }));
+      await pollAndReconcilePrs(f.registry, async () => null, async () => null,
+        undefined, undefined, async () => sha);
+      if (historical) {
+        const next = { ...f.episode, episodeId: `${id}-next`, branch: `feat/${id}-next`, startedAt: Date.now() };
+        replaceSessionWorkEpisode(next);
+        f.registry.bindTaskToWorkEpisode(f.taskId, f.id, next);
+      }
+      await f.tasks.complete(f.taskId, "completed");
+      const sourceBefore = f.registry.getTask(f.taskId)!;
+      const createdAt = sourceBefore.completedAt! + 1;
+      const url = `https://github.com/example/repo/pull/${historical ? 1323 : 1322}`;
+      const discover = async (registry: InstanceType<typeof Registry>, merged: boolean) => {
+        await pollAndReconcilePrs(registry, async (_cwd, branch) => branch !== f.episode.branch ? null : {
+          url, number: historical ? 1323 : 1322, state: merged ? "merged" : "open", checks: "passing",
+          createdAt, mergedAt: merged ? createdAt + 1 : null,
+          headSha: merged && !matchesAtMerge ? "b".repeat(40) : sha, worktreeHeadSha: null,
+        }, async candidate => candidate !== url ? null : { state: "merged", mergedAt: createdAt + 1 });
+      };
+      const restarted = new Registry();
+      const restartedTasks = new TaskManager(restarted);
+      managers.push(restartedTasks);
+      await discover(restarted, false);
+      assert.equal(restarted.getTask(dependentId)!.dependencies[0]!.satisfiedAt, null);
+      // A cached open URL must not let the state-only URL poller bypass the final head.
+      const afterOpenRestart = new Registry();
+      const tasks = new TaskManager(afterOpenRestart);
+      managers.push(tasks);
+      await discover(afterOpenRestart, true);
+      const edge = afterOpenRestart.getTask(dependentId)!.dependencies[0]!;
+      if (matchesAtMerge) {
+        assert.equal(edge.prUrl, url);
+        assert.equal(typeof edge.satisfiedAt, "number");
+        assert.deepEqual(tasks.dependencyBlockers(afterOpenRestart.getTask(dependentId)!), []);
+      } else {
+        assert.equal(edge.satisfiedAt, null);
+        const binding = historical ? historicalTaskWorkEpisodeBindingsForTask(f.taskId)[0]! : taskWorkEpisodeForTask(f.taskId)!;
+        assert.equal(binding.mergedAt, null, "the force-pushed PR cannot become durable merge evidence");
+      }
+      const sourceAfter = afterOpenRestart.getTask(f.taskId)!;
+      assert.deepEqual([sourceAfter.status, sourceAfter.outcome, sourceAfter.outcomeUrl, sourceAfter.completedAt, sourceAfter.updatedAt],
+        [sourceBefore.status, sourceBefore.outcome, sourceBefore.outcomeUrl, sourceBefore.completedAt, sourceBefore.updatedAt]);
+    });
+  }
+}
+
+for (const matchesAtMerge of [false, true]) {
+  test(`a live completed session ${matchesAtMerge ? "accepts" : "rejects"} a late PR's source head at merge`, async () => {
+    const id = `live-late-head-${matchesAtMerge}`;
+    const f = departed(id, { worktreePath: null, homeName: null });
+    const sha = "c".repeat(40);
+    const dependentId = `${id}-dependent`;
+    f.registry.upsertTask(baseTask({ id: dependentId, dependencies: [{
+      type: "task", taskId: f.taskId, title: "Earlier work", sessionId: f.id,
+      episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId,
+      branch: f.episode.branch, prUrl: null, selectedAt: 1, satisfiedAt: null,
+    }] }));
+    await pollAndReconcilePrs(f.registry, async () => null, async () => null,
+      undefined, undefined, async () => sha);
+    await f.tasks.complete(f.taskId, "completed");
+    const createdAt = f.registry.getTask(f.taskId)!.completedAt! + 1;
+    const url = "https://github.com/example/repo/pull/1324";
+    const match = { url, number: 1324, state: "open" as const, checks: "passing" as const,
+      createdAt, mergedAt: null, headSha: sha, worktreeHeadSha: sha,
+      branch: f.episode.branch!, episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId };
+    f.registry.reconcilePrs(new Map([[f.id, match]]), new Set());
+    assert.equal(f.registry.getTask(dependentId)!.dependencies[0]!.satisfiedAt, null);
+    const head = matchesAtMerge ? sha : "d".repeat(40);
+    f.registry.reconcilePrs(new Map([[f.id, { ...match, state: "merged", mergedAt: createdAt + 1,
+      headSha: head, worktreeHeadSha: head }]]), new Set());
+    const edge = f.registry.getTask(dependentId)!.dependencies[0]!;
+    assert.equal(typeof edge.satisfiedAt, matchesAtMerge ? "number" : "object");
+    if (!matchesAtMerge) assert.equal(taskWorkEpisodeForTask(f.taskId)!.mergedAt, null);
+  });
+}

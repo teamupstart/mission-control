@@ -115,6 +115,31 @@ test("every skin write keeps the desktop window's launch colour, browser or desk
   assert.equal(color(), "#f5f7fa");
 });
 
+test("a malformed field elsewhere cannot abort startup or fail the page, and a valid skin survives it", async () => {
+  // Startup and the dashboard document read the skin outside any settings request. A strict
+  // parse of the whole record would throw on one bad field and take the daemon or every page
+  // load down with it; reading the skin alone keeps a valid Daylight in force.
+  const { readFileSync, rmSync: remove } = await import("node:fs");
+  const { storedSkin, syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight", layout: "hologram" } as never);
+  assert.throws(() => getUiConfig(false), "the premise: a strict parse of this record throws");
+  assert.equal(storedSkin(), "daylight");
+  remove(launch, { force: true });
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#f5f7fa", "startup did not record the valid stored skin");
+
+  // An unknown skin, or a record that is not an object at all, reads as Default and never throws.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "hologram" } as never);
+  assert.equal(storedSkin(), "default");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, "not an object" as never);
+  assert.equal(storedSkin(), "default");
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#0a0c0f");
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {

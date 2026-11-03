@@ -6,7 +6,7 @@ import {
 } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { skinById, type SkinId } from "@shared/skins.ts";
+import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
@@ -97,19 +97,40 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
 }
 
 /**
+ * The stored skin on its own, for the two readers that run outside a settings request: daemon
+ * startup and serving the dashboard document.
+ *
+ * Deliberately NOT `getUiConfig(false).skin`. That parses the whole record strictly, so one
+ * malformed field elsewhere (a hand-edited `layout`, a record from a newer build) would throw -
+ * aborting daemon startup, or failing every page load. Reading only `skin` keeps a valid stored
+ * Daylight in force even then. An unknown or unreadable skin is Default, as `UiConfigSchema`
+ * reads it, and this never throws.
+ */
+export function storedSkin(): SkinId {
+  try {
+    const stored = getAppConfig(CONFIG_ENTRY) as unknown as { skin?: unknown } | null | undefined;
+    const skin = typeof stored === "object" && stored !== null ? stored.skin : undefined;
+    return isSkinId(skin) ? skin : UI_CONFIG_DEFAULTS.skin;
+  } catch (error) {
+    console.warn("[ui-config] could not read the stored skin:", error);
+    return UI_CONFIG_DEFAULTS.skin;
+  }
+}
+
+/**
  * Keep the desktop window's launch colour in step with the stored skin.
  *
  * The shell paints its window before the dashboard loads, from a file in the state home
- * (`window-background.ts`). The dashboard's desktop bridge keeps it current, but a skin chosen
- * in a browser tab has no bridge, so without this the first desktop launch after it would open
- * on the previous colour - a dark frame under Daylight. Called on every skin write, after a
- * settings restore, and at daemon startup. The colour is the registry's swatch, which
- * `test/skins.test.ts` holds equal to the skin's own `--bg`. Never fails the write that
- * prompted it: a launch colour is not worth refusing a setting over.
+ * (`window-background.ts`), and this is that file's only writer. A page's own reports are
+ * never persisted, since a page can be showing a stale skin, so a skin chosen anywhere -
+ * a browser tab included - reaches the next desktop launch only through here. Called on every
+ * skin write, after a settings restore, and at daemon startup. The colour is the registry's
+ * swatch, which `test/skins.test.ts` holds equal to the skin's own `--bg`. Never throws, so it
+ * can neither fail the write that prompted it nor abort startup.
  */
-export function syncWindowBackground(skin: SkinId = getUiConfig(false).skin): void {
+export function syncWindowBackground(skin?: SkinId): void {
   try {
-    rememberWindowBackground(windowBackgroundPath(STATE_DIR), skinById(skin).swatches.bg);
+    rememberWindowBackground(windowBackgroundPath(STATE_DIR), skinById(skin ?? storedSkin()).swatches.bg);
   } catch (error) {
     console.warn("[ui-config] could not remember the window background:", error);
   }

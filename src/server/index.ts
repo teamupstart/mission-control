@@ -3,7 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
-import { getUiConfig, syncWindowBackground } from "./ui-config.ts";
+import { storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -750,9 +750,10 @@ if (hasDist) {
   // The document itself carries the stored skin, so a profile with no local cache - a first
   // desktop launch after a skin was chosen in a browser - paints it from the first frame. Read
   // per request: a rebuild replaces the file, and the skin can change between loads.
-  // `getUiConfig(false)`: serving a page never writes the config.
+  // `storedSkin()`: serving a page never writes the config, and a malformed field elsewhere in
+  // the record cannot fail the page.
   const dashboardDocument = (c: Context) =>
-    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), getUiConfig(false).skin));
+    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), storedSkin()));
   app.get("/", dashboardDocument);
   app.get("/index.html", dashboardDocument);
   app.use("/*", serveStatic({ root: webDir }));

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -78,6 +79,7 @@ export function readUpdateOutcome(path = updateOutcomePath()): UpdateApplyOutcom
 
 /** Read and remove a marker so a surfaced result cannot recur forever. */
 export function consumeUpdateOutcome(path = updateOutcomePath()): UpdateApplyOutcome | null {
+  if (!existsSync(path)) return null;
   return withMigrationLockSync(dirname(path), () => {
     const outcome = readUpdateOutcome(path);
     if (outcome) rmSync(path, { force: true });

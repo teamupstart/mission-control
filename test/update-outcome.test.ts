@@ -56,6 +56,14 @@ test("a surfaced outcome is consumed exactly once", async (t) => {
   assert.deepEqual([consumeUpdateOutcome(path), consumeUpdateOutcome(path)], [outcome, null]);
 });
 
+test("consuming an absent outcome does not require a state directory", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mission-update-absent-"));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const stateDirectory = join(directory, "fresh-state");
+  assert.equal(consumeUpdateOutcome(join(stateDirectory, "update-outcome.json")), null);
+  assert.equal(fs.existsSync(stateDirectory), false);
+});
+
 
 test("startup waits for its live helper to publish verified success, and an old notice cannot clear a newer failure", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "mission-update-settled-"));
@@ -196,6 +204,7 @@ test("outcome retirement cannot overlap recovery in the same app process", async
   await withMigrationLock(directory, async () => {
     await Promise.resolve();
     assert.throws(() => clearUpdateOutcome(path, expected), /Another update or install/);
+    assert.throws(() => consumeUpdateOutcome(path), /Another update or install/);
     assert.deepEqual(readUpdateOutcome(path), expected);
   });
   assert.equal(clearUpdateOutcome(path, expected), true);

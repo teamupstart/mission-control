@@ -1,4 +1,4 @@
-import { RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
 import { residentWakeMarker } from "@shared/resident-turn.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
@@ -115,7 +115,7 @@ export class ResidentLoop {
     if (!run || run.endedAt !== null || run.launchState !== "launched") { this.cancelTimer(id); return; }
     const session = this.session(run);
     if (!session || session.runtime !== "sdk") return;
-    if (run.loopState === "paused" && run.pauseReason === "needs-you" && releaseResidentReviewPause(id)) {
+    if (run.loopState === "paused" && run.pauseReason === RESIDENT_NEEDS_YOU_PAUSE_REASON && releaseResidentReviewPause(id)) {
       run = liveRun(id);
       this.publish(id);
     }
@@ -168,7 +168,7 @@ export class ResidentLoop {
     if (!run) throw new ResidentLoopRefusal("Only a resident can schedule its next iteration.");
     const parsed = ScheduleNextIterationSchema.safeParse(request);
     if (!parsed.success) throw new ResidentLoopRefusal(parsed.error.message);
-    if (run.loopState === "paused" && run.pauseReason === "needs-you") releaseResidentReviewPause(run.id);
+    if (run.loopState === "paused" && run.pauseReason === RESIDENT_NEEDS_YOU_PAUSE_REASON) releaseResidentReviewPause(run.id);
     const receipt = paceResident(run.id, parsed.data, session.workCycle?.generation ?? 0, this.now(), reportBucket(session) === "needs-you");
     this.cancelTimer(run.id);
     this.publish(run.id);

@@ -31,6 +31,13 @@ export const RESIDENT_OPERATOR_PAUSE_REASON = "Paused by operator";
  * `residentRestart` record read back.
  */
 export const RESIDENT_RESTART_PAUSE_REASON = "Restarting on new profile";
+/**
+ * The automatic pause reason older daemons recorded while a resident's session needed a person.
+ * The loop no longer writes it - an open request now holds wakes without pausing - but runs
+ * persisted with it still exist, and the loop releases them on observation. Stored under this
+ * exact spelling, so it is never reworded.
+ */
+export const RESIDENT_NEEDS_YOU_PAUSE_REASON = "needs-you";
 
 /**
  * The harnesses a resident may run on, in picker order.

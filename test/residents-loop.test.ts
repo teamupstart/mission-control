@@ -45,6 +45,22 @@ test("an operator pause stays out of attention while a guardrail pause is owed",
   assert.equal(attention().items[0]?.kind, "session_blocked");
 });
 
+test("the inbox draws no row for a stale needs-you hold, while a guardrail pause still gets one", () => {
+  // No loop runs here, so nothing can lift the hold first: this isolates the inbox's own filter.
+  const f = fixture();
+  const attention = () => foldAttention({ sessions: [f.session], reviews: [], ensembles: [], residentRuns: [residentRunSummary(f.run())!] });
+  assert.equal(f.session.pendingReviews, 0, "no review is open on the session");
+  state.pauseResident("run", "needs-you");
+  assert.equal(f.run().loopState, "paused"); assert.equal(f.run().pauseReason, "needs-you");
+  assert.equal(attention().total, 0);
+  assert.deepEqual(attention().items, [], "no 'Waiting on you: needs-you' row with nothing to answer");
+  state.pauseResident("run", "Spend guardrail reached");
+  assert.equal(attention().total, 1);
+  const row = attention().items[0];
+  assert.equal(row?.kind, "session_blocked");
+  assert.equal(row?.kind === "session_blocked" ? row.activity : null, "Spend guardrail reached");
+});
+
 function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let now = 1_800_000_000_000;
   const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options });

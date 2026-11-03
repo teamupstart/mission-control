@@ -39,7 +39,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -666,6 +666,17 @@ server.registerTool(
     },
   },
   async ({ question, options, multiSelect, allowOther }, extra) => {
+    // Refused before any review exists: a card the human cannot answer would leave this call,
+    // and the session, waiting on something nobody can resolve. The daemon's schema enforces
+    // the same rule; checking here first lets the agent read why instead of a transport error.
+    const problem = inputQuestionProblem(question, options);
+    if (problem) {
+      return textResult(
+        `Not asked: ${problem}. Nothing was shown to the human and nothing is waiting on them. ` +
+          "Fix the question and call request_input again.",
+        true,
+      );
+    }
     try {
       // Option ids are positional and generated here rather than asked of the agent. The
       // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a

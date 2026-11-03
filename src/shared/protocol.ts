@@ -521,6 +521,32 @@ export const PlanDecisionSchema = z.object({
 export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
 
 /**
+ * Why a `request_input` ask could not be answered on its dashboard card, or null when it can.
+ *
+ * The card is the human's only way to answer, so an ask it cannot carry is refused before a
+ * review exists rather than shown as something nobody can act on: a blank question has nothing
+ * to read, a blank option label is a radio with no name, and two options with the same label
+ * cannot be told apart - neither by the person choosing nor by the agent, which receives the
+ * chosen option back as its LABEL. Shared by the MCP tool, which explains the refusal to the
+ * agent in its own words, and by `CreateReviewSchema`, which holds the line for any client.
+ */
+export function inputQuestionProblem(
+  question: string,
+  options: ReadonlyArray<{ label: string }> | undefined,
+): string | null {
+  if (!question.trim()) return "the question is empty";
+  const seen = new Set<string>();
+  for (const [index, option] of (options ?? []).entries()) {
+    const label = option.label.trim();
+    if (!label) return `option ${index + 1} has an empty label`;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return `more than one option is labelled "${label}", so the answer could not say which was chosen`;
+    seen.add(key);
+  }
+  return null;
+}
+
+/**
  * An MCP-driven agent creating a review item bound to its session's pane.
  *
  * A `plan-decisions` review must carry at least one decision: the whole point of the
@@ -557,6 +583,12 @@ export const CreateReviewSchema = z
   .refine((r) => r.kind !== "input" || (r.decisions?.length ?? 0) <= 1, {
     message: "kind 'input' carries at most one decision",
     path: ["decisions"],
+  })
+  .superRefine((r, ctx) => {
+    if (r.kind !== "input") return;
+    const decision = r.decisions?.[0];
+    const problem = inputQuestionProblem(decision ? decision.question : r.body.trim() || r.title, decision?.options);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `This question cannot be answered on its card: ${problem}`, path: ["decisions"] });
   })
   .refine((r) => r.kind === "plan-decisions" || r.kind === "input" || !r.decisions?.length, {
     message: "only kinds 'plan-decisions' and 'input' can carry decisions",

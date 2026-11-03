@@ -1010,18 +1010,26 @@ async function restSearch(
 async function readCli(
   cfg: JiraConfig,
   ctx: SweepContext,
-): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean }> {
-  if (ctx.signal.aborted) return { issues: [], error: "the sweep was abandoned", hasMore: false };
+): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean; repoGone: boolean }> {
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", hasMore: false, repoGone: false };
+  }
   // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is for the
-  // operators who have one - so nothing has to be passed through explicitly.
-  const page = pageFromCli(await run(jiraBin(), jiraIssueListArgs(cfg), { timeoutMs: JIRA_TIMEOUT_MS }));
-  if (page.error) return { issues: [], error: page.error, hasMore: false };
+  // operators who have one - so nothing has to be passed through explicitly. It starts in the
+  // source's checkout, as acli and gh do, so a checkout that has gone is named as one here rather
+  // than surfacing later as every candidate refused at ingest.
+  const res = await run(jiraBin(), jiraIssueListArgs(cfg), { cwd: ctx.repoRoot, timeoutMs: JIRA_TIMEOUT_MS });
+  const page = pageFromCli(res);
+  if (page.error) {
+    return { issues: [], error: page.error, hasMore: false, repoGone: res.missingCwd !== undefined };
+  }
   // The extra row is a probe, not a candidate: it answers the question and is then dropped, so a
   // sweep files exactly the page size it was configured for.
   return {
     issues: page.issues.slice(0, cfg.limit),
     error: null,
     hasMore: page.issues.length > cfg.limit,
+    repoGone: false,
   };
 }
 
@@ -1353,7 +1361,9 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
         advisory: targetProblem ?? cliCannotPage(cfg),
       };
     }
-    if (!restCred || ctx.signal.aborted) {
+    // A vanished checkout is not a CLI problem the REST rung can route around: REST would read
+    // Jira and every candidate would then be refused at ingest for the same missing repository.
+    if (viaCli.repoGone || !restCred || ctx.signal.aborted) {
       // The CLI failed and there is no second rung to try. A credential that exists but may not be
       // used for this host is worth saying alongside the CLI's own failure, since the operator
       // would otherwise reasonably assume the fallback was attempted.

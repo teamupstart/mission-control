@@ -267,6 +267,7 @@ const uiFields = {
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
+  boardSidebarAllSessions: "setting",
   collapsedBoardColumns: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",

@@ -171,6 +171,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "board-sidebar",
+    label: "Show all sessions in sidebar",
+    description: "Select Board layout to show every session state in the drill-in sidebar.",
+    category: "display",
+    anchor: "display/layout",
+    keywords: ["board", "sidebar", "sessions", "states", "rail", "drill-in"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",

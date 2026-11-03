@@ -243,16 +243,65 @@ test("native Git operations fail closed when a subprocess outcome is unknown", a
   assertUnknown(merged, /git merge-base --is-ancestor/);
 });
 
-test("concurrent acquires receive different exact slots and respect capacity", async () => {
+test("concurrent acquires receive different exact slots and respect capacity", async (t) => {
   const { clone, sha } = repository("mission-native-concurrent-");
+  let announceFirstAdd!: () => void;
+  let releaseFirstAdd!: () => void;
+  let announceSecondReservation!: () => void;
+  const firstAddStarted = new Promise<void>((resolve) => { announceFirstAdd = resolve; });
+  const firstAddGate = new Promise<void>((resolve) => { releaseFirstAdd = resolve; });
+  const secondReserved = new Promise<void>((resolve) => { announceSecondReservation = resolve; });
+  let addCalls = 0;
+  let activeAdds = 0;
+  let peakAdds = 0;
+  class ObservedAddGit extends NativeWorktreeGit {
+    override async add(...args: Parameters<NativeWorktreeGit["add"]>): Promise<GitResult<void>> {
+      addCalls++;
+      activeAdds++;
+      peakAdds = Math.max(peakAdds, activeAdds);
+      try {
+        if (addCalls === 1) {
+          announceFirstAdd();
+          await firstAddGate;
+        }
+        return await super.add(...args);
+      } finally {
+        activeAdds--;
+      }
+    }
+  }
   const m = manager({
+    git: new ObservedAddGit(),
     resolvePolicy: () => ({ enabled: true, maxSlots: 2, setupArgv: null }),
   });
-  const results = await Promise.all([
-    acquire(m, clone, sha, "task-1"),
-    acquire(m, clone, sha, "task-2"),
-    acquire(m, clone, sha, "task-3"),
-  ]);
+  const reserveNew = m.store.reserveNew.bind(m.store);
+  t.mock.method(m.store, "reserveNew", (input: Parameters<typeof reserveNew>[0]) => {
+    const slot = reserveNew(input);
+    if (slot && input.ownerKey === "task-2") announceSecondReservation();
+    return slot;
+  });
+  const attempts = [acquire(m, clone, sha, "task-1")];
+  let results: Awaited<ReturnType<typeof acquire>>[];
+  try {
+    await firstAddStarted;
+    attempts.push(acquire(m, clone, sha, "task-2"));
+    await secondReserved;
+    // Reservation is past the filesystem work. Drain its promise continuations through the
+    // slot/add locks while the first add stays held; this is an event-loop turn, not a delay.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(addCalls, 1, "the second same-repository add must wait for the held first add");
+    assert.equal(activeAdds, 1, "the first add is still held at the synchronization point");
+    attempts.push(acquire(m, clone, sha, "task-3"));
+    assert.equal((await attempts[2]!).outcome, "notAcquired", "both reserved slots count toward capacity while Git waits");
+  } finally {
+    // Also drain both acquires after a failed assertion, before the test database is cleared.
+    releaseFirstAdd();
+    results = await Promise.all(attempts);
+  }
+  assert.equal(addCalls, 2, "the waiting add starts after the first is released");
+  // Distinct slot paths still share Git's worktrees metadata. A second add can read
+  // the first registration before its commondir file exists, so creation must serialize.
+  assert.equal(peakAdds, 1, "same-repository Git worktree adds must not overlap");
   const acquired = results.filter((result) => result.outcome === "acquired");
   // The refusals are named in the message, not just counted. This case failed once under a
   // loaded full-suite run with a bare `1 !== 2`, which says nothing about WHY a second slot

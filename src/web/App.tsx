@@ -2219,6 +2219,7 @@ export function App(): React.JSX.Element {
     return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
   }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
   const visible = fleet.sessions;
+  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
   // nav-bar filter contract as real session cards: title, displayed state, and agent. Keep
@@ -2374,8 +2375,12 @@ export function App(): React.JSX.Element {
   // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
-  const collapsedColumns = useUiConfig().collapsedBoardColumns;
-  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  // A filter can hide the selected detail without clearing the saved drill-in intent.
+  // Navigation follows the overview that BoardView renders until a detail is visible again.
+  const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
+  const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
     if (!hideCollapsedColumns) return folded;
@@ -2735,7 +2740,6 @@ export function App(): React.JSX.Element {
   tourBindingsRef.current = tourBindings;
   const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
 
-  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
@@ -3375,7 +3379,7 @@ export function App(): React.JSX.Element {
             if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
-            mode: layout,
+            mode: allSessionsRail ? "console" : layout,
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
@@ -3385,11 +3389,14 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console") focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
-            if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
+            if (layout === "board" && !boardDetailOpen) {
+              setBoardOpen(false);
+              pendingTileFocus.current = nextId;
+            }
           }
           return;
         }
@@ -3640,7 +3647,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this

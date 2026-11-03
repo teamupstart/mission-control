@@ -99,5 +99,36 @@ test("fake acli records argv, uses captured auth and search shapes, and refuses 
   assert.equal(call(["jira", "auth", "status"]).status, 1);
   assert.match(call(args).stderr, /auth login/);
   writeFileSync(join(recordDir, "fake-acli-state.json"), "{}");
-  assert.equal(call(["jira", "workitem", "view", "MC-1"]).status, 1);
+  assert.equal(call(["jira", "workitem", "delete", "MC-1"]).status, 1);
+});
+
+test("fake acli absorbs write verbs, records argv and models refusals, confirmation and site switches", () => {
+  const env = { ...process.env, MC_E2E_RECORD_DIR: recordDir };
+  const call = (args: string[]) => spawnSync(agents.bins.acli, args, { cwd: home, env, encoding: "utf8" });
+  const state = (value: unknown) => writeFileSync(join(recordDir, "fake-acli-state.json"), JSON.stringify(value));
+  const comment = ["jira", "workitem", "comment", "create", "--key", "MC-2", "--body", '{"type":"doc"}'];
+  const transition = ["jira", "workitem", "transition", "--key", "MC-2", "--status", "Done", "--yes", "--json"];
+  const view = ["jira", "workitem", "view", "MC-2", "--fields", "status", "--json"];
+  state({});
+  assert.equal(call(comment).status, 0);
+  assert.equal(call(transition).status, 0);
+  assert.equal(JSON.parse(call(view).stdout).fields.status.name, "Done");
+  state({ transition: "refused", reason: "Review needed" });
+  assert.match(call(transition).stderr, /✗ Error: Review needed/);
+  state({ transition: "json-failure" });
+  assert.equal(JSON.parse(call(transition).stdout)[0].success, false);
+  state({ transition: "unchanged" });
+  call(transition);
+  assert.equal(JSON.parse(call(view).stdout).fields.status.name, "In Review");
+  state({ confirmError: true });
+  call(transition);
+  assert.equal(call(view).status, 1);
+  state({ afterWriteSite: "other.atlassian.net" });
+  call(comment);
+  assert.match(call(["jira", "auth", "status"]).stdout, /other.atlassian.net/);
+  const records = readdirSync(recordDir).filter((name) => /^acli-\d/.test(name))
+    .map((name) => JSON.parse(readFileSync(join(recordDir, name), "utf8")));
+  assert.ok(records.some((r) => JSON.stringify(r.argv) === JSON.stringify(comment)));
+  assert.ok(records.some((r) => JSON.stringify(r.argv) === JSON.stringify(transition)));
+  state({});
 });

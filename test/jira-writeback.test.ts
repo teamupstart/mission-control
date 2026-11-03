@@ -20,7 +20,6 @@ import {
   writebackBlocks,
   cliFailure,
   cliFault,
-  ACLI_WRITE_PENDING,
   restReadFailure,
   restWritebackFailure,
 } from "../src/server/task-sources/jira.ts";
@@ -1281,23 +1280,4 @@ test("a thrown fetch is read as never-arrived or unknown, by its cause code", as
   const timedOut = await throwWith("UND_ERR_HEADERS_TIMEOUT");
   assert.equal(timedOut.outcomeUnknown, true, "a timeout was called a refusal");
   assert.match(timedOut.error!, /check the issue in Jira before retrying/);
-});
-
-test("acli sources refuse both write-back verbs before spawning any CLI", async () => {
-  const argv = join(home, "acli-write-pending-argv");
-  writeFileSync(argv, "");
-  machine({ cli: true, argv });
-  process.env.MISSION_ACLI_BIN = join(withJira, "jira");
-  try {
-    for (const resolveTransition of ["", "Done"]) {
-      for (const verb of [jira.annotate!, jira.resolve!]) {
-        const result = await verb(cfg({ queryVia: "acli", resolveTransition }), notice(), ctx);
-        assert.equal(result.error, ACLI_WRITE_PENDING);
-        assert.equal(result.outcomeUnknown, false);
-      }
-    }
-    assert.deepEqual(argvIn(argv), []);
-  } finally {
-    delete process.env.MISSION_ACLI_BIN;
-  }
 });

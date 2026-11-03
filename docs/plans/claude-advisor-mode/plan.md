@@ -69,8 +69,8 @@ Today only the top path (settings files to the CLI) exists, and the return path 
 ### 1. Visibility (no new configuration)
 
 - **Transcript:** parse `server_tool_use` (name `advisor`) and `advisor_tool_result` blocks in the shared JSONL transcript parser (`transcript.ts`), which renders both runtimes. Render a compact "Advisor reviewed the conversation" row with the advisor's text when it is not redacted, and an error chip for `advisor_tool_result_error`. Unknown result content renders as nothing, matching the CLI.
-- **Session indicator:** show the advisor model on the session header or chip when the latest assistant message carries `advisorModel`. A read-only chip; no control in this step. (A "configured, not yet called" fallback was dropped during phasing: terminal sessions have no cheap read of effective settings.)
-- **Spend:** add a focused test pinning that a result frame's `modelUsage` with two models (executor and advisor) yields two ledger rows. If the CLI turns out to report advisor tokens only in `usage.iterations`, add the iteration rows under the advisor's model id instead.
+- **Session indicator:** show the advisor model on the session header or chip when the latest assistant message carries `advisorModel`, at the location the Phase 1 probe observes in a real transcript. A read-only chip; no control in this step. (A "configured, not yet called" fallback was dropped during phasing: terminal sessions have no cheap read of effective settings.)
+- **Spend:** Phase 1 first captures one real advisor result frame (its probe gate). It then attributes advisor tokens from whichever field the real frame uses: `modelUsage` keyed by the advisor model, or `usage.iterations` entries of type `advisor_message`. A focused test is built from that captured shape. Both cases are Phase 1's job; neither is deferred.
 - **Docs:** add an `### Advisor` section to `docs/dispatch-and-backlog.md`, beside `### Default effort`, covering inheritance, the gating, the pairing rule, and the global-write caveat of typing `/advisor`.
 
 ### 2. Per-dispatch override
@@ -92,7 +92,8 @@ Follows the `effort` pattern end to end, with no parallel source of truth:
 | Assumption | Confidence | If wrong | How to confirm |
 |---|---|---|---|
 | `--settings` JSON with `advisorModel` activates the advisor on terminal launch the same way `--advisor` does | about 80% | Stop and return for a decision; the hidden `--advisor` flag is the fallback candidate | Phase 2 first step: launch with the flag and check the init or `/advisor` status |
-| `modelUsage` includes the advisor model | about 65% | Advisor spend is under-reported; add rows from `usage.iterations` | Capture one real result frame on an account with the advisor enabled |
+| `modelUsage` includes the advisor model | about 65% | Phase 1 attributes from `usage.iterations` instead; either way Phase 1 owns it | Phase 1 probe gate: capture one real result frame on an account with the advisor enabled |
+| `advisorModel` sits at the top level of the assistant transcript record | about 75% | The chip reads the location the probe observes | Phase 1 probe gate: capture the real JSONL records of the same advisor call |
 | The operator's account has the advisor feature flag | unknown | The override is a no-op without the experimental env var | `/advisor` in a terminal session; SDK init `slash_commands` lists `advisor` only when enabled (inferred) |
 
 ## Out of scope

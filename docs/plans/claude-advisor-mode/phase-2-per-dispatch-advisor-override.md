@@ -24,7 +24,9 @@ Before any other change, confirm that `--settings '{"advisorModel":"opus"}'` act
 
 This costs one interactive command and no task tokens. If the account lacks the advisor feature flag, `/advisor` reports "The advisor is not available". In that case set `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` for the check only.
 
-**If `--settings` does not activate the advisor,** stop, open no PR, and report back so the human can decide on the hidden `--advisor` flag. Do not switch mechanisms on your own. Record the gate's output in the PR either way.
+**If `--settings` does not activate the advisor,** stop and open no PR. Put the gate's output in your report back to the human, so they can decide on the hidden `--advisor` flag. Do not switch mechanisms on your own.
+
+**If it does activate the advisor,** continue, and put the gate's output in the PR description.
 
 ## Scope
 
@@ -163,7 +165,7 @@ npm run build && npx playwright test e2e/specs/advisor-dispatch-override.spec.ts
 
 ## Merge and exit criteria
 
-- The gate passed and its output is in the PR.
+- The gate passed and its output is in the PR description. (A failed gate never reaches merge: it ends the phase with a report back to the human and no PR.)
 - Inherit is byte-identical to today's launch.
 - All new unit tests and both advisor e2e specs pass.
 - Typecheck, lint and CI are green.
@@ -178,3 +180,4 @@ No later phase. Future work (live control, Fable, kind or harness defaults) can 
 - Consumes Phase 1's `fake-claude.mjs` and docs section only by appending, as the index contracts allow.
 - Reads none of Phase 1's parser or meta shapes, and changes none of them.
 - Re-checked after writing: this phase's file set and Phase 1's overlap only in `fake-claude.mjs` and `docs/dispatch-and-backlog.md`. That overlap is why the phases are serial.
+- Repair round 1: clarified that a failed gate's output goes in the report back to the human (no PR), and a passing gate's output goes in the PR. Phase 1 now owns iteration-based spend attribution and a real-advisor probe; this phase depends on neither beyond the shared fake agent.

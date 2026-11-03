@@ -140,6 +140,34 @@ function latestAssistantUsage(
   return null;
 }
 
+/**
+ * The advisor model on the newest main-chain assistant record that names one, or null.
+ *
+ * Claude Code stamps a top-level `advisorModel` (a full id such as `claude-opus-5-5`) on
+ * every assistant record of a turn that called the advisor (observed on 2.1.317). That it
+ * also stamps a turn that offered the advisor without calling it is inferred from the CLI's
+ * code, not captured. `message.advisorModel` is read too, in case a later CLI moves it.
+ * Skipping records without one, rather than stopping at the newest assistant record, keeps
+ * the answer stable across a sidechain or API-error record written between advisor turns.
+ */
+function latestAdvisorModel(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line || line.indexOf('"advisorModel"') < 0) continue;
+    let o: Record<string, unknown>;
+    try {
+      o = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (o.type !== "assistant" || o.isSidechain || o.isApiErrorMessage) continue;
+    const m = o.message as Record<string, unknown> | undefined;
+    const named = o.advisorModel ?? (m && typeof m === "object" ? m.advisorModel : undefined);
+    if (typeof named === "string" && named) return named;
+  }
+  return null;
+}
+
 /** Context length = input + both cache tiers; output is excluded (matches ccstatusline). */
 function contextTokensFromUsage(usage: Record<string, unknown>): number | null {
   const n = (k: string): number => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
@@ -160,6 +188,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
   const contextTokens = usage?.tokens ?? null;
 
   if (!modelId && contextTokens === null && !thinkingLevel) return null;
+  const advisorModel = latestAdvisorModel(lines);
 
   // The transcript's model id drops the `[1m]` marker, so infer the window from the
   // id but let the observed token count correct it upward (489k tokens can't fit a
@@ -176,6 +205,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
     longContext: isLongContext(size),
     thinkingLevel,
     effortRevision: effort.revision,
+    ...(advisorModel ? { advisorModel } : {}),
   };
 }
 

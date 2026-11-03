@@ -5984,9 +5984,12 @@ export class Registry extends EventEmitter {
     );
     const rejectedStatusLineEffort =
       guarded.rejectedStatusLineEffort || reconciled.rejectedStatusLineEffort;
-    const meta = rejectedStatusLineEffort && s.meta
+    const statusLineMeta = rejectedStatusLineEffort && s.meta
       ? { ...reconciled.meta, source: s.meta.source, updatedAt: s.meta.updatedAt }
       : reconciled.meta;
+    // A statusLine does not report the advisor, so the transcript's last reading stands -
+    // unless the agent session rebound, when it described a conversation this no longer is.
+    const meta = agentRebound ? statusLineMeta : withAdvisorModel(statusLineMeta, s.meta?.advisorModel);
     const next: Session = { ...s, meta, agentSessionId, transcriptPath };
     this.clearEffortTrackingOnRebind(s, next);
     // A statusLine can be the first thing to bind an agent session id (it carries one and
@@ -6407,8 +6410,11 @@ export class Registry extends EventEmitter {
       now - s.meta.updatedAt < STATUSLINE_TTL_MS;
     const hasEffortFreshnessGuard = this.effortFreshnessGuards.has(sessionId);
     if (statusLineHasPrecedence && !hasEffortFreshnessGuard) {
-      if (!s.effortBaselineReady) {
-        const next: Session = { ...s, effortBaselineReady: true };
+      // The statusLine owns every field it reports. The advisor model is not one of them,
+      // so the transcript still supplies it here.
+      const advised = s.meta ? withAdvisorModel(s.meta, read.advisorModel) : s.meta;
+      if (!s.effortBaselineReady || advised !== s.meta) {
+        const next: Session = { ...s, meta: advised, effortBaselineReady: true };
         this.sessions.set(sessionId, next);
         this.emitSession(next);
       }
@@ -6434,7 +6440,7 @@ export class Registry extends EventEmitter {
       null,
     );
     const meta = statusLineHasPrecedence && s.meta
-      ? { ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }
+      ? withAdvisorModel({ ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }, read.advisorModel)
       : reconciled.meta;
     const pendingEffort = this.reconcilePendingEffort(
       sessionId,
@@ -10226,8 +10232,22 @@ function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean
     a.thinkingLevel === b.thinkingLevel &&
     a.nativeEffort === b.nativeEffort &&
     a.thinkingEnabled === b.thinkingEnabled &&
-    a.contextPct === b.contextPct
+    a.contextPct === b.contextPct &&
+    (a.advisorModel ?? null) === (b.advisorModel ?? null)
   );
+}
+
+/**
+ * `meta` carrying the given advisor model, or without one when there is none. Returns `meta`
+ * itself when nothing changes, so a caller can compare by identity. Absent rather than null,
+ * so a session that never ran with an advisor keeps exactly the meta shape it always had.
+ */
+function withAdvisorModel(meta: SessionMeta, advisorModel: string | null | undefined): SessionMeta {
+  if (advisorModel) return meta.advisorModel === advisorModel ? meta : { ...meta, advisorModel };
+  if (meta.advisorModel === undefined) return meta;
+  const next = { ...meta };
+  delete next.advisorModel;
+  return next;
 }
 
 /** Build a SessionMeta from a transcript/rollout read (friendly name applied). */
@@ -10243,6 +10263,7 @@ function metaFromRead(read: RuntimeMetaRead, source: MetaSource, now: number): S
     contextWindow: read.contextWindow,
     source,
     updatedAt: now,
+    ...(read.advisorModel ? { advisorModel: read.advisorModel } : {}),
   };
 }
 

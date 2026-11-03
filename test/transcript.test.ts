@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseLines } from "../src/server/transcript.ts";
@@ -745,4 +746,107 @@ test("Claude native transcript paths escape underscores and spaces, with legacy 
     const file = join(dir, `${UUID}.jsonl`); writeFileSync(file, "{}\n");
     assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
   }
+});
+
+// ---- advisor calls -------------------------------------------------------------------
+//
+// `test/fixtures/claude-advisor/transcript.jsonl` is one real headless turn, captured from
+// Claude Code 2.1.317 with Sonnet advised by Opus and sanitized of ids and paths. It is the
+// shape these cases rest on: one record per content block, all sharing a message id, each
+// stamped with a top-level `advisorModel`. That capture came back redacted (the server
+// encrypts the advisor's words for this account), so the plain-text, refusal and error
+// results below are built on the same record envelope with the content shapes the CLI's
+// own renderer reads.
+
+const ADVISOR_LINES = readFileSync(
+  fileURLToPath(new URL("./fixtures/claude-advisor/transcript.jsonl", import.meta.url)),
+  "utf8",
+).split("\n");
+const capturedRecords = ADVISOR_LINES.filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+const capturedResult = capturedRecords.find((r) =>
+  JSON.stringify(r).includes('"advisor_tool_result"'))!;
+
+/** The captured result record with its content block replaced. */
+function advisorRecord(content: unknown, over: Record<string, unknown> = {}): Record<string, unknown> {
+  const message = capturedResult.message as Record<string, unknown>;
+  return {
+    ...capturedResult,
+    ...over,
+    message: {
+      ...message,
+      content: [{ type: "advisor_tool_result", tool_use_id: "srvtoolu_fixture_advisor", content }],
+    },
+  };
+}
+
+test("the captured advisor turn: no chip for the call, a redacted result, then the reply", () => {
+  const msgs = parseLines(ADVISOR_LINES, toMessage);
+  assert.equal(msgs.length, 3, "prompt, advisor result, reply - the call marker draws nothing");
+  const [, result, reply] = msgs;
+  assert.deepEqual(result!.advisor, { model: "claude-opus-5-5", outcome: "redacted" });
+  assert.equal(result!.text, "");
+  assert.deepEqual(result!.tools, [], "the server_tool_use block is not a tool chip");
+  assert.equal(reply!.text, "`add(a, b)` is a good name for it, because it's short, it's a verb, and it says what the function does.");
+  assert.equal("advisor" in reply!, false, "a turn without an advisor result carries no field");
+});
+
+test("each advisor result shape maps to its outcome", () => {
+  assert.deepEqual(
+    toMessage(advisorRecord({ type: "advisor_result", text: "  Check the null case first.  " }))!.advisor,
+    { model: "claude-opus-5-5", outcome: "advised", text: "Check the null case first." },
+  );
+  assert.deepEqual(
+    toMessage(advisorRecord({ type: "advisor_result", text: "I can't help with that.", stop_reason: "refusal" }))!.advisor,
+    { model: "claude-opus-5-5", outcome: "declined", text: "I can't help with that." },
+  );
+  assert.deepEqual(
+    toMessage(advisorRecord({ type: "advisor_redacted_result", encrypted_content: "x", stop_reason: "refusal" }))!.advisor,
+    { model: "claude-opus-5-5", outcome: "declined" },
+  );
+  assert.deepEqual(
+    toMessage(advisorRecord({ type: "advisor_tool_result_error", error_code: "overloaded" }))!.advisor,
+    { model: "claude-opus-5-5", outcome: "error", errorCode: "overloaded" },
+  );
+});
+
+test("an advisor result Claude Code would not draw is dropped, like the CLI drops it", () => {
+  assert.equal(toMessage(advisorRecord({ type: "advisor_something_new", text: "?" })), null);
+  assert.equal(toMessage(advisorRecord(null)), null);
+  assert.equal(toMessage(advisorRecord("not an object")), null);
+});
+
+test("the advisor model is read from the record, then the message, then left null", () => {
+  const content = { type: "advisor_redacted_result", encrypted_content: "x" };
+  assert.equal(toMessage(advisorRecord(content))!.advisor!.model, "claude-opus-5-5");
+  const unnamed = advisorRecord(content, { advisorModel: undefined });
+  assert.equal(toMessage(unnamed)!.advisor!.model, null);
+  (unnamed.message as Record<string, unknown>).advisorModel = "claude-sonnet-5-5";
+  assert.equal(toMessage(unnamed)!.advisor!.model, "claude-sonnet-5-5");
+});
+
+test("computeRuntimeMeta reads the advisor model off the captured transcript", () => {
+  const read = computeRuntimeMeta(ADVISOR_LINES);
+  assert.equal(read?.advisorModel, "claude-opus-5-5");
+  assert.equal(read?.modelId, "claude-sonnet-5-5", "the executor is still the session's model");
+});
+
+test("a newer sidechain or API-error record cannot replace the main-chain advisor model", () => {
+  const base = capturedRecords.at(-1)!;
+  const sidechain = JSON.stringify({ ...base, uuid: "side", isSidechain: true, advisorModel: "claude-sonnet-5-5" });
+  const apiError = JSON.stringify({ ...base, uuid: "err", isApiErrorMessage: true, advisorModel: "claude-haiku-5-5" });
+  assert.equal(computeRuntimeMeta([...ADVISOR_LINES, sidechain])?.advisorModel, "claude-opus-5-5");
+  assert.equal(computeRuntimeMeta([...ADVISOR_LINES, apiError])?.advisorModel, "claude-opus-5-5");
+  assert.equal(computeRuntimeMeta([...ADVISOR_LINES, sidechain, apiError])?.advisorModel, "claude-opus-5-5");
+});
+
+test("computeRuntimeMeta takes the newest advisor model and omits the field when none", () => {
+  const later = JSON.stringify({ ...capturedRecords.at(-1)!, uuid: "later", advisorModel: "claude-sonnet-5-5" });
+  assert.equal(computeRuntimeMeta([...ADVISOR_LINES, later])?.advisorModel, "claude-sonnet-5-5");
+  // A newer record without one does not hide the older advisor turn.
+  assert.equal(computeRuntimeMeta([later, asstText])?.advisorModel, "claude-sonnet-5-5");
+  const plain = computeRuntimeMeta([
+    JSON.stringify({ type: "assistant", uuid: "p1", message: { role: "assistant", model: "claude-opus-4-8", content: [] } }),
+  ]);
+  assert.ok(plain);
+  assert.equal("advisorModel" in plain, false);
 });

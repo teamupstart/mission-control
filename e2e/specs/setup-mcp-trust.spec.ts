@@ -174,6 +174,12 @@ test("a failed inline integration install shows its error and never retries the 
     await page.mouse.move(1, 1);
     await page.screenshot({ path: join(out, "codex-inline-install-failed-r3.png") });
   }
+
+  // A fresh trust attempt replaces the whole outcome; the old install failure must not linger.
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expect.poll(() => trustStarts).toBe(2);
+  await expect(row.getByRole("status")).toContainText("not registered in Codex yet");
+  await expect(row.getByText("Integration install could not finish. Check the app log and retry.")).toHaveCount(0);
 });
 
 test("Codex MCP trust without the desktop bridge names where the install lives", async ({ page, daemon }) => {

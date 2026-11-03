@@ -261,7 +261,9 @@ function ServiceRemedy({
 
   async function start(): Promise<void> {
     setStarting(true);
+    // A new attempt replaces the whole outcome, including an earlier inline install failure.
     setResult(null);
+    setInstallError(null);
     try {
       const next = await startSetupService({ service });
       setResult(next);

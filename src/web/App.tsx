@@ -1786,16 +1786,19 @@ export function App(): React.JSX.Element {
       const afterPaint = (then: () => void): void => {
         requestAnimationFrame(() => requestAnimationFrame(then));
       };
-      afterPaint(() => {
-        const first = revealLaunchFailure(tasks, taskId);
-        if (first === "shown" || layout !== "board") return;
-        // Drawn, but inert: a drilled-in session makes every other column inert, so close the
-        // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. A
-        // failure already on the drilled rail is shown above, and the open session stays put.
-        if (first === "inert") setBoardOpen(false);
+      // Drawn, but inert: a drilled-in session makes every other column inert, so close the
+      // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. Both can
+      // hold at once - a folded Working behind a drilled-in Idle session - so each fix is followed
+      // by another look, and there are at most two to make. A failure already on the drilled rail
+      // is shown on the first look, and the open session stays put.
+      const look = (fixesLeft: number): void => afterPaint(() => {
+        const seen = revealLaunchFailure(tasks, taskId);
+        if (seen === "shown" || layout !== "board" || fixesLeft === 0) return;
+        if (seen === "inert") setBoardOpen(false);
         else setColumnWidth("working", "normal");
-        afterPaint(() => revealLaunchFailure(tasks, taskId));
+        look(fixesLeft - 1);
       });
+      look(2);
     },
     [navigate, tasks, layout],
   );

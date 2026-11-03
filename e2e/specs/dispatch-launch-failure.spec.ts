@@ -451,8 +451,10 @@ test("Show unfolds a folded Working column, and the report dialog hands focus ba
  * inert subtree. Show must not stop at an anchor nobody can reach: it closes the drill-in, then
  * focuses the failure.
  */
-test("Show closes a drilled-in Board session to reach a failure in an inert column", async ({ dashboard, daemon }) => {
-  await useLayout(dashboard, daemon, "board");
+for (const folded of [false, true]) test(`Show closes a drilled-in Board session to reach a failure in an inert column${folded ? ", unfolding Working too" : ""}`, async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/ui/config", { layout: "board", collapsedBoardColumns: folded ? ["working"] : [] }, "PUT");
+  await dashboard.reload();
+  await expect(dashboard.getByRole("button", { name: "Dispatch" })).toBeVisible();
   const live = "Keep this session open";
   await dispatch(daemon, "chat", live);
   const openLive = dashboard.getByRole("button", { name: new RegExp(`^Open ${live}`) });
@@ -469,13 +471,17 @@ test("Show closes a drilled-in Board session to reach a failure in an inert colu
     await dispatch(daemon, "chat", title);
     const tile = dashboard.getByRole("list", { name: "Did not start" }).getByRole("listitem").filter({ hasText: title });
     const anchor = tile.getByLabel(`${title} did not start`);
-    await expect(anchor).toBeAttached();
+    await expect(dashboard.getByRole("button", { name: /1\s*did not start/ })).toBeVisible();
+    if (!folded) await expect(anchor).toBeAttached();
+    else await expect(anchor, "a folded Working column draws only its strip").toHaveCount(0);
     await dashboard.getByRole("region", { name: "Launch failures" }).getByRole("button", { name: "Close" }).click();
 
     await openLive.focus();
     await dashboard.keyboard.press("Enter");
-    await expect.poll(() => anchor.evaluate((element) => Boolean(element.closest("[inert]"))),
-      { message: "drilling into the idle session makes the Working column inert" }).toBe(true);
+    if (!folded) {
+      await expect.poll(() => anchor.evaluate((element) => Boolean(element.closest("[inert]"))),
+        { message: "drilling into the idle session makes the Working column inert" }).toBe(true);
+    }
 
     await dashboard.getByRole("button", { name: /1\s*did not start/ }).click();
     await expect(anchor).toBeFocused();

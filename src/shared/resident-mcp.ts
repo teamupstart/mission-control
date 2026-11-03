@@ -322,10 +322,12 @@ export function credentialShapedPath(url: URL): boolean {
     } catch {
       return true;
     }
-    if (SECRET_KEY_PREFIX.test(segment)) return true;
-    // A credential-named assignment, whatever its value's length: `token=…`, `api_key:…`, and the
-    // same as a `;`-separated path parameter.
-    if (segment.split(";").some((part) => {
+    // A secret-key prefix, or a credential-named assignment whatever its value's length
+    // (`token=…`, `api_key:…`, a `;`-separated path parameter). Both are checked within each part
+    // of the DECODED segment, so an encoded separator (`foo:bar%2Ftoken=abc`, `x%2Fsk-…`) cannot
+    // hide one behind a harmless start.
+    if (segment.split(/[/\\;&,]/).some((part) => {
+      if (SECRET_KEY_PREFIX.test(part)) return true;
       const pair = /^([^=:]+)[=:]./s.exec(part);
       return pair !== null && credentialName(pair[1]!);
     })) return true;

@@ -530,6 +530,8 @@ test("a URL whose path is shaped like a key is a credential; ordinary MCP endpoi
     `https://h.example.com/${"x".repeat(32)}`, "https://h.example.com/%E0%A4%A/mcp",
     // A credential-named assignment, however short its value and with no digit in it.
     "https://h.example.com/token=shortsecret/mcp", "https://h.example.com/mcp/API_KEY:abc", "https://h.example.com/mcp;access_token=abc/sse",
+    // Behind an encoded separator, which decodes inside one segment.
+    "https://h.example.com/foo:bar%2Ftoken=abc/mcp", "https://h.example.com/x%2Fsk-abc/mcp", "https://h.example.com/a%3Bapi_key=abc",
   ]) assert.equal(credentialShapedPath(new URL(url)), true, url);
   // An assignment whose name is not a credential's is not, by itself, a key.
   assert.equal(credentialShapedPath(new URL("https://h.example.com/mcp;version=2/sse")), false);

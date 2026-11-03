@@ -3,6 +3,7 @@
 export const UPDATE_HELPER_FILES = [
   "dist/native/state-lock.node",
   "scripts/apply-update.mjs",
+  "scripts/update-diagnostic.mjs",
   "scripts/update-helper-runtime.mjs",
   "scripts/update-helper-files.mjs",
   "scripts/install-binary.mjs",

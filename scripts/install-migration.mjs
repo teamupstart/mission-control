@@ -16,6 +16,7 @@ import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 import { APP_BUNDLE_NAME, BUNDLE_COPY_ARGUMENTS, SYSTEM_APPS_DIR, reserveRenamedApp, publishRenamedApp, removeRenamedBundle, bundleShortVersion, replaceAppBundle, stagingPaths, RESTORE_AUTHORIZATION_PROMPT } from "./app-bundle-swap.mjs";
 import { inspectInstallDirectory, installDirectoryProblem } from "./install-destination.mjs";
 import { acquireHelperLock, releaseHelperLock, realHelperLockOperations, parseClaimEntryName, HELPER_LOCK_DIR_NAME } from "./update-lock.mjs";
+import { sanitizeDiagnostic } from "./update-diagnostic.mjs";
 
 export const MIGRATION_PROTOCOL = 1;
 export const MIGRATION_JOURNAL = "install-migration.json";
@@ -505,11 +506,12 @@ function recordMigrationRecoveryFailure(journal, message) {
  *
  * "The update did not commit" on its own is the outcome that gave nobody anything to act on:
  * the helper knew the blocking pid and why, and dropped both on the way to the dialog. The
- * cause is the attempt's own error text - the same text `recordMigrationRecoveryFailure`
- * already records - bounded so one runaway message cannot crowd out the rest.
+ * cause is the attempt's own error text, passed through the helper's redaction policy
+ * (`sanitizeDiagnostic`) because it is persisted and shown: a filesystem or child-process error
+ * can carry a home path, a URL or a token. That policy also bounds it at 500 characters.
  */
 export function migrationRollbackMessage(lead, cause, tail) {
-  const reason = cause === undefined || cause === null ? "" : String(cause?.message ?? cause).trim().slice(0, 1500);
+  const reason = cause === undefined || cause === null ? "" : sanitizeDiagnostic(String(cause?.message ?? cause).trim()).trim();
   return [lead, reason && (/[.!?]$/.test(reason) ? reason : `${reason}.`), tail].filter(Boolean).join(" ");
 }
 

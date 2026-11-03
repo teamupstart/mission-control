@@ -104,20 +104,35 @@ test('a restored app-name migration names what stopped it in the outcome', async
   assert.deepEqual(f.events, ['stop-target', 'launch-source']);
 });
 
-test('the rollback cause is kept whole up to 1,500 characters and cut just past it', () => {
+test('the rollback cause is kept whole up to the 500-character redaction bound and cut just past it', () => {
   const lead = 'The update did not commit.';
   const tail = 'The previous app and exact installation receipt were preserved.';
-  const at = 'x'.repeat(1499) + '.';
-  assert.equal(at.length, 1500);
+  const at = 'x'.repeat(499) + '.';
+  assert.equal(at.length, 500);
   assert.equal(migrationRollbackMessage(lead, new Error(at), tail), `${lead} ${at} ${tail}`, 'a cause at the limit lost characters');
-  const over = 'y'.repeat(1501);
-  assert.equal(migrationRollbackMessage(lead, over, tail), `${lead} ${'y'.repeat(1500)}. ${tail}`, 'a cause past the limit was not cut at 1,500');
+  const over = 'y'.repeat(501);
+  assert.equal(migrationRollbackMessage(lead, over, tail), `${lead} ${'y'.repeat(500)}. ${tail}`, 'a cause past the limit was not cut at 500');
   // Whitespace is trimmed before the limit, so padding cannot push real text out.
   assert.equal(migrationRollbackMessage(lead, `   ${at}   `, tail), `${lead} ${at} ${tail}`);
   // No cause leaves the original sentence exactly as it was.
   for (const none of [undefined, null, '', '   ']) assert.equal(migrationRollbackMessage(lead, none, tail), `${lead} ${tail}`);
   // A cause already ending a sentence is not given a second full stop.
   assert.equal(migrationRollbackMessage(lead, 'Stopped!', tail), `${lead} Stopped! ${tail}`);
+});
+
+test('a rollback cause is redacted before it is persisted or shown', async (t) => {
+  // The outcome reaches update-outcome.json and the dashboard dialog, so a filesystem or
+  // child-process error must not carry a home path, a URL or a token into either.
+  const f = inPlaceFixture(t);
+  f.ports.waitForReady = async () => {
+    throw new Error(`ENOENT: no such file or directory, open '${f.root}/Users/jo/.mission-control/secret.json' via https://example.test/x?token=abc ghp_abcdefghijklmnop1234`);
+  };
+  const result = await runMigration(f.plan, f.ports);
+  assert.equal(result.committed, false);
+  const {message} = JSON.parse(readFileSync(join(f.stateDirectory, 'update-outcome.json'), 'utf8'));
+  assert.equal(message, "The update did not commit. ENOENT: no such file or directory, open '<path>' via <url><redacted> <redacted-token>. "
+    + 'The previous app and exact installation receipt were preserved.');
+  assert.doesNotMatch(message, /\/Users\/|secret\.json|example\.test|ghp_|token=abc/);
 });
 
 test('a no-nonce launch of the in-place target while the helper is alive is told the update is in progress', async (t) => {

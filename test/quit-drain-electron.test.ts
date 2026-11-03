@@ -26,8 +26,10 @@ import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 const require = createRequire(import.meta.url);
 
+/** Only `ESRCH` proves the group is gone; `EPERM` means it may well still exist. */
 function groupAlive(pgid: number): boolean {
-  try { process.kill(-pgid, 0); return true; } catch { return false; }
+  try { process.kill(-pgid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 /** Processes still carrying this attempt's supervisor marker - what would hold the bundle. */

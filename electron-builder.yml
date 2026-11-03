@@ -69,6 +69,7 @@ files:
   - src/shared/install-receipt.mjs
   - src/shared/harness-runtime.mjs
   - scripts/apply-update.mjs
+  - scripts/update-diagnostic.mjs
   - scripts/mac-app-lifecycle.mjs
   - scripts/app-bundle-swap.mjs
   - scripts/update-lock.mjs

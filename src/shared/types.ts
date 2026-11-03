@@ -2074,6 +2074,21 @@ export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
  * It is derived from the retention ledger on read, not stored on the `tasks` row: there is one
  * durable clock, and a second copy of its state would be a second thing to keep in step.
  */
+/**
+ * A resident task whose run Restart on new profile ended, while the task itself is still open.
+ *
+ * Restart leaves completing the replaced session to the operator, so the Console keeps offering
+ * Complete until the task is done - whatever happened to the replacement since. Derived on read
+ * from the resident runs (the ended run's restart pause and the replacement its request id
+ * names), never stored on the `tasks` row, and absent once the task is terminal.
+ */
+export interface TaskResidentRestart {
+  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
+  replacementTaskId: string | null;
+  /** The profile revision the replacement pinned; null with no replacement. */
+  revision: number | null;
+}
+
 export interface TaskAutomaticCleanup {
   /** Only one state crosses today. An enum so a later observability state is additive. */
   state: "retrying";
@@ -2314,6 +2329,11 @@ export interface Task {
    * FAILED are the task's own record, and a maintenance note must never overwrite either.
    */
   automaticCleanup: TaskAutomaticCleanup | null;
+  /**
+   * Set while this resident task's run was ended by Restart on new profile and the task is still
+   * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
+   */
+  residentRestart?: TaskResidentRestart | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;

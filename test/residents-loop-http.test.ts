@@ -21,7 +21,7 @@ test("pacing resolves only the signed caller; no session-control grant or body i
   const loop = new ResidentLoop({ registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
   const tasks = new TaskManager(registry);
   const residents = new ResidentManager({ registry, persona: () => null, createTask: () => { throw new Error("unused"); } });
-  const app = new Hono(); registerResidentLoopRoutes(app, { registry, loop, tasks, residents });
+  const app = new Hono(); registerResidentLoopRoutes(app, { registry, loop, residents });
   const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Signed resident" }, persona: { personaId: "p" } });
   store.createResidentProfile({ id: "profile", settings, at: Date.now() });
   store.reserveResidentRun({ id: "run", profileId: "profile", profileRevision: 1, taskId: "resident-task", launchRequestId: "launch", launchInput: residentLaunchInput("/repo", ""), repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "" }, runInstructions: "", at: Date.now() });

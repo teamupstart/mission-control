@@ -10406,6 +10406,16 @@ mark.find-hit.is-current {
 .task-outcome:hover {
   text-decoration: underline;
 }
+/* Alone in the chip - a session named after its task, with no schedule origin - there is no
+   title to share the row with, so pinning it right under a 60% cap drew a mostly empty bar
+   whose only text was cut off at its far end. It reads from the left and uses the width. */
+.task-outcome:only-child {
+  margin-left: 0;
+  max-width: none;
+}
+span.task-outcome:hover {
+  text-decoration: none;
+}
 
 /* ---- One pull request per changed repo (multi-repo tasks only) ---- */
 /* Its own row rather than more chips inside the task pill, because the list is as wide as
@@ -36791,6 +36801,16 @@ body.foreman-sidecar-open .modal-backdrop {
    past the edge. */
 .resident-band-changed {
   color: var(--attention);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* A replaced session whose replacement is no longer live has no marker colour to borrow. */
+.resident-band-replaced {
+  --resident: var(--border);
+}
+/* The one sentence a replaced session's band exists to say, so it wraps rather than clips. */
+.resident-band-replaced-note {
+  color: var(--fg);
   min-width: 0;
   overflow-wrap: anywhere;
 }

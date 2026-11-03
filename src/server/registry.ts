@@ -238,6 +238,7 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskResidentRestartSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
   retireTaskSessionClosure,
@@ -6815,7 +6816,29 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
-  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+  /**
+   * Re-derive one task's `residentRestart` record and broadcast it on the ordinary `task_upsert`,
+   * the way `refreshTaskAutomaticCleanup` does. Restart calls it after it ends the old run and
+   * again after the replacement launch settles, so the replaced session's Complete offer appears
+   * at once and names its replacement as soon as one exists.
+   */
+  refreshTaskResidentRestart(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const record = taskResidentRestartSummaries([taskId]).get(taskId) ?? null;
+    if (JSON.stringify(record) === JSON.stringify(current.residentRestart ?? null)) return;
+    const next = { ...current, residentRestart: record };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  private publishTask(written: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+    // Re-derived on every resident write rather than trusted from the caller. A writer that
+    // built its row from a copy taken before Restart ended the run would otherwise broadcast it
+    // without the record, and the replaced session would silently lose its Complete offer.
+    const task: Task = written.kind === "resident"
+      ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
+      : written;
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),

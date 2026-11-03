@@ -139,7 +139,7 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
-import { pinnedResidentSessions, residentMarksBySession } from "./residents/marker.ts";
+import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -2147,6 +2147,10 @@ export function App(): React.JSX.Element {
     [sessions, residentRuns, residentProfiles],
   );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
+  const residentReplacementBySession = useMemo(
+    () => residentReplacementsBySession(sessions, tasks, residentRuns),
+    [sessions, tasks, residentRuns],
+  );
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
@@ -2791,6 +2795,7 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    residentReplacementBySession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 

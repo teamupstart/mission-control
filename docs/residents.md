@@ -210,11 +210,16 @@ you resume it. Pausing does not interrupt an already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
-After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
-and launches the latest revision in a new conversation. It preserves the repository choice and
-run instructions; a repository-free resident receives a fresh private workspace. New conversation
+After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
+and launches the latest revision in a new conversation. The old task and session stay open: the
+old session's Console band says it was restarted on the new revision and offers **Open new
+session** and **Complete & close**, so you decide when the replaced conversation closes. The
+offer stays until that task is completed, even if the new session has since ended or never
+started, and survives a reload or daemon restart. Restart
+preserves the repository choice and run instructions; a repository-free resident receives a fresh
+private workspace. New conversation
 creation ensures every changed launch option takes effect. Retrying an interrupted Restart
-finishes the same replacement request, including an interruption after the old task completed.
+finishes the same replacement request, including an interruption after the old run ended.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 

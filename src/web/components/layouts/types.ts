@@ -20,7 +20,7 @@ import {
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
 import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
-import type { ResidentSessionMark } from "../../residents/marker.ts";
+import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -297,6 +297,12 @@ export interface SessionViewProps {
    * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
    */
   residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /**
+   * App-owned join from each session Restart on new profile replaced to its replacement
+   * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no
+   * `residentBySession` entry; the Console offers Complete and the new session from this.
+   */
+  residentReplacementBySession?: ReadonlyMap<string, ResidentReplacement>;
   /** Open a resident's profile on `#/residents`, from its Console band. */
   onOpenResidentProfile?: (profileId: string) => void;
 }

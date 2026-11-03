@@ -8180,7 +8180,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(task);
   });
 
-  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);

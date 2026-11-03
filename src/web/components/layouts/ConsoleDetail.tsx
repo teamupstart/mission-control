@@ -33,7 +33,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
-import { ResidentBand } from "../../residents/ResidentBand.tsx";
+import { ResidentBand, ResidentReplacedBand } from "../../residents/ResidentBand.tsx";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -211,6 +211,7 @@ export function ConsoleDetail({
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
   const resident = view.residentBySession?.get(session.id) ?? null;
+  const replacedBy = resident ? null : view.residentReplacementBySession?.get(session.id) ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -649,6 +650,13 @@ export function ConsoleDetail({
       {resident && (
         <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
       )}
+      {replacedBy && (
+        <ResidentReplacedBand
+          replacement={replacedBy}
+          onOpenSession={view.onSelect}
+          onComplete={live ? () => view.onComplete(session.id) : undefined}
+        />
+      )}
 
       {pipelineCommission && (
         <div className="detail-pipeline-meter">
@@ -709,7 +717,10 @@ export function ConsoleDetail({
                 </a>
                 </Tooltip>
               ) : (
-                <span className="task-outcome">{session.task.outcome}</span>
+                // The outcome ellipsises, so the hover is the only place a long one is whole.
+                <Tooltip label={`Outcome: ${session.task.outcome}`}>
+                  <span className="task-outcome" tabIndex={0}>{session.task.outcome}</span>
+                </Tooltip>
               ))}
           </div>
           )}

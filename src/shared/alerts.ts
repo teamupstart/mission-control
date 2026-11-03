@@ -346,9 +346,28 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `failed:${t.id}`,
         kind: "task-failed",
-        title: `Task failed: ${t.title}`,
+        // A launch failure says what it is: the work never started, which is a different
+        // thing to act on from a session that ran and failed.
+        title: t.launchFailure ? `Did not start: ${t.title}` : `Task failed: ${t.title}`,
         body: t.error ?? "dispatch failed",
         sessionId: t.sessionId,
+        severity: "attention",
+      });
+    } else if (
+      t.status === "backlog" &&
+      t.launchFailure &&
+      beforeTask !== undefined &&
+      beforeTask.launchFailure?.at !== t.launchFailure.at
+    ) {
+      // The dispatch failed while provisioning and the task went back to the Backlog. Its
+      // status never passes through `failed`, so without this the only sign was the card
+      // moving columns - a launch that failed in silence.
+      alerts.push({
+        id: `returned:${t.id}:${t.launchFailure.at}`,
+        kind: "task-failed",
+        title: `Did not start, back in Backlog: ${t.title}`,
+        body: t.error ?? "dispatch failed",
+        sessionId: null,
         severity: "attention",
       });
     } else if (

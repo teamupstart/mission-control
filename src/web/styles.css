@@ -4053,7 +4053,11 @@ body {
 .is-desktop .lib-chip-pop,
 /* The round context line's `Why?` disclosure. It holds the only copy of the evidence
    explanation and of the button back to the live round. */
-.is-desktop .wf-run-disclose-pop {
+.is-desktop .wf-run-disclose-pop,
+/* Launch-failure toasts are bottom-anchored, which keeps them out of the bar on any window
+   tall enough to use - the same assumption every entry above was added after breaking. Each
+   holds a Report bug button. */
+.is-desktop .lf-toasts {
   -webkit-app-region: no-drag;
 }
 
@@ -25223,6 +25227,206 @@ button.sc-row:focus-visible {
 }
 .pend-rail .pend-seg {
   width: 9px;
+}
+
+/* ---- Launch failures: a dispatch that never started (LaunchFailures.tsx) ----
+
+   The failed tile is the placeholder above, stopped: same position, same width, solid where
+   the placeholder was dashed, in the danger tone. The reason is printed whole, because it is
+   the one thing on the tile worth reading and an ellipsized reason says nothing. */
+/* Doubled class: `.tile` is declared further down this sheet and would otherwise win on order.
+   `--tone-color` is the tile's left accent, which it would else inherit from the Working column. */
+.tile.lf-tile {
+  --tone-color: var(--danger);
+  cursor: default;
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
+  box-shadow: none;
+  flex: none;
+}
+.lf-tile:focus-visible,
+.lf-rail:focus-visible,
+.lf-notice:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+.lf-state {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--danger);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.lf-phase {
+  color: var(--muted);
+  font-weight: 400;
+}
+.lf-kind {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+.lf-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+.lf-reason {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.lf-foot {
+  color: var(--muted);
+  justify-content: space-between;
+}
+.lf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lf-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.lf-report {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+.lf-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.rail-row.lf-rail {
+  --tone-color: var(--danger);
+  cursor: default;
+  flex-wrap: wrap;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.rail-row.lf-rail {
+  align-items: start;
+}
+/* The rail's dot is centred on a one-line row; a failed row is three, so pin it to the name. */
+.lf-rail > .agent-dot {
+  margin-top: 5px;
+}
+.lf-rail .rail-right {
+  grid-row: 1;
+}
+/* The rail is the narrowest surface: the reason wraps under the name, held to four lines, and
+   prints whole on hover. The tile beside it in the Board has room to print it all. */
+.lf-rail .lf-reason {
+  grid-column: 2 / -1;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  color: var(--muted);
+}
+.lf-rail .lf-actions {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+.lf-rail-state {
+  color: var(--danger);
+}
+
+/* On a Backlog card or a session card: a band, not a second card. */
+.lf-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 7px 8px;
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.lf-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  /* Above the fleet's popovers (40), below every modal (50): a toast is news about the board,
+     and must never paint over a dialog the operator is answering. */
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+}
+.lf-toast {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border));
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.lf-toast-title {
+  color: var(--fg);
+  font-size: 13px;
+}
+/* The toast points at the tile, which prints the reason whole; three lines here is enough to
+   recognise it without the toast growing into a panel. */
+.lf-toast .lf-reason {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.lf-report-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.lf-report-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 12px;
+  font-size: 13px;
+}
+.lf-report-body p {
+  margin: 0;
+}
+.lf-report-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+.lf-report-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.lf-report-repo {
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.pulse-failed .pulse-n {
+  color: var(--danger);
+}
+.pulse-failed .pulse-dot {
+  background: var(--danger);
 }
 
 @media (prefers-reduced-motion: reduce) {

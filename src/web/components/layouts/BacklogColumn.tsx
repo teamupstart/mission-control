@@ -30,6 +30,7 @@ import {
   ScheduleSwitch,
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 
 /**
  * The backlog as a board column you dispatch OUT of by dragging.
@@ -1032,6 +1033,9 @@ function BacklogCard({
         className="bl-recovery"
         onManageTrust={onManageTrust}
       />
+      {/* Put back here by a dispatch that failed while provisioning: the reason is the notice
+          above, and these are the ways to act on it. */}
+      <LaunchFailureNotice taskId={task.id} />
       {/* A generated task's recurring-mission origin. The shared chip stops propagation so
           opening its history does not also open Dispatch or start a drag. */}
       <ScheduleOriginChip task={task} scheduleNames={scheduleNameById} onOpen={onOpenSchedule} />

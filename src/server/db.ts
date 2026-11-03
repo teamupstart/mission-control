@@ -144,6 +144,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import {
   isRetentionCandidate,
@@ -185,7 +186,9 @@ let db: DatabaseSync | undefined;
 // 12: bind resident wake attribution to its recorded conversation and native turn.
 // 13: retain a resident SDK session's measured native compaction limit across resumes.
 // 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
+// 15: a task's launch-failure record (`tasks.launch_failure`) and a Report bug session's
+//     marker (`tasks.launch_report_for`), with no historical backfill.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 15;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -416,6 +419,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       outcome       TEXT,
       outcome_url   TEXT,
       error         TEXT,
+      -- JSON TaskLaunchFailure (@shared/launch-failure.ts): this attempt failed before its
+      -- session started. NULL on every other task, including one whose session ran and was
+      -- later lost - the dispatcher writes it at the failure and nothing infers it later.
+      launch_failure TEXT,
+      -- A Report bug session: the failed task it was started to report. NULL on every other.
+      launch_report_for TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -4069,6 +4078,11 @@ function migrate(d: DatabaseSync): void {
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  // A dispatch that failed before its session started. NULL on an upgraded row is the honest
+  // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
+  // every historical failed task as a fresh "did not start" would bury the board.
+  addColumn(d, "tasks", "launch_failure", "TEXT");
+  addColumn(d, "tasks", "launch_report_for", "TEXT");
   addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
@@ -5504,6 +5518,8 @@ interface TaskRow {
   outcome: string | null;
   outcome_url: string | null;
   error: string | null;
+  launch_failure: string | null;
+  launch_report_for: string | null;
   created_at: number;
   updated_at: number;
   dispatched_at: number | null;
@@ -5840,6 +5856,8 @@ function rowToTask(
     outcome: r.outcome,
     outcomeUrl: r.outcome_url,
     error: r.error,
+    launchFailure: parseLaunchFailure(r.launch_failure),
+    launchReportFor: r.launch_report_for,
     automaticCleanup,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -5884,9 +5902,9 @@ export function upsertTask(t: Task): string[] {
          base_sha,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5913,7 +5931,9 @@ export function upsertTask(t: Task): string[] {
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
-         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         error=excluded.error, launch_failure=excluded.launch_failure,
+         launch_report_for=excluded.launch_report_for,
+         updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
@@ -5937,7 +5957,10 @@ export function upsertTask(t: Task): string[] {
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
-      t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.status, t.outcome, t.outcomeUrl, t.error,
+      t.launchFailure ? JSON.stringify(t.launchFailure) : null,
+      t.launchReportFor ?? null,
+      t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
     );

@@ -27,12 +27,21 @@ function fixture(name: string) {
 // This tests native fixture execution and response classification, not host scheduling.
 // An async execFile timer can expire before a starved worker collects an already-finished
 // child's pipes. Even a ten-second budget did that under full-suite contention. Collect
-// these shell-only responses synchronously, giving the child scheduling headroom while
-// asserting the unchanged production deadline. Production uses the async executor.
+// these shell-only responses synchronously, keeping a bounded child timeout and asserting
+// the unchanged production deadline. Production execution still uses the async executor.
+//
+// The child's own budget is deliberately NOT that deadline. The fixture's status path is a
+// `/bin/sh` script reading one file, yet under full-suite contention forking that shell alone
+// has outrun one second (`spawnSync ... ETIMEDOUT`), which measured the host, not the probe.
+// A fall-through into the refused JavaScript runtime exits 77 at once and fails the
+// classification asserts below, so a longer bound cannot hide the regression this file
+// guards; it only stops a busy machine from failing it.
+const FIXTURE_CHILD_BUDGET_MS = 30_000;
+
 function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv): TerminalExec {
   return async (_bin, args, options) => {
     assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
-    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: 10_000 });
+    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: FIXTURE_CHILD_BUDGET_MS });
     assert.ifError(result.error);
     assert.equal(result.signal, null, "the native fixture must report its own exit");
     return stubRun({ code: result.status, stdout: result.stdout, stderr: result.stderr });

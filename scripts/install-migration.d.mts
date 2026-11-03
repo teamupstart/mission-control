@@ -52,3 +52,4 @@ export function claimInstallReceiptWriter(stateDirectory: string): () => void;
 export function keepSystemInstallation(plan: MigrationPlan): Promise<InstallReceipt>;
 
 export function prepareInPlaceInstall(args: {descriptor: import("./install-staged-app.mjs").StagedInstallDescriptor; stateDirectory: string}): MigrationPlan;
+export function migrationRollbackMessage(lead: string, cause: unknown, tail: string): string;

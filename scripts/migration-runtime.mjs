@@ -160,6 +160,15 @@ export function verifyMigrationAssets(bundle) {
   }
 }
 
+/**
+ * What an ordinary launch is told while an update helper still owns the transaction.
+ *
+ * It names no other app on purpose. In place, source and target are the same bundle, so the
+ * former "Reopen the system app" advice pointed back at the app the person had just opened.
+ * The helper relaunches the app itself when it finishes, committed or restored.
+ */
+export const MIGRATION_IN_PROGRESS_NOTICE = "Mission Control is installing an update. It will reopen on its own when the update finishes.";
+
 /** The main entry calls this before its ordinary single-instance/redirect decision. */
 export async function migrationStartupGate({ stateDirectory, runningBundle, nonce, port, policy, timeout = MIGRATION_TIMEOUT_MS }) {
   if (!existsSync(join(stateDirectory, MIGRATION_JOURNAL))) {
@@ -178,6 +187,13 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     // The personal main process may stay alive with unresolved repairs. A second
     // launch can now use the ordinary redirect/single-instance path immediately.
     return {proceed: true, committed: true, fresh: false};
+  }
+  if (!nonce && sameMigrationProcess(journal.owner)) {
+    // An ordinary launch (Dock, Finder, a login item) while the helper is mid-transaction. It
+    // is not part of the attempt, so it may neither throw a recovery instruction nor wait:
+    // before the swap the helper is waiting for this very bundle to exit, so waiting here
+    // would hold the update until it timed out and rolled back. Leave, and say why.
+    return {proceed: false, committed: false, fresh: false, notice: MIGRATION_IN_PROGRESS_NOTICE};
   }
   if (target && plan.kind && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
     // Recovery must outlive this launch too. Copy a complete runtime before asking

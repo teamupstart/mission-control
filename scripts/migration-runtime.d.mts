@@ -7,4 +7,5 @@ export function sameMigrationProcess(record: ProcessRecord | null): boolean;
 export function migrationPortOccupied(port: number): Promise<boolean>;
 export function migrationRuntimePorts(options: {mac?: import("./mac-app-lifecycle.mjs").MacAppOps; parent?: ProcessRecord; port: number; timeout?: number; inventory?: unknown; checkpoint?: (stage: string) => void}): MigrationPorts;
 export function verifyMigrationAssets(bundle: string): void;
-export function migrationStartupGate(options: {stateDirectory: string; runningBundle: string; nonce?: string; port: number; policy?: MigrationPolicy; timeout?: number}): Promise<{proceed: boolean; committed: boolean; fresh: boolean}>;
+export const MIGRATION_IN_PROGRESS_NOTICE: string;
+export function migrationStartupGate(options: {stateDirectory: string; runningBundle: string; nonce?: string; port: number; policy?: MigrationPolicy; timeout?: number}): Promise<{proceed: boolean; committed: boolean; fresh: boolean; notice?: string}>;

@@ -307,10 +307,12 @@ export interface SessionMeta {
   /** epoch ms these values were observed (drives precedence + freshness TTL). */
   updatedAt: number;
   /**
-   * Raw id of the advisor model Claude attached to the session's newest advisor-enabled
-   * turn (the transcript record's top-level `advisorModel`), e.g. `claude-opus-5-5`.
-   * Absent when no turn in the scanned transcript tail carried one. Only the transcript
-   * reports it, so a statusLine reading keeps the last transcript value.
+   * Raw id of the advisor model named by the newest eligible main-chain assistant record in
+   * the transcript (its top-level `advisorModel`), e.g. `claude-opus-5-5`. Sidechain and
+   * API-error records are not eligible. Absent when that newest record is unstamped, even if
+   * an older stamped turn is still in the scanned tail, and absent when no eligible record is
+   * in the tail. Only the transcript reports it, so a statusLine reading keeps the last
+   * transcript value.
    */
   advisorModel?: string | null;
 }

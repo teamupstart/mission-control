@@ -102,6 +102,46 @@ test("acli retains clickable GitHub PR links with query strings, fragments and t
   }
 });
 
+test("acli write diagnostics redact credentials and common personal identifiers before returning", async () => {
+  const secret = `opaque-${"synthetic".repeat(4)}`;
+  const email = "person@example.test";
+  const jsonSecret = "short-test-key";
+  const text = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000; "access_token":"${jsonSecret}"`;
+  const failure = stubRun({ code: 1, stdout: "", stderr: text });
+  const results = [
+    await acliAnnotate(cfg(), notice, ctx, scripted(auth(), failure, auth()).deps),
+    await acliAnnotate(cfg(), notice, ctx, scripted(auth(), ok([{ key: "MC-2", success: false, error: text }]), auth()).deps),
+    await acliAnnotate(cfg(), notice, ctx, scripted(failure).deps),
+    await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx,
+      scripted(auth(), status("In Review"), auth(), ok([{ success: false, message: text }]), auth()).deps),
+    await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx,
+      scripted(auth(), status("In Review"), auth(), ok({ message: text, metadata: "private response metadata" }), auth(), auth(), status("In Review"), auth()).deps),
+  ];
+  for (const result of results) {
+    assert.match(result.error!, /Workflow requires review/);
+    assert.match(result.error!, /\[redacted\]/);
+    for (const value of [secret, jsonSecret, email, "000-00-0000"]) assert.ok(!result.error!.includes(value));
+  }
+});
+
+test("acli scrubs a write-site diagnostic before the inherited classifier truncates it", async () => {
+  const secret = `opaque-${"synthetic".repeat(4)}`;
+  const prefix = `${"x".repeat(289)} Bearer `;
+  const { deps, calls } = scripted(stubRun({ code: 1, stdout: "", stderr: prefix + secret }));
+  const result = await acliAnnotate(cfg(), notice, ctx, deps);
+  assert.ok(result.error);
+  assert.ok(!result.error.includes(secret.slice(0, 3)), "truncation must not expose a partial credential");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.args, ["jira", "auth", "status"]);
+});
+
+test("acli never copies an unrecognized transition response body into the refusal", async () => {
+  const { deps } = scripted(auth(), status("In Review"), auth(), ok({ metadata: "private response metadata" }), auth(), auth(), status("In Review"), auth());
+  const result = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+  assert.match(result.error!, /the confirming read still shows another status/);
+  assert.doesNotMatch(result.error!, /private response metadata/);
+});
+
 test("failed, unknown and mismatched site proof prevents every write, including repeat attempts", async () => {
   for (const gate of [fixture("logged-out"), ok(), otherSite(), { ...auth(), outcomeUnknown: true }]) {
     for (const operation of [acliAnnotate, acliResolve]) {

@@ -2,6 +2,7 @@ import type { JiraConfig, SweepContext, WritebackNotice, WritebackResult } from 
 import { PR_URL_RE } from "@shared/pr-command.mjs";
 import { acliBin } from "../config.ts";
 import { run, type RunResult } from "../util/exec.ts";
+import { scrubSecrets } from "../inspector/scrub.ts";
 import {
   commentBodyAdf, currentStatusFrom, issuesFrom, MAX_SWEEP_ISSUES, NO_TARGET_STATUS,
   siteHost, tooBroad, transitionFor, transitionsFrom, UNKNOWN_OUTCOME,
@@ -15,6 +16,31 @@ export interface JiraAcliDeps {
   run: typeof run;
 }
 const defaultDeps: JiraAcliDeps = { run };
+
+/** Preserve useful workflow reasons without retaining credential or common PII shapes. */
+function writeDiagnostic(text: string): string {
+  return scrubSecrets(text)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, "Bearer [redacted]")
+    .replace(/(\b(?:password|passwd|secret|token|access_token|refresh_token|id_token|api[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi, "$1[redacted]")
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[redacted]")
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted]");
+}
+
+/** Scrub before the inherited read-only classifier truncates stderr. */
+function writeDeps(deps: JiraAcliDeps): JiraAcliDeps {
+  return { run: async (bin, args, opts) => {
+    const res = await deps.run(bin, args, opts);
+    return { ...res, stderr: writeDiagnostic(res.stderr) };
+  } };
+}
+
+/** This is the boundary before the ledger, its log and the settings API receive a result. */
+function writeResult(result: WritebackResult): WritebackResult {
+  return { ...result,
+    error: result.error === null ? null : writeDiagnostic(result.error),
+    detail: result.detail === null ? null : writeDiagnostic(result.detail),
+  };
+}
 
 const SERVICE_ISSUE_URL = /^https:\/\/jira-prod-[a-z]{2}-\d+-\d+\.prod\.atl-paas\.net(\/rest\/api\/3\/issue\/\d+)$/;
 /** The status and category self URLs in the captured view are also tenant-neutral. */
@@ -231,6 +257,12 @@ function writeReason(res: RunResult): string {
 export async function acliAnnotate(
   cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps = defaultDeps,
 ): Promise<WritebackResult> {
+  return writeResult(await annotateAcli(cfg, notice, ctx, writeDeps(deps)));
+}
+
+async function annotateAcli(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps,
+): Promise<WritebackResult> {
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const gate = await acliSiteGate(cfg, ctx, deps);
@@ -282,11 +314,15 @@ function writeResponseFailure(body: unknown): string | null {
   for (const name of ["error", "errors", "errorMessages"]) {
     const value = row[name];
     if (value && value !== "" && JSON.stringify(value) !== "[]" && JSON.stringify(value) !== "{}") {
-      return typeof value === "string" ? value.slice(0, 500) : JSON.stringify(value).slice(0, 500);
+      const reason = typeof value === "string" ? value
+        : Array.isArray(value) && value.every((part) => typeof part === "string") ? value.join("; ")
+        : "acli reported a structured error";
+      return writeDiagnostic(reason).slice(0, 500);
     }
   }
   if (row.success === false || /^(failed|failure|error)$/i.test(String(row.status))) {
-    return String(row.message || row.status || "acli reported failure").slice(0, 500);
+    const reason = typeof row.message === "string" ? row.message : String(row.status || "acli reported failure");
+    return writeDiagnostic(reason).slice(0, 500);
   }
   for (const value of Object.values(row)) {
     const problem = writeResponseFailure(value);
@@ -297,6 +333,12 @@ function writeResponseFailure(body: unknown): string | null {
 
 export async function acliResolve(
   cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps = defaultDeps,
+): Promise<WritebackResult> {
+  return writeResult(await resolveAcli(cfg, notice, ctx, writeDeps(deps)));
+}
+
+async function resolveAcli(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps,
 ): Promise<WritebackResult> {
   const wanted = cfg.resolveTransition.trim();
   if (!wanted) return writebackRefusal(NO_TARGET_STATUS);
@@ -325,12 +367,15 @@ export async function acliResolve(
     `${key} cannot move to "${wanted}" from "${status}" - acli said: ${reason}. Set this source's resolve status to one the issue can reach`,
   );
   if (res.code !== 0) return refused(read.status, writeReason(res));
-  const failure = writeResponseFailure(jsonBody(res.stdout));
+  const response = jsonBody(res.stdout);
+  const failure = writeResponseFailure(response);
   if (failure) return refused(read.status, failure);
   const confirmed = await readStatus(cfg, key, ctx, deps);
   if ("problem" in confirmed) return unknownWrite(key, cfg, `the move could not be confirmed - ${confirmed.problem}`);
   if (confirmed.status.toLowerCase() !== destination.toLowerCase()) {
-    return refused(confirmed.status, res.stdout.trim().slice(0, 500) || "the confirming read still shows another status");
+    const message = record(response)?.message;
+    const reason = res.stderr.trim() || (typeof message === "string" ? message : "the confirming read still shows another status");
+    return refused(confirmed.status, writeDiagnostic(reason).slice(0, 500));
   }
   return writebackDone(`moved to "${confirmed.status}"`);
 }

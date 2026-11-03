@@ -811,7 +811,7 @@ if (argv[0] === "--version") {
     process.exitCode = 1;
   } else {
     const key = argv[argv.indexOf("--key") + 1];
-    const result = mode === "json-failure" ? [{ key, success: false, error: "Workflow refused (fake)" }]
+    const result = mode === "json-failure" ? [{ key, success: false, error: state.reason || "Workflow refused (fake)" }]
       : mode === "unrecognized" ? { message: "Operation processed (fake)" }
       : { key, success: true, ...(state.writeSelf ? { self: state.writeSelf } : {}) };
     process.stdout.write(JSON.stringify(state.writeEnvelope ? { [state.writeEnvelope]: result } : result) + "\\n");

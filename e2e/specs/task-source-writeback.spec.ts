@@ -165,6 +165,28 @@ test("acli posts untrusted completion URLs as plain text rather than clickable l
     .flatMap((node: { marks?: unknown[] }) => node.marks ?? [])).toEqual([]);
 });
 
+for (const mode of ["refused", "json-failure"] as const) test(`acli ${mode} diagnostic secrets are removed before the ledger, logs, API and dashboard receive them`, async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  const secret = `opaque-${"synthetic".repeat(4)}`;
+  const email = "person@example.test";
+  const sensitive = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000`;
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: mode, reason: sensitive }));
+  await oweAcli(page, daemon, ["annotate"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 failed/)).toBeVisible({ timeout: 30_000 });
+  const reason = page.getByText(/the comment could not be posted.*Workflow requires review/);
+  await expect(reason).toBeVisible();
+  await expect.poll(() => daemon.readLog()).toContain("gave up");
+  const api = JSON.stringify(await queue(page, daemon));
+  const ui = await page.locator("body").innerText();
+  const rows = withDaemonDb(daemon, (db) => db.prepare("SELECT last_error FROM task_source_writeback").all());
+  for (const text of [api, ui, JSON.stringify(rows), daemon.readLog()]) {
+    expect(text).toContain("[redacted]");
+    for (const value of [secret, email, "000-00-0000"]) expect(text).not.toContain(value);
+  }
+  await shoot(page, `acli-diagnostics-${mode}`, reason);
+});
+
 test("acli exit-zero comment failures stay retryable in the write-back queue", async ({ page, daemon }) => {
   await configureAcli(page, daemon);
   writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: "json-failure" }));

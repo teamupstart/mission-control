@@ -456,6 +456,17 @@ binaries through the executable registry, records their versions and hashes, cre
 fixture homes, and requests skill lists without sending a model turn. Its success means it
 confirmed the counterexamples, not that either harness supports isolation. It stops at discovery
 failure; invocation, resume, authentication and effective-settings preservation remain unproven.
+What the probe cannot reach is a real stored login: its homes are disposable, so it holds none.
+That was measured by hand on 2026-11-03 against Claude Code 2.1.317, with the production
+resolver, snapshot and driver, the operator's own user-scope configuration and a loopback model
+API. A user-scope `{ "type": "http", "url": "https://mcp.vercel.com" }` server the operator had
+signed in to connected with that login, with all 241 of its tools, both inherited and selected;
+forced through the launcher instead, the same server failed to connect. Claude Code keys the
+login by the server's name and `sha256(JSON.stringify({ type, url, headers: headers || {} }))`
+and reads it from the login keychain under `$USER`, which the daemon's environment carries. Under
+another name, with the URL normalized to a trailing slash, or without `$USER`, it reported
+`needs-auth`, and it then cached that verdict by name in `~/.claude/mcp-needs-auth-cache.json`.
+
 The probe definitions are source code; captured output belongs in workflow evidence, never Git.
 
 Claude documents `strictPluginOnlyCustomization` as
@@ -508,7 +519,7 @@ records `null`.
 
 | Harness | Mechanism | What it does |
 | --- | --- | --- |
-| Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. So does a set Claude cannot confirm within 60 seconds: a status call that fails or goes unanswered, or a server still starting. The same check runs on the relaunch after an authentication failure. |
+| Claude Code | `strict-mcp-config` | The SDK's `strictMcpConfig`, with Mission's server and the snapshot in `mcpServers`, plus `disableClaudeAiConnectors` in launch-scoped settings. The CLI reads no user, local, project or plugin MCP configuration for the run. A global remote server with no header or query value is in `mcpServers` as configured (name, `type`, `url`, `headers: {}`), so Claude Code's own transport presents any OAuth login it holds for it; every other global server is a scoped-launcher entry. After start, `mcpServerStatus` is checked against the set: every server in it must be configured and connect, and one reported failed, disabled or needing a login refuses the start. So does a set Claude cannot confirm within 60 seconds: a status call that fails or goes unanswered, or a server still starting. The same check runs on the relaunch after an authentication failure. |
 | Codex | `codex-home-overlay` | A per-run `CODEX_HOME` that links every entry of the operator's Codex home except `config.toml`, which it generates on every start: the operator's file with every MCP statement removed byte for byte, `sqlite_home` pointed at the operator's home, and the snapshot under quoted keys. Before `thread/start` or `thread/resume`, `config/read` with layers is checked. |
 
 An overlay alone is not an exact set. Measured on Codex 0.160.0, a trusted project's
@@ -533,7 +544,9 @@ APIs answered by loopback mocks and every agent environment built from scratch, 
 tokens and reads no operator configuration. Measured on 2026-10-30 on Claude Code 2.1.310 and
 Codex 0.160.0, at launch and on resume, 75 of 75 checks passing; the output is
 [retained on pull request #1269](https://github.com/teamupstart/mission-control/pull/1269#issuecomment-6532974173).
-A later harness release is not covered until the probe is run against it:
+Measured again on 2026-11-03 on Claude Code 2.1.317 and Codex 0.166.0, 75 of 75 passing, after
+OAuth servers began reaching Claude Code directly; that output is retained on the pull request
+that made the change. A later harness release is not covered until the probe is run against it:
 
 - Fixture servers that record their own start, placed in every native source a fixture can reach
   (Claude: user, local, project and plugin; Codex: user and a trusted project, including a dotted
@@ -542,9 +555,11 @@ A later harness release is not covered until the probe is run against it:
   server and the snapshot started, each with its snapshot definition.
 - A project layer that adds a field to a snapshot server, or forces a foreign server on, refused the
   Codex launch before any server started.
-- A global remote server whose endpoint answers 401 with a Bearer challenge, as an OAuth-protected
-  server does, was reached through the launcher's bridge and reported as not connected by Claude
-  Code, and the start was refused, naming it.
+- A global remote server behind an OAuth login, with no header or query value, whose endpoint
+  publishes OAuth metadata and answers 401 with a Bearer challenge, was handed to Claude Code
+  directly. With no stored login in the disposable home, Claude Code reported it `needs-auth` and
+  the start was refused, naming it and saying it needs a login. An endpoint that publishes no
+  metadata fails Claude Code's client registration and is reported `failed` instead.
 - Sentinel secrets on a stdio server and an HTTP server, both through the scoped launcher, reached
   only their own server; the HTTP fixture received its header and query through the bridge. Neither
   they nor the launch tickets appeared in any process argument of the probe's own descendants, the

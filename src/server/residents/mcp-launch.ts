@@ -65,12 +65,18 @@ export type ResidentMcpResolution =
   | { ok: true; servers: ResidentMcpResolvedServer[] | null }
   | { ok: false; error: string };
 
+/**
+ * A global server as a launch snapshots it. Its whole definition is private, so it starts through
+ * the scoped launcher - except a remote server the harness may hold a login for, which only the
+ * harness's own transport can present. That one has nothing private to carry but its URL, and is
+ * handed to the harness as configured; `strictMcpConfig` still pins the set.
+ */
 function resolvedGlobal(definition: GlobalMcpDefinition): ResidentMcpResolvedServer {
   return {
     source: "global",
     name: definition.summary.name,
     transport: definition.transport!,
-    launcher: true,
+    launcher: !definition.harnessLogin,
     options: definition.options,
     secrets: definition.secrets,
   };
@@ -286,7 +292,7 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
     if (transport.type === "stdio") {
       return { name, options, shape: "stdio", command: transport.command, args: [...transport.args], env: { ...transport.env } };
     }
-    return { name, options, shape: "http", url: transport.url, headers: { ...transport.headers } };
+    return { name, options, shape: "http", transport: transport.type, url: transport.url, headers: { ...transport.headers } };
   }
   const runtime = resolveMissionMcpRuntime();
   return {

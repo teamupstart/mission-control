@@ -473,6 +473,66 @@ test("secrets under one field name stay bound to their own (source, name)", asyn
   assert.ok(!refused.ok && /no value for its secret K/.test(refused.error));
 });
 
+// A remote server Claude Code signs in to itself. Its stored OAuth login is keyed by the name and
+// by `sha256(JSON.stringify({ type, url, headers: headers || {} }))`, measured on Claude Code
+// 2.1.317, so only an entry with that name, type, URL as written and empty headers finds it.
+const LOGIN_SERVERS = {
+  login: { type: "http", url: "https://mcp.example.com" },
+  "login-sse": { type: "sse", url: "https://events.example.com/sse", timeout: 9000 },
+  headed: { type: "http", url: "https://mcp.example.com/headed", headers: { "X-Api-Key": SECRET } },
+  queried: { type: "http", url: `https://mcp.example.com/q?key=${SECRET}` },
+  userinfo: { type: "http", url: "https://user:pw@mcp.example.com/u" },
+  local: { command: "local-mcp" },
+};
+
+test("only a Claude remote server with no header or query value may use Claude Code's own login, with its URL as written", () => {
+  const read = globalsOf("claude", LOGIN_SERVERS);
+  const byName = new Map(read.servers.map((server) => [server.summary.name, server]));
+  assert.deepEqual(
+    read.servers.map((server) => [server.summary.name, server.harnessLogin]),
+    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["local", false]],
+  );
+  // Not `https://mcp.example.com/`, which keys a different, empty login.
+  assert.deepEqual(byName.get("login")!.transport, { type: "http", url: "https://mcp.example.com", headers: {}, secretHeaders: [], secretQuery: [] });
+  assert.equal(byName.get("login")!.secrets.size, 0);
+  assert.deepEqual(byName.get("login-sse")!.transport, { type: "sse", url: "https://events.example.com/sse", headers: {}, secretHeaders: [], secretQuery: [] });
+  // A server with a private part keeps its normalized, query-less URL for the launcher.
+  const queried = byName.get("queried")!.transport;
+  assert.ok(queried?.type === "http" && queried.url === "https://mcp.example.com/q" && !queried.url.includes(SECRET));
+  // Unavailable is never a login server, and Codex never offers one.
+  assert.equal(globalsOf("claude", { helper: { type: "http", url: "https://x", headersHelper: "h" } }).servers[0]!.harnessLogin, false);
+  assert.ok(globalsOf("codex", { remote: { url: "https://mcp.example.com" } }).servers.every((server) => !server.harnessLogin));
+});
+
+test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {
+  const globals = globalsOf("claude", LOGIN_SERVERS);
+  const expected = [["login", false], ["login-sse", false], ["headed", true], ["queried", true], ["userinfo", true], ["local", true]];
+  const inherited = await resolve(profile(), globals);
+  assert.ok(inherited.ok && inherited.servers);
+  assert.deepEqual(inherited.servers.map((server) => [server.name, server.launcher]), expected);
+  const selected = await resolve(profile({
+    inheritDefaults: false,
+    selected: Object.keys(LOGIN_SERVERS).map((name) => ({ source: "global", agent: "claude", name })),
+  }), globals);
+  assert.ok(selected.ok && selected.servers);
+  assert.deepEqual(selected.servers.map((server) => [server.name, server.launcher]), expected, "selected behaves as inherited");
+  assert.deepEqual(
+    inherited.servers.map(({ secrets: _secrets, ...server }) => server),
+    selected.servers.map(({ secrets: _secrets, ...server }) => server),
+  );
+
+  // Through the snapshot to the entries: the login servers as configured, every other one a launcher.
+  const runId = crypto.randomUUID();
+  seedRun(runId, inherited.servers);
+  const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
+  assert.deepEqual(entries[0], { name: "login", options: {}, shape: "http", transport: "http", url: "https://mcp.example.com", headers: {} });
+  assert.deepEqual(entries[1], { name: "login-sse", options: { claude: { timeoutMs: 9000 } }, shape: "http", transport: "sse", url: "https://events.example.com/sse", headers: {} });
+  assert.deepEqual(entries.slice(2).map((entry) => [entry.name, entry.shape]), [["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["local", "launcher"]]);
+  const rendered = JSON.stringify(entries);
+  assert.ok(!rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("local-mcp"), "a launcher server's definition stays daemon-private");
+  assert.deepEqual(JSON.stringify(launch.residentMcpLaunchForRun(runId)!.preview().slice(0, 2)), JSON.stringify(entries.slice(0, 2)), "the preview renders them the same");
+});
+
 // ---- the snapshot, the entries and the tickets ----
 
 function seedRun(runId: string, servers: Resolved[]): void {
@@ -638,6 +698,29 @@ test("a recovery point redacts a global server's private definition, and a run r
   const ticket = (JSON.parse(readFileSync(entries[0]!.shape === "launcher" ? entries[0]!.args.at(-1)! : "", "utf8")) as { ticket: string }).ticket;
   const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "private-global" });
   assert.ok(!redeemed.ok && redeemed.status === 409 && /launch the resident again/.test(redeemed.error));
+});
+
+test("a recovery point redacts a Claude login server's definition too, and a run restored from it still refuses that server", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const resolved = await resolve(profile(), globalsOf("claude", { login: LOGIN_SERVERS.login }));
+  assert.ok(resolved.ok && resolved.servers?.[0]?.launcher === false);
+  const runId = crypto.randomUUID();
+  seedRun(runId, resolved.servers);
+  const copy = join(home, `redact-login-${Date.now()}.sqlite3`);
+  openDb().prepare("VACUUM INTO ?").run(copy);
+  scrubWriteOnlySecrets(copy);
+  assert.ok(!readFileSync(copy).includes("mcp.example.com"), "the URL does not survive, free pages included");
+  const restored = new DatabaseSync(copy);
+  const row = restored.prepare("SELECT definition_json FROM resident_run_mcp_servers WHERE run_id = ?").get(runId) as { definition_json: string };
+  restored.close();
+  assert.deepEqual(JSON.parse(row.definition_json).transport, { type: "redacted" });
+  openDb().prepare("UPDATE resident_run_mcp_servers SET definition_json = ? WHERE run_id = ?").run(row.definition_json, runId);
+  // Never an http entry without a URL: the launcher entry is refused on redemption.
+  const [entry] = launch.residentMcpLaunchForRun(runId)!.forStart();
+  assert.equal(entry!.shape, "launcher");
+  const ticket = (JSON.parse(readFileSync(entry!.shape === "launcher" ? entry!.args.at(-1)! : "", "utf8")) as { ticket: string }).ticket;
+  const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "login" });
+  assert.ok(!redeemed.ok && redeemed.status === 409 && /restored from a backup; launch the resident again/.test(redeemed.error));
 });
 
 // ---- through the manager ----

@@ -1440,10 +1440,19 @@ rl.on("line", (line) => {
     }
     // The configured MCP servers, as the real CLI reports them: what `--mcp-config` named. A
     // resident launch checks this against its snapshot, so answering with the argv keeps that
-    // check exercised without starting any server.
+    // check exercised without starting any server. A remote server on a `needs-login.` host
+    // stands for one behind an OAuth login Claude Code holds no usable token for, which the real
+    // CLI reports `needs-auth`.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
-      ok(frame.request_id, { mcpServers: Object.keys(configured).map((name) => ({ name, status: "connected" })) });
+      const status = (server) => {
+        try {
+          return server?.url && new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected";
+        } catch {
+          return "connected";
+        }
+      };
+      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, status: status(server) })) });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});

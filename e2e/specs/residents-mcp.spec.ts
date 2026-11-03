@@ -248,3 +248,77 @@ test("a profile that selects a global server with inheritance off launches with 
   expect(servers["github-global"]!.args).toContain("--credential");
   expect(argv.join(" ")).not.toContain(GLOBAL_SECRET);
 });
+
+test("an inherited remote server Claude Code signs in to reaches the launch as configured, and one without a login refuses it, saying so", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  // A remote server with no header or query value may be one the operator signed in to with OAuth
+  // in Claude Code, which only Claude's own connection can present. It must reach Claude under
+  // its exact name, type and URL, with no headers. One that still carries a value keeps the launcher.
+  const expired = { type: "http", url: "https://needs-login.example.test/mcp" };
+  writeFileSync(join(daemon.home, ".claude.json"), JSON.stringify({
+    hasCompletedOnboarding: true,
+    mcpServers: { "expired-login": expired },
+  }));
+
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: "New" }).click();
+  const profile = page.getByRole("region", { name: "New resident profile" });
+  await profile.getByLabel("Name").fill("OAuth Resident");
+  await profile.getByRole("combobox", { name: "Persona" }).selectOption({ label: "Code Risk Reviewer · built-in" });
+  await profile.getByLabel("Default repository").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await expect(profile.getByRole("checkbox", { name: "Inherit harness defaults" })).toBeChecked();
+  await profile.getByRole("button", { name: "Save" }).click();
+  const saved = page.getByRole("region", { name: "Resident profile OAuth Resident" });
+  await expect(saved).toContainText("Revision 1");
+
+  // Claude reports a server whose login it cannot use as needing one. The resident's session is
+  // refused once Claude has started, so the launch did not start, and its failure says what to do.
+  const launchResident = async (): Promise<void> => {
+    await saved.getByRole("button", { name: "Launch" }).click();
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden({ timeout: 60_000 });
+  };
+  await launchResident();
+  const didNotStart = page.getByRole("button", { name: /1\s*did not start/ });
+  await expect(didNotStart).toBeVisible({ timeout: 60_000 });
+  await didNotStart.click();
+  const failure = page.getByRole("list", { name: "Did not start" }).getByRole("listitem").filter({ hasText: "expired-login" });
+  await expect(failure).toContainText(
+    "cannot use its MCP server expired-login, which needs a login Claude Code does not have or could not refresh; sign in to expired-login with /mcp in Claude Code, then launch again",
+  );
+  await capture(failure, "resident-refused-needs-login");
+
+  // Signed in: the next launch reads the configuration afresh and starts.
+  writeFileSync(join(daemon.home, ".claude.json"), JSON.stringify({
+    hasCompletedOnboarding: true,
+    mcpServers: {
+      "remote-login": { type: "http", url: "https://mcp.example.test" },
+      "remote-events": { type: "sse", url: "https://events.example.test/sse", timeout: 9000 },
+      "remote-keyed": { type: "http", url: "https://keyed.example.test/mcp", headers: { "X-Api-Key": GLOBAL_SECRET } },
+    },
+  }));
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /OAuth Resident/ }).click();
+  await launchResident();
+
+  let servers: Record<string, Record<string, unknown>> = {};
+  let argv: string[] = [];
+  await expect.poll(() => {
+    const record = recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+      .find((entry) => entry.argv.includes("--strict-mcp-config") && (argvValue(entry.argv, "--mcp-config") ?? "").includes("remote-login"));
+    argv = record?.argv ?? [];
+    servers = JSON.parse(argvValue(argv, "--mcp-config") ?? "{}").mcpServers ?? {};
+    return Object.keys(servers).length > 0;
+  }, { timeout: 60_000 }).toBe(true);
+  expect(Object.keys(servers).sort()).toEqual(["mission-control", "remote-events", "remote-keyed", "remote-login"]);
+  // The URL as written: `https://mcp.example.test/` would key a different, empty login.
+  expect(servers["remote-login"]).toEqual({ type: "http", url: "https://mcp.example.test", headers: {} });
+  expect(servers["remote-events"]).toEqual({ type: "sse", url: "https://events.example.test/sse", headers: {}, timeout: 9000 });
+  expect(servers["remote-keyed"]!.args).toContain("--credential");
+  expect(argv.join(" ")).not.toContain("keyed.example.test");
+  expect(argv.join(" ")).not.toContain(GLOBAL_SECRET);
+});

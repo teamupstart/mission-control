@@ -250,8 +250,9 @@ that run's starts, and removed when the run ends.
 **No secret on a command line, in a configuration file or in the agent's environment.** Each
 harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
 written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
-environment is inherited by every shell and tool it runs. So a global server, and a custom server
-with any secret, is rendered as an entry for Mission's scoped launcher, whose arguments name only
+environment is inherited by every shell and tool it runs. So a global server (except the Claude
+Code remote server described after this list), and a custom server with any secret, is rendered
+as an entry for Mission's scoped launcher, whose arguments name only
 the run, the server's name and a credential file:
 
 - For each process start the daemon writes one credential file per launcher entry in the run's
@@ -274,12 +275,23 @@ the run, the server's name and a credential file:
   global one is unavailable to residents, and the launcher refuses either before any request.
 - A missing, spent or expired ticket, or a run that has ended, starts nothing.
 
+One kind of global server is handed to the harness itself instead: a Claude Code remote (`http`
+or `sse`) server with no header and no URL query, user name or password. It holds no value to
+protect, and it may be one Claude Code signs in to with OAuth, a login only Claude Code's own
+transport can present. Claude Code keys that stored login by the server's name and a hash of its
+type, URL and headers as configured, so the entry carries exactly those, with an empty header
+table. The trade-off is that this server's URL, and only its URL, appears in the agent's
+launch-scoped MCP configuration (`--mcp-config`) instead of staying private to the launcher. The
+login itself never passes through Mission Control: Claude Code reads it from its own credential
+store. `strictMcpConfig` pins the set exactly as for every other server.
+
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
 the agent itself inherits, so a global server that uses one is not available to residents: its
-value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
-authentication the harness holds (an OAuth login). Claude Code's configuration does not mark such a
-server, so it cannot connect through the launcher, and the start is refused, naming it. A custom server's argument in a credential
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or a Codex
+server whose OAuth login Codex holds. A Claude Code server behind an OAuth login is handed to
+Claude Code itself, as above; when Claude Code has no usable login for it, the start is refused,
+naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
 

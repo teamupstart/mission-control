@@ -348,10 +348,14 @@ every resume after that reads only the copy:
   configuration layer that changes one of the run's servers or forces a server on itself. On
   Claude Code a start is also refused when a server in the set does not connect, is switched off or
   waits on a login once Claude has started it, or when Claude cannot confirm the set within 60
-  seconds; this applies equally to the relaunch Claude makes to recover from a lost login. That includes a remote server behind an OAuth login
-  Claude Code holds, which the launcher cannot present. Nothing is renamed or dropped silently.
-  When a remote server does not connect, Claude Code's MCP log for the run's workspace has the
-  launcher's reason, with the transport's error code. A code such as `SELF_SIGNED_CERT_IN_CHAIN`
+  seconds; this applies equally to the relaunch Claude makes to recover from a lost login.
+  Nothing is renamed or dropped silently. A remote server behind an OAuth login Claude Code has no
+  usable token for - never signed in, or one it could not refresh - refuses the start saying it
+  needs a login; sign in to it with `/mcp` in Claude Code and launch again. Claude Code remembers
+  that verdict by server name for a while, so a later launch can be refused the same way until
+  you sign in.
+  When a remote server reached through the launcher does not connect, Claude Code's MCP log for
+  the run's workspace has the launcher's reason, with the transport's error code. A code such as `SELF_SIGNED_CERT_IN_CHAIN`
   says the server presented a certificate chain the launcher does not trust; the common cause is
   a root, such as a TLS-inspecting proxy's, that is in neither Node's roots nor the system's
   certificate store, both of which the launcher trusts.
@@ -368,9 +372,16 @@ values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
-`:-default`, which is used as written. Claude Code's configuration does not say which remote
-servers use its OAuth login, so such a server is listed as usable and refuses the start instead,
-as above.
+`:-default`, which is used as written.
+
+A Claude Code remote (`http` or `sse`) server with no headers and no query, user name or password
+in its URL is handed to Claude Code as configured, whether it is inherited or selected, rather than
+through the launcher. That is what lets a resident use a server you signed in to with OAuth in
+Claude Code: Claude Code keeps that login under the server's name, type, URL and headers exactly as
+configured, and only its own connection can present it. So such a server's URL appears in the
+agent's launch-scoped MCP configuration. Renaming the server or changing its URL, even by a
+trailing slash, asks for a new login. Every other global server, and any one with a header or a
+query value, still starts through the launcher.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
@@ -403,12 +414,21 @@ servers. A custom server has a name, the harnesses it applies to, and either a *
 
 A secret value never appears on a command line. It reaches only its own server, through Mission
 Control's launcher, as that server's environment, headers or query; never the agent's environment,
-a generated configuration file, a log or the transcript. A global server's definition stays out of
-the agent's launch arguments and generated configuration as well: the agent is handed only a
-launcher entry naming the run, the server and a credential file. The launcher then starts a stdio
-server with its configured command and arguments, so those ordinary arguments appear on that
-server's own process, as they would if the harness started it. See
-[security](security.md#resident-mcp-secrets).
+a generated configuration file, a log or the transcript. A global server reaches the agent in one
+of two ways:
+
+- **Through the launcher**, for every global server except the one below. Its definition stays out
+  of the agent's launch arguments and generated configuration: the agent is handed only a launcher
+  entry naming the run, the server and a credential file. The launcher then starts a stdio server
+  with its configured command and arguments, so those ordinary arguments appear on that server's
+  own process, as they would if the harness started it.
+- **Directly**, for a Claude Code remote (`http` or `sse`) server with no headers and no query,
+  user name or password in its URL (above). It carries no value, so Claude is handed the server
+  itself: its name, type and URL as configured, an empty header table and its options. Its URL is
+  therefore in the agent's launch-scoped MCP configuration, and Claude Code presents any OAuth
+  login it holds for it.
+
+See [security](security.md#resident-mcp-secrets).
 
 When a run ends, its copy of the servers and their values, its launch tickets and its Codex
 configuration overlay are removed once its session has stopped.

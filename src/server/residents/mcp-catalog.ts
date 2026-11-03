@@ -39,6 +39,13 @@ export interface GlobalMcpDefinition {
   /** Every environment, header and query value, by secrets-table field. */
   secrets: ReadonlyMap<string, string>;
   options: ResidentMcpOptions;
+  /**
+   * Whether the harness itself may hold a login for this server, which only its own transport
+   * can present: a Claude Code remote server with no header and no query value. A resident hands
+   * such a server to the harness as-is instead of through the scoped launcher, under its exact
+   * name and URL, because those are what the harness's stored OAuth login is keyed by.
+   */
+  harnessLogin: boolean;
 }
 
 export interface GlobalMcpRead {
@@ -78,6 +85,7 @@ function unreadable(name: string, transport: ResidentMcpGlobalServer["transport"
     transport: null,
     secrets: new Map(),
     options: {},
+    harnessLogin: false,
   };
 }
 
@@ -222,6 +230,7 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     return "value" in result ? result.value : result;
   };
   let transport: ResidentMcpSnapshotTransport;
+  let harnessLogin = false;
   let problem: string | null = unknownField ? `it uses ${unknownField}, which residents cannot carry` : null;
   if (type === "stdio") {
     if (typeof entry.command !== "string" || !entry.command) return unreadable(name, "stdio", "it has no command");
@@ -264,7 +273,12 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     if (typeof split === "string") return unreadable(name, type, split);
     for (const [key, value] of Object.entries(headers)) secrets.set(residentMcpSecretField("header", key), value);
     if (Object.keys(headers).length > 0 || split.secretQuery.length > 0) problem ??= plaintextCredentialProblem(new URL(split.url));
-    transport = { type, url: split.url, headers: {}, secretHeaders: Object.keys(headers), secretQuery: split.secretQuery };
+    // Nothing private to carry, so the server may be one Claude Code signs in to itself. Its
+    // stored OAuth login is keyed by the name and by the type, URL and headers exactly as
+    // configured, so the URL is kept as written: `split.url` is normalized (`https://host`
+    // gains a trailing slash) and would key a different, empty login.
+    harnessLogin = Object.keys(headers).length === 0 && split.secretQuery.length === 0;
+    transport = { type, url: harnessLogin ? url : split.url, headers: {}, secretHeaders: Object.keys(headers), secretQuery: split.secretQuery };
   }
   const options = claudeOptions(entry);
   if (typeof options === "string") problem ??= options;
@@ -273,6 +287,7 @@ export function parseClaudeServer(name: string, entry: unknown, env: NodeJS.Proc
     transport: problem ? null : transport,
     secrets: problem ? new Map() : secrets,
     options: typeof options === "string" ? {} : options,
+    harnessLogin: !problem && harnessLogin,
   };
 }
 
@@ -390,6 +405,8 @@ export function parseCodexServer(name: string, entry: unknown, authStatus: strin
     transport: problem ? null : transport,
     secrets: problem ? new Map() : secrets,
     options: typeof options === "string" ? {} : options,
+    // A Codex OAuth login is refused above, so every usable Codex server goes through the launcher.
+    harnessLogin: false,
   };
 }
 

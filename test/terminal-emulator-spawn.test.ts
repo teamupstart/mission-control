@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TerminalExec } from "../src/server/terminal/exec.ts";
 
 // What is at stake: that "a tab opened" and "we can address it" stay two answers.
 //
@@ -65,12 +64,6 @@ process.exit(0);
 process.env.HARNESS_HOME = join(home, "state");
 process.env.FAKE_LOG = LOG;
 const { weztermEmulator } = await import("../src/server/terminal/wezterm.ts");
-const { defaultExec } = await import("../src/server/terminal/exec.ts");
-
-// Keep real subprocess argv, exit and environment coverage without making Node fixture
-// startup speed a test of the production CLI discovery deadline.
-const fixtureExec: TerminalExec = (bin, args, opts) =>
-  defaultExec(bin, args, { ...opts, timeoutMs: 10_000 });
 
 interface Call {
   argv: string[];
@@ -87,7 +80,7 @@ async function spawnTab(mode: "ok" | "unreadable" | "refused") {
   // Set on the parent so the strip has something to strip - this is the stale-GUI case.
   process.env.WEZTERM_UNIX_SOCKET = "/tmp/gui-sock-dead";
   try {
-    const result = await weztermEmulator(fixtureExec).spawn!.tab({
+    const result = await weztermEmulator().spawn!.tab({
       argv: ["tmux", "attach", "-t", "api"],
       title: "api",
       cwd: null,

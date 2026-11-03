@@ -16123,6 +16123,30 @@ select.ensemble-judge-persona {
 .resident-problem {
   margin: 0;
 }
+/* Marks a built-in resident wherever profiles are chosen, beside an operator's same-named one. */
+.resident-builtin-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purple);
+  border: 1px solid color-mix(in oklab, var(--purple) 40%, var(--border));
+  border-radius: 4px;
+  vertical-align: 1px;
+}
+/* A built-in resident: why nothing here can be saved, and the way to a copy that can. */
+.resident-builtin-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
 /* A revision saved elsewhere over unsaved edits: said, with the choice beside it. */
 .resident-conflict {
   display: flex;
@@ -37195,10 +37219,20 @@ body.foreman-sidecar-open .modal-backdrop {
   min-height: 30px;
 }
 .residents-pop-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   font-weight: 600;
   white-space: nowrap;
+}
+/* The name gives way first, so a built-in's tag is never the part that is clipped. */
+.residents-pop-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.residents-pop-name > .resident-builtin-tag {
+  flex: none;
 }
 .residents-pop-state {
   font-size: 11.5px;

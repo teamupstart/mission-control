@@ -220,6 +220,11 @@ export type ResidentLaunchOutcome =
  *   durable evidence - an `sdk_sessions` row carrying the reserved task id, which the SDK
  *   supervisor writes only after the driver accepted turn one.
  */
+/** Why a built-in cannot be written, and the one way to a copy that can. */
+function builtinRefusal(profile: ResidentProfile, verb: "edited" | "archived"): string {
+  return `${profile.name} ships with Mission Control and cannot be ${verb}; duplicate it to make your own`;
+}
+
 export class ResidentManager {
   private readonly now: () => number;
   private readonly resolveRepoRoot: typeof resolveTaskRepoRoot;
@@ -410,6 +415,8 @@ export class ResidentManager {
         return { ok: false, status: 404, error: "no such resident profile" };
       case "archived":
         return { ok: false, status: 409, error: "this resident profile is archived", profile: write.profile };
+      case "builtin":
+        return { ok: false, status: 409, error: builtinRefusal(write.profile, "edited"), profile: write.profile };
       case "stale":
         return {
           ok: false,
@@ -431,6 +438,8 @@ export class ResidentManager {
       case "archived":
         // Idempotent: a second Archive answers with the row as it stands.
         return { ok: true, profile: write.profile };
+      case "builtin":
+        return { ok: false, status: 409, error: builtinRefusal(write.profile, "archived"), profile: write.profile };
       case "stale":
         return {
           ok: false,

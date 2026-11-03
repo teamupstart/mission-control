@@ -72,6 +72,7 @@
     "init": "node scripts/init.mjs",
     "personas": "tsx scripts/builtin-personas.ts",
     "session-actions": "tsx scripts/builtin-session-actions.ts",
+    "residents": "tsx scripts/builtin-residents.ts",
     "tours": "tsx scripts/tour-content.ts",
     "session": "node scripts/new-session.mjs",
     "prerecover:database": "node scripts/build-state-lock-native.mjs",

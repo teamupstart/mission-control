@@ -2476,6 +2476,19 @@ test("an unrelated hook PR hint cannot block the validated episode PR", () => {
   });
   // A URL the agent merely printed (`gh pr view`, no `prCreated`) never reaches the card.
   assert.equal(registry.getSession(id)?.prUrl, null);
+  // One it opened (`gh pr create`) does, as an immediate hint - and that hint is the case
+  // this test is about: it must not block the PR the poller validates for the episode.
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "hook-hint-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prUrl: "https://github.com/example/repo/pull/70",
+    prCreated: true,
+  });
+  assert.equal(registry.getSession(id)?.prUrl, "https://github.com/example/repo/pull/70");
   assert.equal(registry.workEpisodeForSession(id)?.prUrl, null);
   assert.equal(registry.prObservationFor(id), null);
 

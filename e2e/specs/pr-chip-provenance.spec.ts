@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
@@ -60,6 +61,13 @@ function runBashHook(daemon: DaemonHandle, session: Session, command: string): v
     timeout: 15_000,
   });
   expect(result.status, result.stderr).toBe(0);
+}
+
+/** How many `PostToolUse` hook events the daemon has applied to this session. */
+function postToolUseEvents(daemon: DaemonHandle, sessionId: string): number {
+  return withDaemonDb(daemon, (db) => (db
+    .prepare("SELECT COUNT(*) AS n FROM session_events WHERE session_id = ? AND kind = 'PostToolUse'")
+    .get(sessionId) as { n: number }).n);
 }
 
 async function useConsole(page: Page, daemon: DaemonHandle): Promise<void> {
@@ -158,9 +166,16 @@ test("a repository-free Claude resident never wears a pull request chip", async 
 
   // What the Shepherd actually ran, then the stricter case: even a real `gh pr create` from a
   // session the poller can never confirm or retract must not decorate it.
+  //
+  // The bridge never reports a failed POST, so a hook that returns proves nothing on its own.
+  // Each event the daemon APPLIES logs one `session_events` row, so wait until both of these
+  // have landed - otherwise the `gh pr create` case could pass without ever being exercised.
+  const before = postToolUseEvents(daemon, session.id);
   runBashHook(daemon, session, `gh pr view ${PR_NUMBER} --json url --jq .url`);
   runBashHook(daemon, session, `gh pr create --title "Not mine" --body "x"`);
-  await expect.poll(async () => (await sessionById(daemon, session.id))?.hooksSeen).toBe(true);
+  await expect.poll(() => postToolUseEvents(daemon, session.id), {
+    message: "both hook events should be applied to the resident's card",
+  }).toBe(before + 2);
   const after = (await sessionById(daemon, session.id))!;
   expect(after).toMatchObject({ prUrl: null, prNumber: null, prState: null });
 

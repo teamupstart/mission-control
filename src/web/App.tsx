@@ -3796,6 +3796,7 @@ export function App(): React.JSX.Element {
         )
         : (
           <LibraryPage
+            filter={filter}
             workflowSummaries={workflowSummaries}
             personas={personas}
             foremanSummary={{

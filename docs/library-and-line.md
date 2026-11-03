@@ -37,6 +37,12 @@ noun:
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
 
+The top-bar filter narrows cards across all six shelves as you type. It matches names,
+descriptions, tags, and the facts printed on cards, ignoring case and surrounding spaces.
+Fixed cards such as Foreman and Task sources, ensemble launchers, and New cards follow the
+same filter. Shelves stay in place and show **No matching cards.** when nothing matches.
+Clear the filter with its clear button or Escape to restore every card.
+
 The four authoring surfaces mount one level deeper at bookmarkable hashes:
 
 | Hash | Surface |

@@ -1355,9 +1355,17 @@ A skin is CSS only, and it is added in four places:
    `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
    thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
    registered skin with no new case, so a skin may change colours, fonts and corners but
-   never padding, borders, font size or line height.
+   never padding, borders, font size or line height. A skin changes a face through
+   `--font-display` (headings, card titles, tile names) and `--font-label` (the Line's stage
+   names), never by restating a font rule.
+   Any rule beside the token block is decoration, and `test/skin-decoration.test.ts` holds
+   it to paint: backgrounds, `box-shadow`, `text-shadow`, `text-transform`, `color` and
+   `border-color`. Nothing that sizes a box, and no `filter`, `backdrop-filter`,
+   `transition` or animation. A glow restates the shadow it replaces, rings included.
 4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
-   assert its background and persistence.
+   assert its background and persistence. A skin that changes a face or adds decoration also
+   joins `DECORATED_SKINS` there, which holds the top bar, the Line and the Dispatch button to
+   Default's measured geometry.
 
 `src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
 document's `color-scheme`, and no component branches on the skin id. The daemon serves the

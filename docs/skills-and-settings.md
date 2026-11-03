@@ -296,7 +296,8 @@ including stable release news. Its badge says `This installation` because this p
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
 
 Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
-(today's dark look) and the light **Daylight** skin. A tile applies the moment it is picked,
+(today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
+and **Neon Dusk** skins. A tile applies the moment it is picked,
 repainting the page behind the settings and persisting per machine in `app_config.ui.skin`,
 which settings backup carries with the rest of Display. See [Skins](ui.md#skins).
 

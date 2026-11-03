@@ -4,7 +4,7 @@ import { taskHasRepository } from "@shared/task.ts";
 import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { checkToken } from "../auth.ts";
-import { sessionControlCaller } from "../session-control.ts";
+import { sessionControlCaller, sessionControlCallerRefusal } from "../session-control.ts";
 import type { Registry } from "../registry.ts";
 import type { ResidentManager } from "./manager.ts";
 import type { ResidentLoop } from "./loop.ts";
@@ -62,7 +62,9 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           }
           // Settled or not, the replacement's run is reserved by now, so the replaced session's
           // record can name it. A launch that threw leaves the offer to complete in place.
-          const result = await deps.residents.launch(profile.id, request)
+          const result = await deps.residents.launch(profile.id, request, {
+            mayConsumeControlClick: sessionControlCallerRefusal(c) === null,
+          })
             .finally(() => deps.registry.refreshTaskResidentRestart(task.id));
           return "result" in result ? c.json(result.result, result.status) : c.json({ error: result.error }, result.status);
         }

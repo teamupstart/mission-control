@@ -1,8 +1,9 @@
 import { useContext, useEffect, useState } from "react";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
-import type { ResidentLoopStatus, ResidentRunSummary } from "@shared/residents.ts";
+import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
 import { controlResident } from "./api.ts";
 import type { ResidentSessionMark } from "./marker.ts";
 import { ResidentRestartPromptContext } from "./restart-prompt.ts";
@@ -69,6 +70,15 @@ export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSes
   const promptToComplete = useContext(ResidentRestartPromptContext);
   if (!mark.loop) return null;
   const act = async (action: "pause" | "resume" | "run-now" | "restart") => {
+    if (action === "restart" && mark.changedTo !== null) {
+      // A replacement is a new launch. Arm its own click before awaiting anything; the
+      // manager checks the new pinned revision's authority, never the old run's grant.
+      authorizeResidentLaunch({
+        requestId: residentRestartRequestId(mark.runId),
+        profileId: mark.profileId,
+        revision: mark.changedTo,
+      });
+    }
     setBusy(true); setError(null);
     try {
       await controlResident(mark.runId, action);

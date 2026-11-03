@@ -60,8 +60,8 @@ editable, archivable, and never touched by an upgrade. Every saved profile also 
 A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
 ships different settings, the daemon writes them as the built-in's next revision at startup. A
 resident already running keeps the revision it launched with. Use **Restart on new profile** to
-pick up the update. Like any other launch, a restart grants session control only from a desktop
-Launch click.
+pick up the update. In the desktop app, that Restart click authorizes session control for the
+new run when the new profile revision has **Control other sessions** on.
 
 The daemon refuses edits and archives of a built-in even when they do not come from the editor.
 New profiles and renames cannot take a built-in's name. A profile you authored under that name
@@ -175,8 +175,8 @@ that way at every width.
 **Control other sessions**, under **Authority**, is off by default. Turned on, it lets a
 resident's run receive the same grant as the
 [session control menu](sessions.md#let-a-session-steer-other-sessions), so it can read and steer
-your other live sessions. Your **Launch** click in the Mission Control desktop app, on
-**Launch resident** in Dispatch or **Launch** in the Residents dock, is the only thing that gives
+your other live sessions. Your desktop click on **Launch resident** in Dispatch,
+**Launch** in the Residents dock, or **Restart on new profile** gives
 it a grant that lasts for the run and through a restart. The session control menu can still grant
 control for one conversation, as it can for any session, and that grant ends at the next restart.
 
@@ -269,8 +269,12 @@ the reservation no replacement launch exists, so retrying Restart starts it. Aft
 reservation, a replacement whose session never started is a failed launch like any other (see
 [Lifecycle](#lifecycle)): retrying Restart only reports that failure, so launch the profile again.
 Either way the old session's band keeps **Complete & close**.
-The replacement conversation does not inherit a session-control grant from the old run;
-only the desktop Launch flow or the existing session-control menu can grant that authority.
+The replacement conversation does not inherit a session-control grant from the old run.
+In the desktop app, the Restart click authorizes a fresh grant through the same path as Launch,
+bound to the replacement request and the new profile revision. It grants control only if that
+revision has **Control other sessions** on. A browser restart or a desktop app attached to a
+daemon it did not start still launches without control; the session control menu can grant it
+for that conversation.
 
 ### Compaction and guardrails
 

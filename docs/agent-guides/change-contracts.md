@@ -1243,11 +1243,13 @@ These rules hold across phases:
 4. **Persona and instructions are standing instructions**, appended after repository standing
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
-5. **Session control comes only from the desktop Launch click.** `launchResident()` arms it, the
-   launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
+5. **Session control comes only from desktop Launch or Restart on new profile clicks.**
+   `launchResident()` arms it, the launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
    applied and recorded in the four `control_*` columns of `resident_runs`. No later phase may
-   create a resident grant through any other path, including Restart on new profile, which is a
-   new launch and needs its own click. The rule is stated in
+   create a resident grant through any other path. Restart on new profile is a new launch:
+   its desktop click arms the same capability for the replacement request and displayed new
+   revision, and its route uses the same caller check and manager consumption. It never copies
+   the old run's grant. The rule is stated in
    [security](../security.md#resident-launch-grants).
 
 6. **A run's MCP servers come only from its snapshot.** The launch resolves the effective set once

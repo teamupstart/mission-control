@@ -8516,7 +8516,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // `answerWhen: "accepted"` is answered once the run's task exists, so Dispatch closes as
   // quickly as a task dispatch; its still-starting run answers 202.
   //
-  // It is also the one place a desktop Launch click can be consumed for session control. A
+  // Like the resident restart route, it lets the manager consume a desktop launch click. A
   // tool, an agent or a foreign origin still launches, but never consumes a click: its run
   // starts without control, exactly as a launch from the standalone browser does.
   app.post("/api/residents/profiles/:id/launch", async (c) => {

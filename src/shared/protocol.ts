@@ -8270,8 +8270,11 @@ export const ArchiveResidentProfileSchema = z
   .strict();
 export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
 
-/** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
-export const LaunchResidentRequestSchema = LaunchResidentSchema;
+/** `POST /api/residents/profiles/:id/launch`. Restart IDs belong only to the restart route. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema.refine(
+  (input) => !input.requestId.startsWith("resident-restart:"),
+  { message: "This request ID is reserved for profile restarts.", path: ["requestId"] },
+);
 
 export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";
 /** Skill-source mutations share one validated config contract. */

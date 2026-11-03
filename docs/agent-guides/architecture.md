@@ -277,6 +277,10 @@ through `ResidentManager.sessionControlRevoked` before the live grant is turned 
 launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
 session-control route's trusted menu click above is the other grant source, as
 [security](../security.md#delegated-session-control) states.
+**Restart on new profile** arms the same resident-launch capability synchronously from its
+desktop click, using `residentRestartRequestId` and the displayed new revision. Its route passes
+the same caller check to `ResidentManager.launch`. The replacement receives its own grant only
+when its pinned revision requests control and the click matches; it never copies the old grant.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control

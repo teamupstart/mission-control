@@ -1,0 +1,5 @@
+/* Every skin, imported once from `main.tsx` directly after `styles.css`. Default has no file:
+   it is `:root` itself. One `@import` per non-default entry in `src/shared/skins.ts`, in
+   registry order; `test/skins.test.ts` fails when the two lists disagree. They ship in the
+   main bundle, so switching skins never waits on a fetch. */
+@import "./daylight.css";

@@ -10,6 +10,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
+import type { TaskLaunchFailure } from "./launch-failure.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -2320,6 +2321,18 @@ export interface Task {
   outcomeUrl: string | null;
   /** Failure reason, including one carried by a backlog task that is safe to retry. */
   error: string | null;
+  /**
+   * Set by the dispatcher when this attempt failed before its session started, and cleared
+   * when the task is dispatched again. Absent or null on every other task, including one
+   * whose session ran and was later lost. See `@shared/launch-failure.ts`.
+   */
+  launchFailure?: TaskLaunchFailure | null;
+  /**
+   * Set on a Report bug session: the failed task it was started to report. The session's own
+   * identity, persisted on it, so a report session that itself fails to start never offers a
+   * Report bug of its own - whatever has happened to the failure that started it since.
+   */
+  launchReportFor?: string | null;
   /**
    * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.
    *

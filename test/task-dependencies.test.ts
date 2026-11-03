@@ -1036,7 +1036,7 @@ test("reset after delayed merge rollover stops pending task provenance", async (
   assert.notEqual(reset.episodeId, rolledOver.episodeId);
   const resetEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
   assert.equal(resetEdge?.type === "task" ? resetEdge.episodeId : null, rolledOver.episodeId);
-  assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, null);
+  assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, setup.url);
 
   const branch = `${setup.branch}-after-reset`;
   setup.registry.applyDiscovery([discovered(setup.id, setup.cwd, { gitBranch: branch })]);

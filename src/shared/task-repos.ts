@@ -201,6 +201,8 @@ export interface RepoWorkFacts {
   mergedAt?: number | null;
   /** Last observed worktree head. See the three states above. */
   headSha?: string | null;
+  /** Durable change evidence for a checkout that has already been reclaimed. */
+  retainedChange?: RepoChangeVerdict;
 }
 
 /**
@@ -229,6 +231,7 @@ export type RepoChangeVerdict = "changed" | "unchanged" | "unknown";
  */
 export function repoChangeVerdict(ref: TaskRepoRef, facts: RepoWorkFacts): RepoChangeVerdict {
   if (facts.prUrl !== null) return "changed";
+  if (facts.retainedChange !== undefined) return facts.retainedChange;
   if (ref.baseSha === null || ref.worktreePath === null) return "unchanged";
   if (facts.headSha === undefined) return "unknown";
   if (facts.headSha === null) return "unchanged";

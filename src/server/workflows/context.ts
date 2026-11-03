@@ -60,6 +60,7 @@ import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
 import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { captureReviewSnapshot } from "../git/review-snapshot.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -893,7 +894,12 @@ async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
   return { diff, allStatus, status, statusTruncated, statusFingerprint };
 }
 
-async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = false): Promise<{
+/**
+ * `reviewSnapshot` is set only by the capture a submission persists - never by the boundary
+ * re-read - so one capture writes at most one review snapshot. The boundary compares the same
+ * content tree, which is content-addressed and therefore identical whichever store hashed it.
+ */
+async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = false, reviewSnapshot = false): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
@@ -901,28 +907,35 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
   statusFingerprint: string;
   standards: ReturnType<typeof readStandards>;
   contentTreeOid: string;
+  reviewCommit: string | null;
   repositoryFingerprint: string;
   coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
 }> {
   const work = await readRepositoryWorkEvidence(cwd);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
-  const { treeOid: contentTreeOid } = await captureWorktreeTree(cwd);
+  const snapshot = reviewSnapshot ? await captureReviewSnapshot(cwd) : null;
+  const contentTreeOid = snapshot?.treeOid ?? (await captureWorktreeTree(cwd)).treeOid;
+  const reviewCommit = snapshot?.commitOid ?? null;
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   let coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
   if (captureCodeRabbit) {
     const root = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
     coderabbit = captureCodeRabbitConfig(root.code === 0 ? root.stdout.trim() : null);
     if (coderabbit.enabled) {
-      const committedYaml = await run("git", ["-C", cwd, "show", "HEAD:.coderabbit.yaml"], { maxBuffer: 64 * 1024 });
+      // The YAML CodeRabbit will read is the one in the commit it reviews.
+      const committedYaml = await run("git", ["-C", cwd, "show", `${reviewCommit ?? "HEAD"}:.coderabbit.yaml`], { maxBuffer: 64 * 1024 });
       coderabbit.committed = committedYaml.code === 0 && !committedYaml.overflowed
         && !committedYaml.outcomeUnknown && sha(committedYaml.stdout) === coderabbit.digest;
     }
   }
+  // `committed` is derived from the head, the content tree and the YAML digest, all fingerprinted
+  // already, and only the persisted capture derives it against the review snapshot.
+  const { committed: _derived, ...fingerprintedCodeRabbit } = coderabbit ?? {};
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
     contentTreeOid,
-    ...(coderabbit ? { coderabbit } : {}),
+    ...(coderabbit ? { coderabbit: fingerprintedCodeRabbit } : {}),
     patch: diff.patch,
     patchTruncated: diff.truncated,
     statusFingerprint,
@@ -933,7 +946,7 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
       truncated: doc.truncated,
     })),
   }));
-  return { ...work, standards, contentTreeOid, coderabbit, repositoryFingerprint };
+  return { ...work, standards, contentTreeOid, reviewCommit, coderabbit, repositoryFingerprint };
 }
 
 function sourceFingerprintFields(
@@ -1250,9 +1263,10 @@ export async function readWorkflowContextRaw(
     statusFingerprint,
     standards,
     contentTreeOid,
+    reviewCommit,
     repositoryFingerprint,
     coderabbit,
-  } = await readRepositoryEvidence(checkout, captureCodeRabbit);
+  } = await readRepositoryEvidence(checkout, captureCodeRabbit, graph?.nodes.some(node => node.kind === "check") ?? false);
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
@@ -1291,6 +1305,7 @@ export async function readWorkflowContextRaw(
       ...(coderabbit ? { coderabbit } : {}),
       headSha: diff.headSha,
       contentTreeOid,
+      reviewCommit,
       diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),
       diff: boundedDiff,
       diffTruncated: diff.truncated || boundedDiff !== diff.patch,

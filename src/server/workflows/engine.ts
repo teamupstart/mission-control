@@ -254,6 +254,18 @@ function upstreamNodeIds(
   return upstream;
 }
 
+/**
+ * The commit a submission's Commands and CodeRabbit are pinned to: an observed pull-request
+ * head first, then the capture's review snapshot (which carries uncommitted work), then the
+ * captured HEAD for a snapshot written before review snapshots existed.
+ */
+export function reviewedCommit(
+  prHeadSha: string | null,
+  evidence: { headSha: string | null; reviewCommit?: string | null },
+): string | null {
+  return prHeadSha ?? evidence.reviewCommit ?? evidence.headSha;
+}
+
 /** Completed same-submission Check outcomes frozen for one newly-runnable Persona attempt. */
 export function personaCheckEvidence(
   graph: PublishedWorkflowGraph,
@@ -605,7 +617,7 @@ export class WorkflowEngine {
                   target.id,
                   this.store.listAttempts(submission.id),
                   currentReceipts,
-                  submission.prHeadSha ?? captured.data.evidence.headSha,
+                  reviewedCommit(submission.prHeadSha, captured.data.evidence),
                 )
               : [];
             let reviewInput: WorkflowNodeAttempt["reviewInput"];
@@ -1384,7 +1396,7 @@ export class WorkflowEngine {
         slot: node.slot,
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
-          dirty: context.data.evidence.workingTreeDirty,
+          dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
           retryAt: this.store.listAttempts(submission.id)
             .map((attempt) => {
               const output = attempt.output;
@@ -1394,7 +1406,7 @@ export class WorkflowEngine {
             }).reduce((a, b) => Math.max(a, b), 0),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
-              repoRoot: binding.sessionRepoRoot!, headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+              repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
               yaml: context.data.evidence.coderabbit!, command: commandView!,
             })),
         } : undefined,
@@ -1427,7 +1439,7 @@ export class WorkflowEngine {
         },
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
-        headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+        headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
         // supervisor's durable identity by attempt id, and `claimed.id` is that id.
       }, deps);
@@ -1488,7 +1500,7 @@ export class WorkflowEngine {
       slot: node.slot,
       status: checkOutcome.status,
       exitCode: checkOutcome.exitCode,
-      headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+      headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
       outputBytes: Buffer.byteLength(checkOutcome.output),
       omittedBytes: checkOutcome.truncatedBytes,
     }, this.now());

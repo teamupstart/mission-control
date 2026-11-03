@@ -51,7 +51,11 @@ form on that profile.
 
 Like a task dispatch, Dispatch closes as soon as Mission Control accepts the launch and the
 resident's task exists, without waiting for its session to start. The resident keeps starting on
-its task, and a launch that fails from there shows its reason on that task. A launch refused
+its task, and a launch that fails from there stays on the board as a **Did not start** tile in
+**Working** with its reason - for example an MCP server that could not connect - and offers
+**Launch again**, **Open profile**, **Report bug** and **Dismiss**. Launches of one profile that
+fail for the same reason share one tile, and a later successful launch of that profile clears it.
+See [when a dispatch does not start](dispatch-and-backlog.md#when-a-dispatch-does-not-start). A launch refused
 before its task exists, such as an MCP set that cannot be pinned, keeps Dispatch open with the
 reason. If Mission Control answers before the task exists, Dispatch stays open and checks on
 that same launch until it does; you can close it, and launching again resumes that launch.

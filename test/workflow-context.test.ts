@@ -561,6 +561,56 @@ test("only the pinned CodeRabbit graph captures ignored YAML and includes it in 
   assert.equal(refreshedOld.context.evidence.contentTreeOid, enabled.context.evidence.contentTreeOid);
 });
 
+test("an uncommitted submission with Commands pins them to a review snapshot of exactly that content", async () => {
+  // A ship task submits before it commits. Without the snapshot its Commands checked the base
+  // commit and CodeRabbit refused the submission outright.
+  const repo = join(home, "review-snapshot-capture");mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");git("config", "user.name", "Fixture");git("config", "user.email", "fixture@example.com");git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "app.txt"), "base\n");
+  git("add", ".");git("commit", "-qm", "base");
+  const head = git("rev-parse", "HEAD");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "review-snapshot-capture", agent: "claude", name: "ship", nameSource: "process",
+    cwd: repo, gitBranch: "main", gitRoot: repo, repoRoot: repo, pid: 1, tty: "ttys-ship", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
+  const session = registry.getSession("review-snapshot-capture")!;
+  const binding = { id: "ship-binding", sessionId: session.id, noteKey: noteKeyFor(session) } as WorkflowBinding;
+  const codeRabbitGraph = BUILTIN_WORKFLOWS.find(w => w.definition.id === "builtin-workflow:no-mistakes-review")!
+    .versions.find(v => v.id.endsWith("@22"))!.graph;
+
+  const clean = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  assert.equal(clean.context.evidence.reviewCommit, head);
+
+  writeFileSync(join(repo, "app.txt"), "the task's work\n");
+  writeFileSync(join(repo, "new.txt"), "untracked\n");
+  writeFileSync(join(repo, ".coderabbit.yaml"), "reviews: {auto_review: {enabled: true}}\n");
+  const dirty = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  const snapshot = dirty.context.evidence.reviewCommit!;
+  assert.equal(dirty.context.evidence.workingTreeDirty, true);
+  assert.match(snapshot, /^[0-9a-f]{40}$/);
+  assert.notEqual(snapshot, head);
+  assert.equal(git("rev-parse", `${snapshot}^`), head);
+  assert.equal(git("rev-parse", `${snapshot}^{tree}`), dirty.context.evidence.contentTreeOid);
+  assert.equal(git("show", `${snapshot}:app.txt`), "the task's work");
+  assert.equal(git("show", `${snapshot}:new.txt`), "untracked");
+  assert.equal(git("rev-parse", `refs/mission-control/workflow-reviews/${snapshot}`), snapshot);
+  // The uncommitted YAML is the one the snapshot carries, so CodeRabbit reads what was captured.
+  assert.equal(dirty.context.evidence.coderabbit!.committed, true);
+  // The checkout is untouched and the boundary re-read, which writes no snapshot, agrees.
+  assert.equal(git("rev-parse", "HEAD"), head);
+  assert.equal(git("diff", "--cached", "--name-only"), "");
+  assert.deepEqual(git("status", "--porcelain").split("\n").map(line => line.trim()).sort(), ["?? .coderabbit.yaml", "?? new.txt", "M app.txt"]);
+  assert.equal(await captureBoundaryChanged(registry, binding, dirty.boundary), false);
+
+  // A graph with no Command has nothing to pin and writes no snapshot.
+  const before = git("for-each-ref", "refs/mission-control/workflow-reviews/");
+  const withoutCommands = await readWorkflowContextRaw(registry, binding, [], [], null);
+  assert.equal(withoutCommands.context.evidence.reviewCommit, null);
+  assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);
+});
+
 test("repository capture fails closed and detects worktree evidence changes", async () => {
   const repo = join(home, "evidence-repo");
   mkdirSync(repo);

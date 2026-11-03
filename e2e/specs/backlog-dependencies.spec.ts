@@ -8,6 +8,7 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 async function post(daemon: DaemonHandle, path: string, body: object) {
@@ -194,3 +195,73 @@ test("failed prerequisite guidance shows an error and disables dependency remova
   await expect(dialog.getByRole("button", { name: "Remove dependency: Optional prerequisite" })).toBeDisabled();
   await shoot(dashboard, "prerequisite-guidance-unavailable");
 });
+
+
+for (const episode of ["current", "historical", "late-opened"] as const) {
+  test(`manual Complete leaves the override unchecked and a later ${episode} merge releases its dependent`, async ({ dashboard, daemon }) => {
+  const source = await create(daemon, "Late merged prerequisite", { backlog: false });
+  await expect.poll(async () => {
+    const sessions = await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    return sessions.some(s => s.task?.id === source.id && s.agentSessionId && s.state === "idle");
+  }).toBe(true);
+  const dependent = await create(daemon, "Waiting for shipped work", { dependencies: [{ type: "task", taskId: source.id }] });
+  const prCreatedAt = new Date().toISOString();
+  await dashboard.reload();
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await dashboard.locator(".console-detail").getByRole("button", { name: "Complete" }).click();
+  const complete = dashboard.getByRole("dialog", { name: "Complete task and close session" });
+  await expectContentClearsBorder(complete);
+  await expect(complete.getByRole("checkbox", { name: /Unblock/ })).not.toBeChecked();
+  await complete.getByRole("button", { name: "Complete & close" }).click();
+  await expect(complete).toBeHidden();
+  const read = async (id: string): Promise<Task> => {
+    const tasks = await (await fetch(`${daemon.baseURL}/api/tasks`)).json() as Task[];
+    return tasks.find(task => task.id === id)!;
+  };
+  await expect.poll(async () => (await read(source.id)).status).toBe("done");
+  expect((await read(dependent.id)).dependencies[0]!.satisfiedAt).toBeNull();
+  const before = await read(source.id);
+  const dialog = await editor(dashboard, daemon, dependent.title);
+  await expect(dialog.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
+  const url = "https://github.com/acme/demo-repo/pull/1303";
+  writeGhPullRequests(daemon.home, [{ cwd: daemon.repo, url, number: 1303, state: "MERGED",
+    createdAt: episode === "late-opened" ? new Date().toISOString() : prCreatedAt, mergedAt: new Date().toISOString(), headRefOid: "a".repeat(40) }]);
+  // Discovery is disabled in the fixture, so seed the branch observation that a real
+  // session leaves behind. No PR URL or merge evidence is seeded: the real poller must
+  // discover and verify both after restart with the session already closed.
+  await daemon.crash();
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE task_work_episode_bindings SET branch = ? WHERE task_id = ?")
+      .run("feat/late-prerequisite", source.id);
+    db.prepare("UPDATE session_work_episodes SET branch = ? WHERE session_id = (SELECT session_id FROM task_work_episode_bindings WHERE task_id = ?)")
+      .run("feat/late-prerequisite", source.id);
+    if (episode === "late-opened") {
+      // Stand in for the pre-completion branch observation while fixture discovery is disabled.
+      // The server regression separately exercises capture, freeze, and rollover of this SHA.
+      db.prepare("UPDATE task_work_episode_bindings SET work_head_sha = ? WHERE task_id = ?")
+        .run("a".repeat(40), source.id);
+    }
+    if (episode === "historical") {
+      db.prepare(`INSERT INTO historical_task_work_episode_bindings
+        (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, bound_at, updated_at, ended_at)
+        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, bound_at, updated_at, ?
+        FROM task_work_episode_bindings WHERE task_id = ?`).run(before.completedAt, source.id);
+      db.prepare("UPDATE tasks SET dependencies = ? WHERE id = ?")
+        .run(JSON.stringify(dependent.dependencies.map(edge => ({ ...edge, branch: "feat/late-prerequisite" }))), dependent.id);
+      db.prepare(`UPDATE session_work_episodes SET episode_id = episode_id || '-next', branch = 'main'
+        WHERE session_id = (SELECT session_id FROM task_work_episode_bindings WHERE task_id = ?)`).run(source.id);
+      db.prepare("UPDATE task_work_episode_bindings SET episode_id = episode_id || '-next', branch = 'main' WHERE task_id = ?")
+        .run(source.id);
+    }
+  });
+  await daemon.restart();
+  await expect.poll(async () => (await read(dependent.id)).dependencies[0]!.satisfiedAt).not.toBeNull();
+  expect((await read(dependent.id)).dependencies[0]!.prUrl).toBe(url);
+  const after = await read(source.id);
+  expect([after.outcome, after.outcomeUrl, after.completedAt]).toEqual([before.outcome, before.outcomeUrl, before.completedAt]);
+  const healed = await editor(dashboard, daemon, dependent.title);
+  await expect(healed.locator(".dep-chips")).toContainText("Late merged prerequisite (merged)");
+  await expect(healed.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await shoot(dashboard, `manual-complete-late-${episode}-merge`);
+});
+}

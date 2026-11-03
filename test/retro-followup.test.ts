@@ -33,6 +33,8 @@ function binding(over: {
     ...over,
     agentSessionId: `agent:${over.sessionId}`,
     branch: `feature/${over.episodeId}`,
+    workHeadSha: null,
+    repoChanges: null,
     prHeadSha: over.prUrl ? "a".repeat(40) : null,
     boundAt: 100,
     updatedAt: over.mergedAt ?? 100,

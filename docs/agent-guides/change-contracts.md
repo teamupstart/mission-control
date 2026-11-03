@@ -1333,6 +1333,45 @@ Chrome colours are supplied through tokens. Each token is declared on the leadin
 
 Harness colors come from `AGENT_IDENTITY` through `--agent-accent`; never name an agent in CSS.
 
+### Adding a skin
+
+A skin is CSS only, and it is added in four places:
+
+1. **Register it** by appending an entry to `SKINS` in `src/shared/skins.ts`: a kebab-case
+   `id`, `label`, one-line `description`, `colorScheme` (`dark` or `light`) and the six
+   `swatches` the picker's thumbnail draws. Ids are persisted in `app_config.ui.skin` and are
+   append-only: never rename, reorder or remove one. A stored id a build does not know reads
+   as Default, while a write of one is refused.
+2. **Write one file**, `src/web/skins/<id>.css`, containing `:root[data-skin="<id>"] { ... }`
+   and nothing that is not scoped under that selector. Restate `color-scheme` for a light
+   skin and at least `--bg`, `--bg-2`, `--panel`, `--panel-2`, `--border`, `--border-soft`,
+   `--fg`, `--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger`, `--exited`,
+   `--purple`, `--radius` and `--shadow`, plus every role token whose Default value would
+   paint wrong on your background (inks, text on solid fills, the failure family, the
+   canvas, the `--select-chevron` data URI). Add an `@import` for it to
+   `src/web/skins/index.css` in registry order. Default has no file: it is `:root`.
+3. **Pass `test/skins.test.ts`.** Against `--bg`, `--panel` and `--panel-2`, `--fg`, `--muted`,
+   `--dim`, `--working`, `--idle`, `--attention`, `--danger` and `--held` must clear 4.5:1 and
+   `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
+   thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
+   registered skin with no new case, so a skin may change colours, fonts and corners but
+   never padding, borders, font size or line height.
+4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
+   assert its background and persistence.
+
+`src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
+document's `color-scheme`, and no component branches on the skin id. The daemon serves the
+dashboard document with the stored skin already on `<html>`, plus a `<meta name="mission-skin">`
+seed (`src/server/dashboard-document.ts`). The preference store takes that seed over its local
+cache, so a profile with no cache paints the stored skin from its first frame, and `lib/skin.ts`
+keeps the served attribute instead of replacing it. The desktop window's launch colour
+lives in `window-background.json` in the state home (`src/server/window-background.ts`), and the
+daemon is its only writer: `syncWindowBackground` records the stored skin's swatch on every skin
+write, after a settings restore and at startup, so a skin chosen in a browser still decides the
+next desktop launch. The shell's bridge handler only repaints the live window; it never persists,
+because a page that loaded before a change elsewhere would write a stale colour. `createWindow`
+and the shell's startup page both paint from the file.
+
 In Electron, the top bar is a drag region. New floating interactive layers need the desktop `no-drag` rule.
 
 Update README in the same change:

@@ -146,6 +146,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import {
   isRetentionCandidate,
@@ -187,7 +188,11 @@ let db: DatabaseSync | undefined;
 // 12: bind resident wake attribution to its recorded conversation and native turn.
 // 13: retain a resident SDK session's measured native compaction limit across resumes.
 // 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
+// 15: a task's launch-failure record (`tasks.launch_failure`) and a Report bug session's
+//     marker (`tasks.launch_report_for`), with no historical backfill.
+// 16: task work-episode ownership end times and retained branch commits.
+// 17: retain per-repository episode change evidence across checkout teardown.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 17;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -418,6 +423,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       outcome       TEXT,
       outcome_url   TEXT,
       error         TEXT,
+      -- JSON TaskLaunchFailure (@shared/launch-failure.ts): this attempt failed before its
+      -- session started. NULL on every other task, including one whose session ran and was
+      -- later lost - the dispatcher writes it at the failure and nothing infers it later.
+      launch_failure TEXT,
+      -- A Report bug session: the failed task it was started to report. NULL on every other.
+      launch_report_for TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -507,6 +518,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -522,9 +535,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
+      ended_at         INTEGER,
       PRIMARY KEY (task_id, episode_id)
     );
     CREATE INDEX IF NOT EXISTS idx_historical_task_work_episode_session
@@ -3795,6 +3811,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
   addColumn(d, "session_work_episodes", "prompted_at", "INTEGER");
   addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
+  // Unknown historical end times stay null: a reused branch is not ownership evidence.
+  addColumn(d, "historical_task_work_episode_bindings", "ended_at", "INTEGER");
+  addColumn(d, "task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "task_work_episode_bindings", "repo_changes", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "repo_changes", "TEXT");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -4071,6 +4093,11 @@ function migrate(d: DatabaseSync): void {
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  // A dispatch that failed before its session started. NULL on an upgraded row is the honest
+  // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
+  // every historical failed task as a fresh "did not start" would bury the board.
+  addColumn(d, "tasks", "launch_failure", "TEXT");
+  addColumn(d, "tasks", "launch_report_for", "TEXT");
   addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
@@ -5506,6 +5533,8 @@ interface TaskRow {
   outcome: string | null;
   outcome_url: string | null;
   error: string | null;
+  launch_failure: string | null;
+  launch_report_for: string | null;
   created_at: number;
   updated_at: number;
   dispatched_at: number | null;
@@ -5844,6 +5873,8 @@ function rowToTask(
     outcome: r.outcome,
     outcomeUrl: r.outcome_url,
     error: r.error,
+    launchFailure: parseLaunchFailure(r.launch_failure),
+    launchReportFor: r.launch_report_for,
     automaticCleanup,
     residentRestart,
     createdAt: r.created_at,
@@ -5889,9 +5920,9 @@ export function upsertTask(t: Task): string[] {
          base_sha,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5918,7 +5949,9 @@ export function upsertTask(t: Task): string[] {
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
-         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         error=excluded.error, launch_failure=excluded.launch_failure,
+         launch_report_for=excluded.launch_report_for,
+         updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
@@ -5942,7 +5975,10 @@ export function upsertTask(t: Task): string[] {
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
-      t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.status, t.outcome, t.outcomeUrl, t.error,
+      t.launchFailure ? JSON.stringify(t.launchFailure) : null,
+      t.launchReportFor ?? null,
+      t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
     );
@@ -6031,6 +6067,9 @@ export interface TaskWorkEpisodeBinding {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  /** Branch commit observed while this task still owned the active episode. */
+  workHeadSha?: string | null;
+  repoChanges?: Array<{ repoRoot: string; verdict: "changed" | "unchanged" | "unknown"; final?: boolean }> | null;
   mergedAt: number | null;
   boundAt: number;
   updatedAt: number;
@@ -6089,6 +6128,8 @@ type TaskWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  work_head_sha: string | null;
+  repo_changes: string | null;
   merged_at: number | null;
   bound_at: number;
   updated_at: number;
@@ -6111,6 +6152,14 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
   };
 }
 
+function parseRepoChanges(raw: string | null): TaskWorkEpisodeBinding["repoChanges"] {
+  const parsed = parseJsonArray<unknown>(raw);
+  if (!parsed || !parsed.every((v) => v && typeof v === "object" && "repoRoot" in v &&
+    typeof v.repoRoot === "string" && "verdict" in v &&
+    (v.verdict === "changed" || v.verdict === "unchanged" || v.verdict === "unknown"))) return null;
+  return parsed as NonNullable<TaskWorkEpisodeBinding["repoChanges"]>;
+}
+
 function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding {
   return {
     taskId: row.task_id,
@@ -6120,6 +6169,8 @@ function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    workHeadSha: row.work_head_sha,
+    repoChanges: parseRepoChanges(row.repo_changes),
     mergedAt: row.merged_at,
     boundAt: row.bound_at,
     updatedAt: row.updated_at,
@@ -6390,31 +6441,32 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     // - and the pr_url / merged_at that are the only durable proof its work landed - would
     // be lost. `mergedPrFor` reads current AND historical bindings precisely so that a merge
     // on a rolled-past episode still completes the task; that read is inert unless the old
-    // binding is preserved here. Only a row that actually changes episode and carries a PR
-    // is worth keeping - a PR-less binding is no completion evidence, and
-    // `cleanupDependencyProvenance` prunes it anyway. (#167 archived here too, then dropped
-    // it when dependency provenance moved onto the edges; durable completion is the new
-    // reader that needs it back.) COALESCE keeps a merge already recorded on the historical
-    // row rather than letting a re-archival clear it.
+    // binding is preserved here. A branch without an observed PR also needs archival:
+    // unresolved dependencies may still need to discover that episode's PR after completion.
+    // Registry cleanup keeps only branch evidence those edges reference. COALESCE keeps
+    // a merge already recorded on the historical row rather than letting a re-archival clear it.
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
-       WHERE task_id = ? AND episode_id <> ? AND pr_url IS NOT NULL
+       WHERE task_id = ? AND episode_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.taskId, binding.episodeId);
-    // And archive any OTHER task's PR-carrying binding that the cross-task DELETE below is
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.taskId, binding.episodeId);
+    // And archive any OTHER task's PR- or branch-carrying binding that the cross-task DELETE below is
     // about to drop. A session rebound from task A to task B removes A's current binding
     // here; if A's PR had merged while A was still active, losing that row leaves A with
     // neither a current nor a historical merge, so a later departure fails it. This is the
@@ -6423,21 +6475,24 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
-       WHERE session_id = ? AND task_id <> ? AND pr_url IS NOT NULL
+       WHERE session_id = ? AND task_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.sessionId, binding.taskId);
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.sessionId, binding.taskId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);
@@ -6453,6 +6508,16 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         repo_changes     = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.repo_changes ELSE NULL END,
+         work_head_sha    = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.work_head_sha ELSE NULL END,
          merged_at        = excluded.merged_at,
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at`,
@@ -6475,6 +6540,52 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
   }
 }
 
+/** Persist only a still-active, unchanged binding; late poll results cannot rewrite history. */
+/** Release only an unmerged link whose completed task and episode still own it. */
+export function clearClosedCompletedPr(binding: TaskWorkEpisodeBinding, url: string): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    let changed = 0;
+    for (const table of ["task_work_episode_bindings", "historical_task_work_episode_bindings"]) {
+      changed += Number(d.prepare(`UPDATE ${table} SET pr_url = NULL, pr_head_sha = NULL
+        WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+          AND branch IS ? AND pr_url = ? AND merged_at IS NULL
+          AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'done')`)
+        .run(binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch, url, binding.taskId).changes);
+    }
+    if (changed > 0) d.prepare(`UPDATE session_work_episodes SET pr_url = NULL, pr_head_sha = NULL
+      WHERE session_id = ? AND episode_id = ? AND agent_session_id = ? AND branch IS ?
+        AND pr_url = ? AND merged_at IS NULL`)
+      .run(binding.sessionId, binding.episodeId, binding.agentSessionId, binding.branch, url);
+    if (ownsTransaction) d.exec("COMMIT");
+    return changed > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function recordTaskRepoChanges(binding: TaskWorkEpisodeBinding, changes: NonNullable<TaskWorkEpisodeBinding["repoChanges"]>, final = false): boolean {
+  // A poll begun before teardown must not overwrite the quiescent final snapshot.
+  const current = taskWorkEpisodeForTask(binding.taskId);
+  if (!final && current?.repoChanges?.some(v => v.final)) return false;
+  const result = openDb().prepare(`UPDATE task_work_episode_bindings SET repo_changes = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ? AND branch IS ?`)
+    .run(JSON.stringify(changes.map(v => ({ ...v, final }))), binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch);
+  return Number(result.changes) > 0;
+}
+
+export function recordTaskWorkEpisodeHead(binding: TaskWorkEpisodeBinding, headSha: string): void {
+  openDb().prepare(`UPDATE task_work_episode_bindings SET work_head_sha = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+      AND branch IS ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ?
+        AND status NOT IN ('done', 'cancelled', 'backlog'))`)
+    .run(headSha, binding.taskId, binding.episodeId, binding.sessionId,
+      binding.agentSessionId, binding.branch, binding.taskId);
+}
+
 export function taskWorkEpisodeForSession(sessionId: string): TaskWorkEpisodeBinding | null {
   const row = openDb()
     .prepare(
@@ -6493,23 +6604,23 @@ export function taskWorkEpisodeForTask(taskId: string): TaskWorkEpisodeBinding |
   return row ? taskWorkEpisodeFromRow(row) : null;
 }
 
-export function historicalTaskWorkEpisodeBindings(): TaskWorkEpisodeBinding[] {
+export function historicalTaskWorkEpisodeBindings(): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(`SELECT * FROM historical_task_work_episode_bindings ORDER BY updated_at DESC`)
-    .all() as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all() as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 export function historicalTaskWorkEpisodeBindingsForTask(
   taskId: string,
-): TaskWorkEpisodeBinding[] {
+): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(
       `SELECT * FROM historical_task_work_episode_bindings
        WHERE task_id = ? ORDER BY bound_at DESC`,
     )
-    .all(taskId) as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all(taskId) as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 /** The retro task already reserved for this source episode, when one exists. */
@@ -6600,6 +6711,23 @@ export function deleteHistoricalTaskWorkEpisodeBinding(
        WHERE task_id = ? AND episode_id = ?`,
     )
     .run(taskId, episodeId);
+}
+
+/** Associate a newly discovered PR only with the exact retained historical task episode. */
+export function updateHistoricalTaskWorkEpisodePr(
+  binding: TaskWorkEpisodeBinding,
+  prUrl: string,
+  prHeadSha: string,
+  now: number,
+): boolean {
+  const result = openDb().prepare(
+    `UPDATE historical_task_work_episode_bindings
+     SET pr_url = ?, pr_head_sha = ?, updated_at = MAX(updated_at, ?)
+     WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+       AND branch = ? AND pr_url IS NULL`,
+  ).run(prUrl, prHeadSha, now, binding.taskId, binding.episodeId, binding.sessionId,
+    binding.agentSessionId, binding.branch);
+  return Number(result.changes) === 1;
 }
 
 export function updateWorkEpisodePr(

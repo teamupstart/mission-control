@@ -7,7 +7,7 @@ import {
   type ResidentProfile,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
-import type { Session } from "@shared/types.ts";
+import type { Session, Task } from "@shared/types.ts";
 
 /**
  * What a resident's label chip draws, and nothing more: the name it is called, the revision the
@@ -32,6 +32,8 @@ export interface ResidentChipMark extends ResidentMarker {
 export interface ResidentSessionMark extends ResidentChipMark {
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction">;
   runId: string;
+  /** The task the run launched, so a control can name it - Restart's completion prompt does. */
+  taskId: string;
   profileId: string;
   /** Null when the run launched without a Persona. */
   personaName: string | null;
@@ -66,6 +68,63 @@ export function residentMarksBySession(
   return out;
 }
 
+/**
+ * Where a replaced session's replacement stands: `live` once its run and session both exist,
+ * `starting` while the run is launching or its session has not appeared, `stopped` when a
+ * replacement was reserved but no live run of it remains, and `not-started` when Restart ended
+ * this run but its launch failed before reserving any replacement at all.
+ */
+export type ResidentReplacementState = "live" | "starting" | "stopped" | "not-started";
+
+/**
+ * A session whose resident run was replaced through Restart on new profile. The run has ended,
+ * so the session has no `ResidentSessionMark`, but its task is still open: completing it is the
+ * operator's call, and this is what the Console offers it from - for as long as the task stays
+ * open, whatever happens to the replacement meanwhile.
+ */
+export interface ResidentReplacement {
+  /** The replacement run's pinned name while it is live, else the replaced session's own. */
+  name: string;
+  /** The revision the replacement pinned; null when Restart reserved no replacement. */
+  revision: number | null;
+  /** The replacement's marker colour while its run is live; null otherwise. */
+  colorId: ResidentMarkerColorId | null;
+  state: ResidentReplacementState;
+  /** The replacement's session, set only when `state` is `live`. */
+  sessionId: string | null;
+}
+
+/**
+ * Join each still-open session to the Restart that ended its run. Read from the task's durable
+ * `residentRestart` record, not from the replacement's live run, because that run can end or
+ * fail while the replaced task is still waiting to be completed.
+ */
+export function residentReplacementsBySession(
+  sessions: readonly Session[],
+  tasks: readonly Task[],
+  runs: readonly ResidentRunSummary[],
+): ReadonlyMap<string, ResidentReplacement> {
+  const out = new Map<string, ResidentReplacement>();
+  const restarted = new Map(tasks.filter((task) => task.status === "running" && task.residentRestart)
+    .map((task) => [task.id, task.residentRestart!]));
+  if (restarted.size === 0) return out;
+  for (const session of sessions) {
+    const restart = session.task?.status === "running" ? restarted.get(session.task.id) : undefined;
+    if (!restart) continue;
+    const replacementTaskId = restart.replacementTaskId;
+    const run = replacementTaskId ? runs.find((candidate) => candidate.taskId === replacementTaskId) : undefined;
+    const replacementSession = run ? sessions.find((candidate) => candidate.task?.id === replacementTaskId) : undefined;
+    out.set(session.id, {
+      name: run?.settings.identity.name ?? session.name,
+      revision: restart.revision,
+      colorId: run ? residentMarker(run.settings).colorId : null,
+      state: replacementTaskId === null ? "not-started" : !run ? "stopped" : replacementSession ? "live" : "starting",
+      sessionId: replacementSession?.id ?? null,
+    });
+  }
+  return out;
+}
+
 export function residentSessionMark(
   run: ResidentRunSummary,
   profile: ResidentProfile | null,
@@ -73,6 +132,7 @@ export function residentSessionMark(
   const marker = residentMarker(run.settings);
   return {
     runId: run.id,
+    taskId: run.taskId,
     loop: run,
     profileId: run.profileId,
     name: run.settings.identity.name,

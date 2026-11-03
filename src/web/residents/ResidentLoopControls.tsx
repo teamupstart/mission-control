@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import type { ResidentLoopStatus, ResidentRunSummary } from "@shared/residents.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { controlResident } from "./api.ts";
 import type { ResidentSessionMark } from "./marker.ts";
+import { ResidentRestartPromptContext } from "./restart-prompt.ts";
 
 const actionDescriptions = {
   pause: "Pause automatic resident iterations after the current turn",
@@ -33,10 +34,15 @@ export function ResidentLoopStatusLine({ loop }: { loop: ResidentLoopStatus & Pa
 export function ResidentLoopControls({ mark, menu = false }: { mark: ResidentSessionMark; menu?: boolean }): React.JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const promptToComplete = useContext(ResidentRestartPromptContext);
   if (!mark.loop) return null;
   const act = async (action: "pause" | "resume" | "run-now" | "restart") => {
     setBusy(true); setError(null);
-    try { await controlResident(mark.runId, action); }
+    try {
+      await controlResident(mark.runId, action);
+      // Restart leaves the original task open; offer to complete it now, from wherever this was.
+      if (action === "restart") promptToComplete?.(mark.taskId);
+    }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   };

@@ -206,8 +206,8 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
-failed launch, or one interrupted by a restart before its session started, is recorded with its
-reason and is never relaunched; launch the profile again.
+failed launch, or one interrupted by a daemon restart before its session started, is recorded
+with its reason and is never relaunched; launch the profile again.
 
 A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
 The Files panel browses its working directory directly, without Git or managed repository plans.
@@ -246,11 +246,20 @@ you resume it. Pausing does not interrupt an already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
-After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
-and launches the latest revision in a new conversation. It preserves the repository choice and
-run instructions; a repository-free resident receives a fresh private workspace. New conversation
-creation ensures every changed launch option takes effect. Retrying an interrupted Restart
-finishes the same replacement request, including an interruption after the old task completed.
+After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
+and launches the latest revision in a new conversation. The old task and session stay open, and
+Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
+it there, or cancel to keep it. The old session's Console band also says it was restarted on the
+new revision and offers **Open new session** and **Complete & close**, so you decide when the
+replaced conversation closes. The offer stays until that task is completed, even if the new
+session has since ended or never started, and survives a reload or daemon restart. Restart
+preserves the repository choice and run instructions; a repository-free resident receives a fresh
+private workspace. New conversation creation ensures every changed launch option takes effect.
+If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
+the reservation no replacement launch exists, so retrying Restart starts it. After the
+reservation, a replacement whose session never started is a failed launch like any other (see
+[Lifecycle](#lifecycle)): retrying Restart only reports that failure, so launch the profile again.
+Either way the old session's band keeps **Complete & close**.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 

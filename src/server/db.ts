@@ -85,6 +85,7 @@ import type {
   Task,
   TaskAutomaticCleanup,
   TaskPriority,
+  TaskResidentRestart,
   TaskRepoEntry,
   TaskStatus,
   TrackedGap,
@@ -98,6 +99,7 @@ import {
   PROMPTED_COMPLETION_OUTCOMES,
   TASK_KINDS,
 } from "@shared/types.ts";
+import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -5676,7 +5678,8 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
   // every browser gets on connect. The map is almost always empty - only a task whose
   // automatic cleanup is mid-retry has a row that projects to anything.
   const cleanup = taskAutomaticCleanupSummaries(rows.map((r) => r.id));
-  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
+  const restarts = taskResidentRestartSummaries(rows.map((r) => r.id));
+  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null, restarts.get(r.id) ?? null));
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
@@ -5793,6 +5796,7 @@ function rowToTask(
   r: TaskRow,
   extraRepos: TaskRepoEntry[],
   automaticCleanup: TaskAutomaticCleanup | null = null,
+  residentRestart: TaskResidentRestart | null = null,
 ): Task {
   return {
     id: r.id,
@@ -5872,6 +5876,7 @@ function rowToTask(
     launchFailure: parseLaunchFailure(r.launch_failure),
     launchReportFor: r.launch_report_for,
     automaticCleanup,
+    residentRestart,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -6021,7 +6026,12 @@ export function getTask(id: string): Task | undefined {
     | TaskRow
     | undefined;
   if (!r) return undefined;
-  return rowToTask(r, taskReposFor(r.id), taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null);
+  return rowToTask(
+    r,
+    taskReposFor(r.id),
+    taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null,
+    taskResidentRestartSummaries([r.id]).get(r.id) ?? null,
+  );
 }
 
 export function taskIdForSession(sessionId: string): string | null {
@@ -8137,6 +8147,39 @@ export function clearTaskSessionClosure(taskId: string): void {
 export function retireTaskSessionClosure(taskId: string, sessionId: string, at: number): void {
   openDb().prepare(`UPDATE task_session_closures SET retired_at = COALESCE(retired_at, ?)
     WHERE task_id = ? AND session_id = ?`).run(at, taskId, sessionId);
+}
+
+/**
+ * Each still-open resident task whose run Restart on new profile ended, with the replacement
+ * that restart's request id names. See `TaskResidentRestart`.
+ *
+ * Selected from the ended runs themselves rather than `IN (...)` over the caller's ids, for the
+ * reason `taskAutomaticCleanupSummaries` gives: `listTasks` passes every task ever filed. Only
+ * open tasks join, so the rows are the replaced sessions nobody has completed yet - normally none.
+ * The replacement's request id is built in SQL from the shared helper's prefix, bound as a
+ * parameter, so the two spellings cannot drift apart.
+ */
+export function taskResidentRestartSummaries(
+  taskIds: readonly string[],
+): Map<string, TaskResidentRestart> {
+  const out = new Map<string, TaskResidentRestart>();
+  if (taskIds.length === 0) return out;
+  const wanted = new Set(taskIds);
+  const rows = openDb().prepare(
+    `SELECT old.task_id AS task_id, rep.task_id AS replacement_task_id, rep.profile_revision AS revision
+       FROM resident_runs old
+       JOIN tasks t ON t.id = old.task_id AND t.status NOT IN ('done', 'cancelled', 'failed')
+       LEFT JOIN resident_runs rep ON rep.launch_request_id = (? || old.id)
+      WHERE old.ended_at IS NOT NULL AND old.pause_reason = ?
+      ORDER BY old.created_at`,
+  ).all(residentRestartRequestId(""), RESIDENT_RESTART_PAUSE_REASON) as Array<{
+    task_id: string; replacement_task_id: string | null; revision: number | null;
+  }>;
+  for (const row of rows) {
+    if (!wanted.has(row.task_id)) continue;
+    out.set(row.task_id, { replacementTaskId: row.replacement_task_id, revision: row.revision });
+  }
+  return out;
 }
 
 /**

@@ -86,6 +86,7 @@ for (const [harness, executable] of [["claude", claude.path], ["codex", codex.pa
 const { openDb } = await import("../src/server/db.ts");
 const store = await import("../src/server/residents/mcp-store.ts");
 const { residentMcpLaunchForRun, redeemResidentMcpTicket } = await import("../src/server/residents/mcp-launch.ts");
+const { parseClaudeServer } = await import("../src/server/residents/mcp-catalog.ts");
 const { RedeemResidentMcpTicketSchema } = await import("../src/shared/resident-mcp.ts");
 const { claudeSdkSpec } = await import("../src/server/harness/claude/sdk.ts");
 const { defaultClaudeSdkDeps } = await import("../src/server/harness/claude/sdk-deps.ts");
@@ -163,13 +164,25 @@ const redeemServer: Server = createServer(async (req, res) => {
 await new Promise<void>((resolve) => redeemServer.listen(freePort, "127.0.0.1", resolve));
 
 /**
- * A remote MCP endpoint behind an OAuth login: it answers every request 401 with a Bearer
- * challenge, as an OAuth-protected server does to a client without a token.
+ * A remote MCP endpoint behind an OAuth login: it publishes its protected-resource and
+ * authorization-server metadata, and answers every other request 401 with a Bearer challenge
+ * naming that metadata, as an OAuth-protected server does to a client without a token. Claude
+ * Code reports a server like this `needs-auth`; one that publishes no metadata fails its client
+ * registration and is reported `failed` instead.
  */
 const oauthFixture: Server = createServer(async (req, res) => {
   for await (const _chunk of req) { /* drained */ }
   writeFileSync(oauthLog, `${JSON.stringify({ method: req.method })}\n`, { flag: "a" });
-  res.writeHead(401, { "www-authenticate": 'Bearer realm="probe"' }).end();
+  const origin = `http://127.0.0.1:${(oauthFixture.address() as { port: number }).port}`;
+  const json = (body: unknown): void => { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body)); };
+  if (req.url?.startsWith("/.well-known/oauth-protected-resource")) return json({ resource: `${origin}/mcp`, authorization_servers: [origin] });
+  if (req.url?.startsWith("/.well-known/oauth-authorization-server") || req.url?.startsWith("/.well-known/openid-configuration")) {
+    return json({
+      issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
+      response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"],
+    });
+  }
+  res.writeHead(401, { "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` }).end();
 });
 await new Promise<void>((resolve) => oauthFixture.listen(0, "127.0.0.1", resolve));
 const oauthPort = (oauthFixture.address() as { port: number }).port;
@@ -485,15 +498,18 @@ async function probeClaude(): Promise<void> {
       }
     }
 
-    // A global remote server behind an OAuth login Claude Code holds. The launcher's bridge cannot
-    // present that login, so Claude must report the server as not connected and the start must be
-    // refused, naming it, instead of running without its tools.
+    // A global remote server behind an OAuth login, with no header or query value: handed to
+    // Claude directly, as a launch resolves it, so Claude's own transport would present a stored
+    // login. This disposable home holds none, so Claude must report it needing a login and the
+    // start must be refused, naming it, instead of running without its tools.
     const oauthRun = "00000000-0000-4000-8000-00000000c1a1";
     seedRunRow(oauthRun);
+    const oauthUrl = `http://127.0.0.1:${oauthPort}/mcp`;
+    const oauthDefinition = parseClaudeServer("oauth-remote", { type: "http", url: oauthUrl }, {});
+    assert.ok(oauthDefinition.harnessLogin && oauthDefinition.transport, "a headerless remote server may use Claude Code's own login");
     store.writeRunMcpSnapshot(oauthRun, [{
-      source: "global", name: "oauth-remote",
-      transport: { type: "http", url: `http://127.0.0.1:${oauthPort}/mcp`, headers: {}, secretHeaders: [], secretQuery: [] },
-      launcher: true, options: {}, secrets: new Map(),
+      source: "global", name: "oauth-remote", transport: oauthDefinition.transport,
+      launcher: true, harnessLogin: true, options: oauthDefinition.options, secrets: oauthDefinition.secrets,
     }], Date.now());
     phaseName = "oauth";
     toolSent = true;
@@ -502,9 +518,10 @@ async function probeClaude(): Promise<void> {
       (error: unknown) => (error instanceof Error ? error.message : String(error)),
     );
     const reached = existsSync(oauthLog) && readFileSync(oauthLog, "utf8").trim().length > 0;
-    say({ harness: "claude", check: "a remote server behind an OAuth login refuses the launch, named", pass: reached && /could not connect to its MCP server oauth-remote/.test(refused ?? ""), refused, reachedEndpoint: reached });
-    assert.ok(reached, "the bridge never reached the OAuth-protected endpoint");
-    assert.match(refused ?? "", /could not connect to its MCP server oauth-remote/);
+    const needsLogin = /its MCP server oauth-remote, which needs a login Claude Code does not have/;
+    say({ harness: "claude", check: "a remote server behind an OAuth login Claude does not hold refuses the launch, named", pass: reached && needsLogin.test(refused ?? ""), refused, reachedEndpoint: reached });
+    assert.ok(reached, "Claude never reached the OAuth-protected endpoint");
+    assert.match(refused ?? "", needsLogin);
   } finally {
     model.closeAllConnections();
     await new Promise<void>((resolve) => model.close(() => resolve()));

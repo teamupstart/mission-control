@@ -70,7 +70,7 @@ test("MCP statements are removed in every TOML form, and every other byte is kep
 
 const entries: ResidentMcpEntry[] = [
   { name: "foo.bar", options: { codex: { startupTimeoutSec: 12, toolTimeoutSec: 1.5, enabledTools: ["read"], disabledTools: ["write"] } }, shape: "stdio", command: "/usr/bin/srv", args: ['a "quoted" arg', "b"], env: { MODE: "fast" } },
-  { name: "web", options: {}, shape: "http", url: "https://web.example.com/mcp", headers: { Accept: "application/json" } },
+  { name: "web", options: {}, shape: "http", transport: "http", url: "https://web.example.com/mcp", headers: { Accept: "application/json" } },
   { name: "secret", options: {}, shape: "launcher", command: "/usr/bin/node", args: ["/l.mjs", "--run", "r", "--server", "secret", "--credential", "/c.json"], env: {} },
 ];
 
@@ -232,10 +232,18 @@ test("Claude starts exactly Mission's server and the snapshot, under strict MCP 
   assert.deepEqual((seen[1]!.mcpServers as Record<string, unknown>).opt, { type: "stdio", command: "o", args: [], env: {}, timeout: 4000, alwaysLoad: true });
   await second.stop();
 
+  // A remote server Claude connects to itself keeps its configured transport and an explicit
+  // empty header table: Claude Code keys a stored OAuth login by exactly these.
+  const remote = residentLaunch(["events"], () => [{ name: "events", options: { claude: { timeoutMs: 9000 } }, shape: "http", transport: "sse", url: "https://mcp.example.com", headers: {} }]);
+  const third = await spec.launch(sdkOptions({ residentMcp: remote }));
+  assert.deepEqual((seen[2]!.mcpServers as Record<string, unknown>).events, { type: "sse", url: "https://mcp.example.com", headers: {}, timeout: 9000 });
+  assert.equal(seen[2]!.strictMcpConfig, true);
+  await third.stop();
+
   // Every other launch is exactly what it was: no strict mode, no flag settings.
   const ordinary = await spec.launch(sdkOptions({}));
-  assert.equal(seen[2]!.strictMcpConfig, undefined);
-  assert.equal(seen[2]!.settings, undefined);
+  assert.equal(seen[3]!.strictMcpConfig, undefined);
+  assert.equal(seen[3]!.settings, undefined);
   await ordinary.stop();
 });
 
@@ -271,10 +279,12 @@ test("a snapshot server Claude reports switched off, failed or waiting on a logi
   }).launch(sdkOptions({ residentMcp: residentLaunch(["snap"], () => [{ name: "snap", options: {}, shape: "stdio", command: "s", args: [], env: {} }]) }));
   const mission = { name: "mission-control", status: "connected" };
   await assert.rejects(launchWith([mission, { name: "snap", status: "disabled" }]), /has its MCP server snap switched off/);
-  // An OAuth-backed remote server reaches Claude through the launcher's bridge, which cannot
-  // present that login, so Claude reports it failed.
   await assert.rejects(launchWith([mission, { name: "snap", status: "failed" }]), /could not connect to its MCP server snap/);
-  await assert.rejects(launchWith([mission, { name: "snap", status: "needs-auth" }]), /its MCP server snap, which needs a login a resident cannot present/);
+  // A remote server Claude connects to itself, with no stored login or one it could not refresh.
+  await assert.rejects(
+    launchWith([mission, { name: "snap", status: "needs-auth" }]),
+    /its MCP server snap, which needs a login Claude Code does not have or could not refresh; sign in to snap with \/mcp in Claude Code, then launch again$/,
+  );
   await assert.rejects(launchWith([{ name: "mission-control", status: "disabled" }, { name: "snap", status: "connected" }]), /has its MCP server mission-control switched off/);
   // A server outside the set that Claude itself switched off is not running, so it is no extra.
   const ok = await launchWith([mission, { name: "snap", status: "connected" }, { name: "native", status: "disabled" }]);

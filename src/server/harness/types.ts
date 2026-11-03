@@ -762,7 +762,11 @@ export interface ResidentMcpOptions {
  */
 export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
   | { shape: "stdio"; command: string; args: string[]; env: Record<string, string> }
-  | { shape: "http"; url: string; headers: Record<string, string> }
+  /**
+   * A remote server the harness connects to itself. `transport` is the configured one: Claude
+   * Code keys a stored OAuth login by it, so an SSE server rendered as HTTP would find none.
+   */
+  | { shape: "http"; transport: "http" | "sse"; url: string; headers: Record<string, string> }
   | { shape: "launcher"; command: string; args: string[]; env: Record<string, string> }
 );
 

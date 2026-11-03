@@ -430,6 +430,16 @@ export interface ResidentMcpSnapshotServer {
    * custom server with a secret, so none of its private parts reach the agent's configuration.
    */
   launcher: boolean;
+  /**
+   * Set on a global remote server the harness may hold a login for that only its own transport
+   * presents (`GlobalMcpDefinition.harnessLogin`): it reaches the agent's launch-scoped
+   * configuration as written, URL included, instead of through the launcher.
+   *
+   * A separate field rather than `launcher: false`, which keeps such a row safe for a reader that
+   * predates it: that reader ignores the field and starts the server through the launcher, as it
+   * always did, instead of rendering an `sse` server as `http`. Absent on every older row.
+   */
+  harnessLogin?: true;
   options: ResidentMcpOptions;
 }
 

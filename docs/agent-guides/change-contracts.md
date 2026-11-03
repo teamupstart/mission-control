@@ -1146,6 +1146,8 @@ Route every server-side reset through `resetSession` in `src/server/reset.ts`; i
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
 
+A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
+
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
 A fourth layout also requires render selection, expansion state, Escape handling, expand shortcuts, command bar behavior, `layoutNav.ts`, and `LayoutPanel`.

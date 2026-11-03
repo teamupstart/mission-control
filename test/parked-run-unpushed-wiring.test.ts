@@ -246,8 +246,12 @@ async function stallFor(sessionCwd: string | null, signal: AbortSignal): Promise
     w.tick();
     // Four sequential Git reads each have a 15-second deadline. Bound the whole
     // integration test instead of giving their combined duration five seconds.
-    while (!observer.snapshot().has("run")) {
-      await delay(25, undefined, { signal });
+    try {
+      while (!observer.snapshot().has("run")) {
+        await delay(25, undefined, { signal });
+      }
+    } catch (cause) {
+      throw new Error("git never answered for this checkout", { cause });
     }
     // A second pass, so the sentence is built from the observation that just landed.
     w.tick();
@@ -285,6 +289,15 @@ test("a branch that tracks NOTHING says nothing, however many commits it holds",
   // with the case above it also rules out the build that simply always appends a clause.
   const reason = await stallFor(seedCheckout("no-remote", 2, false), t.signal);
   assert.equal(reason, "idle 30m - No-Mistakes Review is waiting for a pushed head");
+});
+
+test("an aborted observation wait names the missing Git result and preserves its cause", async () => {
+  await assert.rejects(stallFor(null, AbortSignal.abort()), (error: Error) => {
+    assert.equal(error.message, "git never answered for this checkout");
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.cause.name, "AbortError");
+    return true;
+  });
 });
 
 test("bindingCheckout resolves the BINDING's checkout, which is what the observer is given", () => {

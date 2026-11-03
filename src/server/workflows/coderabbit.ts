@@ -121,7 +121,8 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   // Setup is the remedy for installation, login, trust and runtime problems. A review that ran
   // and returned a result Mission Control cannot accept is a different problem: Setup would
   // show a healthy CLI, so point at the retained output instead.
-  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true): CheckResult => ({ kind: "action_required", reason: setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
+  // `remedy` replaces both: a problem neither Setup nor the retained output can fix says its own.
+  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
   reservation = input.reserveRun?.();
   if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
@@ -130,7 +131,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     const denied = checkBlockedReason(input.policy, input.cwd, input.repoRoot);
     if (denied) return block(denied);
     if (!input.repoRoot || !deps.execute) return block("CodeRabbit execution runtime or repository is unavailable");
-    if (input.coderabbit?.dirty || yaml.committed === false) return block("Submission contains uncommitted changes. Commit all reviewed content and create a new submission");
+    // Uncommitted work is reviewed through the capture's review snapshot, so `dirty` means a
+    // submission captured before snapshots existed: it has no commit holding what it reviewed.
+    if (input.coderabbit?.dirty) return block("This submission captured uncommitted changes without a review snapshot", undefined, undefined, false, "Submit again so Mission Control captures one");
+    if (yaml.committed === false) return block("The captured .coderabbit.yaml is not the one in the reviewed commit", undefined, undefined, false, "Make sure .coderabbit.yaml is not ignored, then submit again");
     failureStage = "comparison";
     comparison = await input.coderabbit!.comparison();
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");

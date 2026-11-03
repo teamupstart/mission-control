@@ -4603,6 +4603,12 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /**
+     * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
+     * uncommitted one, a Mission Control review snapshot of `contentTreeOid` parented on HEAD.
+     * Null for snapshots captured before review snapshots existed, or with no Command to run.
+     */
+    reviewCommit?: string | null;
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;

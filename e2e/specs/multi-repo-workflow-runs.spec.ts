@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agents.ts";
 
@@ -332,6 +333,43 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${secondRun.id}$`));
   await expect(dashboard.locator(".wf-run-repo")).toHaveText("second-repo");
   await shoot(dashboard, "attached-repo-run", dashboard.locator(".wf-run-head"));
+
+  // Seed the delivery boundary only: no real model or agent repair turn is sent.
+  // The daemon derives the current hold from these durable rows, not from a scripted API.
+  const primaryRun = runs.find((r) => r.id !== secondRun.id)!;
+  await expect.poll(() => withDaemonDb(daemon, db => db.prepare("SELECT status FROM workflow_runs WHERE id = ?").get(primaryRun.id)?.status))
+    .toBe("waiting_for_session");
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE workflow_bindings SET delivery_mode = 'live' WHERE id = ?").run(primaryRun.bindingId);
+    db.prepare("UPDATE workflow_runs SET status = 'waiting_for_evidence_readiness', current_phase = 'evidence_readiness' WHERE id = ?").run(secondRun.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'delivered', kind = 'evidence_readiness' WHERE run_id = ?").run(secondRun.id);
+    db.prepare("UPDATE workflow_deliveries SET state = 'prepared' WHERE run_id = ?").run(primaryRun.id);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${primaryRun.id}`);
+  const header = dashboard.locator(".wf-run-head");
+  await expect(header).toContainText(`Queued behind second-repo (run ${secondRun.id})`);
+  await expect(header).toContainText("waiting for evidence readiness");
+  await expect(header).not.toContainText("nothing for it to have repaired");
+  await shoot(dashboard, "sibling-evidence-hold", header);
+  for (const [kind, phase, condition] of [
+    ["pr_handoff", "pr_handoff", "waiting for the session to prepare its pull request"],
+    ["inspector_feedback", "inspector_findings", "waiting for the session to address Inspector feedback"],
+  ]) {
+    withDaemonDb(daemon, db => {
+      db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = ? WHERE id = ?").run(phase, secondRun.id);
+      db.prepare("UPDATE workflow_deliveries SET kind = ? WHERE run_id = ?").run(kind, secondRun.id);
+    });
+    await dashboard.reload();
+    await expect(header).toContainText(`Queued behind second-repo (run ${secondRun.id})`);
+    await expect(header).toContainText(condition);
+    await expect(header).not.toContainText("waiting for its repair round");
+    await shoot(dashboard, `sibling-${kind}-hold`, header);
+  }
+  withDaemonDb(daemon, db => {
+    db.prepare("UPDATE workflow_runs SET status = 'running', current_phase = 'persona' WHERE id = ?").run(secondRun.id);
+  });
+  await dashboard.reload();
+  await expect(header).not.toContainText("Queued behind second-repo");
 });
 
 test("a repo the task never changed gets no review at all", async ({ dashboard, daemon }) => {

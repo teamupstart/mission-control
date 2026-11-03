@@ -4890,6 +4890,14 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  /** Live sibling ownership of the conversation, independent of paginated event history. */
+  deliveryHold?: {
+    runId: string;
+    deliveryId: string;
+    repoRoot: string | null;
+    kind: WorkflowDeliveryKind;
+    state: WorkflowDeliveryState;
+  } | null;
   evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;

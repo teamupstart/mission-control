@@ -5,7 +5,7 @@
 // app version). contextIsolation keeps this the only channel into the renderer.
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { UpdateSnapshot } from "../shared/update.ts";
+import type { UpdateApplyOutcome, UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
 import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "../shared/session-control-authorization.ts";
 
@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     repairMigration: (): Promise<void> => ipcRenderer.invoke("mission:update-repair-migration"),
     cancel: (): Promise<void> => ipcRenderer.invoke("mission:update-cancel"),
     defer: (): Promise<void> => ipcRenderer.invoke("mission:update-defer"),
+    dismissOutcome: (outcome: UpdateApplyOutcome): Promise<boolean> => ipcRenderer.invoke("mission:update-dismiss-outcome", outcome),
     onState: (cb: (snapshot: UpdateSnapshot) => void): (() => void) => {
       const listener = (_event: unknown, snapshot: UpdateSnapshot): void => cb(snapshot);
       ipcRenderer.on("mission:update-state", listener);

@@ -31,7 +31,7 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     stagedBundleIdentity: () => ({ version: "1.2.3", revision: "fixture", commit: stagedCommit }),
     handoff: async ({ targetTag }) => { acceptedCommit = targetTag; },
     requestQuit: () => {},
-    helperSource: () => "", stateDirectory: () => daemon.home, readOutcome: () => null, clearOutcome: () => {},
+    helperSource: () => "", stateDirectory: () => daemon.home, readOutcome: () => null, clearOutcome: () => false,
     now: () => now, random: () => 0, log: () => {},
     dialogs: { available: async () => "defer", upToDate: async () => {}, preparing: async () => {}, ready: async () => "defer", applying: async () => {}, error: async () => {}, outcome: async () => {} },
   });

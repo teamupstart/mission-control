@@ -77,7 +77,7 @@ test("a copy that is not the installed app says so, and update copy names no fix
     helperSource: () => "",
     stateDirectory: () => daemon.home,
     readOutcome: () => null,
-    clearOutcome: () => {},
+    clearOutcome: () => false,
     now: () => Date.now(),
     random: () => 0,
     log: () => {},

@@ -254,6 +254,8 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair(true) : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
+  ipcMain.handle("mission:update-dismiss-outcome", (event, outcome) =>
+    event.sender === getMainWindow()?.webContents && updateController.dismissOutcome(outcome));
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
   // pushes an announcement and an answer rather than invoking for a result. Both are
   // refused from any sender but the dashboard's own contents, the way the product-issue

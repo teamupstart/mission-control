@@ -35,6 +35,7 @@ export function ownsMigrationTarget(plan: MigrationPlan): boolean;
 export function stageMigrationTarget(plan: MigrationPlan, options?: { policy?: MigrationPolicy; checkpoint?: (stage: string) => void }): void;
 export function validateMigrationTarget(plan: MigrationPlan): void;
 export function migrationReceipt(stateDirectory: string): InstallReceipt;
+export function withMigrationLockSync<T>(stateDirectory: string, action: (owner: ProcessRecord) => T, lock?: LockOperations): T;
 export function withMigrationLock<T>(stateDirectory: string, action: (owner: ProcessRecord) => Promise<T> | T, lock?: LockOperations): Promise<T>;
 export interface MigrationPorts {
   helperReady?(journal: MigrationJournal): void | Promise<void>;

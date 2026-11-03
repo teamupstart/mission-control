@@ -369,7 +369,9 @@ raw hook event names to identify a completed turn.
 
 An SDK `turn_done` that carries a capacity `failure` is not a completion while the supervisor
 holds a retry for it: the Registry keeps the card working with the retry countdown as its
-activity and emits no `turn_completed`. Cancelling the retry timer does not by itself complete
+activity and emits no `turn_completed`. When an accepted turn is already queued behind the
+failure, no retry is scheduled because that turn is the retry, and the cycle likewise stays
+open until it ends. Cancelling the retry timer does not by itself complete
 the cycle. The cycle completes when:
 
 - a later turn ends without a capacity failure. That turn can be the retry's own continuation,

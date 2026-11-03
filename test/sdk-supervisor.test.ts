@@ -2707,3 +2707,36 @@ test("a refused interrupt during the backoff puts the retry back", async (t) => 
   await drain();
   assert.equal(continuations(), 1);
 });
+
+test("a capacity failure with a queued turn keeps the cycle open until that turn ends", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    return "queued";
+  };
+  assert.equal(await supervisor.send(session.id, { text: "and then run the tests" }), "queued");
+  const generation = registry.getSession(session.id)?.workCycle?.generation;
+  const published = watchCard(registry, session.id);
+  const usage = { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, modelId: "claude-test", costUsd: null };
+
+  handle.push({ kind: "turn_done", usage, failure: CAPACITY });
+  await drain();
+  assert.deepEqual(
+    published.filter((card) => card.state === "idle" || card.active === false || card.generation !== generation),
+    [],
+    "no completion is published while the queued turn still has the unfinished work",
+  );
+  assert.equal(registry.getSession(session.id)?.state, "working");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, true);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "the queued turn is the retry");
+
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "idle", "the queued turn's completion settles the card");
+  assert.equal(card?.workCycle?.active, false);
+  assert.equal(card?.workCycle?.generation, generation! + 1);
+});

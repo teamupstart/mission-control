@@ -1541,6 +1541,7 @@ export class SdkSupervisor {
           this.recordTurnInProgress(id, true);
         }
         let retryPending: string | null = null;
+        let holdWorkCycle = false;
         if (evt.kind === "turn_done" && !this.shuttingDown) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
           this.unfinishedTurns.set(id, remaining);
@@ -1548,6 +1549,9 @@ export class SdkSupervisor {
           // with nothing left to run needs one scheduled.
           if (evt.failure?.kind === "capacity" && remaining === 0) {
             retryPending = this.scheduleCapacityRetry(id, handle, evt.failure.message);
+          } else if (evt.failure?.kind === "capacity") {
+            // The queued turn is the retry, and the work is still unfinished until it ends.
+            holdWorkCycle = true;
           } else if (!evt.failure) {
             this.capacityAttempts.delete(id);
           }
@@ -1562,7 +1566,7 @@ export class SdkSupervisor {
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
         if (!this.shuttingDown && !heldIdle) {
-          this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending });
+          this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending, holdWorkCycle });
           if (evt.kind === "bound") {
             // A clear replaces the conversation that accepted these launch-window prompts.
             // Never replay its objective under the replacement's native key.

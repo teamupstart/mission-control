@@ -91,12 +91,17 @@ const SIDE_ROLES = new Set(["menuitem", "menuitemradio", "menuitemcheckbox", "op
 const SIDE_CONTAINER = '[role="menu"], [role="listbox"]';
 
 /**
- * The one bubble on screen, by its owner's `hide`. There is one pointer and one focus, and
- * a second bubble only ever paints over the first: a menu focuses its checked option as it
- * opens, so hovering any other option used to stack its explanation onto the focused one's.
- * The newest trigger wins, since that is where the person just moved.
+ * The one OPTION bubble on screen, by its owner's `hide`. Every option's bubble opens in
+ * the same place - beside its menu - so a second one only ever paints over the first: a
+ * menu focuses its checked option as it opens, and hovering any other option used to stack
+ * its explanation onto the focused one's. The newest option wins, since that is where the
+ * person just moved.
+ *
+ * Options only. Two ordinary bubbles open at their own triggers and do not collide, and a
+ * pointer left resting while the layout shifts under it fires `mouseenter` on whatever
+ * lands there - which, app-wide, silently took a keyboard user's focus bubble away.
  */
-let shown: (() => void) | null = null;
+let shownOption: (() => void) | null = null;
 
 function verticalPlacement(top: number, height?: number): Placement {
   if (top < TOP_FLIP_THRESHOLD) return "below";
@@ -233,15 +238,17 @@ export function Tooltip({
     });
   }, [beside]);
   const hide = useCallback(() => {
-    if (shown === hide) shown = null;
+    if (shownOption === hide) shownOption = null;
     setTip(null);
   }, []);
   const showOnly = useCallback((el: HTMLElement) => {
-    if (shown !== hide) shown?.();
-    shown = hide;
+    if (beside) {
+      if (shownOption !== hide) shownOption?.();
+      shownOption = hide;
+    }
     show(el);
-  }, [show, hide]);
-  // A trigger unmounted with its bubble open must not stay the one `shown` points at.
+  }, [beside, show, hide]);
+  // A trigger unmounted with its bubble open must not stay the one `shownOption` names.
   useEffect(() => hide, [hide]);
 
   // Measured on the ref callback rather than in a layout effect: this runs before paint

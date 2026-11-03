@@ -987,7 +987,7 @@ test("a manual command reports when an update is already being applied", async (
   f.controller.stop();
 });
 
-test("a prior outcome is surfaced once and retained in the in-memory snapshot", async () => {
+test("an acknowledged outcome is retired from the live snapshot as well as disk", async () => {
   const f = fixture();
   f.setOutcome({
     result: "failure",
@@ -996,14 +996,10 @@ test("a prior outcome is surfaced once and retained in the in-memory snapshot", 
     message: "build failed",
   });
   await f.controller.start();
-  assert.equal(f.controller.getSnapshot().lastOutcome?.result, "failure");
+  assert.equal(f.controller.getSnapshot().lastOutcome, null);
   assert.deepEqual(f.events, ["outcome:failure", "log:update outcome delivered; awaiting operator acknowledgment"]);
+  assert.equal(await f.port.readOutcome(), null);
   f.controller.stop();
-
-  const next = fixture();
-  await next.controller.start();
-  assert.equal(next.controller.getSnapshot().lastOutcome, null);
-  next.controller.stop();
 });
 
 test("release notes and diagnostics leave only bounded plain safe text", () => {
@@ -2000,3 +1996,80 @@ for (const changed of ["no plan", "source", "directory", "name", "scope", "recei
     if (changed === "receipt") assert.ok(f.events.some(event => event.includes("policy changed")));
   });
 }
+
+test("outcome acknowledgement cannot be undone by an in-flight background check", async () => {
+  const f = fixture();
+  const outcome: UpdateApplyOutcome = {result: "success", targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z"};
+  f.setOutcome(outcome);
+  let acknowledge!: () => void;
+  f.port.dialogs.outcome = async (_outcome, delivery) => { acknowledge = delivery.acknowledged; };
+  await f.controller.start();
+  let reject!: (error: Error) => void;
+  f.port.latestRelease = () => new Promise((_resolve, fail) => { reject = fail; });
+  const check = f.controller.check(false);
+  acknowledge();
+  assert.equal(f.controller.getSnapshot().lastOutcome, null);
+  reject(new Error("Temporary network failure"));
+  await check;
+  assert.equal(f.controller.getSnapshot().phase, "idle");
+  assert.equal(f.controller.getSnapshot().lastOutcome, null);
+  f.controller.stop();
+});
+
+test("banner dismissal retires the matching stored marker, including interrupted updates", async () => {
+  for (const result of ["success", "failure", "in-progress"] as const) {
+    const f = fixture();
+    const stored: UpdateApplyOutcome = {result, targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z", message: "failed"};
+    f.setOutcome(stored);
+    const clear = f.port.clearOutcome;
+    f.port.clearOutcome = expected => { assert.deepEqual(expected, stored); clear(expected); };
+    f.port.dialogs.outcome = async () => {};
+    await f.controller.start();
+    const notice = f.controller.getSnapshot().lastOutcome!;
+    assert.equal(f.controller.dismissOutcome({...notice, recordedAt: "2026-11-02T14:27:34.000Z"}), false);
+    assert.notEqual(await f.port.readOutcome(), null);
+    assert.equal(f.controller.dismissOutcome(notice), true);
+    assert.equal(await f.port.readOutcome(), null);
+    assert.equal(f.controller.getSnapshot().lastOutcome, null);
+    f.controller.stop();
+  }
+});
+
+test("banner dismissal rejects mismatched outcome fields even when recorded times match", async (t) => {
+  const f = fixture();
+  t.after(() => f.controller.stop());
+  const stored: UpdateApplyOutcome = {
+    result: "failure", targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z", message: "failed",
+  };
+  f.setOutcome(stored);
+  f.port.dialogs.outcome = async () => {};
+  await f.controller.start();
+
+  const mismatches: Array<[string, UpdateApplyOutcome]> = [
+    ["result", { ...stored, result: "success" }],
+    ["target version", { ...stored, targetVersion: "1.2.5" }],
+    ["failure message", { ...stored, message: "a different failure" }],
+  ];
+  for (const [field, expected] of mismatches) {
+    assert.equal(f.controller.dismissOutcome(expected), false, `reject mismatched ${field}`);
+    assert.deepEqual(await f.port.readOutcome(), stored, `retain stored notice after mismatched ${field}`);
+    assert.deepEqual(f.controller.getSnapshot().lastOutcome, stored, `retain live notice after mismatched ${field}`);
+  }
+});
+
+test("failed marker retirement keeps the notice available for another acknowledgement", async () => {
+  const f = fixture();
+  f.setOutcome({result: "failure", targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z", message: "failed"});
+  f.port.dialogs.outcome = async () => {};
+  await f.controller.start();
+  const notice = f.controller.getSnapshot().lastOutcome!;
+  const clear = f.port.clearOutcome;
+  f.port.clearOutcome = () => { throw new Error("Access denied"); };
+  assert.equal(f.controller.dismissOutcome(notice), false);
+  assert.deepEqual(f.controller.getSnapshot().lastOutcome, notice);
+  assert.notEqual(await f.port.readOutcome(), null);
+  f.port.clearOutcome = clear;
+  assert.equal(f.controller.dismissOutcome(notice), true);
+  assert.equal(f.controller.getSnapshot().lastOutcome, null);
+  f.controller.stop();
+});

@@ -556,8 +556,10 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. A later update attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,

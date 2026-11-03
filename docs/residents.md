@@ -219,13 +219,15 @@ and launches the latest revision in a new conversation. The old task and session
 Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
 it there, or cancel to keep it. The old session's Console band also says it was restarted on the
 new revision and offers **Open new session** and **Complete & close**, so you decide when the
-replaced conversation closes. The
-offer stays until that task is completed, even if the new session has since ended or never
-started, and survives a reload or daemon restart. Restart
+replaced conversation closes. The offer stays until that task is completed, even if the new
+session has since ended or never started, and survives a reload or daemon restart. Restart
 preserves the repository choice and run instructions; a repository-free resident receives a fresh
-private workspace. New conversation
-creation ensures every changed launch option takes effect. Retrying an interrupted Restart
-finishes the same replacement request, including an interruption after the old run ended.
+private workspace. New conversation creation ensures every changed launch option takes effect.
+Retrying a Restart interrupted after the old run ended but before its replacement was reserved
+finishes that same replacement request. A replacement already reserved when the daemon stopped,
+but whose session never started, is marked failed, and retrying Restart reports that failure
+instead of launching again: the old session's band says the new session is no longer running and
+still offers **Complete & close**, and launching the profile again starts a fresh run.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 

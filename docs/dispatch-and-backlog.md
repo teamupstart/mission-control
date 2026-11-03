@@ -1554,7 +1554,7 @@ while delivering the comment. A completion without a pull request still posts it
 Only `https://github.com/<owner>/<repo>/pull/<number>` URLs receive a clickable link in an
 acli comment; query strings, fragments and a trailing slash are allowed. Other supplied
 completion URLs remain readable as plain text.
-Write diagnostics redact known credential shapes, bearer tokens, email addresses and SSN-like
+Write diagnostics redact known credential shapes, Authorization fields, email addresses and SSN-like
 identifiers before reaching the ledger, logs or settings. Normal workflow reasons remain
 available; an unrecognized transition response is not copied into the diagnostic.
 No local CLI or REST credential fallback is attempted.

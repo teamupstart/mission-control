@@ -169,7 +169,7 @@ for (const mode of ["refused", "json-failure"] as const) test(`acli ${mode} diag
   await configureAcli(page, daemon);
   const secret = `opaque-${"synthetic".repeat(4)}`;
   const email = "person@example.test";
-  const sensitive = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000; Authorization: Basic dTpw; "Authorization":"Bearer tiny"; Basic authentication needs review`;
+  const sensitive = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000; Basic authentication needs review\nAuthorization: Basic dTpw\n"Authorization":"Bearer tiny"\nAuthorization: token tok-test\nAuthorization: AWS4-HMAC-SHA256 Credential=scope-demo,SignedHeaders=host;x-amz-date,Signature=sig-test`;
   writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: mode, reason: sensitive }));
   await oweAcli(page, daemon, ["annotate"]);
   await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
@@ -182,7 +182,7 @@ for (const mode of ["refused", "json-failure"] as const) test(`acli ${mode} diag
   const rows = withDaemonDb(daemon, (db) => db.prepare("SELECT last_error FROM task_source_writeback").all());
   for (const text of [api, ui, JSON.stringify(rows), daemon.readLog()]) {
     expect(text).toContain("[redacted]");
-    for (const value of [secret, email, "000-00-0000", "dTpw", "tiny"]) expect(text).not.toContain(value);
+    for (const value of [secret, email, "000-00-0000", "dTpw", "tiny", "tok-test", "scope-demo", "sig-test"]) expect(text).not.toContain(value);
     expect(text).toContain("Basic authentication needs review");
   }
   await shoot(page, `acli-diagnostics-${mode}`, reason);

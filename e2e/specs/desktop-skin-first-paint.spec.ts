@@ -13,11 +13,13 @@ import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.
  * The desktop window opens in the chosen skin, with no dark frame first.
  *
  * Electron paints its window before the dashboard has loaded, so a light skin would open on a
- * dark frame unless the shell already knows the skin's background. The unit layer proves the
- * helpers and the handler in isolation; only this file runs the production `createWindow`, the
- * production preload and the production `mission:set-window-background` handler together, and
- * can therefore see the colour the window is constructed with, the dashboard keeping it current
- * through the real bridge, and the next launch opening in what the dashboard last wrote.
+ * dark frame unless the shell already knows the skin's background. The daemon saves that colour
+ * from the stored skin; the desktop bridge only repaints the current window. The unit layer
+ * proves the pieces in isolation; only this file runs the production `createWindow`, the
+ * production preload and the production `mission:set-window-background` handler against a real
+ * daemon, and can therefore see the colour the window is constructed with, the bridge repainting
+ * the live window, and the next launch opening in what the daemon saved for the stored skin - even
+ * after a stale page reports a different colour.
  *
  * No agent is dispatched, so no binary runs and no tokens are spent.
  */

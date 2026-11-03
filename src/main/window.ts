@@ -59,8 +59,10 @@ function initialSize(): { width: number; height: number } {
 
 export const getMainWindow = (): BrowserWindow | null => win;
 
-/** Where the last skin's background is remembered: read here at launch, written by the
- *  `mission:set-window-background` handler (`window-background.ts`). One path for both. */
+/** Where the stored skin's launch colour is kept: read here at launch, and written only by the
+ *  daemon (`syncWindowBackground` in `server/ui-config.ts`) from the stored skin. The
+ *  `mission:set-window-background` handler only repaints the current window; it never writes
+ *  this file (`server/window-background.ts`). */
 export function windowBackgroundFile(): string {
   return windowBackgroundPath(stateDir());
 }

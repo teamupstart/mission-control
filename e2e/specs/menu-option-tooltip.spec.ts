@@ -301,3 +301,40 @@ test("a side tooltip taller than the room below its row slides up to stay on scr
   expect(level(tipBox, row), "the slide carried the tooltip away from its option").toBe(true);
   await shoot(dashboard, "vertical-slide-bottom", tipBox, menuBox);
 });
+
+test("with room on no side and in neither gap, the fallback takes the roomier gap and stays on screen", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "cramped view menu tooltips");
+  const detail = await openConsoleDetail(dashboard, daemon, /Cramped View Menu Tooltips/i);
+  // Too narrow for either side, as in the fallback case above.
+  await dashboard.setViewportSize({ width: 460, height: 800 });
+  const { menu, terminal } = await openViewMenu(dashboard, detail);
+  const viewport = dashboard.viewportSize()!;
+  const menuBox = await box(menu);
+  const roomAbove = menuBox.y - 16;
+  const roomBelow = viewport.height - (menuBox.y + menuBox.height) - 16;
+  // Taller than both gaps, standing in for long copy beside a long menu, yet still shorter
+  // than the window, so placement rather than sheer size decides where it ends up.
+  const height = Math.round(Math.max(roomAbove, roomBelow) + 40);
+  expect(height, "the window is too short for this case").toBeLessThanOrEqual(viewport.height - 16);
+  await dashboard.addStyleTag({ content: `.tooltip { min-height: ${height}px; box-sizing: border-box; }` });
+
+  await terminal.hover();
+  const tip = bubble(dashboard, "terminal stream");
+  await expect(tip).toBeVisible();
+  const tipBox = await box(tip);
+  console.log(`CRAMPED_FALLBACK ${JSON.stringify({ viewport, menu: menuBox, roomAbove, roomBelow, tip: tipBox })}`);
+  // The precondition: neither gap holds the bubble, so the old fallback ran it off screen.
+  expect(tipBox.height).toBeGreaterThan(Math.max(roomAbove, roomBelow));
+
+  await expectOnScreen(dashboard, tipBox);
+  // It took the roomier gap, and slid only as far as that edge's margin.
+  if (roomBelow >= roomAbove) {
+    expect(tipBox.y + tipBox.height).toBeCloseTo(viewport.height - 8, 0);
+  } else {
+    expect(tipBox.y).toBeCloseTo(8, 0);
+  }
+  await shoot(dashboard, "cramped-fallback", tipBox, menuBox);
+});

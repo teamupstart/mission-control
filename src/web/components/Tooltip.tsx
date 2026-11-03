@@ -103,9 +103,9 @@ const SIDE_CONTAINER = '[role="menu"], [role="listbox"]';
  */
 let shownOption: (() => void) | null = null;
 
-function verticalPlacement(top: number, height?: number): Placement {
-  if (top < TOP_FLIP_THRESHOLD) return "below";
-  return height !== undefined && height > top - EDGE_MARGIN ? "below" : "above";
+/** An ordinary trigger's first guess, before the bubble is measured. */
+function verticalPlacement(top: number): Placement {
+  return top < TOP_FLIP_THRESHOLD ? "below" : "above";
 }
 
 function verticalTip(trigger: TipState["trigger"], placement: Placement): TipState {
@@ -129,6 +129,12 @@ function onScreen(start: number, end: number, size: number): number {
  * open and so where a person looks first; left when the right runs off screen and the left
  * does not; and above or below the whole menu when neither side has room - a narrow
  * window, where a beside-bubble cannot fit at all.
+ *
+ * Above or below is chosen from the two measured gaps, not from where the menu starts: a
+ * long menu in a narrow window can leave room on neither. Then the bubble takes the
+ * roomier gap and slides onto the screen, over the menu's edge if it must. A tooltip
+ * cannot scroll (it is `pointer-events: none`), so clipping it would hide text nobody
+ * could reach; covering part of the menu while the person reads it is the lesser cost.
  */
 function settleSide(tip: TipState, width: number, height: number): TipState {
   const { trigger } = tip;
@@ -136,8 +142,18 @@ function settleSide(tip: TipState, width: number, height: number): TipState {
   const fitsLeft = trigger.left - GAP - width >= EDGE_MARGIN;
   const side: Placement | null = fitsRight ? "right" : fitsLeft ? "left" : null;
   if (side === null) {
-    const next = verticalTip(trigger, verticalPlacement(trigger.top, height));
-    return { ...next, shift: onScreen(next.x - width / 2, next.x + width / 2, window.innerWidth) };
+    const roomAbove = trigger.top - GAP - EDGE_MARGIN;
+    const roomBelow = window.innerHeight - trigger.bottom - GAP - EDGE_MARGIN;
+    const placement: Placement = height <= roomAbove ? "above"
+      : height <= roomBelow ? "below"
+        : roomBelow >= roomAbove ? "below" : "above";
+    const next = verticalTip(trigger, placement);
+    const top = placement === "above" ? trigger.top - GAP - height : trigger.bottom + GAP;
+    return {
+      ...next,
+      shift: onScreen(next.x - width / 2, next.x + width / 2, window.innerWidth),
+      shiftY: onScreen(top, top + height, window.innerHeight),
+    };
   }
   const top = tip.y - height / 2;
   return {

@@ -55,10 +55,17 @@ class MissingRegistrationError extends Error {
 
 type CodexConfig = z.infer<typeof CodexSettings>;
 
-/** The Mission Control server table, only when it is a registration something can launch. */
+/**
+ * The Mission Control server table, only when it is a registration Codex will launch: it has a
+ * `command` or `url`, and it is not switched off. Codex skips an entry with `enabled = false`,
+ * so trusting one would report Ready for tools no session can reach. Read through the
+ * passthrough rather than the schema so an unexpected `enabled` value never makes an otherwise
+ * readable config invalid; only the literal `false` disables (Codex treats absent as enabled).
+ */
 function registeredCodexServer(config: CodexConfig) {
   const server = config.mcp_servers?.["mission-control"];
-  return server && (server.command || server.url) ? server : null;
+  if (!server || !(server.command || server.url)) return null;
+  return (server as { enabled?: unknown }).enabled === false ? null : server;
 }
 
 function codexConfig(text: string) {

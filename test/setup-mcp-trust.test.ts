@@ -120,6 +120,26 @@ test("an unregistered Codex server names the integration install as its prerequi
   assert.equal(enableMcpTrust("codex", path).prerequisite, undefined);
 });
 
+test("a disabled Codex server is not a registration trust can satisfy", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const path = join(home, "config.toml");
+  // Codex skips an entry with `enabled = false`, so even an already-approved one must not read
+  // as Ready: no session could reach its tools.
+  const disabledApproved = '[mcp_servers.mission-control]\ncommand = "node"\nenabled = false\ndefault_tools_approval_mode = "approve"\n';
+  assert.equal(hasMcpTrust("codex", disabledApproved), false);
+  writeFileSync(path, disabledApproved);
+  assert.equal(mcpTrustStatus("codex", path).state === "needs-setup" && (mcpTrustStatus("codex", path) as { why: string }).why, CODEX_MCP_NOT_REGISTERED);
+  assert.equal(enableMcpTrust("codex", path).prerequisite, "mission-integrations");
+  assert.equal(readFileSync(path, "utf8"), disabledApproved);
+  // Explicitly enabled, or an `enabled` value that is not the literal `false`, still counts,
+  // and an odd value never makes the config unreadable.
+  for (const enabled of ["true", '"yes"']) {
+    const text = `[mcp_servers.mission-control]\ncommand = "node"\nenabled = ${enabled}\ndefault_tools_approval_mode = "approve"\n`;
+    assert.equal(hasMcpTrust("codex", text), true, enabled);
+  }
+});
+
 test("publication retains the original and recheck becomes satisfied without a second write", (t) => {
   const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));

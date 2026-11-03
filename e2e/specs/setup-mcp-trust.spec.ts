@@ -223,6 +223,8 @@ test("an install that leaves Codex unregistered asks for a manual fix instead of
   await row.getByRole("button", { name: "Install Claude integrations" }).click();
 
   await expect(row.getByText("Codex still has no runnable mission-control server, so trust cannot apply.")).toBeVisible();
+  // The fixture's entry is `enabled = false`; adding a command alone would leave it skipped.
+  await expect(row).toContainText("remove enabled = false if it is there");
   await expect(row).toContainText("Existing disabled or custom MCP registration preserved.");
   await expect(row.getByRole("button", { name: "Install Claude integrations" })).toHaveCount(0);
   await expect(row).not.toContainText("then this retries the trust automatically");
@@ -238,7 +240,15 @@ test("an install that leaves Codex unregistered asks for a manual fix instead of
     await page.screenshot({ path: join(out, "codex-install-did-not-register-r8.png") });
   }
 
-  // After a manual fix, a fresh trust press starts over and succeeds.
+  // Half a fix - a command added but `enabled = false` left in - is still a server Codex skips,
+  // so trusting it must not read as Ready.
+  writeFileSync(path, '[mcp_servers.mission-control]\nenabled = false\ncommand = "node"\nargs = ["server.mjs"]\n');
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expect(row.getByRole("status").first()).toContainText("not registered in Codex yet");
+  await expectRowStatus(page, anchor, "Needs setup");
+  expect(readFileSync(path, "utf8")).not.toContain("default_tools_approval_mode");
+
+  // After the full manual fix, a fresh trust press starts over and succeeds.
   writeFileSync(path, '[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n');
   await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
   await expectRowStatus(page, anchor, "Ready");

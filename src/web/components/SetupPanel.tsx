@@ -301,7 +301,7 @@ function ServiceRemedy({
       // would loop, so say what it did and what is left to fix by hand.
       if (retried.prerequisite === "mission-integrations") {
         setInstallDidNotRegister(true);
-        setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. Give its [mcp_servers.mission-control] table in config.toml a command or url, then press Trust again.`);
+        setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. In config.toml, give its [mcp_servers.mission-control] table a command or url and remove enabled = false if it is there, then press Trust again.`);
       }
     } catch {
       // The install already succeeded; only the trust retry can land here.

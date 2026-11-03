@@ -119,8 +119,11 @@ The e2e fake (`e2e/fixtures/fake-claude.mjs:323-349`) records argv and a fixed e
    - In `src/web/components/DispatchModal.tsx`, add an "Advisor" `<select>` next to Effort, rendered only when `capabilitiesFor(draft.agent).advisor` is non-null.
    - Give it the accessible name "Advisor for dispatched Claude Code session", matching the effort select's naming.
    - Options: "Inherit from Claude settings" (empty), "Opus", "Sonnet", "Off".
-   - Reset it with model and effort on agent switch; include it in the submit body and in `taskUpdatePatch`.
-   - Mirror effort in `src/web/lib/task-draft.ts` and the `src/web/lib/api.ts` create-body type.
+   - Inherit has a different representation in each operation, exactly as effort does (`src/web/lib/task-draft.ts:64`, `:249-250`; `DispatchModal.tsx:2376`):
+     - `""` in the draft only;
+     - omitted from the dispatch body (`advisorModel: submitted.advisorModel || undefined`), so `null` is never sent on dispatch;
+     - `null` in `taskUpdatePatch` (`draft.advisorModel || null`), which clears a saved override.
+   - Reset it with model and effort on agent switch. Mirror effort in `src/web/lib/task-draft.ts` (draft field, empty value, `draftFromTask` mapping `null` to `""`, `draftsEqual`, patch) and in the `src/web/lib/api.ts` create-body type.
 10. **Fake agent.** In `fake-claude.mjs`, add `disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null` to the invocation record. Do not change Phase 1's advisor transcript trigger.
 11. **E2e spec.** Add `e2e/specs/advisor-dispatch-override.spec.ts` with three cases:
     - terminal runtime, Advisor = Opus: `argvValue(argv, "--settings")` parses to `{ advisorModel: "opus" }`;
@@ -184,3 +187,4 @@ No later phase. Future work (live control, Fable, kind or harness defaults) can 
 - Re-checked after writing: this phase's file set and Phase 1's overlap only in `fake-claude.mjs` and `docs/dispatch-and-backlog.md`. That overlap is why the phases are serial.
 - Repair round 1: clarified that a failed gate's output goes in the report back to the human (no PR), and a passing gate's output goes in the PR. Phase 1 now owns iteration-based spend attribution and a real-advisor probe; this phase depends on neither beyond the shared fake agent.
 - PR #1326 review: stated that Inherit (`null`) bypasses the `AdvisorSpec` helpers and the `supportsAdvisor` refine, so their non-null signatures and the nullable task, options and resolver fields agree.
+- PR #1326 review: documented Inherit's representation in each operation, mirroring effort: `""` in the draft, omitted on dispatch, `null` in the update patch.

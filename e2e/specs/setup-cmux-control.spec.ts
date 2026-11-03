@@ -131,6 +131,68 @@ test.describe("a cmux that is running and refusing", () => {
   });
 });
 
+// Each refusal ends on that service's own next step. "Start it yourself in a terminal" is
+// advice about a server, and wrong for both of these.
+test.describe("a cmux app that will not open", () => {
+  test.use({ daemonEnv: { MC_E2E_CMUX_CONTROL: "stopped" } });
+
+  test("the refusal says to open cmux yourself", async ({ page, daemon }) => {
+    // Opening a real app is not something a browser test may do, so the daemon's refusal is
+    // stood in for exactly as `setup-herdr-server.spec.ts` does. The hint under test is the
+    // browser's own, read from the shared catalog.
+    await page.route("**/api/setup/service", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ service: "cmux-app" });
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, service: "cmux-app", outcome: "refused", label: "cmux app", detail: "cmux could not be opened." }),
+      });
+    });
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "terminals");
+    const cmux = setupRow(page, ROW);
+
+    await cmux.getByRole("button", { name: "Open cmux" }).click();
+    await expect(cmux.getByRole("status")).toContainText("cmux could not be opened.");
+    await expect(cmux.getByRole("status")).toContainText("Open cmux yourself, then press Re-check.");
+    await expect(cmux).not.toContainText("Start it yourself in a terminal");
+    await expectRowStatus(page, ROW, "Needs setup");
+    await expect(cmux.getByRole("button", { name: "Open cmux" })).toBeEnabled();
+  });
+});
+
+test.describe("a cmux config that cannot be repaired", () => {
+  test.use({ daemonEnv: { MC_E2E_CMUX_CONTROL: "refused" } });
+
+  test("the refusal names the file to fix and leaves it untouched", async ({ page, daemon }) => {
+    const path = configPath(daemon);
+    const broken = '{ "automation": { "socketControlMode": "cmuxOnly" ';
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, broken);
+
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "terminals");
+    const cmux = setupRow(page, ROW);
+
+    const refused = page.waitForResponse((response) =>
+      response.url().endsWith("/api/setup/service") && response.request().method() === "POST");
+    await cmux.getByRole("button", { name: "Allow Mission Control to drive cmux" }).click();
+    expect((await refused).status()).toBe(409);
+    await expect(cmux.getByRole("status")).toContainText("is not valid JSON/JSONC - fix it and retry.");
+    await expect(cmux.getByRole("status")).toContainText("Fix the file named above as described, then press Re-check.");
+    await expect(cmux).not.toContainText("Start it yourself in a terminal");
+    expect(readFileSync(path, "utf8")).toBe(broken);
+    expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".bak"))).toHaveLength(0);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidence = artifactsDir("cmux-socket-control");
+      mkdirSync(evidence, { recursive: true });
+      await page.mouse.move(1, 1);
+      await cmux.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(evidence, "cmux-config-refused-r6.png") });
+    }
+  });
+});
+
 test("a cmux whose socket answers is Ready, and reports the mode it is in", async ({
   page,
   daemon,

@@ -15,6 +15,7 @@ interface DesktopPreloadResult {
   isDesktop: boolean;
   hasDesktopClass: boolean;
   capability: string | null;
+  windowBackground: string | null;
   preloadError: string | null;
   authorization: {
     withoutClick: boolean;
@@ -80,6 +81,11 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       result.hasDesktopClass,
       true,
       "the desktop-only traffic-light inset will not be applied",
+    );
+    assert.equal(
+      result.windowBackground,
+      "#f5f7fa",
+      "the preload does not expose setWindowBackground, so a light skin opens on a dark frame",
     );
     assert.match(
       result.capability ?? "",

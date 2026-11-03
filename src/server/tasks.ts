@@ -138,6 +138,8 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
@@ -1017,6 +1019,7 @@ export class TaskManager {
         return this.residentLaunch(task, repository, runtime);
       },
       residentMcp: (task) => this.residentMcp?.(task) ?? null,
+      residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1434,6 +1437,12 @@ export class TaskManager {
    */
   registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
     this.writeback = enqueuer;
+  }
+
+  /** A launch-failure record for a dispatch this manager settles outside the dispatcher. */
+  private launchFailureFor(t: Task, sessionKept = false): TaskLaunchFailure {
+    const resident = TASK_KIND_BEHAVIOR[t.kind].launch === "resident";
+    return newLaunchFailure(t, Date.now(), resident ? residentRunForTask(t.id)?.run.profileId ?? null : null, sessionKept);
   }
 
   /** Install the resident launch composer after `ResidentManager` exists. */
@@ -2481,6 +2490,8 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
+      // The provider run this dispatch exists to create never appeared: it did not start.
+      launchFailure: this.launchFailureFor(t),
       error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
@@ -5585,6 +5596,8 @@ export class TaskManager {
       outcome: null,
       outcomeUrl: null,
       error: null,
+      // Re-filed on purpose: a launch failure it carried was answered by this.
+      launchFailure: null,
       dispatchedAt: null,
       completedAt: null,
       updatedAt: Date.now(),
@@ -6185,6 +6198,9 @@ export class TaskManager {
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR
             : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+        // A dispatch the restart interrupted before anything was provisioned never started:
+        // drawn where its placeholder was, or on its Backlog card when it went back there.
+        launchFailure: this.launchFailureFor(current),
         dispatchedAt: null,
         updatedAt: Date.now(),
       });
@@ -6263,6 +6279,9 @@ export class TaskManager {
         this.registry.upsertTask({
           ...t,
           status: "failed",
+          // Its home survived the restart (or its session is being resumed): kept, like the
+          // dispatcher's own kept branch, so it is opened or cancelled rather than retried.
+          launchFailure: this.launchFailureFor(t, true),
           error:
             embedded === true
               ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
@@ -6316,6 +6335,9 @@ export class TaskManager {
         : t.status === "dispatching"
           ? "dispatch interrupted by a restart - re-dispatch"
           : "the agent's session did not survive a restart";
+    // A dispatch the restart interrupted never reached its session: a launch failure, drawn
+    // where its placeholder was. A session that ran and died with the daemon is not one.
+    const interrupted = t.status === "dispatching" ? { launchFailure: this.launchFailureFor(t) } : {};
 
     if (taskHasWorktrees(t)) {
       // The agent died WITH the daemon, and this used to be where its checkout was removed on
@@ -6340,6 +6362,7 @@ export class TaskManager {
       const now = Date.now();
       const settled: Task = {
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: settledError,
         // The one resource fact restart is entitled to clear, and only because the existing
@@ -6370,6 +6393,7 @@ export class TaskManager {
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
         sessionId: null,
@@ -6388,6 +6412,7 @@ export class TaskManager {
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
+        ...interrupted,
         status: settledStatus,
         error:
           t.status === "done" || t.status === "cancelled"
@@ -6400,6 +6425,7 @@ export class TaskManager {
     }
     this.registry.upsertTask({
       ...t,
+      ...interrupted,
       status: settledStatus,
       error: settledError,
       ...releasedTaskResources(t, null),

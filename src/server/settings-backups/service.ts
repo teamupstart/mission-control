@@ -1,3 +1,4 @@
+import { syncWindowBackground } from "../ui-config.ts";
 import { randomBytes } from "node:crypto";
 import type { CostConfig, SkillsConfig } from "@shared/protocol.ts";
 import {
@@ -327,6 +328,8 @@ export class SettingsBackupService {
       attempt("Settings status reconciliation failed", () => publishSettingsStatus(registry));
     }
     attempt("Skills reconciliation failed", this.runtime.reconcileSkills ?? (() => reconcileSkills()));
+    // A restored skin decides the desktop window's next launch colour, as a picked one does.
+    attempt("Window background reconciliation failed", () => syncWindowBackground());
     attempt(
       "Cost reconciliation failed",
       () => (this.runtime.reconcileCost ?? reconcileCostTelemetry)(getCostConfig()),

@@ -70,6 +70,136 @@ test("the conversation rendering round-trips, and an unknown one is refused", ()
   assert.equal(getUiConfig().conversationView, "chat", "a refused patch changed the store");
 });
 
+test("the skin defaults to Default, round-trips, and only a shipped id can be written", async () => {
+  const { UiConfigPatchSchema, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.equal(getUiConfig().skin, "default", "a missing key reads as today's look");
+  setUiConfig({ skin: "daylight" });
+  assert.equal(getUiConfig().skin, "daylight");
+  // Strict on write, at the route's schema and at the store: a bad id is refused, never
+  // stored as Default by the read schema's fallback.
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "nope" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "daylight" }).success, true);
+  assert.throws(() => setUiConfig({ skin: "nope" } as never));
+  assert.equal(getUiConfig().skin, "daylight", "a refused skin changed the store");
+  // Tolerant on read: a skin written by a newer build (a downgrade) opens as Default, and the
+  // rest of the record survives it.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "console" });
+  assert.equal(getUiConfig().skin, "default");
+  assert.equal(getUiConfig().layout, "console", "an unknown skin failed the whole ui record");
+  assert.equal(UiConfigSchema.parse({ skin: 42 }).skin, "default");
+});
+
+test("every skin write keeps the desktop window's launch colour, browser or desktop alike", async () => {
+  // A browser tab has no desktop bridge, so the daemon is the one place every skin write passes
+  // through. Without this, Daylight chosen in a browser would open the next desktop launch on a
+  // dark frame.
+  const { readFileSync, rmSync: remove, existsSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+  remove(launch, { force: true });
+
+  setUiConfig({ skin: "daylight" });
+  assert.equal(color(), "#f5f7fa", "picking Daylight left no launch colour for the shell");
+  setUiConfig({ skin: "default" });
+  assert.equal(color(), "#0a0c0f");
+
+  // A write that is not about the skin leaves the file alone.
+  remove(launch);
+  setUiConfig({ richText: false });
+  assert.equal(existsSync(launch), false, "an unrelated preference rewrote the launch colour");
+
+  // Startup and post-restore reconciliation read whatever is stored, however it got there.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight" });
+  syncWindowBackground();
+  assert.equal(color(), "#f5f7fa");
+});
+
+test("a malformed field elsewhere cannot abort startup or fail the page, and a valid skin survives it", async () => {
+  // Startup and the dashboard document read the skin outside any settings request. A strict
+  // parse of the whole record would throw on one bad field and take the daemon or every page
+  // load down with it; reading the skin alone keeps a valid Daylight in force.
+  const { readFileSync, rmSync: remove } = await import("node:fs");
+  const { storedSkin, syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight", layout: "hologram" } as never);
+  assert.throws(() => getUiConfig(false), "the premise: a strict parse of this record throws");
+  assert.equal(storedSkin(), "daylight");
+  remove(launch, { force: true });
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#f5f7fa", "startup did not record the valid stored skin");
+
+  // An unknown skin, or a record that is not an object at all, reads as Default and never throws.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "hologram" } as never);
+  assert.equal(storedSkin(), "default");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, "not an object" as never);
+  assert.equal(storedSkin(), "default");
+  assert.doesNotThrow(() => syncWindowBackground());
+  assert.equal(color(), "#0a0c0f");
+});
+
+test("a launch colour that cannot be written never fails the skin write or startup", async (t) => {
+  // The launch colour is a convenience for the next desktop launch; the skin choice is the
+  // setting. A failed write - a full disk, a read-only state home, something in the way - must
+  // leave the skin saved and the caller unharmed. A non-empty directory where the file belongs
+  // makes the atomic rename fail on every platform, with no permission trick root would ignore.
+  const { mkdirSync, writeFileSync: write, rmSync: remove, statSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  remove(launch, { recursive: true, force: true });
+  mkdirSync(launch, { recursive: true });
+  write(join(launch, "occupied"), "");
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args));
+  try {
+    setUiConfig({ skin: "default" });
+    warnings.length = 0;
+
+    assert.doesNotThrow(() => setUiConfig({ skin: "daylight" }), "a failed launch-colour write failed the skin write");
+    assert.equal(getUiConfig().skin, "daylight", "the skin was not saved when its launch colour could not be");
+    assert.doesNotThrow(() => syncWindowBackground(), "a failed launch-colour write would abort daemon startup");
+    assert.ok(statSync(launch).isDirectory(), "the premise: the launch file really could not be written");
+    assert.equal(warnings.length, 2, "each failed write is reported, not swallowed silently");
+    assert.match(String(warnings[0]![0]), /could not remember the window background/);
+  } finally {
+    remove(launch, { recursive: true, force: true });
+  }
+});
+
+test("a skin from a newer build survives unrelated writes in this one, and a real choice replaces it", () => {
+  // After a downgrade, a skin this build does not ship reads as Default - but it must not be
+  // WRITTEN as Default by a write that was not about the skin, or the operator loses their
+  // choice for good on the next upgrade.
+  const raw = (): unknown => (getAppConfig(APP_CONFIG_ENTRIES.ui) as { skin?: unknown }).skin;
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", layout: "console", guidedTour: false } as never);
+  assert.equal(getUiConfig().skin, "default", "an unknown skin still reads as Default");
+
+  setUiConfig({ richText: false });
+  assert.equal(raw(), "neon-dusk", "an unrelated setting erased the newer build's skin");
+  assert.equal(getUiConfig().richText, false, "the unrelated setting itself was saved");
+
+  // This module's own migration write keeps it too: a record without the guidedTour key is
+  // rewritten on read.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", layout: "console" } as never);
+  getUiConfig();
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { guidedTour?: unknown }).guidedTour, false, "the premise: the migration wrote");
+  assert.equal(raw(), "neon-dusk", "the migration write erased the newer build's skin");
+
+  // Choosing a skin in this build is a real choice and replaces it; so does choosing Default.
+  setUiConfig({ skin: "daylight" });
+  assert.equal(raw(), "daylight");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", guidedTour: false } as never);
+  setUiConfig({ skin: "default" });
+  assert.equal(raw(), "default");
+
+  // Something that is not an id at all is not worth keeping.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "<script>", guidedTour: false } as never);
+  setUiConfig({ richText: true });
+  assert.equal(raw(), "default");
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {

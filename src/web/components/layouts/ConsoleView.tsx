@@ -1,6 +1,7 @@
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { provisioningTasks } from "@shared/session.ts";
+import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
 import {
   clusterFallbackLabel,
   fleetRows,
@@ -61,10 +62,14 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     pinnedResidentSessions(props.residentBySession),
   );
   const pending = provisioningTasks(props.tasks);
+  // Every open failure: the rail has no Backlog column and its rows carry no notices, so a
+  // returned or kept failure has nowhere else to be found here.
+  const failed = fleetFailureGroups(props.tasks);
+  const starters = pending.length + failed.length;
   // Keep Working mounted for the first dispatch onto an otherwise quiet fleet because its
   // task-backed placeholders live inside that group.
   const groups = order.groups.filter(
-    (g) => g.sessions.length > 0 || (g.tone === "working" && pending.length > 0),
+    (g) => g.sessions.length > 0 || (g.tone === "working" && starters > 0),
   );
   const repoTotals = repoSessionTotals(order);
   // Which repository groups are folded, from the store `App` and the board read too. Shared
@@ -164,7 +169,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                   free or held agent because the session does not exist yet. */}
               {g.heldFrom === null ? (
                 <span className="rail-group-n">
-                  {g.sessions.length + (g.tone === "working" ? pending.length : 0)}
+                  {g.sessions.length + (g.tone === "working" ? starters : 0)}
                 </span>
               ) : (
                 <span className="rail-group-n rail-group-split">
@@ -182,6 +187,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
             {/* Not interactive and not part of session navigation: arrow keys continue to
                 walk only real session ids while the placeholder occupies the right place. */}
             {g.tone === "working" && <PendingList tasks={pending} variant="rail" />}
+            {g.tone === "working" && <FailedLaunchList groups={failed} variant="rail" />}
             {/* Sibling members of one run sit under a header row of their own, inside the
                 tone section they belong to. The header is NOT a session row: rail navigation
                 walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}

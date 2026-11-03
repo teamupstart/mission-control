@@ -63,7 +63,10 @@ turns those into a **desktop (Chrome) notification + a short sound** the moment 
 session goes to `needs-input`, a session stops on an
 [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard) (which needs no hooks, and says
 how many options it's offering), a review lands, or a
-dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
+dispatched task fails. A dispatch that never started is titled **Did not start**, including one
+that failed while provisioning and went back to the Backlog, which used to raise no alert at
+all. The dashboard also draws the failure in place; what it shows and which actions it offers
+are described in [when a dispatch does not start](dispatch-and-backlog.md#when-a-dispatch-does-not-start). It's zero extra tokens - the daemon (not an LLM) does the
 watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
 
 **Only things blocked on you ever interrupt.** Informational events (a session going

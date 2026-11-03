@@ -28,6 +28,7 @@ interface RendererRequest {
   source: string;
   ordinal: number;
   palette: RendererPalette;
+  colorScheme: "dark" | "light";
 }
 
 const READY_MESSAGE = "mission:mermaid-ready";
@@ -101,13 +102,20 @@ function rendererRequest(value: unknown, token: string): RendererRequest | null 
     input.ordinal > MAX_DIAGRAMS
   ) return null;
   const palette = rendererPalette(input.palette);
-  if (!palette) return null;
+  // Absent is the dark scheme every request had before skins: a dashboard still running the
+  // previous build talks to this renderer, which the daemon serves fresh. Anything else invalid
+  // is refused.
+  const colorScheme = input.colorScheme === undefined
+    ? "dark"
+    : input.colorScheme === "light" || input.colorScheme === "dark" ? input.colorScheme : null;
+  if (!palette || !colorScheme) return null;
   return {
     type: "mission:mermaid-render",
     token,
     source: input.source,
     ordinal: input.ordinal,
     palette,
+    colorScheme,
   };
 }
 
@@ -219,6 +227,9 @@ if (token && root && expectedParentOrigin) {
     const request = rendererRequest(event.data, token);
     if (!request) return;
     consumed = true;
+    // The skin's scheme, not a pinned one: a frame whose scheme differs from the page's paints
+    // an opaque canvas, which would be a dark slab on a light skin.
+    document.documentElement.style.colorScheme = request.colorScheme;
     void (async () => {
       try {
         mermaid.initialize({

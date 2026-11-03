@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import type { LineStageSummary, LineSummary } from "../src/shared/line.ts";
 import type { LineDensity } from "../src/shared/protocol.ts";
+import { DEFAULT_SKIN, SKIN_IDS } from "../src/shared/skins.ts";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
 /**
@@ -156,8 +157,22 @@ interface Measured {
   viewport: { width: number; height: number };
 }
 
-function page(styles: string, body: string): string {
-  return `<!doctype html><meta charset="utf-8"><style>${styles}</style>${body}`;
+/** A page in the given skin: `data-skin` on `<html>` exactly as `lib/skin.ts` sets it. */
+function page(styles: string, body: string, skin: string = DEFAULT_SKIN): string {
+  const attribute = skin === DEFAULT_SKIN ? "" : ` data-skin="${skin}"`;
+  return `<!doctype html><html${attribute}><meta charset="utf-8"><style>${styles}</style>${body}`;
+}
+
+/**
+ * `src/web/skins/index.css` with its imports inlined, loaded after the stylesheet the way
+ * `main.tsx` loads it. Inlined because a page written to a temp dir cannot resolve them.
+ */
+function skinStyles(): string {
+  const dir = new URL("../src/web/skins/", import.meta.url);
+  return readFileSync(fileURLToPath(new URL("index.css", dir)), "utf8").replace(
+    /@import\s+"\.\/([\w-]+\.css)"\s*;/g,
+    (_, file: string) => readFileSync(fileURLToPath(new URL(file, dir)), "utf8"),
+  );
 }
 
 /** The console shell exactly as `App` composes it: header, strip, then the layout. */
@@ -166,7 +181,7 @@ const consoleShell = (summary: LineSummary | null, density: LineDensity = "expan
      <div class="console"><div class="console-rail"></div><div class="console-detail"></div></div>
    </div>`;
 
-const CASES: Array<[string, string]> = [
+const CASES: Array<[string, string, string?]> = [
   ["console", consoleShell(FULL)],
   ["console-empty", consoleShell(null)],
   ["console-long", consoleShell(LONG)],
@@ -176,6 +191,12 @@ const CASES: Array<[string, string]> = [
   ["condensed", consoleShell(FULL, "condensed")],
   ["condensed-empty", consoleShell(null, "condensed")],
   ["condensed-long", consoleShell(LONG, "condensed")],
+  // Every registered skin, both densities. A skin may change colours, fonts and corners and
+  // never a band height, and a later skin is enrolled here by registering it - no new case.
+  ...SKIN_IDS.filter((id) => id !== DEFAULT_SKIN).flatMap((id): Array<[string, string, string]> => [
+    [`console@${id}`, consoleShell(FULL), id],
+    [`condensed@${id}`, consoleShell(FULL, "condensed"), id],
+  ]),
 ];
 
 let measured: Record<string, Measured>;
@@ -188,10 +209,11 @@ before(() => {
   const dir = mkdtempSync(join(tmpdir(), "mission-line-strip-"));
   const userData = mkdtempSync(join(tmpdir(), "mission-line-strip-profile-"));
   try {
-    const styles = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
-    const paths = CASES.map(([name, body]) => {
+    const styles =
+      readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8") + skinStyles();
+    const paths = CASES.map(([name, body, skin]) => {
       const path = join(dir, `${name}.html`);
-      writeFileSync(path, page(styles, body));
+      writeFileSync(path, page(styles, body, skin));
       return path;
     });
     const output = execFileSync(electron, [
@@ -361,4 +383,30 @@ test("a condensed shell still ends at the viewport, so the reply box stays reach
     `the condensed console body ended ${m.bodyBottomOverflow}px past the viewport`,
   );
   assert.ok((m.bodyHeight ?? 0) > 600, `the condensed console body collapsed to ${m.bodyHeight}px`);
+});
+
+test("every registered skin keeps the strip's band heights, expanded and condensed", () => {
+  // Measured against Default's own cases rather than against the budgets alone: a skin that
+  // grew the strip by a pixel would still sit inside a 70-110px band, and would still move
+  // every fleet surface below it the moment an operator picked it.
+  const expanded = at("console");
+  const condensed = at("condensed");
+  for (const id of SKIN_IDS.filter((skin) => skin !== DEFAULT_SKIN)) {
+    const e = at(`console@${id}`);
+    const c = at(`condensed@${id}`);
+    assert.equal(e.stages, 6, `${id} dropped a stage`);
+    assert.equal(e.lineBoxHeight, expanded.lineBoxHeight, `${id} changed the expanded strip's height`);
+    assert.equal(c.lineBoxHeight, condensed.lineBoxHeight, `${id} changed the condensed strip's height`);
+    assert.equal(e.bodyHeight, expanded.bodyHeight, `${id} changed the height left for the conversation`);
+    assert.equal(c.bodyHeight, condensed.bodyHeight, `${id} changed the condensed body's height`);
+  }
+});
+
+test("the skin cases really were laid out under their skins' rules", () => {
+  // The case above is only evidence if the pages carried each skin's stylesheet; an import
+  // that failed to inline would leave every skin measuring Default and passing by default.
+  const css = skinStyles();
+  for (const id of SKIN_IDS.filter((skin) => skin !== DEFAULT_SKIN)) {
+    assert.ok(css.includes(`:root[data-skin="${id}"]`), `${id}'s rules were not loaded into the shell`);
+  }
 });

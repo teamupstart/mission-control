@@ -559,7 +559,9 @@ therefore visible without opening the local log. **Retry** runs a fresh check, w
 acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
 banner retires the result from both disk and live state, so background checks, dashboard reloads,
 and app restarts do not show it again. If the saved marker has been replaced or cannot be
-cleared, dismissal leaves the notice visible and preserves the replacement. A later update
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
 attempt can still report its own result.
 Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across

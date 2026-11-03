@@ -2435,6 +2435,8 @@ export function runParkedSentence(detail: WorkflowRunDetail): string | null {
       : hold.kind === "evidence_readiness" ? "waiting for evidence readiness"
       : hold.kind === "evidence_capture_repair" ? "waiting for evidence capture repair"
       : hold.kind === "session_action" ? "waiting for its session action to finish"
+      : hold.kind === "pr_handoff" ? "waiting for the session to prepare its pull request"
+      : hold.kind === "inspector_feedback" ? "waiting for the session to address Inspector feedback"
       : "waiting for its repair round";
     return `Queued behind ${repository} (run ${hold.runId}), ${condition}.`
       + " This packet will be delivered when that run releases the conversation.";

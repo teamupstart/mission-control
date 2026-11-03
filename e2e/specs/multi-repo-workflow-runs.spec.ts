@@ -351,6 +351,20 @@ test("a two-repo task runs one review per changed repo, each named on the card",
   await expect(header).toContainText("waiting for evidence readiness");
   await expect(header).not.toContainText("nothing for it to have repaired");
   await shoot(dashboard, "sibling-evidence-hold", header);
+  for (const [kind, phase, condition] of [
+    ["pr_handoff", "pr_handoff", "waiting for the session to prepare its pull request"],
+    ["inspector_feedback", "inspector_findings", "waiting for the session to address Inspector feedback"],
+  ]) {
+    withDaemonDb(daemon, db => {
+      db.prepare("UPDATE workflow_runs SET status = 'waiting_for_session', current_phase = ? WHERE id = ?").run(phase, secondRun.id);
+      db.prepare("UPDATE workflow_deliveries SET kind = ? WHERE run_id = ?").run(kind, secondRun.id);
+    });
+    await dashboard.reload();
+    await expect(header).toContainText(`Queued behind second-repo (run ${secondRun.id})`);
+    await expect(header).toContainText(condition);
+    await expect(header).not.toContainText("waiting for its repair round");
+    await shoot(dashboard, `sibling-${kind}-hold`, header);
+  }
   withDaemonDb(daemon, db => {
     db.prepare("UPDATE workflow_runs SET status = 'running', current_phase = 'persona' WHERE id = ?").run(secondRun.id);
   });

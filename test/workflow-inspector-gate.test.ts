@@ -221,7 +221,7 @@ async function seed(over: SeedOptions = {}) {
       transcriptPath: null,
       env: { tmuxPane: `%${serial}` },
       prUrl: url,
-      prCreated: false,
+      prCreated: true,
     });
   }
   const now = Date.now() - 1_000;
@@ -804,7 +804,7 @@ test("durable handoff provenance requires an exact known repository identity", a
         transcriptPath: null,
         env: { tmuxPane: `%${serial}` },
         prUrl: seeded.url,
-        prCreated: false,
+        prCreated: true,
       });
       seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
       await new Promise((resolve) => setImmediate(resolve));

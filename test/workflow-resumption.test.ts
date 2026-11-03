@@ -886,7 +886,7 @@ async function inspectorFindingsRun(
     transcriptPath: null,
     env: { tmuxPane: paneId },
     prUrl: url,
-    prCreated: false,
+    prCreated: true,
   });
   h.manager.start();
   const bound = h.manager.createBinding({ workflowVersionId: versionId, sessionId });

@@ -3315,9 +3315,30 @@ export class Registry extends EventEmitter {
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
-      // A PR link sniffed from `gh pr create` decorates the card at once as an
-      // open PR; the poller confirms it and later flips it to merged.
-      const pr = evt.prUrl
+      // A PR link from `gh pr create` decorates the card at once as an open PR; the poller
+      // confirms it and later flips it to merged.
+      //
+      // Only when the agent OPENED the pull request, and only for a session the poller can
+      // retract. The hook bridge sniffs a URL out of ANY tool output, so `prUrl` alone is
+      // also what `gh pr view` trips: an agent that merely READ someone else's pull request
+      // would wear its chip. `prCreated` is the command-side proof that it was
+      // `gh pr create`. A session whose task has no repository (a resident in its own
+      // workspace) is outside both `prPollTargets` and `reconcilePrs`, so nothing would
+      // ever confirm or clear a chip there. Same two conditions `applyDriverPrCreated`
+      // holds the SDK drivers to.
+      //
+      // The poller (`reconcilePrs`) is the only other writer, and it does NOT require
+      // creation provenance. It asks `gh` only for the branch checked out in this session's
+      // own worktree, and `acceptPrForEpisode` refuses a pull request created before this
+      // session's current work episode began - but a PR on that branch created DURING the
+      // episode is accepted whoever opened it (the agent, a person in the GitHub UI, `gh
+      // api`, an MCP tool). That is deliberate for now: the operator chose to keep the poller
+      // as it is, because `prCreated` is held in memory and never persisted, and requiring
+      // it there would stop such PRs from completing their tasks on merge. Strict creation
+      // provenance for the poller was requested later in review and remains an open scope
+      // question, not a guarantee this code makes. What the hook path above does guarantee
+      // is that a URL an agent merely printed (`gh pr view`) never decorates a card.
+      const pr = evt.prUrl && evt.prCreated && taskHasRepository(target.task ?? {})
         ? {
             prUrl: evt.prUrl,
             prNumber: prNumberFromUrl(evt.prUrl),

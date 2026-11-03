@@ -95,6 +95,36 @@ test("a mounted workflow minimap repaints from its tokens without a re-render", 
   await failed.evaluate((rect) => rect.classList.remove("is-fail"));
   await shoot(minimap, "minimap-token-override");
 
+  // The rest of React Flow's chrome - the minimap frame and the canvas controls - is painted
+  // by `.workflow-canvas` rules on --panel, --border and --fg, which outrank React Flow's own
+  // light defaults, its `:hover` rule included. Repaint those tokens and every surface follows.
+  const frame = dashboard.locator(".workflow-canvas .react-flow__minimap");
+  const zoomIn = dashboard.getByRole("button", { name: "Zoom in" });
+  await dashboard.evaluate(() => {
+    const root = document.documentElement.style;
+    root.setProperty("--panel", "rgb(10, 80, 40)");
+    root.setProperty("--border", "rgb(200, 120, 0)");
+    root.setProperty("--fg", "rgb(240, 230, 140)");
+  });
+  await expect(frame).toHaveCSS("background-color", "rgb(10, 80, 40)");
+  await expect(frame).toHaveCSS("border-top-color", "rgb(200, 120, 0)");
+  await expect(zoomIn).toHaveCSS("background-color", "rgb(10, 80, 40)");
+  await expect(zoomIn).toHaveCSS("border-bottom-color", "rgb(200, 120, 0)");
+  // The controls draw text glyphs, so their ink is the button's colour, inherited from --fg.
+  await expect(zoomIn).toHaveCSS("color", "rgb(240, 230, 140)");
+  await zoomIn.hover();
+  await expect(zoomIn, "a hovered control keeps the token, not React Flow's light hover").toHaveCSS(
+    "background-color",
+    "rgb(10, 80, 40)",
+  );
+  await expect(zoomIn).toHaveCSS("color", "rgb(240, 230, 140)");
+  await dashboard.evaluate(() => {
+    const root = document.documentElement.style;
+    for (const token of ["--panel", "--border", "--fg"]) root.removeProperty(token);
+  });
+  await expect(frame).toHaveCSS("background-color", "rgb(20, 24, 30)");
+  await expect(zoomIn).toHaveCSS("background-color", "rgb(20, 24, 30)");
+
   // Removing the override returns the mounted minimap to the default look.
   await dashboard.evaluate(() => {
     const root = document.documentElement.style;

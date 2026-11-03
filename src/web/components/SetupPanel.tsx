@@ -284,7 +284,15 @@ function ServiceRemedy({
     setInstalling(true);
     setInstallError(null);
     try {
-      const installed = await window.missionDesktop!.installIntegrations();
+      // Only the install is guarded here, so its failure sentence is never pinned on the
+      // trust retry below, which reports its own outcome through `result`.
+      let installed: { ok: boolean; message: string };
+      try {
+        installed = await window.missionDesktop!.installIntegrations();
+      } catch {
+        setInstallError("Integration install could not finish. Check the app log and retry.");
+        return;
+      }
       if (!installed.ok) { setInstallError(installed.message); return; }
       onRepaired();
       const retried = await start();
@@ -296,13 +304,17 @@ function ServiceRemedy({
         setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. Give its [mcp_servers.mission-control] table in config.toml a command or url, then press Trust again.`);
       }
     } catch {
-      setInstallError("Integration install could not finish. Check the app log and retry.");
+      // The install already succeeded; only the trust retry can land here.
+      setInstallError("Integrations installed, but the trust request could not finish. Press Trust again.");
     } finally {
       setInstalling(false);
     }
   }
 
   const needsIntegrations = result?.prerequisite === "mission-integrations";
+  // `request()` resolves a transport failure without an HTTP status: the daemon never
+  // answered, so no file or service is at fault and the per-service hint would mislead.
+  const unreachable = !!result && !result.ok && result.status === undefined;
   const canInstall = typeof window !== "undefined" && !!window.missionDesktop?.installIntegrations;
   const busy = starting || installing;
 
@@ -323,8 +335,12 @@ function ServiceRemedy({
       {result && (
         <RemedyNotice
           tone={result.ok ? "attention" : "error"}
-          detail={result.detail || result.error || `${label} did not finish.`}
-          hint={result.ok || installDidNotRegister ? undefined : needsIntegrations
+          detail={unreachable
+            ? `Mission Control did not answer the request${result.error ? ` (${result.error})` : ""}.`
+            : result.detail || result.error || `${label} did not finish.`}
+          hint={result.ok || installDidNotRegister ? undefined : unreachable
+            ? `Check that Mission Control is running, then press ${label} again.`
+            : needsIntegrations
             ? canInstall
               ? "Install Claude integrations also registers the Mission Control MCP server with Codex, then this retries the trust automatically."
               : "Open Setup in the Mission Control desktop app and choose Install Claude integrations, which registers the MCP server with Codex too, then retry."

@@ -245,6 +245,56 @@ test("an install that leaves Codex unregistered asks for a manual fix instead of
   await expect(row.getByText("Codex still has no runnable mission-control server")).toHaveCount(0);
 });
 
+// The install worked; the trust request after it did not. The operator must not be told to
+// reinstall.
+test("a trust retry that fails after a successful install is not reported as an install failure", async ({ page, daemon }) => {
+  const dir = join(daemon.home, ".codex");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "config.toml");
+  writeFileSync(path, 'approval_policy = "on-request"\n');
+  await page.exposeFunction("registerFixture", () => {
+    writeFileSync(path, `${readFileSync(path, "utf8")}[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n`);
+    return { ok: true, message: "Claude integrations installed via this app's bundled Node." };
+  });
+  await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {
+    isDesktop: true,
+    onOpenSettings: () => () => {},
+    installIntegrations: () => (window as unknown as { registerFixture(): Promise<unknown> }).registerFixture(),
+  } }));
+  let trustStarts = 0;
+  await page.route("**/api/setup/service", async (route) => {
+    trustStarts += 1;
+    if (trustStarts === 2) await route.abort("connectionreset");
+    else await route.continue();
+  });
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+  const anchor = "dependency-codex-mcp-trust";
+  const row = setupRow(page, anchor);
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await row.getByRole("button", { name: "Install Claude integrations" }).click();
+
+  await expect.poll(() => trustStarts).toBe(2);
+  await expect(row.getByRole("button", { name: "Trust Mission Control in Codex" })).toBeEnabled();
+  await expect(row.getByRole("status")).toContainText("Mission Control did not answer the request");
+  await expect(row.getByRole("status")).toContainText("Check that Mission Control is running, then press Trust Mission Control in Codex again.");
+  await expect(row).not.toContainText("Fix the file named above");
+  await expect(row).not.toContainText("Integration install could not finish");
+  await expect(row).not.toContainText("not registered in Codex yet");
+  await expectRowStatus(page, anchor, "Needs setup");
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const out = artifactsDir("mcp-trust");
+    mkdirSync(out, { recursive: true });
+    await row.scrollIntoViewIfNeeded();
+    await page.mouse.move(1, 1);
+    await page.screenshot({ path: join(out, "codex-trust-retry-failed-r9.png") });
+  }
+
+  // The registration the install wrote is intact, so pressing Trust again finishes the job.
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expectRowStatus(page, anchor, "Ready");
+});
+
 test("Codex MCP trust without the desktop bridge names where the install lives", async ({ page, daemon }) => {
   const dir = join(daemon.home, ".codex");
   mkdirSync(dir, { recursive: true });

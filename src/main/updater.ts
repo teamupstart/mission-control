@@ -170,7 +170,7 @@ export interface UpdaterPort {
   repairMigration?(confirmLogin?: boolean): Promise<void>;
   requestQuit(): void;
   readOutcome(): UpdateApplyOutcome | null | Promise<UpdateApplyOutcome | null>;
-  clearOutcome(expected: UpdateApplyOutcome): void;
+  clearOutcome(expected: UpdateApplyOutcome): boolean;
   now(): number;
   random(): number;
   log(line: string): void;
@@ -546,7 +546,7 @@ export class UpdateController {
     if (notice.result !== expected.result || notice.targetVersion !== expected.targetVersion ||
       notice.recordedAt !== expected.recordedAt ||
       (notice.result === "failure" && expected.result === "failure" && notice.message !== expected.message)) return false;
-    try { this.port.clearOutcome(pending.stored); }
+    try { if (!this.port.clearOutcome(pending.stored)) return false; }
     catch (error) {
       this.port.log(`could not retire update outcome: ${String(error)}`);
       return false;

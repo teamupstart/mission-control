@@ -73,9 +73,9 @@ test("startup waits for its live helper to publish verified success, and an old 
   assert.deepEqual(await pending, success);
   const failure = {result: "failure" as const, targetVersion: "2.1.0", recordedAt: "2026-08-20T12:00:00.000Z", message: "failed"};
   writeUpdateOutcome(path, failure);
-  clearUpdateOutcome(path, success);
+  assert.equal(clearUpdateOutcome(path, success), false);
   assert.deepEqual(readUpdateOutcome(path), failure);
-  clearUpdateOutcome(path, failure);
+  assert.equal(clearUpdateOutcome(path, failure), true);
   assert.equal(readUpdateOutcome(path), null);
 });
 

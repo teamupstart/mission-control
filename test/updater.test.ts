@@ -245,6 +245,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     },
     clearOutcome: () => {
       outcome = null;
+      return true;
     },
     now: () => Date.parse("2026-08-19T14:00:00.000Z"),
     random: () => 0,
@@ -2022,7 +2023,7 @@ test("banner dismissal retires the matching stored marker, including interrupted
     const stored: UpdateApplyOutcome = {result, targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z", message: "failed"};
     f.setOutcome(stored);
     const clear = f.port.clearOutcome;
-    f.port.clearOutcome = expected => { assert.deepEqual(expected, stored); clear(expected); };
+    f.port.clearOutcome = expected => { assert.deepEqual(expected, stored); return clear(expected); };
     f.port.dialogs.outcome = async () => {};
     await f.controller.start();
     const notice = f.controller.getSnapshot().lastOutcome!;
@@ -2072,4 +2073,23 @@ test("failed marker retirement keeps the notice available for another acknowledg
   assert.equal(f.controller.dismissOutcome(notice), true);
   assert.equal(f.controller.getSnapshot().lastOutcome, null);
   f.controller.stop();
+});
+
+
+test("a refused compare-and-clear retains the live outcome for acknowledgement", async (t) => {
+  const f = fixture();
+  t.after(() => f.controller.stop());
+  const stored: UpdateApplyOutcome = {result: "success", targetVersion: "1.2.4", recordedAt: "2026-11-03T14:27:34.000Z"};
+  f.setOutcome(stored);
+  f.port.dialogs.outcome = async () => {};
+  await f.controller.start();
+  const replacement: UpdateApplyOutcome = {result: "failure", targetVersion: "1.2.5", recordedAt: "2026-11-03T15:27:34.000Z", message: "failed"};
+  f.setOutcome(replacement);
+  f.port.clearOutcome = expected => {
+    assert.deepEqual(expected, stored);
+    return false;
+  };
+  assert.equal(f.controller.dismissOutcome(stored), false);
+  assert.deepEqual(f.controller.getSnapshot().lastOutcome, stored);
+  assert.deepEqual(await f.port.readOutcome(), replacement);
 });

@@ -16,6 +16,7 @@ for (const result of ["success", "failure"] as const) {
     } as UpdateApplyOutcome;
     writeUpdateOutcome(path, outcome);
     let notices = 0;
+    let retirementAttempts = 0;
     const port: UpdaterPort = {
       packaged: true, arch: "arm64", currentVersion: () => "1.2.4", currentCommit: () => null,
       readAlpha: () => false, writeAlpha: () => {}, readSnoozes: () => ({}), writeSnoozes: () => {},
@@ -31,7 +32,7 @@ for (const result of ["success", "failure"] as const) {
       stage: async () => { throw new Error("No installation expected"); },
       helperSource: () => "", stateDirectory: () => daemon.home,
       handoff: async () => { throw new Error("No handoff expected"); }, requestQuit: () => {},
-      readOutcome: () => readUpdateOutcome(path), clearOutcome: expected => clearUpdateOutcome(path, expected),
+      readOutcome: () => readUpdateOutcome(path), clearOutcome: expected => { retirementAttempts++; return clearUpdateOutcome(path, expected); },
       now: Date.now, random: () => 0, log: () => {},
       dialogs: {
         available: async () => "defer", ready: async () => "defer", upToDate: async () => {},
@@ -52,6 +53,17 @@ for (const result of ["success", "failure"] as const) {
         await dashboard.screenshot({ path: join(directory, `${result}-${name}.png`), fullPage: true });
       };
       await capture("before");
+      // A later helper result can replace the file while the old notice is still visible.
+      const replacement = { ...outcome, recordedAt: "2026-11-03T15:00:00.000Z" };
+      writeUpdateOutcome(path, replacement);
+      await banner.getByRole("button", { name: "Dismiss" }).click();
+      await expect.poll(() => retirementAttempts).toBe(1);
+      await expect(banner).toBeVisible();
+      expect(readUpdateOutcome(path)).toEqual(replacement);
+      await capture("replacement-retained");
+
+      // Restore the matching fixture marker to exercise the ordinary dismissal below.
+      writeUpdateOutcome(path, outcome);
       await banner.getByRole("button", { name: "Dismiss" }).click();
       await expect(banner).toHaveCount(0);
       await expect.poll(() => readUpdateOutcome(path)).toBeNull();

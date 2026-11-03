@@ -558,7 +558,9 @@ update modal and dashboard banner report a safe success or failure summary; a fa
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
 acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
 banner retires the result from both disk and live state, so background checks, dashboard reloads,
-and app restarts do not show it again. A later update attempt can still report its own result.
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. A later update
+attempt can still report its own result.
 Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched

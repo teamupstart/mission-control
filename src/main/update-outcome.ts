@@ -82,13 +82,15 @@ export function consumeUpdateOutcome(path = updateOutcomePath()): UpdateApplyOut
   return outcome;
 }
 
-export function clearUpdateOutcome(path = updateOutcomePath(), expected?: UpdateApplyOutcome): void {
+/** False means the expected marker is absent or has been replaced. */
+export function clearUpdateOutcome(path = updateOutcomePath(), expected?: UpdateApplyOutcome): boolean {
   if (expected) {
     const current = readUpdateOutcome(path);
     if (!current || current.result !== expected.result || current.targetVersion !== expected.targetVersion || current.recordedAt !== expected.recordedAt ||
-      (current.result === "failure" && expected.result === "failure" && current.message !== expected.message)) return;
+      (current.result === "failure" && expected.result === "failure" && current.message !== expected.message)) return false;
   }
   rmSync(path, { force: true });
+  return true;
 }
 
 /** The freshly opened app starts before its helper can publish the verified outcome. */

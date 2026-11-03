@@ -32,6 +32,8 @@ export interface ResidentChipMark extends ResidentMarker {
 export interface ResidentSessionMark extends ResidentChipMark {
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction">;
   runId: string;
+  /** The task the run launched, so a control can name it - Restart's completion prompt does. */
+  taskId: string;
   profileId: string;
   /** Null when the run launched without a Persona. */
   personaName: string | null;
@@ -130,6 +132,7 @@ export function residentSessionMark(
   const marker = residentMarker(run.settings);
   return {
     runId: run.id,
+    taskId: run.taskId,
     loop: run,
     profileId: run.profileId,
     name: run.settings.identity.name,

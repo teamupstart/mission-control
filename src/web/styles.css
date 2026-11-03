@@ -12086,6 +12086,16 @@ select:not([multiple]) option:focus-visible {
   gap: 8px;
   margin: 0 0 14px;
 }
+/* Why the dialog opened by itself - Restart on new profile's offer. A note above the subject,
+   not a warning: dismissing it is a legitimate answer. */
+.complete-why {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--working);
+  background: color-mix(in oklab, var(--working) 8%, var(--panel-2));
+  border-radius: 6px;
+  color: var(--fg);
+}
 .complete-lead .agent-dot,
 .kill-lead .agent-dot,
 .requeue-lead .agent-dot {

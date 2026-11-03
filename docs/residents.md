@@ -211,9 +211,11 @@ you resume it. Pausing does not interrupt an already running turn.
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
 After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
-and launches the latest revision in a new conversation. The old task and session stay open: the
-old session's Console band says it was restarted on the new revision and offers **Open new
-session** and **Complete & close**, so you decide when the replaced conversation closes. The
+and launches the latest revision in a new conversation. The old task and session stay open, and
+Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
+it there, or cancel to keep it. The old session's Console band also says it was restarted on the
+new revision and offers **Open new session** and **Complete & close**, so you decide when the
+replaced conversation closes. The
 offer stays until that task is completed, even if the new session has since ended or never
 started, and survives a reload or daemon restart. Restart
 preserves the repository choice and run instructions; a repository-free resident receives a fresh

@@ -35,6 +35,7 @@ import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mod
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
+import { ResidentRestartPromptContext } from "./residents/restart-prompt.ts";
 import { KillModal } from "./components/KillModal.tsx";
 import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
@@ -600,6 +601,8 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  /** Set while the Complete dialog is Restart's offer, so it can say why it opened. */
+  const [restartPromptSessionId, setRestartPromptSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   // The session the Return to backlog confirm was showing when it sent its request. Requeueing
@@ -829,7 +832,22 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeComplete = useCallback(() => {
+    setCompleteSessionId(null);
+    setRestartPromptSessionId(null);
+  }, []);
+  /**
+   * Restart on new profile succeeded somewhere - a card menu, the band, the dock or the
+   * Residents page - and left the original task open. Offer to complete it now, with the
+   * ordinary Complete dialog over whatever page the operator is on; Cancel keeps it open, and
+   * the replaced session's band keeps the offer afterwards.
+   */
+  const promptRestartCompletion = useCallback((replacedTaskId: string) => {
+    const session = sessionsRef.current.find((candidate) => candidate.task?.id === replacedTaskId);
+    if (!session) return;
+    setRestartPromptSessionId(session.id);
+    setCompleteSessionId(session.id);
+  }, []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -3778,6 +3796,7 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -4249,18 +4268,6 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {completeSession && (
-          <CompleteModal
-            session={completeSession}
-            tasks={tasks}
-            tourOutcome={
-              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
-            }
-            onCompleted={() => onKilled(completeSession.id)}
-            onClose={closeComplete}
-          />
-        )}
-
         {killSession && (
           <KillModal
             session={killSession}
@@ -4348,6 +4355,22 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* In the slot every page shares: Restart on new profile offers it from the
+                  Residents page and the dock as well as the fleet. */}
+              {completeSession && (
+                <CompleteModal
+                  session={completeSession}
+                  tasks={tasks}
+                  tourOutcome={
+                    completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+                  }
+                  lead={restartPromptSessionId === completeSession.id
+                    ? "Restart launched the new profile revision in a new session and left this one open. Complete it now, or cancel to keep it - its band keeps this offer."
+                    : undefined}
+                  onCompleted={() => onKilled(completeSession.id)}
+                  onClose={closeComplete}
+                />
+              )}
               {/* The everything-palette lives in the slot every page shares, because it
                   indexes every page: it opens over the fleet, the Library, a run reader and
                   Settings alike, and a row's navigation must not unmount the surface that
@@ -4542,6 +4565,7 @@ export function App(): React.JSX.Element {
         )}
       </div>
       </TourTargetHost>
+      </ResidentRestartPromptContext.Provider>
     </OverlayHost>
   );
 }

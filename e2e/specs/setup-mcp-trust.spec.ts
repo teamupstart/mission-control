@@ -180,6 +180,17 @@ test("a failed inline integration install shows its error and never retries the 
   await expect.poll(() => trustStarts).toBe(2);
   await expect(row.getByRole("status")).toContainText("not registered in Codex yet");
   await expect(row.getByText("Integration install could not finish. Check the app log and retry.")).toHaveCount(0);
+
+  // And a trust that now succeeds: fail the install once more, register the server out of
+  // band, then trust. The row turns Ready with no leftover install failure beside it.
+  await install.click();
+  await expect(row.getByText("Integration install could not finish. Check the app log and retry.")).toBeVisible();
+  writeFileSync(path, `${initial}[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n`);
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expectRowStatus(page, anchor, "Ready");
+  expect(trustStarts).toBe(3);
+  await expect(row.getByText("Integration install could not finish. Check the app log and retry.")).toHaveCount(0);
+  expect(parseToml(readFileSync(path, "utf8"))).toMatchObject({ mcp_servers: { "mission-control": { default_tools_approval_mode: "approve" } } });
 });
 
 test("Codex MCP trust without the desktop bridge names where the install lives", async ({ page, daemon }) => {

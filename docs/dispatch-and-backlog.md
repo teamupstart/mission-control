@@ -544,7 +544,9 @@ comes back seeded with that repo, not blank. A submit that fails leaves the form
 your fields intact so you can retry.
 
 A backdrop click closes the form only when both the press and release happen outside it.
-Selecting text inside the form and releasing the mouse outside keeps the form open.
+Selecting text inside the form and releasing the mouse outside keeps the form open. See
+[Overlays and shortcuts](agent-guides/change-contracts.md#overlays-and-shortcuts) for the
+shared backdrop rule.
 
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the

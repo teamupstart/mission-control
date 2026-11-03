@@ -20,7 +20,7 @@ function live(daemon: DaemonHandle): Run | undefined {
   return withDaemonDb(daemon, db => db.prepare("SELECT * FROM resident_runs WHERE ended_at IS NULL AND launch_state = 'launched'").get() as Run | undefined);
 }
 type Surface = "card" | "band" | "dock" | "page";
-const RESTART_PROMPT = "Restart launched the new profile revision in a new session and left this one open. Complete it now, or cancel to keep it - its band keeps this offer.";
+const RESTART_PROMPT = "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer.";
 async function surface(page: Page, daemon: DaemonHandle, profile: ResidentProfile, kind: Surface): Promise<Locator> {
   await page.keyboard.press("Escape");
   if (kind === "page") {

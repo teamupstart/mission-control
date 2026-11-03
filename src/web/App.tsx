@@ -4423,7 +4423,7 @@ export function App(): React.JSX.Element {
                     completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
                   }
                   lead={restartPromptSessionId === completeSession.id
-                    ? "Restart launched the new profile revision in a new session and left this one open. Complete it now, or cancel to keep it - its band keeps this offer."
+                    ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
                     : undefined}
                   onCompleted={() => onKilled(completeSession.id)}
                   onClose={closeComplete}

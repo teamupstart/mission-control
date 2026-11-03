@@ -61,9 +61,15 @@ function fixtureApp(root: string): string {
     import { killLiveCheckGroups } from "./src/server/workflows/check-group.ts";
     const out = process.env.FIXTURE_OUT!;
     const running = spawnCheckProcess({
-      attemptId: process.env.FIXTURE_ATTEMPT!, command: ["/bin/sleep", "600"], cwd: out,
+      attemptId: process.env.FIXTURE_ATTEMPT!,
+      command: ["/bin/sh", "-c", "printf ready > check-started; exec /bin/sleep 600"], cwd: out,
       env: {PATH: "/usr/bin:/bin"}, timeoutMs: 600_000,
-      onSupervisorReady: (supervisor) => writeFileSync(out + "/supervisor.json", JSON.stringify(supervisor)),
+      onSupervisorReady: (supervisor) => {
+        writeFileSync(out + "/supervisor.json", JSON.stringify(supervisor));
+        // Keep the command gate closed across several main-process polls. Registration is
+        // deliberately observable before the check starts, as it can be under suite load.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+      },
     });
     process.on("SIGTERM", async () => {
       await new Promise((r) => setTimeout(r, 5000));
@@ -97,7 +103,9 @@ function fixtureApp(root: string): string {
         drain: () => bg.drainBackgroundStart(start, 30000).then(() => {}),
       });
       const ready = setInterval(() => {
-        if (!existsSync(join(out, "supervisor.json"))) return;
+        // onSupervisorReady precedes gate release. Quitting on supervisor.json can kill the
+        // daemon before branch code starts, so the control has no running check to leak.
+        if (!existsSync(join(out, "check-started"))) return;
         clearInterval(ready);
         app.quit();
       }, 50);
@@ -129,6 +137,7 @@ for (const mode of ["send-only", "drain"] as const) {
     const code = await new Promise<number | null>((done) => electron.once("exit", done));
     assert.equal(code, 0, output);
     assert.ok(existsSync(join(out, "supervisor.json")), `the daemon never started its check\n${output}`);
+    assert.ok(existsSync(join(out, "check-started")), "the check command never crossed its supervisor gate");
     supervisor = JSON.parse(readFileSync(join(out, "supervisor.json"), "utf8")) as {pid: number};
     // The helper's wait starts only after the app process has exited - which is now.
     if (mode === "drain") {

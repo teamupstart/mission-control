@@ -174,8 +174,8 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
-failed launch, or one interrupted by a restart before its session started, is recorded with its
-reason and is never relaunched; launch the profile again.
+failed launch, or one interrupted by a daemon restart before its session started, is recorded
+with its reason and is never relaunched; launch the profile again.
 
 A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
 The Files panel browses its working directory directly, without Git or managed repository plans.
@@ -223,11 +223,11 @@ replaced conversation closes. The offer stays until that task is completed, even
 session has since ended or never started, and survives a reload or daemon restart. Restart
 preserves the repository choice and run instructions; a repository-free resident receives a fresh
 private workspace. New conversation creation ensures every changed launch option takes effect.
-Retrying a Restart interrupted after the old run ended but before its replacement was reserved
-finishes that same replacement request. A replacement already reserved when the daemon stopped,
-but whose session never started, is marked failed, and retrying Restart reports that failure
-instead of launching again: the old session's band says the new session is no longer running and
-still offers **Complete & close**, and launching the profile again starts a fresh run.
+If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
+the reservation no replacement launch exists, so retrying Restart starts it. After the
+reservation, a replacement whose session never started is a failed launch like any other (see
+[Lifecycle](#lifecycle)): retrying Restart only reports that failure, so launch the profile again.
+Either way the old session's band keeps **Complete & close**.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 

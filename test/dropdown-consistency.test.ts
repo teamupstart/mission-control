@@ -45,7 +45,10 @@ function rules(source: string): Rule[] {
 
 const ALL = rules(bare);
 const ruleFor = (selector: string): Rule | undefined => ALL.find((r) => r.selectors.includes(selector));
-const CHEVRON = /background-image:\s*url\("data:image\/svg\+xml/;
+// The chevron image is a `:root` token so a skin can restate it in its own `--muted`; the
+// shared rule is the one place that paints it.
+const CHEVRON = /background-image:\s*var\(--select-chevron\)/;
+const ROOT = bare.slice(0, bare.indexOf("\n}"));
 
 test("one shared rule themes every single dropdown", () => {
   const base = ruleFor("select:not([multiple])");
@@ -55,11 +58,15 @@ test("one shared rule themes every single dropdown", () => {
   assert.match(base.body, /appearance:\s*none/, "a native select ignores theming without appearance:none");
   assert.match(base.body, /appearance:\s*base-select/, "the dropdown no longer opts into the themed picker");
   assert.match(base.body, CHEVRON, "the shared rule no longer draws its chevron");
-  assert.match(
-    base.body,
-    /color-scheme:\s*dark/,
-    "native option popups must explicitly use the app's dark color scheme",
-  );
+  // A data URI cannot read --muted, so the token restates it; pin the two together.
+  const muted = ROOT.match(/--muted:\s*#([0-9a-fA-F]{6})\s*;/)?.[1];
+  const stroke = ROOT.match(/--select-chevron:\s*url\("data:image\/svg\+xml,[^"]*stroke='%23([0-9a-fA-F]{6})'/)?.[1];
+  assert.ok(stroke, "the chevron token on :root no longer draws a stroked SVG chevron");
+  assert.equal(stroke?.toLowerCase(), muted?.toLowerCase(), "the chevron is no longer stroked in --muted");
+  // Native option popups follow the scheme `:root` declares (dark by default), so a light
+  // skin that flips it on :root reaches every dropdown without editing this rule.
+  assert.match(base.body, /color-scheme:\s*inherit/, "the shared rule no longer inherits the color scheme");
+  assert.match(ROOT, /color-scheme:\s*dark/, ":root no longer declares the default dark color scheme");
   assert.match(base.body, /background-color:\s*var\(--bg-2\)/);
   assert.match(base.body, /border-radius:/);
   // The chevron sits at the right, and the padding leaves room for it there.

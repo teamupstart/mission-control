@@ -55,6 +55,11 @@ export interface RuntimeMetaRead {
   thinkingLevel: ThinkingLevel | null;
   /** Source revision; only orderable revisions can release a verified effort change. */
   effortRevision: string | null;
+  /**
+   * Claude only: the advisor model named by the newest eligible main-chain assistant record,
+   * or absent when that record is unstamped (`SessionMeta.advisorModel`).
+   */
+  advisorModel?: string | null;
 }
 
 /** What a passive read yields about a session's liveness. */

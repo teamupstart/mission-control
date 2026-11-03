@@ -1183,6 +1183,67 @@ that harness offers it *for the model this launch resolved*. Codex drops `max` o
 but its newest two, so a `max` chosen for `plan` reaches a Codex launch on one of those and
 falls back to this card's default on the others rather than passing a flag the CLI rejects.
 
+### Advisor
+
+Claude Code's **advisor** lets the model a session runs on (the executor) consult a stronger
+model at key moments. The executor gets a server-side `advisor` tool; when it calls it, the
+Anthropic API forwards the conversation to the advisor model and hands its review back. Claude
+Code stores the choice as `advisorModel` in its settings, and `/advisor opus` (or `sonnet`, or
+`off`) sets it. Claude Code's own recommended pairing is Sonnet as the executor with Opus as the
+advisor.
+
+**Mission Control inherits it.** Both Claude runtimes load the operator's Claude Code settings:
+a Terminal pane starts the `claude` CLI with no settings-source restriction, and an Agent SDK
+session loads the user, project and local layers. So when `advisorModel` is set in
+`~/.claude/settings.json`, or in a project's `.claude/settings.json` or
+`.claude/settings.local.json`, every eligible Claude session Mission Control dispatches runs with
+that advisor. Codex and Pi have no advisor.
+
+**Eligibility is the CLI's decision, not Mission Control's.** The advisor works only:
+
+- on the first-party Anthropic API, not Bedrock or Vertex;
+- when the advisor feature is enabled for the account (a server-side flag, which
+  `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` overrides);
+- when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is not set, which turns it off completely;
+- when the advisor is at least as capable as the executor. An Opus session with a Sonnet advisor
+  does not consult it on the main conversation, though its subagents still may.
+
+**Typing `/advisor` writes your global settings.** In any Claude session, including the composer
+of an Agent SDK session, `/advisor` writes `advisorModel` to `~/.claude/settings.json`. That
+changes every Claude session you start afterwards, inside Mission Control and out of it.
+
+**Where you see it.** Each advisor call appears in the session's conversation as one line in
+both renderings. A review reads "Advisor (Opus 5.5) reviewed the conversation"; when the API
+returned the advisor's words, clicking the line shows them. The API can return the review
+encrypted, in which case there are no words to show. A refusal reads "Advisor declined to
+advise on this request", and a failed call reads "Advisor unavailable" with the API's error
+code. A session whose newest turn names an advisor model carries a read-only
+**Advisor: Opus 5.5** chip beside its model, on the board card and in the console header. The
+chip shows only what the transcript records, never what a settings file says, so a session that
+has not run a turn yet shows no chip even when an advisor is configured, and a turn that runs
+without the advisor (after `/advisor off`, for example) clears it.
+
+What the transcript records was observed on Claude Code 2.1.317 on 2026-11-03, from one
+captured headless turn that called the advisor: every assistant record of that turn, including
+the reply after the advisor call, carries a top-level `advisorModel`. So the chip appears from
+the first turn that calls the advisor. Whether Claude Code also stamps a turn that offered the
+advisor but did not call it is **inferred, not verified**: the CLI's code appears to stamp every
+record of a request that carries the advisor tool, but no such turn has been captured. If it does
+not, the chip shows only after turns that called the advisor, and clears after a turn that did
+not. A later Claude Code version may change either behaviour.
+
+**Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
+2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,
+committed as `test/fixtures/claude-advisor/result-frame.json`), the per-model usage
+(`modelUsage`) listed the advisor model, `claude-opus-5-5`, with its own token counts and reported
+cost. The per-model costs added up to the turn's `total_cost_usd`. So the session's cost and the
+usage ledger carry the advisor as its own model row next to the executor's. That is what one
+capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
+version may report it differently.
+
+Mission Control has no per-dispatch advisor override yet: every session gets the advisor your
+Claude Code settings name.
+
 ### Session runtime
 
 **Each card's runtime select** chooses how a dispatched session of that harness is *driven*:

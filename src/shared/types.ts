@@ -306,6 +306,15 @@ export interface SessionMeta {
   source: MetaSource;
   /** epoch ms these values were observed (drives precedence + freshness TTL). */
   updatedAt: number;
+  /**
+   * Raw id of the advisor model named by the newest eligible main-chain assistant record in
+   * the transcript (its top-level `advisorModel`), e.g. `claude-opus-5-5`. Sidechain and
+   * API-error records are not eligible. Absent when that newest record is unstamped, even if
+   * an older stamped turn is still in the scanned tail, and absent when no eligible record is
+   * in the tail. Only the transcript reports it, so a statusLine reading keeps the last
+   * transcript value.
+   */
+  advisorModel?: string | null;
 }
 
 /** Which estimator produced the API-equivalent dollar figure. */
@@ -3475,6 +3484,26 @@ export interface TranscriptMessage {
    * on it.
    */
   presentation?: TranscriptPresentation;
+  /**
+   * One call to Claude's server-side advisor, when this assistant turn carries its result.
+   *
+   * Read from the `advisor_tool_result` content block Claude Code writes after a
+   * `server_tool_use` block named `advisor`. The call marker itself carries nothing to draw,
+   * so only the result produces this field. `model` is the record's top-level
+   * `advisorModel` (a full model id such as `claude-opus-5-5`), or null when the record
+   * does not name one. `text` is present only for an `advisor_result` that carries text;
+   * a redacted result is encrypted and has none. `errorCode` is the API's `error_code`.
+   * A result shape Claude Code does not recognise is ignored, as the CLI ignores it.
+   */
+  advisor?: TranscriptAdvisor;
+}
+
+/** What an advisor call produced, as `TranscriptMessage.advisor` reports it. */
+export interface TranscriptAdvisor {
+  model: string | null;
+  outcome: "advised" | "redacted" | "declined" | "error";
+  text?: string;
+  errorCode?: string;
 }
 
 /**

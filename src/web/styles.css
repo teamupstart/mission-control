@@ -5275,6 +5275,10 @@ body {
   color: var(--fg);
   font-weight: 550;
 }
+/* Read only: the advisor Claude ran with, beside the model it advised. */
+.rt-advisor {
+  color: var(--muted);
+}
 .rt-1m {
   font-size: 8.5px;
   font-weight: 700;
@@ -8674,6 +8678,33 @@ kbd {
 .tool-chip-detail {
   color: var(--fg);
   overflow-wrap: anywhere;
+}
+/* One call to Claude's advisor, drawn in both conversation renderings (`AdvisorNote`). Set
+   in the tool chips' mono line rather than as prose: it is something the agent did, not
+   something it said. The advisor's own words open beneath a disclosure. */
+.advisor-note {
+  margin: 0;
+  font: 500 11px/1.5 var(--mono);
+  color: var(--muted);
+}
+.advisor-note > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.advisor-note > summary:hover {
+  color: var(--fg);
+}
+.advisor-note-text {
+  margin-top: 4px;
+  padding: 6px 9px;
+  border-left: 2px solid var(--border-soft);
+  font: 12px/1.5 var(--sans);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.advisor-note-error {
+  color: var(--danger-text);
 }
 /* A folded run is one line of the conversation, so it sits tight against its label
    instead of wearing a full turn's worth of vertical frame. */
@@ -27488,8 +27519,10 @@ span.line-run-prov {
    whole controls rather than words. Both are ticking ESTIMATES of what the session is spending
    rather than facts about what it is, both are drawn on the board's card for the same session
    (`SessionTile`), and the fleet's own spend chip is on the topbar. Cost leads because the
-   figure is the wider of the two. */
+   figure is the wider of the two. The advisor pill goes with them: it is also drawn on the
+   board card, and it restates a Claude Code setting rather than anything this row acts on. */
 .detail-head[data-rung~="4"] .cost-chip,
+.detail-head[data-rung~="4"] .rt-advisor,
 .detail-head[data-rung~="4"] .rt-ctx {
   display: none;
 }

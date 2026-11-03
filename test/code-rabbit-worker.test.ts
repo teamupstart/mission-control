@@ -30,7 +30,13 @@ const { readCodeRabbit, getInspectorPr } = await import("../src/server/db.ts");
 const { fetchPr, fetchIssueCommentPage } = await import("../src/server/inspector/github.ts");
 after(() => rmSync(dir, { force: true, recursive: true }));
 const pause = () => new Promise((r) => setTimeout(r, 20));
-async function until(check: () => boolean) { const end = Date.now() + 5000; while (!check() && Date.now() < end) await pause(); assert.ok(check()); }
+async function until(check: () => boolean, description: string) {
+  // The real poll owner launches a child, whose production budget is 20 seconds. A
+  // five-second fixture deadline expired under full-suite Electron/process contention.
+  const end = Date.now() + 20_000;
+  while (!check() && Date.now() < end) await pause();
+  assert.ok(check(), `${description}; latest CodeRabbit state: ${JSON.stringify(readCodeRabbit("a/b#1"))}`);
+}
 
 test("CodeRabbit-only sweeps use one shared snapshot, never call a model or write GitHub, and stop with both flags off", async () => {
   setInspectorConfig({ enabled: false }); setShippingConfig({ codeRabbitAutoResolve: false });
@@ -51,7 +57,7 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
   try {
     await new Promise((r) => setTimeout(r, 150)); assert.equal(readFileSync(calls, "utf8"), "");
     setShippingConfig({ codeRabbitAutoResolve: true });
-    await until(() => (readCodeRabbit("a/b#1")?.findings.length ?? 0) === 1 && sweeps >= 2);
+    await until(() => (readCodeRabbit("a/b#1")?.findings.length ?? 0) === 1 && sweeps >= 2, "initial finding and completed sweep");
     const row = getInspectorPr("a/b#1")!;
     assert.equal(row.round, 0); assert.equal(row.headSha, null); assert.equal(row.observedHeadSha, "sha");
     assert.equal(row.lastError, null); assert.equal(row.mergeBlock, null);
@@ -68,14 +74,14 @@ test("CodeRabbit-only sweeps use one shared snapshot, never call a model or writ
       comments: { nodes: [preMergeComment(undefined, "https://github.com/a/b/pull/1#issuecomment-70")], pageInfo: { hasNextPage: false, endCursor: null } },
     };
     writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: withChecks } } }));
-    await until(() => readCodeRabbit("a/b#1")?.findings.filter((f) => f.present && !f.resolved).length === 3);
+    await until(() => readCodeRabbit("a/b#1")?.findings.filter((f) => f.present && !f.resolved).length === 3, "three pre-merge findings");
     // A malformed issue-comment read invalidates delivery and preserves prior check history.
     writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...withChecks, comments: null } } } }));
-    await until(() => !!readCodeRabbit("a/b#1")?.error);
+    await until(() => !!readCodeRabbit("a/b#1")?.error, "malformed comment read");
     assert.equal(readCodeRabbit("a/b#1")!.findings.filter((f) => f.present && !f.resolved).length, 3);
     // A malformed newer thread read also invalidates delivery without an Inspector failure.
     writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: { ...data.data.repository.pullRequest, reviewThreads: null } } } }));
-    await until(() => !!readCodeRabbit("a/b#1")?.error);
+    await until(() => !!readCodeRabbit("a/b#1")?.error, "malformed thread read");
     assert.equal(readCodeRabbit("a/b#1")!.findings.filter((f) => f.present && !f.resolved).length, 3);
     assert.equal(getInspectorPr("a/b#1")!.lastError, null);
     setShippingConfig({ codeRabbitAutoResolve: false });

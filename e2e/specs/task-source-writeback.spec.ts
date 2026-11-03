@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -39,7 +40,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 // The worker's own cadence, sped up to its floor. Per file rather than in the shared daemon
 // env: every override there runs in all four workers' daemons for every spec in the suite,
 // and a poller sped up for one spec is background work the other fifty pay for.
-test.use({ daemonEnv: { MISSION_TASK_SOURCE_WRITEBACK_TICK_MS: "5000" } });
+test.use({ daemonEnv: { MISSION_TASK_SOURCE_WRITEBACK_TICK_MS: "5000", JIRA_API_TOKEN: "", JIRA_EMAIL: "" } });
 
 const EVIDENCE = artifactsDir("task-source-writeback");
 
@@ -80,6 +81,129 @@ async function shoot(page: Page, name: string, anchor?: Locator): Promise<void> 
 /** The item a delivery is owed to, in the `owner/repo#number` shape a sweep records. */
 const ISSUE = "acme/demo-repo#123";
 const PR_URL = "https://github.com/acme/demo-repo/pull/9";
+
+async function configureAcli(page: Page, daemon: DaemonHandle): Promise<void> {
+  const res = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, { data: {
+    sources: [{ id: "src-writeback", kind: "jira", label: "acli issues", enabled: false,
+      repoRoot: daemon.repo, writeback: { onPrOpened: true, onCompleted: true, resolve: true },
+      config: { queryVia: "acli", site: "example.atlassian.net", jql: "project = MC", resolveTransition: "Done", linkVia: "both" },
+    }],
+  } });
+  expect(res.ok()).toBe(true);
+}
+
+async function oweAcli(page: Page, daemon: DaemonHandle, actions: ("annotate" | "resolve")[]): Promise<void> {
+  // Completion notices are revalidated against a live done task, even with a seeded ledger.
+  const created = await page.request.post(`${daemon.baseURL}/api/tasks`, { data: {
+    repoRoot: daemon.repo, title: "Fix the parser", intent: "Repair parser", backlog: true, enabled: false,
+  } });
+  expect(created.ok()).toBe(true);
+  const task = await created.json();
+  const completed = await page.request.post(`${daemon.baseURL}/api/tasks/${task.id}/complete`, { data: { outcome: "Parser repaired" } });
+  expect(completed.ok()).toBe(true);
+  withDaemonDb(daemon, (db) => {
+    for (const action of actions) {
+      const notice = { signal: "task-completed", action, externalId: "MC-2",
+        externalUrl: "https://example.atlassian.net/browse/MC-2", taskTitle: "Fix the parser",
+        prUrl: PR_URL, repoRoot: daemon.repo, outcome: "Parser repaired", observedAt: Date.now() };
+      db.prepare(`INSERT INTO task_source_writeback
+        (source_id, external_id, signal, action, dedupe_key, task_id, payload, state, attempts, next_at, created_at, updated_at)
+        VALUES (?, ?, 'task-completed', ?, ?, ?, ?, 'pending', 5, 0, ?, ?)`)
+        .run("src-writeback", "MC-2", action, `completed:${action}`, task.id, JSON.stringify(notice), Date.now(), Date.now());
+    }
+  });
+}
+
+for (const withTransitions of [false, true]) test(`acli delivers a PR comment and a confirmed move${withTransitions ? " with captured transition metadata" : ""}; its remote-link note follows link style`, async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  if (withTransitions) {
+    const captured = JSON.parse(JSON.parse(readFileSync(new URL("../../test/fixtures/acli/view-status.json", import.meta.url), "utf8")).stdout);
+    writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ transitions: [
+      { id: "31", name: "Finish work", to: { ...captured.fields.status, name: "Done" } },
+    ] }));
+  }
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const note = page.getByText("acli cannot post a remote link. The comment carries the pull request link instead.");
+  await expect(note).toBeVisible();
+  await shoot(page, withTransitions ? "acli-transition-link-note" : "acli-remote-link-note", note);
+  const style = page.getByLabel("How the pull request is attached to a Jira issue");
+  await style.selectOption("comment");
+  await expect(note).toHaveCount(0);
+  await style.selectOption("remote-link");
+  await expect(note).toBeVisible();
+  await expect.poll(async () => {
+    const body = await (await page.request.get(`${daemon.baseURL}/api/task-sources/config`)).json();
+    return body.sources[0].config.linkVia;
+  }).toBe("remote-link");
+  await oweAcli(page, daemon, ["annotate", "resolve"]);
+  await expect(page.getByText(/2 delivered\./)).toBeVisible({ timeout: 30_000 });
+  expect(await queue(page, daemon)).toMatchObject({ delivered: 2, failed: 0, unknown: 0 });
+  const records = recordsIn<GhRecord>(daemon.recordDir, (f) => /^acli-\d/.test(f));
+  const comments = records.filter((r) => r.argv[2] === "comment");
+  expect(comments).toHaveLength(1);
+  expect(comments[0]!.argv.slice(0, 7)).toEqual(["jira", "workitem", "comment", "create", "--key", "MC-2", "--body"]);
+  expect(JSON.stringify(JSON.parse(comments[0]!.argv[7]!))).toContain(PR_URL);
+  expect(records.filter((r) => r.argv[2] === "transition").map((r) => r.argv)).toEqual([
+    ["jira", "workitem", "transition", "--key", "MC-2", "--status", "Done", "--yes", "--json"],
+  ]);
+  expect(records.filter((r) => r.argv[2] === "view")).toHaveLength(2);
+  await shoot(page, withTransitions ? "acli-transitions-delivered" : "acli-delivered", page.getByText(/2 delivered\./));
+});
+
+test("acli exit-zero comment failures stay retryable in the write-back queue", async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: "json-failure" }));
+  await oweAcli(page, daemon, ["annotate"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 failed/)).toBeVisible({ timeout: 30_000 });
+  const reason = page.getByText(/the comment could not be posted.*Workflow refused \(fake\)/);
+  await expect(reason).toBeVisible();
+  expect(await queue(page, daemon)).toMatchObject({ failed: 1, delivered: 0, unknown: 0 });
+  await expect(page.getByRole("button", { name: "Retry failed", exact: true })).toBeEnabled();
+  const records = recordsIn<GhRecord>(daemon.recordDir, (file) => /^acli-\d/.test(file));
+  expect(records.filter((record) => record.argv[2] === "comment")).toHaveLength(1);
+  await shoot(page, "acli-comment-json-refused", reason);
+});
+
+test("acli refused moves name the current status and reason in the write-back queue", async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ transition: "refused", reason: "Review is required" }));
+  await oweAcli(page, daemon, ["resolve"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 failed/)).toBeVisible({ timeout: 30_000 });
+  const reason = page.getByText(/MC-2 cannot move to "Done" from "In Review".*Review is required/);
+  await expect(reason).toBeVisible();
+  await shoot(page, "acli-resolve-refused", reason);
+});
+
+for (const action of ["annotate", "resolve"] as const) test(`acli refuses a different active site before ${action}`, async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({ site: "other.atlassian.net" }));
+  await oweAcli(page, daemon, [action]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 failed/)).toBeVisible({ timeout: 30_000 });
+  const reason = page.getByText(/other.atlassian.net.*example.atlassian.net.*nothing was written/);
+  await expect(reason).toBeVisible();
+  const records = recordsIn<GhRecord>(daemon.recordDir, (f) => /^acli-\d/.test(f));
+  expect(records.length).toBeGreaterThan(0);
+  expect(records.every((r) => r.argv.join(" ") === "jira auth status")).toBe(true);
+  await shoot(page, `acli-site-refused-${action}`, reason);
+});
+
+test("acli treats a foreign site inside an unfamiliar write response as unknown", async ({ page, daemon }) => {
+  await configureAcli(page, daemon);
+  writeFileSync(join(daemon.recordDir, "fake-acli-state.json"), JSON.stringify({
+    writeEnvelope: "operation", writeSelf: "https://other.atlassian.net/rest/api/3/issue/2",
+  }));
+  await oweAcli(page, daemon, ["annotate"]);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  await expect(page.getByText(/1 may already have landed/)).toBeVisible({ timeout: 30_000 });
+  const reason = page.getByText(/MC-2.*example.atlassian.net.*other.atlassian.net.*check both sites/);
+  await expect(reason).toBeVisible();
+  expect(await queue(page, daemon)).toMatchObject({ unknown: 1, delivered: 0 });
+  await expect(page.getByRole("button", { name: "Retry failed" })).toBeDisabled();
+  await shoot(page, "acli-response-site-unknown", reason);
+});
 
 /** One recorded `gh` invocation, as `FAKE_GH` writes it. */
 interface GhRecord {

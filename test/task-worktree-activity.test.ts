@@ -209,7 +209,9 @@ test("a real git read suspended past its budget still answers, instead of report
   const head = git(dir, "rev-parse", "HEAD").trim();
   // Warm the executable locator first: a process's first lookup spawns a login-shell PATH probe,
   // and the suspension below must land on git's spawn, not that one.
-  assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 300)).code, 0);
+  // Warm-up is not the deadline regression. Allow a contended child to start; the
+  // suspended read below still has the original 300ms budget.
+  assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 5_000)).code, 0);
 
   // Suspend INSIDE git's spawn: the child exists, the read's budget is already armed, and no
   // output can have been processed, because nothing returns to the event loop until spawn does.

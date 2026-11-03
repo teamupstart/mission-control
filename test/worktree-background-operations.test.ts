@@ -598,7 +598,7 @@ test("observations never overlap, and no process read runs while this daemon's G
   assert.deepEqual(violations, []);
 });
 
-test("a slow Git removal does not make an unrelated preview wait", async () => {
+test("a slow Git removal does not make an unrelated preview wait", async (t) => {
   const [removing] = await availableSlots("mission-worktree-bg-slow-remove-", 2);
   let entered = (): void => {};
   const removalStarted = new Promise<void>((resolve) => {
@@ -620,20 +620,32 @@ test("a slow Git removal does not make an unrelated preview wait", async () => {
     occupancy,
     resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
   });
+  // Earlier cases retain many pools. Observe this case's real, current records so the
+  // watchdog detects a held observation lock rather than timing an ever-growing inventory.
+  const poolId = slow.store.slot(removing!.slotId)!.poolId;
+  const pools = slow.store.pools.bind(slow.store);
+  const slots = slow.store.slots.bind(slow.store);
+  t.mock.method(slow.store, "pools", () => pools().filter((pool) => pool.id === poolId));
+  t.mock.method(slow.store, "slots", (id?: string) => slots(id).filter((slot) => slot.poolId === poolId));
   const removal = slow.removeSlot({ slotId: removing!.slotId, allowDirty: false, allowUnmerged: false });
   await removalStarted;
   // The removal is parked inside `git worktree remove`. An observation - what every preview
   // and inventory read starts with - must still complete.
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const outcome = await Promise.race([
-    slow.status().then(() => "observed" as const),
-    new Promise<"blocked">((resolve) => {
-      timer = setTimeout(() => resolve("blocked"), 10_000);
-    }),
-  ]);
-  clearTimeout(timer);
-  finish();
-  assert.equal(outcome, "observed", "status() waited behind the removal");
+  const observation = slow.status();
+  try {
+    const outcome = await Promise.race([
+      observation.then(() => "observed" as const),
+      new Promise<"blocked">((resolve) => {
+        timer = setTimeout(() => resolve("blocked"), 10_000);
+      }),
+    ]);
+    assert.equal(outcome, "observed", "status() waited behind the removal");
+  } finally {
+    clearTimeout(timer);
+    finish();
+    await Promise.allSettled([removal, observation]);
+  }
   assert.equal((await removal).outcome, "removed");
 });
 

@@ -303,7 +303,9 @@ async function seed(over: SeedOptions = {}) {
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 2_000) assert.fail(message);
+    // Head normalization runs real Git children before the detached gate can publish.
+    // This fixture observes the resulting state, not a two-second product deadline.
+    if (Date.now() - started > 10_000) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }

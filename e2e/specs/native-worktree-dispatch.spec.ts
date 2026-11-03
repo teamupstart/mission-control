@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import type { WorktreeInventory } from "../../src/shared/worktrees.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
@@ -164,6 +165,18 @@ test("native dispatch isolates concurrent work, cleans ownership, and reuses bot
     worktreePath: first.worktreePath,
     worktreeLeaseId: first.worktreeLeaseId,
   });
+
+  // A failed task row can arrive before its killed process has exited. Clean up correctly
+  // refuses an occupied tree, so observe both real process inventories before requesting it.
+  const releasedPaths = [first.worktreePath!, first.extraRepos[0]!.worktreePath!];
+  await expect.poll(async () => {
+    const response = await dashboard.request.get(`${daemon.baseURL}/api/worktrees`);
+    expect(response.ok()).toBe(true);
+    const inventory = await response.json() as WorktreeInventory;
+    const slots = inventory.repositories.flatMap((repository) => repository.slots);
+    return releasedPaths.map((path) => slots.find((slot) => slot.path === path)?.processes);
+  }, { timeout: RECLAIM_SETTLES_MS, message: "the killed task must leave both worktrees before Clean up" })
+    .toEqual(releasedPaths.map(() => ({ state: "known", count: 0, reason: null })));
 
   await dashboard.keyboard.press("Shift+P");
   const sitrep = dashboard.getByRole("dialog", { name: "Sitrep" });

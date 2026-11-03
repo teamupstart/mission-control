@@ -5,10 +5,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JiraConfigSchema } from "../src/shared/task-source.ts";
-import type { JiraConfig, SweepContext } from "../src/shared/task-source.ts";
+import type { JiraConfig, SweepContext, WritebackNotice } from "../src/shared/task-source.ts";
 import { acliBin } from "../src/server/config.ts";
 import {
-  acliActiveSite, acliFailure, acliFault, acliPreflight, acliSearchArgs, acliSiteGate,
+  acliActiveSite, acliAnnotate, acliCommentArgs, acliFailure, acliFault, acliPreflight, acliResolve, acliSearchArgs, acliSiteGate,
   readAcli, type JiraAcliDeps,
 } from "../src/server/task-sources/jira-acli.ts";
 import { jira, MAX_SWEEP_ISSUES, sweepResultFromWalk } from "../src/server/task-sources/jira.ts";
@@ -34,6 +34,153 @@ function scripted(...answers: RunResult[]) {
   };
   return { calls, deps };
 }
+
+const notice: WritebackNotice = {
+  externalId: "MC-2", externalUrl: "https://example.atlassian.net/browse/MC-2",
+  taskTitle: "Repair parser", prUrl: "https://github.com/acme/demo/pull/9", repoRoot: tmpdir(),
+  signal: "task-completed", action: "annotate", outcome: "Completed parser repair", observedAt: 1,
+};
+const ok = (body: unknown = {}) => stubRun({ code: 0, stdout: JSON.stringify(body), stderr: "" });
+const auth = () => fixture("jira-auth-status");
+const status = (name: string, extra: Record<string, unknown> = {}) => ok({
+  ...JSON.parse(fixture("view-status").stdout), fields: { status: { name } }, ...extra,
+});
+const otherSite = () => stubRun({ code: 0, stdout: "Site: other.atlassian.net", stderr: "" });
+const refused = () => stubRun({ code: 1, stdout: "", stderr: "✗ Error: Workflow requires review; available: In Review" });
+
+test("comment argv carries ADF with a clickable PR link; every link style delivers a comment", async () => {
+  const args = acliCommentArgs("MC-2", notice);
+  assert.deepEqual(args.slice(0, 7), ["jira", "workitem", "comment", "create", "--key", "MC-2", "--body"]);
+  const body = JSON.parse(args[7]!);
+  assert.equal(body.type, "doc");
+  assert.ok(body.content.flatMap((p: { content: { marks?: unknown[] }[] }) => p.content)
+    .some((n: { marks?: { type: string; attrs: { href: string } }[] }) => n.marks?.some((m) => m.type === "link" && m.attrs.href === notice.prUrl)));
+  for (const linkVia of ["comment", "both", "remote-link"] as const) {
+    const { calls, deps } = scripted(auth(), ok(), auth());
+    const result = await acliAnnotate(cfg({ linkVia }), notice, ctx, deps);
+    assert.equal(result.error, null);
+    assert.equal(result.outcomeUnknown, false);
+    assert.match(result.detail!, /commented/);
+    if (linkVia !== "comment") assert.match(result.detail!, /remote link is unavailable.*comment carries the pull request link/);
+    else assert.equal(result.detail, "commented");
+    assert.deepEqual(calls.map((c) => c.args.slice(0, 3)), [["jira", "auth", "status"], ["jira", "workitem", "comment"], ["jira", "auth", "status"]]);
+    for (const call of calls) assert.equal(call.opts?.input, "");
+  }
+  const { deps } = scripted(auth(), ok(), auth());
+  assert.equal((await acliAnnotate(cfg(), { ...notice, prUrl: null }, ctx, deps)).detail, "commented; no pull request to link");
+});
+
+test("failed, unknown and mismatched site proof prevents every write, including repeat attempts", async () => {
+  for (const gate of [fixture("logged-out"), ok(), otherSite(), { ...auth(), outcomeUnknown: true }]) {
+    for (const operation of [acliAnnotate, acliResolve]) {
+      const { calls, deps } = scripted(gate, gate);
+      for (let i = 0; i < 2; i++) {
+        const result = await operation(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+        assert.equal(result.outcomeUnknown, false);
+        assert.match(result.error!, /nothing was written/);
+      }
+      assert.ok(calls.every((c) => c.args.join(" ") === "jira auth status"));
+    }
+  }
+});
+
+test("invalid targets and empty resolve status refuse before any process, with empty status first", async () => {
+  const { calls, deps } = scripted();
+  assert.match((await acliResolve(cfg({ site: "", resolveTransition: "" }), { ...notice, externalId: "bad" }, ctx, deps)).error!, /names no target status/);
+  for (const operation of [acliAnnotate, acliResolve]) {
+    assert.match((await operation(cfg({ resolveTransition: "Done" }), { ...notice, externalId: "MC-2/evil" }, ctx, deps)).error!, /not a Jira issue key/);
+    assert.ok((await operation(cfg({ site: "", resolveTransition: "Done" }), notice, ctx, deps)).error);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("comment refusals are retryable but killed writes and post-write site failures are unknown", async () => {
+  for (const [res, post, unknown, message] of [
+    [refused(), auth(), false, /Workflow requires review/],
+    [{ ...refused(), outcomeUnknown: true }, auth(), true, /check the issue in Jira before retrying/],
+    [ok(), otherSite(), true, /MC-2.*example.atlassian.net.*other.atlassian.net.*check both sites/],
+    [ok(), fixture("logged-out"), true, /MC-2.*example.atlassian.net.*not logged in/],
+    [ok(), ok(), true, /cannot confirm which Jira site/],
+    [ok({ self: "https://other.atlassian.net/rest/api/3/issue/2" }), auth(), true, /other.atlassian.net.*example.atlassian.net/],
+    [ok({ operation: { self: "https://other.atlassian.net/rest/api/3/issue/2" } }), auth(), true, /other.atlassian.net.*example.atlassian.net/],
+    [ok({ self: 42 }), auth(), true, /cannot confirm the Jira site/],
+    [ok([{ key: "MC-2", success: false, error: "Workflow refused" }]), otherSite(), true, /check both sites/],
+  ] as const) {
+    const { deps, calls } = scripted(auth(), res, post);
+    const result = await acliAnnotate(cfg(), notice, ctx, deps);
+    assert.equal(result.outcomeUnknown, unknown);
+    assert.match(result.error!, message);
+    assert.equal(calls.length, 3, "every attempted write gets a post-site check");
+  }
+});
+
+test("resolve already there reads captured status without moving, and failed reads never imply unknown writes", async () => {
+  const already = scripted(auth(), fixture("view-status"), auth());
+  assert.equal((await acliResolve(cfg({ resolveTransition: "to do" }), notice, ctx, already.deps)).detail, 'already "To Do"');
+  assert.equal(already.calls.length, 3);
+  for (const view of [refused(), { ...refused(), outcomeUnknown: true }, ok({}), ok({ fields: { status: { name: "Done" } }, self: "https://other.atlassian.net/rest/api/3/issue/2" })]) {
+    const { deps, calls } = scripted(auth(), view);
+    const result = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+    assert.ok(result.error);
+    assert.equal(result.outcomeUnknown, false);
+    assert.equal(calls.length, 2);
+  }
+  const switched = scripted(auth(), status("In Review"), otherSite());
+  assert.equal((await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, switched.deps)).outcomeUnknown, false);
+  assert.equal(switched.calls.length, 3, "profile changed during read must not start a transition");
+});
+
+test("transition success needs a confirming status, even with unrecognized or non-JSON output", async () => {
+  for (const result of [ok({ results: [{ key: "MC-2", success: true }] }), ok({ unexpected: "shape" }), stubRun({ code: 0, stdout: "not JSON", stderr: "" })]) {
+    const { deps, calls } = scripted(auth(), status("In Review"), auth(), result, auth(), auth(), status("Done"), auth());
+    const moved = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+    assert.equal(moved.error, null);
+    assert.equal(moved.detail, 'moved to "Done"');
+    assert.deepEqual(calls[3]!.args, ["jira", "workitem", "transition", "--key", "MC-2", "--status", "Done", "--yes", "--json"]);
+    assert.ok(calls.every((c) => c.opts?.input === ""));
+  }
+});
+
+test("transition refusals quote current status and CLI reason, including exit-zero per-issue errors", async () => {
+  for (const answer of [refused(), ok([{ key: "MC-2", success: false, message: "Workflow requires review" }]), ok({ results: [{ key: "MC-2", error: "Workflow requires review" }] }), ok({ errors: ["Workflow requires review"] })]) {
+    const { deps } = scripted(auth(), status("In Review"), auth(), answer, auth());
+    const result = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+    assert.equal(result.outcomeUnknown, false);
+    assert.match(result.error!, /MC-2 cannot move to "Done" from "In Review".*Workflow requires review/);
+  }
+});
+
+test("unchanged confirming status is a refusal; a lost confirmation or write is unknown", async () => {
+  const unchanged = scripted(auth(), status("In Review"), auth(), ok({ message: "Not moved" }), auth(), auth(), status("In Review"), auth());
+  const result = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, unchanged.deps);
+  assert.equal(result.outcomeUnknown, false);
+  assert.match(result.error!, /from "In Review".*Not moved/);
+  for (const [write, post, tail] of [
+    [ok(), auth(), [auth(), refused()]],
+    [ok(), auth(), [auth(), status("Done"), otherSite()]],
+    [{ ...refused(), outcomeUnknown: true }, auth(), []],
+    [ok(), otherSite(), []],
+    [ok({ results: [{ key: "MC-2", self: "https://other.atlassian.net/rest/api/3/issue/2" }] }), auth(), []],
+  ] as const) {
+    const { deps } = scripted(auth(), status("In Review"), auth(), write, post, ...tail);
+    const result = await acliResolve(cfg({ resolveTransition: "Done" }), notice, ctx, deps);
+    assert.equal(result.outcomeUnknown, true);
+    assert.match(result.error!, /MC-2.*example.atlassian.net.*check the issue in Jira before retrying/);
+  }
+});
+
+test("a supplied transition list is honored, using the destination status and listing reachable moves", async () => {
+  const transitions = [{ id: "31", name: "Finish work", to: {
+    ...JSON.parse(fixture("view-status").stdout).fields.status, name: "Done",
+  } }];
+  const matched = scripted(auth(), status("In Review", { transitions }), auth(), ok(), auth(), auth(), status("Done"), auth());
+  assert.equal((await acliResolve(cfg({ resolveTransition: "Finish work" }), notice, ctx, matched.deps)).detail, 'moved to "Done"');
+  assert.equal(matched.calls[3]!.args[6], "Done");
+  const unreachable = scripted(auth(), status("In Review", { transitions }), auth());
+  const refused = await acliResolve(cfg({ resolveTransition: "Closed" }), notice, ctx, unreachable.deps);
+  assert.match(refused.error!, /In Review.*available from here: Finish work \(to Done\)/);
+  assert.equal(unreachable.calls.length, 3);
+});
 
 test("argv keeps JQL as one argument, probes the tail, and bounds pagination", () => {
   assert.deepEqual(acliSearchArgs(cfg({ jql: ' project = MC AND summary ~ "a b" ' }), 1000), [
@@ -274,6 +421,54 @@ test("production dispatch, linked reads and preflight use only the redirected ac
     assert.equal(records.filter((r) => r.argv[2] === "search").length, 3);
   } finally {
     globalThis.fetch = fetchBefore;
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
+    Object.assign(process.env, old);
+  }
+});
+
+test("production write dispatch stays on fake acli even with a local CLI and REST credential available", async () => {
+  const agents = writeFakeAgents(join(home, "writes"));
+  const old = { ...process.env };
+  const realFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches++; throw new Error("REST must not be reached"); };
+  try {
+    process.env.MISSION_ACLI_BIN = agents.bins.acli;
+    process.env.MISSION_JIRA_BIN = agents.bins.jira;
+    process.env.MC_E2E_RECORD_DIR = agents.recordDir;
+    process.env.JIRA_API_TOKEN = "synthetic-unused-token";
+    process.env.JIRA_EMAIL = "operator@example.invalid";
+    assert.equal((await jira.annotate!(cfg({ linkVia: "remote-link" }), notice, ctx)).error, null);
+    assert.equal((await jira.resolve!(cfg({ resolveTransition: "Done" }), notice, ctx)).detail, 'moved to "Done"');
+    writeFileSync(join(agents.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: "refused", transition: "refused" }));
+    assert.ok((await jira.annotate!(cfg(), notice, ctx)).error);
+    assert.ok((await jira.resolve!(cfg({ resolveTransition: "Done" }), notice, ctx)).error);
+    assert.equal(fetches, 0);
+    assert.equal(readdirSync(agents.recordDir).filter((n) => n.startsWith("jira-")).length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
+    Object.assign(process.env, old);
+  }
+});
+
+test("an exit-zero fake comment failure is a retryable refusal", async () => {
+  const agents = writeFakeAgents(join(home, "comment-json-failure"));
+  const old = { ...process.env };
+  try {
+    process.env.MISSION_ACLI_BIN = agents.bins.acli;
+    process.env.MC_E2E_RECORD_DIR = agents.recordDir;
+    assert.equal(acliBin(), agents.bins.acli);
+    writeFileSync(join(agents.recordDir, "fake-acli-state.json"), JSON.stringify({ comment: "json-failure" }));
+    const result = await acliAnnotate(cfg(), notice, ctx);
+    assert.equal(result.outcomeUnknown, false);
+    assert.equal(result.detail, null);
+    assert.match(result.error!, /the comment could not be posted.*Workflow refused \(fake\)/);
+    const calls = readdirSync(agents.recordDir).filter((name) => /^acli-\d/.test(name))
+      .map((name) => JSON.parse(readFileSync(join(agents.recordDir, name), "utf8")).argv as string[]);
+    assert.equal(calls.filter((args) => args.join(" ") === "jira auth status").length, 2);
+    assert.equal(calls.filter((args) => args.slice(0, 3).join(" ") === "jira workitem comment").length, 1);
+  } finally {
     for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key];
     Object.assign(process.env, old);
   }

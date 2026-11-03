@@ -85,7 +85,9 @@ async function drain(times = 40): Promise<void> {
   for (let i = 0; i < times; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+// Identity arrives through the detached pump, including asynchronous startup work. The
+// two-second fixture deadline flaked under full-suite contention; it is not a product SLA.
+async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (check()) return;

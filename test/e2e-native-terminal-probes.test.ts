@@ -27,12 +27,12 @@ function fixture(name: string) {
 // This tests native fixture execution and response classification, not host scheduling.
 // An async execFile timer can expire before a starved worker collects an already-finished
 // child's pipes. Even a ten-second budget did that under full-suite contention. Collect
-// these shell-only responses synchronously, keeping a bounded child timeout and asserting
-// the unchanged production deadline. Production execution still uses the async executor.
+// these shell-only responses synchronously, giving the child scheduling headroom while
+// asserting the unchanged production deadline. Production uses the async executor.
 function nativeProbeExec(bin: string, env: NodeJS.ProcessEnv): TerminalExec {
   return async (_bin, args, options) => {
     assert.equal(options?.timeoutMs, 1_000, "the production probe deadline must stay unchanged");
-    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: options?.timeoutMs });
+    const result = spawnSync(bin, args, { env, encoding: "utf8", timeout: 10_000 });
     assert.ifError(result.error);
     assert.equal(result.signal, null, "the native fixture must report its own exit");
     return stubRun({ code: result.status, stdout: result.stdout, stderr: result.stderr });

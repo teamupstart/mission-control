@@ -791,6 +791,37 @@ if (argv[0] === "--version") {
       writeFileSync(file, JSON.stringify({ ...state, site: state.afterSearchSite }));
     }
   }
+} else if (command === "jira workitem view") {
+  if (state.viewError || (state.transitioned && state.confirmError)) {
+    process.stderr.write("✗ Error: cannot read issue (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(JSON.stringify({
+      key: argv[3], self: state.self || "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/1",
+      fields: { status: { name: state.status || "In Review" } }, transitions: state.transitions ?? null,
+    }) + "\\n");
+  }
+} else if (command === "jira workitem comment" || command === "jira workitem transition") {
+  const transition = command.endsWith("transition");
+  const mode = transition ? state.transition : state.comment;
+  if (mode === "no-answer") {
+    process.kill(process.pid, "SIGKILL");
+  } else if (mode === "refused") {
+    process.stderr.write("✗ Error: " + (state.reason || "Not allowed from this status (fake)") + "\\n");
+    process.exitCode = 1;
+  } else {
+    const key = argv[argv.indexOf("--key") + 1];
+    const result = mode === "json-failure" ? [{ key, success: false, error: "Workflow refused (fake)" }]
+      : mode === "unrecognized" ? { message: "Operation processed (fake)" }
+      : { key, success: true, ...(state.writeSelf ? { self: state.writeSelf } : {}) };
+    process.stdout.write(JSON.stringify(state.writeEnvelope ? { [state.writeEnvelope]: result } : result) + "\\n");
+    if (file) writeFileSync(file, JSON.stringify({ ...state,
+      ...(transition ? { transitioned: true,
+        status: mode === "json-failure" || mode === "unchanged" ? state.status || "In Review" : argv[argv.indexOf("--status") + 1],
+      } : {}),
+      ...(state.afterWriteSite ? { site: state.afterWriteSite } : {}),
+    }));
+  }
 } else {
   process.stderr.write("fake acli refuses unsupported commands\\n");
   process.exitCode = 1;

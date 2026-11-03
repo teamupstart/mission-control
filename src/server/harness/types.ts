@@ -1039,6 +1039,15 @@ export interface SdkUsage {
 }
 
 /**
+ * Why a provider ended a turn early, when the supervisor can do something about it.
+ *
+ * `capacity`: the selected model was overloaded and the harness's own retries are spent.
+ * The work is unfinished, so the supervisor retries with backoff instead of reporting the
+ * turn as complete. `message` is the provider's own sentence, for the card.
+ */
+export type SdkTurnFailure = { kind: "capacity"; message: string };
+
+/**
  * What a driver tells the daemon about its session.
  *
  * The counterpart of a hook ingest, with one difference that removes a whole class of
@@ -1092,7 +1101,12 @@ export type SdkEvent =
   | { kind: "rate_limits"; rateLimits: import("@shared/types.ts").RateLimits }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
-  | { kind: "turn_done"; usage: SdkUsage | null }
+  /**
+   * The turn ended. `failure` is present only when the provider ended it for a reason the
+   * supervisor can act on - today, the model being at capacity - and absent for every
+   * ordinary completion, interrupt, or failure nobody can retry.
+   */
+  | { kind: "turn_done"; usage: SdkUsage | null; failure?: SdkTurnFailure }
   /**
    * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
    *

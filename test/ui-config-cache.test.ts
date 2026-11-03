@@ -47,6 +47,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // Pinned here because this one line decides the Line's band height for every profile
   // that has never touched the control.
   assert.equal(config.lineDensity, "condensed");
+  // Today's look: a skin is opt-in.
+  assert.equal(config.skin, "default");
   // A task's kind is marked on both surfaces out of the box, in the styles the operator
   // chose from the mockups: a badge before the console's title, a tab on the card's edge.
   assert.equal(config.taskKindHeader, "badge");
@@ -73,6 +75,8 @@ test("a written cache round-trips", () => {
     layout: "console",
     conversationView: "chat",
     lineDensity: "expanded",
+    // Not Default, so it cannot round-trip by falling back to the default.
+    skin: "daylight",
     // Off on both, so neither round-trips by falling back to its default.
     taskKindHeader: "off",
     taskKindCard: "off",
@@ -107,6 +111,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.layout, "console");
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
+  assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
@@ -193,6 +198,17 @@ test("a density this build does not ship reads as the shipped one", () => {
   // real. It falls to the shipped default, which is a strip you can see.
   store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
   assert.equal(readCache().lineDensity, "condensed");
+});
+
+test("a skin this build does not ship reads as Default, and a cached one paints first", () => {
+  // The first frame is painted from this cache, so dropping a real skin here would flash
+  // Default on every cold load; adopting an unknown one would PUT it to the daemon as real.
+  store.set("mission-control.ui", JSON.stringify({ skin: "daylight" }));
+  assert.equal(readCache().skin, "daylight", "the cached skin was dropped");
+  for (const stray of ["neon-dusk-from-the-future", 7, null, ""]) {
+    store.set("mission-control.ui", JSON.stringify({ skin: stray }));
+    assert.equal(readCache().skin, "default", `${JSON.stringify(stray)} was adopted as a skin`);
+  }
 });
 
 test("a task-kind style this build does not ship reads as the shipped one", () => {

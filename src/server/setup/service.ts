@@ -2,6 +2,7 @@ import { enableMcpTrust } from "./mcp-trust.ts";
 import {
   SETUP_SERVICE_INFO,
   type SetupServiceId,
+  type SetupServicePrerequisite,
 } from "@shared/setup-catalog.ts";
 
 import { cmuxAppStart } from "../terminal/cmux.ts";
@@ -37,9 +38,13 @@ export interface SetupServiceResult {
   outcome: SetupServiceOutcome;
   label: string;
   detail: string;
+  /** A different named repair this start needs first; see `SETUP_SERVICE_PREREQUISITES`. */
+  prerequisite?: SetupServicePrerequisite;
 }
 
-export type SetupServiceStarters = Record<SetupServiceId, () => Promise<TerminalResult>>;
+export type SetupServiceStartResult = TerminalResult & { prerequisite?: SetupServicePrerequisite };
+
+export type SetupServiceStarters = Record<SetupServiceId, () => Promise<SetupServiceStartResult>>;
 
 export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = {
   "claude-mcp-trust": async () => enableMcpTrust("claude"),
@@ -93,6 +98,7 @@ export async function startSetupService(
       outcome: unknown ? "unknown" : "refused",
       label,
       detail: result.error ?? refused,
+      ...(result.prerequisite ? { prerequisite: result.prerequisite } : {}),
     },
   };
 }

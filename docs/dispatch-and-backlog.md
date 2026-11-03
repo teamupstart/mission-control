@@ -498,9 +498,31 @@ forced into the backlog. Every task or standalone active session completes only 
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
 repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
-primary repository's pull request, but what releases it is the prerequisite's own
-completion, which is the stronger condition. The explicit completion override is the exception:
+ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
+edges are still checked for verified merges, including after a restart or session closure.
+An unresolved dependency also retains its earlier work episode's branch when the task moves
+on, so a PR first discovered on that historical branch can still release it. Branch discovery
+searches PR candidates within that episode's recorded ownership window, so a newer PR on a
+reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
+its source head exactly matches a branch commit retained while the episode was active. These
+late-opened PRs stay in branch discovery until merged, so a force-push after discovery cannot
+bypass the final head check. If a linked PR closes without merging, a confirmed closure
+reopens discovery for a replacement under the same episode checks. The comparison uses the
+PR's source head, which also supports squash merges. Without that retained match, an unknown historical end or a PR created after
+completion stays unresolved; a later episode's merge does not release an edge pinned to
+earlier unmerged work.
+When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
+unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+For multi-repository work, each episode retains its repositories' change evidence before
+cleanup clears checkout paths and baselines. An edge pinned to a retained episode waits for
+that episode's full changed-repository quorum; another episode's partial delivery cannot
+complete it. New edges use the current episode's evidence. Legacy edges without surviving
+episode provenance retain task-wide recovery from verified merge evidence, never from a bare
+done status or outcome text.
+A dependency edge names the prerequisite's primary pull request, or a merged secondary
+from the same episode when the primary was unchanged. Its release still requires the
+prerequisite's full merge quorum. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
@@ -727,6 +749,67 @@ nothing changes and the dialog says which task stopped it.
 **Delete…** asks once, in the bar, and then removes the selected tasks. Every task is checked
 before any is removed, so a selection that includes a task that has left the backlog deletes
 nothing. A task that still fails to go after that check is reported, and the rest are removed.
+
+### When a dispatch does not start
+
+Every dispatch shows a placeholder at the top of **Working** until its session exists: a launch
+from Dispatch, a Backlog task dispatched by you or by Foreman's autopilot, and a resident
+profile's Launch. A task filed by a recurring mission or by an MCP `create_task` waits in the
+Backlog first and gets its placeholder when it is dispatched from there. When the dispatch
+fails first, the failure is drawn where it happened instead of disappearing:
+
+- **Failed with no session** (any kind that cannot return to the Backlog, such as a chat or a
+  resident, and any failure after provisioning): the placeholder becomes a red **Did not
+  start** tile in the same place, on the Board and in the Console rail. It names the phase it
+  stopped in and prints the whole reason. Attempts of the same work that failed for the same
+  reason share one tile with an attempt count, so six launches of one resident read as one
+  problem.
+- **Back in Backlog** (a Backlog kind whose base or worktree step failed before anything was
+  provisioned): the task's Backlog card says **Did not start, back in Backlog** beside the
+  reason it already prints.
+- **Failed with its session kept** (a late failure, such as a first prompt that was not
+  delivered, where the dispatcher kept the agent and its worktree): the session's own card
+  says why. When the task was not yet bound to that session there is no card to carry it, so
+  it is drawn as a tile marked **Launch failed, session kept**. A kept failure never offers
+  Retry, because retrying re-files the task and reclaims the worktree its agent may be using.
+  It offers **Open** only when the task is bound to the kept session; an unbound one has no
+  session to open from here and offers just **Report bug** and **Dismiss**. Find the kept agent
+  through its terminal or Agent SDK session, or cancel the task, as its reason says.
+
+Every open failure always has exactly one place on screen. The Console layout has no Backlog
+column and its rows carry no notices, so there a failure that went back to the Backlog or kept
+its session is a row in the rail, beside the ones that never started. On the Board, a returned
+or kept failure whose card is hidden - a folded Backlog column, a fleet filter - is drawn as a
+tile instead.
+
+Each one offers the way back in for its kind - **Retry**, for a launch that kept nothing,
+dispatches a Backlog kind again as the same task and files a chat again as a new one; a resident offers **Launch again** and
+**Open profile**; a kept failure bound to its session offers **Open** - plus **Dismiss** on every
+failure, and **Report bug** on every failure except a report session's own (see below). The
+top bar counts open failures as **N did not start**, and a toast appears the moment one
+happens; it goes away as soon as its failure is dismissed or answered. Dismissing answers the
+failure without erasing it: the task keeps its reason. A failure also clears itself when the
+same work later starts - for a resident, a launch of the same profile, whatever it is named now
+and however many other profiles share its name; for anything else, the same kind, repository
+and title.
+
+**Report bug** asks first, then starts a Claude chat session named
+`Report: <title> did not start` in the repository you choose (the failed task's own by
+default). The daemon writes that session's brief from the failed task: its kind, agent, the
+phase it stopped in, the reason, and every attempt that failed the same way. The session
+reads the daemon log around those attempts and drafts a bug with
+[`report_product_issue`](sessions.md#review-channel-mcp), leaving out intents, profile
+instructions, paths, repository names, MCP URLs and secrets because the issue is public.
+Nothing is filed until you review the exact text and press **Submit public issue**. A report
+session is marked as one on its own task, so if it fails to start itself it never offers a
+Report bug of its own - even after the failure it was reporting has been retried. While a
+report session for that failure is running, the button reads **Open report session** instead
+of starting another.
+
+Only a launch failure carries this state. The dispatcher records it at the moment the
+dispatch fails, in `tasks.launch_failure`; a session that ran and was later lost to a restart
+or an exit is described in the next section and is never drawn as **Did not start**. Failures
+recorded before this existed are not shown.
 
 ### When a task's agent goes away
 

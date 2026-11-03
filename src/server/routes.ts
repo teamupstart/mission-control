@@ -46,7 +46,16 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { taskHasRepository, isShippingTaskKind } from "@shared/task.ts";
+import { taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import {
+  dismissLaunchFailures,
+  launchFailureGroupFor,
+  launchFailureReportBrief,
+  launchFailureReportTitle,
+  markLaunchFailureReport,
+  recordLaunchFailureReport,
+} from "./launch-failures.ts";
 import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -77,6 +86,9 @@ import {
   DetachReviewWaitSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
+  DismissLaunchFailuresSchema,
+  ReportLaunchFailureSchema,
+  RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
   PipelineRetrySchema,
   PipelineSettlementSchema,
@@ -265,6 +277,7 @@ import type {
   ReviewActor,
   Session,
   SkillsView,
+  Task,
   WorkItem,
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
@@ -8119,23 +8132,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---
-  app.post("/api/tasks", async (c) => {
-    const parsed = await parseBody(c, DispatchSchema);
-    if (!parsed.ok) return parsed.res;
+  /**
+   * File one task from a dispatch input, through every check the dispatch form meets: the
+   * repositories, the creation policy, the Workflow and plan-skill blocks, and `create`'s own
+   * refusals. The one path a route takes to file a task, so a report session or a retried chat
+   * cannot become a task the form would have refused.
+   */
+  async function createTaskFromDispatch(
+    data: TypeOf<typeof DispatchSchema>,
+  ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
     const prepared = await prepareTaskRepositories({
-      primary: parsed.data.repoRoot,
-      extras: parsed.data.extraRepoRoots,
-      kind: parsed.data.kind,
-      agent: parsed.data.agent,
+      primary: data.repoRoot,
+      extras: data.extraRepoRoots,
+      kind: data.kind,
+      agent: data.agent,
       shortNameSelectors: "none",
     });
-    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    if (!prepared.ok) return { ok: false, status: prepared.status, body: { error: prepared.error } };
     const { repoRoot, extraRepoRoots, agent } = prepared;
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy(parsed.data);
+      creationPolicy = tasks.prepareCreationPolicy(data);
     } catch (error) {
-      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
     const { workflowId } = creationPolicy;
@@ -8147,38 +8166,201 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // running the same resolution and hoping the config did not move between them.
     if (workflowId) {
       const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = parsed.data.backlog
+      if (!manager) return { ok: false, status: 503, body: { error: "Workflow manager unavailable" } };
+      const blocked = data.backlog
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+      if (blocked) return { ok: false, status: 409, body: workflowLaunchRefusal(blocked) };
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
     // dispatch that could not invoke them is refused before the task exists - the operator
     // reads the reason on the form they are still standing in, and there is no card to clean
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
-    if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock({ ...parsed.data, agent });
-      if (planBlock) return c.json({ error: planBlock }, 409);
+    if (!data.backlog) {
+      const planBlock = planDispatchBlock({ ...data, agent });
+      if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
-    let task;
     try {
-      task = tasks.create(
-        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
-        undefined,
-        MANUAL_DISPATCH_TASK_CREATE,
-        creationPolicy,
-      );
+      return {
+        ok: true,
+        task: tasks.create(
+          { ...data, agent, repoRoot, extraRepoRoots, workflowId },
+          undefined,
+          MANUAL_DISPATCH_TASK_CREATE,
+          creationPolicy,
+        ),
+      };
     } catch (error) {
-      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {
+        return { ok: false, status: 409, body: { error: error.message } };
+      }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError) return { ok: false, status: 400, body: { error: error.message } };
       throw error;
     }
-    return c.json(task);
+  }
+
+  app.post("/api/tasks", async (c) => {
+    const parsed = await parseBody(c, DispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const created = await createTaskFromDispatch(parsed.data);
+    return created.ok ? c.json(created.task) : c.json(created.body, created.status);
   });
+
+  /** Why an existing task's armed Workflow refuses its dispatch, or null when nothing does. */
+  function taskWorkflowDispatchRefusal(
+    task: Task | undefined,
+  ): { status: 409 | 503; body: Record<string, unknown> } | null {
+    if (!task?.workflowId) return null;
+    const manager = workflowManager();
+    if (!manager) return { status: 503, body: { error: "Workflow manager unavailable" } };
+    const blocked = manager.dispatchWorkflowBlock(task.workflowId, task.agent, task.repoRoot);
+    return blocked ? { status: 409, body: workflowLaunchRefusal(blocked) } : null;
+  }
+
+  // ---- launch failures: a dispatch that never started (@shared/launch-failure.ts) ----
+
+  app.post("/api/launch-failures/dismiss", async (c) => {
+    const parsed = await parseBody(c, DismissLaunchFailuresSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
+  });
+
+  // Start the session that catalogs one failure and drafts its public bug report. The brief
+  // is built here from the task, never sent by the browser; publication stays behind the
+  // human review `report_product_issue` already requires.
+  /**
+   * Report creations in flight, by failure group. "One reason, one report" is a read of the
+   * group followed by an await on task creation and only then a write of the report id, so two
+   * presses for the same reason could both read "no report yet" and both start a session. The
+   * second press for a group waits on the first's creation instead, and is answered with the
+   * session it started.
+   */
+  const reportsInFlight = new Map<string, Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }>>();
+
+  async function startLaunchFailureReport(
+    task: Task,
+    repoRoot: string,
+  ): Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    const group = launchFailureGroupFor(registry.listTasks(), task);
+    // One report per reason: a live report session for this group is the answer.
+    const reportId = group.map((t) => t.launchFailure!.reportTaskId).find((id) => id !== null) ?? null;
+    const existing = reportId ? registry.getTask(reportId) : undefined;
+    if (existing && isActiveTask(existing.status)) return { status: 200, body: { ok: true, task: existing, existing: true } };
+    const input = DispatchSchema.safeParse({
+      repoRoot,
+      intent: launchFailureReportBrief(task, group),
+      title: launchFailureReportTitle(task),
+      kind: "chat",
+      agent: "claude",
+      workflowId: null,
+    });
+    if (!input.success) return { status: 400, body: { error: input.error.issues[0]?.message ?? "invalid report" } };
+    const created = await createTaskFromDispatch(input.data);
+    if (!created.ok) return { status: created.status, body: created.body };
+    // The session's own identity, on the session: what keeps a report that fails to start from
+    // offering a Report bug of its own, whatever later happens to the failure it reports.
+    const report = markLaunchFailureReport(registry, created.task.id, task.id, Date.now()) ?? created.task;
+    recordLaunchFailureReport(registry, launchFailureGroupFor(registry.listTasks(), task), report.id, Date.now());
+    return { status: 200, body: { ok: true, task: report, existing: false } };
+  }
+
+  app.post("/api/launch-failures/report", async (c) => {
+    const parsed = await parseBody(c, ReportLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to report" }, 404);
+    const key = launchFailureGroupKey(task);
+    const inFlight = reportsInFlight.get(key);
+    if (inFlight) {
+      const first = await inFlight;
+      return first.status === 200
+        ? c.json({ ...first.body, existing: true })
+        : c.json(first.body, first.status);
+    }
+    const work = startLaunchFailureReport(task, parsed.data.repoRoot);
+    reportsInFlight.set(key, work);
+    try {
+      const outcome = await work;
+      return c.json(outcome.body, outcome.status);
+    } finally {
+      reportsInFlight.delete(key);
+    }
+  });
+
+  /**
+   * Chat retries in flight, by work key. A chat is retried by filing a new task, and the failure
+   * it answers stays open until that task starts - so without this, a second press while the
+   * first replacement is still being filed or still starting would file a second one.
+   */
+  const retriesInFlight = new Set<string>();
+
+  // Try a failed launch again. A backlog kind retries as the same task; a chat, which has no
+  // backlog to come back through, is filed again as a new task with the same settings - and
+  // when that one starts, the dispatcher dismisses this failure as answered.
+  app.post("/api/launch-failures/retry", async (c) => {
+    const parsed = await parseBody(c, RetryLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to retry" }, 404);
+    if (launchFailureOutcome(task) !== "not-started") {
+      return c.json({ error: "only a launch that failed with no session can be retried here" }, 409);
+    }
+    if (taskKindCreator(task.kind) === "resident-launch") {
+      return c.json({ error: "launch this resident again from its profile" }, 409);
+    }
+    if (taskKindAllowsBacklog(task.kind)) {
+      const refused = taskWorkflowDispatchRefusal(task);
+      if (refused) return c.json(refused.body, refused.status);
+      // A failure that kept a worktree cannot be dispatched over it; re-file it first, which
+      // reclaims that tree, then dispatch the clean row.
+      if (task.worktreePath) {
+        const filed = await tasks.reschedule(task.id);
+        if (!filed.ok) return c.json({ error: filed.error }, 409);
+      }
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
+    }
+    const workKey = launchWorkKey(task);
+    const starting = registry.listTasks().some((other) =>
+      other.id !== task.id && isActiveTask(other.status) && launchWorkKey(other) === workKey);
+    if (starting || retriesInFlight.has(workKey)) {
+      return c.json({ error: "a retry of this is already starting" }, 409);
+    }
+    retriesInFlight.add(workKey);
+    try {
+      return await fileChatRetry(c, task);
+    } finally {
+      retriesInFlight.delete(workKey);
+    }
+  });
+
+  /** File a failed chat again as a new task with the same settings, keeping a report's identity. */
+  async function fileChatRetry(c: Context, task: Task): Promise<Response> {
+    const input = DispatchSchema.safeParse({
+      repoRoot: task.repoRoot,
+      extraRepoRoots: task.extraRepos.map((extra) => extra.repoRoot),
+      intent: task.intent,
+      title: task.title,
+      kind: task.kind,
+      agent: task.agent,
+      model: task.model ?? undefined,
+      effort: task.effort ?? undefined,
+      workflowId: task.workflowId,
+      priority: task.priority,
+      labels: task.labels,
+    });
+    if (!input.success) return c.json({ error: input.error.issues[0]?.message ?? "this task cannot be filed again" }, 400);
+    const created = await createTaskFromDispatch(input.data);
+    if (!created.ok) return c.json(created.body, created.status);
+    // A report session filed again is still a report session.
+    const filed = task.launchReportFor
+      ? markLaunchFailureReport(registry, created.task.id, task.launchReportFor, Date.now()) ?? created.task
+      : created.task;
+    return c.json({ ok: true, task: filed });
+  }
 
   if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
@@ -8578,17 +8760,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
-    const task = tasks.get(id);
-    if (task?.workflowId) {
-      const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = manager.dispatchWorkflowBlock(
-        task.workflowId,
-        task.agent,
-        task.repoRoot,
-      );
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
-    }
+    const refused = taskWorkflowDispatchRefusal(tasks.get(id));
+    if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);

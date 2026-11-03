@@ -87,17 +87,16 @@ test("workflow state tones clear AA on the dark surfaces", () => {
   }
 });
 
-test("the app stays dark-only - no OS light-mode override", () => {
-  // Mission Control is dark-only by design: there is no theme toggle anywhere
-  // (no `data-theme`, no settings control), and `:root` hardcodes the dark tokens.
-  // A `@media (prefers-color-scheme: light)` block flips every token to white on a
-  // light-mode OS with no way to force dark - which is exactly the regression #213
-  // shipped. Keep this file free of a light override until the app grows a real,
-  // user-controllable theme.
+test("the OS light mode never repaints the app - a light look is a skin the operator picks", () => {
+  // `:root` is the dark Default skin, and a light look is an explicit choice in
+  // Settings > Display (`src/web/skins/`, applied through `<html data-skin>`). A
+  // `@media (prefers-color-scheme: light)` block would flip every token to white on a
+  // light-mode OS with no way to force dark - which is exactly the regression #213 shipped -
+  // and "Match system" was declined for skins v1. Keep this file free of a light override.
   assert.doesNotMatch(
     css,
     /prefers-color-scheme:\s*light/,
-    "styles.css must not carry a light-mode override - the app is dark-only",
+    "styles.css must not carry a light-mode override - a light look is a skin, chosen explicitly",
   );
 });
 

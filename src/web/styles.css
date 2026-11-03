@@ -10919,6 +10919,11 @@ span.task-outcome:hover {
   grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
   gap: 10px;
 }
+/* A fifth column for a harness that declares an advisor. One class, so the narrow-viewport
+   rule further down still collapses it to two columns like the four-field row. */
+.dispatch-crew--advisor {
+  grid-template-columns: 1fr 0.55fr 1.1fr 0.9fr 1fr;
+}
 /* Agent and Kind sit in a cell rather than being grid items themselves, so the guided
    pass's list can hang off the field from OUTSIDE its `<label>` - see the note at that
    markup. Always present, so a pass starting does not restructure the row. */

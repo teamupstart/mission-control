@@ -160,6 +160,30 @@ test("requirements union live Persona and ensemble obligations with task kind an
   assert.ok(resumeContext(source, mkTask({ kind: "scout" }), false, false).requiredTools.includes("submit_scout_artifacts"));
 });
 
+test("a terminal resume renders the task's advisor pin exactly as its first launch did", async () => {
+  // The owning task's pin reaches the resume context; a pin the harness does not offer does not.
+  const source = session("advisor-context");
+  assert.equal(resumeContext(source, mkTask({ advisorModel: "opus" }), false, false).advisorModel, "opus");
+  assert.equal(resumeContext(source, mkTask({ advisorModel: null }), false, false).advisorModel, null);
+  assert.equal(resumeContext(source, mkTask({ agent: "codex", advisorModel: "opus" }), false, false).advisorModel, null);
+  assert.equal(resumeContext(source, null, false, false).advisorModel, null);
+
+  const read = async (id: string, advisorModel: "opus" | "off" | null) => {
+    const prepared = await prepareTerminalResume(session(id), { ...context, advisorModel });
+    try {
+      const launch = JSON.parse(readFileSync(join(prepared.stateHome, "launch.json"), "utf8")) as {
+        argv: string[]; env: Record<string, string>;
+      };
+      assert.deepEqual(launch.argv, prepared.argv);
+      const at = launch.argv.indexOf("--settings");
+      return { settings: at === -1 ? null : JSON.parse(launch.argv[at + 1]!), off: launch.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL };
+    } finally { prepared.dispose(); }
+  };
+  assert.deepEqual(await read("advisor-resume-opus", "opus"), { settings: { advisorModel: "opus" }, off: undefined });
+  assert.deepEqual(await read("advisor-resume-off", "off"), { settings: null, off: "1" });
+  assert.deepEqual(await read("advisor-resume-inherit", null), { settings: null, off: undefined });
+});
+
 test("missing tools and renderer exceptions revoke preparation without retaining secrets", async (t) => {
   const mcp = process.env.MISSION_MCP_SERVER;
   process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "stale.mjs"), ["request_input"]);

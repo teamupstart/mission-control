@@ -10,6 +10,7 @@ import {
   type AgentType,
   type TaskPriority,
   type ThinkingLevel,
+  type AdvisorChoice,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import {
@@ -288,6 +289,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.priority === EMPTY_DISPATCH_DRAFT.priority &&
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
+    d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
@@ -421,7 +423,14 @@ export function defaultEffortOptionLabel(
  * place where the app describes the same choice in different words.
  */
 const AGENT_FIELD_TIP =
-  "Which harness this task is dispatched to - switching resets the model and effort overrides";
+  "Which harness this task is dispatched to - switching resets the model, effort and advisor overrides";
+
+/** What each advisor pin reads as on the form. Inherit is the empty option, not a value. */
+const ADVISOR_OPTION_LABELS: Record<AdvisorChoice, string> = {
+  opus: "Opus",
+  sonnet: "Sonnet",
+  off: "Off",
+};
 const KIND_FIELD_TIP =
   "What this task is asked to produce - a kind with no diff also clears the after-work Workflow";
 const AFTER_WORK_FIELD_TIP =
@@ -1414,6 +1423,7 @@ function DispatchModal({
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
   const usesHarness = kindBehavior.launch === "harness";
   const managedPipeline = draft.kind === "pipeline" && pipelineLaunchRuntime === "agent-sdk";
+  const advisorSpec = capabilitiesFor(draft.agent).advisor;
   const selectableAgents = managedPipeline
     ? AGENT_TYPES.filter(supportsManagedPipelineHost)
     : AGENT_TYPES;
@@ -1564,7 +1574,7 @@ function DispatchModal({
    * rule. Two copies of this expression are what let them disagree in the first place.
    */
   function overridesForAgent(agent: AgentType): Partial<DispatchDraft> {
-    return agent === draft.agent ? {} : { model: "", effort: "" };
+    return agent === draft.agent ? {} : { model: "", effort: "", advisorModel: "" };
   }
 
   // Pipeline host constraints can change while this modal stays open. Kind selection applies
@@ -2374,6 +2384,8 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
+          // Inherit is omitted, never sent as null: a create has no stored pin to clear.
+          advisorModel: submitted.advisorModel || undefined,
           workflowId: submitted.workflowId,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
@@ -2833,7 +2845,7 @@ function DispatchModal({
             named model instead of "Default"), so no per-field "overriding" hint is needed. */}
         <div className="field dispatch-crew-field">
           <span className={`field-label${guidedDim}`}>Crew</span>
-          <div className="dispatch-crew">
+          <div className={`dispatch-crew${advisorSpec ? " dispatch-crew--advisor" : ""}`}>
             {/* The cell exists so the guided pass's list can hang off the field WITHOUT
                 being inside its `<label>`. A `<label>` names the control it wraps from its
                 own text content, so a list rendered in there would rewrite the Agent
@@ -2978,10 +2990,37 @@ function DispatchModal({
                 </select>
               </Tooltip>
             </label>
+            {/* Only for a harness that declares an advisor, read off the capability rather
+                than the agent's name. Inherit renders nothing at launch, so the operator's
+                own Claude settings decide; a pin rides the session-scoped flag layer and
+                never writes their settings files. */}
+            {advisorSpec && (
+              <label className={`field${guidedDim}`}>
+                <span className="field-label">Advisor</span>
+                <Tooltip label={managedPipeline
+                  ? "The Engineer host uses the operator's Claude settings; Conductor owns downstream advisor selection"
+                  : "Pin the stronger model this task's agent may consult, for this launch only, without changing your Claude settings"}>
+                  <select
+                    className="field-input"
+                    value={draft.advisorModel}
+                    disabled={!usesHarness}
+                    onChange={(e) => update({ advisorModel: e.target.value as AdvisorChoice | "" })}
+                    aria-label={`Advisor for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
+                  >
+                    <option value="">Inherit from Claude settings</option>
+                    {advisorSpec.values.map((choice) => (
+                      <option key={choice} value={choice}>
+                        {ADVISOR_OPTION_LABELS[choice]}
+                      </option>
+                    ))}
+                  </select>
+                </Tooltip>
+              </label>
+            )}
           </div>
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
-              ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model and effort overrides."
+              ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model, effort and advisor overrides."
               : draft.kind === "pipeline"
                 ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
                 : kindBehavior.constraint}

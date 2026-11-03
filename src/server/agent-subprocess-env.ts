@@ -123,6 +123,12 @@ export interface AgentSubprocessEnvOptions {
   loopbackAccess?: boolean;
   /** Checkout whose already-provisioned scoped scout capability should follow the launch. */
   cwd?: string;
+  /**
+   * Harness launch variables a capability rendered for this session (the advisor's Off
+   * switch, today). Applied over the inherited environment and BEFORE the isolation below,
+   * so nothing here can name a state home, a token or a credential back into the child.
+   */
+  extraEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -137,6 +143,7 @@ export function agentSubprocessEnv(
   for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value !== undefined) env[name] = value;
   }
+  Object.assign(env, options.extraEnv);
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
   const stateHome = options.stateHome ?? createDisposableAgentStateHome();
   env.MISSION_HOME = stateHome;

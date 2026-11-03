@@ -22,7 +22,7 @@ import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
-import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
@@ -378,6 +378,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       enabled       INTEGER NOT NULL DEFAULT 1,
       model         TEXT,
       effort        TEXT,
+      -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
+      advisor_model TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -1901,6 +1903,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       task_id           TEXT,
       model             TEXT,
       effort            TEXT,
+      advisor_model     TEXT,
       permission_mode   TEXT,
       status            TEXT NOT NULL,
       -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
@@ -3424,6 +3427,9 @@ function migrate(d: DatabaseSync): void {
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
   addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
+  // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
+  // layer the first launch did. NULL inherits, which is what every older row did.
+  addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -4057,6 +4063,9 @@ function migrate(d: DatabaseSync): void {
   // `effort`: the per-task reasoning override. NULL follows the launch-time harness
   // default, which is also the truthful value for every task created before it existed.
   addColumn(d, "tasks", "effort", "TEXT");
+  // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
+  // Claude settings, which is exactly what every task dispatched before it existed did.
+  addColumn(d, "tasks", "advisor_model", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -5507,6 +5516,7 @@ interface TaskRow {
   backlog_rank: unknown;
   model: string | null;
   effort: string | null;
+  advisor_model: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -5788,6 +5798,16 @@ function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
 }
 
 /**
+ * The same rule for the advisor pin: a value this harness no longer offers reads back as
+ * Inherit rather than reaching a launch.
+ */
+function parseAdvisor(agent: Task["agent"], raw: string | null): Task["advisorModel"] {
+  return raw && supportsAdvisor(agent, raw as NonNullable<Task["advisorModel"]>)
+    ? (raw as Task["advisorModel"])
+    : null;
+}
+
+/**
  * `extraRepos` is a REQUIRED argument with no default, which is what keeps
  * `rows.map(rowToTask)` from compiling: `map` would pass the index there, and the
  * resulting type error is the whole point - see `rowsToTasks`.
@@ -5840,6 +5860,7 @@ function rowToTask(
     backlogRank: Number.isSafeInteger(r.backlog_rank) ? (r.backlog_rank as number) : null,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
+    advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -5913,7 +5934,7 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
-         model, effort,
+         model, effort, advisor_model,
          workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
@@ -5922,13 +5943,13 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
-         model=excluded.model, effort=excluded.effort,
+         model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
@@ -5966,6 +5987,7 @@ export function upsertTask(t: Task): string[] {
       t.backlogRank,
       t.model,
       t.effort,
+      t.advisorModel,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,

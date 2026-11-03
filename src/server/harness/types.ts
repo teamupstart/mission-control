@@ -1,5 +1,6 @@
 import type { HookIngest } from "@shared/protocol.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   MetaSource,
   PaneDialog,
@@ -810,6 +811,11 @@ export interface SdkLaunchOptions {
   prompt: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * The task's advisor pin; omitted or null inherits the operator's Claude settings. Rendered
+   * only by a driver whose harness declares `advisor`; every other driver ignores it.
+   */
+  advisorModel?: AdvisorChoice | null;
   /** From `dispatchPermissionMode` - the same source the terminal path renders as argv. */
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */

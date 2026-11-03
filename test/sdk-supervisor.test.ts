@@ -248,6 +248,37 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   assert.equal(residents.getResidentRun("native-run")?.run.endedAt, null);
 });
 
+test("a task's advisor pin is kept on the driver row and replayed by a restore", async t => {
+  const first = fakeHandle();
+  const handles = [first, fakeHandle()];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  t.after(fake.restore);
+  const original = new SdkSupervisor(new Registry());
+  const session = await original.start({ ...START, cwd: "/wt/advisor-pin", advisorModel: "opus" });
+  assert.equal(fake.calls[0]?.advisorModel, "opus");
+  first.push({ kind: "bound", agentSessionId: "advisor-pin-thread", transcriptPath: null, modelId: null, pid: null });
+  await drain();
+  assert.equal(getSdkSession(session.id)?.advisorModel, "opus");
+  await original.stopAll();
+
+  const restored = new SdkSupervisor(new Registry());
+  t.after(() => restored.stopAll());
+  await restored.restore();
+  const relaunch = fake.calls.slice(1).find((call) => call.resume === "advisor-pin-thread");
+  assert.ok(relaunch, "the suspended row should have been resumed");
+  assert.equal(relaunch.advisorModel, "opus", "a restart renders the flag layer the first launch did");
+  assert.equal(getSdkSession(session.id)?.advisorModel, "opus");
+
+  // An omitted pin writes NULL, which is Inherit - every row from before the column existed.
+  const inheritHandle = fakeHandle();
+  const inherit = withFakeDriver(async () => inheritHandle);
+  t.after(inherit.restore);
+  const plainSupervisor = new SdkSupervisor(new Registry());
+  t.after(() => plainSupervisor.stopAll());
+  const plain = await plainSupervisor.start({ ...START, cwd: "/wt/advisor-inherit" });
+  assert.equal(getSdkSession(plain.id)?.advisorModel, null);
+});
+
 test("the supervisor persists the observed child lifetime after the stream ends and clears it on replacement", async (t) => {
   const handle = fakeHandle();
   let pid: number | null = 41001;

@@ -202,6 +202,48 @@ function idleQuery(configured: () => string[]) {
   };
 }
 
+test("a Claude advisor pin merges into the one flag-layer settings object and never replaces connectors", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const spec = claudeSdkSpec({
+    executable: async () => "/fake/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ options }) => {
+      seen.push(options as unknown as Record<string, unknown>);
+      const configured = Object.keys((options as { mcpServers?: Record<string, unknown> }).mcpServers ?? {});
+      return idleQuery(() => configured) as never;
+    },
+  });
+  const launch = async (over: Partial<SdkLaunchOptions>) => {
+    const handle = await spec.launch(sdkOptions(over));
+    await handle.stop();
+    const options = seen.at(-1)!;
+    return { settings: options.settings, env: options.env as Record<string, string | undefined> };
+  };
+
+  // A resident run already owns `settings`; the pin joins it rather than overwriting it.
+  const resident = residentLaunch(["web"], () => [entries[1]!]);
+  const pinnedResident = await launch({ residentMcp: resident, advisorModel: "opus" });
+  assert.deepEqual(pinnedResident.settings, { disableClaudeAiConnectors: true, advisorModel: "opus" });
+  assert.equal(pinnedResident.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, undefined);
+
+  const pinned = await launch({ advisorModel: "sonnet" });
+  assert.deepEqual(pinned.settings, { advisorModel: "sonnet" });
+
+  // Off is the environment switch, and leaves an ordinary launch's settings absent.
+  const off = await launch({ advisorModel: "off" });
+  assert.equal(off.settings, undefined);
+  assert.equal(off.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
+  const offResident = await launch({ residentMcp: residentLaunch(["web"], () => [entries[1]!]), advisorModel: "off" });
+  assert.deepEqual(offResident.settings, { disableClaudeAiConnectors: true });
+
+  // Inherit, omitted or null, is exactly a launch from before the pin existed.
+  for (const advisorModel of [undefined, null]) {
+    const inherit = await launch({ advisorModel });
+    assert.equal("settings" in seen.at(-1)!, false);
+    assert.equal(inherit.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, undefined);
+  }
+});
+
 test("Claude starts exactly Mission's server and the snapshot, under strict MCP config, minting each start", async () => {
   const seen: Array<Record<string, unknown>> = [];
   const resident = residentLaunch(["foo.bar", "web", "secret"], () => entries.map((entry) => ({ ...entry })));

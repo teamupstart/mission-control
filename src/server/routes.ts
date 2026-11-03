@@ -285,6 +285,7 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
+  TaskAdvisorUnsupportedError,
   TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
@@ -4885,6 +4886,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
+        advisorModel: data.advisorModel ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -4895,7 +4897,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+        return c.json({ error: error.message }, 400);
+      }
       throw error;
     }
   }
@@ -8204,7 +8208,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) return { ok: false, status: 400, body: { error: error.message } };
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+        return { ok: false, status: 400, body: { error: error.message } };
+      }
       throw error;
     }
   }
@@ -8355,6 +8361,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
+      advisorModel: task.advisorModel ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,

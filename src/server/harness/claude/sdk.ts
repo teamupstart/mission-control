@@ -44,6 +44,7 @@ import type {
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
@@ -1333,6 +1334,18 @@ function withArtifactTool(env: Record<string, string | undefined>): Record<strin
   return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
 }
 
+/**
+ * The task's advisor pin as session environment: `off` sets the one switch that also beats
+ * an inherited user setting. Inherit (`null`) and a model pin leave the env as it was.
+ */
+function withAdvisorEnv(
+  env: Record<string, string | undefined>,
+  choice: SdkLaunchOptions["advisorModel"],
+): Record<string, string | undefined> {
+  const extra = choice ? capabilitiesFor("claude").advisor?.launchEnv(choice) ?? {} : {};
+  return Object.keys(extra).length > 0 ? { ...env, ...extra } : env;
+}
+
 /** One resident entry as Claude Code's `mcpServers` value. */
 function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> {
   const claude = entry.options.claude ?? {};
@@ -1366,6 +1379,21 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
     // for an account instead, and this is the setting that keeps them out.
     settings: { disableClaudeAiConnectors: true },
   };
+}
+
+/**
+ * `claudeMcpOptions` plus the task's advisor pin, as ONE flag-layer `settings` object.
+ *
+ * Both write the same option, and the SDK takes a single value for it, so a resident run
+ * pinned to an advisor has to carry `disableClaudeAiConnectors` and `advisorModel` together;
+ * spreading the two separately would let whichever came second erase the other. Inherit adds
+ * nothing, so an unpinned launch's options are exactly what they were before the pin existed.
+ */
+function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
+  const mcp = claudeMcpOptions(opts);
+  const advisor = opts.advisorModel ? capabilitiesFor("claude").advisor?.sdkSettings(opts.advisorModel) ?? {} : {};
+  if (Object.keys(advisor).length === 0) return mcp;
+  return { ...mcp, settings: { ...mcp.settings, ...advisor } };
 }
 
 /**
@@ -1474,7 +1502,10 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // This session's trace context, which also clears any `TRACEPARENT` the daemon
         // inherited. Claude Code reads it at each interaction span in an SDK session; it
         // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
-        env: withAgentTraceContext(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.traceContext),
+        env: withAgentTraceContext(
+          withAdvisorEnv(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.advisorModel),
+          opts.traceContext,
+        ),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
@@ -1525,7 +1556,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // every session that started in any other mode unable to reach bypass at all.
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
-        ...claudeMcpOptions(opts),
+        ...claudeFlagOptions(opts),
         // The ask channel's disallow + redirect are deliberately NOT rendered here. They
         // exist because a menu on a child's screen is unreadable to the dashboard; a
         // driver request IS the dashboard's own control, so the native tool is better
@@ -1547,7 +1578,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // replaced, so the replacement mints its own.
         const fresh = await deps.query({ prompt, options: {
           ...base,
-          ...claudeMcpOptions(opts),
+          ...claudeFlagOptions(opts),
           // The original options predate any accepted live model change.
           ...(modelOverride ? { model: modelOverride } : {}),
           resume,

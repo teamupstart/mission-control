@@ -1257,6 +1257,18 @@ These rules hold across phases:
    argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
+7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`
+   document compiled in by `npm run residents`, plus its other settings in `BUILTIN_RESIDENTS`
+   (`src/server/residents/builtin-residents.ts`). Its id is `builtin:<slug>`, durable and
+   append-only. `reconcileBuiltinResidentProfiles` runs at daemon start before the Registry loads,
+   inserts a missing built-in, and gives a changed one a NEW revision, so rule 2 holds across
+   upgrades. Unlike built-in Personas, a built-in resident is stored, because a run joins
+   `resident_profile_revisions` for its pinned revision. The store refuses every edit and archive of
+   a `builtin:` id. It reserves a built-in's name for create and rename. It leaves built-ins out of
+   the live-profile bound, settings snapshots and restores. A built-in's `normalized_name` is a
+   sentinel, so an operator profile that already held the name keeps it, and both are listed.
+   Every surface that offers profiles as choices names a built-in through
+   `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null

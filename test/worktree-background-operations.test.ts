@@ -624,11 +624,16 @@ test("a slow Git removal does not make an unrelated preview wait", async () => {
   await removalStarted;
   // The removal is parked inside `git worktree remove`. An observation - what every preview
   // and inventory read starts with - must still complete.
+  //
+  // The removal stays parked until `finish()` below, so a `status()` that queued behind it
+  // would never resolve at all: the timer only has to outlast a SLOW observation, not a
+  // blocked one. Ten seconds did not on a host running several full suites at once (a real
+  // `git` scan took longer), so the bound is generous; it detects the same bug either way.
   let timer: ReturnType<typeof setTimeout> | undefined;
   const outcome = await Promise.race([
     slow.status().then(() => "observed" as const),
     new Promise<"blocked">((resolve) => {
-      timer = setTimeout(() => resolve("blocked"), 10_000);
+      timer = setTimeout(() => resolve("blocked"), 60_000);
     }),
   ]);
   clearTimeout(timer);

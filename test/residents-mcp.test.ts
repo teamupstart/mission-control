@@ -533,19 +533,22 @@ test("a URL whose path is shaped like a key is a credential; ordinary MCP endpoi
 
 test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {
   const globals = globalsOf("claude", LOGIN_SERVERS);
+  // [name, goes to Claude directly]. Every global row keeps `launcher: true`; `harnessLogin` marks the direct ones.
   const expected = [
-    ["login", false], ["login-sse", false], ["headed", true], ["queried", true], ["userinfo", true],
-    ["plaintext", true], ["plaintext-sse", true], ["fragment", true], ["loopback", false], ["path-key", true], ["path-uuid", true], ["local", true],
+    ["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false],
+    ["plaintext", false], ["plaintext-sse", false], ["fragment", false], ["loopback", true], ["path-key", false], ["path-uuid", false], ["local", false],
   ];
+  const direct = (server: Resolved) => [server.name, server.harnessLogin === true];
   const inherited = await resolve(profile(), globals);
   assert.ok(inherited.ok && inherited.servers);
-  assert.deepEqual(inherited.servers.map((server) => [server.name, server.launcher]), expected);
+  assert.deepEqual(inherited.servers.map(direct), expected);
+  assert.ok(inherited.servers.every((server) => server.launcher), "every global row keeps launcher: true");
   const selected = await resolve(profile({
     inheritDefaults: false,
     selected: Object.keys(LOGIN_SERVERS).map((name) => ({ source: "global", agent: "claude", name })),
   }), globals);
   assert.ok(selected.ok && selected.servers);
-  assert.deepEqual(selected.servers.map((server) => [server.name, server.launcher]), expected, "selected behaves as inherited");
+  assert.deepEqual(selected.servers.map(direct), expected, "selected behaves as inherited");
   assert.deepEqual(
     inherited.servers.map(({ secrets: _secrets, ...server }) => server),
     selected.servers.map(({ secrets: _secrets, ...server }) => server),
@@ -567,6 +570,16 @@ test("an inherited or selected Claude login server goes to Claude directly; ever
     "a launcher server's definition stays daemon-private: no plain-http login URL, no fragment",
   );
   assert.deepEqual(JSON.stringify(launch.residentMcpLaunchForRun(runId)!.preview().slice(0, 2)), JSON.stringify(entries.slice(0, 2)), "the preview renders them the same");
+
+  // Rollback safety: the stored row still says `launcher: true`, so a reader that predates
+  // `harnessLogin` - which decides on `launcher` alone - starts it through the launcher, as before
+  // this change, and never renders the SSE server as HTTP. Without the field, this reader does too.
+  const row = JSON.parse((openDb().prepare("SELECT definition_json FROM resident_run_mcp_servers WHERE run_id = ? AND name = 'login-sse'").get(runId) as { definition_json: string }).definition_json);
+  assert.equal(row.launcher, true);
+  assert.equal(row.harnessLogin, true);
+  const { harnessLogin: _field, ...older } = row;
+  openDb().prepare("UPDATE resident_run_mcp_servers SET definition_json = ? WHERE run_id = ? AND name = 'login-sse'").run(JSON.stringify(older), runId);
+  assert.equal(launch.residentMcpLaunchForRun(runId)!.preview()[1]!.shape, "launcher");
 });
 
 // ---- the snapshot, the entries and the tickets ----
@@ -739,7 +752,7 @@ test("a recovery point redacts a global server's private definition, and a run r
 test("a recovery point redacts a Claude login server's definition too, and a run restored from it still refuses that server", async () => {
   const { DatabaseSync } = await import("node:sqlite");
   const resolved = await resolve(profile(), globalsOf("claude", { login: LOGIN_SERVERS.login }));
-  assert.ok(resolved.ok && resolved.servers?.[0]?.launcher === false);
+  assert.ok(resolved.ok && resolved.servers?.[0]?.harnessLogin === true);
   const runId = crypto.randomUUID();
   seedRun(runId, resolved.servers);
   const copy = join(home, `redact-login-${Date.now()}.sqlite3`);

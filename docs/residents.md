@@ -381,7 +381,7 @@ through the launcher. That is what lets a resident use a server you signed in to
 Claude Code: Claude Code keeps that login under the server's name, type, URL and headers exactly as
 configured, and only its own connection can present it. So such a server's URL appears in the
 agent's launch-scoped MCP configuration. Renaming the server or changing its URL, even by a
-trailing slash, asks for a new login. Every other global server still starts through the launcher,
+trailing slash, asks for a new login. Every other usable global server still starts through the launcher,
 which presents no login and keeps the URL private: any with a header, a query value or a fragment;
 one on plain `http` to another host, because a login is a credential and travels in the clear only
 on this machine; and one whose path has a segment shaped like a key (a known key prefix such as
@@ -423,7 +423,7 @@ Control's launcher, as that server's environment, headers or query; never the ag
 a generated configuration file, a log or the transcript. A global server reaches the agent in one
 of two ways:
 
-- **Through the launcher**, for every global server except the one below. Its definition stays out
+- **Through the launcher**, for every usable global server except the one below. Its definition stays out
   of the agent's launch arguments and generated configuration: the agent is handed only a launcher
   entry naming the run, the server and a credential file. The launcher then starts a stdio server
   with its configured command and arguments, so those ordinary arguments appear on that server's

@@ -250,7 +250,7 @@ that run's starts, and removed when the run ends.
 **No secret on a command line, in a configuration file or in the agent's environment.** Each
 harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
 written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
-environment is inherited by every shell and tool it runs. So a global server (except the Claude
+environment is inherited by every shell and tool it runs. So a usable global server (except the Claude
 Code remote server described after this list), and a custom server with any secret, is rendered
 as an entry for Mission's scoped launcher, whose arguments name only
 the run, the server's name and a credential file:

@@ -509,7 +509,7 @@ async function probeClaude(): Promise<void> {
     assert.ok(oauthDefinition.harnessLogin && oauthDefinition.transport, "a headerless remote server may use Claude Code's own login");
     store.writeRunMcpSnapshot(oauthRun, [{
       source: "global", name: "oauth-remote", transport: oauthDefinition.transport,
-      launcher: false, options: oauthDefinition.options, secrets: oauthDefinition.secrets,
+      launcher: true, harnessLogin: true, options: oauthDefinition.options, secrets: oauthDefinition.secrets,
     }], Date.now());
     phaseName = "oauth";
     toolSent = true;

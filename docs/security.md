@@ -175,15 +175,17 @@ to that daemon. Stop the standalone daemon and reopen the app to use the menu.
 ### Resident launch grants
 
 A resident profile's **Control other sessions** setting is off by default and grants nothing on
-its own. It lets one thing give a resident run the grant above: the operator's **Launch** click
-in the desktop app.
+its own. It lets the operator's **Launch** or **Restart on new profile** click in the desktop
+app give a resident run the grant above. Restart authorizes the replacement launch, never
+copies the old run's grant.
 
 - **The click.** Inside the click, before the launch request is sent, the dashboard arms a
   single-use authorization bound to that launch's request id, the profile id and the profile
   revision. It uses the same private preload capability and trusted-click check as the session
   menu, through its own channel registered with `serveDashboardClick`. It expires after 15
   seconds and is cleared when the daemon is replaced.
-- **The consumption.** Only the resident launch route asks the shell for it, over the private
+- **The consumption.** The resident launch and profile-restart routes ask the shell for it through
+  `ResidentManager.launch`, over the private
   utility-process channel. It asks once, for the request that reserved the run, when the run's
   pinned revision turns control on, and for the revision the run pinned. A request carrying the
   machine token, a signed agent credential, an agent actor header or a non-loopback origin never

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Hono } from "hono";
 
 import type { Persona } from "../src/shared/workflow.ts";
 import type { ResidentLaunchAuthorization } from "../src/shared/session-control-authorization.ts";
@@ -28,7 +29,9 @@ const store = await import("../src/server/residents/store.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { openDb, upsertTask } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { ResidentProfileRevisionSchema, residentRunControlRecorded } = await import("../src/shared/residents.ts");
+const { ResidentProfileRevisionSchema, residentRunControlRecorded, residentRestartRequestId } = await import("../src/shared/residents.ts");
+const { ResidentLoop } = await import("../src/server/residents/loop.ts");
+const { registerResidentLoopRoutes } = await import("../src/server/residents/routes.ts");
 const { residentLaunchControlReport, residentRunControlOutcome } = await import("../src/web/residents/launch.ts");
 const {
   armResidentLaunchAuthorization,
@@ -163,6 +166,47 @@ function control(runId: string) {
   return store.getResidentRun(runId)!.run.control;
 }
 
+for (const scenario of ["authorized", "off", "no-click", "stale-revision", "token", "agent", "credential", "foreign-origin"] as const) {
+  test(`Restart on new profile session control: ${scenario}`, async () => {
+    const h = harness();
+    const profile = profileIn(h, true);
+    const originalRequest = randomUUID();
+    h.clicks.set(originalRequest, { requestId: originalRequest, profileId: profile.id, revision: 1 });
+    const original = await launched(h, profile.id, originalRequest);
+    assert.equal(h.registry.sessionControlEnabled(original.sessionId), true);
+    const updated = h.residents.updateProfile(profile.id, 1, settings(scenario !== "off"));
+    assert.ok(updated.ok);
+    const requestId = residentRestartRequestId(original.run.id);
+    if (scenario !== "no-click") h.clicks.set(requestId, {
+      requestId, profileId: profile.id, revision: scenario === "stale-revision" ? 1 : 2,
+    });
+    const loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: {
+      sendWhenIdle: async () => null, compact: async () => 1,
+    } });
+    const app = new Hono();
+    registerResidentLoopRoutes(app, { registry: h.registry, residents: h.residents, loop });
+    const headers: Record<string, string> = scenario === "token" ? { "x-harness-token": "token" }
+      : scenario === "agent" ? { "x-mission-operation-actor": "agent" }
+      : scenario === "credential" ? { "x-mission-scout-credential": "credential" }
+      : scenario === "foreign-origin" ? { origin: "https://example.com" } : {};
+    const restartRequest = () => app.request(`/api/residents/runs/${original.run.id}/restart`, { method: "POST", headers });
+    try {
+      const response = await restartRequest();
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      assert.equal(result.run.profileRevision, 2);
+      assert.notEqual(result.run.id, original.run.id);
+      const sessionId = h.registry.getTask(result.taskId)!.sessionId!;
+      assert.equal(h.registry.sessionControlEnabled(sessionId), scenario === "authorized");
+      assert.equal(residentRunControlRecorded(control(result.run.id)), scenario === "authorized");
+      const asks = h.asked.length;
+      assert.equal(asks, ["authorized", "no-click", "stale-revision"].includes(scenario) ? 2 : 1);
+      assert.deepEqual(await (await restartRequest()).json(), result, "retry returns the same replacement");
+      assert.equal(h.asked.length, asks, "retry cannot consume another click");
+    } finally { await loop.stop(); }
+  });
+}
+
 // ---- the shell's half: arm and consume ----
 
 function shellChannel() {
@@ -171,6 +215,20 @@ function shellChannel() {
   serveSessionControlAuthorization(child as never);
   return { port, authorize: residentLaunchAuthorization(port as never) };
 }
+
+test("the shell accepts a resident restart's stable request id, bound to its new revision and single use", async () => {
+  const c = shellChannel();
+  const click = { requestId: residentRestartRequestId(randomUUID()), profileId: "profile-1", revision: 2 };
+  for (const requestId of ["resident-restart:", "resident-restart:not-a-uuid", `other:${randomUUID()}`]) {
+    assert.equal(armResidentLaunchAuthorization({ ...click, requestId }), false);
+  }
+  assert.equal(armResidentLaunchAuthorization(click), true);
+  assert.equal(await c.authorize({ ...click, revision: 3 }), false);
+  assert.equal(await c.authorize(click), false, "a mismatch consumes the click");
+  assert.equal(armResidentLaunchAuthorization(click), true);
+  assert.equal(await c.authorize(click), true);
+  assert.equal(await c.authorize(click), false);
+});
 
 test("the shell gives a resident launch the click armed for its exact request, profile and revision, once, within 15 seconds", async () => {
   const c = shellChannel();

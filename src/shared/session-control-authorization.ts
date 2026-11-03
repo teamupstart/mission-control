@@ -25,7 +25,12 @@ export interface SessionControlAuthorizationReply {
  * revision, over the same private channel as the menu's authorization above.
  */
 export const ResidentLaunchAuthorizationSchema = z.object({
-  requestId: z.string().uuid(),
+  // Ordinary launches mint a UUID; profile restarts use residentRestartRequestId(runId)
+  // so every retry names the same replacement. Both still bind one exact launch click.
+  requestId: z.string().refine(
+    (id) => z.string().uuid().safeParse(id.replace(/^resident-restart:/, "")).success,
+    "Expected a UUID or resident-restart:<UUID>",
+  ),
   profileId: z.string().min(1).max(200),
   revision: z.number().int().positive(),
 }).strict();

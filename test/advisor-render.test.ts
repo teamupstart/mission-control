@@ -32,7 +32,7 @@ test("each advisor outcome reads as Claude Code words it", () => {
   assert.equal(advisorNoteLabel({ model: null, outcome: "error" }), "Advisor unavailable (unknown)");
 });
 
-test("advice with words sits behind a closed disclosure; everything else is one line", () => {
+test("an advisor result with words sits behind a closed disclosure; one without is a single line", () => {
   const advised = renderToStaticMarkup(
     createElement(AdvisorNote, { advisor: { model: "claude-opus-5-5", outcome: "advised", text: "Check the null case." } }),
   );
@@ -40,6 +40,27 @@ test("advice with words sits behind a closed disclosure; everything else is one 
   assert.match(advised, /class="tt-desc">Show what the advisor told Claude</, "the disclosure says what opening it does");
   assert.doesNotMatch(advised, /<details[^>]* open/, "closed by default");
   assert.match(advised, /Check the null case\./);
+
+  // A refusal can carry the advisor's own words. Claude Code shows "Advisor declined to advise
+  // on this request" and reveals those words when the row is expanded, so it is the same closed
+  // disclosure under the refusal's label - never the review's label, and never open.
+  const declined = renderToStaticMarkup(
+    createElement(AdvisorNote, {
+      advisor: { model: "claude-opus-5-5", outcome: "declined", text: "I can't help with that." },
+    }),
+  );
+  assert.match(
+    declined,
+    /^<details class="advisor-note"><summary aria-describedby="[^"]+">Advisor declined to advise on this request<\/summary>/,
+  );
+  assert.doesNotMatch(declined, /<details[^>]* open/, "a refusal's words start hidden too");
+  assert.doesNotMatch(declined, /reviewed the conversation/, "a refusal never reads as a review");
+  assert.match(declined, /<div class="advisor-note-text">I can(&#x27;|')t help with that\.<\/div>/);
+
+  const declinedBare = renderToStaticMarkup(
+    createElement(AdvisorNote, { advisor: { model: "claude-opus-5-5", outcome: "declined" } }),
+  );
+  assert.equal(declinedBare, '<p class="advisor-note">Advisor declined to advise on this request</p>');
 
   const redacted = renderToStaticMarkup(
     createElement(AdvisorNote, { advisor: { model: "claude-opus-5-5", outcome: "redacted" } }),

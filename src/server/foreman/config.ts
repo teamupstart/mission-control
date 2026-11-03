@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ForemanPlannerHealth, ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
-import type { ForemanHealthReport } from "@shared/foreman-health.ts";
+import type { ForemanHealthIssue, ForemanHealthReport } from "@shared/foreman-health.ts";
 import type {
   ForemanConfig,
   ForemanConfigPatch,
@@ -70,6 +70,23 @@ interface ForemanLease {
 /** Latest leader-owned projection of the worker's process-local planner circuit. */
 let plannerHealthReport: ForemanPlannerHealthReport | null = null;
 let workerHealthReport: { report: ForemanHealthReport; reportedAt: number } | null = null;
+/**
+ * Which occurrence of a group the operator was looking at. `occurrenceId` is minted fresh by
+ * the worker's tracker on every failure, unlike `lastSeenAt` (repeats within a millisecond)
+ * and `count` (stops at its cap), so no later failure can match it.
+ */
+export interface ForemanHealthOccurrence {
+  id: string;
+  occurrenceId: string;
+}
+
+/**
+ * Error groups the operator dismissed, keyed by group id and valued at the occurrence the
+ * operator was looking at. A group stays hidden until it fails AGAIN, so dismissing
+ * acknowledges what has been seen without silencing what happens next. Process-local, like
+ * the report it filters, and bounded by it: an id the worker no longer reports is dropped.
+ */
+const dismissedHealth = new Map<string, string>();
 /** Operator retry signal. Process-local by design: it is control, not durable schedule state. */
 let plannerRetryGeneration = 0;
 /** The one worker allowed to spend the current retry generation. */
@@ -345,7 +362,34 @@ export function recordForemanHealth(report: ForemanHealthReport, now = Date.now(
   if (workerHealthReport?.report.workerId === report.workerId
     && workerHealthReport.report.health.revision > report.health.revision) return true;
   workerHealthReport = { report: structuredClone(report), reportedAt: now };
+  const reportedIds = new Set(report.health.issues.map((issue) => issue.id));
+  for (const id of dismissedHealth.keys()) if (!reportedIds.has(id)) dismissedHealth.delete(id);
   return true;
+}
+
+/**
+ * Hide the named error groups from the status projection until each one recurs.
+ *
+ * A group is dismissed only when it is in the current report AND its latest occurrence is
+ * still the one the operator was shown (`occurrenceId`). A stale id cannot pre-silence a
+ * failure that has not happened yet, and a report that lands between display and dismissal
+ * leaves the newer occurrence visible instead of hiding it unseen. Observability only: the
+ * worker's tracker, its retry and recovery rules are untouched. Returns how many groups
+ * this call dismissed.
+ */
+export function dismissForemanHealthIssues(seen: readonly ForemanHealthOccurrence[]): number {
+  const shown = new Map(seen.map((entry) => [entry.id, entry.occurrenceId]));
+  let dismissed = 0;
+  for (const issue of workerHealthReport?.report.health.issues ?? []) {
+    if (shown.get(issue.id) !== issue.occurrenceId) continue;
+    dismissedHealth.set(issue.id, issue.occurrenceId);
+    dismissed++;
+  }
+  return dismissed;
+}
+
+function undismissedHealthIssues(issues: readonly ForemanHealthIssue[]): ForemanHealthIssue[] {
+  return issues.filter((issue) => dismissedHealth.get(issue.id) !== issue.occurrenceId);
 }
 
 /** Live status: config, lease liveness, and bounded worker diagnostics. */
@@ -431,6 +475,7 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     running: leaderAlive(now),
     health: workerHealthReport ? {
       ...workerHealthReport.report.health,
+      issues: undismissedHealthIssues(workerHealthReport.report.health.issues),
       reportedAt: workerHealthReport.reportedAt,
       current: leader?.workerId === workerHealthReport.report.workerId
         && now - workerHealthReport.reportedAt < LEASE_TTL_MS,

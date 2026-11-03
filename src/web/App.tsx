@@ -4091,6 +4091,7 @@ export function App(): React.JSX.Element {
           )}
           residents={route.page === "residents" ? (
             <ResidentsPage
+              sessions={sessions}
               runs={residentRuns}
               profiles={residentProfiles}
               personas={personas}

@@ -1307,21 +1307,10 @@ function missionMcpDescriptor() {
   return config.mcpServers?.["mission-control"] ?? null;
 }
 
-/**
- * Do what the brief asks, with no model call: start the session's own bundled MCP server, the
- * way the real CLI would from its `--mcp-config`, and call `report_product_issue`. That call
- * blocks inside the real tool until a human submits or dismisses the public preview, which is
- * the review-before-submit step a spec drives from the dashboard. Its answer becomes the turn.
- *
- * The draft is generalised from the brief rather than copied: the brief carries private paths,
- * and the tool's issue is public.
- */
-async function runReportBug(prompt) {
+/** Run real Mission Control tools from this fake agent, without a model call. */
+async function withMissionMcp(work) {
   const descriptor = missionMcpDescriptor();
   if (!descriptor) return "This session has no Mission Control MCP server, so nothing was reported.";
-  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
-  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
-  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
   const child = spawn(descriptor.command, descriptor.args ?? [], {
     cwd: process.cwd(),
     env: { ...process.env, ...descriptor.env },
@@ -1348,8 +1337,20 @@ async function runReportBug(prompt) {
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
   try {
-    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-report-bug", version: "1" } });
+    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-mission-tools", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    return await work(request);
+  } finally {
+    child.stdin.end();
+  }
+}
+
+/** The bug-report scenario waits for the public issue preview's human response. */
+async function runReportBug(prompt) {
+  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
+  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
+  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  return withMissionMcp(async (request) => {
     const called = await request("tools/call", {
       name: "report_product_issue",
       arguments: {
@@ -1364,9 +1365,18 @@ async function runReportBug(prompt) {
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
-  } finally {
-    child.stdin.end();
-  }
+  });
+}
+
+/** A resident records its pacing, then waits inside the real review tool. */
+async function runResidentReview() {
+  return withMissionMcp(async (request) => {
+    const pacing = await request("tools/call", { name: "schedule_next_iteration", arguments: {
+      callId: "resident-review-before", delaySeconds: 2, reason: "Review cadence" } });
+    const result = await request("tools/call", { name: "request_input", arguments: {
+      question: "Continue resident triage?", options: [{ label: "Continue" }, { label: "Defer" }] } });
+    return `Resident review resolved: ${JSON.stringify(result)}; pacing: ${JSON.stringify(pacing)}`;
+  });
 }
 
 /** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
@@ -1567,6 +1577,11 @@ rl.on("line", (line) => {
 
     // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
     // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
+      beginHeldTurn(runResidentReview());
+      return;
+    }
+
     if (prompt.includes(REPORT_BUG_MARKER)) {
       beginHeldTurn(runReportBug(prompt));
       return;

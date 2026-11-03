@@ -433,6 +433,57 @@ test("a finished task's outcome reads from the left of its pill, whole", async (
   await capture(page, "outcome-pill");
 });
 
+for (const detached of [false, true]) for (const resolution of ["answer", "dismiss"] as const) test(`resident review ${resolution} ${detached ? "after restart" : "attached"} releases its hold and wakes again`, async ({ dashboard: page, daemon }) => {
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Review watcher" }, instructions: { markdown: "Triage the fixture inbox." }, execution: { model: "claude-fable-5" },
+    loop: { delaySeconds: 30, minDelaySeconds: 1, iterationCap: 2 },
+  } });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null,
+    requestId: `review-${resolution}` });
+  await surface(page, daemon, profile, "band");
+  const composer = page.locator(".console-detail").getByPlaceholder(/^Reply to this session/);
+  await composer.fill("E2E_RESIDENT_REVIEW");
+  await composer.press("Enter");
+  await expect.poll(async () => (await request<Array<{ pendingReviews: number }>>(daemon, "/api/sessions", undefined, "GET"))[0]?.pendingReviews,
+    { timeout: 60_000 }).toBe(1);
+  if (detached) {
+    await daemon.crash();
+    await daemon.restart();
+    await page.reload();
+  }
+  // Visit every resident surface while the real review is pending.
+  await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await page.reload();
+  for (const kind of ["page", "dock", "card", "band"] as const) {
+    if (kind === "band") {
+      await request(daemon, "/api/ui/config", { layout: "console" }, "PUT");
+      await page.reload();
+    }
+    const host = await surface(page, daemon, profile, kind);
+    const status = kind === "card" ? page.locator(".tile.is-resident").getByLabel("Resident loop status") : host.getByLabel("Resident loop status");
+    await expect(status).toContainText("waiting on you");
+    await expect(status).not.toContainText("next in");
+    await capture(page, `review-${resolution}-${detached ? "detached" : "attached"}-${kind}-held`);
+  }
+  expect(live(daemon)?.loop_state).not.toBe("paused");
+  expect(live(daemon)?.iteration).toBe(1);
+  const detail = page.locator(".console-detail");
+  await detail.getByRole("button", { name: /to review/ }).click();
+  const modal = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(modal);
+  if (resolution === "answer") {
+    await modal.getByRole("radio", { name: /Continue/ }).check();
+    await modal.getByRole("button", { name: "Submit", exact: true }).click();
+  } else {
+    await modal.getByRole("button", { name: "Dismiss", exact: true }).click();
+  }
+  // Requested 2s pacing must win over the 30s profile default; no Resume or Run now.
+  await expect.poll(() => live(daemon)?.iteration, { timeout: 15_000 }).toBe(2);
+  await expect(detail.getByLabel("Resident loop status")).not.toContainText("waiting on you");
+  await expect(detail.getByRole("article", { name: "resident", exact: true })).toHaveCount(1);
+  await capture(page, `review-${resolution}-${detached ? "detached" : "attached"}-woke`);
+});
+
 test("card: clicking the live loop status or the empty middle opens the session, the controls menu does not", async ({ daemon, dashboard: page }) => {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {

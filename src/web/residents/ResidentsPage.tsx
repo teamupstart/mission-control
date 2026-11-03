@@ -9,6 +9,7 @@ import {
   type ResidentProfileRevision,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
+import type { Session } from "@shared/types.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
@@ -45,6 +46,7 @@ export function residentProfileFact(profile: ResidentProfile, personas: readonly
 export function ResidentsPage({
   profiles,
   runs = [],
+  sessions = [],
   personas,
   selectedId,
   creating,
@@ -61,6 +63,7 @@ export function ResidentsPage({
 }: {
   profiles: readonly ResidentProfile[];
   runs?: readonly ResidentRunSummary[];
+  sessions?: readonly Session[];
   personas: readonly PersonaView[];
   /** From the route. Null shows the rail with nothing open. */
   selectedId: string | null;
@@ -207,7 +210,7 @@ export function ResidentsPage({
           {selected && !skillSources && !mcpServers && runs.filter((run) => run.profileId === selected.id).map((run) =>
             <section className="resident-live-run" aria-label={`Live run of ${selected.name}`} key={run.id}>
               <strong>Revision {run.profileRevision}</strong>
-              <ResidentLoopStatusLine loop={run} />
+              <ResidentLoopStatusLine loop={run} session={sessions.find(session => session.task?.id === run.taskId)} />
               <ResidentLoopControls mark={residentSessionMark(run, selected)} />
             </section>
           )}

@@ -90,6 +90,30 @@ test("a crashed owner leaves no kernel lease to reclaim", async () => {
   }
 });
 
+test("repeated release is harmless and preserves a successor's owner metadata", async () => {
+  const { root, metadataPath } = await fixture();
+  let first: E2eHostLease | null = null;
+  let second: E2eHostLease | null = null;
+  try {
+    first = await acquireE2eHostLease({ metadataPath, port: 0, workers: 4 });
+    await first.release();
+    second = await acquireE2eHostLease({ metadataPath, port: first.owner.port, workers: 4 });
+
+    // The first lease's finally cleanup must not touch the new owner's metadata.
+    await assert.doesNotReject(first.release());
+    const current = JSON.parse(await readFile(metadataPath, "utf8")) as { token: string };
+    assert.equal(current.token, second.owner.token);
+
+    await second.release();
+    await assert.doesNotReject(second.release());
+    await assert.rejects(readFile(metadataPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await first?.release();
+    await second?.release();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("an unrelated process on the lease port fails fast", async () => {
   const { root, metadataPath } = await fixture();
   const unrelated = createServer((socket) => socket.end("not-a-mission-control-lease\n"));

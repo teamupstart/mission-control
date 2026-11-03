@@ -58,14 +58,22 @@ export function launchFailureAnchorId(taskId: string): string {
   return `launch-failure-${taskId}`;
 }
 
-/** Bring the surface drawing this task's failure into view and give it focus. False if none is drawn. */
-export function revealLaunchFailure(tasks: readonly Task[], taskId: string): boolean {
+/**
+ * Bring the surface drawing this task's failure into view and give it focus.
+ *
+ * `missing` when nothing draws it (its column is folded), `inert` when something does but it
+ * sits in an inert subtree - the Board's other columns while a session is drilled in - where
+ * focus cannot land and its actions cannot be pressed. Either way the caller has a layout
+ * change to make first; reporting `shown` there would leave the operator with nothing to reach.
+ */
+export function revealLaunchFailure(tasks: readonly Task[], taskId: string): "shown" | "missing" | "inert" {
   const group = openLaunchFailureGroups(tasks).find((g) => g.tasks.some((t) => t.id === taskId));
   const target = group ? document.getElementById(launchFailureAnchorId(latestLaunchFailure(group).id)) : null;
-  if (!target) return false;
+  if (!target) return "missing";
+  if (target.closest("[inert]")) return "inert";
   target.scrollIntoView({ block: "center", behavior: "smooth" });
   target.focus({ preventScroll: true });
-  return true;
+  return "shown";
 }
 
 function title(task: Task): string {

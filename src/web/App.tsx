@@ -1787,10 +1787,13 @@ export function App(): React.JSX.Element {
         requestAnimationFrame(() => requestAnimationFrame(then));
       };
       afterPaint(() => {
-        if (revealLaunchFailure(tasks, taskId) || layout !== "board") return;
-        // The Board draws failed tiles in Working; a folded Working column draws only its strip.
-        // Asking to see a failure is asking for that column, so unfold it and look again.
-        setColumnWidth("working", "normal");
+        const first = revealLaunchFailure(tasks, taskId);
+        if (first === "shown" || layout !== "board") return;
+        // Drawn, but inert: a drilled-in session makes every other column inert, so close the
+        // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. A
+        // failure already on the drilled rail is shown above, and the open session stays put.
+        if (first === "inert") setBoardOpen(false);
+        else setColumnWidth("working", "normal");
         afterPaint(() => revealLaunchFailure(tasks, taskId));
       });
     },

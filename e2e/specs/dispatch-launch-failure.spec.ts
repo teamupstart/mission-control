@@ -445,3 +445,42 @@ test("Show unfolds a folded Working column, and the report dialog hands focus ba
     restore();
   }
 });
+
+/**
+ * A drilled-in Board session makes every other column inert, and focus cannot land inside an
+ * inert subtree. Show must not stop at an anchor nobody can reach: it closes the drill-in, then
+ * focuses the failure.
+ */
+test("Show closes a drilled-in Board session to reach a failure in an inert column", async ({ dashboard, daemon }) => {
+  await useLayout(dashboard, daemon, "board");
+  const live = "Keep this session open";
+  await dispatch(daemon, "chat", live);
+  const openLive = dashboard.getByRole("button", { name: new RegExp(`^Open ${live}`) });
+  await expect(openLive).toBeAttached({ timeout: 60_000 });
+  // Idle, so it sits in the Idle column and drilling into it leaves Working inert.
+  await expect.poll(async () => {
+    const sessions = await api<Array<{ state: string; task: { title: string } | null }>>(daemon, "/api/sessions");
+    return sessions.find((s) => s.task?.title === live)?.state ?? null;
+  }, { timeout: 60_000 }).toBe("idle");
+
+  const restore = breakOrigin(daemon);
+  const title = "Fail while drilled in";
+  try {
+    await dispatch(daemon, "chat", title);
+    const tile = dashboard.getByRole("list", { name: "Did not start" }).getByRole("listitem").filter({ hasText: title });
+    const anchor = tile.getByLabel(`${title} did not start`);
+    await expect(anchor).toBeAttached();
+    await dashboard.getByRole("region", { name: "Launch failures" }).getByRole("button", { name: "Close" }).click();
+
+    await openLive.focus();
+    await dashboard.keyboard.press("Enter");
+    await expect.poll(() => anchor.evaluate((element) => Boolean(element.closest("[inert]"))),
+      { message: "drilling into the idle session makes the Working column inert" }).toBe(true);
+
+    await dashboard.getByRole("button", { name: /1\s*did not start/ }).click();
+    await expect(anchor).toBeFocused();
+    expect(await anchor.evaluate((element) => Boolean(element.closest("[inert]"))), "the drill-in was closed").toBe(false);
+  } finally {
+    restore();
+  }
+});

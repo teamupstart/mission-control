@@ -92,6 +92,26 @@ test("a failure with nothing to say falls back to the service's own refusal", as
   assert.equal(response.body.detail, "cmux could not be opened.");
 });
 
+test("a refusal carries any prerequisite its starter named", async () => {
+  const response = await startSetupService("codex-mcp-trust", {
+    "claude-mcp-trust": unused,
+    "codex-mcp-trust": async () => ({ ok: false, outcomeUnknown: false, error: "not registered", prerequisite: "mission-integrations" }),
+    "herdr-server": unused,
+    "cmux-app": unused,
+    "cmux-socket-control": unused,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(response.body.prerequisite, "mission-integrations");
+  const herdr = await startSetupService("herdr-server", {
+    "claude-mcp-trust": unused,
+    "codex-mcp-trust": unused,
+    "herdr-server": async () => ({ ok: false, outcomeUnknown: false }),
+    "cmux-app": unused,
+    "cmux-socket-control": unused,
+  });
+  assert.equal("prerequisite" in herdr.body, false);
+});
+
 test("the wire schema admits only a known service id and no second field", () => {
   assert.equal(SetupServiceStartSchema.safeParse({ service: "herdr-server" }).success, true);
   for (const body of [

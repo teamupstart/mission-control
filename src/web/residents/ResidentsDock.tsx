@@ -1,6 +1,6 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
+import { residentProfileChoiceName, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -251,7 +251,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                     <li key={run.id} className="residents-pop-row residents-pop-card" style={residentAccentStyle(mark.colorId)}>
                       <div className="residents-pop-card-head">
                         <ResidentChip mark={mark} title={residentMarkTitle(mark)} />
-                        <span className="residents-pop-name">{mark.name}</span>
+                        <span className="residents-pop-name"><span className="residents-pop-name-text">{mark.name}</span></span>
                         <span className="residents-pop-state residents-pop-pill" style={{ "--tone": `var(--${state.tone})` } as CSSProperties}>
                           <span className="residents-pop-dot" aria-hidden />
                           {state.label}
@@ -299,7 +299,10 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                   return (
                     <li key={profile.id} className="residents-pop-row">
                       <ResidentChip mark={mark} />
-                      <span className="residents-pop-name">{profile.name}</span>
+                      <span className="residents-pop-name">
+                        <span className="residents-pop-name-text">{profile.name}</span>
+                        {profile.builtin && <em className="resident-builtin-tag">built-in</em>}
+                      </span>
                       <span className="residents-pop-state" role="status">
                         {state?.busy
                           ? "starting…"
@@ -315,7 +318,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                         <button
                           type="button"
                           className="btn residents-pop-action"
-                          aria-label={`Launch ${profile.name}`}
+                          aria-label={`Launch ${residentProfileChoiceName(profile)}`}
                           disabled={state?.busy}
                           onClick={() => void launch(profile)}
                         >

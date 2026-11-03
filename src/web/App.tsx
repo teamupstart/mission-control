@@ -33,8 +33,17 @@ import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
+import {
+  LaunchFailureProvider,
+  LaunchFailureToasts,
+  ReportLaunchFailureDialog,
+  revealLaunchFailure,
+  type LaunchFailureControls,
+} from "./components/LaunchFailures.tsx";
+import { openLaunchFailureGroups } from "@shared/launch-failure.ts";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
+import { ResidentRestartPromptContext } from "./residents/restart-prompt.ts";
 import { KillModal } from "./components/KillModal.tsx";
 import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
@@ -90,7 +99,7 @@ import {
 } from "./lib/card-shortcuts.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
-import { collapsedColumnSessionIds } from "./lib/column-width.ts";
+import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -139,7 +148,7 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
-import { pinnedResidentSessions, residentMarksBySession } from "./residents/marker.ts";
+import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -600,6 +609,8 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  /** Set while the Complete dialog is Restart's offer, so it can say why it opened. */
+  const [restartPromptSessionId, setRestartPromptSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   // The session the Return to backlog confirm was showing when it sent its request. Requeueing
@@ -829,7 +840,22 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeComplete = useCallback(() => {
+    setCompleteSessionId(null);
+    setRestartPromptSessionId(null);
+  }, []);
+  /**
+   * Restart on new profile succeeded somewhere - a card menu, the band, the dock or the
+   * Residents page - and left the original task open. Offer to complete it now, with the
+   * ordinary Complete dialog over whatever page the operator is on; Cancel keeps it open, and
+   * the replaced session's band keeps the offer afterwards.
+   */
+  const promptRestartCompletion = useCallback((replacedTaskId: string) => {
+    const session = sessionsRef.current.find((candidate) => candidate.task?.id === replacedTaskId);
+    if (!session) return;
+    setRestartPromptSessionId(session.id);
+    setCompleteSessionId(session.id);
+  }, []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -1758,6 +1784,42 @@ export function App(): React.JSX.Element {
     },
     [navigate, layout],
   );
+  // The failure a Report bug press is confirming, or null.
+  const [reportingLaunchFailure, setReportingLaunchFailure] = useState<Task | null>(null);
+  const launchFailureControls = useMemo<LaunchFailureControls>(
+    () => ({
+      tasks,
+      openReport: setReportingLaunchFailure,
+      launchResident: (profileId) => openResidentLaunch(profileId),
+      openProfile: (profileId) => navigate({ page: "residents", profileId }),
+      openSession: openSessionOnFleet,
+    }),
+    [tasks, openResidentLaunch, navigate, openSessionOnFleet],
+  );
+  // "Show" from a toast or the top bar: back to the fleet, then to the surface drawing it once
+  // that page has painted. The failure is drawn from the task row, so it is there to find.
+  const showLaunchFailure = useCallback(
+    (taskId: string): void => {
+      navigate({ page: "fleet" });
+      const afterPaint = (then: () => void): void => {
+        requestAnimationFrame(() => requestAnimationFrame(then));
+      };
+      // Drawn, but inert: a drilled-in session makes every other column inert, so close the
+      // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. Both can
+      // hold at once - a folded Working behind a drilled-in Idle session - so each fix is followed
+      // by another look, and there are at most two to make. A failure already on the drilled rail
+      // is shown on the first look, and the open session stays put.
+      const look = (fixesLeft: number): void => afterPaint(() => {
+        const seen = revealLaunchFailure(tasks, taskId);
+        if (seen === "shown" || layout !== "board" || fixesLeft === 0) return;
+        if (seen === "inert") setBoardOpen(false);
+        else setColumnWidth("working", "normal");
+        look(fixesLeft - 1);
+      });
+      look(2);
+    },
+    [navigate, tasks, layout],
+  );
   /**
    * Run a Line stage click.
    *
@@ -2147,6 +2209,10 @@ export function App(): React.JSX.Element {
     [sessions, residentRuns, residentProfiles],
   );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
+  const residentReplacementBySession = useMemo(
+    () => residentReplacementsBySession(sessions, tasks, residentRuns),
+    [sessions, tasks, residentRuns],
+  );
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
@@ -2180,6 +2246,12 @@ export function App(): React.JSX.Element {
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
   // and a filter left over from browsing the fleet must not make the reply look like "no".
   const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
+  // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
+  // and session-card notices, and the top bar's `did not start` count all read these groups.
+  const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
+  // and on the Board a returned one whose Backlog card is hidden becomes a tile.
+  const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
@@ -2699,6 +2771,7 @@ export function App(): React.JSX.Element {
   const layoutHasContent =
     visible.length > 0 ||
     dispatchingTasks.length > 0 ||
+    failedLaunchTiles > 0 ||
     (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length + (layout === "board" ? restoringSessions.length : 0);
@@ -2791,6 +2864,8 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    residentReplacementBySession,
+    onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
@@ -3745,6 +3820,7 @@ export function App(): React.JSX.Element {
         )
         : (
           <LibraryPage
+            filter={filter}
             workflowSummaries={workflowSummaries}
             personas={personas}
             foremanSummary={{
@@ -3772,6 +3848,8 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <LaunchFailureProvider value={launchFailureControls}>
+      <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -3794,6 +3872,11 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           onOpenInbox={() => setInboxOpen(true)}
+          didNotStart={launchFailureGroups.length}
+          onShowDidNotStart={() => {
+            const first = launchFailureGroups[0];
+            if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
@@ -4243,18 +4326,6 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {completeSession && (
-          <CompleteModal
-            session={completeSession}
-            tasks={tasks}
-            tourOutcome={
-              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
-            }
-            onCompleted={() => onKilled(completeSession.id)}
-            onClose={closeComplete}
-          />
-        )}
-
         {killSession && (
           <KillModal
             session={killSession}
@@ -4285,7 +4356,8 @@ export function App(): React.JSX.Element {
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
           (layout !== "board" || restoringSessions.length === 0) &&
-          dispatchingTasks.length === 0 && (
+          dispatchingTasks.length === 0 &&
+          failedLaunchTiles === 0 && (
           hasSnapshot ? (
             <div className="empty">
               <p className="empty-title">No agent sessions detected</p>
@@ -4342,6 +4414,22 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* In the slot every page shares: Restart on new profile offers it from the
+                  Residents page and the dock as well as the fleet. */}
+              {completeSession && (
+                <CompleteModal
+                  session={completeSession}
+                  tasks={tasks}
+                  tourOutcome={
+                    completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+                  }
+                  lead={restartPromptSessionId === completeSession.id
+                    ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
+                    : undefined}
+                  onCompleted={() => onKilled(completeSession.id)}
+                  onClose={closeComplete}
+                />
+              )}
               {/* The everything-palette lives in the slot every page shares, because it
                   indexes every page: it opens over the fleet, the Library, a run reader and
                   Settings alike, and a row's navigation must not unmount the surface that
@@ -4534,8 +4622,22 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
+        {reportingLaunchFailure && (
+          <ReportLaunchFailureDialog
+            task={reportingLaunchFailure}
+            onClose={() => setReportingLaunchFailure(null)}
+          />
+        )}
+        <LaunchFailureToasts
+          tasks={tasks}
+          ready={hasSnapshot}
+          onShow={showLaunchFailure}
+          onReport={setReportingLaunchFailure}
+        />
       </div>
       </TourTargetHost>
+      </ResidentRestartPromptContext.Provider>
+      </LaunchFailureProvider>
     </OverlayHost>
   );
 }

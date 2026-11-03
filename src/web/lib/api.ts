@@ -131,7 +131,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import type { SetupChecksSnapshot, SetupRowId } from "@shared/setup-catalog.ts";
+import type { SetupChecksSnapshot, SetupRowId, SetupServicePrerequisite } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -209,6 +209,7 @@ export interface SetupServiceStartResult extends ActionResult {
   outcome?: "started" | "refused" | "unknown";
   label?: string;
   detail?: string;
+  prerequisite?: SetupServicePrerequisite;
 }
 
 /**
@@ -1945,6 +1946,16 @@ export const api = {
   // Send a dispatched task back to the backlog at the rank it had, cancelling it first when it
   // is still live. The session footer's Return to backlog; refused (409) on a done task.
   requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
+  // A dispatch that never started (`@shared/launch-failure.ts`). Dismiss answers every attempt
+  // a failed tile stands for; report starts the session that catalogs the failure and drafts
+  // its public bug report, which still waits for the operator to submit it; retry dispatches a
+  // backlog kind again as the same task, and files a chat again as a new one.
+  dismissLaunchFailures: (taskIds: readonly string[]) =>
+    post<ActionResult & { dismissed?: number }>(`/api/launch-failures/dismiss`, { taskIds }),
+  reportLaunchFailure: (taskId: string, repoRoot: string) =>
+    post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
+  retryLaunchFailure: (taskId: string) =>
+    post<ActionResult & { task?: Task }>(`/api/launch-failures/retry`, { taskId }),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.

@@ -69,7 +69,16 @@ export function useDesktopUpdates(): DesktopUpdateState {
   const defer = useCallback(() => {
     void updates?.defer().catch(() => {});
   }, [updates]);
-  const dismiss = useCallback(() => setDismissed(true), []);
+  const dismiss = useCallback(() => {
+    if (snapshot?.lastOutcome && (snapshot.phase === "idle" || snapshot.phase === "disabled") &&
+      (!snapshot.migration || snapshot.migration.status === "offered") && updates?.dismissOutcome) {
+      // Main retires the marker and publishes the new state to every subscriber. If
+      // retirement fails, leave the result visible so the operator can try again.
+      void updates.dismissOutcome(snapshot.lastOutcome).catch(() => {});
+      return;
+    }
+    setDismissed(true);
+  }, [snapshot, updates]);
 
   return { snapshot: dismissed ? null : snapshot, check, apply, install, keepSystem, repairMigration, cancel, defer, dismiss };
 }

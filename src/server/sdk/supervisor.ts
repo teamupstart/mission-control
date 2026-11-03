@@ -26,9 +26,14 @@ import {
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
 } from "../mission-mcp.ts";
-import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
+import { noteKeyFor, SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import {
+  CAPACITY_CONTINUATION_PROMPT,
+  capacityRetryActivity,
+  capacityRetryPlan,
+} from "./capacity-retry.ts";
 import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
   confirmReservedInjection,
@@ -170,6 +175,23 @@ export class SdkSupervisor {
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
+  /** Consecutive capacity failures per session; any turn that ends without one clears it. */
+  private capacityAttempts = new Map<string, number>();
+  /**
+   * A capacity retry waiting for its backoff to elapse.
+   *
+   * While one is present the failed turn has NOT been reported complete: the card stays
+   * working, the durable row keeps `turn_in_progress` so a restart continues the work, and
+   * nothing waiting on the turn (a workflow review, Foreman's completion check) is released
+   * with half-done work. `token` lets a fired timer tell whether it is still the current one;
+   * `attempt` and `reason` let a control that set the retry aside and then failed re-arm it.
+   */
+  private capacityRetries = new Map<string, {
+    token: object;
+    timer: ReturnType<typeof setTimeout>;
+    attempt: number;
+    reason: string;
+  }>();
   /** Exact readable live rows captured once before HTTP starts serving. */
   private preparedRestoreRows: SdkSessionRow[] | null = null;
   /** One serial startup pass, retained so shutdown can join its ownership boundary. */
@@ -674,6 +696,10 @@ export class SdkSupervisor {
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.send(turn);
+        // A delivered turn resumes the work, so a retry waiting on the same session would
+        // only repeat it. Cancelled only once the driver took the turn: a refused send must
+        // leave the retry in place, or nothing would ever finish the failed turn.
+        this.cancelCapacityRetry(id);
         if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
@@ -720,6 +746,7 @@ export class SdkSupervisor {
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.sendIfIdle(turn);
+        if (disposition === "started") this.cancelCapacityRetry(id);
         if (disposition === null) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
           this.unfinishedTurns.set(id, remaining);
@@ -851,7 +878,21 @@ export class SdkSupervisor {
   clearContext(id: string): Promise<boolean> {
     return this.serialize(id, async (handle) => {
       if (!handle.clearContext) return false;
-      await handle.clearContext();
+      // A retry would continue the conversation being wiped, so it is set aside for the
+      // clear. The failed turn is NOT reported finished yet: a completion cannot be taken
+      // back, and a refused clear leaves that conversation live with its work unfinished.
+      const held = this.takeCapacityRetry(id);
+      const session = held ? this.registry.getSession(id) : undefined;
+      const oldConversation = session ? noteKeyFor(session) : undefined;
+      try {
+        await handle.clearContext();
+      } catch (err) {
+        if (held) this.rearmCapacityRetry(id, handle, held);
+        throw err;
+      }
+      // Recorded against the conversation the turn belonged to: the cleared binding may
+      // already have moved the card to its replacement.
+      if (held) this.settleCapacityRetry(id, oldConversation);
       return true;
     });
   }
@@ -906,8 +947,19 @@ export class SdkSupervisor {
     const handle = this.handles.get(id);
     if (!handle) return null;
     const running = (this.unfinishedTurns.get(id) ?? 0) > 0;
-    await handle.interrupt();
-    return running ? "interrupted" : "idle";
+    // A waiting capacity retry IS the session's unfinished work, and the card says working
+    // because of it. Stopping it is what the operator asked for; the driver itself is idle,
+    // so the failed turn is reported finished here or nothing ever would.
+    const held = this.takeCapacityRetry(id);
+    try {
+      await handle.interrupt();
+    } catch (err) {
+      // Nothing was stopped, so the retry still owns the unfinished turn.
+      if (held) this.rearmCapacityRetry(id, handle, held);
+      throw err;
+    }
+    if (held) this.settleCapacityRetry(id);
+    return running || held ? "interrupted" : "idle";
   }
 
   /** Queue-preserving interruption for an outbox claim, serialized with other input. */
@@ -966,6 +1018,7 @@ export class SdkSupervisor {
     const handle = this.handles.get(id);
     if (!handle) return Promise.resolve();
     this.stopping.add(id);
+    const heldRetry = this.takeCapacityRetry(id);
     const stopping = (async () => {
       await handle.stop();
       await this.pumps.get(id)?.catch(() => {});
@@ -980,7 +1033,10 @@ export class SdkSupervisor {
         this.stopPromises.delete(id);
         // A rejected stop left this same handle live. Make it reachable again; an
         // interactive join restores the card presentation in its own catch handler.
-        if (this.handles.get(id) === handle) this.stopping.delete(id);
+        if (this.handles.get(id) !== handle) return;
+        this.stopping.delete(id);
+        // Nothing settled the turn the retry was holding, so the live session needs it back.
+        if (heldRetry) this.rearmCapacityRetry(id, handle, heldRetry);
       },
     );
     return stopping;
@@ -1484,18 +1540,33 @@ export class SdkSupervisor {
           }
           this.recordTurnInProgress(id, true);
         }
+        let retryPending: string | null = null;
+        let holdWorkCycle = false;
         if (evt.kind === "turn_done" && !this.shuttingDown) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
           this.unfinishedTurns.set(id, remaining);
-          this.recordTurnInProgress(id, remaining > 0);
+          // An accepted turn still waiting will run anyway and is the retry; only a session
+          // with nothing left to run needs one scheduled.
+          if (evt.failure?.kind === "capacity" && remaining === 0) {
+            retryPending = this.scheduleCapacityRetry(id, handle, evt.failure.message);
+          } else if (evt.failure?.kind === "capacity") {
+            // The queued turn is the retry, and the work is still unfinished until it ends.
+            holdWorkCycle = true;
+          } else if (!evt.failure) {
+            this.capacityAttempts.delete(id);
+          }
+          this.recordTurnInProgress(id, remaining > 0 || retryPending !== null);
           deferIdle = remaining > 0;
         }
+        // The driver is idle while a retry waits, but the work is not done. No current driver
+        // reports idle after a turn ends; this keeps one that does from releasing it early.
+        const heldIdle = evt.kind === "state" && evt.state === "idle" && this.capacityRetries.has(id);
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        if (!this.shuttingDown) {
-          this.registry.applyDriverEvent(id, evt, { deferIdle });
+        if (!this.shuttingDown && !heldIdle) {
+          this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending, holdWorkCycle });
           if (evt.kind === "bound") {
             // A clear replaces the conversation that accepted these launch-window prompts.
             // Never replay its objective under the replacement's native key.
@@ -1522,6 +1593,8 @@ export class SdkSupervisor {
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
+      this.cancelCapacityRetry(id);
+      this.capacityAttempts.delete(id);
       this.unfinishedTurns.delete(id);
       this.acceptingTurns.delete(id);
       this.pendingLaunchGoalPrompts.delete(id);
@@ -1547,6 +1620,105 @@ export class SdkSupervisor {
           console.error(`[sdk] final eviction for ${id} failed:`, err);
         }
       }
+    }
+  }
+
+  /**
+   * Arrange the next capacity retry, and return the card's activity while it waits.
+   *
+   * Null when the attempts are spent: the turn is then reported complete like any other, so
+   * a model that stays down cannot hold a session busy for ever.
+   */
+  private scheduleCapacityRetry(id: string, handle: SdkSessionHandle, reason: string): string | null {
+    this.cancelCapacityRetry(id);
+    const attempt = (this.capacityAttempts.get(id) ?? 0) + 1;
+    const plan = capacityRetryPlan(attempt);
+    if (!plan) {
+      this.capacityAttempts.delete(id);
+      console.warn(`[sdk] ${id}: model still at capacity after ${attempt - 1} retries; giving up (${reason})`);
+      return null;
+    }
+    this.capacityAttempts.set(id, attempt);
+    const token = {};
+    const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), plan.delayMs);
+    timer.unref?.();
+    this.capacityRetries.set(id, { token, timer, attempt, reason });
+    console.warn(
+      `[sdk] ${id}: model at capacity (${reason}); retrying in ${plan.delayMs / 1000}s ` +
+        `(attempt ${plan.attempt} of ${plan.maxAttempts})`,
+    );
+    return capacityRetryActivity(plan);
+  }
+
+  /** Send the continuation, through the same idle-only boundary every automated turn uses. */
+  private async fireCapacityRetry(id: string, handle: SdkSessionHandle, token: object): Promise<void> {
+    if (this.capacityRetries.get(id)?.token !== token) return;
+    this.capacityRetries.delete(id);
+    if (this.handles.get(id) !== handle || this.shuttingDown) return;
+    // Harness-authored, like the restart continuation: the agent's prompt echo must not be
+    // captured as the operator's Goal or read back to a workflow as their words.
+    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    const busy = new Error("the driver was already running a turn");
+    try {
+      const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT });
+      if (started !== "started") throw busy;
+    } catch (err) {
+      // Both ways in are positive evidence nothing was delivered: `sendWhenIdle` rejects only
+      // when its guard or the driver refused the turn, and null is the driver declining an
+      // idle-only turn because one was already running.
+      releaseInjection(id, CAPACITY_CONTINUATION_PROMPT);
+      // That already-running turn continues the work and its own completion settles the
+      // card, so there is nothing left to retry.
+      if (err === busy) return;
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
+    confirmReservedInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+  }
+
+  /** Drop a waiting retry, returning what a failed control needs to re-arm it. */
+  private takeCapacityRetry(id: string): { attempt: number; reason: string } | null {
+    const pending = this.capacityRetries.get(id);
+    if (!pending) return null;
+    clearTimeout(pending.timer);
+    this.capacityRetries.delete(id);
+    return { attempt: pending.attempt, reason: pending.reason };
+  }
+
+  /** Drop a waiting retry. True when there was one. */
+  private cancelCapacityRetry(id: string): boolean {
+    return this.takeCapacityRetry(id) !== null;
+  }
+
+  /**
+   * Put back a retry a control set aside before it failed, at the same attempt, with the
+   * wait starting over. Only for a retry nothing has settled: the card is still working.
+   */
+  private rearmCapacityRetry(
+    id: string,
+    handle: SdkSessionHandle,
+    held: { attempt: number; reason: string },
+  ): string | null {
+    if (this.handles.get(id) !== handle || this.shuttingDown) return null;
+    this.capacityAttempts.set(id, held.attempt - 1);
+    return this.scheduleCapacityRetry(id, handle, held.reason);
+  }
+
+
+  /**
+   * Report the turn a cancelled retry was holding open as finished after all, against
+   * `workCycleKey` when the conversation it belonged to may no longer be the card's.
+   */
+  private settleCapacityRetry(id: string, workCycleKey?: string): void {
+    this.capacityAttempts.delete(id);
+    const remaining = this.unfinishedTurns.get(id) ?? 0;
+    this.recordTurnInProgress(id, remaining > 0);
+    if (!this.shuttingDown && remaining === 0) {
+      this.registry.applyDriverEvent(id, { kind: "turn_done", usage: null }, { workCycleKey });
     }
   }
 

@@ -1257,6 +1257,18 @@ These rules hold across phases:
    argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
+7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`
+   document compiled in by `npm run residents`, plus its other settings in `BUILTIN_RESIDENTS`
+   (`src/server/residents/builtin-residents.ts`). Its id is `builtin:<slug>`, durable and
+   append-only. `reconcileBuiltinResidentProfiles` runs at daemon start before the Registry loads,
+   inserts a missing built-in, and gives a changed one a NEW revision, so rule 2 holds across
+   upgrades. Unlike built-in Personas, a built-in resident is stored, because a run joins
+   `resident_profile_revisions` for its pinned revision. The store refuses every edit and archive of
+   a `builtin:` id. It reserves a built-in's name for create and rename. It leaves built-ins out of
+   the live-profile bound, settings snapshots and restores. A built-in's `normalized_name` is a
+   sentinel, so an operator profile that already held the name keeps it, and both are listed.
+   Every surface that offers profiles as choices names a built-in through
+   `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
@@ -1332,6 +1344,53 @@ The `@shared` alias must agree across TypeScript, Vite, and esbuild. Never enabl
 Chrome colours are supplied through tokens. Each token is declared on the leading `:root` block with its default value, and every rule below that block paints through `var(--...)` or a `color-mix()` of tokens. Tokens are named for roles, so distinct roles may share a default value (`--on-accent`, `--fg-strong` and `--highlight-ink` are all `#fff` today) and a skin can still separate them. That is what lets a skin repaint the app by overriding tokens. Apart from the exceptions below, a hex, `rgb()`, `hsl()`, named colour or system colour (`Canvas`, `CanvasText`) anywhere after `:root` fails `test/style-literals.test.ts`. That includes any letter case (`RGB(...)`), a CSS escape (`\72 ed`), and a colour inside a data URI's SVG, whether the URI sits in `url()` or bare in `image-set()`, is percent-encoded or base64, spells the colour with an XML character reference (`&#x72;ed`), or nests another data URI. A raster data URI is reported too, since its colours are baked into pixels no token reaches. Reuse a token when its role matches, otherwise add a role token named for what it does (`--on-accent`, `--danger-soft`), never for its hue, even if its default equals an existing token's. A translucent shade of an existing role is a `color-mix()` of that role's token with `transparent`, not a new token. A token carries a translucent value of its own only when the translucency is the role itself and there is no opaque role to derive it from. `--canvas-minimap-mask` is that case: it is React Flow's 60% veil over the part of the workflow canvas outside the viewport. The older `--shadow` token is another. The guard's exceptions are narrow and listed in the test's `ALLOWED` array, each with its reason. Two kinds exist today, and neither is chrome. The first is the white canvas behind operator-authored HTML (`.managed-plan-reader iframe`, `.html-preview` and `.artifact-preview`), which is written against a browser's white default and must not follow a skin. The second is `#000` in a `mask-image` gradient (`.conversation-header-preview .detail-tabs` and `.rm-occurrence-list`), where a mask reads only alpha and its colour never reaches the screen. An entry matches one selector, property and literal, and the test fails when an entry stops matching, so the list cannot outlive what it excuses. Separately, a colour word is not a colour in a property that holds only names (an animation, font, grid area, counter or transition, for example) or inside quoted text that is not a data URI. Do not add skin colours to the allowlist. React Flow's canvas colours are routed through `--canvas-*` tokens on `.workflow-canvas`, and its minimap colours its nodes by class rather than through `nodeColor`, whose inline `fill` no stylesheet can repaint.
 
 Harness colors come from `AGENT_IDENTITY` through `--agent-accent`; never name an agent in CSS.
+
+### Adding a skin
+
+A skin is CSS only, and it is added in four places:
+
+1. **Register it** by appending an entry to `SKINS` in `src/shared/skins.ts`: a kebab-case
+   `id`, `label`, one-line `description`, `colorScheme` (`dark` or `light`) and the six
+   `swatches` the picker's thumbnail draws. Ids are persisted in `app_config.ui.skin` and are
+   append-only: never rename, reorder or remove one. A stored id a build does not know reads
+   as Default, while a write of one is refused.
+2. **Write one file**, `src/web/skins/<id>.css`, containing `:root[data-skin="<id>"] { ... }`
+   and nothing that is not scoped under that selector. Restate `color-scheme` for a light
+   skin and at least `--bg`, `--bg-2`, `--panel`, `--panel-2`, `--border`, `--border-soft`,
+   `--fg`, `--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger`, `--exited`,
+   `--purple`, `--radius` and `--shadow`, plus every role token whose Default value would
+   paint wrong on your background (inks, text on solid fills, the failure family, the
+   canvas, the `--select-chevron` data URI). Add an `@import` for it to
+   `src/web/skins/index.css` in registry order. Default has no file: it is `:root`.
+3. **Pass `test/skins.test.ts`.** Against `--bg`, `--panel` and `--panel-2`, `--fg`, `--muted`,
+   `--dim`, `--working`, `--idle`, `--attention`, `--danger` and `--held` must clear 4.5:1 and
+   `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
+   thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
+   registered skin with no new case, so a skin may change colours, fonts and corners but
+   never padding, borders, font size or line height. A skin changes a face through
+   `--font-display` (headings, card titles, tile names) and `--font-label` (the Line's stage
+   names), never by restating a font rule.
+   Any rule beside the token block is decoration, and `test/skin-decoration.test.ts` holds
+   it to paint: backgrounds, `box-shadow`, `text-shadow`, `text-transform`, `color` and
+   `border-color`. Nothing that sizes a box, and no `filter`, `backdrop-filter`,
+   `transition` or animation. A glow restates the shadow it replaces, rings included.
+4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
+   assert its background and persistence. A skin that changes a face or adds decoration also
+   joins `DECORATED_SKINS` there, which holds the top bar, the Line and the Dispatch button to
+   Default's measured geometry.
+
+`src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
+document's `color-scheme`, and no component branches on the skin id. The daemon serves the
+dashboard document with the stored skin already on `<html>`, plus a `<meta name="mission-skin">`
+seed (`src/server/dashboard-document.ts`). The preference store takes that seed over its local
+cache, so a profile with no cache paints the stored skin from its first frame, and `lib/skin.ts`
+keeps the served attribute instead of replacing it. The desktop window's launch colour
+lives in `window-background.json` in the state home (`src/server/window-background.ts`), and the
+daemon is its only writer: `syncWindowBackground` records the stored skin's swatch on every skin
+write, after a settings restore and at startup, so a skin chosen in a browser still decides the
+next desktop launch. The shell's bridge handler only repaints the live window; it never persists,
+because a page that loaded before a change elsewhere would write a stale colour. `createWindow`
+and the shell's startup page both paint from the file.
 
 In Electron, the top bar is a drag region. New floating interactive layers need the desktop `no-drag` rule.
 

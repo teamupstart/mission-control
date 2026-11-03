@@ -354,19 +354,36 @@ export function migrationReceipt(stateDirectory) {
 }
 
 const localOwners = new Set();
-export async function withMigrationLock(stateDirectory, action, lock = realHelperLockOperations()) {
+function acquireMigrationOwnership(stateDirectory, lock) {
   const directory = join(realpathSync(stateDirectory), HELPER_LOCK_DIR_NAME);
   if (localOwners.has(directory)) throw new Error("Another update or install is in progress. Retry after it finishes.");
   localOwners.add(directory);
   let claim;
+  const release = () => {
+    try { if (claim?.ok) releaseHelperLock(directory, claim.entryName, lock); }
+    finally { localOwners.delete(directory); }
+  };
   try {
     claim = acquireHelperLock(directory, lock);
     if (!claim.ok) throw new Error("Another update or install is in progress. Retry after it finishes.");
-    return await action({ pid: lock.pid, identity: lock.identity(lock.pid) });
-  } finally {
-    try { if (claim?.ok) releaseHelperLock(directory, claim.entryName, lock); }
-    finally { localOwners.delete(directory); }
+    return { owner: { pid: lock.pid, identity: lock.identity(lock.pid) }, release };
+  } catch (error) {
+    release();
+    throw error;
   }
+}
+
+export async function withMigrationLock(stateDirectory, action, lock = realHelperLockOperations()) {
+  const ownership = acquireMigrationOwnership(stateDirectory, lock);
+  try { return await action(ownership.owner); }
+  finally { ownership.release(); }
+}
+
+/** Synchronous marker retirement shares helper exclusion and the app's local-owner guard. */
+export function withMigrationLockSync(stateDirectory, action, lock = realHelperLockOperations()) {
+  const ownership = acquireMigrationOwnership(stateDirectory, lock);
+  try { return action(ownership.owner); }
+  finally { ownership.release(); }
 }
 
 /** Normal managed installers share the receipt lock. Old helpers already hold it and

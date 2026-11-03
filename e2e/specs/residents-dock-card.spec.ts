@@ -161,10 +161,14 @@ test("a live resident is a card in its color with one footer of actions, and the
   await capture(dock, "01-dock-card-control-not-granted");
 
   // The profiles share one chip column: every name, and every Launch button, starts on one line.
+  // Four rows: the three authored here and the built-in Agent Shepherd every install ships, whose
+  // "built-in" tag sits beside its name without moving the column.
   const rows = dock.locator(".residents-pop-profiles > .residents-pop-row");
-  await expect(rows).toHaveCount(3);
-  const names = await Promise.all([0, 1, 2].map((i) => box(rows.nth(i).locator(".residents-pop-name"))));
-  const launches = await Promise.all([0, 1, 2].map((i) => box(rows.nth(i).getByRole("button", { name: /^Launch / }))));
+  await expect(rows).toHaveCount(4);
+  await expect(rows.filter({ hasText: "Agent Shepherd" }).locator(".resident-builtin-tag")).toHaveText("built-in");
+  const indexes = [0, 1, 2, 3];
+  const names = await Promise.all(indexes.map((i) => box(rows.nth(i).locator(".residents-pop-name"))));
+  const launches = await Promise.all(indexes.map((i) => box(rows.nth(i).getByRole("button", { name: /^Launch / }))));
   await expect(dock.getByRole("button", { name: "Launch Inbox Triage" })).toHaveText("Launch");
   await expect(dock.getByRole("button", { name: "Launch Contract Owner" })).toHaveText("Launch…");
   for (const [i, each] of names.entries()) {

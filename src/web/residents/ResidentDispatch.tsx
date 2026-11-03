@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { RESIDENT_LIMITS, residentLaunchSummary, type ResidentProfile } from "@shared/residents.ts";
+import { RESIDENT_LIMITS, residentLaunchSummary, residentProfileChoiceName, type ResidentProfile } from "@shared/residents.ts";
 import type { DispatchMode } from "../lib/dispatch-mode.ts";
 import { fetchRepos } from "../lib/api.ts";
 import { DispatchModeToggle } from "../components/DispatchModeToggle.tsx";
@@ -209,7 +209,7 @@ export function ResidentDispatch({
               <span className="field-label" id="resident-dispatch-profile-label">Profile</span>
               <div className="resident-profile-cards" role="radiogroup" aria-labelledby="resident-dispatch-profile-label">
                 {profiles.map((candidate) => (
-                  <Tooltip key={candidate.id} label={candidate.settings.identity.description || `Launch ${candidate.name}`}>
+                  <Tooltip key={candidate.id} label={candidate.settings.identity.description || `Launch ${residentProfileChoiceName(candidate)}`}>
                     <button
                       type="button"
                       role="radio"
@@ -218,7 +218,10 @@ export function ResidentDispatch({
                       disabled={busy}
                       onClick={() => choose(candidate)}
                     >
-                      <span className="resident-profile-card-name">{candidate.name}</span>
+                      <span className="resident-profile-card-name">
+                        {candidate.name}
+                        {candidate.builtin && <em className="resident-builtin-tag">built-in</em>}
+                      </span>
                       <span className="resident-profile-card-fact">{residentProfileFact(candidate, personas)}</span>
                     </button>
                   </Tooltip>
@@ -272,7 +275,8 @@ export function ResidentDispatch({
                 </p>
                 <Tooltip label={`Open ${profile.name} on the Residents page`}>
                   <button type="button" className="btn btn-ghost" onClick={() => mode.onEditProfile(profile.id)}>
-                    Edit profile
+                    {/* A built-in is read-only; its page offers Duplicate to edit. */}
+                    {profile.builtin ? "View profile" : "Edit profile"}
                   </button>
                 </Tooltip>
               </div>

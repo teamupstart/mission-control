@@ -98,7 +98,7 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
 import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
-import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
@@ -172,6 +172,7 @@ import {
   listQueueItems,
   listQueueRows,
   listPendingTurns,
+  getTask as getDurableTask,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPrPendingTerminalTasks,
@@ -226,11 +227,15 @@ import {
   sessionCostFor,
   taskIdForSession as dbTaskIdForSession,
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
+  recordTaskWorkEpisodeHead,
+  recordTaskRepoChanges,
+  clearClosedCompletedPr,
   deleteHistoricalTaskWorkEpisodeBinding,
   deleteSessionWorkEpisode,
   deleteSessionWorkEpisodeWithOwnership,
   deleteWorkEpisodePrompts,
   historicalTaskWorkEpisodeBindings,
+  historicalTaskWorkEpisodeBindingsForTask,
   rebindPendingSessionWorkEpisodeWithDependencies,
   replaceSessionWorkEpisode,
   replaceSessionWorkEpisodeWithDependencies,
@@ -238,11 +243,13 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskResidentRestartSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
   retireTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
+  updateHistoricalTaskWorkEpisodePr,
   primaryRepoPrForTask,
   recordWorkEpisodeRepoPr,
   retargetInspectorPrCheckout,
@@ -2905,7 +2912,12 @@ export class Registry extends EventEmitter {
   applyDriverEvent(
     id: string,
     evt: SdkEvent,
-    options: { deferIdle?: boolean } = {},
+    options: {
+      deferIdle?: boolean;
+      retryPending?: string | null;
+      workCycleKey?: string;
+      holdWorkCycle?: boolean;
+    } = {},
   ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
@@ -2947,7 +2959,22 @@ export class Registry extends EventEmitter {
         // the session first is silently reverted by it - the ledger row survives, the card's
         // own figure does not, and the fleet total then disagrees with every chip on it.
         // Recording last means `applyDurableUsage` re-reads the session it is updating.
-        if (!options.deferIdle) {
+        if (options.retryPending) {
+          // The provider ended the turn at capacity and the supervisor will retry it. The
+          // work is unfinished, so the cycle must not complete and the card must not go
+          // idle: either would hand half-done work to whatever is waiting on this turn.
+          this.applyDriverState(s, "working", options.retryPending, now, null);
+        } else if (options.workCycleKey && options.workCycleKey !== noteKeyFor(s)) {
+          // The turn belonged to a conversation a clear has since replaced on this card. Its
+          // completion is recorded against that conversation, never the replacement, whose
+          // cycle has not started; the card itself is idle either way.
+          completeWorkCycle(options.workCycleKey, now, now);
+          this.applyDriverState(s, "idle", null, now, null);
+        } else if (options.holdWorkCycle) {
+          // A capacity failure with an accepted turn still queued: that turn continues the
+          // unfinished work, so this ending is neither idle nor a completed cycle. The queued
+          // turn's own completion settles both.
+        } else if (!options.deferIdle) {
           this.applyDriverState(s, "idle", null, now, "turn_completed");
         } else {
           // The next accepted turn keeps the card working, but the cycle that just ended
@@ -3289,9 +3316,30 @@ export class Registry extends EventEmitter {
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
-      // A PR link sniffed from `gh pr create` decorates the card at once as an
-      // open PR; the poller confirms it and later flips it to merged.
-      const pr = evt.prUrl
+      // A PR link from `gh pr create` decorates the card at once as an open PR; the poller
+      // confirms it and later flips it to merged.
+      //
+      // Only when the agent OPENED the pull request, and only for a session the poller can
+      // retract. The hook bridge sniffs a URL out of ANY tool output, so `prUrl` alone is
+      // also what `gh pr view` trips: an agent that merely READ someone else's pull request
+      // would wear its chip. `prCreated` is the command-side proof that it was
+      // `gh pr create`. A session whose task has no repository (a resident in its own
+      // workspace) is outside both `prPollTargets` and `reconcilePrs`, so nothing would
+      // ever confirm or clear a chip there. Same two conditions `applyDriverPrCreated`
+      // holds the SDK drivers to.
+      //
+      // The poller (`reconcilePrs`) is the only other writer, and it does NOT require
+      // creation provenance. It asks `gh` only for the branch checked out in this session's
+      // own worktree, and `acceptPrForEpisode` refuses a pull request created before this
+      // session's current work episode began - but a PR on that branch created DURING the
+      // episode is accepted whoever opened it (the agent, a person in the GitHub UI, `gh
+      // api`, an MCP tool). That is deliberate for now: the operator chose to keep the poller
+      // as it is, because `prCreated` is held in memory and never persisted, and requiring
+      // it there would stop such PRs from completing their tasks on merge. Strict creation
+      // provenance for the poller was requested later in review and remains an open scope
+      // question, not a guarantee this code makes. What the hook path above does guarantee
+      // is that a URL an agent merely printed (`gh pr view`) never decorates a card.
+      const pr = evt.prUrl && evt.prCreated && taskHasRepository(target.task ?? {})
         ? {
             prUrl: evt.prUrl,
             prNumber: prNumberFromUrl(evt.prUrl),
@@ -4008,6 +4056,7 @@ export class Registry extends EventEmitter {
 
   private cleanupDependencyProvenance(): void {
     const legacyTaskIds = new Set<string>();
+    const completedSources = new Set(this.completedDependencySources().map((task) => task.id));
     const episodeKeys = new Set<string>();
     for (const task of this.tasks.values()) {
       for (const dependency of task.dependencies) {
@@ -4028,13 +4077,18 @@ export class Registry extends EventEmitter {
       // is the newer: a rolled-past episode's pull request is what `mergedPrFor` reads to
       // complete the task, and - once a merge can be observed by URL rather than only
       // through a live session - what the poller is still WATCHING before that. Both are
-      // `preservesCompletionEvidence`. The dependency reason is unchanged: a legacy edge
-      // still pointing at the task keeps its PR-carrying binding.
-      const owner = this.tasks.get(binding.taskId);
+      // `preservesCompletionEvidence`. Legacy edges and unresolved edges to completed
+      // sources also retain PR-carrying bindings, including sources pruned from memory.
+      // An unresolved edge additionally retains its branch-only episode before completion,
+      // so rollover cannot erase the only way to discover that episode's later PR.
+      const owner = this.tasks.get(binding.taskId) ??
+        (completedSources.has(binding.taskId) ? getDurableTask(binding.taskId) : undefined);
       const mergeEvidence =
         binding.prUrl !== null &&
         preservesCompletionEvidence(owner, binding.mergedAt !== null);
-      const dependencyEvidence = legacyTaskIds.has(binding.taskId) && binding.prUrl !== null;
+      const dependencyEvidence =
+        ((legacyTaskIds.has(binding.taskId) || completedSources.has(binding.taskId)) && binding.prUrl !== null) ||
+        (binding.branch !== null && this.unresolvedDependencyReferences(binding));
       if (!mergeEvidence && !dependencyEvidence) {
         deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
         continue;
@@ -4376,6 +4430,10 @@ export class Registry extends EventEmitter {
             dependency.prUrl === target.prUrl) ||
             (dependency.episodeId === null && taskIds.has(dependency.taskId)));
         if (!matchesSession && !matchesTask) return dependency;
+        // A done task may still owe a multi-repo quorum. TaskManager repairs its edges
+        // from that quorum; observing only the primary here must not release them early.
+        if (dependency.type === "task" &&
+          (this.tasks.get(dependency.taskId) ?? getDurableTask(dependency.taskId))?.status === "done") return dependency;
         if (
           dependencyBoundaryAt !== null &&
           (dependency.selectedAt === null || dependency.selectedAt >= dependencyBoundaryAt)
@@ -4819,6 +4877,14 @@ export class Registry extends EventEmitter {
     );
   }
 
+  private canAssociateCompletedPr(binding: TaskWorkEpisodeBinding, endedAt: number | null, match: PrMatch): boolean {
+    if (match.createdAt === null) return false;
+    if (endedAt !== null && match.createdAt < endedAt) return true;
+    // Keep late-opened PRs in branch discovery until merged, so the final source head
+    // is verified. Caching an open URL would hand it to a state-only merge poll later.
+    return match.state === "merged" && binding.workHeadSha != null && binding.workHeadSha === match.headSha;
+  }
+
   private acceptPrForEpisode(
     session: Session,
     match: PrMatch,
@@ -4844,6 +4910,10 @@ export class Registry extends EventEmitter {
     ) {
       return null;
     }
+    const binding = taskWorkEpisodeForSession(session.id);
+    const owner = binding && (this.tasks.get(binding.taskId) ?? getDurableTask(binding.taskId));
+    if (owner?.status === "done" && binding && binding.episodeId === episode.episodeId &&
+      !this.canAssociateCompletedPr(binding, owner.completedAt, match)) return null;
     if (
       !updateWorkEpisodePr(
         session.id,
@@ -5171,7 +5241,7 @@ export class Registry extends EventEmitter {
   /**
    * The worktrees whose head the completion quorum still needs read.
    *
-   * Every repository of every multi-repo task a merge could still complete - and no others,
+   * Every multi-repo task a merge could still complete or release dependents for,
    * so a fleet with no multi-repo task in flight spends nothing on this. The PRIMARY is in
    * the list: it is a repository like any other to the changed-set rule, and leaving it out
    * is precisely how a task whose primary changed without opening a primary pull request
@@ -5179,8 +5249,8 @@ export class Registry extends EventEmitter {
    */
   worktreeHeadTargets(): string[] {
     const paths = new Set<string>();
-    for (const task of this.tasks.values()) {
-      if (task.extraRepos.length === 0 || !completableByMerge(task.status)) continue;
+    for (const task of this.mergeObservationTasks()) {
+      if (task.extraRepos.length === 0) continue;
       for (const ref of taskRepoRefs(task)) {
         if (ref.worktreePath) paths.add(ref.worktreePath);
       }
@@ -5197,7 +5267,26 @@ export class Registry extends EventEmitter {
    * nothing has been observed yet, and a quorum that read "unobserved" as "unchanged" would
    * complete a task on one merged sibling in the seconds before the first sweep.
    */
-  recordWorktreeHeads(heads: Map<string, string | null>): void {
+  repoChangeEvidenceTargets(): Array<{ task: Task; binding: TaskWorkEpisodeBinding }> {
+    return this.mergeObservationTasks().flatMap(task => {
+      const binding = taskWorkEpisodeForTask(task.id);
+      return binding && task.extraRepos.length > 0 ? [{ task, binding }] : [];
+    });
+  }
+
+  recordWorktreeHeads(heads: Map<string, string | null>, targets = this.repoChangeEvidenceTargets()): void {
+    for (const { task, binding } of targets) {
+      const current = taskWorkEpisodeForTask(task.id);
+      const live = this.tasks.get(task.id) ?? getDurableTask(task.id);
+      if (!current || !live || current.episodeId !== binding.episodeId || current.sessionId !== binding.sessionId ||
+        current.agentSessionId !== binding.agentSessionId || current.branch !== binding.branch ||
+        JSON.stringify(taskRepoRefs(live)) !== JSON.stringify(taskRepoRefs(task))) continue;
+      recordTaskRepoChanges(current, taskRepoRefs(task).map(ref => {
+        if (!ref.worktreePath) return current.repoChanges?.find(v => v.repoRoot === ref.repoRoot) ?? { repoRoot: ref.repoRoot, verdict: "unknown" };
+        const head = heads.get(ref.worktreePath);
+        return { repoRoot: ref.repoRoot, verdict: head == null ? "unknown" : repoChangeVerdict(ref, { prUrl: null, headSha: head }) };
+      }));
+    }
     for (const [path, sha] of heads) this.worktreeHeads.set(path, sha);
     // Bounded by what is still worth asking about, so a long-lived daemon does not
     // accumulate an entry per worktree it ever polled.
@@ -5400,6 +5489,129 @@ export class Registry extends EventEmitter {
     this.cleanupDependencyProvenance();
   }
 
+  private dependencyWorkHeadTargetFor(taskId: string): { cwd: string; binding: TaskWorkEpisodeBinding } | null {
+    const task = this.tasks.get(taskId);
+    if (!task || !completableByMerge(task.status)) return null;
+    const binding = taskWorkEpisodeForTask(task.id);
+    const session = binding && this.sessions.get(binding.sessionId);
+    const episode = binding && sessionWorkEpisodeFor(binding.sessionId);
+    if (!binding?.branch || binding.prUrl || !session?.cwd || session.state === "exited" || !episode || episode.awaitingAgentRebind ||
+      episode.episodeId !== binding.episodeId || episode.agentSessionId !== binding.agentSessionId ||
+      episode.branch !== binding.branch) return null;
+    return { cwd: session.cwd, binding };
+  }
+
+  dependencyWorkHeadTargets(): Array<{ cwd: string; binding: TaskWorkEpisodeBinding }> {
+    return this.listTasks().flatMap((task) => {
+      const target = this.dependencyWorkHeadTargetFor(task.id);
+      return target ? [target] : [];
+    });
+  }
+
+  recordDependencyWorkHead(target: ReturnType<Registry["dependencyWorkHeadTargets"]>[number], sha: string | null): void {
+    if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return;
+    const current = this.dependencyWorkHeadTargetFor(target.binding.taskId);
+    if (current && current.cwd === target.cwd && current.binding.episodeId === target.binding.episodeId &&
+      current.binding.sessionId === target.binding.sessionId && current.binding.agentSessionId === target.binding.agentSessionId &&
+      current.binding.branch === target.binding.branch) recordTaskWorkEpisodeHead(current.binding, sha);
+  }
+
+  /** Completed sources still owed merge evidence, bounded by unresolved task edges. */
+  completedDependencySources(): Task[] {
+    const ids = new Set<string>();
+    for (const task of this.tasks.values()) {
+      for (const edge of task.dependencies) {
+        if (edge.type === "task" && edge.satisfiedAt === null) ids.add(edge.taskId);
+      }
+    }
+    return [...ids].flatMap((id) => {
+      const task = this.tasks.get(id) ?? getDurableTask(id);
+      return task?.status === "done" ? [task] : [];
+    });
+  }
+
+  private mergeObservationTasks(): Task[] {
+    return [...this.tasks.values()].filter((task) => completableByMerge(task.status))
+      .concat(this.completedDependencySources());
+  }
+
+  private unresolvedDependencyReferences(binding: TaskWorkEpisodeBinding): boolean {
+    return this.listTasks().some((task) => task.dependencies.some((edge) =>
+      edge.type === "task" && edge.taskId === binding.taskId && edge.satisfiedAt === null &&
+      (edge.episodeId === null ||
+        (edge.episodeId === binding.episodeId && edge.sessionId === binding.sessionId &&
+          edge.agentSessionId === binding.agentSessionId && edge.branch === binding.branch))));
+  }
+
+  reconcileClosedDependencyPrs(urls: Set<string>): void {
+    if (urls.size === 0) return;
+    for (const source of this.completedDependencySources()) {
+      for (const binding of [taskWorkEpisodeForTask(source.id), ...historicalTaskWorkEpisodeBindingsForTask(source.id)]) {
+        if (!binding?.branch || !binding.prUrl || binding.mergedAt !== null || !urls.has(binding.prUrl)) continue;
+        if (clearClosedCompletedPr(binding, binding.prUrl)) {
+          this.bindPendingTaskDependencies(source.id, { ...binding, prUrl: null }, Date.now());
+        }
+      }
+    }
+  }
+
+  /** A closed session may never have observed its PR, including on an earlier episode. */
+  completedDependencyBranchTargets(): Array<{ taskId: string; cwd: string; binding: TaskWorkEpisodeBinding; historical: boolean; startedAt: number; endedAt: number | null }> {
+    return this.completedDependencySources().flatMap((task) => {
+      if (!taskHasRepository(task)) return [];
+      const current = taskWorkEpisodeForTask(task.id);
+      const candidates = [
+        ...(current ? [{ binding: current, historical: false,
+          startedAt: sessionWorkEpisodeFor(current.sessionId)?.startedAt ?? current.boundAt, endedAt: task.completedAt }] : []),
+        ...historicalTaskWorkEpisodeBindingsForTask(task.id)
+          .filter((binding) => this.unresolvedDependencyReferences(binding))
+          .map((binding) => ({ binding, historical: true, startedAt: binding.boundAt,
+            endedAt: binding.endedAt === null || task.completedAt === null
+              ? null : Math.min(binding.endedAt, task.completedAt) })),
+      ];
+      return candidates.filter(({ binding }) => binding.branch && !binding.prUrl)
+        .map((candidate) => ({ taskId: task.id, cwd: task.repoRoot, ...candidate }));
+    });
+  }
+
+  reconcileCompletedDependencyPr(
+    target: ReturnType<Registry["completedDependencyBranchTargets"]>[number],
+    match: PrMatch,
+  ): void {
+    // Re-read after the network call. A reset, reassignment or removed edge revokes it.
+    const current = this.completedDependencyBranchTargets().find((candidate) =>
+      candidate.taskId === target.taskId && candidate.cwd === target.cwd &&
+      candidate.historical === target.historical &&
+      candidate.binding.episodeId === target.binding.episodeId &&
+      candidate.binding.sessionId === target.binding.sessionId &&
+      candidate.binding.agentSessionId === target.binding.agentSessionId &&
+      candidate.binding.branch === target.binding.branch);
+    // A late-opened PR needs the exact source commit retained while the episode was active.
+    // Compare the PR head, never its merge commit: squash merges produce a different target SHA.
+    if (!current || match.branch !== target.binding.branch || !match.headSha || match.state === "closed" ||
+      match.createdAt === null || (match.state === "merged" && match.mergedAt === null)) return;
+    if (!this.canAssociateCompletedPr(current.binding, current.endedAt, match)) return;
+    const at = Date.now();
+    if (target.historical) {
+      // The live session now describes B, not A. A's retained binding is its authority;
+      // refuse PRs older than the task's ownership of that episode.
+      if (match.createdAt < current.binding.boundAt ||
+        !updateHistoricalTaskWorkEpisodePr(current.binding, match.url, match.headSha, at)) return;
+    } else {
+      const episode = sessionWorkEpisodeFor(target.binding.sessionId);
+      if (!episode || episode.episodeId !== target.binding.episodeId ||
+        episode.agentSessionId !== target.binding.agentSessionId || episode.awaitingAgentRebind ||
+        match.createdAt < episode.startedAt ||
+        !updateWorkEpisodePr(episode.sessionId, episode.episodeId, match.branch, match.url, match.headSha, at)) return;
+    }
+    this.bindPendingTaskDependencies(target.taskId, { ...target.binding, prUrl: match.url }, at);
+    if (match.state === "merged" && match.mergedAt !== null) {
+      // TaskManager applies the task's full merge quorum before releasing its edges.
+      markWorkEpisodeMerged(target.binding.sessionId, target.binding.episodeId, match.url, match.mergedAt);
+      this.emit("pr_merges_recorded");
+    }
+  }
+
   dependencyPrPollTargets(): string[] {
     const urls = new Set<string>();
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
@@ -5463,8 +5675,7 @@ export class Registry extends EventEmitter {
       list.push(binding);
       historical.set(binding.taskId, list);
     }
-    for (const task of this.tasks.values()) {
-      if (!completableByMerge(task.status)) continue;
+    for (const task of this.mergeObservationTasks()) {
       const candidates = [
         taskWorkEpisodeForTask(task.id),
         ...(historical.get(task.id) ?? []),
@@ -5601,8 +5812,7 @@ export class Registry extends EventEmitter {
     // `complete(..., satisfyDependents)` finishes once `TaskManager` acts on this record.
     // Widening either here would satisfy an edge from a merge that has completed nothing
     // yet, and would delete the very evidence the completion is about to read.
-    for (const task of this.tasks.values()) {
-      if (!completableByMerge(task.status)) continue;
+    for (const task of this.mergeObservationTasks()) {
       let binding = bindings.get(task.id);
       if (binding === undefined) {
         binding = taskWorkEpisodeForTask(task.id);
@@ -5633,7 +5843,7 @@ export class Registry extends EventEmitter {
         // upgrade this row is the evidence for. Only a `backlog` task (rescheduled: being
         // re-run, so a previous attempt's merge is not its outcome) drops it here; the rest
         // are pruned with the task itself.
-        const owner = this.tasks.get(binding.taskId);
+        const owner = this.tasks.get(binding.taskId) ?? getDurableTask(binding.taskId);
         if (!preservesCompletionEvidence(owner, true)) {
           deleteHistoricalTaskWorkEpisodeBinding(binding.taskId, binding.episodeId);
         }
@@ -5646,8 +5856,8 @@ export class Registry extends EventEmitter {
     // sibling merge on a multi-repo task is precisely not. What a secondary merge is, is a
     // durable stamp plus a reason to re-ask the quorum, and that is what this does.
     let repoMerges = 0;
-    for (const task of this.tasks.values()) {
-      if (!completableByMerge(task.status) || task.extraRepos.length === 0) continue;
+    for (const task of this.mergeObservationTasks()) {
+      if (task.extraRepos.length === 0) continue;
       let stamped = false;
       for (const repoPr of workEpisodeRepoPrsForTask(task.id)) {
         if (repoPr.mergedAt !== null) continue;
@@ -6815,7 +7025,29 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
-  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+  /**
+   * Re-derive one task's `residentRestart` record and broadcast it on the ordinary `task_upsert`,
+   * the way `refreshTaskAutomaticCleanup` does. Restart calls it after it ends the old run and
+   * again after the replacement launch settles, so the replaced session's Complete offer appears
+   * at once and names its replacement as soon as one exists.
+   */
+  refreshTaskResidentRestart(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const record = taskResidentRestartSummaries([taskId]).get(taskId) ?? null;
+    if (JSON.stringify(record) === JSON.stringify(current.residentRestart ?? null)) return;
+    const next = { ...current, residentRestart: record };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  private publishTask(written: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+    // Re-derived on every resident write rather than trusted from the caller. A writer that
+    // built its row from a copy taken before Restart ended the run would otherwise broadcast it
+    // without the record, and the replaced session would silently lose its Complete offer.
+    const task: Task = written.kind === "resident"
+      ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
+      : written;
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),

@@ -20,6 +20,7 @@ function live(daemon: DaemonHandle): Run | undefined {
   return withDaemonDb(daemon, db => db.prepare("SELECT * FROM resident_runs WHERE ended_at IS NULL AND launch_state = 'launched'").get() as Run | undefined);
 }
 type Surface = "card" | "band" | "dock" | "page";
+const RESTART_PROMPT = "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer.";
 async function surface(page: Page, daemon: DaemonHandle, profile: ResidentProfile, kind: Surface): Promise<Locator> {
   await page.keyboard.press("Escape");
   if (kind === "page") {
@@ -43,6 +44,20 @@ async function capture(page: Page, name: string) {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   const dir = artifactsDir(process.env.MC_E2E_RESIDENT_EVIDENCE_TOPIC ?? "residents-loop"); mkdirSync(dir, { recursive: true });
   await page.screenshot({ path: `${dir}${name}.png` });
+}
+/**
+ * Select the rail row whose detail shows `band`. Sessions that share a name have no stable
+ * order, and a band can render a beat after its row is clicked, so each row gets a moment.
+ */
+async function selectSessionShowing(rows: Locator, band: Locator): Promise<void> {
+  const count = await rows.count();
+  // Two passes: right after a reload the dashboard may still be restoring its selection, and a
+  // click that lands then is replaced rather than kept.
+  for (let attempt = 0; attempt < count * 2; attempt++) {
+    await rows.nth(attempt % count).click();
+    if (await band.waitFor({ timeout: 5_000 }).then(() => true, () => false)) return;
+  }
+  await expect(band).toBeVisible();
 }
 async function expectControlTooltip(page: Page, control: Locator, description: string) {
   await control.hover();
@@ -155,9 +170,20 @@ for (const kind of ["card", "band", "dock", "page"] as const) test(`${kind}: loo
   host = await surface(page, daemon, profile, kind);
   const old = live(daemon)!.id;
   await expectControlTooltip(page, host.getByRole(role, { name: "Restart on new profile", exact: true }), "Start a fresh resident run using the latest profile revision");
+  const oldTaskId = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident" && task.status === "running")!.id;
   await host.getByRole(role, { name: "Restart on new profile", exact: true }).click();
+  // Wherever Restart was clicked, it ends by offering to complete the session it replaced.
+  const prompt = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(prompt).toBeVisible();
+  await expect(prompt.getByRole("status")).toHaveText(RESTART_PROMPT);
+  await expectContentClearsBorder(prompt);
+  await capture(page, `${kind}-restart-prompt`);
+  // Declining is a real answer: the original task stays open.
+  await prompt.getByRole("button", { name: "Cancel" }).click();
+  await expect(prompt).toHaveCount(0);
   await expect.poll(() => live(daemon)?.profile_revision, { timeout: 60_000 }).toBe(2);
   expect(live(daemon)!.id).not.toBe(old);
+  expect((await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.id === oldTaskId)?.status).toBe("running");
   await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
   expect(live(daemon)?.iteration).toBe(1);
   host = await surface(page, daemon, profile, kind);
@@ -235,13 +261,174 @@ test("Restart on new profile preserves a resident's no-repository workspace mode
     host.getByRole("button", { name: "Restart on new profile", exact: true }).click(),
   ]);
   expect(response.ok(), await response.text()).toBeTruthy();
+  const prompt = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(prompt.getByRole("status")).toHaveText(RESTART_PROMPT);
+  await prompt.getByRole("button", { name: "Cancel" }).click();
   await expect.poll(() => live(daemon)?.profile_revision).toBe(2);
   const tasks = await request<Task[]>(daemon, "/api/tasks", undefined, "GET");
-  const fresh = tasks.find(task => task.kind === "resident" && task.status === "running")!;
+  const fresh = tasks.find(task => task.kind === "resident" && task.status === "running" && task.id !== oldTask.id)!;
   expect(fresh.workspaceKind).toBe("resident-workspace");
   expect(fresh.repoRoot).not.toBe(oldTask.repoRoot);
   expect(fresh.branch).toBeNull();
-  expect(tasks.find(task => task.id === oldTask.id)?.status).toBe("done");
+  // Restart ends the old run but leaves completing its session to the operator.
+  expect(tasks.find(task => task.id === oldTask.id)?.status).toBe("running");
   await expect(host).toContainText("iteration 1");
   await capture(page, "workspace-restarted");
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const rows = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Workspace watcher/ });
+  await expect(rows).toHaveCount(2);
+  const detail = page.locator(".console-detail");
+  const replacedBand = detail.getByRole("group", { name: "Replaced resident Workspace watcher" });
+  const openReplaced = () => selectSessionShowing(rows, replacedBand);
+  await openReplaced();
+  await expect(replacedBand.getByRole("status")).toHaveText("Restarted on revision 2 in a new session. This session no longer wakes.");
+  await expect(detail.getByRole("group", { name: "Resident Workspace watcher", exact: true })).toHaveCount(0);
+  await capture(page, "workspace-replaced-band");
+
+  // Open new session goes to the replacement, which wears the live band and no offer.
+  await expectControlTooltip(page, replacedBand.getByRole("button", { name: "Open new session" }), "Open the session now running revision 2");
+  await replacedBand.getByRole("button", { name: "Open new session" }).click();
+  await expect(detail.getByRole("group", { name: "Resident Workspace watcher", exact: true })).toContainText("revision 2");
+  await expect(replacedBand).toHaveCount(0);
+
+  // Back on the replaced session, Complete & close is the ordinary Complete dialog.
+  await openReplaced();
+  await replacedBand.getByRole("button", { name: "Complete & close" }).click();
+  const dialog = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(dialog).toBeVisible();
+  await capture(page, "workspace-replaced-complete");
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => (await request<Task[]>(daemon, "/api/tasks", undefined, "GET"))
+    .find(task => task.id === oldTask.id)?.status).toBe("done");
+  await expect.poll(async () => (await request<Array<{ id: string }>>(daemon, "/api/sessions", undefined, "GET"))
+    .map(session => session.id), { timeout: 30_000 }).toEqual([fresh.sessionId]);
+  expect(live(daemon)?.profile_revision, "completing the replaced session leaves the replacement running").toBe(2);
+});
+
+test("a replaced session keeps its Complete offer after its replacement has ended", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const settings = {
+    identity: { name: "Short-lived watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  };
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "short-lived" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const old = live(daemon)!.id;
+  const oldTask = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident")!;
+  await request(daemon, `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings: { ...settings, loop: { delaySeconds: 600 } } }, "PATCH");
+  await request(daemon, `/api/residents/runs/${old}/restart`);
+  await expect.poll(() => live(daemon)?.profile_revision).toBe(2);
+  // The replacement ends before anyone completes the session it replaced.
+  const replacement = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET"))
+    .find(task => task.kind === "resident" && task.id !== oldTask.id)!;
+  await request(daemon, `/api/tasks/${replacement.id}/complete`, { outcome: "Stood down" });
+  await expect.poll(() => live(daemon)).toBeUndefined();
+
+  // Read back after a reload: the offer is durable, not a memory of the live replacement.
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.reload();
+  const rows = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Short-lived watcher/ });
+  const detail = page.locator(".console-detail");
+  const band = detail.getByRole("group", { name: "Replaced resident Short-lived watcher" });
+  // The replacement completed without a worktree, so its session is still listed beside it.
+  await expect(rows).toHaveCount(2);
+  await selectSessionShowing(rows, band);
+  await expect(band.getByRole("status")).toHaveText("Restarted on revision 2, but that session is no longer running. This session no longer wakes.");
+  await expect(band.getByRole("button", { name: "Open new session" })).toHaveCount(0);
+  await capture(page, "replaced-after-replacement-ended");
+  await band.getByRole("button", { name: "Complete & close" }).click();
+  const dialog = page.getByRole("dialog", { name: "Complete task and close session" });
+  await dialog.getByRole("button", { name: "Complete & close" }).click();
+  await expect.poll(async () => (await request<Task[]>(daemon, "/api/tasks", undefined, "GET"))
+    .find(task => task.id === oldTask.id)?.status).toBe("done");
+  await expect(band).toHaveCount(0);
+});
+
+test("Open new session reaches the replacement even when the fleet filter hides it", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const settings = {
+    identity: { name: "Filtered watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  };
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "filtered" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const old = live(daemon)!.id;
+  const oldTask = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident")!;
+  // A name only the original carries, so a filter on it shows the original and hides its replacement.
+  await request(daemon, `/api/sessions/${encodeURIComponent(oldTask.sessionId!)}/rename`, { name: "Original wrangler" });
+  await request(daemon, `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings: { ...settings, loop: { delaySeconds: 600 } } }, "PATCH");
+  await request(daemon, `/api/residents/runs/${old}/restart`);
+  await expect.poll(() => live(daemon)?.profile_revision).toBe(2);
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const rows = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /wrangler|watcher/i });
+  await expect(rows).toHaveCount(2);
+  await page.keyboard.press("/");
+  const filter = page.getByRole("textbox", { name: "Filter sessions by title, status, agent, or PR number" });
+  await filter.fill("Original wrangler");
+  await expect(rows).toHaveCount(1);
+  await rows.first().click();
+  const detail = page.locator(".console-detail");
+  const band = detail.getByRole("group", { name: /^Replaced resident / });
+  const open = band.getByRole("button", { name: "Open new session" });
+  await expect(open).toBeEnabled();
+  await open.click();
+  // The filter is cleared so the replacement can be listed, and its detail is what opens.
+  await expect(filter).toHaveValue("");
+  await expect(detail.getByRole("group", { name: "Resident Filtered watcher", exact: true })).toContainText("revision 2");
+  await capture(page, "open-new-session-through-filter");
+});
+
+test("Restart's prompt completes the replaced session in one step", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const settings = {
+    identity: { name: "Prompted watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  };
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "prompted" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const oldTask = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident")!;
+  await request(daemon, `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings: { ...settings, loop: { delaySeconds: 600 } } }, "PATCH");
+  // From the Residents page, nowhere near the original session's Console detail.
+  await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+  await page.getByRole("region", { name: "Live run of Prompted watcher" }).getByRole("button", { name: "Restart on new profile", exact: true }).click();
+  const prompt = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(prompt.getByRole("status")).toHaveText(RESTART_PROMPT);
+  await expect(prompt).toContainText("Prompted watcher");
+  await capture(page, "restart-prompt-from-residents-page");
+  await prompt.getByRole("button", { name: "Complete & close" }).click();
+  await expect(prompt).toHaveCount(0);
+  await expect.poll(async () => (await request<Task[]>(daemon, "/api/tasks", undefined, "GET"))
+    .find(task => task.id === oldTask.id)?.status).toBe("done");
+  await expect.poll(() => live(daemon)?.profile_revision, { timeout: 60_000 }).toBe(2);
+  await expect.poll(async () => (await request<Array<{ id: string; task: { id: string } | null }>>(daemon, "/api/sessions", undefined, "GET"))
+    .some(session => session.task?.id === oldTask.id), { timeout: 30_000 }).toBe(false);
+});
+
+test("a finished task's outcome reads from the left of its pill, whole", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Outcome watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  } });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "outcome-pill" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const task = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(candidate => candidate.kind === "resident")!;
+  // Ordinary completion of a repo-less task leaves its session up, which is the state the pill
+  // is drawn in with nothing but an outcome to say: the session is named after the task.
+  const outcome = "Stood down after the release review finished";
+  await request(daemon, `/api/tasks/${task.id}/complete`, { outcome });
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Outcome watcher/ }).click();
+  const detail = page.locator(".console-detail");
+  const text = detail.getByText(outcome, { exact: true });
+  await expect(text).toBeVisible();
+  const chip = text.locator("xpath=..");
+  const [textBox, chipBox] = [await text.boundingBox(), await chip.boundingBox()];
+  expect(textBox!.x - chipBox!.x, "the outcome starts at the pill's left edge").toBeLessThan(16);
+  expect(await text.evaluate(el => el.scrollWidth <= el.clientWidth), "the outcome is not cut off").toBe(true);
+  await text.hover();
+  await expect(page.locator(".tooltip").filter({ hasText: `Outcome: ${outcome}` })).toBeVisible();
+  await capture(page, "outcome-pill");
 });

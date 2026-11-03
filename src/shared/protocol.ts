@@ -67,6 +67,7 @@ import {
   isArchiveRepoSlot,
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
+import { DEFAULT_SKIN, SKIN_IDS } from "./skins.ts";
 import { EMULATOR_IDS, TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
@@ -1255,6 +1256,33 @@ export const RescheduleTaskSchema = z.object({}).strict();
  * a caller expecting an option this route does not have.
  */
 export const RequeueTaskSchema = z.object({}).strict();
+
+/**
+ * Dismiss open launch failures (`POST /api/launch-failures/dismiss`). A list, because a failed
+ * tile stands for every attempt of the same work that failed the same way, and one Dismiss on
+ * it answers all of them. Bounded as a request body, not as a product limit.
+ */
+export const DismissLaunchFailuresSchema = z
+  .object({ taskIds: z.array(z.string().min(1)).min(1).max(100) })
+  .strict();
+
+/**
+ * Start a report session for one launch failure (`POST /api/launch-failures/report`).
+ *
+ * The daemon builds the session's brief from `taskId` alone, so the browser never carries the
+ * failure's facts. `repoRoot` is only where the report session runs: every session kind but a
+ * resident needs a checkout, and a failed resident has none of its own to offer.
+ */
+export const ReportLaunchFailureSchema = z
+  .object({ taskId: z.string().min(1), repoRoot: z.string().min(1) })
+  .strict();
+
+/**
+ * Try a failed launch again (`POST /api/launch-failures/retry`): a backlog kind is re-filed and
+ * dispatched as the same task, a chat is filed again as a new one. A resident is launched again
+ * from its profile instead, through the one resident launch call.
+ */
+export const RetryLaunchFailureSchema = z.object({ taskId: z.string().min(1) }).strict();
 
 /**
  * Move one backlog task in the operator's order - the ONE route that writes
@@ -3211,6 +3239,12 @@ export const LineDensitySchema = z.enum(LINE_DENSITIES);
 export type LineDensity = (typeof LINE_DENSITIES)[number];
 
 /**
+ * Which skin paints the dashboard. The registry, its append-only rule and the reason a stored
+ * id is never renamed live in `./skins.ts`; this is only the validator over its ids.
+ */
+export const SkinIdSchema = z.enum(SKIN_IDS);
+
+/**
  * How the console's conversation header marks a task session's kind (`TaskKindMark`).
  *
  * Every kind is marked, `ship` included, because a kind printed only when it is not the
@@ -3410,6 +3444,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  /** Today's look. A skin is opt-in; nothing an install already shows changes on upgrade. */
+  skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
   keybindings: {},
@@ -3513,6 +3549,14 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  /**
+   * The skin. `.catch` rather than `.default`, so an id written by a build that shipped a skin
+   * this one does not (a downgrade) reads as Default instead of failing the whole `ui` record.
+   * A missing key lands in the same place, so no migration is owed. Tolerant on READ only:
+   * `UiConfigPatchSchema` validates this field strictly, so a bad write is a 400 and the
+   * dashboard's optimistic store rolls the skin back rather than storing "default" by accident.
+   */
+  skin: SkinIdSchema.catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
@@ -3679,7 +3723,11 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().refine(
+export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
+  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+  // `{ skin: "nope" }` into a successful write of Default.
+  skin: SkinIdSchema.optional(),
+}).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty config update" },
 );
@@ -5957,6 +6005,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
+    reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
     diffTruncated: z.boolean(),

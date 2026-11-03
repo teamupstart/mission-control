@@ -81,7 +81,7 @@ for (const path of ["one dumpstate", "per-job prints"] as const) {
       // The production preflight, over the slow host, with the scaled-down budget.
       launchPreflight: (bundle) => assertSafeAppLaunch(bundle, host, BUDGET_MS),
       handoff: async () => {handoffs++;}, requestQuit: () => {quits++;},
-      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: (line) => {errors.push(line);},
+      readOutcome: () => null, clearOutcome: () => false, now: Date.now, random: () => 0, log: (line) => {errors.push(line);},
       dialogs: {
         error: async (message) => {await pushUpdateDialog(dashboard, {...UPDATE_DIALOGS.error(message), id: `error-${++dialogs}`});},
         available: async () => "defer", upToDate: async () => {}, preparing: async () => {}, ready: async () => "defer", applying: async () => {}, outcome: async () => {},

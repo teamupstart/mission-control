@@ -138,6 +138,8 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
@@ -1017,6 +1019,7 @@ export class TaskManager {
         return this.residentLaunch(task, repository, runtime);
       },
       residentMcp: (task) => this.residentMcp?.(task) ?? null,
+      residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1434,6 +1437,12 @@ export class TaskManager {
    */
   registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
     this.writeback = enqueuer;
+  }
+
+  /** A launch-failure record for a dispatch this manager settles outside the dispatcher. */
+  private launchFailureFor(t: Task, sessionKept = false): TaskLaunchFailure {
+    const resident = TASK_KIND_BEHAVIOR[t.kind].launch === "resident";
+    return newLaunchFailure(t, Date.now(), resident ? residentRunForTask(t.id)?.run.profileId ?? null : null, sessionKept);
   }
 
   /** Install the resident launch composer after `ResidentManager` exists. */
@@ -2060,12 +2069,19 @@ export class TaskManager {
   private mergeQuorumFor(t: Task): QuorumVerdict {
     const primary = primaryRepoPrForTask(t.id);
     const task = { ...t, extraRepos: taskReposFor(t.id) };
+    const changes = [taskWorkEpisodeForTask(t.id), ...historicalTaskWorkEpisodeBindingsForTask(t.id)]
+      .flatMap(binding => binding?.repoChanges ?? []);
     return taskMergeQuorum(task, (ref) => {
       const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
       return {
         prUrl: entry ? entry.prUrl : primary.prUrl,
         mergedAt: entry ? entry.mergedAt : primary.mergedAt,
         headSha: this.registry.worktreeHead(ref.worktreePath),
+        retainedChange: ref.worktreePath === null
+          ? changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "changed") ? "changed"
+            : changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "unknown") ? "unknown"
+              : changes.some(v => v.repoRoot === ref.repoRoot) ? "unchanged" : "unknown"
+          : undefined,
       };
     });
   }
@@ -2158,8 +2174,8 @@ export class TaskManager {
    * edge: terminal rows are eventually pruned, so a completion recorded only in this task's
    * row stops being readable and every dependent silently re-blocks.
    *
-   * Idempotent, and it must stay that way - it runs from four signals. A `done` task is
-   * never revisited, and a merge already recorded costs one indexed read per task.
+   * Done sources with unresolved dependents are revisited for edge repair only. Their
+   * outcome, completion time, writeback and cleanup obligations are never replayed.
    */
   reconcileMergedTasks(): void {
     // Completing re-enters here: `complete` upserts, which resyncs the bound session, which
@@ -2169,6 +2185,10 @@ export class TaskManager {
     if (this.reconcilingMergedTasks) return;
     this.reconcilingMergedTasks = true;
     try {
+      for (const source of this.registry.completedDependencySources()) {
+        const outcome = this.mergeOutcomeFor(source);
+        if (outcome) this.satisfyDeclaredEdgesTo(source.id, Date.now(), outcome.url, true);
+      }
       for (const { id } of this.registry.listTasks()) {
         // Re-read rather than trusting the snapshot: a completion mid-loop can settle
         // another row through that same re-entrancy, and can evict a terminal one entirely.
@@ -2477,6 +2497,8 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
+      // The provider run this dispatch exists to create never appeared: it did not start.
+      launchFailure: this.launchFailureFor(t),
       error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
@@ -2644,7 +2666,8 @@ export class TaskManager {
           };
         }
       } else {
-        const target = this.registry.getTask(input.taskId);
+        const target = this.registry.getTask(input.taskId) ??
+          (existing.has(`task:${input.taskId}`) ? getDurableTask(input.taskId) : undefined);
         if (!target) {
           const kept = existing.get(`task:${input.taskId}`);
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
@@ -2656,6 +2679,16 @@ export class TaskManager {
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
+          const merged = target.status === "done" ? this.mergeOutcomeFor(target) : null;
+          const mergeCandidate: TaskDependency = previousEdge ?? {
+            type: "task", taskId: target.id, title: target.title,
+            sessionId: binding?.sessionId ?? null, episodeId: binding?.episodeId ?? null,
+            agentSessionId: binding?.agentSessionId ?? null, branch: binding?.branch ?? null,
+            prUrl: null, selectedAt, satisfiedAt: null,
+          };
+          const mergedUrl = merged && (previousEdge || binding)
+            ? this.mergeUrlForDependency(mergeCandidate, merged.url)
+            : null;
           const eligible = target.status === "backlog" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -2671,12 +2704,14 @@ export class TaskManager {
             episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
             agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
             branch: previousEdge?.branch ?? binding?.branch ?? null,
-            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
+            prUrl: previousEdge?.satisfiedAt != null
+              ? previousEdge.prUrl
+              : mergedUrl ?? previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              observedPr && activeSession?.prState === "merged"
+              previousEdge?.satisfiedAt ?? (mergedUrl || (target.status !== "done" && observedPr && activeSession?.prState === "merged")
                 ? Date.now()
-                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+                : null),
           };
         }
       }
@@ -5231,7 +5266,8 @@ export class TaskManager {
     } catch (err) {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
-    if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    const merged = this.mergeOutcomeFor(updated);
+    if (input.satisfyDependents || merged) this.satisfyDeclaredEdgesTo(id, now, merged?.url, !input.satisfyDependents);
     if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
       this.enqueueFinishedWorktreeReturn(updated, "complete");
       this.scheduleMissionSessionClosureSweep();
@@ -5285,7 +5321,36 @@ export class TaskManager {
    * by construction operator-started work with no task to complete - nothing this call
    * could be about.
    */
-  private satisfyDeclaredEdgesTo(taskId: string, at: number): void {
+  private mergeUrlForDependency(dependency: TaskDependency, fallback: string): string | null {
+    if (dependency.type !== "task" || dependency.episodeId === null) return fallback;
+    const bindings = [taskWorkEpisodeForTask(dependency.taskId), ...historicalTaskWorkEpisodeBindingsForTask(dependency.taskId)];
+    const bound = bindings.find((binding) => binding?.episodeId === dependency.episodeId &&
+      binding.sessionId === dependency.sessionId);
+    // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
+    // stale provenance without a surviving binding still uses the task's durable outcome.
+    if (!bound) return fallback;
+    const source = this.registry.getTask(dependency.taskId) ?? getDurableTask(dependency.taskId);
+    if (source && source.extraRepos.length > 0) {
+      const secondary = workEpisodeRepoPrsForTask(dependency.taskId).filter(row =>
+        row.episodeId === bound.episodeId && row.sessionId === bound.sessionId);
+      const quorum = taskMergeQuorum(source, ref => {
+        const row = secondary.find(row => row.repoRoot === ref.repoRoot);
+        return {
+          prUrl: ref.role === "primary" ? bound.prUrl : row?.prUrl ?? null,
+          mergedAt: ref.role === "primary" ? bound.mergedAt : row?.mergedAt ?? null,
+          retainedChange: bound.repoChanges?.find(v => v.repoRoot === ref.repoRoot)?.verdict ?? "unknown",
+        };
+      });
+      if (!quorum.satisfied) return null;
+    }
+    if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
+    // The primary can be unchanged. Once the task quorum passes, a merged secondary
+    // belonging to this same episode is delivery evidence for its dependent as well.
+    return workEpisodeRepoPrsForTask(dependency.taskId).find((row) =>
+      row.episodeId === bound.episodeId && row.sessionId === bound.sessionId && row.mergedAt !== null)?.prUrl ?? null;
+  }
+
+  private satisfyDeclaredEdgesTo(taskId: string, at: number, prUrl?: string, verifyEpisode = false): void {
     for (const task of this.registry.listTasks()) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -5296,8 +5361,10 @@ export class TaskManager {
         ) {
           return dependency;
         }
+        const verifiedUrl = verifyEpisode && prUrl ? this.mergeUrlForDependency(dependency, prUrl) : prUrl;
+        if (verifiedUrl === null) return dependency;
         changed = true;
-        return { ...dependency, satisfiedAt: at };
+        return { ...dependency, satisfiedAt: at, prUrl: verifiedUrl ?? dependency.prUrl };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
@@ -5556,6 +5623,8 @@ export class TaskManager {
       outcome: null,
       outcomeUrl: null,
       error: null,
+      // Re-filed on purpose: a launch failure it carried was answered by this.
+      launchFailure: null,
       dispatchedAt: null,
       completedAt: null,
       updatedAt: Date.now(),
@@ -6156,6 +6225,9 @@ export class TaskManager {
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR
             : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+        // A dispatch the restart interrupted before anything was provisioned never started:
+        // drawn where its placeholder was, or on its Backlog card when it went back there.
+        launchFailure: this.launchFailureFor(current),
         dispatchedAt: null,
         updatedAt: Date.now(),
       });
@@ -6234,6 +6306,9 @@ export class TaskManager {
         this.registry.upsertTask({
           ...t,
           status: "failed",
+          // Its home survived the restart (or its session is being resumed): kept, like the
+          // dispatcher's own kept branch, so it is opened or cancelled rather than retried.
+          launchFailure: this.launchFailureFor(t, true),
           error:
             embedded === true
               ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
@@ -6287,6 +6362,9 @@ export class TaskManager {
         : t.status === "dispatching"
           ? "dispatch interrupted by a restart - re-dispatch"
           : "the agent's session did not survive a restart";
+    // A dispatch the restart interrupted never reached its session: a launch failure, drawn
+    // where its placeholder was. A session that ran and died with the daemon is not one.
+    const interrupted = t.status === "dispatching" ? { launchFailure: this.launchFailureFor(t) } : {};
 
     if (taskHasWorktrees(t)) {
       // The agent died WITH the daemon, and this used to be where its checkout was removed on
@@ -6311,6 +6389,7 @@ export class TaskManager {
       const now = Date.now();
       const settled: Task = {
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: settledError,
         // The one resource fact restart is entitled to clear, and only because the existing
@@ -6341,6 +6420,7 @@ export class TaskManager {
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
         sessionId: null,
@@ -6359,6 +6439,7 @@ export class TaskManager {
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
+        ...interrupted,
         status: settledStatus,
         error:
           t.status === "done" || t.status === "cancelled"
@@ -6371,6 +6452,7 @@ export class TaskManager {
     }
     this.registry.upsertTask({
       ...t,
+      ...interrupted,
       status: settledStatus,
       error: settledError,
       ...releasedTaskResources(t, null),

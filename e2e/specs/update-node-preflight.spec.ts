@@ -20,7 +20,7 @@ for (const kind of ["legacy source", "binary"] as const) {
       stagedBundleIdentity: () => ({version: "1.2.4", revision: "staged-1", commit: "b".repeat(40)}),
       helperSource: () => "", stateDirectory: () => daemon.home, launchPreflight: async () => {},
       handoff: async args => {expect(args.descriptor?.receipt.kind).toBe("binary"); expect(args.node).toBeUndefined(); expect(args.sourceClone).toBeUndefined(); handoffs++;}, requestQuit: () => {quits++;},
-      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: () => {},
+      readOutcome: () => null, clearOutcome: () => false, now: Date.now, random: () => 0, log: () => {},
       dialogs: {error: async () => {}, available: async () => "defer", upToDate: async () => {}, preparing: async () => {}, ready: async () => "defer", applying: async () => {}, outcome: async () => {}},
     };
     // An old/missing host runtime is deliberately poisonous if the controller ever

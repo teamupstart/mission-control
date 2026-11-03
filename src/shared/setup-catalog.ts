@@ -121,34 +121,40 @@ export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
  * `The ${label} is running.` is true of a server and false of everything else. It produced
  * "The cmux socket control is running." for a repair that writes one value into a config
  * file and starts no process at all, which tells an operator nothing they can check.
+ * `retry` is the panel's next step after a refusal, for the same reason: "start it yourself in
+ * a terminal" is advice about a server, and wrong for a configuration write.
  */
 export const SETUP_SERVICE_INFO: Record<
   SetupServiceId,
-  { id: SetupServiceId; label: string; started: string; refused: string }
+  { id: SetupServiceId; label: string; started: string; refused: string; retry: string }
 > = {
   "claude-mcp-trust": {
     id: "claude-mcp-trust",
     label: "Claude Code Mission Control MCP trust",
     started: "Mission Control MCP is allowed by default in Claude Code. Explicit restrictions still apply. Restart sessions to apply.",
     refused: "The Claude Code MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
   "codex-mcp-trust": {
     id: "codex-mcp-trust",
     label: "Codex Mission Control MCP trust",
     started: "Mission Control MCP is allowed by default in Codex. Explicit restrictions still apply. Restart sessions to apply.",
     refused: "The Codex MCP trust setting could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
   "herdr-server": {
     id: "herdr-server",
     label: "Herdr server",
     started: "The Herdr server is running.",
     refused: "The Herdr server could not be started.",
+    retry: "Start it yourself in a terminal, then press Re-check.",
   },
   "cmux-app": {
     id: "cmux-app",
     label: "cmux app",
     started: "cmux is open, and its control socket is answering.",
     refused: "cmux could not be opened.",
+    retry: "Open cmux yourself, then press Re-check.",
   },
   // A configuration repair belongs in this union because it is
   // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
@@ -158,8 +164,21 @@ export const SETUP_SERVICE_INFO: Record<
     label: "cmux socket control",
     started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
     refused: "The cmux configuration could not be written.",
+    retry: "Fix the file named above as described, then press Re-check.",
   },
 };
+
+/**
+ * Something a service start found missing that a different, named repair supplies.
+ *
+ * `mission-integrations`: Codex MCP trust edits the `[mcp_servers.mission-control]` table,
+ * so it cannot run until the desktop app's integration install has registered that server.
+ * A refusal carrying this tells the panel to offer that install instead of prose that sends
+ * the operator to a terminal for something no terminal command in front of them would fix.
+ */
+export const SETUP_SERVICE_PREREQUISITES = ["mission-integrations"] as const;
+
+export type SetupServicePrerequisite = (typeof SETUP_SERVICE_PREREQUISITES)[number];
 
 /**
  * How the panel helps with one unsatisfied row.
@@ -433,7 +452,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       kind: "service",
       service: "claude-mcp-trust",
       label: "Trust Mission Control in Claude Code",
-      note: "Add mcp__mission-control__* to permissions.allow in ~/.claude/settings.json, preserving other settings and a recovery copy. Restart Claude Code sessions to apply. Install the Mission Control MCP integration first.",
+      note: "Add mcp__mission-control__* to permissions.allow in ~/.claude/settings.json, preserving other settings and a recovery copy. Restart Claude Code sessions to apply. Register the MCP server first with Install Claude integrations in the desktop app.",
     },
   },
   "codex-mcp-trust": {
@@ -446,7 +465,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       kind: "service",
       service: "codex-mcp-trust",
       label: "Trust Mission Control in Codex",
-      note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Install the Mission Control MCP integration first.",
+      note: "Set mcp_servers.mission-control.default_tools_approval_mode to approve in ~/.codex/config.toml, preserving other settings and a recovery copy. Restart Codex sessions to apply. Needs the MCP server registered in Codex; this offers Install Claude integrations when it is not.",
     },
   },
 };

@@ -12,6 +12,12 @@ import "@xyflow/react/dist/style.css";
 // is the one surface that actually boots the stylesheet-aware Vite application.
 import "react-diff-view/style/index.css";
 import "./styles.css";
+// Directly after the base stylesheet, so a skin's `:root[data-skin]` overrides win on order as
+// well as specificity. Every skin ships in this bundle; switching never waits on a fetch.
+import "./skins/index.css";
+// For its side effect: puts the cached skin on `<html>` before React renders its first frame,
+// then follows the preference store. See `lib/skin.ts`.
+import "./lib/skin.ts";
 
 // In the Electron shell the window has no native title bar (titleBarStyle:
 // "hiddenInset"), so the topbar doubles as it: this flag turns on the traffic-

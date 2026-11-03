@@ -890,7 +890,9 @@ run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 **Commands use the built-in native pool.** Two Commands run at once, and each holds one exact,
 detached lease for as long as it runs. A repository whose native policy is disabled or whose
 allocator positively refuses capacity uses a throwaway detached Git worktree pinned to the
-captured commit. An ambiguous native outcome does not try another provider. The configured argv
+same commit. That commit is the captured HEAD for a clean submission and the [review
+snapshot](worktrees-and-checks.md#running-a-check-command) for an uncommitted one, so a ship
+task's Commands check its work rather than the base it started from. An ambiguous native outcome does not try another provider. The configured argv
 still runs on positive degradation and its real result still gates the workflow; the fallback
 does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
@@ -2752,9 +2754,14 @@ retained output instead, since Setup would show a healthy CLI. Neither spends a 
 sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
 update, remote-ref fetch or paid-credit continuation happens automatically.
 
-Only committed content is reviewed. Dirty submissions must be committed and submitted again.
-The first successful comparison pins the full captured head, configured base, resolved base tip
-and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
+CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
+through its review snapshot, a commit of exactly the captured content parented on HEAD, so a ship
+task that has not committed yet is reviewed rather than refused. The `.coderabbit.yaml` that
+gates the review is the one in that commit; an ignored, uncommitted YAML blocks with a
+submit-again remedy rather than reviewing under a configuration the review cannot see. A dirty
+submission captured before review snapshots existed also blocks with a submit-again remedy, not a
+Setup link. The first successful comparison pins the full reviewed head, configured base,
+resolved base tip and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
 same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.

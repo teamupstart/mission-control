@@ -42,6 +42,38 @@ it names, never changes a resident that is already running.
 Pi is not offered: the first release supports Claude Code and Codex, and a profile can only be
 saved for a harness with an Agent SDK driver.
 
+## Built-in residents
+
+Mission Control ships one resident ready to launch, installed on every machine:
+
+| Resident | What it does |
+|---|---|
+| Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+
+Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
+your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
+Archive are absent, every field is locked, and a line says why. **Duplicate to edit** opens a new,
+unsaved profile named `<name> copy` with the same settings. Your copy is an ordinary profile:
+editable, archivable, and never touched by an upgrade. Every saved profile also offers
+**Duplicate**.
+
+A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
+ships different settings, the daemon writes them as the built-in's next revision at startup. A
+resident already running keeps the revision it launched with. Use **Restart on new profile** to
+pick up the update. Like any other launch, a restart grants session control only from a desktop
+Launch click.
+
+The daemon refuses edits and archives of a built-in even when they do not come from the editor.
+New profiles and renames cannot take a built-in's name. A profile you authored under that name
+before it shipped keeps the name and everything in it. Both stay listed: yours under **Yours**,
+the built-in under **Built-in**. The dock and Dispatch tag the built-in, and its Launch button
+reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-in in place of
+your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
+live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
+
+The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
+the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+
 ## Launching a resident
 
 **Dispatch > Resident** shows a card per live profile, the repository (pre-filled from the
@@ -51,7 +83,11 @@ form on that profile.
 
 Like a task dispatch, Dispatch closes as soon as Mission Control accepts the launch and the
 resident's task exists, without waiting for its session to start. The resident keeps starting on
-its task, and a launch that fails from there shows its reason on that task. A launch refused
+its task, and a launch that fails from there stays on the board as a **Did not start** tile in
+**Working** with its reason - for example an MCP server that could not connect - and offers
+**Launch again**, **Open profile**, **Report bug** and **Dismiss**. Launches of one profile that
+fail for the same reason share one tile, and a later successful launch of that profile clears it.
+See [when a dispatch does not start](dispatch-and-backlog.md#when-a-dispatch-does-not-start). A launch refused
 before its task exists, such as an MCP set that cannot be pinned, keeps Dispatch open with the
 reason. If Mission Control answers before the task exists, Dispatch stays open and checks on
 that same launch until it does; you can close it, and launching again resumes that launch.
@@ -173,8 +209,8 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
-failed launch, or one interrupted by a restart before its session started, is recorded with its
-reason and is never relaunched; launch the profile again.
+failed launch, or one interrupted by a daemon restart before its session started, is recorded
+with its reason and is never relaunched; launch the profile again.
 
 A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
 The Files panel browses its working directory directly, without Git or managed repository plans.
@@ -213,11 +249,20 @@ you resume it. Pausing does not interrupt an already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
-After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
-and launches the latest revision in a new conversation. It preserves the repository choice and
-run instructions; a repository-free resident receives a fresh private workspace. New conversation
-creation ensures every changed launch option takes effect. Retrying an interrupted Restart
-finishes the same replacement request, including an interruption after the old task completed.
+After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
+and launches the latest revision in a new conversation. The old task and session stay open, and
+Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
+it there, or cancel to keep it. The old session's Console band also says it was restarted on the
+new revision and offers **Open new session** and **Complete & close**, so you decide when the
+replaced conversation closes. The offer stays until that task is completed, even if the new
+session has since ended or never started, and survives a reload or daemon restart. Restart
+preserves the repository choice and run instructions; a repository-free resident receives a fresh
+private workspace. New conversation creation ensures every changed launch option takes effect.
+If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
+the reservation no replacement launch exists, so retrying Restart starts it. After the
+reservation, a replacement whose session never started is a failed launch like any other (see
+[Lifecycle](#lifecycle)): retrying Restart only reports that failure, so launch the profile again.
+Either way the old session's band keeps **Complete & close**.
 The replacement conversation does not inherit a session-control grant from the old run;
 only the desktop Launch flow or the existing session-control menu can grant that authority.
 

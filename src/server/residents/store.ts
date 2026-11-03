@@ -4,8 +4,10 @@ import {
   RESIDENT_LAUNCH_STATES,
   RESIDENT_LIMITS,
   ResidentPersonaSnapshotSchema,
+  BUILTIN_RESIDENT_PROFILE_ID_PREFIX,
   ResidentProfileRevisionSchema,
   canonicalResidentJson,
+  isBuiltinResidentProfileId,
   type ResidentLaunchInput,
   type ResidentLaunchState,
   type ResidentPersonaSnapshot,
@@ -76,6 +78,39 @@ export class ResidentNameConflictError extends Error {}
 /** The machine already holds the maximum number of live profiles. */
 export class ResidentProfileLimitError extends Error {}
 
+/**
+ * SQL that is true for a built-in profile's row. Exact rather than `LIKE`, whose `_` and `%`
+ * are wildcards.
+ */
+function builtinRow(column = "id"): string {
+  return `substr(${column}, 1, ${BUILTIN_RESIDENT_PROFILE_ID_PREFIX.length}) = '${BUILTIN_RESIDENT_PROFILE_ID_PREFIX}'`;
+}
+
+/**
+ * A built-in's `normalized_name`. Never its real normalized name: an operator profile authored
+ * under that name before it shipped keeps the name (and the live-name index slot) it already
+ * holds, and shadows the built-in instead. A built-in's name is reserved by `builtinNameOwner`.
+ */
+function builtinNormalizedName(id: string): string {
+  return `\u0000${id}`;
+}
+
+/** The built-in already installed under this name, or null. What create and rename refuse. */
+function builtinNameOwner(d: DatabaseSync, normalizedName: string): string | null {
+  const rows = d
+    .prepare(`SELECT id, name FROM resident_profiles WHERE ${builtinRow()} AND archived_at IS NULL`)
+    .all() as Array<{ id: string; name: string }>;
+  return rows.find((row) => normalizeResidentName(row.name) === normalizedName)?.id ?? null;
+}
+
+/** Live operator profiles: what `RESIDENT_LIMITS.liveProfiles` bounds. Built-ins are extra. */
+function liveOperatorProfileCount(d: DatabaseSync): number {
+  const row = d
+    .prepare(`SELECT COUNT(*) AS n FROM resident_profiles WHERE archived_at IS NULL AND NOT (${builtinRow()})`)
+    .get() as { n: number };
+  return row.n;
+}
+
 function inTransaction<T>(d: DatabaseSync, fn: () => T): T {
   const owns = !d.isTransaction;
   if (owns) d.exec("BEGIN IMMEDIATE");
@@ -110,6 +145,7 @@ function rowToProfile(row: ProfileRow): ResidentProfile | null {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     settings,
+    ...(isBuiltinResidentProfileId(row.id) ? { builtin: true as const } : {}),
   };
 }
 
@@ -124,18 +160,29 @@ export function getResidentProfile(id: string): ResidentProfile | null {
   return row ? rowToProfile(row) : null;
 }
 
-/** Live profiles by name, bounded by `RESIDENT_LIMITS.liveProfiles`. */
+/**
+ * Live profiles by name: the operator's, bounded by `RESIDENT_LIMITS.liveProfiles`, then the
+ * built-ins, which this build ships a handful of and which the bound does not count.
+ */
 export function listLiveResidentProfiles(): ResidentProfile[] {
-  const rows = openDb()
-    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL ORDER BY p.normalized_name, p.id LIMIT ?`)
+  const d = openDb();
+  const operator = d
+    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL AND NOT (${builtinRow("p.id")})
+      ORDER BY p.normalized_name, p.id LIMIT ?`)
     .all(RESIDENT_LIMITS.liveProfiles) as unknown as ProfileRow[];
-  return rows.flatMap((row) => rowToProfile(row) ?? []);
+  const builtins = d
+    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL AND ${builtinRow("p.id")} ORDER BY p.id`)
+    .all() as unknown as ProfileRow[];
+  return [...operator, ...builtins].flatMap((row) => rowToProfile(row) ?? []);
 }
 
-/** Every profile, archived included, for the settings backup capture. */
+/**
+ * Every operator profile, archived included, for the settings restore preview. Built-ins are app
+ * data: no snapshot carries them and no restore changes them.
+ */
 export function listAllResidentProfiles(): ResidentProfile[] {
   const rows = openDb()
-    .prepare(`${PROFILE_SELECT} ORDER BY p.id`)
+    .prepare(`${PROFILE_SELECT} WHERE NOT (${builtinRow("p.id")}) ORDER BY p.id`)
     .all() as unknown as ProfileRow[];
   return rows.flatMap((row) => rowToProfile(row) ?? []);
 }
@@ -153,12 +200,13 @@ export function listAllResidentProfiles(): ResidentProfile[] {
  */
 export function listBackupResidentProfiles(archivedLimit: number): ResidentProfile[] {
   const d = openDb();
+  const operator = `NOT (${builtinRow("p.id")})`;
   const live = d
-    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL ORDER BY p.id`)
+    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL AND ${operator} ORDER BY p.id`)
     .all() as unknown as ProfileRow[];
   const room = Math.max(0, archivedLimit);
   const archived = room === 0 ? [] : d
-    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NOT NULL ORDER BY p.archived_at DESC, p.id LIMIT ?`)
+    .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NOT NULL AND ${operator} ORDER BY p.archived_at DESC, p.id LIMIT ?`)
     .all(room) as unknown as ProfileRow[];
   return [...live, ...archived]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -230,10 +278,10 @@ export function createResidentProfile(input: {
     if (liveNameOwner(d, normalized)) {
       throw new ResidentNameConflictError(`a resident named ${name} already exists`);
     }
-    const live = d
-      .prepare(`SELECT COUNT(*) AS n FROM resident_profiles WHERE archived_at IS NULL`)
-      .get() as { n: number };
-    if (live.n >= RESIDENT_LIMITS.liveProfiles) {
+    if (builtinNameOwner(d, normalized)) {
+      throw new ResidentNameConflictError(`${name} is a built-in resident's name; choose another`);
+    }
+    if (liveOperatorProfileCount(d) >= RESIDENT_LIMITS.liveProfiles) {
       throw new ResidentProfileLimitError(
         `at most ${RESIDENT_LIMITS.liveProfiles} live resident profiles are allowed; archive one first`,
       );
@@ -253,7 +301,9 @@ export type ResidentProfileWrite =
   | { status: "ok"; profile: ResidentProfile }
   | { status: "not_found" }
   | { status: "archived"; profile: ResidentProfile }
-  | { status: "stale"; profile: ResidentProfile };
+  | { status: "stale"; profile: ResidentProfile }
+  /** A built-in ships with the app: no revision of it is the operator's to write. */
+  | { status: "builtin"; profile: ResidentProfile };
 
 /**
  * Write revision n+1, compare-and-set on the revision the editor read. The revision number is
@@ -269,6 +319,7 @@ export function updateResidentProfile(input: {
   return inTransaction(d, () => {
     const current = getResidentProfile(input.id);
     if (!current) return { status: "not_found" };
+    if (current.builtin) return { status: "builtin", profile: current };
     if (current.archivedAt !== null) return { status: "archived", profile: current };
     if (current.revision !== input.expectedRevision) return { status: "stale", profile: current };
     const name = input.settings.identity.name;
@@ -276,6 +327,11 @@ export function updateResidentProfile(input: {
     const owner = liveNameOwner(d, normalized);
     if (owner && owner !== input.id) {
       throw new ResidentNameConflictError(`a resident named ${name} already exists`);
+    }
+    // Renaming INTO a built-in's name is refused; a profile that already held the name before
+    // the built-in shipped keeps it, and shadows the built-in.
+    if (normalized !== normalizeResidentName(current.name) && builtinNameOwner(d, normalized)) {
+      throw new ResidentNameConflictError(`${name} is a built-in resident's name; choose another`);
     }
     const revision = current.revision + 1;
     // The request was validated against this build's schema; anything the stored revision holds
@@ -303,6 +359,7 @@ export function archiveResidentProfile(input: {
   return inTransaction(d, () => {
     const current = getResidentProfile(input.id);
     if (!current) return { status: "not_found" };
+    if (current.builtin) return { status: "builtin", profile: current };
     if (current.archivedAt !== null) return { status: "archived", profile: current };
     if (current.revision !== input.expectedRevision) return { status: "stale", profile: current };
     d.prepare(`UPDATE resident_profiles SET archived_at = ?, updated_at = ? WHERE id = ?`)
@@ -338,9 +395,11 @@ export function restoreResidentProfilesInTransaction(
 ): void {
   const d = openDb();
   inTransaction(d, () => {
+    // Built-ins are app data: a snapshot never carries them, so restore neither releases,
+    // archives nor rewrites one.
     d.prepare(
       `UPDATE resident_profiles SET normalized_name = char(0) || 'restore:' || id
-        WHERE archived_at IS NULL`,
+        WHERE archived_at IS NULL AND NOT (${builtinRow()})`,
     ).run();
     const keep = new Set(rows.map((row) => row.id));
     const live = d.prepare(`SELECT id, name, archived_at FROM resident_profiles`).all() as Array<{
@@ -352,10 +411,14 @@ export function restoreResidentProfilesInTransaction(
       `UPDATE resident_profiles SET archived_at = ?, normalized_name = ?, updated_at = ? WHERE id = ?`,
     );
     for (const row of live) {
-      if (keep.has(row.id) || row.archived_at !== null) continue;
+      if (keep.has(row.id) || row.archived_at !== null || isBuiltinResidentProfileId(row.id)) continue;
       archive.run(at, normalizeResidentName(row.name), at, row.id);
     }
     for (const row of rows) {
+      // The preflight refuses a snapshot naming a built-in id; this is the write boundary's guard.
+      if (isBuiltinResidentProfileId(row.id)) {
+        throw new Error(`resident profile ${row.id} belongs to a built-in and cannot be restored`);
+      }
       const current = getResidentProfile(row.id);
       const normalized = normalizeResidentName(row.name);
       if (!current) {
@@ -382,14 +445,62 @@ export function restoreResidentProfilesInTransaction(
     }
     // The write boundary's own guard on the live bound, behind the restore preflight that
     // already refuses it: throwing here rolls back the whole restore transaction, every domain.
-    const restoredLive = d
-      .prepare(`SELECT COUNT(*) AS n FROM resident_profiles WHERE archived_at IS NULL`)
-      .get() as { n: number };
-    if (restoredLive.n > RESIDENT_LIMITS.liveProfiles) {
+    const restoredLive = liveOperatorProfileCount(d);
+    if (restoredLive > RESIDENT_LIMITS.liveProfiles) {
       throw new ResidentProfileLimitError(
-        `restoring would leave ${restoredLive.n} live resident profiles; at most ${RESIDENT_LIMITS.liveProfiles} are allowed`,
+        `restoring would leave ${restoredLive} live resident profiles; at most ${RESIDENT_LIMITS.liveProfiles} are allowed`,
       );
     }
+  });
+}
+
+/**
+ * Install this build's built-in residents, at daemon start and before the Registry loads its
+ * catalog. A built-in not yet on this machine is inserted at revision 1. One whose current
+ * revision differs from what this build ships gets the shipped settings as a NEW revision, so a
+ * run that pinned the old one keeps reading exactly what it launched with. An unchanged one is
+ * not touched. Returns the profiles it wrote.
+ *
+ * A row is never deleted: a built-in a later build stops shipping stays as it was, still
+ * read-only, because runs and their history name its id.
+ */
+export function reconcileBuiltinResidentProfiles(
+  builtins: readonly { id: string; settings: ResidentProfileRevision }[],
+  at: number,
+): ResidentProfile[] {
+  const d = openDb();
+  return inTransaction(d, () => {
+    const written: ResidentProfile[] = [];
+    for (const builtin of builtins) {
+      if (!isBuiltinResidentProfileId(builtin.id)) {
+        throw new Error(`built-in resident id ${builtin.id} must start with builtin:`);
+      }
+      const name = builtin.settings.identity.name;
+      const current = d
+        .prepare(`SELECT revision, archived_at FROM resident_profiles WHERE id = ?`)
+        .get(builtin.id) as { revision: number; archived_at: number | null } | undefined;
+      if (!current) {
+        d.prepare(
+          `INSERT INTO resident_profiles (id, name, normalized_name, revision, archived_at, created_at, updated_at)
+           VALUES (?, ?, ?, 1, NULL, ?, ?)`,
+        ).run(builtin.id, name, builtinNormalizedName(builtin.id), at, at);
+        insertRevision(d, builtin.id, 1, builtin.settings, at);
+        written.push(getResidentProfile(builtin.id)!);
+        continue;
+      }
+      const stored = storedResidentSettings(builtin.id, current.revision);
+      const same = canonicalResidentJson(stored) === canonicalResidentJson(builtin.settings);
+      if (same && current.archived_at === null) continue;
+      const revision = same ? current.revision : current.revision + 1;
+      if (!same) insertRevision(d, builtin.id, revision, builtin.settings, at);
+      d.prepare(
+        `UPDATE resident_profiles
+            SET name = ?, normalized_name = ?, revision = ?, archived_at = NULL, updated_at = ?
+          WHERE id = ?`,
+      ).run(name, builtinNormalizedName(builtin.id), revision, at, builtin.id);
+      written.push(getResidentProfile(builtin.id)!);
+    }
+    return written;
   });
 }
 

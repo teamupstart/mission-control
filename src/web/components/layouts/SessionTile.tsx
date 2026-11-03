@@ -27,6 +27,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
@@ -552,6 +553,10 @@ export function SessionTile({
           {shown("cost") && <CostChip cost={session.cost} />}
         </span>
       )}
+
+      {/* A launch that failed after this session was created: the session stays, and this is
+          the one place its card can say why. Draws nothing for every other session. */}
+      <LaunchFailureNotice sessionId={session.id} />
 
       {foot && (
         <span className="tile-foot">

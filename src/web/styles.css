@@ -126,6 +126,16 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The face of headings, card titles and session tile names. Default draws them in --sans,
+     the face they inherited anyway, so this token changes nothing until a skin restates it
+     (Paper's serif, Blueprint's mono). A skin may change the FAMILY only: size, weight,
+     line height and letter spacing stay where they are declared, because the Line strip
+     geometry test and the measured topbar and detail-head ladders depend on them. */
+  --font-display: var(--sans);
+  /* The small uppercase labels on the Line - its stage names. Mono by default, which is why
+     they cannot simply read --font-display; a skin whose display face should reach them too
+     (Paper) points this at it. */
+  --font-label: var(--mono);
 
   /* ---- Role tokens: chrome below `:root` paints with these or a token above ----
      Each value is exactly the literal it replaced, so the default look is unchanged. Roles
@@ -3826,6 +3836,13 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Headings take the skin's display face. `:where()` keeps this at zero specificity, so a
+   heading whose own rule names a family (a mono eyebrow, say) keeps it, and under Default
+   `--font-display` is the --sans every heading already inherited. */
+:where(h1, h2, h3, h4) {
+  font-family: var(--font-display);
+}
+
 .app {
   max-width: 1400px;
   margin: 0 auto;
@@ -4053,7 +4070,11 @@ body {
 .is-desktop .lib-chip-pop,
 /* The round context line's `Why?` disclosure. It holds the only copy of the evidence
    explanation and of the button back to the live round. */
-.is-desktop .wf-run-disclose-pop {
+.is-desktop .wf-run-disclose-pop,
+/* Launch-failure toasts are bottom-anchored, which keeps them out of the bar on any window
+   tall enough to use - the same assumption every entry above was added after breaking. Each
+   holds a Report bug button. */
+.is-desktop .lf-toasts {
   -webkit-app-region: no-drag;
 }
 
@@ -7853,6 +7874,12 @@ a.btn {
   border: 0;
   background: transparent;
 }
+/* Until it has rendered, the frame's document is still in the renderer's initial dark scheme,
+   and a frame whose scheme differs from the page's paints an opaque canvas - a dark slab
+   under a light skin. The status line covers the stage meanwhile, so nothing is lost. */
+.mermaid-diagram.is-loading .mermaid-diagram-frame {
+  visibility: hidden;
+}
 .mermaid-diagram-status {
   position: absolute;
   inset: 0;
@@ -10406,6 +10433,16 @@ mark.find-hit.is-current {
 .task-outcome:hover {
   text-decoration: underline;
 }
+/* Alone in the chip - a session named after its task, with no schedule origin - there is no
+   title to share the row with, so pinning it right under a 60% cap drew a mostly empty bar
+   whose only text was cut off at its far end. It reads from the left and uses the width. */
+.task-outcome:only-child {
+  margin-left: 0;
+  max-width: none;
+}
+span.task-outcome:hover {
+  text-decoration: none;
+}
 
 /* ---- One pull request per changed repo (multi-repo tasks only) ---- */
 /* Its own row rather than more chips inside the task pill, because the list is as wide as
@@ -12075,6 +12112,16 @@ select:not([multiple]) option:focus-visible {
   align-items: center;
   gap: 8px;
   margin: 0 0 14px;
+}
+/* Why the dialog opened by itself - Restart on new profile's offer. A note above the subject,
+   not a warning: dismissing it is a legitimate answer. */
+.complete-why {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--working);
+  background: color-mix(in oklab, var(--working) 8%, var(--panel-2));
+  border-radius: 6px;
+  color: var(--fg);
 }
 .complete-lead .agent-dot,
 .kill-lead .agent-dot,
@@ -16096,6 +16143,30 @@ select.ensemble-judge-persona {
 .resident-problem {
   margin: 0;
 }
+/* Marks a built-in resident wherever profiles are chosen, beside an operator's same-named one. */
+.resident-builtin-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purple);
+  border: 1px solid color-mix(in oklab, var(--purple) 40%, var(--border));
+  border-radius: 4px;
+  vertical-align: 1px;
+}
+/* A built-in resident: why nothing here can be saved, and the way to a copy that can. */
+.resident-builtin-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
 /* A revision saved elsewhere over unsaved edits: said, with the choice beside it. */
 .resident-conflict {
   display: flex;
@@ -19020,7 +19091,24 @@ td.wf-command-rule-action {
 .workflow-edge-list li { display: grid; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 7px; }
 .workflow-edge-list span { overflow-wrap: anywhere; font-size: 10px; line-height: 1.4; color: var(--muted); }
 .workflow-edge-list span:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
-.workflow-version-list { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+/* Capped at `--workflow-version-rows` rows (set by the component) and scrolled past that, so
+   the selected version's detail below stays close to the row that opened it. The cap is exact
+   only because each row's height is: fixed line heights, and a meta line that truncates
+   rather than wraps. The trailing `- 3px` drops the last row's gap so the fifth row ends flush. */
+.workflow-version-list {
+  --workflow-version-row: 53px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  max-height: calc(var(--workflow-version-rows, 5) * (var(--workflow-version-row) + 3px) - 3px);
+  overflow-y: auto;
+}
+.workflow-version-list > button,
+.workflow-version-list > .tt-anchor > button { flex-shrink: 0; box-sizing: border-box; height: var(--workflow-version-row); }
+.workflow-version-list > .tt-anchor { flex-shrink: 0; }
+.workflow-version-list strong { line-height: 17px; }
+.workflow-version-list span { min-width: 0; max-width: 100%; overflow: hidden; line-height: 13px; white-space: nowrap; text-overflow: ellipsis; }
 .workflow-version-detail { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .workflow-version-detail dl { display: grid; gap: 4px; margin: 0; }
 .workflow-version-detail dl div { display: flex; justify-content: space-between; font-size: 10.5px; }
@@ -25202,6 +25290,206 @@ button.sc-row:focus-visible {
   width: 9px;
 }
 
+/* ---- Launch failures: a dispatch that never started (LaunchFailures.tsx) ----
+
+   The failed tile is the placeholder above, stopped: same position, same width, solid where
+   the placeholder was dashed, in the danger tone. The reason is printed whole, because it is
+   the one thing on the tile worth reading and an ellipsized reason says nothing. */
+/* Doubled class: `.tile` is declared further down this sheet and would otherwise win on order.
+   `--tone-color` is the tile's left accent, which it would else inherit from the Working column. */
+.tile.lf-tile {
+  --tone-color: var(--danger);
+  cursor: default;
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
+  box-shadow: none;
+  flex: none;
+}
+.lf-tile:focus-visible,
+.lf-rail:focus-visible,
+.lf-notice:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+.lf-state {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--danger);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.lf-phase {
+  color: var(--muted);
+  font-weight: 400;
+}
+.lf-kind {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+.lf-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+.lf-reason {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.lf-foot {
+  color: var(--muted);
+  justify-content: space-between;
+}
+.lf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.lf-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.lf-report {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+.lf-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.rail-row.lf-rail {
+  --tone-color: var(--danger);
+  cursor: default;
+  flex-wrap: wrap;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.rail-row.lf-rail {
+  align-items: start;
+}
+/* The rail's dot is centred on a one-line row; a failed row is three, so pin it to the name. */
+.lf-rail > .agent-dot {
+  margin-top: 5px;
+}
+.lf-rail .rail-right {
+  grid-row: 1;
+}
+/* The rail is the narrowest surface: the reason wraps under the name, held to four lines, and
+   prints whole on hover. The tile beside it in the Board has room to print it all. */
+.lf-rail .lf-reason {
+  grid-column: 2 / -1;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  color: var(--muted);
+}
+.lf-rail .lf-actions {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+.lf-rail-state {
+  color: var(--danger);
+}
+
+/* On a Backlog card or a session card: a band, not a second card. */
+.lf-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 7px 8px;
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.lf-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  /* Above the fleet's popovers (40), below every modal (50): a toast is news about the board,
+     and must never paint over a dialog the operator is answering. */
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+}
+.lf-toast {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border));
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.lf-toast-title {
+  color: var(--fg);
+  font-size: 13px;
+}
+/* The toast points at the tile, which prints the reason whole; three lines here is enough to
+   recognise it without the toast growing into a panel. */
+.lf-toast .lf-reason {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.lf-report-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.lf-report-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 12px;
+  font-size: 13px;
+}
+.lf-report-body p {
+  margin: 0;
+}
+.lf-report-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+.lf-report-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.lf-report-repo {
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.pulse-failed .pulse-n {
+  color: var(--danger);
+}
+.pulse-failed .pulse-dot {
+  background: var(--danger);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pend-seg.is-live {
     animation: none;
@@ -25266,8 +25554,13 @@ button.sc-row:focus-visible {
   color: var(--muted);
 }
 .ls-name {
-  font-family: var(--mono);
+  font-family: var(--font-label);
   font-size: 10px;
+  /* A 10px label inside a row the 17px count already sets, so it never adds height. Pinned
+     rather than `normal` because a skin may change its face (Paper's serif), and a normal
+     line height follows the face's ascent and descent: Paper's grew the condensed band by a
+     fraction of a pixel. At 1 the label sits inside the count's line box in any face. */
+  line-height: 1;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
@@ -29152,6 +29445,7 @@ span.line-run-prov {
 .bl-title {
   padding: 0;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
   line-height: 1.42;
   text-align: left;
@@ -30135,6 +30429,7 @@ span.line-run-prov {
 .tile-name {
   flex: 1;
   min-width: 0;
+  font-family: var(--font-display);
   font-size: 12.5px;
   font-weight: 640;
   white-space: nowrap;
@@ -31250,6 +31545,25 @@ span.line-run-prov {
 }
 .layout-option.is-on .view-thumb {
   color: var(--working);
+}
+
+/* ---- settings: skin picker ----
+   The same tile row again. The thumbnail paints the skin it OFFERS, from the registry's
+   swatches as inline fills, so only its frame and spacing are styled here. The ring is what
+   separates a thumbnail from a panel of the same colour - Daylight's white on a Daylight page. */
+.skin-thumb {
+  flex: none;
+  width: 44px;
+  height: 32px;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.layout-option.is-on .skin-thumb {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 70%, var(--border));
+}
+/* The hint under the tiles belongs to them; the toggle row below starts its own group. */
+.skin-picker + .settings-hint {
+  margin: 10px 0 20px;
 }
 
 /* ---- settings: toggle row ----
@@ -36794,6 +37108,16 @@ body.foreman-sidecar-open .modal-backdrop {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A replaced session whose replacement is no longer live has no marker colour to borrow. */
+.resident-band-replaced {
+  --resident: var(--border);
+}
+/* The one sentence a replaced session's band exists to say, so it wraps rather than clips. */
+.resident-band-replaced-note {
+  color: var(--fg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .resident-band-spacer {
   flex: 1 0 0;
 }
@@ -36985,11 +37309,20 @@ body.foreman-sidecar-open .modal-backdrop {
   justify-self: start;
 }
 .residents-pop-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   font-weight: 600;
   white-space: nowrap;
+}
+/* The name gives way first, so a built-in's tag is never the part that is clipped. */
+.residents-pop-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+}
+.residents-pop-name > .resident-builtin-tag {
+  flex: none;
 }
 .residents-pop-state {
   font-size: 11px;

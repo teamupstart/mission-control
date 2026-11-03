@@ -1133,6 +1133,38 @@ same transcript, so find, the Observed activity rail, scroll-back, attachments a
 reply box behave identically in either. See
 [Reading a conversation as a terminal](sessions.md#reading-a-conversation-as-a-terminal).
 
+## Skins
+
+**Settings → Display → Appearance → Skin** chooses how the whole dashboard is painted. Each
+tile shows a small preview in that skin's own colours. Picking one repaints everything at
+once, including the dashboard behind the settings page, with no Save button and no reload.
+The choice persists per machine, not per browser, and the next load paints in
+it from the first frame, in any browser or desktop window, because the daemon serves the page
+with the skin already applied. The desktop app opens in the skin's background, including its
+"Starting Mission Control" page, so a light skin opens without a dark flash. That holds even
+when the skin was chosen in a browser tab and the desktop app has never run.
+
+| Skin | Scheme | What it is |
+|------|--------|-----------|
+| **Default** | dark | The original dark theme: graphite surfaces and bright state colours. It stays the default for every install. |
+| **Daylight** | light | A clean, neutral light theme for bright rooms and daytime work. Its state colours are deepened so each still reads on white. |
+| **Paper** | light | Warm cream and ink, tuned for long reading. Headings, card titles and the Line's stage names are set in a serif. |
+| **Blueprint** | dark | An engineering drawing: deep cobalt surfaces with a faint 20px drafting grid behind the panels, crisp light linework, and headings in upper-case monospace. |
+| **Neon Dusk** | dark | A late-night synth palette: violet surfaces on a violet-to-indigo backdrop, and a magenta glow on the board's keyboard cursor, on a session tile or Line stage that needs you, and on a focused text field. Some tiles keep what they already draw in place of it: a resident's tile its own marker glow, selected or not; an expanded workflow tile that needs you its ring; and the tile a drag is aimed at its drop highlight. The Dispatch button is a magenta-to-cyan gradient. Foreman, cost and held sessions read magenta. |
+
+A skin is CSS only. It changes how the dashboard looks, never what it shows: no skin adds,
+hides or reorders a control, and every session-state colour keeps its meaning. A skin never
+changes a size, a padding or a line height either, so the fixed chrome - the top bar, the Line
+and the Dispatch button - keeps Default's geometry exactly in every skin. A skin that changes
+the face of titles can still reflow the text inside them: Blueprint's monospace is wider than
+the default face, so a long backlog card title can wrap onto one more line and make that card
+taller. Agent brand
+colours and repository colours are the same in every skin. The OS light or dark setting is
+not followed; a skin is always an explicit choice. A skin chosen in one browser tab reaches
+another open tab on its next reload. Every skin's text and state colours meet WCAG contrast
+on the surfaces they are drawn on; [Adding a skin](agent-guides/change-contracts.md#adding-a-skin)
+states the contract.
+
 ## Message formatting
 
 Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced

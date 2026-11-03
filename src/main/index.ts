@@ -32,6 +32,7 @@ import { installIntegrations, removeIntegrations, migrationIntegrationPorts } fr
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
+import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -253,6 +254,8 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair(true) : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
+  ipcMain.handle("mission:update-dismiss-outcome", (event, outcome) =>
+    event.sender === getMainWindow()?.webContents && updateController.dismissOutcome(outcome));
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
   // pushes an announcement and an answer rather than invoking for a result. Both are
   // refused from any sender but the dashboard's own contents, the way the product-issue
@@ -277,6 +280,9 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:card-jump-keys", (_e, claimed: boolean) => {
     setRendererOwnsNumberRow(claimed === true);
   });
+  // The skin's background, reported by `src/web/lib/skin.ts` whenever a skin is applied, and
+  // repainted behind the page. The next launch's colour is the daemon's, from the stored skin.
+  registerWindowBackgroundIpc(ipcMain, getMainWindow);
 }
 
 app.on("second-instance", () => { if (runtimeReady) showWindow(paths.preload); });

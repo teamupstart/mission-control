@@ -28,6 +28,7 @@ export function CompleteModal({
   session,
   tasks,
   tourOutcome,
+  lead,
   onCompleted,
   onClose,
 }: {
@@ -39,6 +40,8 @@ export function CompleteModal({
    * actions inert; the tour controller owns the one fixed completion path.
    */
   tourOutcome?: string;
+  /** Why the dialog opened on its own, when it did - Restart on new profile's offer. */
+  lead?: string;
   /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
   onClose: () => void;
@@ -212,6 +215,7 @@ export function CompleteModal({
         </header>
 
         <div className="modal-bleed complete-body">
+          {lead && <p className="complete-why" role="status">{lead}</p>}
           <p className="complete-lead">
             <AgentDot agent={session.agent} />
             <span className="complete-name">{session.name || "(unnamed)"}</span>

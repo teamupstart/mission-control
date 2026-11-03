@@ -526,6 +526,9 @@ test("a reused session attributes its merged PR only to the current task after r
   assert.equal(r.getTask("binding-current"), undefined);
 
   const restarted = new Registry();
+  // The daemon restores both owners: TaskManager applies the completed task's merge
+  // quorum before writing dependent edges, including for sources pruned from memory.
+  const restartedTasks = new TaskManager(restarted);
   assert.equal(restarted.getTask("binding-current"), undefined);
   restarted.applyDiscovery([
     mkDiscovered({
@@ -561,6 +564,9 @@ test("a reused session attributes its merged PR only to the current task after r
 
   assert.ok(restarted.getTask("wait-current")?.dependencies[0]?.satisfiedAt);
   assert.equal(restarted.getTask("wait-previous")?.dependencies[0]?.satisfiedAt, null);
+  assert.deepEqual(restartedTasks.dependencyBlockers(restarted.getTask("wait-current")!), []);
+  restartedTasks.stopMissionSessionClosures();
+  await restartedTasks.settleWorktreeReturns();
 });
 
 test("assignment binds only after reset identity is resolved", async () => {

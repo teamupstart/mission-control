@@ -835,7 +835,7 @@ test("a run never vetoes a SIBLING repository's pull request", async () => {
     transcriptPath: null,
     env: { tmuxPane: `%${serial}` },
     prUrl: "https://github.com/owner/repo/pull/1",
-    prCreated: false,
+    prCreated: true,
   });
 
   // Both reviews are open, so both repositories' pull requests are held - by their OWN run.

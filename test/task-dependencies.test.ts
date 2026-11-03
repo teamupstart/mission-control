@@ -2474,7 +2474,8 @@ test("an unrelated hook PR hint cannot block the validated episode PR", () => {
     env: {},
     prUrl: "https://github.com/example/repo/pull/70",
   });
-  assert.equal(registry.getSession(id)?.prUrl, "https://github.com/example/repo/pull/70");
+  // A URL the agent merely printed (`gh pr view`, no `prCreated`) never reaches the card.
+  assert.equal(registry.getSession(id)?.prUrl, null);
   assert.equal(registry.workEpisodeForSession(id)?.prUrl, null);
   assert.equal(registry.prObservationFor(id), null);
 

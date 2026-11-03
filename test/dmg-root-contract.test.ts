@@ -73,8 +73,19 @@ function image(t: test.TestContext, entries: readonly string[]): {work: string; 
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dmg-root-image-')));
   t.after(() => rmSync(work, {recursive: true, force: true}));
   const dmg = join(work, 'fixture.dmg');
-  execFileSync('/usr/bin/hdiutil', ['create', '-quiet', '-srcfolder', source, '-format', 'UDZO', '-volname', 'Agent Mission Control', dmg], {timeout: 60_000});
-  return {work, dmg};
+  // Building the image is fixture setup, not the contract under test, and `hdiutil create`
+  // fails transiently on a loaded host (a full `make test` beside other worktrees' suites):
+  // exit 1 with nothing printed, because `-quiet` silences its errors too. So keep its output
+  // and give it a bounded retry; a persistent failure still fails with every attempt's text.
+  const failures: string[] = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    rmSync(dmg, {force: true});
+    const created = spawnSync('/usr/bin/hdiutil', ['create', '-srcfolder', source, '-format', 'UDZO', '-volname', 'Agent Mission Control', dmg], {encoding: 'utf8', timeout: 60_000});
+    if (created.status === 0) return {work, dmg};
+    failures.push(`attempt ${attempt}: status ${created.status} signal ${created.signal} ${created.error?.message ?? ''}\n${created.stdout}${created.stderr}`.trim());
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500 * attempt);
+  }
+  throw new Error(`hdiutil create failed 3 times:\n${failures.join('\n')}`);
 }
 
 test('archive qualification refuses a DMG whose root the installer refuses, before trusting its app', macOnly, async t => {

@@ -2059,6 +2059,21 @@ export const TASK_WORKTREE_RETENTION_DAYS = 30;
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
 
 /**
+ * A resident task whose run Restart on new profile ended, while the task itself is still open.
+ *
+ * Restart leaves completing the replaced session to the operator, so the Console keeps offering
+ * Complete until the task is done - whatever happened to the replacement since. Derived on read
+ * from the resident runs (the ended run's restart pause and the replacement its request id
+ * names), never stored on the `tasks` row, and absent once the task is terminal.
+ */
+export interface TaskResidentRestart {
+  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
+  replacementTaskId: string | null;
+  /** The profile revision the replacement pinned; null with no replacement. */
+  revision: number | null;
+}
+
+/**
  * What automatic worktree cleanup has to say about this task, or null when it has nothing.
  *
  * Null in every ordinary case: a task with no checkout, a checkout inside its 30-day window,
@@ -2074,21 +2089,6 @@ export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
  * It is derived from the retention ledger on read, not stored on the `tasks` row: there is one
  * durable clock, and a second copy of its state would be a second thing to keep in step.
  */
-/**
- * A resident task whose run Restart on new profile ended, while the task itself is still open.
- *
- * Restart leaves completing the replaced session to the operator, so the Console keeps offering
- * Complete until the task is done - whatever happened to the replacement since. Derived on read
- * from the resident runs (the ended run's restart pause and the replacement its request id
- * names), never stored on the `tasks` row, and absent once the task is terminal.
- */
-export interface TaskResidentRestart {
-  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
-  replacementTaskId: string | null;
-  /** The profile revision the replacement pinned; null with no replacement. */
-  revision: number | null;
-}
-
 export interface TaskAutomaticCleanup {
   /** Only one state crosses today. An enum so a later observability state is additive. */
   state: "retrying";

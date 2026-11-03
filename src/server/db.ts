@@ -8022,26 +8022,6 @@ export function retireTaskSessionClosure(taskId: string, sessionId: string, at: 
 }
 
 /**
- * The bounded, browser-safe view of a task's automatic cleanup, or null.
- *
- * Null is the ordinary case and covers every task that is observing quietly, every task with
- * no ledger row at all, and every task whose cleanup succeeded - so a dashboard that renders
- * this only when non-null shows nothing until there is genuinely something to say.
- *
- * What crosses is the state, when it will be tried again, and a sentence a person can read.
- * What does not cross, ever: the fingerprint, the generation, the claim token, raw git or
- * provider output, and any path the task row does not already carry. This is a maintenance
- * note on a card, not a debugging channel.
- *
- * TWO ledgers project here, not one, and that is on purpose: "automatic cleanup is retrying"
- * is the one line the board has for maintenance the daemon owns and a person did not ask for,
- * and an owed session closure is exactly that. A parallel field would have said the same
- * sentence in a second place. They cannot meaningfully collide - a retention row only reaches
- * `retry` thirty days after its task went terminal, and a session closure is resolved or
- * visibly overdue within minutes of one - and where they somehow do, the closure wins: a live
- * agent nobody could stop outranks a checkout that has been sitting quietly for a month.
- */
-/**
  * Each still-open resident task whose run Restart on new profile ended, with the replacement
  * that restart's request id names. See `TaskResidentRestart`.
  *
@@ -8074,6 +8054,26 @@ export function taskResidentRestartSummaries(
   return out;
 }
 
+/**
+ * The bounded, browser-safe view of a task's automatic cleanup, or null.
+ *
+ * Null is the ordinary case and covers every task that is observing quietly, every task with
+ * no ledger row at all, and every task whose cleanup succeeded - so a dashboard that renders
+ * this only when non-null shows nothing until there is genuinely something to say.
+ *
+ * What crosses is the state, when it will be tried again, and a sentence a person can read.
+ * What does not cross, ever: the fingerprint, the generation, the claim token, raw git or
+ * provider output, and any path the task row does not already carry. This is a maintenance
+ * note on a card, not a debugging channel.
+ *
+ * TWO ledgers project here, not one, and that is on purpose: "automatic cleanup is retrying"
+ * is the one line the board has for maintenance the daemon owns and a person did not ask for,
+ * and an owed session closure is exactly that. A parallel field would have said the same
+ * sentence in a second place. They cannot meaningfully collide - a retention row only reaches
+ * `retry` thirty days after its task went terminal, and a session closure is resolved or
+ * visibly overdue within minutes of one - and where they somehow do, the closure wins: a live
+ * agent nobody could stop outranks a checkout that has been sitting quietly for a month.
+ */
 export function taskAutomaticCleanupSummaries(
   taskIds: readonly string[],
 ): Map<string, TaskAutomaticCleanup> {

@@ -36824,6 +36824,49 @@ body.foreman-sidecar-open .modal-backdrop {
   min-height: 24px;
   padding-block: 1px;
 }
+/* The dock card's footer badge: a shield and one word, green while granted. */
+.resident-control.is-badge {
+  gap: 3px;
+}
+.resident-control.is-badge .resident-control-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 540;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.resident-control.is-badge.is-granted .resident-control-state {
+  color: color-mix(in oklab, var(--idle) 85%, var(--fg));
+  background: color-mix(in oklab, var(--idle) 14%, transparent);
+  border-color: color-mix(in oklab, var(--idle) 40%, transparent);
+}
+.resident-control-shield {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Its menu sits beside the badge on the card's one footer line, which also holds Resume, Run
+   now and Open: tightened to its glyph and caret so all five fit. */
+.resident-control.is-badge .session-toolbar-btn {
+  min-height: 22px;
+  min-width: 0;
+  padding: 0 4px;
+  gap: 2px;
+  border-radius: 6px;
+}
+.resident-control.is-badge .session-toolbar-caret {
+  font-size: 10px;
+}
 
 /* The profile editor's swatches: one round button per palette id. */
 .resident-swatches {
@@ -36884,11 +36927,16 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--fg);
   background: color-mix(in oklab, var(--fg) 12%, transparent);
 }
+/* 12.5px rather than the page's body size: at 15px a resident's name was the largest text in
+   the top bar's popovers, and the dock's secondary lines and buttons are 11-11.5px beside it.
+   360px is what a live card's footer needs to hold Resume, Run now, the control status with its
+   menu, and Open on one line, with room for a platform's wider system font. */
 .residents-pop {
-  width: 340px;
+  width: 360px;
   gap: 12px;
+  font-size: 12.5px;
 }
-/* On a window too narrow to hang 340px off the button without crossing the left edge, the
+/* On a window too narrow to hang 360px off the button without crossing the left edge, the
    dock spans the window under the bar instead. `--topbar-h` is what App publishes from the
    fitted bar, so the panel starts below it however many rows the bar took. */
 @media (max-width: 560px) {
@@ -36912,26 +36960,39 @@ body.foreman-sidecar-open .modal-backdrop {
 .residents-pop-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.residents-pop-row {
+/* The profiles share one column grid through subgrid, so the chip column is as wide as the
+   widest chip and every name starts on the same line, whatever each label's length. */
+.residents-pop-profiles {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+}
+.residents-pop-profiles > .residents-pop-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 8px;
-  min-height: 30px;
+  row-gap: 2px;
+  min-height: 28px;
+}
+.residents-pop-profiles .resident-chip {
+  justify-self: start;
 }
 .residents-pop-name {
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .residents-pop-state {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
   max-width: 120px;
   overflow: hidden;
@@ -36939,31 +37000,115 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: nowrap;
 }
 .residents-pop-action {
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+/* Launch and Launch... are one width, so the profile buttons form a straight column. */
+.residents-pop-profiles .residents-pop-action {
+  min-width: 66px;
+  text-align: center;
 }
 .residents-pop-error {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--danger);
   overflow-wrap: anywhere;
 }
 .residents-pop-note {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--muted);
 }
-/* A live row's session control, on its own line under the row: a status and a menu would not
-   fit beside the name, state and Open in a 340px panel. Indented to the name, past the chip. */
-.residents-pop-control {
-  grid-column: 2 / -1;
+
+/* A live resident: a card tinted in its own `--resident` color, so a running resident reads as
+   a different kind of thing from the profiles below. The name and state head it, the loop's
+   facts follow, and one footer carries every action. */
+.residents-pop-card {
   display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px 8px;
+  border: 1px solid color-mix(in oklab, var(--resident) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--resident) 5%, var(--panel));
   min-width: 0;
 }
+.residents-pop-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.residents-pop-card-head > .residents-pop-name {
+  flex: 1 1 auto;
+}
+.residents-pop-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+.residents-pop-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone, var(--neutral));
+}
+/* Wraps: the run controls, the control status and Open share one line in a 360px dock, and a
+   third run control (Restart on new profile) or a refusal takes the next line rather than
+   squeezing the others. The controls' wrapper steps aside so its buttons and its refusal are
+   the footer's own items, and the refusal can take a whole line of its own. */
+.residents-pop-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 3px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in oklab, var(--resident) 18%, var(--border-soft));
+}
+.residents-pop-card-foot > .resident-loop-controls {
+  display: contents;
+}
+.residents-pop-card-foot .resident-loop-controls .btn {
+  padding: 2px 7px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+.residents-pop-card-foot .resident-loop-error {
+  order: 1;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.residents-pop-spacer {
+  flex: 1 0 0;
+}
+/* Open ends the footer, and stays at its right edge on a line of its own if the footer wraps. */
+.residents-pop-card-foot > .residents-pop-action {
+  margin-left: auto;
+}
 .residents-pop-manage {
-  align-self: flex-start;
+  align-self: stretch;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  font-size: 11.5px;
+}
+.residents-pop-manage:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--border-soft);
 }
 
 /* Resident controls share their layout across the dock, Console, card and page. */
@@ -36973,8 +37118,18 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-error { color: var(--danger); flex-basis: 100%; font-size: 12px; }
 .resident-live-run { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
 .resident-card-loop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.residents-pop-row > .resident-loop-status,
-.residents-pop-row > .resident-loop-controls { grid-column: 1 / -1; }
+/* The dock card's loop facts: the short ones as tags, a reason as its sentence, compaction as
+   one line under them. Paused is the one tag in a state color, since it is the one that asks for
+   a decision. */
+.resident-loop-tags { display: flex; flex-direction: column; gap: 5px; line-height: 1.45; }
+.resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-reason { color: var(--muted); }
+.resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }
+.resident-loop-tags > .resident-compaction-layers b { font-weight: 550; color: var(--muted); }
+/* Each layer breaks whole, so a narrow card never leaves a lone "unavailable" on a line. */
+.resident-compaction-layer { white-space: nowrap; }
 .resident-band { flex-wrap: wrap; }
 
 /* Resident MCP servers: the custom-server editor and the profile section's selection. */

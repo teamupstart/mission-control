@@ -1231,9 +1231,14 @@ record of a request that carries the advisor tool, but no such turn has been cap
 not, the chip appears only once the advisor is first called. A later Claude Code version may
 change either behaviour.
 
-**Spend.** The advisor's tokens are billed under the advisor model and reported that way:
-Claude Code's per-model usage lists the advisor model with its own token counts and cost, so the
-session's cost and the usage ledger carry it as its own model row next to the executor's.
+**Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
+2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,
+committed as `test/fixtures/claude-advisor/result-frame.json`), the per-model usage
+(`modelUsage`) listed the advisor model, `claude-opus-5-5`, with its own token counts and reported
+cost. The per-model costs added up to the turn's `total_cost_usd`. So the session's cost and the
+usage ledger carry the advisor as its own model row next to the executor's. That is what one
+capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
+version may report it differently.
 
 Mission Control has no per-dispatch advisor override yet: every session gets the advisor your
 Claude Code settings name.

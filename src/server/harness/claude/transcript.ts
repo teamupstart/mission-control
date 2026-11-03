@@ -106,12 +106,10 @@ function toolCall(block: Record<string, unknown>): ToolCall {
 function advisorResult(
   block: Record<string, unknown>,
   rec: Record<string, unknown>,
-  m: Record<string, unknown>,
 ): TranscriptAdvisor | undefined {
   const content = block.content as Record<string, unknown> | undefined;
   if (!content || typeof content !== "object") return undefined;
-  const named = rec.advisorModel ?? m.advisorModel;
-  const model = typeof named === "string" && named ? named : null;
+  const model = typeof rec.advisorModel === "string" && rec.advisorModel ? rec.advisorModel : null;
   if (content.type === "advisor_tool_result_error") {
     const code = content.error_code;
     return { model, outcome: "error", ...(typeof code === "string" && code ? { errorCode: code } : {}) };
@@ -163,7 +161,7 @@ export function toMessage(o: unknown): TranscriptMessage | null {
         if (block.type === "text") text += String(block.text ?? "");
         else if (block.type === "tool_use") tools.push(toolCall(block));
         else if (block.type === "tool_result") hasToolResult = true;
-        else if (block.type === "advisor_tool_result") advisor = advisorResult(block, rec, m) ?? advisor;
+        else if (block.type === "advisor_tool_result") advisor = advisorResult(block, rec) ?? advisor;
       }
     }
   }

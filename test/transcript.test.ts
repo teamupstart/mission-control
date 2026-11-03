@@ -815,13 +815,11 @@ test("an advisor result Claude Code would not draw is dropped, like the CLI drop
   assert.equal(toMessage(advisorRecord("not an object")), null);
 });
 
-test("the advisor model is read from the record, then the message, then left null", () => {
+test("the advisor model is the record's top-level field, or null when the record names none", () => {
   const content = { type: "advisor_redacted_result", encrypted_content: "x" };
   assert.equal(toMessage(advisorRecord(content))!.advisor!.model, "claude-opus-5-5");
   const unnamed = advisorRecord(content, { advisorModel: undefined });
   assert.equal(toMessage(unnamed)!.advisor!.model, null);
-  (unnamed.message as Record<string, unknown>).advisorModel = "claude-sonnet-5-5";
-  assert.equal(toMessage(unnamed)!.advisor!.model, "claude-sonnet-5-5");
 });
 
 test("computeRuntimeMeta reads the advisor model off the captured transcript", () => {

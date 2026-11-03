@@ -146,8 +146,8 @@ function latestAssistantUsage(
  * Claude Code stamps a top-level `advisorModel` (a full id such as `claude-opus-5-5`) on
  * every assistant record of a turn that called the advisor (observed on 2.1.317). That it
  * also stamps a turn that offered the advisor without calling it is inferred from the CLI's
- * code, not captured. `message.advisorModel` is read too, in case a later CLI moves it.
- * Skipping records without one, rather than stopping at the newest assistant record, keeps
+ * code, not captured. Only the top-level field is read, because that is the only place a
+ * capture has shown it. Skipping records without one, rather than stopping at the newest assistant record, keeps
  * the answer stable across a sidechain or API-error record written between advisor turns.
  */
 function latestAdvisorModel(lines: string[]): string | null {
@@ -161,9 +161,7 @@ function latestAdvisorModel(lines: string[]): string | null {
       continue;
     }
     if (o.type !== "assistant" || o.isSidechain || o.isApiErrorMessage) continue;
-    const m = o.message as Record<string, unknown> | undefined;
-    const named = o.advisorModel ?? (m && typeof m === "object" ? m.advisorModel : undefined);
-    if (typeof named === "string" && named) return named;
+    if (typeof o.advisorModel === "string" && o.advisorModel) return o.advisorModel;
   }
   return null;
 }

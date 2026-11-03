@@ -8,7 +8,7 @@ Claude Code has an `/advisor` mode. Is it supported for Claude sessions that Mis
 
 ## Short answer
 
-- **It is already inherited, but you can't see it.** Both Claude runtimes load the operator's Claude Code settings. If `advisorModel` is set in `~/.claude/settings.json`, or in a project or local settings file, every Mission Control Claude session uses that advisor today. Nothing needs to change for that to work.
+- **It is already inherited, but you can't see it.** Both Claude runtimes load the operator's Claude Code settings. If `advisorModel` is set in `~/.claude/settings.json`, or in a project or local settings file, eligible Mission Control Claude sessions inherit it today with no Mission Control change. A session is eligible when the CLI's own rules allow the advisor: first-party API, the advisor feature available to the account, `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` unset, and an advisor at least as capable as the main model (see the table below).
 - **Mission Control has no advisor support of its own.** There is no code, UI, or doc for it. The conversation view drops the advisor's content blocks without showing them. No session shows whether an advisor is active, and a dispatch cannot choose one.
 - **Recommendation:** keep inheritance as the default, and add a thin layer on top:
   1. Show the advisor where it is already happening.
@@ -39,7 +39,6 @@ Findings come from the installed CLI binary (`~/.local/share/claude/versions/2.1
 | Conversation view | Only `text`, `tool_use` and `tool_result` blocks are read. Advisor blocks are dropped without being shown, so a turn where the advisor redirected the work looks unexplained. | `src/server/harness/claude/transcript.ts:129-131` |
 | Session and dispatch UI | No advisor indicator and no picker. The `effort` capability is the established pattern for a per-dispatch Claude launch knob with live SDK control. | `src/shared/harness-capabilities.ts:665-679`, `src/server/db.ts:4055-4057` |
 | Spend | Per-model figures come from the SDK result's `modelUsage`. The advisor's tokens probably show up there under the advisor model's id, but no test proves it. | `src/server/harness/claude/envelope.ts:61-97`; inferred, about 65% |
-| Operator state | `~/.claude/settings.json` has no `advisorModel` today, so the advisor is not active in any session. | verified (`jq keys`) |
 
 ## Inherit, or expose?
 
@@ -78,7 +77,7 @@ Today only the top path (settings files to the CLI) exists, and the return path 
 Follows the `effort` pattern end to end, with no parallel source of truth:
 
 - **Capability:** add an `advisor` capability to `HARNESS_CAPABILITIES.claude` (`src/shared/harness-capabilities.ts`). It declares the selectable values, the terminal launch rendering, and the SDK rendering. Codex and Pi declare `null`, so the UI hides the control for them through the capability, never through a check on the agent name.
-- **Persistence:** add `tasks.advisor_model TEXT` through `addColumn` next to its upgrade path. `NULL` means inherit.
+- **Persistence:** add `tasks.advisor_model TEXT` and `sdk_sessions.advisor_model TEXT` through `addColumn` next to their upgrade paths. The second column keeps the pin across SDK resume. `NULL` means inherit.
 - **Values:** Inherit (default), Opus, Sonnet, Off. Fable is not offered (see Decisions). Values are model aliases, so the CLI resolves them per provider.
 - **Terminal launch:** `--settings '{"advisorModel":"<alias>"}'`, the documented flag-layer input. The first step of the work confirms it activates the advisor. If it does not, stop and bring it back for a decision rather than switching to the hidden `--advisor` flag silently.
 - **SDK launch:** merge `advisorModel` into `Options.settings`, alongside the existing `disableClaudeAiConnectors` entry, not replacing it.

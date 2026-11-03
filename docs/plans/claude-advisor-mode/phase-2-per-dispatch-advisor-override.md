@@ -87,13 +87,15 @@ The e2e fake (`e2e/fixtures/fake-claude.mjs:323-349`) records argv and a fixed e
    - `launchEnv(choice)`, which returns `{ CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" }` for `off` and `{}` otherwise;
    - `sdkSettings(choice)`, which returns `{ advisorModel: choice }` for a model and `{}` for `off`.
 
+   These helpers take a non-null `AdvisorChoice`. Inherit is `null` and never reaches them: for `null`, callers render no args, no env and no settings, and the protocol refine accepts `null` without calling `supportsAdvisor`. The same holds for `resolveDispatchAdvisor` and `SdkLaunchOptions.advisorModel`, which carry `AdvisorChoice | null`.
+
    Claude declares it; Codex and Pi declare `null`. Add `supportsAdvisor(agent, choice)` beside `supportsEffort`. Comment the measured CLI version and the gate result.
 3. **Persistence.** In `src/server/db.ts`:
    - add `advisor_model TEXT` to the `tasks` DDL and `addColumn(d, "tasks", "advisor_model", "TEXT")` next to the effort migration;
    - extend the row type, a `parseAdvisor` built on `supportsAdvisor` (stale values read back as null), `rowToTask`, and the upsert;
    - add `sdk_sessions.advisor_model TEXT` the same way, so SDK resume keeps the pin.
 4. **Wire.** In `src/shared/types.ts`, add `Task.advisorModel: AdvisorChoice | null`. In `src/shared/protocol.ts`:
-   - add an optional `advisorModel` to `DispatchSchema` and a nullable optional one to `UpdateTaskFieldsSchema`, each with a `supportsAdvisor` refine mirroring effort's;
+   - add an optional `advisorModel` to `DispatchSchema` and a nullable optional one to `UpdateTaskFieldsSchema`, each with a `supportsAdvisor` refine mirroring effort's that runs only for a non-null value;
    - leave `BulkUpdateTasksSchema` unchanged.
 5. **Task manager** (`src/server/tasks.ts`). Mirror effort on:
    - create input, validation and error text;
@@ -181,3 +183,4 @@ No later phase. Future work (live control, Fable, kind or harness defaults) can 
 - Reads none of Phase 1's parser or meta shapes, and changes none of them.
 - Re-checked after writing: this phase's file set and Phase 1's overlap only in `fake-claude.mjs` and `docs/dispatch-and-backlog.md`. That overlap is why the phases are serial.
 - Repair round 1: clarified that a failed gate's output goes in the report back to the human (no PR), and a passing gate's output goes in the PR. Phase 1 now owns iteration-based spend attribution and a real-advisor probe; this phase depends on neither beyond the shared fake agent.
+- PR #1326 review: stated that Inherit (`null`) bypasses the `AdvisorSpec` helpers and the `supportsAdvisor` refine, so their non-null signatures and the nullable task, options and resolver fields agree.

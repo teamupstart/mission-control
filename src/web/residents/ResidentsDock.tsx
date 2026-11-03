@@ -1,5 +1,5 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { residentProfileChoiceName, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "../lib/format.ts";
@@ -7,7 +7,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
 import { launchResident, residentLaunchControlReport } from "./launch.ts";
-import { residentMarkTitle, residentProfileMark, residentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentMarkTitle, residentProfileMark, residentSessionMark } from "./marker.ts";
 
 /** How often a still-starting launch is replayed - the same request id - to read its outcome. */
 const PENDING_REPLAY_MS = 1_500;
@@ -242,34 +242,46 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                 {runs.map((run) => {
                   const mark = residentSessionMark(run, profileById.get(run.profileId) ?? null);
                   const session = sessionByTask.get(run.taskId) ?? null;
-                  const state = session ? stateDisplay(session).label : "starting";
+                  const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
                   return (
-                    <li key={run.id} className="residents-pop-row">
-                      <ResidentChip mark={mark} title={residentMarkTitle(mark)} />
-                      <span className="residents-pop-name"><span className="residents-pop-name-text">{mark.name}</span></span>
-                      <span className="residents-pop-state">{state}</span>
-                      <Tooltip label={session ? `Open ${mark.name}'s session` : "Its session has not started yet"}>
-                        <button
-                          type="button"
-                          className="btn btn-ghost residents-pop-action"
-                          aria-label={`Open ${mark.name}`}
-                          disabled={!session}
-                          onClick={() => {
-                            if (!session) return;
-                            setOpen(false);
-                            props.onOpenSession(session.id);
-                          }}
-                        >
-                          Open
-                        </button>
-                      </Tooltip>
-                      <ResidentLoopStatusLine loop={run} />
-                      <ResidentLoopControls mark={mark} />
-                      {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
-                        <div className="residents-pop-control">
-                          <ResidentControlStatus session={session} name={mark.name} />
-                        </div>
-                      )}
+                    // A card in the resident's own color, so a live run reads as a different
+                    // kind of thing from the profiles under it: the name, state and Open, the
+                    // loop's facts, then a footer with the run controls and the control status
+                    // on one line. Open heads the card rather than joining the footer: with it,
+                    // the footer's five controls overran a 340px card in a wider system font
+                    // (Linux) and Open wrapped onto a line of its own.
+                    <li key={run.id} className="residents-pop-row residents-pop-card" style={residentAccentStyle(mark.colorId)}>
+                      <div className="residents-pop-card-head">
+                        <ResidentChip mark={mark} title={residentMarkTitle(mark)} />
+                        <span className="residents-pop-name"><span className="residents-pop-name-text">{mark.name}</span></span>
+                        <span className="residents-pop-state residents-pop-pill" style={{ "--tone": `var(--${state.tone})` } as CSSProperties}>
+                          <span className="residents-pop-dot" aria-hidden />
+                          {state.label}
+                        </span>
+                        <Tooltip label={session ? `Open ${mark.name}'s session` : "Its session has not started yet"}>
+                          <button
+                            type="button"
+                            className="btn residents-pop-action"
+                            aria-label={`Open ${mark.name}`}
+                            disabled={!session}
+                            onClick={() => {
+                              if (!session) return;
+                              setOpen(false);
+                              props.onOpenSession(session.id);
+                            }}
+                          >
+                            Open
+                          </button>
+                        </Tooltip>
+                      </div>
+                      <ResidentLoopStatusLine loop={run} tags />
+                      <div className="residents-pop-card-foot">
+                        <ResidentLoopControls mark={mark} />
+                        <span className="residents-pop-spacer" aria-hidden />
+                        {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+                          <ResidentControlStatus session={session} name={mark.name} badge />
+                        )}
+                      </div>
                     </li>
                   );
                 })}
@@ -281,7 +293,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
             {profiles.length === 0 ? (
               <p className="alert-hint dim">No resident profiles yet. Author one on the Residents page.</p>
             ) : (
-              <ul className="residents-pop-list">
+              <ul className="residents-pop-list residents-pop-profiles">
                 {profiles.map((profile) => {
                   const state = launches[profile.id];
                   const mark = residentProfileMark(profile);
@@ -335,7 +347,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                       {state?.controlReport === "pending" && (
                         <p className="residents-pop-note" role="status">
                           Started; session control is not granted yet. It is given once the
-                          session is ready, and its live row reads control granted when it is.
+                          session is ready, and its live card shows Control when it is.
                         </p>
                       )}
                     </li>

@@ -150,9 +150,12 @@ never a resident that is already running.
 many; with none running it shows no number. Click it, press **Shift+H**, or choose **Open the
 Residents dock** in the ⌘K palette.
 
-- **Live** lists each running resident with its chip, its session's state and **Open**, which
-  opens that session. A resident whose revision asks for session control also shows **control
-  granted** or **control not granted**, the latter with the session control menu.
+- **Live** shows each running resident as a card in its marker color. The card's top line has
+  the chip, the name, the session's state and **Open**, which opens that session. Under it are
+  the loop's state, iteration and next wake as tags, any pause or wake reason, and the resident's
+  compaction layers. The footer holds **Pause** or **Resume** and **Run now**. A resident whose
+  revision asks for session control also shows a **Control** badge at the end of the footer when
+  control is granted, or **No control** beside the session control menu when it is not.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
   launches straight away, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,

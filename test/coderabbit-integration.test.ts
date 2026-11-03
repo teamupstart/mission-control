@@ -109,14 +109,20 @@ test("exhausted allowance skips before missing runtime/trust/tool, regardless of
 for(const [name,change] of [
  ["missing tool",(i:RunCheckInput,d:CheckRunDeps)=>{d.codeRabbitProbe=async()=>({error:"CLI absent"});}],
  ["trust denied",(i:RunCheckInput)=>{i.policy.checksEnabled=false;}],
- ["dirty content",(i:RunCheckInput)=>{i.coderabbit!.dirty=true;}],
- ["uncommitted YAML",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};}],
  ["ambiguous base",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>({...comparison,error:"ambiguous base"});}],
  ["corrupt frozen comparison",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>{throw new Error("corrupt comparison metadata");};}],
  ["vendor action required",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"exited",exitCode:1,output:"",truncatedBytes:0,review:{...summary,status:"incomplete",diagnostic:CODERABBIT_OPERATOR_ACTION}});}],
  ["timeout or cancellation",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"infrastructure",reason:"timeout"});}],
 ] as const) test(`${name} blocks with visible error/Setup action, never a repair verdict`,async()=>{
  const i=input(),d=deps();change(i,d);const r=await runCheck(i,d);assert.equal(r.kind,"action_required");if(r.kind==="action_required"){assert.equal(r.setup,true);assert.match(r.reason,/Error:.*Settings > Setup/);}
+});
+for(const [name,change,remedy] of [
+ ["dirty content without a review snapshot",(i:RunCheckInput)=>{i.coderabbit!.dirty=true;},/without a review snapshot\. Submit again so Mission Control captures one\.$/],
+ ["YAML absent from the reviewed commit",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};},/not the one in the reviewed commit\. Make sure \.coderabbit\.yaml is not ignored, then submit again\.$/],
+] as const) test(`${name} blocks before any probe with its own remedy, never Setup`,async()=>{
+ const i=input(),d=deps();change(i);d.codeRabbitProbe=async()=>{throw new Error("must not probe");};d.execute=async()=>{throw new Error("must not execute");};
+ const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
+ if(r.kind==="action_required"){assert.equal(r.setup,undefined);assert.doesNotMatch(r.reason,/Settings > Setup/);assert.match(r.reason,remedy);}
 });
 test("a review that ran but returned an unusable result points at its output, not Setup",async()=>{
  for(const review of [{...summary,status:"incomplete" as const,diagnostic:"Invalid CodeRabbit completion/gate"},{...summary,status:"incomplete" as const,diagnostic:"CodeRabbit review coverage disagrees with the pinned comparison"}]){

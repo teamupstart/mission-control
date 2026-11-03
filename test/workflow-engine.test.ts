@@ -33,7 +33,7 @@ after(() => rmSync(checkTree, { recursive: true, force: true }));
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
-const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowEngine, reviewedCommit } = await import("../src/server/workflows/engine.ts");
 const { evidenceTelemetryKey, guidanceDigest } = await import(
   "../src/server/workflows/test-evidence-audit.ts"
 );
@@ -144,6 +144,7 @@ function seedNamedVersion(id: string, executionGraph: PublishedWorkflowGraph): v
 function seedSubmission(
   id: string,
   executionGraph: PublishedWorkflowGraph,
+  captured: WorkflowContextSnapshot = context,
 ): InstanceType<typeof WorkflowStore> {
   seedNamedVersion(id, executionGraph);
   const store = new WorkflowStore();
@@ -173,8 +174,8 @@ function seedSubmission(
     },
   );
   store.updateSubmissionCapture(`submission-${id}`, {
-    context: workflowJson(context),
-    evidence: workflowJson(context.evidence),
+    context: workflowJson(captured),
+    evidence: workflowJson(captured.evidence),
     fingerprint: `fingerprint-${id}`,
     status: "running",
   }, 3);
@@ -1564,6 +1565,43 @@ test("a repository-neutral global default runs, at the checkout root", async () 
   const attempt = store.listAttempts("submission-check-default").find((item) => item.nodeId === "gate");
   assert.ok(attempt);
   assert.equal((attempt.output as Record<string, unknown>).status, "passed");
+});
+
+test("an uncommitted submission pins its Commands to the review snapshot, never the HEAD it started from", async () => {
+  // A ship task submits before committing. Pinned to HEAD, its gates judged the base commit
+  // and passed whatever the task had done.
+  const snapshot = "d".repeat(40);
+  const store = seedSubmission("check-snapshot", checkGraph, {
+    ...context,
+    evidence: { ...context.evidence, workingTreeDirty: true, workingTreeStatus: [" M src/app.ts"], reviewCommit: snapshot },
+  });
+  const pinned: Array<string | null> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: passingRunner,
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: checkCatalog({}, { test: ["npm", "test"] }),
+    checkDeps: () => ({
+      execute: async (request) => {
+        pinned.push(request.headSha);
+        return { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-check-snapshot");
+  await waitFor(() => store.getRun("run-check-snapshot")?.status === "completed");
+  await engine.stop();
+  assert.deepEqual(pinned, [snapshot]);
+});
+
+test("reviewedCommit prefers an observed PR head, then the review snapshot, then the legacy HEAD", () => {
+  assert.equal(reviewedCommit("p".repeat(40), { headSha: "abc", reviewCommit: "d".repeat(40) }), "p".repeat(40));
+  assert.equal(reviewedCommit(null, { headSha: "abc", reviewCommit: "d".repeat(40) }), "d".repeat(40));
+  assert.equal(reviewedCommit(null, { headSha: "abc", reviewCommit: null }), "abc");
+  assert.equal(reviewedCommit(null, { headSha: "abc" }), "abc");
 });
 
 test("a failing check returns a repair packet to the Session, citing its own output", async () => {

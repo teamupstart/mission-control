@@ -277,9 +277,11 @@ the run, the server's name and a credential file:
 
 One kind of global server is handed to the harness itself instead: a Claude Code remote (`http`
 or `sse`) server with no header and no URL query, user name, password or fragment, whose URL is
-`https` or plain `http` to this machine's loopback. A login is a credential, so one on plain
-`http` to another host stays on the launcher, which presents none; a fragment, which the launcher
-drops, can carry a token, so a URL with one is never copied as written. It holds no value to
+`https` or plain `http` to this machine's loopback and whose path has no segment shaped like a key
+(`credentialShapedPath`). A login is a credential, so one on plain `http` to another host stays on
+the launcher, which presents none; a fragment, which the launcher drops, can carry a token, so a
+URL with one is never copied as written; and a key-shaped path means the URL itself is the
+credential, so that server keeps its URL private behind the launcher too. It holds no value to
 protect, and it may be one Claude Code signs in to with OAuth, a login only Claude Code's own
 transport can present. Claude Code keys that stored login by the server's name and a hash of its
 type, URL and headers as configured, so the entry carries exactly those, with an empty header

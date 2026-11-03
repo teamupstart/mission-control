@@ -22,6 +22,7 @@ const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts
 const mcpStore = await import("../src/server/residents/mcp-store.ts");
 const catalog = await import("../src/server/residents/mcp-catalog.ts");
 const launch = await import("../src/server/residents/mcp-launch.ts");
+const sharedMcp = await import("../src/shared/resident-mcp.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
@@ -484,17 +485,21 @@ const LOGIN_SERVERS = {
   userinfo: { type: "http", url: "https://user:pw@mcp.example.com/u" },
   // A login travels only over https or plain http to this machine, and a fragment is never copied.
   plaintext: { type: "http", url: "http://mcp.example.com/plain" },
+  "plaintext-sse": { type: "sse", url: "http://events.example.com/plainsse" },
   fragment: { type: "http", url: `https://mcp.example.com/f#access_token=${SECRET}` },
   loopback: { type: "http", url: "http://127.0.0.1:8123/mcp" },
+  // A server that authenticates by URL: the path is the credential, so the URL is never exposed.
+  "path-key": { type: "sse", url: `https://actions.example.com/mcp/${SECRET}/sse` },
+  "path-uuid": { type: "http", url: "https://mcp.example.com/server/3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d/mcp" },
   local: { command: "local-mcp" },
 };
 
-test("only a Claude remote server with no header, query or fragment, over https or loopback http, may use Claude Code's own login, with its URL as written", () => {
+test("only a Claude remote server with no header, query, fragment or key-shaped path, over https or loopback http, may use Claude Code's own login, with its URL as written", () => {
   const read = globalsOf("claude", LOGIN_SERVERS);
   const byName = new Map(read.servers.map((server) => [server.summary.name, server]));
   assert.deepEqual(
     read.servers.map((server) => [server.summary.name, server.harnessLogin]),
-    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["plaintext", false], ["fragment", false], ["loopback", true], ["local", false]],
+    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["plaintext", false], ["plaintext-sse", false], ["fragment", false], ["loopback", true], ["path-key", false], ["path-uuid", false], ["local", false]],
   );
   const loopback = byName.get("loopback")!.transport;
   assert.ok(loopback?.type === "http" && loopback.url === "http://127.0.0.1:8123/mcp", "plain http to this machine may carry the login");
@@ -513,11 +518,24 @@ test("only a Claude remote server with no header, query or fragment, over https 
   assert.ok(globalsOf("codex", { remote: { url: "https://mcp.example.com" } }).servers.every((server) => !server.harnessLogin));
 });
 
+test("a URL whose path is shaped like a key is a credential; ordinary MCP endpoint paths are not", () => {
+  const { credentialShapedPath } = sharedMcp;
+  for (const url of [
+    "https://mcp.vercel.com", "https://mcp.linear.app/sse", "https://mcp.atlassian.com/v1/sse", "https://mcp.notion.com/mcp",
+    "https://api.githubcopilot.com/mcp/", "https://gmailmcp.googleapis.com/mcp/v1", "https://mcp.example.com/api/mcp-server",
+  ]) assert.equal(credentialShapedPath(new URL(url)), false, url);
+  for (const url of [
+    `https://actions.example.com/mcp/${SECRET}/sse`, "https://h.example.com/mcp/ghp_abc/sse", "https://h.example.com/xoxb-1-2/mcp",
+    "https://mcp.example.com/server/3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d/mcp", "https://h.example.com/u/a1B2c3D4e5F6g7H8i9/mcp",
+    `https://h.example.com/${"x".repeat(32)}`, "https://h.example.com/%E0%A4%A/mcp",
+  ]) assert.equal(credentialShapedPath(new URL(url)), true, url);
+});
+
 test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {
   const globals = globalsOf("claude", LOGIN_SERVERS);
   const expected = [
     ["login", false], ["login-sse", false], ["headed", true], ["queried", true], ["userinfo", true],
-    ["plaintext", true], ["fragment", true], ["loopback", false], ["local", true],
+    ["plaintext", true], ["plaintext-sse", true], ["fragment", true], ["loopback", false], ["path-key", true], ["path-uuid", true], ["local", true],
   ];
   const inherited = await resolve(profile(), globals);
   assert.ok(inherited.ok && inherited.servers);
@@ -540,12 +558,12 @@ test("an inherited or selected Claude login server goes to Claude directly; ever
   assert.deepEqual(entries[0], { name: "login", options: {}, shape: "http", transport: "http", url: "https://mcp.example.com", headers: {} });
   assert.deepEqual(entries[1], { name: "login-sse", options: { claude: { timeoutMs: 9000 } }, shape: "http", transport: "sse", url: "https://events.example.com/sse", headers: {} });
   assert.deepEqual(entries.slice(2).map((entry) => [entry.name, entry.shape]), [
-    ["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["plaintext", "launcher"], ["fragment", "launcher"],
-    ["loopback", "http"], ["local", "launcher"],
+    ["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["plaintext", "launcher"], ["plaintext-sse", "launcher"], ["fragment", "launcher"],
+    ["loopback", "http"], ["path-key", "launcher"], ["path-uuid", "launcher"], ["local", "launcher"],
   ]);
   const rendered = JSON.stringify(entries);
   assert.ok(
-    !rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("/plain") && !rendered.includes("/f#") && !rendered.includes("local-mcp"),
+    !rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("/plain") && !rendered.includes("/plainsse") && !rendered.includes("/f#") && !rendered.includes("3f2b8c1e") && !rendered.includes("local-mcp"),
     "a launcher server's definition stays daemon-private: no plain-http login URL, no fragment",
   );
   assert.deepEqual(JSON.stringify(launch.residentMcpLaunchForRun(runId)!.preview().slice(0, 2)), JSON.stringify(entries.slice(0, 2)), "the preview renders them the same");

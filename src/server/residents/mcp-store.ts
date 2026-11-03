@@ -428,8 +428,8 @@ export interface ResidentMcpSnapshotServer {
   /**
    * Whether this server starts through Mission's scoped launcher: every global server, and every
    * custom server with a secret, so none of its private parts reach the agent's configuration.
-   * The one exception is a global remote server with no header, query or fragment, on `https` or
-   * loopback `http`, which the harness
+   * The one exception is a global remote server with no header, query, fragment or key-shaped
+   * path segment, on `https` or loopback `http`, which the harness
    * may hold a login for that only its own transport presents (`GlobalMcpDefinition.harnessLogin`):
    * it reaches the agent's launch-scoped configuration as written, URL included.
    */

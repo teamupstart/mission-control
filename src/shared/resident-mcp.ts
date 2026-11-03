@@ -302,6 +302,32 @@ function urlCredential(text: string): string | null {
   return null;
 }
 
+/** Prefixes that common services give their secret keys (`sk-…`, `ghp_…`, `xoxb-…`). */
+const SECRET_KEY_PREFIX = /^(sk|pk|rk|ak|ghp|gho|ghu|ghs|github_pat|glpat|xox[abpr]|key|tok|token|secret)[-_]/i;
+
+/**
+ * Whether a URL's path carries a segment shaped like a credential: a known secret-key prefix, or
+ * a long token mixing letters and digits (an API key, a UUID used as a capability), or any very
+ * long segment. Services that authenticate by URL put the key in the path, and such a URL must
+ * never be copied into a configuration the agent's processes can read.
+ *
+ * A guard, not a proof, and deliberately wide: a false positive only keeps a server on the scoped
+ * launcher, which carries its URL privately, while a miss would expose a credential.
+ */
+export function credentialShapedPath(url: URL): boolean {
+  return url.pathname.split("/").some((raw) => {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      return true;
+    }
+    if (SECRET_KEY_PREFIX.test(segment)) return true;
+    if (segment.length >= 32) return true;
+    return segment.length >= 16 && /[0-9]/.test(segment) && /[A-Za-z]/.test(segment);
+  });
+}
+
 /** A flag's name alone: up to `=` or whitespace, so `--token abc` names `--token` and nothing more. */
 const FLAG_NAME = /^-{1,2}[A-Za-z][A-Za-z0-9_.-]*/;
 

@@ -19026,7 +19026,24 @@ td.wf-command-rule-action {
 .workflow-edge-list li { display: grid; gap: 5px; padding: 7px; border: 1px solid var(--border-soft); border-radius: 7px; }
 .workflow-edge-list span { overflow-wrap: anywhere; font-size: 10px; line-height: 1.4; color: var(--muted); }
 .workflow-edge-list span:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
-.workflow-version-list { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+/* Capped at `--workflow-version-rows` rows (set by the component) and scrolled past that, so
+   the selected version's detail below stays close to the row that opened it. The cap is exact
+   only because each row's height is: fixed line heights, and a meta line that truncates
+   rather than wraps. The trailing `- 3px` drops the last row's gap so the fifth row ends flush. */
+.workflow-version-list {
+  --workflow-version-row: 53px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  max-height: calc(var(--workflow-version-rows, 5) * (var(--workflow-version-row) + 3px) - 3px);
+  overflow-y: auto;
+}
+.workflow-version-list > button,
+.workflow-version-list > .tt-anchor > button { flex-shrink: 0; box-sizing: border-box; height: var(--workflow-version-row); }
+.workflow-version-list > .tt-anchor { flex-shrink: 0; }
+.workflow-version-list strong { line-height: 17px; }
+.workflow-version-list span { min-width: 0; max-width: 100%; overflow: hidden; line-height: 13px; white-space: nowrap; text-overflow: ellipsis; }
 .workflow-version-detail { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .workflow-version-detail dl { display: grid; gap: 4px; margin: 0; }
 .workflow-version-detail dl div { display: flex; justify-content: space-between; font-size: 10.5px; }

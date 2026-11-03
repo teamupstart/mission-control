@@ -20,6 +20,7 @@ const defaultDeps: JiraAcliDeps = { run };
 /** Preserve useful workflow reasons without retaining credential or common PII shapes. */
 function writeDiagnostic(text: string): string {
   return scrubSecrets(text)
+    .replace(/(\bauthorization\b["']?\s*[:=]\s*["']?)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1[redacted]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, "Bearer [redacted]")
     .replace(/(\b(?:password|passwd|secret|token|access_token|refresh_token|id_token|api[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi, "$1[redacted]")
     .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[redacted]")

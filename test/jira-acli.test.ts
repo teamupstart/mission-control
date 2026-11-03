@@ -106,7 +106,7 @@ test("acli write diagnostics redact credentials and common personal identifiers 
   const secret = `opaque-${"synthetic".repeat(4)}`;
   const email = "person@example.test";
   const jsonSecret = "short-test-key";
-  const text = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000; "access_token":"${jsonSecret}"`;
+  const text = `Workflow requires review; Bearer ${secret}; contact ${email}; id 000-00-0000; "access_token":"${jsonSecret}"; Authorization: Basic dTpw; "Authorization":"Bearer tiny"; Basic authentication needs review`;
   const failure = stubRun({ code: 1, stdout: "", stderr: text });
   const results = [
     await acliAnnotate(cfg(), notice, ctx, scripted(auth(), failure, auth()).deps),
@@ -120,7 +120,8 @@ test("acli write diagnostics redact credentials and common personal identifiers 
   for (const result of results) {
     assert.match(result.error!, /Workflow requires review/);
     assert.match(result.error!, /\[redacted\]/);
-    for (const value of [secret, jsonSecret, email, "000-00-0000"]) assert.ok(!result.error!.includes(value));
+    for (const value of [secret, jsonSecret, email, "000-00-0000", "dTpw", "tiny"]) assert.ok(!result.error!.includes(value));
+    assert.match(result.error!, /Basic authentication needs review/);
   }
 });
 

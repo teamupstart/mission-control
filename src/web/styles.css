@@ -24618,6 +24618,10 @@ button.sc-row:focus-visible {
   font-weight: 500;
   line-height: 1.4;
   text-align: center;
+  /* A path has no spaces to wrap at, so without this a repo option's tooltip ran out of its
+     own bubble - and, beside a list, toward the window edge. `break-word` rather than
+     `anywhere`: it breaks only what would overflow and leaves the bubble's sizing alone. */
+  overflow-wrap: break-word;
   color: var(--fg);
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -24639,6 +24643,18 @@ button.sc-row:focus-visible {
 }
 .tt-below {
   transform: translate(-50%, 8px);
+}
+/* Beside the trigger: a dropdown option's bubble, which above or below would cover the
+   neighbouring options (issue #1315). `left` is the trigger's right or left edge and `top`
+   its vertical centre. Left-aligned, because it reads as a note beside a row, not a label
+   under a button. */
+.tt-right {
+  transform: translate(8px, -50%);
+  text-align: left;
+}
+.tt-left {
+  transform: translate(calc(-100% - 8px), -50%);
+  text-align: left;
 }
 /* The always-rendered accessible description behind every tooltip. Out of flow, so a
    trigger's own layout - flex item, grid cell, inline chip - is untouched by its
@@ -24686,6 +24702,23 @@ button.sc-row:focus-visible {
   top: -4px;
   border-bottom: none;
   border-right: none;
+}
+/* A side caret rides `--tt-caret-y`, which walks back any vertical slide the same way. */
+.tt-right::after,
+.tt-left::after {
+  top: var(--tt-caret-y, 50%);
+  transform: translateY(-50%) rotate(45deg);
+}
+.tt-right::after {
+  left: -4px;
+  border-top: none;
+  border-right: none;
+}
+.tt-left::after {
+  left: auto;
+  right: -4px;
+  border-bottom: none;
+  border-left: none;
 }
 
 /* ---- work queue (the batch of work queued for one session) ---- */

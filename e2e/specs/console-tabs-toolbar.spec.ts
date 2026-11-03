@@ -356,7 +356,15 @@ test("compact session menus share one row and support keyboard view selection", 
   await expect(viewMenu.getByRole("menuitemradio", { name: "Chat" })).toBeFocused();
   const chatTip = dashboard.locator(".tooltip").filter({ hasText: "Turns as messages:" });
   await expect(chatTip).toBeVisible();
-  expect((await chatTip.boundingBox())!.x).toBeGreaterThanOrEqual((await viewMenu.boundingBox())!.x);
+  // Placed at the focused row's measured coordinates, not the menu's pre-layout origin: the
+  // bubble sits beside the menu (an option's tooltip never covers its siblings, #1315) and
+  // level with the row it explains.
+  const tipBox = (await chatTip.boundingBox())!;
+  const menuBox = (await viewMenu.boundingBox())!;
+  const chatBox = (await viewMenu.getByRole("menuitemradio", { name: "Chat" }).boundingBox())!;
+  expect(tipBox.x + tipBox.width <= menuBox.x || tipBox.x >= menuBox.x + menuBox.width).toBe(true);
+  expect(tipBox.y).toBeLessThan(chatBox.y + chatBox.height);
+  expect(tipBox.y + tipBox.height).toBeGreaterThan(chatBox.y);
   // Photograph the choices without the focused row's help bubble covering the heading.
   await viewMenu.focus();
   await shoot(dashboard, detail, "05-conversation-view-menu");

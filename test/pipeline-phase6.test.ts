@@ -458,6 +458,8 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     },
     model: null,
     effort: null,
+    // A pipeline host takes no task pin, exactly as it takes no model or effort.
+    advisorModel: null,
     permissionMode: "approveForMe",
     mcp: {
       ...mcp,

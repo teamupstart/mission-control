@@ -192,10 +192,11 @@ export interface ClaudeSdkQueryOptions {
    */
   strictMcpConfig?: boolean;
   /**
-   * Launch-scoped flag settings, merged over the operator's. A resident run sets only
-   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set.
+   * Launch-scoped flag settings, merged over the operator's. A resident run sets
+   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
+   * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean };
+  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,

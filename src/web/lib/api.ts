@@ -1556,6 +1556,8 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Advisor override; omitted inherits the operator's Claude settings. Never null here. */
+  advisorModel?: import("@shared/types.ts").AdvisorChoice;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   /** Backlog-task or live-session prerequisites. */

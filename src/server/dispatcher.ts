@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   Session,
@@ -55,6 +56,7 @@ import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import {
   getHarnessesConfig,
+  resolveDispatchAdvisor,
   resolveDispatchEffort,
   resolveDispatchModelWithTier,
   resolveDispatchRuntime,
@@ -710,6 +712,9 @@ export class Dispatcher {
         task.kind,
       );
       const effort = resolveDispatchEffort(task.agent, task.effort, task.kind, model);
+      // The advisor pin, rendered by the harness that declares it on BOTH arms below. Null
+      // renders nothing at all, so an Inherit launch is byte-identical to one from before.
+      const advisor = resolveDispatchAdvisor(task);
       resolution = {
         agent: task.agent,
         runtime,
@@ -737,6 +742,7 @@ export class Dispatcher {
           wt,
           model,
           effort,
+          advisor,
           missionMcp,
           intent,
           extraDirs,
@@ -755,6 +761,12 @@ export class Dispatcher {
       const stateHome = createDisposableAgentStateHome();
       pendingAgentStateHome = stateHome;
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
+      // `--settings` is single-valued and nothing else in this argv renders it, so the
+      // advisor's flag-layer object can own the flag outright. Whoever adds a second
+      // contributor merges into one JSON value here, the way `systemPromptAppendArgs` does.
+      const advisorSpec = harnessFor(task.agent).advisor;
+      const advisorArgs = advisor ? (advisorSpec?.launchArgs(advisor) ?? []) : [];
+      const advisorEnv = advisor ? (advisorSpec?.launchEnv(advisor) ?? {}) : {};
       // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
       // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
       // which a fresh session's folder-trust dialog hides, so it gave up and the session
@@ -833,6 +845,7 @@ export class Dispatcher {
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
+        ...advisorArgs,
         ...modeArgs,
         ...askArgs,
         ...extraDirArgs,
@@ -907,6 +920,7 @@ export class Dispatcher {
           agentArgs,
           stateHome,
           terminalBackend,
+          advisorEnv,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
@@ -1547,6 +1561,7 @@ export class Dispatcher {
           launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
           model: null,
           effort: null,
+          advisorModel: null,
           permissionMode: dispatchPermissionMode(task.agent),
           mcp,
           extraDirs: [],
@@ -1771,6 +1786,7 @@ export class Dispatcher {
     wt: DispatchWorkspace,
     model: string | null,
     effort: ThinkingLevel | null,
+    advisorModel: AdvisorChoice | null,
     missionMcp: MissionMcpRequirement | null,
     /** Turn one, already carrying the repo manifest when the task has attached repos. */
     intent: string,
@@ -1860,6 +1876,7 @@ export class Dispatcher {
       launchPresentation: { prompt: intent, displayText: task.intent },
       model,
       effort,
+      advisorModel,
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
       residentMcp,
@@ -3051,10 +3068,12 @@ export async function spawnUniquely(
   agentArgs: readonly string[] = [],
   stateHome?: string,
   terminalBackend: string | null = null,
+  /** Capability-rendered launch variables, written into the wrapper beside the isolation. */
+  extraEnv: Readonly<Record<string, string>> = {},
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
-    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome });
+    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome, extraEnv });
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);

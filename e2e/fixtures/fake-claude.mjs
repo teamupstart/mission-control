@@ -365,6 +365,9 @@ if (recordDir) {
         stateProbe,
         hasMissionApiToken: Boolean(process.env.MISSION_API_TOKEN),
         missionApiTokenFile: process.env.MISSION_API_TOKEN_FILE ?? null,
+        // The advisor's Off switch, so a spec can prove a pin reached the environment and an
+        // Inherit launch left it alone.
+        disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
       },
       null,
       2,

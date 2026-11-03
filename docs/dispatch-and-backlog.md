@@ -1243,8 +1243,40 @@ usage ledger carry the advisor as its own model row next to the executor's. That
 capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
 version may report it differently.
 
-Mission Control has no per-dispatch advisor override yet: every session gets the advisor your
-Claude Code settings name.
+#### Per-dispatch override
+
+The dispatch form's **Advisor** select pins one Claude task's advisor without changing any other
+session. It appears beside Effort only for a harness that declares an advisor, which today is
+Claude Code alone; Codex and Pi do not show it. The choices are:
+
+- **Inherit from Claude settings**, the default. Mission Control renders nothing, so the session
+  gets whatever your Claude Code settings name, exactly as it did before the select existed.
+- **Opus** or **Sonnet**. The launch carries `advisorModel` in Claude Code's session-scoped flag
+  layer: `--settings '{"advisorModel":"opus"}'` on a Terminal launch, and `Options.settings` on an
+  Agent SDK launch. That layer sits above your user, project and local settings for this session
+  only, and Mission Control never writes any settings file.
+- **Off**. The launch sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` in the session's environment,
+  the switch the eligibility list above says turns the advisor off completely, so it is expected
+  to apply even when your settings name one. The verified case is the variable beside an Opus pin
+  on the same launch, described below.
+
+The pin is stored on the task, so reopening a backlog task shows it and a save can change or
+clear it. Switching the task's agent clears it, along with the model and effort overrides. It
+also survives a resume: an Agent SDK session restarted by the daemon relaunches with the pin it
+started with, and continuing a conversation in a terminal renders the task's pin again.
+
+Mission Control does not check whether the pairing makes sense or whether your account has the
+advisor feature; it passes the pin and leaves both to the CLI, under the eligibility rules listed
+above. What was verified, on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched
+with an Opus pin marks Opus as the current choice in `/advisor`, where the same launch without the
+pin marks "No advisor", and that the Off variable removes the `/advisor` command even with an Opus
+pin on the same launch.
+
+How the CLI treats a pin that breaks the pairing rule (a Sonnet advisor on an Opus session, for
+example) or a pin on an account without the advisor feature is **inferred, not verified**: no
+such launch has been observed, so the session may ignore the pin, or the CLI may refuse to start.
+If the CLI refuses a launch outright, the refusal is reported as a launch failure. Fable is not
+offered as an advisor, and an advisor cannot be changed on a session that is already running.
 
 ### Session runtime
 

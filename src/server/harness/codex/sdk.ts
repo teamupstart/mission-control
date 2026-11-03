@@ -1314,9 +1314,11 @@ function pendingKind(method: string): Pending["kind"] | null {
  */
 export function codexCapacityFailure(error: TurnError | null | undefined): SdkTurnFailure | null {
   if (!error) return null;
-  const message = error.message?.trim() || "Selected model is at capacity.";
-  if (error.codexErrorInfo === "serverOverloaded" || isProviderCapacityMessage(message)) {
-    return { kind: "capacity", message };
+  // Classify what Codex actually said. The stand-in sentence is only for the card, once the
+  // structured code has already established capacity; an empty message proves nothing.
+  const said = error.message?.trim() ?? "";
+  if (error.codexErrorInfo === "serverOverloaded" || (said && isProviderCapacityMessage(said))) {
+    return { kind: "capacity", message: said || "Selected model is at capacity." };
   }
   return null;
 }

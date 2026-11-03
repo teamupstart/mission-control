@@ -1969,6 +1969,17 @@ test("a turn Codex failed at capacity reports the failure on turn_done; other en
     threadId: THREAD.id,
     turn: { id: "turn-5", status: "failed", error: { message: "Bad request.", codexErrorInfo: "badRequest", additionalDetails: null } },
   });
+  // A failure with no message is not capacity unless Codex's own code says so.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-7" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-7", status: "failed", error: { message: "", codexErrorInfo: "internalServerError", additionalDetails: null } },
+  });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-8" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-8", status: "failed", error: { message: "", codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
   // ...but fills in for a failed turn that completed without a final error.
   server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-6" } });
   server.notify("error", {
@@ -1989,6 +2000,8 @@ test("a turn Codex failed at capacity reports the failure on turn_done; other en
       { kind: "capacity", message: capacity },
       null,
       null,
+      null,
+      { kind: "capacity", message: "Selected model is at capacity." },
       { kind: "capacity", message: capacity },
     ],
   );

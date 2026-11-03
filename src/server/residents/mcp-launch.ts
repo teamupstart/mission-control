@@ -263,6 +263,21 @@ function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId
 /** Stands in for a credential in a preview: a path no file is ever written to. */
 const UNISSUED_CREDENTIAL = "unissued";
 
+/**
+ * Runtime flags every scoped launcher starts with, ahead of its script.
+ *
+ * `--use-system-ca` adds the operating system's certificate store to the roots an HTTP or SSE
+ * bridge verifies a remote server against. The launcher runs with only its runtime's
+ * environment, and a daemon started from the Finder imports only `PATH` from the login shell, so
+ * an operator's `NODE_EXTRA_CA_CERTS` never reaches it. Behind a TLS-inspecting proxy the
+ * certificate every remote server presents is signed by a root that lives in the system store
+ * and nowhere in Node's bundled set, and without this every request fails with
+ * `SELF_SIGNED_CERT_IN_CHAIN`. A startup flag rather than `tls.setDefaultCACertificates`, which
+ * only Node 24.5 and later have: `engines` admits every Node 24, and so does Electron's node
+ * mode. Verification is never relaxed; any `NODE_EXTRA_CA_CERTS` that does arrive still applies.
+ */
+export const RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS: readonly string[] = ["--use-system-ca"];
+
 /** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
 function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
   const { name, options, transport } = server;
@@ -280,6 +295,7 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
     shape: "launcher",
     command: runtime.command,
     args: [
+      ...RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS,
       residentMcpLauncherPath(),
       "--run", runId,
       "--server", name,

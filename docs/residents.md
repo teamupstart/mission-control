@@ -314,6 +314,11 @@ every resume after that reads only the copy:
   waits on a login once Claude has started it, or when Claude cannot confirm the set within 60
   seconds; this applies equally to the relaunch Claude makes to recover from a lost login. That includes a remote server behind an OAuth login
   Claude Code holds, which the launcher cannot present. Nothing is renamed or dropped silently.
+  When a remote server does not connect, Claude Code's MCP log for the run's workspace has the
+  launcher's reason, with the transport's error code. A code such as `SELF_SIGNED_CERT_IN_CHAIN`
+  says the server presented a certificate chain the launcher does not trust; the common cause is
+  a root, such as a TLS-inspecting proxy's, that is in neither Node's roots nor the system's
+  certificate store, both of which the launcher trusts.
 
 Each launcher credential is good for one start, so a server that exits during a session is not
 restarted by the harness; it starts again with the session's next start, such as a resume.

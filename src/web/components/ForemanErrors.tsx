@@ -81,8 +81,6 @@ function Issue({ issue, onOpenModels, dismissing, onDismiss }: {
   dismissing: boolean;
   onDismiss: () => void;
 }): React.JSX.Element {
-  // Copies through `copyText`: the Electron renderer can refuse the async Clipboard API even
-  // after a click, and the shared synchronous fallback is what copies there.
   const copy = useCopyFeedback({ resetOn: issue.error });
   return (
     <article className="foreman-error-issue">

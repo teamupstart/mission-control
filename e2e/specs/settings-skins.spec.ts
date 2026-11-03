@@ -351,11 +351,15 @@ test("Paper, Blueprint and Neon Dusk each apply live, persist, and leave the top
     expect(now.dispatch.inside, `Dispatch left the topbar under ${name}`).toBe(true);
     expect(now.topbar.height, `${name} changed the topbar's height`).toBe(yardstick.topbar.height);
     expect(now.line, `${name} moved or resized the Line`).toEqual(yardstick.line);
-    expect(now.dispatch.height, `${name} changed the Dispatch button's height`).toBe(yardstick.dispatch.height);
+    expect(
+      { x: now.dispatch.x, y: now.dispatch.y, width: now.dispatch.width, height: now.dispatch.height },
+      `${name} moved or resized the Dispatch button`,
+    ).toEqual({ x: yardstick.dispatch.x, y: yardstick.dispatch.y, width: yardstick.dispatch.width, height: yardstick.dispatch.height });
     observed(
       `${name}: topbar ${now.topbar.height}px, Line ${now.line.height}px at ${now.line.top}px, ` +
-        `Dispatch ${now.dispatch.width}x${now.dispatch.height}px, nothing clipped (Default: ` +
-        `${yardstick.topbar.height}px, ${yardstick.line.height}px at ${yardstick.line.top}px)`,
+        `Dispatch ${now.dispatch.width}x${now.dispatch.height}px at ${now.dispatch.x},${now.dispatch.y}, nothing clipped (Default: ` +
+        `${yardstick.topbar.height}px, ${yardstick.line.height}px at ${yardstick.line.top}px, ` +
+        `Dispatch ${yardstick.dispatch.width}x${yardstick.dispatch.height}px at ${yardstick.dispatch.x},${yardstick.dispatch.y})`,
     );
     await shoot(page, `${want.id}-board`);
   }

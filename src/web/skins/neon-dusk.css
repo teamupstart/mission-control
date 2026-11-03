@@ -101,13 +101,16 @@
 
 /* A tile that needs you glows magenta outside its amber border; the spine stays amber, so its
    state still reads first. A resident keeps its own marker glow, and an expanded workflow tile
-   its ring, as each already wins over the attention shadow under Default. */
-:root[data-skin="neon-dusk"] .tile.attention:not(.is-resident):not(.workflow-expanded) {
+   its ring, as each already wins over the attention shadow under Default. A drop target keeps
+   its highlight too, so the tile a drag will land on stays visible. A selected tile is left to
+   the cursor rule below: the two never match one tile, so neither depends on out-weighing the
+   other's selector. */
+:root[data-skin="neon-dusk"] .tile.attention:not(.is-resident):not(.workflow-expanded):not(.drop-over):not(.selected) {
   box-shadow: var(--shadow), var(--neon-glow);
 }
 
-/* The board's keyboard cursor: the same selection ring, lit. Declared after the attention
-   glow, as the default rules are, so the cursor stays visible on the tile that needs you. */
+/* The board's keyboard cursor: the same selection ring, lit, on any tile it rests on - one that
+   needs you included, so the cursor stays visible on the tile that needs you most. */
 :root[data-skin="neon-dusk"] .tile.selected:not(.drop-over):not(.is-resident),
 :root[data-skin="neon-dusk"] .tile.selected:not(.drop-over):not(.is-resident):hover {
   box-shadow:

@@ -2069,12 +2069,19 @@ export class TaskManager {
   private mergeQuorumFor(t: Task): QuorumVerdict {
     const primary = primaryRepoPrForTask(t.id);
     const task = { ...t, extraRepos: taskReposFor(t.id) };
+    const changes = [taskWorkEpisodeForTask(t.id), ...historicalTaskWorkEpisodeBindingsForTask(t.id)]
+      .flatMap(binding => binding?.repoChanges ?? []);
     return taskMergeQuorum(task, (ref) => {
       const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
       return {
         prUrl: entry ? entry.prUrl : primary.prUrl,
         mergedAt: entry ? entry.mergedAt : primary.mergedAt,
         headSha: this.registry.worktreeHead(ref.worktreePath),
+        retainedChange: ref.worktreePath === null
+          ? changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "changed") ? "changed"
+            : changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "unknown") ? "unknown"
+              : changes.some(v => v.repoRoot === ref.repoRoot) ? "unchanged" : "unknown"
+          : undefined,
       };
     });
   }
@@ -2673,9 +2680,15 @@ export class TaskManager {
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
           const merged = target.status === "done" ? this.mergeOutcomeFor(target) : null;
-          const mergedUrl = merged && previousEdge
-            ? this.mergeUrlForDependency(previousEdge, merged.url)
-            : merged?.url;
+          const mergeCandidate: TaskDependency = previousEdge ?? {
+            type: "task", taskId: target.id, title: target.title,
+            sessionId: binding?.sessionId ?? null, episodeId: binding?.episodeId ?? null,
+            agentSessionId: binding?.agentSessionId ?? null, branch: binding?.branch ?? null,
+            prUrl: null, selectedAt, satisfiedAt: null,
+          };
+          const mergedUrl = merged && (previousEdge || binding)
+            ? this.mergeUrlForDependency(mergeCandidate, merged.url)
+            : null;
           const eligible = target.status === "backlog" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -5316,6 +5329,20 @@ export class TaskManager {
     // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
     // stale provenance without a surviving binding still uses the task's durable outcome.
     if (!bound) return fallback;
+    const source = this.registry.getTask(dependency.taskId) ?? getDurableTask(dependency.taskId);
+    if (source && source.extraRepos.length > 0) {
+      const secondary = workEpisodeRepoPrsForTask(dependency.taskId).filter(row =>
+        row.episodeId === bound.episodeId && row.sessionId === bound.sessionId);
+      const quorum = taskMergeQuorum(source, ref => {
+        const row = secondary.find(row => row.repoRoot === ref.repoRoot);
+        return {
+          prUrl: ref.role === "primary" ? bound.prUrl : row?.prUrl ?? null,
+          mergedAt: ref.role === "primary" ? bound.mergedAt : row?.mergedAt ?? null,
+          retainedChange: bound.repoChanges?.find(v => v.repoRoot === ref.repoRoot)?.verdict ?? "unknown",
+        };
+      });
+      if (!quorum.satisfied) return null;
+    }
     if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
     // The primary can be unchanged. Once the task quorum passes, a merged secondary
     // belonging to this same episode is delivery evidence for its dependent as well.

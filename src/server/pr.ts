@@ -304,6 +304,7 @@ export async function pollAndReconcilePrs(
   // place that already spends subprocesses, and it runs immediately before the reconciler it
   // feeds, so the observation is as fresh as the merge that triggers the question.
   const headTargets = registry.worktreeHeadTargets();
+  const repoEvidenceTargets = registry.repoChangeEvidenceTargets();
   // Both harvests, deduplicated: a task waiting on its own merge is very often also the
   // task something else declared a dependency on, and asking twice would spend two `gh`
   // calls and two backoffs on one pull request.
@@ -366,7 +367,7 @@ export async function pollAndReconcilePrs(
   // Before the reconcilers below, which is the ordering the quorum depends on: both of them
   // can complete a task, and a task completed against last tick's heads is a task completed
   // against a repository whose work may since have moved off its baseline.
-  if (headTargets.length > 0) registry.recordWorktreeHeads(heads);
+  if (headTargets.length > 0) registry.recordWorktreeHeads(heads, repoEvidenceTargets);
 
   for (const t of queryable) {
     const r = preferredPr(results.get(t.cwd) ?? null);

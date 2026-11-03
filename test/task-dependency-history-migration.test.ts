@@ -10,7 +10,7 @@ process.env.MISSION_HOME = home;
 const { openDb, closeDb, historicalTaskWorkEpisodeBindingsForTask } = await import("../src/server/db.ts");
 after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
 
-for (const fromVersion of [14, 15]) {
+for (const fromVersion of [14, 15, 16]) {
   test(`upgrading version ${fromVersion} preserves evidence without inventing an ownership end`, () => {
     const backupRoot = join(home, "backups", "database");
     rmSync(backupRoot, { recursive: true, force: true });
@@ -18,6 +18,8 @@ for (const fromVersion of [14, 15]) {
     db.exec(`ALTER TABLE historical_task_work_episode_bindings DROP COLUMN ended_at;
       ALTER TABLE historical_task_work_episode_bindings DROP COLUMN work_head_sha;
       ALTER TABLE task_work_episode_bindings DROP COLUMN work_head_sha;
+      ALTER TABLE task_work_episode_bindings DROP COLUMN repo_changes;
+      ALTER TABLE historical_task_work_episode_bindings DROP COLUMN repo_changes;
       PRAGMA user_version = ${fromVersion};
       INSERT OR REPLACE INTO historical_task_work_episode_bindings
         (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, bound_at, updated_at)
@@ -30,12 +32,13 @@ for (const fromVersion of [14, 15]) {
     try {
       assert.equal(recovery.prepare("PRAGMA user_version").get()!.user_version, fromVersion);
       const columns = recovery.prepare("PRAGMA table_info(historical_task_work_episode_bindings)").all();
-      assert.ok(!columns.some(column => column.name === "ended_at" || column.name === "work_head_sha"));
+      assert.ok(!columns.some(column => column.name === "ended_at" || column.name === "work_head_sha" || column.name === "repo_changes"));
       assert.equal(recovery.prepare("SELECT branch FROM historical_task_work_episode_bindings WHERE task_id = 'source'").get()!.branch, "feat/reused");
     } finally { recovery.close(); }
     assert.ok(Number(migrated.prepare("PRAGMA user_version").get()!.user_version) > fromVersion);
     const [binding] = historicalTaskWorkEpisodeBindingsForTask("source");
     assert.equal(binding?.endedAt, null, "updated_at is not an ownership end and must not be backfilled as one");
+    assert.equal(binding?.repoChanges, null);
     assert.equal(binding?.workHeadSha, null, "old rows cannot invent commit evidence");
     assert.equal(binding?.branch, "feat/reused");
     assert.equal(binding?.boundAt, 100);

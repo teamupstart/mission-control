@@ -708,6 +708,7 @@ function stubRegistry(operational: string[]) {
     prPollTargets: () => [],
     extraRepoPrPollTargets: () => [],
     worktreeHeadTargets: () => [],
+    repoChangeEvidenceTargets: () => [],
     dependencyPrPollTargets: () => [],
     completedDependencyBranchTargets: () => [],
     dependencyWorkHeadTargets: () => [],

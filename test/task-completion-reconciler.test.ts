@@ -1187,3 +1187,15 @@ for (const matchesAtMerge of [false, true]) {
     if (!matchesAtMerge) assert.equal(taskWorkEpisodeForTask(f.taskId)!.mergedAt, null);
   });
 }
+
+test("a new edge to a manually completed live task cannot inherit an earlier episode's merge", async () => {
+  const f = departed("new-edge-old-merge", { worktreePath: null, homeName: null });
+  insertHistorical({ taskId: f.taskId, episodeId: "earlier-episode", sessionId: f.id,
+    prUrl: "https://github.com/example/repo/pull/1325", mergedAt: NOW });
+  await f.tasks.complete(f.taskId, "completed");
+  f.registry.upsertTask(baseTask({ id: "new-edge-old-merge-dependent", dependencies: [] }));
+  await f.tasks.update("new-edge-old-merge-dependent", { dependencies: [{ type: "task", taskId: f.taskId }] });
+  const edge = f.registry.getTask("new-edge-old-merge-dependent")!.dependencies[0]!;
+  assert.equal(edge.type === "task" ? edge.episodeId : null, f.episode.episodeId);
+  assert.equal(edge.satisfiedAt, null);
+});

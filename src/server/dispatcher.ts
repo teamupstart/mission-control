@@ -112,7 +112,8 @@ import {
   recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
-import { updatePipelineCommissionRecovery } from "./db.ts";
+import { updatePipelineCommissionRecovery, getTask as getDurableTask, taskWorkEpisodeForTask, recordTaskRepoChanges } from "./db.ts";
+import { taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import type {
   PipelineEngineerLifecycle,
   PipelineEngineerRunSnapshot,
@@ -2704,6 +2705,24 @@ export async function teardownWorktree(
       if (alive !== false) {
         throw new Error(`${killed.error ?? `could not close terminal home '${task.homeName}'`}; worktree preserved`);
       }
+    }
+  }
+  // Freeze change evidence after the agent is stopped, before any checkout is removed.
+  // Resource cleanup may clear paths and baselines; that cannot make unshipped work vanish.
+  const source = taskId ? getDurableTask(taskId) : undefined;
+  const binding = source && taskWorkEpisodeForTask(source.id);
+  if (source && binding && source.extraRepos.length > 0) {
+    const refs = taskRepoRefs(source);
+    const changes = await Promise.all(refs.map(async ref => {
+      if (!ref.worktreePath || !trees.some(tree => tree.worktreePath === ref.worktreePath)) {
+        return binding.repoChanges?.find(v => v.repoRoot === ref.repoRoot) ?? { repoRoot: ref.repoRoot, verdict: "unknown" as const };
+      }
+      const head = await headCommit(ref.worktreePath);
+      return { repoRoot: ref.repoRoot, verdict: head === null ? "unknown" as const : repoChangeVerdict(ref, { prUrl: null, headSha: head }) };
+    }));
+    const current = getDurableTask(source.id);
+    if (!current || JSON.stringify(taskRepoRefs(current)) !== JSON.stringify(refs) || !recordTaskRepoChanges(binding, changes, true)) {
+      throw new Error("task repository ownership changed before cleanup");
     }
   }
   const failures: string[] = [];

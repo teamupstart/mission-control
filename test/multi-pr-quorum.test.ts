@@ -35,7 +35,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, replaceSessionWorkEpisode, recordWorkEpisodeRepoPr, markWorkEpisodeMerged, historicalTaskWorkEpisodeBindingsForTask } = await import("../src/server/db.ts");
 
 const managers: InstanceType<typeof TaskManager>[] = [];
 after(() => {
@@ -642,4 +642,31 @@ test("a merged secondary from another episode cannot release a pinned edge", asy
   assert.equal(f.registry.getTask(id)!.dependencies[0]!.satisfiedAt, null);
   await f.tasks.update(id, { dependencies: [{ type: "task", taskId: f.taskId }] });
   assert.equal(f.registry.getTask(id)!.dependencies[0]!.satisfiedAt, null);
+});
+
+
+test("later-episode secondary delivery cannot complete an earlier episode's partial quorum", async () => {
+  const f = fixture("historical-partial-quorum");
+  primaryPr(f, PR_A); extraPr(f, PR_B);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, MOVED], [f.extraCwd, MOVED]]));
+  f.registry.upsertTask(baseTask({ id: "historical-quorum-dependent", dependencies: [{
+    type: "task", taskId: f.taskId, title: "Earlier work", sessionId: f.id,
+    episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId, branch: f.episode.branch,
+    prUrl: PR_A, selectedAt: 1, satisfiedAt: null,
+  }] }));
+  const next = { ...f.episode, episodeId: "historical-quorum-next", prUrl: null, prHeadSha: null, mergedAt: null, startedAt: Date.now() };
+  replaceSessionWorkEpisode(next);
+  f.registry.bindTaskToWorkEpisode(f.taskId, f.id, next);
+  assert.equal(historicalTaskWorkEpisodeBindingsForTask(f.taskId)[0]!.repoChanges?.length, 2);
+  await f.tasks.complete(f.taskId, "completed");
+  markWorkEpisodeMerged(f.id, f.episode.episodeId, PR_A, NOW);
+  const laterUrl = "https://github.com/example/other/pull/1404";
+  recordWorkEpisodeRepoPr({ taskId: f.taskId, sessionId: f.id, episodeId: next.episodeId, repoRoot: "/other",
+    prUrl: laterUrl, prState: "merged", prHeadSha: "later-head" }, NOW + 1);
+  markWorkEpisodeMerged(f.id, next.episodeId, laterUrl, NOW + 1);
+  f.tasks.reconcileMergedTasks();
+  assert.equal(f.registry.getTask("historical-quorum-dependent")!.dependencies[0]!.satisfiedAt, null);
+  markWorkEpisodeMerged(f.id, f.episode.episodeId, PR_B, NOW + 2);
+  f.tasks.reconcileMergedTasks();
+  assert.equal(typeof f.registry.getTask("historical-quorum-dependent")!.dependencies[0]!.satisfiedAt, "number");
 });

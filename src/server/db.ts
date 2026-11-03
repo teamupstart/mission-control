@@ -189,7 +189,8 @@ let db: DatabaseSync | undefined;
 // 15: a task's launch-failure record (`tasks.launch_failure`) and a Report bug session's
 //     marker (`tasks.launch_report_for`), with no historical backfill.
 // 16: task work-episode ownership end times and retained branch commits.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 16;
+// 17: retain per-repository episode change evidence across checkout teardown.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 17;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -516,6 +517,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       pr_url           TEXT,
       pr_head_sha      TEXT,
       work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -532,6 +534,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       pr_url           TEXT,
       pr_head_sha      TEXT,
       work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
@@ -3810,6 +3813,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "historical_task_work_episode_bindings", "ended_at", "INTEGER");
   addColumn(d, "task_work_episode_bindings", "work_head_sha", "TEXT");
   addColumn(d, "historical_task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "task_work_episode_bindings", "repo_changes", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "repo_changes", "TEXT");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -6054,6 +6059,7 @@ export interface TaskWorkEpisodeBinding {
   prHeadSha: string | null;
   /** Branch commit observed while this task still owned the active episode. */
   workHeadSha?: string | null;
+  repoChanges?: Array<{ repoRoot: string; verdict: "changed" | "unchanged" | "unknown"; final?: boolean }> | null;
   mergedAt: number | null;
   boundAt: number;
   updatedAt: number;
@@ -6113,6 +6119,7 @@ type TaskWorkEpisodeRow = {
   pr_url: string | null;
   pr_head_sha: string | null;
   work_head_sha: string | null;
+  repo_changes: string | null;
   merged_at: number | null;
   bound_at: number;
   updated_at: number;
@@ -6135,6 +6142,14 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
   };
 }
 
+function parseRepoChanges(raw: string | null): TaskWorkEpisodeBinding["repoChanges"] {
+  const parsed = parseJsonArray<unknown>(raw);
+  if (!parsed || !parsed.every((v) => v && typeof v === "object" && "repoRoot" in v &&
+    typeof v.repoRoot === "string" && "verdict" in v &&
+    (v.verdict === "changed" || v.verdict === "unchanged" || v.verdict === "unknown"))) return null;
+  return parsed as NonNullable<TaskWorkEpisodeBinding["repoChanges"]>;
+}
+
 function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding {
   return {
     taskId: row.task_id,
@@ -6145,6 +6160,7 @@ function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
     workHeadSha: row.work_head_sha,
+    repoChanges: parseRepoChanges(row.repo_changes),
     mergedAt: row.merged_at,
     boundAt: row.bound_at,
     updatedAt: row.updated_at,
@@ -6422,9 +6438,9 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at, ended_at, work_head_sha)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at, ?, work_head_sha
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
        WHERE task_id = ? AND episode_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
@@ -6434,6 +6450,7 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
          work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at,
@@ -6448,9 +6465,9 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at, ended_at, work_head_sha)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at, ?, work_head_sha
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
        WHERE session_id = ? AND task_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
@@ -6460,6 +6477,7 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
          work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at,
@@ -6480,6 +6498,11 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         repo_changes     = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.repo_changes ELSE NULL END,
          work_head_sha    = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
            AND task_work_episode_bindings.session_id = excluded.session_id
            AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
@@ -6508,6 +6531,16 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
 }
 
 /** Persist only a still-active, unchanged binding; late poll results cannot rewrite history. */
+export function recordTaskRepoChanges(binding: TaskWorkEpisodeBinding, changes: NonNullable<TaskWorkEpisodeBinding["repoChanges"]>, final = false): boolean {
+  // A poll begun before teardown must not overwrite the quiescent final snapshot.
+  const current = taskWorkEpisodeForTask(binding.taskId);
+  if (!final && current?.repoChanges?.some(v => v.final)) return false;
+  const result = openDb().prepare(`UPDATE task_work_episode_bindings SET repo_changes = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ? AND branch IS ?`)
+    .run(JSON.stringify(changes.map(v => ({ ...v, final }))), binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch);
+  return Number(result.changes) > 0;
+}
+
 export function recordTaskWorkEpisodeHead(binding: TaskWorkEpisodeBinding, headSha: string): void {
   openDb().prepare(`UPDATE task_work_episode_bindings SET work_head_sha = ?
     WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?

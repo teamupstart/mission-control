@@ -513,6 +513,12 @@ completion stays unresolved; a later episode's merge does not release an edge pi
 earlier unmerged work.
 When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
 unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+For multi-repository work, each episode retains its repositories' change evidence before
+cleanup clears checkout paths and baselines. An edge pinned to a retained episode waits for
+that episode's full changed-repository quorum; another episode's partial delivery cannot
+complete it. New edges use the current episode's evidence. Legacy edges without surviving
+episode provenance retain task-wide recovery from verified merge evidence, never from a bare
+done status or outcome text.
 A dependency edge names the prerequisite's primary pull request, or a merged secondary
 from the same episode when the primary was unchanged. Its release still requires the
 prerequisite's full merge quorum. The explicit completion override is the exception:

@@ -98,7 +98,7 @@ import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
 import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
-import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
+import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
@@ -228,6 +228,7 @@ import {
   taskIdForSession as dbTaskIdForSession,
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
   recordTaskWorkEpisodeHead,
+  recordTaskRepoChanges,
   deleteHistoricalTaskWorkEpisodeBinding,
   deleteSessionWorkEpisode,
   deleteSessionWorkEpisodeWithOwnership,
@@ -5223,7 +5224,26 @@ export class Registry extends EventEmitter {
    * nothing has been observed yet, and a quorum that read "unobserved" as "unchanged" would
    * complete a task on one merged sibling in the seconds before the first sweep.
    */
-  recordWorktreeHeads(heads: Map<string, string | null>): void {
+  repoChangeEvidenceTargets(): Array<{ task: Task; binding: TaskWorkEpisodeBinding }> {
+    return this.mergeObservationTasks().flatMap(task => {
+      const binding = taskWorkEpisodeForTask(task.id);
+      return binding && task.extraRepos.length > 0 ? [{ task, binding }] : [];
+    });
+  }
+
+  recordWorktreeHeads(heads: Map<string, string | null>, targets = this.repoChangeEvidenceTargets()): void {
+    for (const { task, binding } of targets) {
+      const current = taskWorkEpisodeForTask(task.id);
+      const live = this.tasks.get(task.id) ?? getDurableTask(task.id);
+      if (!current || !live || current.episodeId !== binding.episodeId || current.sessionId !== binding.sessionId ||
+        current.agentSessionId !== binding.agentSessionId || current.branch !== binding.branch ||
+        JSON.stringify(taskRepoRefs(live)) !== JSON.stringify(taskRepoRefs(task))) continue;
+      recordTaskRepoChanges(current, taskRepoRefs(task).map(ref => {
+        if (!ref.worktreePath) return current.repoChanges?.find(v => v.repoRoot === ref.repoRoot) ?? { repoRoot: ref.repoRoot, verdict: "unknown" };
+        const head = heads.get(ref.worktreePath);
+        return { repoRoot: ref.repoRoot, verdict: head == null ? "unknown" : repoChangeVerdict(ref, { prUrl: null, headSha: head }) };
+      }));
+    }
     for (const [path, sha] of heads) this.worktreeHeads.set(path, sha);
     // Bounded by what is still worth asking about, so a long-lived daemon does not
     // accumulate an entry per worktree it ever polled.

@@ -6531,6 +6531,32 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
 }
 
 /** Persist only a still-active, unchanged binding; late poll results cannot rewrite history. */
+/** Release only an unmerged link whose completed task and episode still own it. */
+export function clearClosedCompletedPr(binding: TaskWorkEpisodeBinding, url: string): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    let changed = 0;
+    for (const table of ["task_work_episode_bindings", "historical_task_work_episode_bindings"]) {
+      changed += Number(d.prepare(`UPDATE ${table} SET pr_url = NULL, pr_head_sha = NULL
+        WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+          AND branch IS ? AND pr_url = ? AND merged_at IS NULL
+          AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'done')`)
+        .run(binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch, url, binding.taskId).changes);
+    }
+    if (changed > 0) d.prepare(`UPDATE session_work_episodes SET pr_url = NULL, pr_head_sha = NULL
+      WHERE session_id = ? AND episode_id = ? AND agent_session_id = ? AND branch IS ?
+        AND pr_url = ? AND merged_at IS NULL`)
+      .run(binding.sessionId, binding.episodeId, binding.agentSessionId, binding.branch, url);
+    if (ownsTransaction) d.exec("COMMIT");
+    return changed > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function recordTaskRepoChanges(binding: TaskWorkEpisodeBinding, changes: NonNullable<TaskWorkEpisodeBinding["repoChanges"]>, final = false): boolean {
   // A poll begun before teardown must not overwrite the quiescent final snapshot.
   const current = taskWorkEpisodeForTask(binding.taskId);

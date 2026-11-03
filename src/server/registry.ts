@@ -229,6 +229,7 @@ import {
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
   recordTaskWorkEpisodeHead,
   recordTaskRepoChanges,
+  clearClosedCompletedPr,
   deleteHistoricalTaskWorkEpisodeBinding,
   deleteSessionWorkEpisode,
   deleteSessionWorkEpisodeWithOwnership,
@@ -5500,6 +5501,18 @@ export class Registry extends EventEmitter {
           edge.agentSessionId === binding.agentSessionId && edge.branch === binding.branch))));
   }
 
+  reconcileClosedDependencyPrs(urls: Set<string>): void {
+    if (urls.size === 0) return;
+    for (const source of this.completedDependencySources()) {
+      for (const binding of [taskWorkEpisodeForTask(source.id), ...historicalTaskWorkEpisodeBindingsForTask(source.id)]) {
+        if (!binding?.branch || !binding.prUrl || binding.mergedAt !== null || !urls.has(binding.prUrl)) continue;
+        if (clearClosedCompletedPr(binding, binding.prUrl)) {
+          this.bindPendingTaskDependencies(source.id, { ...binding, prUrl: null }, Date.now());
+        }
+      }
+    }
+  }
+
   /** A closed session may never have observed its PR, including on an earlier episode. */
   completedDependencyBranchTargets(): Array<{ taskId: string; cwd: string; binding: TaskWorkEpisodeBinding; historical: boolean; startedAt: number; endedAt: number | null }> {
     return this.completedDependencySources().flatMap((task) => {
@@ -5533,7 +5546,7 @@ export class Registry extends EventEmitter {
       candidate.binding.branch === target.binding.branch);
     // A late-opened PR needs the exact source commit retained while the episode was active.
     // Compare the PR head, never its merge commit: squash merges produce a different target SHA.
-    if (!current || match.branch !== target.binding.branch || !match.headSha ||
+    if (!current || match.branch !== target.binding.branch || !match.headSha || match.state === "closed" ||
       match.createdAt === null || (match.state === "merged" && match.mergedAt === null)) return;
     if (!this.canAssociateCompletedPr(current.binding, current.endedAt, match)) return;
     const at = Date.now();

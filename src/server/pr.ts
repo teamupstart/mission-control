@@ -195,8 +195,8 @@ async function queryPrUrl(url: string): Promise<PrStateLookup> {
   try {
     const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };
     const state = prStateOf(parsed);
-    // This lookup serves merge dependencies, where closure remains an unmerged result.
-    if (state === "closed") return null;
+    // A confirmed unmerged closure can reopen discovery for completed dependencies.
+    if (state === "closed") return { state, mergedAt: null };
     if (state === null) return "error";
     if (state === "open") return { state, mergedAt: null };
     const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
@@ -398,6 +398,7 @@ export async function pollAndReconcilePrs(
     [...found.values(), ...repoFound.values()].map((match) => [match.url, match]),
   );
   const mergedUrls = new Map<string, number>();
+  const closedUrls = new Set<string>();
   const dueUrls = urlState.due(linkedUrls, now);
   for (const url of linkedUrls) {
     const match = observed.get(url);
@@ -405,6 +406,7 @@ export async function pollAndReconcilePrs(
     if (match.state === "merged" && match.mergedAt !== null) {
       mergedUrls.set(url, match.mergedAt);
     }
+    if (match.state === "closed") closedUrls.add(url);
   }
   await forEachConcurrent(
     dueUrls.filter((url) => !observed.has(url)),
@@ -412,6 +414,7 @@ export async function pollAndReconcilePrs(
     async (url) => {
       const result = await lookupUrl(url);
       urlState.record(url, result, now);
+      if (result !== "error" && result?.state === "closed") closedUrls.add(url);
       if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
         mergedUrls.set(url, result.mergedAt);
       }
@@ -430,10 +433,11 @@ export async function pollAndReconcilePrs(
     [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
   );
   registry.reconcilePrMerges(operationalMerges);
+  registry.reconcileClosedDependencyPrs(new Set([...closedUrls].filter(url => operationalUrls.has(url))));
   // Filter candidates by each retained ownership window before GitHub applies its limit.
   // Share identical searches and bound concurrency just as for the durable by-URL harvest.
   const completedByBranch = new Map<string, typeof completedTargets>();
-  for (const target of completedTargets) {
+  for (const target of registry.completedDependencyBranchTargets().filter(target => target.binding.branch && !DEFAULT_BRANCHES.has(target.binding.branch))) {
     const key = `${target.cwd}\0${target.binding.branch}\0${target.startedAt}\0${target.endedAt}\0${target.binding.workHeadSha}`;
     const group = completedByBranch.get(key) ?? [];
     group.push(target);

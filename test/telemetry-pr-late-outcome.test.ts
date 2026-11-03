@@ -716,6 +716,7 @@ function stubRegistry(operational: string[]) {
     recordWorktreeHeads: () => {},
     reconcilePrs: () => {},
     reconcileRepoPrs: () => {},
+    reconcileClosedDependencyPrs: () => {},
     reconcilePrMerges: (m: Map<string, number>) => merges.push(new Map(m)),
   };
 }

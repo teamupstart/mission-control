@@ -1199,3 +1199,82 @@ test("a new edge to a manually completed live task cannot inherit an earlier epi
   assert.equal(edge.type === "task" ? edge.episodeId : null, f.episode.episodeId);
   assert.equal(edge.satisfiedAt, null);
 });
+
+for (const historical of [false, true]) {
+  test(`a closed unmerged ${historical ? "historical" : "current"} PR permits a verified replacement after restart`, async () => {
+    const f = completedAfterUnobservedEpisode(`closed-replacement-${historical}`);
+    const target = historical ? f.episode : f.next;
+    if (!historical) {
+      const dependent = f.registry.getTask(f.dependentId)!;
+      const edge = dependent.dependencies[0]!; assert.equal(edge.type, "task");
+      f.registry.upsertTask({ ...dependent, dependencies: [{ ...edge, episodeId: target.episodeId,
+        sessionId: target.sessionId, agentSessionId: target.agentSessionId, branch: target.branch }] });
+    }
+    await f.tasks.complete(f.taskId, "completed");
+    const oldUrl = "https://github.com/example/repo/pull/1326";
+    const newUrl = "https://github.com/example/repo/pull/1327";
+    const match = { number: 1326, state: "open" as const, checks: "passing" as const,
+      createdAt: target.startedAt + 1, mergedAt: null, headSha: "episode-head", worktreeHeadSha: null };
+    await pollAndReconcilePrs(f.registry, async (_cwd, branch) => branch !== target.branch ? null : { ...match, url: oldUrl }, async () => null);
+    const bound = () => historical ? historicalTaskWorkEpisodeBindingsForTask(f.taskId)[0]! : taskWorkEpisodeForTask(f.taskId)!;
+    assert.equal(bound().prUrl, oldUrl);
+    assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, null);
+    const restarted = new Registry(); const tasks = new TaskManager(restarted); managers.push(tasks);
+    const asked: string[] = [];
+    await pollAndReconcilePrs(restarted, async (_cwd, branch) => branch !== target.branch ? null : {
+      ...match, url: newUrl, number: 1327, state: "merged", createdAt: target.startedAt + 2, mergedAt: Date.now(),
+    }, async url => { asked.push(url); return url === oldUrl ? { state: "closed", mergedAt: null } : null; });
+    assert.ok(asked.includes(oldUrl));
+    const edge = restarted.getTask(f.dependentId)!.dependencies[0]!;
+    assert.equal(edge.prUrl, newUrl);
+    assert.equal(typeof edge.satisfiedAt, "number");
+    assert.equal(bound().prUrl, newUrl);
+    assert.deepEqual(tasks.dependencyBlockers(restarted.getTask(f.dependentId)!), []);
+  });
+}
+
+for (const result of ["unknown", "reset"] as const) {
+  test(`closed-PR recovery preserves an association on ${result} evidence`, async () => {
+    const f = completedAfterUnobservedEpisode(`closed-guard-${result}`);
+    await f.tasks.complete(f.taskId, "completed");
+    const url = "https://github.com/example/repo/pull/1328";
+    await pollAndReconcilePrs(f.registry, async (_cwd, branch) => branch !== f.episode.branch ? null : {
+      url, number: 1328, state: "open", checks: null, createdAt: f.episode.startedAt + 1,
+      mergedAt: null, headSha: "head", worktreeHeadSha: null,
+    }, async () => null);
+    const before = historicalTaskWorkEpisodeBindingsForTask(f.taskId)[0]!;
+    await pollAndReconcilePrs(f.registry, async () => null, async candidate => {
+      if (candidate !== url) return null;
+      if (result === "unknown") return "error";
+      f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, status: "backlog" });
+      return { state: "closed", mergedAt: null };
+    });
+    assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(f.taskId)[0], before);
+    assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, null);
+  });
+}
+
+test("production URL lookup distinguishes closed PRs and rediscovers a replacement", async () => {
+  const f = completedAfterUnobservedEpisode("production-closed-replacement");
+  f.registry.upsertTask({ ...f.registry.getTask(f.taskId)!, repoRoot: home });
+  await f.tasks.complete(f.taskId, "completed");
+  const oldUrl = "https://github.com/example/repo/pull/1329";
+  const newUrl = "https://github.com/example/repo/pull/1330";
+  await pollAndReconcilePrs(f.registry, async (_cwd, branch) => branch !== f.episode.branch ? null : {
+    url: oldUrl, number: 1329, state: "open", checks: null, createdAt: f.episode.startedAt + 1,
+    mergedAt: null, headSha: "head", worktreeHeadSha: null,
+  }, async () => null);
+  const candidate = { url: newUrl, number: 1330, state: "MERGED", headRefOid: "head",
+    createdAt: new Date(f.episode.startedAt + 2).toISOString(), mergedAt: new Date().toISOString() };
+  const bin = join(home, "gh-closed-replacement"); const log = join(home, "gh-closed-replacement.log");
+  writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'pr' && args[1] === 'view') process.stdout.write(JSON.stringify({ state: 'CLOSED', mergedAt: null }));
+else process.stdout.write(JSON.stringify([${JSON.stringify(candidate)}]));\n`, { mode: 0o755 });
+  await withProcessEnv({ MISSION_GH_BIN: bin }, async () => { await pollAndReconcilePrs(f.registry); });
+  const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+  assert.ok(calls.some(args => args[0] === "pr" && args[1] === "view" && args.includes(oldUrl)));
+  assert.ok(calls.some(args => args.includes("--search") && args.includes(f.episode.branch!)));
+  assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.prUrl, newUrl);
+  assert.equal(typeof f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, "number");
+});

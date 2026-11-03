@@ -507,8 +507,9 @@ searches PR candidates within that episode's recorded ownership window, so a new
 reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
 its source head exactly matches a branch commit retained while the episode was active. These
 late-opened PRs stay in branch discovery until merged, so a force-push after discovery cannot
-bypass the final head check. This compares the source head, not the target commit produced by
-a squash merge. Without that retained match, an unknown historical end or a PR created after
+bypass the final head check. If a linked PR closes without merging, a confirmed closure
+reopens discovery for a replacement under the same episode checks. The comparison uses the
+PR's source head, which also supports squash merges. Without that retained match, an unknown historical end or a PR created after
 completion stays unresolved; a later episode's merge does not release an edge pinned to
 earlier unmerged work.
 When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each

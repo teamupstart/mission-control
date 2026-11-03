@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { applyNodeChanges, type NodeChange } from "@xyflow/react";
-import { reconcileCanvasNodes } from "../src/web/workflows/WorkflowCanvas.tsx";
+import { minimapNodeClassName, reconcileCanvasNodes } from "../src/web/workflows/WorkflowCanvas.tsx";
 import type { WorkflowCanvasNode } from "../src/web/workflows/WorkflowNode.tsx";
 
 const canvasSource = readFileSync(
@@ -85,4 +85,19 @@ test("React Flow mutation handlers keep stable callback identities through one l
       new RegExp(`${prop}=\\{\\s*(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*=>`),
     );
   }
+});
+
+test("the minimap colours its nodes by class, so a skin repaints them through tokens", () => {
+  // A `nodeColor` result lands as an inline `fill` that no stylesheet can override, so a
+  // mounted minimap would keep the previous skin's colours. The class rule reads tokens.
+  assert.doesNotMatch(canvasSource, /nodeColor=/);
+  assert.doesNotMatch(canvasSource, /#[0-9a-fA-F]{3,8}\b/, "the canvas hard-codes a colour");
+  assert.match(canvasSource, /nodeClassName=\{minimapNodeClassName\}/);
+  assert.equal(minimapNodeClassName({ className: "workflow-runtime-failed" }), "workflow-minimap-node is-fail");
+  assert.equal(minimapNodeClassName({ className: "workflow-runtime-passed" }), "workflow-minimap-node");
+  assert.equal(minimapNodeClassName({}), "workflow-minimap-node");
+
+  const css = readFileSync(new URL("../src/web/styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.react-flow__minimap-node\.workflow-minimap-node \{ fill: var\(--canvas-minimap-node\); \}/);
+  assert.match(css, /\.react-flow__minimap-node\.workflow-minimap-node\.is-fail \{ fill: var\(--canvas-minimap-fail\); \}/);
 });

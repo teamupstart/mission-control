@@ -75,6 +75,16 @@ const NODE_EXTENT: CoordinateExtent = [
 ];
 const MULTI_SELECTION_KEYS = ["Meta", "Control"];
 
+/**
+ * The minimap paints its rects from this class, not from `nodeColor`: React Flow writes a
+ * `nodeColor` result as an inline `fill`, which no stylesheet can override, so a skin change
+ * would leave a mounted minimap on the old colours. The class rule in `styles.css` reads
+ * tokens and follows the cascade with no re-render.
+ */
+export function minimapNodeClassName(node: Pick<WorkflowCanvasNode, "className">): string {
+  return node.className?.includes("fail") ? "workflow-minimap-node is-fail" : "workflow-minimap-node";
+}
+
 function boundedCoordinate(value: number): number {
   return Math.max(
     -WORKFLOW_LIMITS.canvasCoordinateAbs,
@@ -735,7 +745,7 @@ export const WorkflowCanvas = forwardRef<WorkflowCanvasHandle, {
           pannable
           zoomable
           ariaLabel="Workflow minimap"
-          nodeColor={(node) => node.className?.includes("fail") ? "#d34f4f" : "#76849b"}
+          nodeClassName={minimapNodeClassName}
         />
       </ReactFlow>
     </div>

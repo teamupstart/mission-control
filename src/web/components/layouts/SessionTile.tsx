@@ -399,7 +399,7 @@ export function SessionTile({
       </span>
 
       {resident?.loop && <span className="resident-card-loop" onClick={(event) => event.stopPropagation()}>
-        <ResidentLoopStatusLine loop={resident.loop} />
+        <ResidentLoopStatusLine loop={resident.loop} session={session} />
         <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
           {() => <ResidentLoopControls mark={resident} menu />}
         </SessionToolbarMenu>

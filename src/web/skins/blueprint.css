@@ -104,10 +104,12 @@
 }
 
 /* Headings read as a drawing's title block. Rendered Markdown is someone's prose, not chrome,
-   so its headings keep the case they were written in. */
-:root[data-skin="blueprint"] h1:not(.markdown *),
-:root[data-skin="blueprint"] h2:not(.markdown *),
-:root[data-skin="blueprint"] h3:not(.markdown *),
-:root[data-skin="blueprint"] h4:not(.markdown *) {
+   so its headings keep the case they were written in. `<Markdown>` adds no class of its own;
+   every caller wraps it in `.markdown` except the Scouts reader, which uses `.scouts-markdown`
+   because the shared `.markdown` styles would restyle it. */
+:root[data-skin="blueprint"] h1:not(.markdown *):not(.scouts-markdown *),
+:root[data-skin="blueprint"] h2:not(.markdown *):not(.scouts-markdown *),
+:root[data-skin="blueprint"] h3:not(.markdown *):not(.scouts-markdown *),
+:root[data-skin="blueprint"] h4:not(.markdown *):not(.scouts-markdown *) {
   text-transform: uppercase;
 }

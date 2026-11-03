@@ -316,6 +316,19 @@ test("Paper, Blueprint and Neon Dusk each apply live, persist, and leave the top
       // The drafting grid: two 20px line patterns on the shell itself.
       expect(root.shell.match(/linear-gradient/g)?.length).toBe(2);
       await expect(page.locator("body")).toHaveCSS("background-size", /20px 20px, 20px 20px/);
+      // Rendered Markdown keeps its author's case, in both wrappers `<Markdown>` is rendered
+      // into (`.markdown` everywhere, `.scouts-markdown` in the Scouts reader), while a chrome
+      // heading beside them is upper-cased. Measured through this page's own cascade.
+      const cases = await page.evaluate(() => {
+        const probe = document.createElement("div");
+        probe.innerHTML =
+          '<h2>Chrome</h2><div class="markdown"><h2>Prose</h2></div><div class="scouts-markdown"><h3>Scout prose</h3></div>';
+        document.body.append(probe);
+        const [chrome, prose, scout] = [...probe.querySelectorAll("h2, h3")].map((h) => getComputedStyle(h).textTransform);
+        probe.remove();
+        return { chrome, prose, scout };
+      });
+      expect(cases).toEqual({ chrome: "uppercase", prose: "none", scout: "none" });
     }
     if (name === "Neon Dusk") {
       // --purple is magenta, so Foreman, cost and the held state all read it.

@@ -48,7 +48,7 @@ export function ResidentBand({
           </span>
         </Tooltip>
       )}
-      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} />}
+      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} session={session} />}
       <span className="resident-band-spacer" />
       <ResidentLoopControls mark={mark} />
       {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (

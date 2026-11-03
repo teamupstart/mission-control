@@ -80,9 +80,10 @@ import {
   SESSION_RUNTIMES,
   TASK_KINDS,
   THINKING_LEVELS,
+  ADVISOR_CHOICES,
 } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
-import { supportsEffort } from "./harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -195,6 +196,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
+const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
   EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
     message: "reasoning effort is not supported by this harness",
@@ -1071,6 +1074,11 @@ export const DispatchSchema = z
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
     /**
+     * Advisor override for a harness that declares `advisor`; omitted inherits the operator's
+     * own Claude settings. Never `null` here: there is no stored pin to clear on a create.
+     */
+    advisorModel: AdvisorChoiceSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
      * and the machine default for other kinds.
@@ -1094,6 +1102,12 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || o.agent === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // The same split for the advisor, and `TaskManager.create` refuses the same pair when the
+  // harness is only known from the kind.
+  .refine((o) => o.advisorModel === undefined || o.agent === undefined || supportsAdvisor(o.agent, o.advisorModel), {
+    path: ["advisorModel"],
+    message: "an advisor override is not supported by this harness",
   })
   .superRefine((o, ctx) => {
     // A resident is created only by its profile's launch, which reserves the run first.
@@ -1334,7 +1348,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
+ * `model`, `effort` and `advisorModel` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
@@ -1368,6 +1382,7 @@ const UpdateTaskFieldsSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    advisorModel: AdvisorChoiceSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
@@ -1378,6 +1393,10 @@ export const UpdateTaskSchema = UpdateTaskFieldsSchema
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+  )
+  .refine(
+    (o) => o.agent === undefined || o.advisorModel == null || supportsAdvisor(o.agent, o.advisorModel),
+    { path: ["advisorModel"], message: "an advisor override is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 

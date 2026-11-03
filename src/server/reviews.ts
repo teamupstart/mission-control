@@ -118,7 +118,7 @@ export class ReviewManager {
   private continuationText(review: ReviewItem): string {
     const result = reviewToolResult(review);
     return (
-      `Mission Control review ${review.id} was answered after its MCP wait ended. ` +
+      `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
       `Treat this as the result of your earlier review tool call:\n\n${result.text}`
     );
   }

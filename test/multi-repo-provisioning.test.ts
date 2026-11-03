@@ -218,6 +218,7 @@ const BASE_TASK = {
   enabled: true,
   model: null,
   effort: null,
+  advisorModel: null,
   workflowId: null,
   source: null,
   pipelineRun: null,

@@ -23,6 +23,7 @@ function tourTask(overrides: Partial<Task> = {}): Task {
     enabled: true,
     model: "gpt-6-sol",
     effort: null,
+    advisorModel: null,
     workflowId: null,
     source: null,
     pipelineRun: null,

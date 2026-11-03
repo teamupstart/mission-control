@@ -296,8 +296,8 @@ test("timeout and skip-or-block policies save, stream, and survive reload", asyn
   dashboard,
   daemon,
 }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/library`);
-  await card(dashboard, "lint").click();
+  // Policy persistence is independent of the index cards arriving over the initial stream.
+  await dashboard.goto(`${daemon.baseURL}/#/library/commands/lint`);
 
   const useDefault = dashboard.getByLabel("Use slot default");
   const timeout = dashboard.getByLabel("Timeout in minutes");

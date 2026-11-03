@@ -10919,6 +10919,11 @@ span.task-outcome:hover {
   grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
   gap: 10px;
 }
+/* A fifth column for a harness that declares an advisor. One class, so the narrow-viewport
+   rule further down still collapses it to two columns like the four-field row. */
+.dispatch-crew--advisor {
+  grid-template-columns: 1fr 0.55fr 1.1fr 0.9fr 1fr;
+}
 /* Agent and Kind sit in a cell rather than being grid items themselves, so the guided
    pass's list can hang off the field from OUTSIDE its `<label>` - see the note at that
    markup. Always present, so a pass starting does not restructure the row. */
@@ -37515,6 +37520,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-error { color: var(--danger); flex-basis: 100%; font-size: 12px; }
 .resident-live-run { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
 .resident-card-loop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.resident-card-loop-menu { display: inline-flex; flex: none; }
 /* The dock card's loop facts: the short ones as tags, a reason as its sentence, compaction as
    one line under them. Paused is the one tag in a state color, since it is the one that asks for
    a decision. */

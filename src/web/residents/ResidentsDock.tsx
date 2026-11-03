@@ -274,7 +274,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           </button>
                         </Tooltip>
                       </div>
-                      <ResidentLoopStatusLine loop={run} tags />
+                      <ResidentLoopStatusLine loop={run} session={session} tags />
                       <div className="residents-pop-card-foot">
                         <ResidentLoopControls mark={mark} />
                         <span className="residents-pop-spacer" aria-hidden />

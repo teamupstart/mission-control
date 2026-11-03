@@ -11,7 +11,7 @@ import { adoptResidentLaunch, getResidentRun, listOpenResidentRuns, residentRunF
 import {
   ResidentLoopRefusal, beginResidentCompaction, claimResidentWake, claimedIteration, completeResidentCompaction, completeResidentGeneration,
   humanResidentTurn, liveRun, paceResident, pauseResident, pruneResidentLoop, residentClaims,
-  residentGuardrail, resumeResident, settleResidentClaim, type ResidentIteration,
+  residentGuardrail, releaseResidentReviewPause, resumeResident, settleResidentClaim, type ResidentIteration,
 } from "./loop-store.ts";
 
 interface LoopDeps {
@@ -60,11 +60,11 @@ export class ResidentLoop {
       } else if (event.type === "resident_run_upsert") this.enqueue(event.run.id);
       else if (event.type === "resident_run_remove") this.cancelTimer(event.id);
     }));
-    this.subscriptions.push(this.deps.registry.onTurnDelivered(({ sessionId }) => {
+    this.subscriptions.push(this.deps.registry.onTurnDelivered(({ sessionId, turnId }) => {
       const session = this.deps.registry.getSession(sessionId);
       const run = session?.task && residentRunForTask(session.task.id)?.run;
       if (run && run.endedAt === null) {
-        humanResidentTurn(run.id);
+        humanResidentTurn(run.id, turnId.startsWith("review-continuation:"));
         this.cancelTimer(run.id);
         this.publish(run.id);
         this.enqueue(run.id);
@@ -111,14 +111,19 @@ export class ResidentLoop {
     });
   }
   private observe(id: string): void {
-    const run = getResidentRun(id)?.run;
+    let run = getResidentRun(id)?.run;
     if (!run || run.endedAt !== null || run.launchState !== "launched") { this.cancelTimer(id); return; }
     const session = this.session(run);
     if (!session || session.runtime !== "sdk") return;
+    if (run.loopState === "paused" && run.pauseReason === "needs-you" && releaseResidentReviewPause(id)) {
+      run = liveRun(id);
+      this.publish(id);
+    }
     if (run.loopState === "paused") { this.cancelTimer(id); return; }
-    if (reportBucket(session) === "needs-you") { this.pause(id, "needs-you"); return; }
+    // A request holds delivery without discarding the durable wake or pacing intent.
+    if (reportBucket(session) === "needs-you") { this.cancelTimer(id); return; }
     if (session.pendingTurns.length > 0) {
-      if (run.nextWakeAt !== null) { humanResidentTurn(id); this.publish(id); }
+      if (run.nextWakeAt !== null) { humanResidentTurn(id, session.pendingTurns.every(turn => turn.id.startsWith("review-continuation:"))); this.publish(id); }
       this.cancelTimer(id);
       return;
     }
@@ -163,7 +168,8 @@ export class ResidentLoop {
     if (!run) throw new ResidentLoopRefusal("Only a resident can schedule its next iteration.");
     const parsed = ScheduleNextIterationSchema.safeParse(request);
     if (!parsed.success) throw new ResidentLoopRefusal(parsed.error.message);
-    const receipt = paceResident(run.id, parsed.data, session.workCycle?.generation ?? 0, this.now());
+    if (run.loopState === "paused" && run.pauseReason === "needs-you") releaseResidentReviewPause(run.id);
+    const receipt = paceResident(run.id, parsed.data, session.workCycle?.generation ?? 0, this.now(), reportBucket(session) === "needs-you");
     this.cancelTimer(run.id);
     this.publish(run.id);
     this.enqueue(run.id);

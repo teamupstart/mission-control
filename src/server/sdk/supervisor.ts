@@ -8,6 +8,7 @@ import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   RestoringSession,
@@ -382,6 +383,11 @@ export class SdkSupervisor {
     launchPresentation?: LaunchPresentationInput;
     model: string | null;
     effort: ThinkingLevel | null;
+    /**
+     * The task's advisor pin. Optional so every existing caller is unchanged; omitted or
+     * null inherits the operator's Claude settings, as every launch before it did.
+     */
+    advisorModel?: AdvisorChoice | null;
     permissionMode: PermissionMode | null;
     mcp: MissionMcpDescriptor | null;
     /** A resident run's pinned MCP set; absent for every other launch. */
@@ -449,6 +455,7 @@ export class SdkSupervisor {
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
+        advisorModel: input.advisorModel,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
         residentMcp: input.residentMcp ?? null,
@@ -501,6 +508,7 @@ export class SdkSupervisor {
           taskId: input.taskId,
           model: input.model,
           effort: input.effort,
+          advisorModel: input.advisorModel,
           // The driver accepted turn one before `adopt` can persist anything. Recording it
           // here closes the startup window before the detached event pump catches up.
           turnInProgress: input.prompt.length > 0,
@@ -563,6 +571,7 @@ export class SdkSupervisor {
       taskId: string | null;
       model: string | null;
       effort: ThinkingLevel | null;
+      advisorModel?: AdvisorChoice | null;
       /** Carried on a RESUME, so the row keeps the identity it is being picked up from. */
       agentSessionId?: string | null;
       /** Carried on a resume; adopting a fresh handle must not forgive unfinished work. */
@@ -613,6 +622,7 @@ export class SdkSupervisor {
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
+      advisorModel: durable.advisorModel,
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
       turnInProgress: durable.turnInProgress,
@@ -1298,6 +1308,9 @@ export class SdkSupervisor {
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
+        // From the row, not the task: the relaunch renders the flag layer the first launch
+        // did, even if somebody has since edited the task's pin.
+        advisorModel: row.advisorModel,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
@@ -1370,6 +1383,7 @@ export class SdkSupervisor {
           taskId: row.taskId,
           model: row.model,
           effort: row.effort,
+          advisorModel: row.advisorModel,
           agentSessionId: row.agentSessionId,
           turnInProgress: row.turnInProgress,
           acceptedTurns: 0,

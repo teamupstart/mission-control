@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { on } from "node:events";
 /**
  * The Command run budget, driven through the ENGINE rather than through `runCheck` alone.
  *
@@ -700,7 +701,7 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
-test("CodeRabbit freezes comparison across an incomplete retry, counts that execution, and reviews repairs at a new head until the tenth execution", async () => {
+test("CodeRabbit freezes comparison across an incomplete retry, counts that execution, and reviews repairs at a new head until the tenth execution", { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
@@ -719,7 +720,23 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
   capture(`submission-${id}`);
   let executions = 0, probes = 0;
   const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
-  const manager = new WorkflowManager(new Registry(), store, { engine: {
+  const registry = new Registry();
+  // A comparison performs five sequential Git reads, each with its own production
+  // deadline. Await the published state instead of imposing a five-second deadline
+  // on their combined duration. The test signal still bounds a stalled engine.
+  const waitForState = async (status: "blocked" | "waiting_for_session") => {
+    const changes = on(registry, "event", { signal: t.signal });
+    try {
+      do {
+        const current = store.getRun(`run-${id}`);
+        if (current?.status === status) return;
+        assert.notEqual(current?.status, "blocked", JSON.stringify(current));
+      } while (!(await changes.next()).done);
+    } finally {
+      await changes.return?.();
+    }
+  };
+  const manager = new WorkflowManager(registry, store, { engine: {
     workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }), workflowCommand: (slot) => emptyWorkflowCommandView(slot),
     runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
     checkDeps: () => ({
@@ -733,19 +750,19 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
   } });
   manager.engine.start(); manager.engine.activateSubmission(`submission-${id}`);
   try {
-    await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
+    await waitForState("blocked");
     assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1, "an incomplete vendor execution still spends allowance");
     const first = store.listAttempts(`submission-${id}`).find(a => a.nodeId === "gate")!;
     assert.equal(first.verdict, null); assert.equal(store.getRun(`run-${id}`)!.currentPhase, "command_action_required");
     git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
     assert.ok(manager.retry(`run-${id}`, { requestId: "retry-incomplete", nodeAttemptId: first.id }).ok);
-    await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+    await waitForState("waiting_for_session");
     assert.equal(comparisons[1]!.baseTip, base, "retry must ignore moved base ref");
     assert.equal(comparisons[1]!.head, comparisons[0]!.head);
     for (let round = 2; round <= 10; round++) {
       writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
       const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
-      await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+      await waitForState("waiting_for_session");
       assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
     }
     assert.equal(executions, 10); assert.equal(probes, 10);

@@ -244,8 +244,14 @@ safe replay. Only a typed refusal or a refused connection proves nothing was rec
 
 **Human input has priority.** Queuing a human message cancels the scheduled wake and pending
 agent delay. After the human turn, the normal cadence applies unless the agent requests another
-delay. A request for human input (`needs-you`) pauses the loop until the request is resolved and
-you resume it. Pausing does not interrupt an already running turn.
+delay. An open review, input request or permission dialog holds wakes and shows **waiting on you**.
+It preserves the scheduled wake and accepts pacing requests. Answering or dismissing the request
+releases the hold automatically once the session is idle. An overdue wake fires once; a completed
+turn uses its requested delay or the profile default. Detached review continuations preserve
+pending pacing too. Only an operator Pause or a guardrail requires Resume; neither is cleared by
+answering a review. Legacy automatic `needs-you` pauses recover on observation using the default
+cadence because their old pacing intent was already discarded. Pausing does not interrupt an
+already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.

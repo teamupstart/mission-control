@@ -25,7 +25,7 @@ import { defaultEnvironmentDeps } from "../environment/index.ts";
 import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
-import { acliPreflight, readAcli } from "./jira-acli.ts";
+import { acliAnnotate, acliPreflight, acliResolve, readAcli } from "./jira-acli.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -1463,9 +1463,6 @@ const UPSTARTCLAW_READ_ONLY =
   "the UpstartClaw connection is read-only - write-back needs the jira CLI, or " +
   "JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
-export const ACLI_WRITE_PENDING =
-  "write-back through acli is not available in this build - select the local Jira query method to write back today";
-
 /**
  * What to say when this machine cannot meet the refusal contract a resolve is held to.
  *
@@ -1489,7 +1486,7 @@ const RESOLVE_NEEDS_READ =
   "can reach instead. Set them, or turn this source's resolve switch off";
 
 /** What to say when a source resolves issues without naming where they should land. */
-const NO_TARGET_STATUS =
+export const NO_TARGET_STATUS =
   "this source resolves issues but names no target status - set it to the status a finished " +
   "issue should land in, e.g. Done";
 
@@ -1555,8 +1552,10 @@ export function commentBodyText(notice: WritebackNotice): string {
  * does NOT auto-link the way the older wiki-markup one did - a url posted as plain text
  * stays plain text, and the whole point of this comment is that somebody can click it.
  */
-export function commentBodyAdf(notice: WritebackNotice): unknown {
-  const url = notice.prUrl ?? "";
+export function commentBodyAdf(notice: WritebackNotice, options: { linkPrUrl?: boolean } = {}): unknown {
+  // Callers may retain an untrusted URL's words without making it a clickable link.
+  // The default preserves the existing local and UpstartClaw formatting contract.
+  const url = options.linkPrUrl === false ? "" : notice.prUrl ?? "";
   /**
    * Plain text as inline nodes, with every newline as a `hardBreak`.
    *
@@ -1754,19 +1753,19 @@ export function restWriteFailure(res: RestAnswer, cfg: JiraConfig): string {
 }
 
 /** A write-back that never left the process. `outcomeUnknown: false` is a fact, not a hope. */
-function writebackRefusal(error: string): WritebackResult {
+export function writebackRefusal(error: string): WritebackResult {
   return { error, outcomeUnknown: false, detail: null };
 }
 
 /** A write-back that landed, with the one line the panel shows for it. */
-function writebackDone(detail: string): WritebackResult {
+export function writebackDone(detail: string): WritebackResult {
   return { error: null, outcomeUnknown: false, detail };
 }
 
 /**
  * The hedge a write that MAY have landed carries. See `WritebackResult.outcomeUnknown`.
  */
-const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
+export const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
 
 /**
  * Read one failed REST write.
@@ -1921,11 +1920,10 @@ async function restIssueCall(
 }
 
 /** The checks both verbs make before anything leaves the process. */
-function writeTarget(
+export function writeTarget(
   cfg: JiraConfig,
   notice: WritebackNotice,
 ): { key: string } | { problem: string } {
-  if (cfg.queryVia === "acli") return { problem: ACLI_WRITE_PENDING };
   if (cfg.queryVia === "upstartclaw") return { problem: UPSTARTCLAW_READ_ONLY };
   const site = siteProblem(cfg.site);
   if (site) return { problem: site };
@@ -1980,11 +1978,11 @@ async function postComment(
  * would retry a comment that has no idempotency of its own, so a machine that can never post
  * the link would accumulate one comment per attempt while still never posting it.
  *
- * `ctx` is not read, so it is not taken. Nothing cancels a write that has already left, and
- * the CLI rung reads its own configuration rather than the repo's - the two things a
- * `WritebackContext` could offer.
+ * The acli branch uses `ctx` for site checks and its subprocess cwd. Local writes retain
+ * their existing credential ladder and do not cancel a write that has already left.
  */
-async function annotate(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function annotate(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliAnnotate(cfg, notice, ctx);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);
@@ -2103,12 +2101,12 @@ async function restResolve(
  * token and already knows the site. It hands off to REST only when the CLI itself is
  * unusable, never when Jira refused the move: that request already arrived.
  */
-async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function resolve(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliResolve(cfg, notice, ctx);
   const wanted = cfg.resolveTransition.trim();
   // First, and without a subprocess or a round trip: a resolve with nowhere to go is a
   // misconfiguration, and no amount of asking Jira will discover what the operator meant.
-  // acli's build-level refusal takes precedence over an unconfigured future write setting.
-  if (!wanted && cfg.queryVia !== "acli") return writebackRefusal(NO_TARGET_STATUS);
+  if (!wanted) return writebackRefusal(NO_TARGET_STATUS);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);

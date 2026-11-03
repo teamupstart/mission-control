@@ -1,4 +1,6 @@
 import { useContext, useEffect, useState } from "react";
+import { reportBucket } from "@shared/session.ts";
+import type { Session } from "@shared/types.ts";
 import { residentRestartRequestId, type ResidentLoopStatus, type ResidentRunSummary } from "@shared/residents.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { authorizeResidentLaunch } from "../lib/session-control-authorization.ts";
@@ -20,8 +22,9 @@ const actionDescriptions = {
  * sentences they are (a guardrail's reason runs to a full sentence, which no tag holds), and the
  * compaction layers as one line under them.
  */
-export function ResidentLoopStatusLine({ loop, tags = false }: {
+export function ResidentLoopStatusLine({ loop, session, tags = false }: {
   loop: ResidentLoopStatus & Partial<Pick<ResidentRunSummary, "compaction">>;
+  session?: Session | null;
   tags?: boolean;
 }): React.JSX.Element {
   const [now, setNow] = useState(Date.now);
@@ -31,13 +34,15 @@ export function ResidentLoopStatusLine({ loop, tags = false }: {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [loop.nextWakeAt]);
+  const held = loop.loopState !== "paused" && session && reportBucket(session) === "needs-you";
+  const label = held ? "waiting on you" : loop.loopState;
   const remaining = loop.nextWakeAt === null ? null : Math.max(0, Math.ceil((loop.nextWakeAt - now) / 1000));
-  const next = remaining === null ? null : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
+  const next = held || remaining === null ? null : `next in ${remaining < 60 ? `${remaining}s` : `${Math.ceil(remaining / 60)}m`}`;
   if (tags) {
     const reasons = [loop.pauseReason, loop.wakeReason].filter((reason): reason is string => !!reason);
     return <span className="resident-loop-status resident-loop-tags" aria-label="Resident loop status">
       <span className="resident-loop-tag-row">
-        <span className={`resident-loop-tag is-${loop.loopState}`}>{loop.loopState}</span>
+        <span className={`resident-loop-tag is-${loop.loopState}`}>{label}</span>
         <span className="resident-loop-tag">iteration {loop.iteration}</span>
         {next && <span className="resident-loop-tag">{next}</span>}
       </span>
@@ -50,7 +55,7 @@ export function ResidentLoopStatusLine({ loop, tags = false }: {
     </span>;
   }
   return <span className="resident-loop-status" aria-label="Resident loop status">
-    {loop.loopState} · iteration {loop.iteration}
+    {label} · iteration {loop.iteration}
     {next && ` · ${next}`}
     {loop.pauseReason && ` · ${loop.pauseReason}`}
     {loop.wakeReason && ` · ${loop.wakeReason}`}

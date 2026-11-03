@@ -3,7 +3,7 @@ import {
   type HarnessesConfig,
   type HarnessesConfigPatch,
 } from "@shared/protocol.ts";
-import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
+import { resolveSessionRuntime, supportsAdvisor } from "@shared/harness-capabilities.ts";
 import {
   launchEffortFor,
   resolveLaunchModel,
@@ -12,7 +12,7 @@ import {
   taskKindDefaultFor,
 } from "@shared/kind-defaults.ts";
 import type { TaskKindDefault } from "@shared/protocol.ts";
-import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
+import type { AdvisorChoice, AgentType, SessionRuntime, Task, TaskKind, ThinkingLevel } from "@shared/types.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -215,6 +215,17 @@ export function resolveDispatchEffort(
   model: string | null = null,
 ): ThinkingLevel | null {
   return launchEffortFor(getHarnessesConfig(), agent, kind, taskEffort, model);
+}
+
+/**
+ * The advisor a dispatch pins, or null to render nothing and let the operator's own Claude
+ * settings decide. Only the task's pin today: there is no kind, harness or Foreman tier, so
+ * a later one belongs here rather than at a launch site. A pin the harness does not offer
+ * (a hand-edited row, a task moved to another agent) resolves to null rather than reaching
+ * argv the CLI would reject.
+ */
+export function resolveDispatchAdvisor(task: Pick<Task, "agent" | "advisorModel">): AdvisorChoice | null {
+  return task.advisorModel && supportsAdvisor(task.agent, task.advisorModel) ? task.advisorModel : null;
 }
 
 /** Which tier of the shared model resolution answered. */

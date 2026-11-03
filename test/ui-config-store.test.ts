@@ -140,6 +140,34 @@ test("a malformed field elsewhere cannot abort startup or fail the page, and a v
   assert.equal(color(), "#0a0c0f");
 });
 
+test("a launch colour that cannot be written never fails the skin write or startup", async (t) => {
+  // The launch colour is a convenience for the next desktop launch; the skin choice is the
+  // setting. A failed write - a full disk, a read-only state home, something in the way - must
+  // leave the skin saved and the caller unharmed. A non-empty directory where the file belongs
+  // makes the atomic rename fail on every platform, with no permission trick root would ignore.
+  const { mkdirSync, writeFileSync: write, rmSync: remove, statSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  remove(launch, { recursive: true, force: true });
+  mkdirSync(launch, { recursive: true });
+  write(join(launch, "occupied"), "");
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args));
+  try {
+    setUiConfig({ skin: "default" });
+    warnings.length = 0;
+
+    assert.doesNotThrow(() => setUiConfig({ skin: "daylight" }), "a failed launch-colour write failed the skin write");
+    assert.equal(getUiConfig().skin, "daylight", "the skin was not saved when its launch colour could not be");
+    assert.doesNotThrow(() => syncWindowBackground(), "a failed launch-colour write would abort daemon startup");
+    assert.ok(statSync(launch).isDirectory(), "the premise: the launch file really could not be written");
+    assert.equal(warnings.length, 2, "each failed write is reported, not swallowed silently");
+    assert.match(String(warnings[0]![0]), /could not remember the window background/);
+  } finally {
+    remove(launch, { recursive: true, force: true });
+  }
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {

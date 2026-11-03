@@ -56,7 +56,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
-import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
+import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -341,6 +341,7 @@ import {
   getForemanConfig,
   recordForemanPlannerHealth,
   recordForemanHealth,
+  dismissForemanHealthIssues,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -6840,6 +6841,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "that worker does not hold the Foreman lease" }, 409);
     }
     return c.json({ ok: true });
+  });
+  // The operator's acknowledgement. Filters the projection only; the worker's report is kept.
+  app.post("/api/foreman/health/dismiss", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ dismissed: dismissForemanHealthIssues(parsed.data.issues) });
   });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.

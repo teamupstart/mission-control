@@ -2003,6 +2003,9 @@ export const api = {
   // --- Foreman (auto-responder) ---
   setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
   retryForemanPlanner: () => post(`/api/foreman/planner/retry`, {}),
+  /** Each group with the occurrence the operator was shown; resolves with how many hid. */
+  dismissForemanErrors: (issues: { id: string; occurrenceId: string }[]) =>
+    post<ActionResult & { dismissed?: number }>(`/api/foreman/health/dismiss`, { issues }),
   setSkillsConfig: (cfg: SkillsConfigPatch) => put(`/api/skills/config`, cfg),
 
   // --- Harnesses (dispatch-time defaults) ---

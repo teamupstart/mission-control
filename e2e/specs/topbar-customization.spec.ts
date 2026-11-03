@@ -291,6 +291,7 @@ test("a minimized Foreman sheds its mode chip but still shows an issue count", a
         model: null,
         error: "scripted review failure",
         count: 1,
+        occurrenceId: "scripted-occurrence",
         firstSeenAt: now,
         lastSeenAt: now,
         sessions: [],

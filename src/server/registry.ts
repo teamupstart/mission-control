@@ -5414,26 +5414,31 @@ export class Registry extends EventEmitter {
     this.cleanupDependencyProvenance();
   }
 
+  private dependencyWorkHeadTargetFor(taskId: string): { cwd: string; binding: TaskWorkEpisodeBinding } | null {
+    const task = this.tasks.get(taskId);
+    if (!task || !completableByMerge(task.status)) return null;
+    const binding = taskWorkEpisodeForTask(task.id);
+    const session = binding && this.sessions.get(binding.sessionId);
+    const episode = binding && sessionWorkEpisodeFor(binding.sessionId);
+    if (!binding?.branch || binding.prUrl || !session?.cwd || session.state === "exited" || !episode || episode.awaitingAgentRebind ||
+      episode.episodeId !== binding.episodeId || episode.agentSessionId !== binding.agentSessionId ||
+      episode.branch !== binding.branch) return null;
+    return { cwd: session.cwd, binding };
+  }
+
   dependencyWorkHeadTargets(): Array<{ cwd: string; binding: TaskWorkEpisodeBinding }> {
     return this.listTasks().flatMap((task) => {
-      if (!completableByMerge(task.status)) return [];
-      const binding = taskWorkEpisodeForTask(task.id);
-      const session = binding && this.sessions.get(binding.sessionId);
-      const episode = binding && sessionWorkEpisodeFor(binding.sessionId);
-      if (!binding?.branch || binding.prUrl || !session?.cwd || session.state === "exited" || !episode || episode.awaitingAgentRebind ||
-        episode.episodeId !== binding.episodeId || episode.agentSessionId !== binding.agentSessionId ||
-        episode.branch !== binding.branch) return [];
-      return [{ cwd: session.cwd, binding }];
+      const target = this.dependencyWorkHeadTargetFor(task.id);
+      return target ? [target] : [];
     });
   }
 
   recordDependencyWorkHead(target: ReturnType<Registry["dependencyWorkHeadTargets"]>[number], sha: string | null): void {
     if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return;
-    const current = this.dependencyWorkHeadTargets().find(candidate => candidate.cwd === target.cwd &&
-      candidate.binding.taskId === target.binding.taskId && candidate.binding.episodeId === target.binding.episodeId &&
-      candidate.binding.sessionId === target.binding.sessionId && candidate.binding.agentSessionId === target.binding.agentSessionId &&
-      candidate.binding.branch === target.binding.branch);
-    if (current) recordTaskWorkEpisodeHead(current.binding, sha);
+    const current = this.dependencyWorkHeadTargetFor(target.binding.taskId);
+    if (current && current.cwd === target.cwd && current.binding.episodeId === target.binding.episodeId &&
+      current.binding.sessionId === target.binding.sessionId && current.binding.agentSessionId === target.binding.agentSessionId &&
+      current.binding.branch === target.binding.branch) recordTaskWorkEpisodeHead(current.binding, sha);
   }
 
   /** Completed sources still owed merge evidence, bounded by unresolved task edges. */

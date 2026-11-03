@@ -512,9 +512,9 @@ a later episode's merge does
 not release an edge pinned to earlier unmerged work.
 When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
 unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
-A dependency edge itself names the prerequisite's
-primary repository's pull request, but what releases it is the prerequisite's own
-completion, which is the stronger condition. The explicit completion override is the exception:
+A dependency edge names the prerequisite's primary pull request, or a merged secondary
+from the same episode when the primary was unchanged. Its release still requires the
+prerequisite's full merge quorum. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish

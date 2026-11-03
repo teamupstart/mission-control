@@ -5304,7 +5304,12 @@ export class TaskManager {
       binding.sessionId === dependency.sessionId);
     // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
     // stale provenance without a surviving binding still uses the task's durable outcome.
-    return bound ? (bound.mergedAt !== null ? bound.prUrl : null) : fallback;
+    if (!bound) return fallback;
+    if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
+    // The primary can be unchanged. Once the task quorum passes, a merged secondary
+    // belonging to this same episode is delivery evidence for its dependent as well.
+    return workEpisodeRepoPrsForTask(dependency.taskId).find((row) =>
+      row.episodeId === bound.episodeId && row.sessionId === bound.sessionId && row.mergedAt !== null)?.prUrl ?? null;
   }
 
   private satisfyDeclaredEdgesTo(taskId: string, at: number, prUrl?: string, verifyEpisode = false): void {

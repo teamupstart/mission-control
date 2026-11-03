@@ -596,3 +596,50 @@ test("a manually completed task keeps dependents blocked until every repository 
   assert.notEqual(f.registry.getTask("manual-quorum-dependent")!.dependencies[0]!.satisfiedAt, null);
   assert.equal(f.registry.getTask(f.taskId)!.outcome, "completed");
 });
+
+for (const path of ["completion", "recovery", "save"] as const) {
+  test(`secondary-only delivery satisfies an episode-pinned edge during ${path}`, async () => {
+    setShippingConfig({ closeSessionAfterMerge: false });
+    const f = fixture(`secondary-only-${path}`);
+    const url = `https://github.com/example/secondary/pull/1400-${path}`;
+    extraPr(f, url);
+    f.registry.recordWorktreeHeads(new Map([[f.cwd, PRIMARY_BASE], [f.extraCwd, MOVED]]));
+    const id = `${f.taskId}-dependent`;
+    const edge = { type: "task" as const, taskId: f.taskId, title: "Prerequisite", sessionId: f.id,
+      episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId, branch: f.episode.branch,
+      prUrl: null, selectedAt: 1, satisfiedAt: null };
+    f.registry.upsertTask(baseTask({ id, dependencies: [edge] }));
+    if (path !== "completion") await f.tasks.complete(f.taskId, "completed");
+    // Record verified delivery without a Registry event, to isolate each writeback path.
+    openDb().prepare("UPDATE work_episode_prs SET pr_state = 'merged', merged_at = ? WHERE task_id = ?")
+      .run(NOW, f.taskId);
+    if (path === "completion") await f.tasks.complete(f.taskId, "completed");
+    else if (path === "recovery") f.tasks.reconcileMergedTasks();
+    else await f.tasks.update(id, { dependencies: [{ type: "task", taskId: f.taskId }] });
+    const dependent = f.registry.getTask(id)!;
+    assert.equal(dependent.dependencies[0]!.prUrl, url);
+    assert.equal(typeof dependent.dependencies[0]!.satisfiedAt, "number");
+    assert.deepEqual(f.tasks.dependencyBlockers(dependent), []);
+    assert.equal(f.registry.workEpisodeForTask(f.taskId)!.prUrl, null, "the unchanged primary has no PR");
+  });
+}
+
+test("a merged secondary from another episode cannot release a pinned edge", async () => {
+  setShippingConfig({ closeSessionAfterMerge: false });
+  const f = fixture("secondary-wrong-episode");
+  extraPr(f, PR_B);
+  f.registry.recordWorktreeHeads(new Map([[f.cwd, PRIMARY_BASE], [f.extraCwd, MOVED]]));
+  const id = `${f.taskId}-dependent`;
+  f.registry.upsertTask(baseTask({ id, dependencies: [{
+    type: "task", taskId: f.taskId, title: "Earlier episode", sessionId: f.id,
+    episodeId: f.episode.episodeId, agentSessionId: f.episode.agentSessionId, branch: f.episode.branch,
+    prUrl: null, selectedAt: 1, satisfiedAt: null,
+  }] }));
+  await f.tasks.complete(f.taskId, "completed");
+  openDb().prepare("UPDATE work_episode_prs SET episode_id = ?, pr_state = 'merged', merged_at = ? WHERE task_id = ?")
+    .run("another-episode", NOW, f.taskId);
+  f.tasks.reconcileMergedTasks();
+  assert.equal(f.registry.getTask(id)!.dependencies[0]!.satisfiedAt, null);
+  await f.tasks.update(id, { dependencies: [{ type: "task", taskId: f.taskId }] });
+  assert.equal(f.registry.getTask(id)!.dependencies[0]!.satisfiedAt, null);
+});

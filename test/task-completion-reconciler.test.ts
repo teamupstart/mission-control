@@ -1014,8 +1014,24 @@ process.stdout.write(JSON.stringify(rows));\n`, { mode: 0o755 });
     await pollAndReconcilePrs(f.registry, undefined, async () => null);
   });
   const args = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
-  assert.ok(args.some(a => a.includes(`created:${new Date(Math.floor(f.episode.startedAt / 1000) * 1000).toISOString()}..${new Date(f.next.startedAt).toISOString()}`)));
+  const lower = new Date(Math.floor(f.episode.startedAt / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const upper = new Date(Math.ceil(f.next.startedAt / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  assert.ok(args.some(a => a.includes(`created:${lower}..${upper}`)));
+  for (const a of args) {
+    const search = a[a.indexOf("--search") + 1]!;
+    assert.doesNotMatch(search, /\.\d{3}Z/, "GitHub search qualifiers use whole-second timestamps");
+  }
   assert.ok(args.some(a => a.some(v => v.startsWith(`${sha} created:>=`))));
   assert.equal(f.registry.getTask(f.dependentId)!.dependencies[0]!.prUrl, older.url);
   assert.equal(typeof f.registry.getTask(f.dependentId)!.dependencies[0]!.satisfiedAt, "number");
+});
+
+
+test("recording an active head revalidates one task without scanning the fleet", (t) => {
+  const f = departed("head-single-target", { worktreePath: null, homeName: null });
+  const target = f.registry.dependencyWorkHeadTargets().find(candidate => candidate.binding.taskId === f.taskId)!;
+  const scan = t.mock.method(f.registry, "listTasks");
+  f.registry.recordDependencyWorkHead(target, "f".repeat(40));
+  assert.equal(scan.mock.callCount(), 0, "recording N targets must not rescan all N tasks each time");
+  assert.equal(taskWorkEpisodeForTask(f.taskId)!.workHeadSha, "f".repeat(40));
 });

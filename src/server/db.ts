@@ -185,7 +185,8 @@ let db: DatabaseSync | undefined;
 // 12: bind resident wake attribution to its recorded conversation and native turn.
 // 13: retain a resident SDK session's measured native compaction limit across resumes.
 // 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
+// 15: task work-episode ownership end times and retained branch commits.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 15;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

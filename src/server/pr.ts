@@ -95,9 +95,10 @@ async function queryPr(cwd: string, branch: string, episode?: EpisodeSearch): Pr
   if (episode) {
     // Filter at GitHub before its result limit: a hundred newer uses of a branch must not
     // hide the PR in this episode's window. SHA search also finds late-opened PRs.
-    const from = new Date(Math.floor(episode.from / 1000) * 1000).toISOString();
+    const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const from = iso(Math.floor(episode.from / 1000) * 1000);
     const searches: string[] = [];
-    if (episode.until !== null) searches.push(`created:${from}..${new Date(episode.until).toISOString()}`);
+    if (episode.until !== null) searches.push(`created:${from}..${iso(Math.ceil(episode.until / 1000) * 1000)}`);
     if (episode.headSha) searches.push(`${episode.headSha} created:>=${from}`);
     const candidates: PrCandidate[] = [];
     for (const search of searches) {

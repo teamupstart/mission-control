@@ -193,23 +193,23 @@ test("a failed inline integration install shows its error and never retries the 
   expect(parseToml(readFileSync(path, "utf8"))).toMatchObject({ mcp_servers: { "mission-control": { default_tools_approval_mode: "approve" } } });
 });
 
-// The installer preserves a `mission-control` entry it does not own and still reports success.
-// The trust retry then refuses for the same reason; offering the same install again would loop.
+// An install that reports success but leaves no table behind (say, a vendor CLI that exited 0
+// without writing). The retry refuses for the same reason; offering the install again would loop.
 test("an install that leaves Codex unregistered asks for a manual fix instead of looping", async ({ page, daemon }) => {
   const dir = join(daemon.home, ".codex");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "config.toml");
-  const initial = '[mcp_servers.mission-control]\nenabled = false\n';
+  const initial = 'approval_policy = "on-request"\n';
   writeFileSync(path, initial);
   let installs = 0;
-  await page.exposeFunction("preserveFixture", () => {
+  await page.exposeFunction("noopFixture", () => {
     installs += 1;
-    return { ok: true, message: "Claude integrations installed via this app's bundled Node. Codex: Existing disabled or custom MCP registration preserved." };
+    return { ok: true, message: "Claude integrations installed via this app's bundled Node." };
   });
   await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {
     isDesktop: true,
     onOpenSettings: () => () => {},
-    installIntegrations: () => (window as unknown as { preserveFixture(): Promise<unknown> }).preserveFixture(),
+    installIntegrations: () => (window as unknown as { noopFixture(): Promise<unknown> }).noopFixture(),
   } }));
   let trustStarts = 0;
   page.on("request", (request) => {
@@ -223,36 +223,68 @@ test("an install that leaves Codex unregistered asks for a manual fix instead of
   await row.getByRole("button", { name: "Install Claude integrations" }).click();
 
   await expect(row.getByText("Codex still has no runnable mission-control server, so trust cannot apply.")).toBeVisible();
-  // The fixture's entry is `enabled = false`; adding a command alone would leave it skipped.
-  await expect(row).toContainText("remove enabled = false if it is there");
-  await expect(row).toContainText("Existing disabled or custom MCP registration preserved.");
+  await expect(row).toContainText("Claude integrations installed via this app's bundled Node.");
   await expect(row.getByRole("button", { name: "Install Claude integrations" })).toHaveCount(0);
   await expect(row).not.toContainText("then this retries the trust automatically");
   await expectRowStatus(page, anchor, "Needs setup");
   expect(installs).toBe(1);
   expect(trustStarts).toBe(2);
   expect(readFileSync(path, "utf8")).toBe(initial);
+
+  // After a manual fix, a fresh trust press starts over and succeeds.
+  writeFileSync(path, `${initial}[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n`);
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expectRowStatus(page, anchor, "Ready");
+  await expect(row.getByText("Codex still has no runnable mission-control server")).toHaveCount(0);
+});
+
+// The installer preserves any existing table, so a disabled or incomplete one needs a hand edit:
+// the row must say so up front and never offer an install that cannot fix it.
+test("a disabled Codex entry asks for a hand edit, not the integration install", async ({ page, daemon }) => {
+  const dir = join(daemon.home, ".codex");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "config.toml");
+  const initial = '[mcp_servers.mission-control]\nenabled = false\n';
+  writeFileSync(path, initial);
+  await page.addInitScript(() => Object.defineProperty(window, "missionDesktop", { value: {
+    isDesktop: true,
+    onOpenSettings: () => () => {},
+    installIntegrations: async () => { throw new Error("the install must not be offered for a disabled table"); },
+  } }));
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+  const anchor = "dependency-codex-mcp-trust";
+  const row = setupRow(page, anchor);
+  const unusable = "Codex has a [mcp_servers.mission-control] table it cannot launch. In config.toml, give it a command or url and remove enabled = false if it is there, then trust it.";
+  await expectRowStatus(page, anchor, "Needs setup");
+  await expect(row).toContainText(unusable);
+  await expect(row).not.toContainText("not registered in Codex yet");
+
+  await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
+  await expect(row.getByRole("status")).toContainText(unusable);
+  await expect(row.getByRole("status")).toContainText("Fix the file named above as described, then press Re-check.");
+  await expect(row.getByRole("button", { name: "Install Claude integrations" })).toHaveCount(0);
+  expect(readFileSync(path, "utf8")).toBe(initial);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const out = artifactsDir("mcp-trust");
     mkdirSync(out, { recursive: true });
     await row.scrollIntoViewIfNeeded();
     await page.mouse.move(1, 1);
-    await page.screenshot({ path: join(out, "codex-install-did-not-register-r8.png") });
+    await page.screenshot({ path: join(out, "codex-disabled-entry-r12.png") });
   }
 
   // Half a fix - a command added but `enabled = false` left in - is still a server Codex skips,
-  // so trusting it must not read as Ready.
+  // so trusting it must not read as Ready or write the approval.
   writeFileSync(path, '[mcp_servers.mission-control]\nenabled = false\ncommand = "node"\nargs = ["server.mjs"]\n');
   await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
-  await expect(row.getByRole("status").first()).toContainText("not registered in Codex yet");
+  await expect(row.getByRole("status")).toContainText(unusable);
   await expectRowStatus(page, anchor, "Needs setup");
   expect(readFileSync(path, "utf8")).not.toContain("default_tools_approval_mode");
 
-  // After the full manual fix, a fresh trust press starts over and succeeds.
+  // The full hand edit, then Trust, reaches Ready.
   writeFileSync(path, '[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n');
   await row.getByRole("button", { name: "Trust Mission Control in Codex" }).click();
   await expectRowStatus(page, anchor, "Ready");
-  await expect(row.getByText("Codex still has no runnable mission-control server")).toHaveCount(0);
 });
 
 // The install worked; the trust request after it did not. The operator must not be told to

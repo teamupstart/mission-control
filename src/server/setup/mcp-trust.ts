@@ -46,6 +46,8 @@ function claudeConfig(text: string) {
 }
 
 export const CODEX_MCP_NOT_REGISTERED = "Mission Control MCP is not registered in Codex yet. Choose Install Claude integrations, which registers it with Codex too, then trust it.";
+/** A table that exists but cannot launch. The installer preserves any existing table, so only a hand edit fixes it. */
+export const CODEX_MCP_UNUSABLE = "Codex has a [mcp_servers.mission-control] table it cannot launch. In config.toml, give it a command or url and remove enabled = false if it is there, then trust it.";
 
 /** Trust edits an existing server table; it never invents the registration it would trust. */
 class MissingRegistrationError extends Error {
@@ -98,7 +100,10 @@ export function withMcpTrust(agent: TrustAgent, original: string): string {
   }
   const desired = codexConfig(original);
   const server = registeredCodexServer(desired);
-  if (!server) throw new MissingRegistrationError();
+  if (!server) {
+    if (desired.mcp_servers?.["mission-control"]) throw new Error(CODEX_MCP_UNUSABLE);
+    throw new MissingRegistrationError();
+  }
   server.default_tools_approval_mode = "approve";
   const headers = [...original.matchAll(/^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(?:mission-control|"mission-control"|'mission-control')[ \t]*\][ \t]*(?:#[^\r\n]*)?(?=\r?$)/gm)];
   if (headers.length !== 1) throw new Error("Use a [mcp_servers.mission-control] table in Codex config.toml, then retry trust setup.");
@@ -132,8 +137,9 @@ export function mcpTrustStatus(agent: TrustAgent, path = mcpTrustPath(agent)): S
     if (hasMcpTrust(agent, text)) {
       return { state: "satisfied", evidence: `${path}: Mission Control MCP allowed by default; explicit restrictions still apply.` };
     }
-    const why = agent === "codex" && !registeredCodexServer(codexConfig(text))
-      ? CODEX_MCP_NOT_REGISTERED
+    const config = agent === "codex" ? codexConfig(text) : null;
+    const why = config && !registeredCodexServer(config)
+      ? config.mcp_servers?.["mission-control"] ? CODEX_MCP_UNUSABLE : CODEX_MCP_NOT_REGISTERED
       : "Mission Control MCP is not allowed by default in this agent's user settings.";
     return { state: "needs-setup", why, evidence: path };
   } catch (error) {

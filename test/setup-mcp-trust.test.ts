@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseJson } from "jsonc-parser";
-import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
+import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, CODEX_MCP_UNUSABLE, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
 
 import { withProcessEnv } from "./helpers/process-env.ts";
 
@@ -102,7 +102,7 @@ test("an unregistered Codex server names the integration install as its prerequi
   const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "config.toml");
-  for (const input of ["", 'approval_policy = "on-request"\n[mcp_servers.other]\nurl = "https://example.invalid"\n', "[mcp_servers.mission-control]\nenabled = true\n"]) {
+  for (const input of ["", 'approval_policy = "on-request"\n[mcp_servers.other]\nurl = "https://example.invalid"\n']) {
     writeFileSync(path, input);
     const status = mcpTrustStatus("codex", path);
     assert.equal(status.state, "needs-setup", input);
@@ -128,10 +128,15 @@ test("a disabled Codex server is not a registration trust can satisfy", (t) => {
   // as Ready: no session could reach its tools.
   const disabledApproved = '[mcp_servers.mission-control]\ncommand = "node"\nenabled = false\ndefault_tools_approval_mode = "approve"\n';
   assert.equal(hasMcpTrust("codex", disabledApproved), false);
-  writeFileSync(path, disabledApproved);
-  assert.equal(mcpTrustStatus("codex", path).state === "needs-setup" && (mcpTrustStatus("codex", path) as { why: string }).why, CODEX_MCP_NOT_REGISTERED);
-  assert.equal(enableMcpTrust("codex", path).prerequisite, "mission-integrations");
-  assert.equal(readFileSync(path, "utf8"), disabledApproved);
+  // The installer preserves any existing table, so a table that cannot launch - disabled, or
+  // with no command or url - gets the hand-edit sentence and no install prerequisite.
+  for (const text of [disabledApproved, "[mcp_servers.mission-control]\nenabled = true\n"]) {
+    writeFileSync(path, text);
+    const status = mcpTrustStatus("codex", path);
+    assert.equal(status.state === "needs-setup" && status.why, CODEX_MCP_UNUSABLE, text);
+    assert.deepEqual(enableMcpTrust("codex", path), { ok: false, outcomeUnknown: false, error: CODEX_MCP_UNUSABLE });
+    assert.equal(readFileSync(path, "utf8"), text);
+  }
   // Explicitly enabled, or an `enabled` value that is not the literal `false`, still counts,
   // and an odd value never makes the config unreadable.
   for (const enabled of ["true", '"yes"']) {

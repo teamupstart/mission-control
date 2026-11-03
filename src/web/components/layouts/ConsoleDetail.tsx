@@ -653,7 +653,7 @@ export function ConsoleDetail({
       {replacedBy && (
         <ResidentReplacedBand
           replacement={replacedBy}
-          onOpenSession={view.onSelect}
+          onOpenSession={view.onFocusSession ?? view.onSelect}
           onComplete={live ? () => view.onComplete(session.id) : undefined}
         />
       )}

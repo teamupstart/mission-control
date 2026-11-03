@@ -303,6 +303,13 @@ export interface SessionViewProps {
    * `residentBySession` entry; the Console offers Complete and the new session from this.
    */
   residentReplacementBySession?: ReadonlyMap<string, ResidentReplacement>;
+  /**
+   * Bring a session forward from wherever the operator is - App's `focusSession`, which clears
+   * the fleet filter before selecting. Unlike `onSelect`, it can reach a session the current
+   * filter hides, which a replacement often is: its name or status can differ from the session
+   * it replaced, and selecting a hidden id would close the detail instead of opening it.
+   */
+  onFocusSession?: (id: string) => void;
   /** Open a resident's profile on `#/residents`, from its Console band. */
   onOpenResidentProfile?: (profileId: string) => void;
 }

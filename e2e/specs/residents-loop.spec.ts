@@ -331,6 +331,41 @@ test("a replaced session keeps its Complete offer after its replacement has ende
   await expect(band).toHaveCount(0);
 });
 
+test("Open new session reaches the replacement even when the fleet filter hides it", async ({ daemon, dashboard: page }) => {
+  const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
+  const settings = {
+    identity: { name: "Filtered watcher" }, persona: { personaId: personas.find(p => p.name === "Code Risk Reviewer")!.id },
+  };
+  const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings });
+  await request(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: null, requestId: "filtered" });
+  await expect.poll(() => live(daemon)?.loop_state).toBe("waiting");
+  const old = live(daemon)!.id;
+  const oldTask = (await request<Task[]>(daemon, "/api/tasks", undefined, "GET")).find(task => task.kind === "resident")!;
+  // A name only the original carries, so a filter on it shows the original and hides its replacement.
+  await request(daemon, `/api/sessions/${encodeURIComponent(oldTask.sessionId!)}/rename`, { name: "Original wrangler" });
+  await request(daemon, `/api/residents/profiles/${profile.id}`, { expectedRevision: 1, settings: { ...settings, loop: { delaySeconds: 600 } } }, "PATCH");
+  await request(daemon, `/api/residents/runs/${old}/restart`);
+  await expect.poll(() => live(daemon)?.profile_revision).toBe(2);
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  const rows = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /wrangler|watcher/i });
+  await expect(rows).toHaveCount(2);
+  await page.keyboard.press("/");
+  const filter = page.getByRole("textbox", { name: "Filter sessions by title, status, agent, or PR number" });
+  await filter.fill("Original wrangler");
+  await expect(rows).toHaveCount(1);
+  await rows.first().click();
+  const detail = page.locator(".console-detail");
+  const band = detail.getByRole("group", { name: /^Replaced resident / });
+  const open = band.getByRole("button", { name: "Open new session" });
+  await expect(open).toBeEnabled();
+  await open.click();
+  // The filter is cleared so the replacement can be listed, and its detail is what opens.
+  await expect(filter).toHaveValue("");
+  await expect(detail.getByRole("group", { name: "Resident Filtered watcher", exact: true })).toContainText("revision 2");
+  await capture(page, "open-new-session-through-filter");
+});
+
 test("a finished task's outcome reads from the left of its pill, whole", async ({ daemon, dashboard: page }) => {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   const profile = await request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {

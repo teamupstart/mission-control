@@ -2796,6 +2796,7 @@ export function App(): React.JSX.Element {
     cardShortcutBySession: cardShortcuts,
     residentBySession,
     residentReplacementBySession,
+    onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 

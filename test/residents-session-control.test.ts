@@ -491,6 +491,49 @@ test("a tool, an agent or another origin launches without consuming a click", as
   assert.equal(h.registry.sessionControlEnabled(operator.sessionId), true);
 });
 
+test("the ordinary launch route cannot reserve a restart ID or consume its pending click", async () => {
+  const h = harness();
+  const profile = profileIn(h, true);
+  const original = await launched(h, profile.id, randomUUID(), { mayConsumeControlClick: false });
+  assert.ok(h.residents.updateProfile(profile.id, 1, settings(true)).ok);
+  const requestId = residentRestartRequestId(original.run.id);
+  const click = { requestId, profileId: profile.id, revision: 2 };
+  h.clicks.set(requestId, click);
+  const loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: {
+    sendWhenIdle: async () => null, compact: async () => 1,
+  } });
+  const app = buildApp({
+    registry: h.registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as import("../src/server/tasks.ts").TaskManager,
+    queues: {} as QueueManager,
+    residents: h.residents,
+    residentLoop: loop,
+  });
+  const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
+  try {
+    // An unattributed loopback caller with no Origin is otherwise eligible to consume clicks.
+    const refused = await app.request(`/api/residents/profiles/${profile.id}/launch`, {
+      method: "POST", headers, body: JSON.stringify({ repoRoot: REPO, requestId }),
+    });
+    assert.equal(refused.status, 400);
+    assert.match(JSON.stringify(await refused.json()), /reserved for profile restarts/);
+    assert.equal(store.residentRunIdentityByRequest(requestId), null, "no replacement was reserved");
+    assert.equal(h.asked.length, 0, "the ordinary route never asks for the restart click");
+    assert.deepEqual(h.clicks.get(requestId), click, "authorization remains available");
+
+    const response = await app.request(`/api/residents/runs/${original.run.id}/restart`, { method: "POST", headers });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.state, "launched");
+    assert.equal(result.run.profileRevision, 2);
+    assert.deepEqual(h.asked, [click]);
+    assert.equal(h.clicks.has(requestId), false);
+    assert.equal(residentRunControlRecorded(control(result.run.id)), true);
+    assert.equal(h.registry.sessionControlEnabled(h.registry.getTask(result.taskId)!.sessionId!), true);
+  } finally { await loop.stop(); }
+});
+
 test("turning control off with the session control toggle forgets the run's grant", async () => {
   const h = harness();
   const menuClicks = new Set<string>();

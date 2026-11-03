@@ -190,6 +190,8 @@ copies the old run's grant.
   pinned revision turns control on, and for the revision the run pinned. A request carrying the
   machine token, a signed agent credential, an agent actor header or a non-loopback origin never
   consumes a click. A replay is answered from the run row and asks for nothing.
+  The ordinary launch route rejects the reserved `resident-restart:` request-id namespace before
+  reserving a run or consuming a click, so it cannot claim a pending restart authorization.
 - **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
   then applies the existing Registry grant to the run's session once that session has a full
   identity bound to the run's task, and records the conversation, working directory and work

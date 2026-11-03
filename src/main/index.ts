@@ -25,13 +25,14 @@ import {
   type BackgroundStartOwnership,
 } from "./daemon-policy.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
-import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
+import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup, windowBackgroundFile } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
+import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -277,6 +278,9 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:card-jump-keys", (_e, claimed: boolean) => {
     setRendererOwnsNumberRow(claimed === true);
   });
+  // The skin's background, reported by `src/web/lib/skin.ts` whenever a skin is applied:
+  // repainted behind the page now, and remembered so the next launch opens in it.
+  registerWindowBackgroundIpc(ipcMain, getMainWindow, windowBackgroundFile);
 }
 
 app.on("second-instance", () => { if (runtimeReady) showWindow(paths.preload); });

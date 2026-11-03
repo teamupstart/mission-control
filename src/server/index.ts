@@ -3,12 +3,15 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { getUiConfig, syncWindowBackground } from "./ui-config.ts";
+import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { existsSync } from "node:fs";
+import type { Context } from "hono";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
@@ -137,6 +140,8 @@ await initializeExecutableEnvironment();
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
 const database = openDb();
+// The desktop window's launch colour follows the stored skin, whoever stored it.
+syncWindowBackground();
 for (const problem of pendingPlanWriteWarnings()) console.warn("Plan write recovery:", problem);
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
@@ -742,8 +747,16 @@ const webDir =
   process.env.MISSION_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
 const hasDist = existsSync(webDir);
 if (hasDist) {
+  // The document itself carries the stored skin, so a profile with no local cache - a first
+  // desktop launch after a skin was chosen in a browser - paints it from the first frame. Read
+  // per request: a rebuild replaces the file, and the skin can change between loads.
+  // `getUiConfig(false)`: serving a page never writes the config.
+  const dashboardDocument = (c: Context) =>
+    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), getUiConfig(false).skin));
+  app.get("/", dashboardDocument);
+  app.get("/index.html", dashboardDocument);
   app.use("/*", serveStatic({ root: webDir }));
-  app.get("*", serveStatic({ path: join(webDir, "index.html") }));
+  app.get("*", dashboardDocument);
 }
 
 let shutdownStarted = false;

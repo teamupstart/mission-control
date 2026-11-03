@@ -54,6 +54,22 @@ test("renderer requests require a bounded source, ordinal, token, and allowliste
   assert.equal(normalizeMermaidPalette({ ...PALETTE, primary: "url(https://sentinel.invalid)" }), null);
 });
 
+test("renderer requests carry the skin's colour scheme, so a light skin gets a light frame", () => {
+  // A frame whose scheme differs from its page paints an opaque canvas: the renderer was
+  // pinned dark, which under a light skin is a dark slab behind every diagram.
+  const dark = createMermaidRenderRequest(TOKEN, "flowchart LR\nA --> B", 1, PALETTE);
+  assert.equal(dark?.colorScheme, "dark", "the default skin's scheme is the default");
+  const light = createMermaidRenderRequest(TOKEN, "flowchart LR\nA --> B", 1, PALETTE, "light");
+  assert.equal(light?.colorScheme, "light");
+  assert.deepEqual(parseMermaidRenderRequest(light, TOKEN), light);
+  assert.equal(parseMermaidRenderRequest({ ...light, colorScheme: "sepia" }, TOKEN), null);
+  assert.equal(parseMermaidRenderRequest({ ...light, colorScheme: undefined }, TOKEN), null);
+  assert.equal(createMermaidRenderRequest(TOKEN, "flowchart LR", 1, PALETTE, "sepia" as never), null);
+  // And the renderer applies it instead of keeping its pinned scheme.
+  const renderer = readFileSync(fileURLToPath(new URL("../src/web/mermaid-renderer.ts", import.meta.url)), "utf8");
+  assert.match(renderer, /document\.documentElement\.style\.colorScheme = request\.colorScheme/);
+});
+
 test("renderer requests reject external assets and active destinations before Mermaid sees them", () => {
   for (const source of [
     'flowchart LR\nRemote@{ img: "/pixel.png", label: "Remote" }',

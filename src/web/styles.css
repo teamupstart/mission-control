@@ -7853,6 +7853,12 @@ a.btn {
   border: 0;
   background: transparent;
 }
+/* Until it has rendered, the frame's document is still in the renderer's initial dark scheme,
+   and a frame whose scheme differs from the page's paints an opaque canvas - a dark slab
+   under a light skin. The status line covers the stage meanwhile, so nothing is lost. */
+.mermaid-diagram.is-loading .mermaid-diagram-frame {
+  visibility: hidden;
+}
 .mermaid-diagram-status {
   position: absolute;
   inset: 0;
@@ -31250,6 +31256,25 @@ span.line-run-prov {
 }
 .layout-option.is-on .view-thumb {
   color: var(--working);
+}
+
+/* ---- settings: skin picker ----
+   The same tile row again. The thumbnail paints the skin it OFFERS, from the registry's
+   swatches as inline fills, so only its frame and spacing are styled here. The ring is what
+   separates a thumbnail from a panel of the same colour - Daylight's white on a Daylight page. */
+.skin-thumb {
+  flex: none;
+  width: 44px;
+  height: 32px;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.layout-option.is-on .skin-thumb {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 70%, var(--border));
+}
+/* The hint under the tiles belongs to them; the toggle row below starts its own group. */
+.skin-picker + .settings-hint {
+  margin: 10px 0 20px;
 }
 
 /* ---- settings: toggle row ----

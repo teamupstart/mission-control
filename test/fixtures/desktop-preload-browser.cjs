@@ -19,6 +19,10 @@ app.whenReady().then(async () => {
   ipcMain.on("mission:product-issue-report-click", (event) => {
     event.returnValue = event.sender === win.webContents;
   });
+  let windowBackground = null;
+  ipcMain.handle("mission:set-window-background", (event, color) => {
+    if (event.sender === win.webContents) windowBackground = color;
+  });
 
   try {
     await win.loadFile(page);
@@ -27,6 +31,11 @@ app.whenReady().then(async () => {
       hasDesktopClass: document.documentElement.classList.contains("is-desktop"),
       capability: window.missionDesktop?.claimProductIssueAuthorization?.() ?? null,
     })`);
+    // The skin bridge: the renderer reports a background and main receives exactly it.
+    await win.webContents.executeJavaScript(
+      `window.missionDesktop?.setWindowBackground?.("#f5f7fa")`,
+    );
+    result.windowBackground = windowBackground;
     win.webContents.on("console-message", (details) => {
       if (details.message !== "preload-test:ready") return;
       win.webContents.sendInputEvent({ type: "mouseDown", x: 30, y: 15, button: "left", clickCount: 1 });

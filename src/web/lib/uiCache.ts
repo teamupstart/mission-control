@@ -7,6 +7,7 @@ import {
   TASK_KIND_HEADER_STYLES,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
+import { isSkinId, type SkinId } from "@shared/skins.ts";
 import type {
   ConversationView,
   LayoutMode,
@@ -113,6 +114,16 @@ function parseLineDensity(raw: string | undefined): LineDensity {
     : UI_CONFIG_DEFAULTS.lineDensity;
 }
 
+/**
+ * Same rule as the density above, and for the same kind of reason: this one decides the
+ * colour of the first frame. A cached skin dropped here would paint Default and then repaint
+ * the whole dashboard the moment the daemon's copy landed - a flash on every cold load. An id
+ * this build does not ship (a downgrade) is Default, exactly as `UiConfigSchema` reads it.
+ */
+export function parseSkin(raw: unknown): SkinId {
+  return isSkinId(raw) ? raw : UI_CONFIG_DEFAULTS.skin;
+}
+
 function parseTaskKindHeader(raw: string | undefined): TaskKindHeaderStyle {
   return (TASK_KIND_HEADER_STYLES as readonly string[]).includes(raw ?? "")
     ? (raw as TaskKindHeaderStyle)
@@ -130,6 +141,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     layout: parseLayout(raw?.layout),
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),
     keybindings: raw?.keybindings ?? UI_CONFIG_DEFAULTS.keybindings,

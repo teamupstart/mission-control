@@ -1,11 +1,15 @@
 import {
   seedHiddenDisplayItems,
+  SkinIdSchema,
   UI_CONFIG_DEFAULTS,
   UiConfigSchema,
 } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { skinById, type SkinId } from "@shared/skins.ts";
+import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
+import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
 // mirroring harnesses.ts/foreman/config.ts/skills/config.ts: a schema-validated blob over
@@ -82,7 +86,31 @@ export function uiConfigView(): UiConfigView {
  * an absent key - and `resetAll` would silently do nothing.
  */
 export function setUiConfig(patch: UiConfigPatch): UiConfig {
+  // The stored schema reads an unknown skin as Default (a downgrade must still open), so the
+  // merged parse below would quietly store Default for a bad id. Refuse it here instead, as
+  // the route's patch schema does, so no caller can write a skin by accident.
+  if (patch.skin !== undefined) SkinIdSchema.parse(patch.skin);
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
   setAppConfig(CONFIG_ENTRY, next);
+  if (patch.skin !== undefined) syncWindowBackground(next.skin);
   return next;
+}
+
+/**
+ * Keep the desktop window's launch colour in step with the stored skin.
+ *
+ * The shell paints its window before the dashboard loads, from a file in the state home
+ * (`window-background.ts`). The dashboard's desktop bridge keeps it current, but a skin chosen
+ * in a browser tab has no bridge, so without this the first desktop launch after it would open
+ * on the previous colour - a dark frame under Daylight. Called on every skin write, after a
+ * settings restore, and at daemon startup. The colour is the registry's swatch, which
+ * `test/skins.test.ts` holds equal to the skin's own `--bg`. Never fails the write that
+ * prompted it: a launch colour is not worth refusing a setting over.
+ */
+export function syncWindowBackground(skin: SkinId = getUiConfig(false).skin): void {
+  try {
+    rememberWindowBackground(windowBackgroundPath(STATE_DIR), skinById(skin).swatches.bg);
+  } catch (error) {
+    console.warn("[ui-config] could not remember the window background:", error);
+  }
 }

@@ -110,6 +110,10 @@ contextBridge.exposeInMainWorld("missionDesktop", {
   // the preference and not the card count.
   setCardJumpKeys: (claimed: boolean): Promise<void> =>
     ipcRenderer.invoke("mission:card-jump-keys", claimed),
+  // The applied skin's `--bg` as `#rrggbb`, so the window behind the page matches it now and
+  // the next launch opens in it. Main validates the colour; see `server/window-background.ts`.
+  setWindowBackground: (color: string): Promise<void> =>
+    ipcRenderer.invoke("mission:set-window-background", color),
   // Main pushes this when the native "Settings…" item (⌘,) is chosen. Returns an
   // unsubscribe so the renderer can detach on unmount.
   onOpenSettings: (cb: () => void): (() => void) => {

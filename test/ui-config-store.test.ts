@@ -70,6 +70,51 @@ test("the conversation rendering round-trips, and an unknown one is refused", ()
   assert.equal(getUiConfig().conversationView, "chat", "a refused patch changed the store");
 });
 
+test("the skin defaults to Default, round-trips, and only a shipped id can be written", async () => {
+  const { UiConfigPatchSchema, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.equal(getUiConfig().skin, "default", "a missing key reads as today's look");
+  setUiConfig({ skin: "daylight" });
+  assert.equal(getUiConfig().skin, "daylight");
+  // Strict on write, at the route's schema and at the store: a bad id is refused, never
+  // stored as Default by the read schema's fallback.
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "nope" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({ skin: "daylight" }).success, true);
+  assert.throws(() => setUiConfig({ skin: "nope" } as never));
+  assert.equal(getUiConfig().skin, "daylight", "a refused skin changed the store");
+  // Tolerant on read: a skin written by a newer build (a downgrade) opens as Default, and the
+  // rest of the record survives it.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "console" });
+  assert.equal(getUiConfig().skin, "default");
+  assert.equal(getUiConfig().layout, "console", "an unknown skin failed the whole ui record");
+  assert.equal(UiConfigSchema.parse({ skin: 42 }).skin, "default");
+});
+
+test("every skin write keeps the desktop window's launch colour, browser or desktop alike", async () => {
+  // A browser tab has no desktop bridge, so the daemon is the one place every skin write passes
+  // through. Without this, Daylight chosen in a browser would open the next desktop launch on a
+  // dark frame.
+  const { readFileSync, rmSync: remove, existsSync } = await import("node:fs");
+  const { syncWindowBackground } = await import("../src/server/ui-config.ts");
+  const launch = join(home, "state", "window-background.json");
+  const color = (): string => (JSON.parse(readFileSync(launch, "utf8")) as { color: string }).color;
+  remove(launch, { force: true });
+
+  setUiConfig({ skin: "daylight" });
+  assert.equal(color(), "#f5f7fa", "picking Daylight left no launch colour for the shell");
+  setUiConfig({ skin: "default" });
+  assert.equal(color(), "#0a0c0f");
+
+  // A write that is not about the skin leaves the file alone.
+  remove(launch);
+  setUiConfig({ richText: false });
+  assert.equal(existsSync(launch), false, "an unrelated preference rewrote the launch colour");
+
+  // Startup and post-restore reconciliation read whatever is stored, however it got there.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight" });
+  syncWindowBackground();
+  assert.equal(color(), "#f5f7fa");
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {

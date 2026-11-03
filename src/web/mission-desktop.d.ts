@@ -82,6 +82,12 @@ declare global {
      * again by an edit that still typechecks. Add later members the same way.
      */
     setCardJumpKeys?(claimed: boolean): Promise<void>;
+    /**
+     * Report the applied skin's background (`#rrggbb`), so the window repaints behind the page
+     * and the next launch opens in it. Optional for `setCardJumpKeys`'s reason: an older preload
+     * beside a newer bundle has no such member. Only `src/web/lib/skin.ts` calls it.
+     */
+    setWindowBackground?(color: string): Promise<void>;
     /** Subscribe to the native Settings… menu item (⌘,). Returns an unsubscribe. */
     onOpenSettings(cb: () => void): () => void;
   }

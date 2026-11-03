@@ -192,7 +192,9 @@ let db: DatabaseSync | undefined;
 //     marker (`tasks.launch_report_for`), with no historical backfill.
 // 16: task work-episode ownership end times and retained branch commits.
 // 17: retain per-repository episode change evidence across checkout teardown.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 17;
+// 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
+//     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 18;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

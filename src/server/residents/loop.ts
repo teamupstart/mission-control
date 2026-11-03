@@ -1,4 +1,4 @@
-import { RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, ScheduleNextIterationSchema, residentRunSummary, type ResidentPacingRequest, type ResidentRun } from "@shared/residents.ts";
 import { residentWakeMarker } from "@shared/resident-turn.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { Session } from "@shared/types.ts";
@@ -115,8 +115,13 @@ export class ResidentLoop {
     if (!run || run.endedAt !== null || run.launchState !== "launched") { this.cancelTimer(id); return; }
     const session = this.session(run);
     if (!session || session.runtime !== "sdk") return;
-    if (run.loopState === "paused") { this.cancelTimer(id); return; }
-    if (reportBucket(session) === "needs-you") { this.pause(id, "needs-you"); return; }
+    if (run.loopState === "paused") {
+      // A lifted hold re-observes the run it just wrote rather than reading this stale copy.
+      if (this.releaseNeedsYou(run, session)) this.enqueue(id);
+      else this.cancelTimer(id);
+      return;
+    }
+    if (reportBucket(session) === "needs-you") { this.pause(id, RESIDENT_NEEDS_YOU_PAUSE_REASON); return; }
     if (session.pendingTurns.length > 0) {
       if (run.nextWakeAt !== null) { humanResidentTurn(id); this.publish(id); }
       this.cancelTimer(id);
@@ -138,6 +143,23 @@ export class ResidentLoop {
     }, Math.max(0, Math.min(2_147_483_647, current.nextWakeAt - this.now())));
     timer.unref();
     this.timers.set(id, timer);
+  }
+  /**
+   * Lift the loop's own needs-you hold once the session no longer needs you. Every other pause
+   * reason is a decision (an operator, a guardrail, a failed delivery) and waits for Resume; this
+   * one only mirrors the session, so keeping it after the request was answered stalled the loop
+   * forever and refused every `schedule_next_iteration` with "needs-you". A guardrail that has
+   * tripped meanwhile replaces the hold with its own reason instead of resuming past it.
+   * Returns whether the run is running again.
+   */
+  private releaseNeedsYou(run: ResidentRun, session: Session): boolean {
+    if (run.loopState !== "paused" || run.pauseReason !== RESIDENT_NEEDS_YOU_PAUSE_REASON) return false;
+    if (reportBucket(session) === "needs-you") return false;
+    const block = residentGuardrail(run, this.now());
+    if (block) { this.pause(run.id, block); return false; }
+    resumeResident(run.id, session.workCycle?.active || session.state !== "idle", session.workCycle?.generation ?? null, this.now());
+    this.publish(run.id);
+    return true;
   }
   pause(id: string, reason = RESIDENT_OPERATOR_PAUSE_REASON): void {
     liveRun(id);
@@ -163,6 +185,8 @@ export class ResidentLoop {
     if (!run) throw new ResidentLoopRefusal("Only a resident can schedule its next iteration.");
     const parsed = ScheduleNextIterationSchema.safeParse(request);
     if (!parsed.success) throw new ResidentLoopRefusal(parsed.error.message);
+    // The request was answered but the observation that lifts the hold may not have run yet.
+    this.releaseNeedsYou(run, session);
     const receipt = paceResident(run.id, parsed.data, session.workCycle?.generation ?? 0, this.now());
     this.cancelTimer(run.id);
     this.publish(run.id);

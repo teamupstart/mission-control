@@ -45,6 +45,22 @@ test("an operator pause stays out of attention while a guardrail pause is owed",
   assert.equal(attention().items[0]?.kind, "session_blocked");
 });
 
+test("the inbox draws no row for a stale needs-you hold, while a guardrail pause still gets one", () => {
+  // No loop runs here, so nothing can lift the hold first: this isolates the inbox's own filter.
+  const f = fixture();
+  const attention = () => foldAttention({ sessions: [f.session], reviews: [], ensembles: [], residentRuns: [residentRunSummary(f.run())!] });
+  assert.equal(f.session.pendingReviews, 0, "no review is open on the session");
+  state.pauseResident("run", "needs-you");
+  assert.equal(f.run().loopState, "paused"); assert.equal(f.run().pauseReason, "needs-you");
+  assert.equal(attention().total, 0);
+  assert.deepEqual(attention().items, [], "no 'Waiting on you: needs-you' row with nothing to answer");
+  state.pauseResident("run", "Spend guardrail reached");
+  assert.equal(attention().total, 1);
+  const row = attention().items[0];
+  assert.equal(row?.kind, "session_blocked");
+  assert.equal(row?.kind === "session_blocked" ? row.activity : null, "Spend guardrail reached");
+});
+
 function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true) {
   let now = 1_800_000_000_000;
   const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options });
@@ -160,6 +176,56 @@ test("human precedence cancels pacing and uses a fresh default cadence; needs-yo
   f.patch({ state: "awaiting_input" }); await flush(); assert.equal(f.run().loopState, "paused");
   assert.throws(() => loop.schedule(f.session, { callId: "paused", delaySeconds: 60, reason: "" }), /needs-you/);
   assert.throws(() => loop.resume("run"), /Resolve/);
+});
+
+test("an answered request_input lifts the needs-you hold, so the resident schedules again", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  await loop.runNow("run");
+  // The agent asks mid-turn: an open review is what paints the session needs-you.
+  f.patch({ pendingReviews: 1 }); await flush();
+  assert.equal(f.run().loopState, "paused"); assert.equal(f.run().pauseReason, "needs-you");
+  const attention = () => foldAttention({ sessions: [f.session], reviews: [], ensembles: [], residentRuns: [residentRunSummary(f.run())!] });
+  // The answer reaches the agent and the turn carries on.
+  f.patch({ pendingReviews: 0 }); await flush();
+  assert.equal(f.run().loopState, "working"); assert.equal(f.run().pauseReason, null);
+  assert.equal(attention().total, 0, "no 'Waiting on you: needs-you' card is left with nothing to answer");
+  const receipt = loop.schedule(f.session, { callId: "after-answer", delaySeconds: 1800, reason: "wait for CI" });
+  assert.equal(receipt.pending, true);
+  f.complete(); await flush();
+  assert.equal(f.run().nextWakeAt, f.now + 1_800_000); assert.equal(f.run().wakeReason, "wait for CI");
+});
+
+test("schedule_next_iteration lifts a needs-you hold the loop has not observed clearing yet", async () => {
+  const f = fixture(); const loop = f.loop(); await flush();
+  await loop.runNow("run");
+  f.patch({ pendingReviews: 1 }); await flush();
+  assert.equal(f.run().pauseReason, "needs-you");
+  await loop.stop(); // no observation can run, as in the window before the next event
+  f.patch({ pendingReviews: 0 });
+  const restarted = f.loop();
+  // Restoring re-observes open runs, so do the call before that microtask runs.
+  const receipt = restarted.schedule(f.session, { callId: "race", delaySeconds: 600, reason: "race" });
+  assert.equal(receipt.delaySeconds, 600); assert.equal(f.run().pauseReason, null);
+});
+
+test("a needs-you hold persisted by an older daemon heals on restart once nothing is open", async () => {
+  const f = fixture(); f.loop(); await flush();
+  state.pauseResident("run", "needs-you");
+  for (const loop of loops.splice(0)) await loop.stop();
+  f.loop(); await flush();
+  assert.equal(f.run().loopState, "waiting"); assert.equal(f.run().pauseReason, null);
+  assert.equal(f.run().nextWakeAt, f.now + 300_000);
+});
+
+test("only the needs-you hold lifts by itself: operator and guardrail pauses wait for Resume", async () => {
+  const f = fixture({ iterationCap: 1 }); const loop = f.loop(); await flush();
+  loop.pause("run"); f.patch({ state: "idle" }); await flush();
+  assert.equal(f.run().pauseReason, "Paused by operator");
+  loop.pause("run", "Spend guardrail reached"); f.patch({}); await flush();
+  assert.equal(f.run().pauseReason, "Spend guardrail reached");
+  // A hold whose request was answered after the cap tripped reports the cap, not a resume.
+  state.pauseResident("run", "needs-you"); f.patch({}); await flush();
+  assert.equal(f.run().loopState, "paused"); assert.match(f.run().pauseReason ?? "", /Iteration guardrail/);
 });
 
 for (const working of [false, true]) test(`resuming an ${working ? "active" : "idle"} resident preserves completion pacing`, async () => {

@@ -31,6 +31,13 @@ export const RESIDENT_OPERATOR_PAUSE_REASON = "Paused by operator";
  * `residentRestart` record read back.
  */
 export const RESIDENT_RESTART_PAUSE_REASON = "Restarting on new profile";
+/**
+ * The pause reason the loop records when the resident's session asks a person for something
+ * (an open `request_input`, review, or approval). It is a hold, not a decision: the loop lifts it
+ * on its own the moment the session stops needing you, so it never outlives the request that set
+ * it. Persisted on existing runs under this exact spelling, so it is never reworded.
+ */
+export const RESIDENT_NEEDS_YOU_PAUSE_REASON = "needs-you";
 
 /**
  * The harnesses a resident may run on, in picker order.

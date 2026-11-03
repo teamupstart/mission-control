@@ -244,8 +244,11 @@ safe replay. Only a typed refusal or a refused connection proves nothing was rec
 
 **Human input has priority.** Queuing a human message cancels the scheduled wake and pending
 agent delay. After the human turn, the normal cadence applies unless the agent requests another
-delay. A request for human input (`needs-you`) pauses the loop until the request is resolved and
-you resume it. Pausing does not interrupt an already running turn.
+delay. A request for human input (`needs-you`), such as an open `request_input` question, review
+or approval, holds the loop while it is open. The hold lifts by itself once the request is
+answered: there is nothing to resume, and `schedule_next_iteration` is recorded again. A spend or
+iteration guardrail that tripped meanwhile replaces the hold, and that pause waits for **Resume**.
+Every other pause also waits for **Resume**. Pausing does not interrupt an already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.

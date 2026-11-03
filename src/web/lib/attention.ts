@@ -1,4 +1,4 @@
-import { RESIDENT_OPERATOR_PAUSE_REASON, type ResidentRunSummary } from "@shared/residents.ts";
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, type ResidentRunSummary } from "@shared/residents.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import {
@@ -375,8 +375,12 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
+  // The loop's needs-you hold is not a reason of its own: it mirrors the session, whose open
+  // question or approval already has a row (or an attention tone) while it lasts. Surfacing it
+  // here printed "Waiting on you: needs-you" with nothing to answer once the question was gone.
   const residentPauses = new Map((input.residentRuns ?? [])
-    .filter((run) => run.loopState === "paused" && run.pauseReason !== RESIDENT_OPERATOR_PAUSE_REASON)
+    .filter((run) => run.loopState === "paused" && run.pauseReason !== RESIDENT_OPERATOR_PAUSE_REASON &&
+      run.pauseReason !== RESIDENT_NEEDS_YOU_PAUSE_REASON)
     .map((run) => [run.taskId, run.pauseReason]));
   const blocked = input.sessions
     .filter((s) => !represented.has(s.id) && (stateDisplay(s).tone === "attention" || (s.task && residentPauses.has(s.task.id))))

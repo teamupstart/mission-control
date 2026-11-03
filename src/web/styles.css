@@ -37179,8 +37179,8 @@ body.foreman-sidecar-open .modal-backdrop {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-/* Its menu sits beside the badge on the card's one footer line, which also holds Resume, Run
-   now and Open: tightened to its glyph and caret so all five fit. */
+/* Its menu sits beside the badge on the card's footer line, which also holds Resume and Run
+   now: tightened to its glyph and caret. */
 .resident-control.is-badge .session-toolbar-btn {
   min-height: 22px;
   min-width: 0;
@@ -37252,15 +37252,13 @@ body.foreman-sidecar-open .modal-backdrop {
   background: color-mix(in oklab, var(--fg) 12%, transparent);
 }
 /* 12.5px rather than the page's body size: at 15px a resident's name was the largest text in
-   the top bar's popovers, and the dock's secondary lines and buttons are 11-11.5px beside it.
-   360px is what a live card's footer needs to hold Resume, Run now, the control status with its
-   menu, and Open on one line, with room for a platform's wider system font. */
+   the top bar's popovers, and the dock's secondary lines and buttons are 11-11.5px beside it. */
 .residents-pop {
-  width: 360px;
+  width: 340px;
   gap: 12px;
   font-size: 12.5px;
 }
-/* On a window too narrow to hang 360px off the button without crossing the left edge, the
+/* On a window too narrow to hang 340px off the button without crossing the left edge, the
    dock spans the window under the bar instead. `--topbar-h` is what App publishes from the
    fitted bar, so the panel starts below it however many rows the bar took. */
 @media (max-width: 560px) {
@@ -37396,7 +37394,7 @@ body.foreman-sidecar-open .modal-backdrop {
   border-radius: 50%;
   background: var(--tone, var(--neutral));
 }
-/* Wraps: the run controls, the control status and Open share one line in a 360px dock, and a
+/* Wraps: the run controls and the control status share one line in a 340px dock, and a
    third run control (Restart on new profile) or a refusal takes the next line rather than
    squeezing the others. The controls' wrapper steps aside so its buttons and its refusal are
    the footer's own items, and the refusal can take a whole line of its own. */
@@ -37424,9 +37422,9 @@ body.foreman-sidecar-open .modal-backdrop {
 .residents-pop-spacer {
   flex: 1 0 0;
 }
-/* Open ends the footer, and stays at its right edge on a line of its own if the footer wraps. */
-.residents-pop-card-foot > .residents-pop-action {
-  margin-left: auto;
+/* Open ends the card's top line, after the state, and never gives way to the name. */
+.residents-pop-card-head > .residents-pop-action {
+  flex: none;
 }
 .residents-pop-manage {
   align-self: stretch;

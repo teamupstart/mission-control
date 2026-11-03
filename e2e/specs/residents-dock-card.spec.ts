@@ -8,9 +8,9 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { HARNESS_CAPABILITIES } from "../../src/shared/harness-capabilities.ts";
 
-// The Residents dock draws each live resident as a card in its own marker color: the name and
-// state, the loop's facts, then one footer holding every action - the run controls, the session
-// control status and Open - on a single line. The profiles under it share one chip column, so
+// The Residents dock draws each live resident as a card in its own marker color: the name, state
+// and Open, the loop's facts, then one footer holding the run controls and the session control
+// status on a single line. The profiles under it share one chip column, so
 // their names and Launch buttons line up whatever each label's length. No model tokens are
 // spent: every agent binary is the fake from `fixtures/fake-agents.ts`.
 
@@ -112,8 +112,9 @@ test("a live resident is a card in its color with one footer of actions, and the
   const dock = dashboard.getByRole("dialog", { name: "Residents", exact: true });
   const card = dock.locator("li.residents-pop-card");
   await expect(card).toHaveCount(1);
+  const head = card.locator(".residents-pop-card-head");
   const footer = card.locator(".residents-pop-card-foot");
-  const open = footer.getByRole("button", { name: `Open ${LIVE}`, exact: true });
+  const open = head.getByRole("button", { name: `Open ${LIVE}`, exact: true });
   await expect(open).toBeEnabled({ timeout: 60_000 });
 
   // The card wears the resident's marker color, as the palette token.
@@ -135,24 +136,30 @@ test("a live resident is a card in its color with one footer of actions, and the
   // Each compaction layer keeps its own value, not just its name.
   await expect(status.locator(".resident-compaction-layer")).toHaveText(claudeCompactionLayers());
 
-  // Every action sits in the footer, on one line: Resume, Run now, the control status with the
-  // existing session control menu, and Open at the right edge.
+  // The footer holds the run controls and the control status on one line: Resume, Run now, then
+  // the status with the existing session control menu at the right edge.
   const resume = footer.getByRole("button", { name: "Resume", exact: true });
   const runNow = footer.getByRole("button", { name: "Run now", exact: true });
   const control = footer.getByRole("status", { name: "control not granted", exact: true });
   const menu = footer.getByRole("button", { name: "Session control: Off" });
   await expect(control).toHaveText("No control");
   await expect(menu).toBeVisible();
-  const line = await Promise.all([resume, runNow, control, menu, open].map(box));
+  const line = await Promise.all([resume, runNow, control, menu].map(box));
   for (const item of line) {
     expect(Math.abs(middle(item) - middle(line[0]!)), "the footer's actions share one line").toBeLessThan(2);
   }
   const footerBox = await box(footer);
-  const openBox = line.at(-1)!;
-  expect(footerBox.x + footerBox.width - (openBox.x + openBox.width), "Open ends the footer").toBeLessThan(1);
+  const menuBox = line.at(-1)!;
+  expect(footerBox.x + footerBox.width - (menuBox.x + menuBox.width), "the control status ends the footer").toBeLessThan(1);
+
+  // Open ends the card's top line, on the name's line and at its right edge.
+  const nameBox = await box(name);
+  const headBox = await box(head);
+  const openBox = await box(open);
+  expect(Math.abs(middle(openBox) - middle(nameBox)), "Open shares the name's line").toBeLessThan(2);
+  expect(headBox.x + headBox.width - (openBox.x + openBox.width), "Open ends the top line").toBeLessThan(1);
 
   // Head, facts, footer: stacked in that order, and all inside the card.
-  const nameBox = await box(name);
   const statusBox = await box(status);
   const cardBox = await box(card);
   expect(statusBox.y).toBeGreaterThanOrEqual(nameBox.y + nameBox.height);

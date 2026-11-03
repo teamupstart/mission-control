@@ -245,9 +245,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
                   return (
                     // A card in the resident's own color, so a live run reads as a different
-                    // kind of thing from the profiles under it: the name and state, the loop's
-                    // facts, then every action - run controls, control status, Open - in one
-                    // footer.
+                    // kind of thing from the profiles under it: the name, state and Open, the
+                    // loop's facts, then a footer with the run controls and the control status
+                    // on one line. Open heads the card rather than joining the footer: with it,
+                    // the footer's five controls overran a 340px card in a wider system font
+                    // (Linux) and Open wrapped onto a line of its own.
                     <li key={run.id} className="residents-pop-row residents-pop-card" style={residentAccentStyle(mark.colorId)}>
                       <div className="residents-pop-card-head">
                         <ResidentChip mark={mark} title={residentMarkTitle(mark)} />
@@ -256,14 +258,6 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                           <span className="residents-pop-dot" aria-hidden />
                           {state.label}
                         </span>
-                      </div>
-                      <ResidentLoopStatusLine loop={run} tags />
-                      <div className="residents-pop-card-foot">
-                        <ResidentLoopControls mark={mark} />
-                        <span className="residents-pop-spacer" aria-hidden />
-                        {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
-                          <ResidentControlStatus session={session} name={mark.name} badge />
-                        )}
                         <Tooltip label={session ? `Open ${mark.name}'s session` : "Its session has not started yet"}>
                           <button
                             type="button"
@@ -279,6 +273,14 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                             Open
                           </button>
                         </Tooltip>
+                      </div>
+                      <ResidentLoopStatusLine loop={run} tags />
+                      <div className="residents-pop-card-foot">
+                        <ResidentLoopControls mark={mark} />
+                        <span className="residents-pop-spacer" aria-hidden />
+                        {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+                          <ResidentControlStatus session={session} name={mark.name} badge />
+                        )}
                       </div>
                     </li>
                   );

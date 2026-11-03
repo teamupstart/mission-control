@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
 import { removeMigrationSourceLogin } from '../src/main/migration-integration-ports.ts';
 import { CANONICAL_REPO, FORMER_CANONICAL_REPO } from '../src/shared/install-receipt-schema.mjs';
-import { migrationStartupGate, migrationRuntimePorts, boundedMigrationWait } from '../scripts/migration-runtime.mjs';
+import { MIGRATION_IN_PROGRESS_NOTICE, migrationStartupGate, migrationRuntimePorts, boundedMigrationWait } from '../scripts/migration-runtime.mjs';
 import { readUpdateOutcome } from '../src/main/update-outcome.ts';
 import {
   prepareMigration, validateMigrationPlan, updateMigrationReceipt, migrationBundleIdentity, atomicMigrationJson, runMigration,
@@ -81,6 +81,19 @@ test('relocation stages beside the personal destination, retains the system app,
   let repeats = 0;
   await repairMigration(f.stateDirectory, async () => { repeats++; return []; }, {policy: f.policy});
   assert.equal(repeats, 0);
+});
+
+test('a restored personal installation names what stopped it in the outcome', async (t) => {
+  const f = fixture(t);
+  f.ports.waitForReady = async () => { throw new Error('The personal app did not confirm readiness before the migration timeout'); };
+  const result = await runMigration(f.plan, f.ports, {policy: f.policy});
+  assert.equal(result.committed, false);
+  const outcome = readUpdateOutcome(join(f.stateDirectory, 'update-outcome.json'));
+  assert.equal(outcome?.result, 'failure');
+  assert.equal(outcome?.result === 'failure' ? outcome.message : null,
+    'The personal installation did not commit. The personal app did not confirm readiness before the migration timeout. '
+    + 'The retained system app and previous receipt are unchanged. Check the update log, then prepare the update again.');
+  assert.ok(f.events.includes('launch-source'), 'the retained system app was relaunched');
 });
 
 test('ownership refuses a replaced source even when its commit and version still match', async (t) => {
@@ -268,7 +281,10 @@ for (const failure of ['stop', 'source', 'receipt'] as const) {
 test('post-helper repair ownership permits old-copy redirect without waiting for the live personal process', async (t) => {
   const f = fixture(t);
   await runMigration(f.plan, f.ports, {policy: f.policy});
-  await assert.rejects(migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.source, port: 1, policy: f.policy, timeout: 5}), /helper is still running/);
+  // While the helper still owns the journal an ordinary launch is told the update is in
+  // progress and leaves; it neither throws nor waits on the helper.
+  assert.deepEqual(await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.source, port: 1, policy: f.policy, timeout: 5}),
+    {proceed: false, committed: false, fresh: false, notice: MIGRATION_IN_PROGRESS_NOTICE});
   await repairMigration(f.stateDirectory, async () => [{id: 'login', status: 'pending', message: 'retry'}], {policy: f.policy});
   assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.ownerRole, 'recovery');
   assert.deepEqual(await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.source, port: 1, policy: f.policy, timeout: 5}), {proceed: true, committed: true, fresh: false});

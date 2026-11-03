@@ -622,13 +622,17 @@ test("a slow Git removal does not make an unrelated preview wait", async () => {
   });
   const removal = slow.removeSlot({ slotId: removing!.slotId, allowDirty: false, allowUnmerged: false });
   await removalStarted;
-  // The removal is parked inside `git worktree remove`. An observation - what every preview
-  // and inventory read starts with - must still complete.
+  // The removal is parked inside `git worktree remove`, and its gate opens only after this
+  // race settles. So an observation that waited behind it could never complete at all: the
+  // proof is that `status()` finishes while the gate is still shut, not how fast it does.
+  // The bound only turns that deadlock into a readable failure. Ten seconds was a speed
+  // assertion in disguise - a real `status()` runs Git and a process read per slot, and the
+  // full suite's concurrency routinely pushed it past that while nothing was blocked.
   let timer: ReturnType<typeof setTimeout> | undefined;
   const outcome = await Promise.race([
     slow.status().then(() => "observed" as const),
     new Promise<"blocked">((resolve) => {
-      timer = setTimeout(() => resolve("blocked"), 10_000);
+      timer = setTimeout(() => resolve("blocked"), 90_000);
     }),
   ]);
   clearTimeout(timer);

@@ -12,6 +12,7 @@ import {
   inspectAppLaunches, assertSafeAppLaunches, parseGuiJobs,
   COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
+import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 
 const bundle = "/Users/test/Applications/Mission Control.app";
 const binary = `${bundle}/Contents/MacOS/Mission Control`;
@@ -176,6 +177,39 @@ test("quit barrier waits for all bundle executables, including orphan utilities"
   await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), /bundle processes.*43/);
   f.outputs.set("ps", "1 0 S /sbin/launchd\n");
   await waitForBundleExit(bundle, f.ops, 1000);
+});
+
+test("a bundle-exit timeout names each blocking pid and its cause without printing a command line", async () => {
+  const f = fixture();
+  const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  f.outputs.set("ps", `42 1 S ${binary}\n43 1 S ${helper}\n44 42 S ${helper}\n`);
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && args.includes("args=")) {
+      const pid = args[args.indexOf("-p") + 1];
+      if (pid === "43") return {code: 0, stdout: `${helper} -e // ${CHECK_SUPERVISOR_MARKER}\nsecret-token=abc npm test\n`};
+      if (pid === "44") return {code: 1, stdout: ""};
+    }
+    return run(command, args, timeout);
+  };
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.match(error.message, /pid 42 \(the Mission Control app is still running\)/);
+  assert.match(error.message, /pid 43 \(a workflow check whose parent already exited is still running\)/);
+  assert.match(error.message, /pid 44 \(Mission Control Helper is still running\)/, "an unreadable command line still names the executable");
+  assert.doesNotMatch(error.message, /secret-token|npm test|\/Users\//);
+});
+
+test("a failed process probe is reported as itself, never blamed on an earlier tick's processes", async () => {
+  const f = fixture();
+  let reads = 0;
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && !args.includes("args=") && ++reads > 1) return {code: 1, stdout: ""};
+    return run(command, args, timeout);
+  };
+  await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), (error: Error) =>
+    /Could not inspect macOS launch state/.test(error.message) && !/pid 43/.test(error.message));
 });
 
 test("a slow probe gets the rest of its caller's deadline, not a fixed two-second slice", async () => {
@@ -1109,7 +1143,7 @@ test("retry cleanup escalates after its bounded TERM wait only for the same proc
         }
       };
       if (reused) {
-        await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /bundle processes did not exit: 42/);
+        await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /bundle processes did not exit: pid 42 \(the Mission Control app is still running\)/);
         assert.deepEqual(signals, [{pid: 42, signal: "SIGTERM", at: 0}]);
         assert.equal(f.ops.now(), 10_000);
       } else {

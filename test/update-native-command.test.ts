@@ -37,8 +37,12 @@ test("the app menu and tray expose the same native update command seam", () => {
     updaterStart < backgroundReady,
     "native update commands must remain available even when daemon startup fails",
   );
-  assert.match(index, /app\.on\("before-quit", stopShell\)/);
+  assert.match(index, /holdQuitUntilDrained\(app, \{beforeQuit: stopShell, owned: \(\) => backgroundStart !== null, drain: drainBackground\}\);/);
+  assert.doesNotMatch(index, /app\.on\("before-quit"/, "a second before-quit handler would race the drain");
   const stopShell = index.match(/function stopShell\(\): void \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(stopShell, "ordinary quit and failed migration share shell cleanup");
-  assert.match(stopShell, /backgroundStart\?\.stop\(\)/);
+  // Background processes are stopped by the awaited drain, never fired and forgotten here.
+  assert.doesNotMatch(stopShell, /backgroundStart\?\.stop\(\)/);
+  assert.match(index, /function drainBackground\(\): Promise<void> \{\s+return drainBackgroundStart\(backgroundStart,/);
+  assert.match(index, /try \{ stopShell\(\); \} finally \{ void drainBackground\(\)\.finally\(\(\) => app\.exit\(1\)\); \}/);
 });

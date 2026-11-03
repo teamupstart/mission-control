@@ -477,7 +477,7 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
         publish("repair-required");
         return { committed: true, journal, error: String(error.message ?? error) };
       }
-      try { await restoreMigration(journal, ports, policy); }
+      try { await restoreMigration(journal, ports, policy, error); }
       catch (recoveryError) {
         const message = recordMigrationRecoveryFailure(journal, `${String(error.message ?? error)} Recovery failed: ${String(recoveryError.message ?? recoveryError)}`);
         return {committed: false, journal, error: message};
@@ -500,9 +500,22 @@ function recordMigrationRecoveryFailure(journal, message) {
   return message;
 }
 
-export async function restoreMigration(journal, ports, policy) {
-  if (journal.plan.kind === "in-place") return restoreInPlace(journal, ports);
-  if (journal.plan.kind === "rename") return restoreRename(journal, ports);
+/**
+ * The rollback sentence a person reads, carrying what stopped the attempt.
+ *
+ * "The update did not commit" on its own is the outcome that gave nobody anything to act on:
+ * the helper knew the blocking pid and why, and dropped both on the way to the dialog. The
+ * cause is the attempt's own error text - the same text `recordMigrationRecoveryFailure`
+ * already records - bounded so one runaway message cannot crowd out the rest.
+ */
+export function migrationRollbackMessage(lead, cause, tail) {
+  const reason = cause === undefined || cause === null ? "" : String(cause?.message ?? cause).trim().slice(0, 1500);
+  return [lead, reason && (/[.!?]$/.test(reason) ? reason : `${reason}.`), tail].filter(Boolean).join(" ");
+}
+
+export async function restoreMigration(journal, ports, policy, cause) {
+  if (journal.plan.kind === "in-place") return restoreInPlace(journal, ports, cause);
+  if (journal.plan.kind === "rename") return restoreRename(journal, ports, cause);
   const { plan } = journal;
   validateMigrationPlan(plan, policy);
   if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt)) throw new Error("The receipt changed. Recovery left both bundles untouched; inspect the installation before retrying.");
@@ -518,13 +531,13 @@ export async function restoreMigration(journal, ports, policy) {
   atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {
     schema: 1, result: "failure", targetVersion: plan.targetIdentity.version,
     recordedAt: new Date().toISOString(),
-    message: "The personal installation did not commit. The retained system app and previous receipt are unchanged. Check the update log, then prepare the update again.",
+    message: migrationRollbackMessage("The personal installation did not commit.", cause, "The retained system app and previous receipt are unchanged. Check the update log, then prepare the update again."),
   });
   requireUnchangedSource(plan);
   await ports.launchSource(plan.source);
 }
 
-async function restoreInPlace(journal, ports) {
+async function restoreInPlace(journal, ports, cause) {
   const {plan} = journal;
   validateMigrationPlan(plan);
   if (!receiptUnchanged(plan)) throw new Error("The receipt changed; recovery preserved all material");
@@ -543,7 +556,7 @@ async function restoreInPlace(journal, ports) {
   atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
   atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {schema: 1, result: "failure",
     targetVersion: plan.targetIdentity.version, recordedAt: new Date().toISOString(),
-    message: "The update did not commit. The previous app and exact installation receipt were preserved."});
+    message: migrationRollbackMessage("The update did not commit.", cause, "The previous app and exact installation receipt were preserved.")});
   // Older apps cannot parse protocol 2. Archive only after verified restoration and
   // durable outcome, before launching the old reader. Keep backup and diagnostics.
   ensureBackupDirectory(plan);
@@ -642,7 +655,7 @@ function retireRenameSource(plan) {
   removeRenamedBundle(plan.source, expectedIdentity);
 }
 
-async function restoreRename(journal, ports) {
+async function restoreRename(journal, ports, cause) {
   const {plan} = journal;
   validateMigrationPlan(plan);
   if (!receiptUnchanged(plan) || !sameSourceBundle(plan) || inspectBundle(plan.source).digest !== plan.sourceDigest) throw new Error("The old-name installation changed; recovery preserved both apps");
@@ -656,7 +669,7 @@ async function restoreRename(journal, ports) {
   atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
   atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {schema: 1, result: "failure",
     targetVersion: plan.targetIdentity.version, recordedAt: new Date().toISOString(),
-    message: "The app-name migration did not commit. The previous app and exact receipt are unchanged."});
+    message: migrationRollbackMessage("The app-name migration did not commit.", cause, "The previous app and exact receipt are unchanged.")});
   ensureBackupDirectory(plan);
   renameSync(join(plan.stateDirectory, MIGRATION_JOURNAL), join(dirname(plan.backup), "restored-journal.json"));
   rmSync(join(plan.stateDirectory, MIGRATION_ACK), {force: true});

@@ -1442,17 +1442,17 @@ rl.on("line", (line) => {
     // resident launch checks this against its snapshot, so answering with the argv keeps that
     // check exercised without starting any server. A remote server on a `needs-login.` host
     // stands for one behind an OAuth login Claude Code holds no usable token for, which the real
-    // CLI reports `needs-auth`.
+    // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
+    // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
+    // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
       const status = (server) => {
-        try {
-          return server?.url && new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected";
-        } catch {
-          return "connected";
-        }
+        if (server?.url === undefined) return { status: "connected" };
+        if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
+        return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
       };
-      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, status: status(server) })) });
+      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});

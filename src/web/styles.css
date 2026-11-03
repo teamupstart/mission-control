@@ -37515,6 +37515,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-error { color: var(--danger); flex-basis: 100%; font-size: 12px; }
 .resident-live-run { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
 .resident-card-loop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.resident-card-loop-menu { display: inline-flex; flex: none; }
 /* The dock card's loop facts: the short ones as tags, a reason as its sentence, compaction as
    one line under them. Paused is the one tag in a state color, since it is the one that asks for
    a decision. */

@@ -172,7 +172,6 @@ export function ResidentDispatch({
     <Overlay
       id={OVERLAY_IDS.dispatch}
       onClose={onClose}
-      ignoreBackdropDrag
       className="modal dispatch-modal dispatch-modal-resident"
       role="dialog"
       ariaLabel="Dispatch an agent"

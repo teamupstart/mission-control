@@ -47,6 +47,31 @@ function migrateGuidedTour(raw: unknown): unknown {
   return "guidedTour" in stored ? raw : { ...stored, guidedTour: false };
 }
 
+/**
+ * The stored skin id exactly as written, when it is one this build does not ship - a skin a
+ * newer build added, read here after a downgrade. Null for a known id, a missing one, or
+ * anything that is not an id.
+ */
+function unshippedStoredSkin(stored: unknown): string | null {
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return null;
+  const skin = (stored as { skin?: unknown }).skin;
+  return typeof skin === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(skin) && !isSkinId(skin) ? skin : null;
+}
+
+/**
+ * Write the whole `ui` record without losing a skin this build cannot represent.
+ *
+ * An unknown stored id READS as Default (`UiConfigSchema`), so a downgrade still opens. But
+ * every write here persists the whole parsed record, and writing that Default back would erase
+ * the operator's choice for good: changing an unrelated Display setting in an older build, or
+ * this module's own migration write, would leave them on Default after upgrading again. So a
+ * write that is not about the skin keeps the stored id as it was. Choosing a skin replaces it.
+ */
+function persistUiConfig(config: UiConfig, stored: unknown, choosesSkin: boolean): void {
+  const unshipped = choosesSkin ? null : unshippedStoredSkin(stored);
+  setAppConfig(CONFIG_ENTRY, unshipped === null ? config : ({ ...config, skin: unshipped } as unknown as UiConfig));
+}
+
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getUiConfig(persistMigration = true): UiConfig {
   const stored = getAppConfig(CONFIG_ENTRY);
@@ -60,7 +85,7 @@ export function getUiConfig(persistMigration = true): UiConfig {
     : seedHiddenDisplayItems(migrateGuidedTour(migrateRetiredLayout(stored)));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
-    setAppConfig(CONFIG_ENTRY, config);
+    persistUiConfig(config, stored, false);
   }
   return config;
 }
@@ -90,8 +115,9 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   // merged parse below would quietly store Default for a bad id. Refuse it here instead, as
   // the route's patch schema does, so no caller can write a skin by accident.
   if (patch.skin !== undefined) SkinIdSchema.parse(patch.skin);
+  const stored = getAppConfig(CONFIG_ENTRY);
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistUiConfig(next, stored, patch.skin !== undefined);
   if (patch.skin !== undefined) syncWindowBackground(next.skin);
   return next;
 }

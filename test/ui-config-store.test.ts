@@ -168,6 +168,38 @@ test("a launch colour that cannot be written never fails the skin write or start
   }
 });
 
+test("a skin from a newer build survives unrelated writes in this one, and a real choice replaces it", () => {
+  // After a downgrade, a skin this build does not ship reads as Default - but it must not be
+  // WRITTEN as Default by a write that was not about the skin, or the operator loses their
+  // choice for good on the next upgrade.
+  const raw = (): unknown => (getAppConfig(APP_CONFIG_ENTRIES.ui) as { skin?: unknown }).skin;
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", layout: "console", guidedTour: false } as never);
+  assert.equal(getUiConfig().skin, "default", "an unknown skin still reads as Default");
+
+  setUiConfig({ richText: false });
+  assert.equal(raw(), "neon-dusk", "an unrelated setting erased the newer build's skin");
+  assert.equal(getUiConfig().richText, false, "the unrelated setting itself was saved");
+
+  // This module's own migration write keeps it too: a record without the guidedTour key is
+  // rewritten on read.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", layout: "console" } as never);
+  getUiConfig();
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { guidedTour?: unknown }).guidedTour, false, "the premise: the migration wrote");
+  assert.equal(raw(), "neon-dusk", "the migration write erased the newer build's skin");
+
+  // Choosing a skin in this build is a real choice and replaces it; so does choosing Default.
+  setUiConfig({ skin: "daylight" });
+  assert.equal(raw(), "daylight");
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "neon-dusk", guidedTour: false } as never);
+  setUiConfig({ skin: "default" });
+  assert.equal(raw(), "default");
+
+  // Something that is not an id at all is not worth keeping.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "<script>", guidedTour: false } as never);
+  setUiConfig({ richText: true });
+  assert.equal(raw(), "default");
+});
+
 test("startup tours default on for fresh and upgraded profiles independently of guidedTour", () => {
   assert.equal(getUiConfig().showToursOnStartup, true);
   for (const old of [{ layout: "board" }, { guidedTour: false }, { guidedTour: true }] as const) {

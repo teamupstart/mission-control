@@ -31,6 +31,18 @@ async function api<T>(daemon: DaemonHandle, path: string): Promise<T> {
   return await response.json() as T;
 }
 
+/**
+ * The operator's own profiles. A fresh install already holds the built-in Agent Shepherd, and
+ * these tests are about profiles an operator authored.
+ */
+async function operatorProfiles<T>(daemon: DaemonHandle): Promise<T[]> {
+  return (await api<Array<T & { builtin?: true }>>(daemon, "/api/residents/profiles"))
+    .filter((profile) => !profile.builtin);
+}
+
+/** The rail's empty "Yours" group, beside the built-in group a fresh install always has. */
+const NO_OWN_PROFILES = "No profiles of your own yet";
+
 function options(select: Locator): Promise<string[]> {
   return select.evaluate((element) =>
     [...(element as HTMLSelectElement).options].map((option) => option.value),
@@ -40,7 +52,7 @@ function options(select: Locator): Promise<string[]> {
 async function authorProfile(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.goto(`${daemon.baseURL}/#/residents`);
   const rail = page.getByRole("complementary", { name: "Resident profiles" });
-  await expect(rail).toContainText("No resident profiles yet");
+  await expect(rail).toContainText(NO_OWN_PROFILES);
   await rail.getByRole("button", { name: "New" }).click();
 
   const editor = page.getByRole("region", { name: "New resident profile" });
@@ -125,9 +137,8 @@ test("a resident authored on #/residents launches from Dispatch > Resident with 
   ).toBe("done");
 });
 
-test("Single agent Dispatch does not offer resident as a kind, and Resident mode with no profiles points at the page", async ({
+test("Single agent Dispatch does not offer resident as a kind, and Resident mode on a fresh install offers the built-in", async ({
   dashboard,
-  daemon,
 }) => {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
@@ -135,13 +146,16 @@ test("Single agent Dispatch does not offer resident as a kind, and Resident mode
   expect(await options(kind)).not.toContain("resident");
 
   await dialog.getByRole("radio", { name: "Resident" }).click();
-  await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeDisabled();
-  await expect(dialog).toContainText("No resident profiles yet");
+  await expect(dialog).not.toContainText("No resident profiles yet");
+  const shepherd = dialog.getByRole("radio").filter({ hasText: "Agent Shepherd" });
+  await expect(shepherd).toHaveCount(1);
+  await shepherd.click();
+  await expect(dialog.getByRole("button", { name: "Launch resident" })).toBeEnabled();
   await expectContentClearsBorder(dialog);
-  await dialog.getByRole("button", { name: "Create a profile" }).click();
+  await dialog.getByRole("button", { name: "View profile" }).click();
   await expect(dialog).toBeHidden();
-  await expect(dashboard).toHaveURL(`${daemon.baseURL}/#/residents`);
-  await expect(dashboard.getByRole("heading", { name: "Residents", level: 2 })).toBeVisible();
+  await expect(dashboard).toHaveURL(/#\/residents\/builtin(:|%3A)agent-shepherd$/);
+  await expect(dashboard.getByRole("region", { name: "Resident profile Agent Shepherd" })).toBeVisible();
 });
 
 test("a profile saves a nondefault harness, model and effort, edits to a new revision, and archives out of the page and Dispatch", async ({
@@ -186,13 +200,13 @@ test("a profile saves a nondefault harness, model and effort, edits to a new rev
   // Archive removes it from the rail, from the catalog, and from Dispatch > Resident.
   await saved.getByRole("button", { name: "Archive" }).click();
   await expect(rail.getByRole("button", { name: /Docs Gardener/ })).toHaveCount(0);
-  await expect(rail).toContainText("No resident profiles yet");
+  await expect(rail).toContainText(NO_OWN_PROFILES);
   await expect.poll(async () => (await persisted()) ?? null).toBeNull();
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByRole("radio", { name: "Resident" }).click();
   await expect(dialog.getByRole("radio", { name: /Docs Gardener/ })).toHaveCount(0);
-  await expect(dialog).toContainText("No resident profiles yet");
+  await expect(dialog.getByRole("radiogroup", { name: "Profile" }).getByRole("radio")).toHaveText([/^Agent Shepherd/]);
 });
 
 test("a revision saved in another window never discards unsaved edits: it is held as a conflict with an explicit choice", async ({
@@ -202,7 +216,7 @@ test("a revision saved in another window never discards unsaved edits: it is hel
   await authorProfile(dashboard, daemon);
   type Profile = { id: string; revision: number; settings: { instructions: { markdown: string } } & Record<string, unknown> };
   const current = async () =>
-    (await api<Profile[]>(daemon, "/api/residents/profiles")).find((p) => p.settings.instructions !== undefined)!;
+    (await operatorProfiles<Profile>(daemon)).find((p) => p.settings.instructions !== undefined)!;
   /** Another window's save: a PATCH straight to the daemon. */
   const saveElsewhere = async (markdown: string) => {
     const profile = await current();
@@ -256,7 +270,7 @@ async function writeElsewhere(
   method: "PATCH" | "DELETE",
   settings?: (current: StoredProfile["settings"]) => StoredProfile["settings"],
 ): Promise<void> {
-  const [profile] = await api<StoredProfile[]>(daemon, "/api/residents/profiles");
+  const [profile] = await operatorProfiles<StoredProfile>(daemon);
   if (!profile) throw new Error("no live profile");
   const response = await fetch(`${daemon.baseURL}/api/residents/profiles/${profile.id}`, {
     method,
@@ -320,7 +334,7 @@ test("a profile archived in another window keeps this window's unsaved draft unt
   await notice.getByRole("button", { name: "Discard changes" }).click();
   await expect(editor).toHaveCount(0);
   await expect(dashboard.getByRole("heading", { name: "This resident profile is not available" })).toBeVisible();
-  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
+  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText(NO_OWN_PROFILES);
 });
 
 test("leaving a profile with unsaved edits - New, the address bar, or another page - asks before discarding the draft", async ({
@@ -368,13 +382,13 @@ test("archiving a profile with unsaved edits asks first, and Cancel keeps both t
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toBeHidden();
   await expect(instructions).toHaveValue("An edit I have not saved.");
-  expect((await api<Array<{ name: string }>>(daemon, "/api/residents/profiles")).map((p) => p.name)).toEqual([PROFILE]);
+  expect((await operatorProfiles<{ name: string }>(daemon)).map((p) => p.name)).toEqual([PROFILE]);
 
   await editor.getByRole("button", { name: "Archive" }).click();
   await confirm.getByRole("button", { name: "Discard changes and archive" }).click();
   await expect(editor).toHaveCount(0);
-  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText("No resident profiles yet");
-  await expect.poll(async () => (await api<unknown[]>(daemon, "/api/residents/profiles")).length).toBe(0);
+  await expect(dashboard.getByRole("complementary", { name: "Resident profiles" })).toContainText(NO_OWN_PROFILES);
+  await expect.poll(async () => (await operatorProfiles(daemon)).length).toBe(0);
 });
 
 test.describe("a launch that is still starting when the daemon answers", () => {
@@ -590,7 +604,7 @@ test.describe("a changed launch after a lost response", () => {
   }
 
   async function secondProfile(daemon: DaemonHandle): Promise<void> {
-    const [first] = await api<StoredProfile[]>(daemon, "/api/residents/profiles");
+    const [first] = await operatorProfiles<StoredProfile>(daemon);
     const response = await fetch(`${daemon.baseURL}/api/residents/profiles`, {
       method: "POST",
       headers: { "content-type": "application/json" },

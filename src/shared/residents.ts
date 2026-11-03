@@ -398,6 +398,30 @@ export interface ResidentProfile {
   updatedAt: number;
   /** The current revision's body. New launches pin this revision. */
   settings: ResidentProfileRevision;
+  /**
+   * Ships with Mission Control (`residents/*.md`): read-only, never archived, and replaced by a
+   * new revision when an upgrade changes it. Absent on an operator's profile.
+   */
+  builtin?: true;
+}
+
+/**
+ * The id prefix of a built-in resident profile, `builtin:<document slug>`. Durable: a run and
+ * its history name the id, so a shipped slug is never renamed.
+ */
+export const BUILTIN_RESIDENT_PROFILE_ID_PREFIX = "builtin:";
+
+export function isBuiltinResidentProfileId(id: string): boolean {
+  return id.startsWith(BUILTIN_RESIDENT_PROFILE_ID_PREFIX);
+}
+
+/**
+ * How a choice names a profile where a built-in and an operator's own profile may read the same:
+ * an operator profile authored under a built-in's name before it shipped keeps that name, and
+ * both are listed, so a built-in says so.
+ */
+export function residentProfileChoiceName(profile: Pick<ResidentProfile, "name" | "builtin">): string {
+  return profile.builtin ? `${profile.name} (built-in)` : profile.name;
 }
 
 /**

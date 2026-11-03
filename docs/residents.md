@@ -42,6 +42,38 @@ it names, never changes a resident that is already running.
 Pi is not offered: the first release supports Claude Code and Codex, and a profile can only be
 saved for a harness with an Agent SDK driver.
 
+## Built-in residents
+
+Mission Control ships one resident ready to launch, installed on every machine:
+
+| Resident | What it does |
+|---|---|
+| Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+
+Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
+your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
+Archive are absent, every field is locked, and a line says why. **Duplicate to edit** opens a new,
+unsaved profile named `<name> copy` with the same settings. Your copy is an ordinary profile:
+editable, archivable, and never touched by an upgrade. Every saved profile also offers
+**Duplicate**.
+
+A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
+ships different settings, the daemon writes them as the built-in's next revision at startup. A
+resident already running keeps the revision it launched with. Use **Restart on new profile** to
+pick up the update. Like any other launch, a restart grants session control only from a desktop
+Launch click.
+
+The daemon refuses edits and archives of a built-in even when they do not come from the editor.
+New profiles and renames cannot take a built-in's name. A profile you authored under that name
+before it shipped keeps the name and everything in it. Both stay listed: yours under **Yours**,
+the built-in under **Built-in**. The dock and Dispatch tag the built-in, and its Launch button
+reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-in in place of
+your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
+live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
+
+The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
+the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+
 ## Launching a resident
 
 **Dispatch > Resident** shows a card per live profile, the repository (pre-filled from the

@@ -835,13 +835,22 @@ test("a newer sidechain or API-error record cannot replace the main-chain adviso
   assert.equal(computeRuntimeMeta([...ADVISOR_LINES, sidechain])?.advisorModel, "claude-opus-5-5");
   assert.equal(computeRuntimeMeta([...ADVISOR_LINES, apiError])?.advisorModel, "claude-opus-5-5");
   assert.equal(computeRuntimeMeta([...ADVISOR_LINES, sidechain, apiError])?.advisorModel, "claude-opus-5-5");
+  // Nor can an unstamped one clear it: only a main-chain turn says whether the advisor is attached.
+  const { advisorModel: _unused, ...unstamped } = base;
+  void _unused;
+  const bareSide = JSON.stringify({ ...unstamped, uuid: "side-bare", isSidechain: true });
+  const bareError = JSON.stringify({ ...unstamped, uuid: "err-bare", isApiErrorMessage: true });
+  assert.equal(computeRuntimeMeta([...ADVISOR_LINES, bareSide, bareError])?.advisorModel, "claude-opus-5-5");
 });
 
 test("computeRuntimeMeta takes the newest advisor model and omits the field when none", () => {
   const later = JSON.stringify({ ...capturedRecords.at(-1)!, uuid: "later", advisorModel: "claude-sonnet-5-5" });
   assert.equal(computeRuntimeMeta([...ADVISOR_LINES, later])?.advisorModel, "claude-sonnet-5-5");
-  // A newer record without one does not hide the older advisor turn.
-  assert.equal(computeRuntimeMeta([later, asstText])?.advisorModel, "claude-sonnet-5-5");
+  // A newer main-chain turn without one means the advisor is no longer attached (`/advisor
+  // off`), so it clears the older stamp rather than leaving the chip on a stale model.
+  const cleared = computeRuntimeMeta([...ADVISOR_LINES, later, asstText]);
+  assert.ok(cleared);
+  assert.equal("advisorModel" in cleared, false);
   const plain = computeRuntimeMeta([
     JSON.stringify({ type: "assistant", uuid: "p1", message: { role: "assistant", model: "claude-opus-4-8", content: [] } }),
   ]);

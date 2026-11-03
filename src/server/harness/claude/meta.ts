@@ -141,19 +141,24 @@ function latestAssistantUsage(
 }
 
 /**
- * The advisor model on the newest main-chain assistant record that names one, or null.
+ * The advisor model the newest main-chain assistant record names, or null when it names none.
  *
  * Claude Code stamps a top-level `advisorModel` (a full id such as `claude-opus-5-5`) on
  * every assistant record of a turn that called the advisor (observed on 2.1.317). That it
  * also stamps a turn that offered the advisor without calling it is inferred from the CLI's
  * code, not captured. Only the top-level field is read, because that is the only place a
- * capture has shown it. Skipping records without one, rather than stopping at the newest assistant record, keeps
- * the answer stable across a sidechain or API-error record written between advisor turns.
+ * capture has shown it.
+ *
+ * The NEWEST eligible record decides, stamped or not. An unstamped turn after an advisor turn
+ * means the advisor is no longer attached - `/advisor off`, say - and an older stamp must not
+ * keep the chip claiming otherwise until it scrolls out of the tail. Sidechain and API-error
+ * records are not eligible: a subagent's request and an error record describe no main turn,
+ * so they neither set nor clear it.
  */
 function latestAdvisorModel(lines: string[]): string | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
-    if (!line || line.indexOf('"advisorModel"') < 0) continue;
+    if (!line || line.indexOf('"assistant"') < 0) continue;
     let o: Record<string, unknown>;
     try {
       o = JSON.parse(line) as Record<string, unknown>;
@@ -161,7 +166,7 @@ function latestAdvisorModel(lines: string[]): string | null {
       continue;
     }
     if (o.type !== "assistant" || o.isSidechain || o.isApiErrorMessage) continue;
-    if (typeof o.advisorModel === "string" && o.advisorModel) return o.advisorModel;
+    return typeof o.advisorModel === "string" && o.advisorModel ? o.advisorModel : null;
   }
   return null;
 }

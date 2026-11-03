@@ -1217,10 +1217,11 @@ both renderings. A review reads "Advisor (Opus 5.5) reviewed the conversation"; 
 returned the advisor's words, clicking the line shows them. The API can return the review
 encrypted, in which case there are no words to show. A refusal reads "Advisor declined to
 advise on this request", and a failed call reads "Advisor unavailable" with the API's error
-code. A session whose transcript names an advisor model carries a read-only
+code. A session whose newest turn names an advisor model carries a read-only
 **Advisor: Opus 5.5** chip beside its model, on the board card and in the console header. The
 chip shows only what the transcript records, never what a settings file says, so a session that
-has not run a turn yet shows no chip even when an advisor is configured.
+has not run a turn yet shows no chip even when an advisor is configured, and a turn that runs
+without the advisor (after `/advisor off`, for example) clears it.
 
 What the transcript records was observed on Claude Code 2.1.317 on 2026-11-03, from one
 captured headless turn that called the advisor: every assistant record of that turn, including
@@ -1228,8 +1229,8 @@ the reply after the advisor call, carries a top-level `advisorModel`. So the chi
 the first turn that calls the advisor. Whether Claude Code also stamps a turn that offered the
 advisor but did not call it is **inferred, not verified**: the CLI's code appears to stamp every
 record of a request that carries the advisor tool, but no such turn has been captured. If it does
-not, the chip appears only once the advisor is first called. A later Claude Code version may
-change either behaviour.
+not, the chip shows only after turns that called the advisor, and clears after a turn that did
+not. A later Claude Code version may change either behaviour.
 
 **Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
 2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,

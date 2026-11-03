@@ -771,7 +771,7 @@ test.describe("acli read method", () => {
     const login = page.getByText(/Log in once with/);
     await expect(login).toContainText("acli jira auth login --web");
     await expect(page.getByRole("spinbutton", { name: "Issues per page" })).toBeDisabled();
-    await expect(login).toContainText("Write-back through acli is not available in this build");
+    await expect(login).toContainText("match this source's Jira site");
     await login.scrollIntoViewIfNeeded();
     await shoot(page, "acli-login-note");
     // A reload proves that the choice crossed the config route and survived storage.

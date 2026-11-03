@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseJson } from "jsonc-parser";
-import { CLAUDE_MCP_ALLOW, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
+import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
 
 import { withProcessEnv } from "./helpers/process-env.ts";
 
@@ -96,6 +96,28 @@ test("malformed and unsupported configs are refused without modifying the file",
       assert.deepEqual(readdirSync(home), ["settings"]);
     }
   }
+});
+
+test("an unregistered Codex server names the integration install as its prerequisite", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "mcp-trust-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const path = join(home, "config.toml");
+  for (const input of ["", 'approval_policy = "on-request"\n[mcp_servers.other]\nurl = "https://example.invalid"\n', "[mcp_servers.mission-control]\nenabled = true\n"]) {
+    writeFileSync(path, input);
+    const status = mcpTrustStatus("codex", path);
+    assert.equal(status.state, "needs-setup", input);
+    assert.equal(status.state === "needs-setup" && status.why, CODEX_MCP_NOT_REGISTERED);
+    assert.deepEqual(enableMcpTrust("codex", path), {
+      ok: false, outcomeUnknown: false, error: CODEX_MCP_NOT_REGISTERED, prerequisite: "mission-integrations",
+    });
+    assert.equal(readFileSync(path, "utf8"), input);
+  }
+  // A registered but untrusted server keeps the generic sentence and no prerequisite.
+  writeFileSync(path, codex);
+  const status = mcpTrustStatus("codex", path);
+  assert.equal(status.state === "needs-setup" && status.why, "Mission Control MCP is not allowed by default in this agent's user settings.");
+  writeFileSync(path, "[broken");
+  assert.equal(enableMcpTrust("codex", path).prerequisite, undefined);
 });
 
 test("publication retains the original and recheck becomes satisfied without a second write", (t) => {

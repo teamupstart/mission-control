@@ -131,7 +131,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import type { SetupChecksSnapshot, SetupRowId } from "@shared/setup-catalog.ts";
+import type { SetupChecksSnapshot, SetupRowId, SetupServicePrerequisite } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -209,6 +209,7 @@ export interface SetupServiceStartResult extends ActionResult {
   outcome?: "started" | "refused" | "unknown";
   label?: string;
   detail?: string;
+  prerequisite?: SetupServicePrerequisite;
 }
 
 /**

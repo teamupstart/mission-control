@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
+  SETUP_SERVICE_INFO,
   homeRelative,
   setupRowAnchor,
   type SetupDependencyId,
@@ -255,6 +256,8 @@ function ServiceRemedy({
 }): React.JSX.Element {
   const [starting, setStarting] = useState(false);
   const [result, setResult] = useState<SetupServiceStartResult | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   async function start(): Promise<void> {
     setStarting(true);
@@ -268,6 +271,28 @@ function ServiceRemedy({
     }
   }
 
+  // The trust write needs a server table to edit, and only the integration install writes
+  // one. Offer that install here, where the refusal is read, then finish the trust the
+  // operator asked for - rather than a sentence pointing somewhere else on the page.
+  async function installThenStart(): Promise<void> {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      const installed = await window.missionDesktop!.installIntegrations();
+      if (!installed.ok) { setInstallError(installed.message); return; }
+      onRepaired();
+      await start();
+    } catch {
+      setInstallError("Integration install could not finish. Check the app log and retry.");
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  const needsIntegrations = result?.prerequisite === "mission-integrations";
+  const canInstall = typeof window !== "undefined" && !!window.missionDesktop?.installIntegrations;
+  const busy = starting || installing;
+
   return (
     <div className="setup-remedy-actions">
       <div className="setup-run-controls">
@@ -275,7 +300,7 @@ function ServiceRemedy({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={starting}
+            disabled={busy}
             onClick={() => void start()}
           >
             {starting ? "Starting..." : label}
@@ -286,9 +311,23 @@ function ServiceRemedy({
         <RemedyNotice
           tone={result.ok ? "attention" : "error"}
           detail={result.detail || result.error || `${label} did not finish.`}
-          hint={result.ok ? undefined : "Start it yourself in a terminal, then press Re-check."}
+          hint={result.ok ? undefined : needsIntegrations
+            ? canInstall
+              ? "Install Claude integrations also registers the Mission Control MCP server with Codex, then this retries the trust automatically."
+              : "Open Setup in the Mission Control desktop app and choose Install Claude integrations, which registers the MCP server with Codex too, then retry."
+            : SETUP_SERVICE_INFO[service].retry}
         />
       )}
+      {needsIntegrations && canInstall && (
+        <div className="setup-run-controls">
+          <Tooltip label="Register Mission Control MCP with Claude Code and Codex using this app's runtime, then retry the trust.">
+            <button type="button" className="btn" disabled={busy} onClick={() => void installThenStart()}>
+              {installing ? "Installing..." : "Install Claude integrations"}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+      {installError && <p role="status" className="settings-error">{installError}</p>}
     </div>
   );
 }

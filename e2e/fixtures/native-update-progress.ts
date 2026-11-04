@@ -26,12 +26,14 @@ export function nativeUpdateProgress(directory: string) {
   const dialogWindows = nativeDialogWindows(directory);
   return (helperPid: number) => {
     const processes = parseAppProcesses(execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,stat=,comm='], {encoding: 'utf8'}));
-    const child = processes.find(row => row.ppid === helperPid && row.executable === '/usr/bin/osascript');
-    if (!child) return null;
-    const command = processIdentity(child.pid);
-    if (!command?.includes('with title "Updating Mission Control"')) return null;
-    const windows = dialogWindows(child.pid);
-    if (!windows.length) return null;
-    return {pid: child.pid, command, windows};
+    // A replaced dialog can remain listed until a paused helper reaps it. Do not
+    // let that older child hide the current dialog from the observation.
+    for (const child of processes.filter(row => row.ppid === helperPid && row.executable === '/usr/bin/osascript')) {
+      const command = processIdentity(child.pid);
+      if (!command?.includes('with title "Updating Mission Control"')) continue;
+      const windows = dialogWindows(child.pid);
+      if (windows.length) return {pid: child.pid, command, windows};
+    }
+    return null;
   };
 }

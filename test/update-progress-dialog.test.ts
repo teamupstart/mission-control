@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { spawn } from 'node:child_process';
 import test from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realApplyOperations } from '../scripts/apply-update.mjs';
@@ -32,7 +32,7 @@ for (const closeByOwner of [false, true]) test(`progress ${closeByOwner ? 'repla
 });
 
 
-test('Hide survives later messages until reopening explicitly reveals the latest progress', async () => {
+for (const earlyRequest of [false, true]) test(`Hide survives later messages until reopening reveals progress with a request ${earlyRequest ? 'before' : 'after'} polling starts`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'update-progress-hide-'));
   const shown: string[] = [];
   let hidden!: () => void;
@@ -42,14 +42,16 @@ test('Hide survives later messages until reopening explicitly reveals the latest
     return () => {};
   });
   const nonce = 'a'.repeat(64);
+  if (earlyRequest) writeFileSync(updateProgressRequestPath(root, nonce), JSON.stringify({at: Date.now()}));
   const close = ops.showProgress!('Waiting for a check', nonce);
   try {
     hidden();
     ops.showProgress!('Installing the new build');
     assert.deepEqual(shown, ['Waiting for a check'], 'a message change must not undo Hide');
-    writeFileSync(updateProgressRequestPath(root, nonce), JSON.stringify({at: Date.now()}));
+    if (!earlyRequest) writeFileSync(updateProgressRequestPath(root, nonce), JSON.stringify({at: Date.now()}));
     const deadline = Date.now() + 3000;
     while (shown.length < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(shown, ['Waiting for a check', 'Installing the new build']);
+    assert.equal(existsSync(updateProgressRequestPath(root, nonce)), false, 'the request is consumed rather than replayed');
   } finally { close(); rmSync(root, {recursive: true, force: true}); }
 });

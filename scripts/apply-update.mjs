@@ -26,8 +26,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  watchFile,
-  unwatchFile,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -214,6 +213,7 @@ export function realApplyOperations(
   let processOwners = [];
   let lastWaiting = '';
   let requestPath = null;
+  let requestPoll = null;
   const revealProgress = () => {
     closeProgress?.();
     progressHidden = false;
@@ -226,12 +226,16 @@ export function realApplyOperations(
     }
     if (nonce && !requestPath) {
       requestPath = updateProgressRequestPath(dirname(logPath), nonce);
-      watchFile(requestPath, {interval: 100}, (current, previous) => {
-        if (current.mtimeMs && current.mtimeMs !== previous.mtimeMs) revealProgress();
-      });
+      // Consume requests even if they predate polling. watchFile's initial stat can
+      // otherwise absorb a fast reopen as its baseline without reporting a change.
+      requestPoll = setInterval(() => {
+        try { unlinkSync(requestPath); } catch { return; }
+        revealProgress();
+      }, 100);
     }
     return () => {
-      if (requestPath) { unwatchFile(requestPath); rmSync(requestPath, {force: true}); requestPath = null; }
+      if (requestPoll) { clearInterval(requestPoll); requestPoll = null; }
+      if (requestPath) { rmSync(requestPath, {force: true}); requestPath = null; }
       closeProgress?.(); closeProgress = null; progressMessage = ""; progressHidden = false;
     };
   };

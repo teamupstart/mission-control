@@ -248,6 +248,15 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
+ * A per-task advisor override for a Claude dispatch: the model aliases Claude Code's
+ * `advisorModel` setting accepts, plus `off`, which disables the advisor tool outright.
+ * Inherit is not a value here - it is `null` on the task, and the launch renders nothing.
+ * Fable is deliberately absent; see `docs/dispatch-and-backlog.md#advisor`.
+ */
+export const ADVISOR_CHOICES = ["opus", "sonnet", "off"] as const;
+export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
+
+/**
  * A harness's live permission posture.
  *
  * The first six values are Claude's exact hook/footer strings. The remaining four
@@ -306,6 +315,15 @@ export interface SessionMeta {
   source: MetaSource;
   /** epoch ms these values were observed (drives precedence + freshness TTL). */
   updatedAt: number;
+  /**
+   * Raw id of the advisor model named by the newest eligible main-chain assistant record in
+   * the transcript (its top-level `advisorModel`), e.g. `claude-opus-5-5`. Sidechain and
+   * API-error records are not eligible. Absent when that newest record is unstamped, even if
+   * an older stamped turn is still in the scanned tail, and absent when no eligible record is
+   * in the tail. Only the transcript reports it, so a statusLine reading keeps the last
+   * transcript value.
+   */
+  advisorModel?: string | null;
 }
 
 /** Which estimator produced the API-equivalent dollar figure. */
@@ -2060,6 +2078,21 @@ export const TASK_WORKTREE_RETENTION_DAYS = 30;
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
 
 /**
+ * A resident task whose run Restart on new profile ended, while the task itself is still open.
+ *
+ * Restart leaves completing the replaced session to the operator, so the Console keeps offering
+ * Complete until the task is done - whatever happened to the replacement since. Derived on read
+ * from the resident runs (the ended run's restart pause and the replacement its request id
+ * names), never stored on the `tasks` row, and absent once the task is terminal.
+ */
+export interface TaskResidentRestart {
+  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
+  replacementTaskId: string | null;
+  /** The profile revision the replacement pinned; null with no replacement. */
+  revision: number | null;
+}
+
+/**
  * What automatic worktree cleanup has to say about this task, or null when it has nothing.
  *
  * Null in every ordinary case: a task with no checkout, a checkout inside its 30-day window,
@@ -2168,6 +2201,12 @@ export interface Task {
    * follow a default changed while it waited unless somebody explicitly pinned it.
    */
   effort: ThinkingLevel | null;
+  /**
+   * Advisor override for this task, or null to inherit whatever the operator's Claude
+   * Code settings say. Unlike `model` and `effort` there is no Mission Control default
+   * to resolve: null renders nothing at launch, so the CLI's own settings decide.
+   */
+  advisorModel: AdvisorChoice | null;
   /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
@@ -2327,6 +2366,11 @@ export interface Task {
    * FAILED are the task's own record, and a maintenance note must never overwrite either.
    */
   automaticCleanup: TaskAutomaticCleanup | null;
+  /**
+   * Set while this resident task's run was ended by Restart on new profile and the task is still
+   * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
+   */
+  residentRestart?: TaskResidentRestart | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -3455,6 +3499,26 @@ export interface TranscriptMessage {
    * on it.
    */
   presentation?: TranscriptPresentation;
+  /**
+   * One call to Claude's server-side advisor, when this assistant turn carries its result.
+   *
+   * Read from the `advisor_tool_result` content block Claude Code writes after a
+   * `server_tool_use` block named `advisor`. The call marker itself carries nothing to draw,
+   * so only the result produces this field. `model` is the record's top-level
+   * `advisorModel` (a full model id such as `claude-opus-5-5`), or null when the record
+   * does not name one. `text` is present only for an `advisor_result` that carries text;
+   * a redacted result is encrypted and has none. `errorCode` is the API's `error_code`.
+   * A result shape Claude Code does not recognise is ignored, as the CLI ignores it.
+   */
+  advisor?: TranscriptAdvisor;
+}
+
+/** What an advisor call produced, as `TranscriptMessage.advisor` reports it. */
+export interface TranscriptAdvisor {
+  model: string | null;
+  outcome: "advised" | "redacted" | "declined" | "error";
+  text?: string;
+  errorCode?: string;
 }
 
 /**

@@ -525,6 +525,22 @@ The app marks itself as quitting before the quit request, so the hide-on-close g
 normally. The helper checks competing launchers and waits for all bundle executables to exit
 before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
+Every quit, including the one an update requests, holds the app open while the daemon and
+Foreman drain, bounded by the shared 30-second quit deadline. The app sends a private shutdown
+message first. A failed send or utility timeout requests forced termination and waits for exit;
+if the overall deadline is reached, Electron reaps the remaining utilities. Workflow checks
+start draining before slower session shutdown. The detached helper then handles any verified
+survivors before replacing the bundle.
+
+If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
+summary of the executable and check-supervisor marker. The helper never prints command lines
+or uses that fallback description as authority to signal a process. Rollback outcomes use the
+shared diagnostic redaction policy.
+
+Other migration kinds retain the startup notification and bounded fallback window when their
+helper is alive. In-place updates use the existing helper's progress dialog, as described below,
+so the transient app launch does not hold the old bundle open while displaying a notice.
+
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
@@ -596,8 +612,14 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
+attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,

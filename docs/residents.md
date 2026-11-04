@@ -42,6 +42,38 @@ it names, never changes a resident that is already running.
 Pi is not offered: the first release supports Claude Code and Codex, and a profile can only be
 saved for a harness with an Agent SDK driver.
 
+## Built-in residents
+
+Mission Control ships one resident ready to launch, installed on every machine:
+
+| Resident | What it does |
+|---|---|
+| Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+
+Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
+your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
+Archive are absent, every field is locked, and a line says why. **Duplicate to edit** opens a new,
+unsaved profile named `<name> copy` with the same settings. Your copy is an ordinary profile:
+editable, archivable, and never touched by an upgrade. Every saved profile also offers
+**Duplicate**.
+
+A built-in launches like any profile. **Upgrading Mission Control updates it**: when a new build
+ships different settings, the daemon writes them as the built-in's next revision at startup. A
+resident already running keeps the revision it launched with. Use **Restart on new profile** to
+pick up the update. In the desktop app, that Restart click authorizes session control for the
+new run when the new profile revision has **Control other sessions** on.
+
+The daemon refuses edits and archives of a built-in even when they do not come from the editor.
+New profiles and renames cannot take a built-in's name. A profile you authored under that name
+before it shipped keeps the name and everything in it. Both stay listed: yours under **Yours**,
+the built-in under **Built-in**. The dock and Dispatch tag the built-in, and its Launch button
+reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-in in place of
+your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
+live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
+
+The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
+the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+
 ## Launching a resident
 
 **Dispatch > Resident** shows a card per live profile, the repository (pre-filled from the
@@ -118,9 +150,12 @@ never a resident that is already running.
 many; with none running it shows no number. Click it, press **Shift+H**, or choose **Open the
 Residents dock** in the ⌘K palette.
 
-- **Live** lists each running resident with its chip, its session's state and **Open**, which
-  opens that session. A resident whose revision asks for session control also shows **control
-  granted** or **control not granted**, the latter with the session control menu.
+- **Live** shows each running resident as a card in its marker color. The card's top line has
+  the chip, the name, the session's state and **Open**, which opens that session. Under it are
+  the loop's state, iteration and next wake as tags, any pause or wake reason, and the resident's
+  compaction layers. The footer holds **Pause** or **Resume** and **Run now**. A resident whose
+  revision asks for session control also shows a **Control** badge at the end of the footer when
+  control is granted, or **No control** beside the session control menu when it is not.
 - **Profiles** lists every live profile with **Launch**. A profile with a default repository
   launches straight away, through the same launch call as Dispatch; while it starts the row reads
   *starting…*, and closing the dock does not lose it - launching again resumes that same launch,
@@ -140,8 +175,8 @@ that way at every width.
 **Control other sessions**, under **Authority**, is off by default. Turned on, it lets a
 resident's run receive the same grant as the
 [session control menu](sessions.md#let-a-session-steer-other-sessions), so it can read and steer
-your other live sessions. Your **Launch** click in the Mission Control desktop app, on
-**Launch resident** in Dispatch or **Launch** in the Residents dock, is the only thing that gives
+your other live sessions. Your desktop click on **Launch resident** in Dispatch,
+**Launch** in the Residents dock, or **Restart on new profile** gives
 it a grant that lasts for the run and through a restart. The session control menu can still grant
 control for one conversation, as it can for any session, and that grant ends at the next restart.
 
@@ -174,8 +209,8 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 After each completed turn a resident waits for its next wake. Foreman never completes it
 automatically. It ends when you choose **Complete & close** on its session,
 or when its session goes away, which settles its task through the ordinary task lifecycle. A
-failed launch, or one interrupted by a restart before its session started, is recorded with its
-reason and is never relaunched; launch the profile again.
+failed launch, or one interrupted by a daemon restart before its session started, is recorded
+with its reason and is never relaunched; launch the profile again.
 
 A run without a repository has no Git worktree, diff, pull request, repository reset or repository group.
 The Files panel browses its working directory directly, without Git or managed repository plans.
@@ -209,18 +244,37 @@ safe replay. Only a typed refusal or a refused connection proves nothing was rec
 
 **Human input has priority.** Queuing a human message cancels the scheduled wake and pending
 agent delay. After the human turn, the normal cadence applies unless the agent requests another
-delay. A request for human input (`needs-you`) pauses the loop until the request is resolved and
-you resume it. Pausing does not interrupt an already running turn.
+delay. An open review, input request or permission dialog holds wakes and shows **waiting on you**.
+It preserves the scheduled wake and accepts pacing requests. Answering or dismissing the request
+releases the hold automatically once the session is idle. An overdue wake fires once; a completed
+turn uses its requested delay or the profile default. Detached review continuations preserve
+pending pacing too. Only an operator Pause or a guardrail requires Resume; neither is cleared by
+answering a review. Legacy automatic `needs-you` pauses recover on observation using the default
+cadence because their old pacing intent was already discarded. Pausing does not interrupt an
+already running turn.
 
 All four surfaces offer **Pause**, **Resume** and **Run now**. Resume starts a fresh cadence;
 Run now asks for an immediate idle wake, subject to the same human, compaction and budget checks.
-After a profile edit, **Restart on new profile** ends the old task through its normal lifecycle
-and launches the latest revision in a new conversation. It preserves the repository choice and
-run instructions; a repository-free resident receives a fresh private workspace. New conversation
-creation ensures every changed launch option takes effect. Retrying an interrupted Restart
-finishes the same replacement request, including an interruption after the old task completed.
-The replacement conversation does not inherit a session-control grant from the old run;
-only the desktop Launch flow or the existing session-control menu can grant that authority.
+After a profile edit, **Restart on new profile** ends the old run, so its session stops waking,
+and launches the latest revision in a new conversation. The old task and session stay open, and
+Restart ends by opening the Complete dialog for the old session, wherever you clicked it: complete
+it there, or cancel to keep it. The old session's Console band also says it was restarted on the
+new revision and offers **Open new session** and **Complete & close**, so you decide when the
+replaced conversation closes. The offer stays until that task is completed, even if the new
+session has since ended or never started, and survives a reload or daemon restart. Restart
+preserves the repository choice and run instructions; a repository-free resident receives a fresh
+private workspace. New conversation creation ensures every changed launch option takes effect.
+If Restart is interrupted, recovery depends on whether it had reserved its replacement yet. Before
+the reservation no replacement launch exists, so retrying Restart starts it. After the
+reservation, a replacement whose session never started is a failed launch like any other (see
+[Lifecycle](#lifecycle)): retrying Restart only reports that failure, so launch the profile again.
+Either way the old session's band keeps **Complete & close**.
+The replacement conversation does not inherit a session-control grant from the old run.
+In the desktop app, the Restart click authorizes a fresh grant through the same path as Launch,
+bound to the replacement request and the new profile revision. It grants control only if that
+revision has **Control other sessions** on. A browser restart or a desktop app attached to a
+daemon it did not start still launches without control; the session control menu can grant it
+for that conversation.
 
 ### Compaction and guardrails
 
@@ -316,10 +370,14 @@ every resume after that reads only the copy:
   configuration layer that changes one of the run's servers or forces a server on itself. On
   Claude Code a start is also refused when a server in the set does not connect, is switched off or
   waits on a login once Claude has started it, or when Claude cannot confirm the set within 60
-  seconds; this applies equally to the relaunch Claude makes to recover from a lost login. That includes a remote server behind an OAuth login
-  Claude Code holds, which the launcher cannot present. Nothing is renamed or dropped silently.
-  When a remote server does not connect, Claude Code's MCP log for the run's workspace has the
-  launcher's reason, with the transport's error code. A code such as `SELF_SIGNED_CERT_IN_CHAIN`
+  seconds; this applies equally to the relaunch Claude makes to recover from a lost login.
+  Nothing is renamed or dropped silently. A remote server behind an OAuth login Claude Code has no
+  usable token for - never signed in, or one it could not refresh - refuses the start saying it
+  needs a login; sign in to it with `/mcp` in Claude Code and launch again. Claude Code remembers
+  that verdict by server name for a while, so a later launch can be refused the same way until
+  you sign in.
+  When a remote server reached through the launcher does not connect, Claude Code's MCP log for
+  the run's workspace has the launcher's reason, with the transport's error code. A code such as `SELF_SIGNED_CERT_IN_CHAIN`
   says the server presented a certificate chain the launcher does not trust; the common cause is
   a root, such as a TLS-inspecting proxy's, that is in neither Node's roots nor the system's
   certificate store, both of which the launcher trusts.
@@ -336,9 +394,23 @@ values over plain `http` to another host, has a credential in an argument,
 or uses a Claude Code `${VAR}` reference. A reference to a variable that is set reads a value the
 resident's agent inherits too, so it would not be private to the server; define that server as a
 custom server with a secret instead. A reference to an unset variable is refused unless it has a
-`:-default`, which is used as written. Claude Code's configuration does not say which remote
-servers use its OAuth login, so such a server is listed as usable and refuses the start instead,
-as above.
+`:-default`, which is used as written.
+
+A Claude Code remote (`http` or `sse`) server with no headers, and no query, user name, password,
+fragment or key-shaped path segment in its URL, reached over `https` or over plain `http` to this
+machine, is handed to Claude Code as configured, whether it is inherited or selected, rather than
+through the launcher. That is what lets a resident use a server you signed in to with OAuth in
+Claude Code: Claude Code keeps that login under the server's name, type, URL and headers exactly as
+configured, and only its own connection can present it. So such a server's URL appears in the
+agent's launch-scoped MCP configuration. Renaming the server or changing its URL, even by a
+trailing slash, asks for a new login. Every other usable global server still starts through the launcher,
+which presents no login and keeps the URL private: any with a header, a query value or a fragment;
+one on plain `http` to another host, because a login is a credential and travels in the clear only
+on this machine; and one whose path has a segment shaped like a key (a known key prefix such as
+`sk-`, a credential-named assignment such as `token=…`, a long token mixing letters and digits, a
+UUID), because such a server authenticates by
+its URL and that URL must not reach the agent. The check is deliberately wide: a false match only
+keeps a server on the launcher.
 
 How each harness is held to exactly this set, and what was measured, is in
 [resident MCP isolation](harnesses-and-terminals.md#resident-mcp-isolation).
@@ -371,12 +443,22 @@ servers. A custom server has a name, the harnesses it applies to, and either a *
 
 A secret value never appears on a command line. It reaches only its own server, through Mission
 Control's launcher, as that server's environment, headers or query; never the agent's environment,
-a generated configuration file, a log or the transcript. A global server's definition stays out of
-the agent's launch arguments and generated configuration as well: the agent is handed only a
-launcher entry naming the run, the server and a credential file. The launcher then starts a stdio
-server with its configured command and arguments, so those ordinary arguments appear on that
-server's own process, as they would if the harness started it. See
-[security](security.md#resident-mcp-secrets).
+a generated configuration file, a log or the transcript. A global server reaches the agent in one
+of two ways:
+
+- **Through the launcher**, for every usable global server except the one below. Its definition stays out
+  of the agent's launch arguments and generated configuration: the agent is handed only a launcher
+  entry naming the run, the server and a credential file. The launcher then starts a stdio server
+  with its configured command and arguments, so those ordinary arguments appear on that server's
+  own process, as they would if the harness started it.
+- **Directly**, for a Claude Code remote (`http` or `sse`) server with no headers, no query, user
+  name, password, fragment or key-shaped path segment in its URL, over `https` or loopback `http`
+  (above). It carries no value, so Claude is handed the server
+  itself: its name, type and URL as configured, an empty header table and its options. Its URL is
+  therefore in the agent's launch-scoped MCP configuration, and Claude Code presents any OAuth
+  login it holds for it.
+
+See [security](security.md#resident-mcp-secrets).
 
 When a run ends, its copy of the servers and their values, its launch tickets and its Codex
 configuration overlay are removed once its session has stopped.

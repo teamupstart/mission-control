@@ -26,6 +26,11 @@ import { superviseUtilityProcess } from "./utility-supervisor.ts";
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
   adopted: boolean;
+  /**
+   * Resolves once a daemon we spawned has run its own shutdown and exited - which is where its
+   * workflow checks' process groups are torn down through the lease path. An adopted daemon is
+   * not ours to stop, so that resolves at once.
+   */
   stop: () => Promise<void>;
 }
 

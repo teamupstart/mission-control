@@ -10,7 +10,7 @@ import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } fro
 // never meant to touch it. The API takes a patch for exactly this reason: an omitted key
 // means "leave it alone" (see `UpdateTaskSchema`).
 
-import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
+import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
@@ -63,6 +63,12 @@ export type DispatchDraft = {
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
   /**
+   * Advisor override, or "" to inherit the operator's own Claude settings. Unlike model and
+   * effort there is no Mission Control default behind the empty option: "" is omitted on a
+   * dispatch and sent as `null` on an update, so the launch renders nothing either way.
+   */
+  advisorModel: AdvisorChoice | "";
+  /**
    * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
@@ -94,6 +100,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   labels: "",
   model: "",
   effort: "",
+  advisorModel: "",
   workflowId: undefined,
   enabled: true,
   dependencies: [],
@@ -141,6 +148,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
+    advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
@@ -176,6 +184,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.labels === b.labels &&
     a.model === b.model &&
     a.effort === b.effort &&
+    a.advisorModel === b.advisorModel &&
     a.workflowId === b.workflowId &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
@@ -248,6 +257,8 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
+  const advisorModel = draft.advisorModel || null;
+  if (advisorModel !== task.advisorModel) patch.advisorModel = advisorModel;
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }

@@ -1,15 +1,52 @@
-import type { JiraConfig, SweepContext } from "@shared/task-source.ts";
+import type { JiraConfig, SweepContext, WritebackNotice, WritebackResult } from "@shared/task-source.ts";
+import { PR_URL_RE } from "@shared/pr-command.mjs";
 import { acliBin } from "../config.ts";
 import { run, type RunResult } from "../util/exec.ts";
-import { issuesFrom, MAX_SWEEP_ISSUES, siteHost, tooBroad, type JiraWalk } from "./jira.ts";
+import { scrubSecrets } from "../inspector/scrub.ts";
+import { repoRootGone } from "./repo-root.ts";
+import {
+  commentBodyAdf, currentStatusFrom, issuesFrom, MAX_SWEEP_ISSUES, NO_TARGET_STATUS,
+  siteHost, tooBroad, transitionFor, transitionsFrom, UNKNOWN_OUTCOME,
+  writebackDone, writebackRefusal, writeTarget, type JiraWalk,
+} from "./jira.ts";
 
 /** Status, search and status again fit inside the sweeper's 60-second deadline. */
-const ACLI_TIMEOUT_MS = 15_000;
+export const ACLI_TIMEOUT_MS = 15_000;
 
 export interface JiraAcliDeps {
   run: typeof run;
 }
 const defaultDeps: JiraAcliDeps = { run };
+
+/** Preserve useful workflow reasons without retaining credential or common PII shapes. */
+export function writeDiagnostic(text: string): string {
+  return scrubSecrets(text)
+    .replace(/(\bauthorization\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi, "$1[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, "Bearer [redacted]")
+    .replace(/(\b(?:password|passwd|secret|token|access_token|refresh_token|id_token|api[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi, "$1[redacted]")
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[redacted]")
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted]");
+}
+
+/** Scrub before the inherited read-only classifier truncates stderr. */
+function writeDeps(deps: JiraAcliDeps): JiraAcliDeps {
+  return { run: async (bin, args, opts) => {
+    const res = await deps.run(bin, args, opts);
+    return { ...res, stderr: writeDiagnostic(res.stderr) };
+  } };
+}
+
+/** This is the boundary before the ledger, its log and the settings API receive a result. */
+function writeResult(result: WritebackResult): WritebackResult {
+  return { ...result,
+    error: result.error === null ? null : writeDiagnostic(result.error),
+    detail: result.detail === null ? null : writeDiagnostic(result.detail),
+  };
+}
+
+const SERVICE_ISSUE_URL = /^https:\/\/jira-prod-[a-z]{2}-\d+-\d+\.prod\.atl-paas\.net(\/rest\/api\/3\/issue\/\d+)$/;
+/** The status and category self URLs in the captured view are also tenant-neutral. */
+const SERVICE_STATUS_URL = /^https:\/\/jira-prod-[a-z]{2}-\d+-\d+\.prod\.atl-paas\.net\/rest\/api\/3\/(?:status|statuscategory)\/\d+$/;
 
 /** --paginate honors --limit as a total ceiling, verified against six matching issues. */
 export function acliSearchArgs(cfg: JiraConfig, limit: number): string[] {
@@ -22,6 +59,7 @@ export function acliSearchArgs(cfg: JiraConfig, limit: number): string[] {
 
 export type AcliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unauthenticated"
   | "unsupported-flag"
@@ -29,6 +67,8 @@ export type AcliFault =
 
 export function acliFault(res: RunResult): AcliFault {
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   if (res.code === 127 || /\bENOENT\b|was not found in the executable environment/i.test(res.stderr)) return "not-installed";
   if (/unauthorized|auth login/i.test(res.stderr)) return "unauthenticated";
   if (/unknown flag/i.test(res.stderr)) return "unsupported-flag";
@@ -41,10 +81,12 @@ export function acliFailure(res: RunResult): string {
     case "no-answer":
       if (res.overflowed) return "acli returned too much output to read - narrow the JQL and run Check it works again";
       return "acli did not answer - check your connection and run Check it works again";
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
-      return "acli is not installed - run `brew tap atlassian/homebrew-acli && brew install acli`";
+      return "Mission Control cannot find acli - install it from Settings > Setup > Jira, or run `brew install atlassian/acli/acli`. If it is installed somewhere unusual, set MISSION_ACLI_BIN to its path";
     case "unauthenticated":
-      return "acli is not logged in to Jira - run `acli jira auth login --web`";
+      return "acli is not signed in to Jira - sign in from Settings > Setup > Jira, or run `acli jira auth login --web`";
     case "unsupported-flag":
       return "acli does not support the required flags - run `brew upgrade acli`";
     case "refused": {
@@ -97,7 +139,7 @@ function normalizeSearchSites(issues: JiraWalk["issues"], cfg: JiraConfig): stri
     const host = siteHost(self);
     if (!host) return "cannot confirm the Jira site in acli's search response - check `acli jira auth status` and try again";
     if (host === configured) continue;
-    const servicePath = /^https:\/\/jira-prod-[a-z]{2}-\d+-\d+\.prod\.atl-paas\.net(\/rest\/api\/3\/issue\/\d+)$/.exec(self)?.[1];
+    const servicePath = SERVICE_ISSUE_URL.exec(self)?.[1];
     if (!servicePath) return siteMismatch(host, configured);
     issue.self = `https://${configured}${servicePath}`;
   }
@@ -138,4 +180,210 @@ export async function acliPreflight(
   deps: JiraAcliDeps = defaultDeps,
 ): Promise<string | null> {
   return (await readAcli(cfg, ctx, 1, deps)).error;
+}
+
+/** Only the canonical GitHub PR URLs Mission Control observes receive clickable marks. */
+function hasAcliPrLink(url: string | null): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password || parsed.port) return false;
+    const canonical = `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
+    return PR_URL_RE.exec(canonical)?.[0] === canonical;
+  } catch {
+    return false;
+  }
+}
+
+export function acliCommentArgs(key: string, notice: WritebackNotice): string[] {
+  const body = commentBodyAdf(notice, { linkPrUrl: hasAcliPrLink(notice.prUrl) });
+  return ["jira", "workitem", "comment", "create", "--key", key, "--body", JSON.stringify(body)];
+}
+
+function jsonBody(stdout: string): unknown {
+  try { return JSON.parse(stdout); } catch { return null; }
+}
+
+function record(body: unknown): Record<string, unknown> | null {
+  return body !== null && typeof body === "object" && !Array.isArray(body)
+    ? body as Record<string, unknown> : null;
+}
+
+/** Inspect every envelope; captured issue/status service URLs cannot prove tenant identity. */
+function responseSiteProblem(body: unknown, cfg: JiraConfig): string | null {
+  const pending = [body];
+  const configured = siteHost(cfg.site);
+  while (pending.length) {
+    const value = pending.pop();
+    if (Array.isArray(value)) {
+      for (const entry of value) pending.push(entry);
+      continue;
+    }
+    const row = record(value);
+    if (!row) continue;
+    if (row.self != null) {
+      const self = typeof row.self === "string" ? row.self : "";
+      const host = siteHost(self);
+      // OAuth's captured issue URLs are tenant-neutral. Auth checks bracket every read/write.
+      if (!host) return "cannot confirm the Jira site in acli's response";
+      if (host !== configured && !SERVICE_ISSUE_URL.test(self) && !SERVICE_STATUS_URL.test(self)) {
+        return `acli's response names ${host}, but this source uses ${configured}`;
+      }
+    }
+    for (const child of Object.values(row)) pending.push(child);
+  }
+  return null;
+}
+
+function unknownWrite(key: string, cfg: JiraConfig, reason: string): WritebackResult {
+  return {
+    error: `${key} at ${siteHost(cfg.site)}: ${reason}${UNKNOWN_OUTCOME}`,
+    outcomeUnknown: true, detail: null,
+  };
+}
+
+/** A write is never delivered on exit code alone: the active site must still be proven. */
+async function afterWrite(
+  cfg: JiraConfig, key: string, res: RunResult, ctx: SweepContext, deps: JiraAcliDeps,
+): Promise<WritebackResult | null> {
+  const gate = await acliSiteGate(cfg, ctx, deps);
+  const response = responseSiteProblem(jsonBody(res.stdout), cfg);
+  if (gate || response) {
+    return unknownWrite(key, cfg, `${[gate, response].filter(Boolean).join("; ")} - check both sites before retrying`);
+  }
+  if (acliFault(res) === "no-answer") return unknownWrite(key, cfg, "acli did not answer the write");
+  return null;
+}
+
+/** Preserve the write's own reason without the read-only classifier's JQL advice. */
+function writeReason(res: RunResult): string {
+  if (acliFault(res) !== "refused") return acliFailure(res);
+  return res.stderr.trim().replace(/^(?:✗\s*)?Error:\s*/i, "").slice(0, 500) || "acli refused without a reason";
+}
+
+export async function acliAnnotate(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps = defaultDeps,
+): Promise<WritebackResult> {
+  return writeResult(await annotateAcli(cfg, notice, ctx, writeDeps(deps)));
+}
+
+async function annotateAcli(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps,
+): Promise<WritebackResult> {
+  const target = writeTarget(cfg, notice);
+  if ("problem" in target) return writebackRefusal(target.problem);
+  const gate = await acliSiteGate(cfg, ctx, deps);
+  if (gate) return writebackRefusal(`${gate}, so nothing was written`);
+  const res = await deps.run(acliBin(), acliCommentArgs(target.key, notice), {
+    cwd: ctx.repoRoot, timeoutMs: ACLI_TIMEOUT_MS, input: "",
+  });
+  const uncertain = await afterWrite(cfg, target.key, res, ctx, deps);
+  if (uncertain) return uncertain;
+  if (res.code !== 0) return writebackRefusal(`the comment could not be posted - acli said: ${writeReason(res)}`);
+  const failure = writeResponseFailure(jsonBody(res.stdout));
+  if (failure) return writebackRefusal(`the comment could not be posted - acli said: ${failure}`);
+  const link = cfg.linkVia === "comment" ? "" : notice.prUrl
+    ? `; the remote link is unavailable (acli cannot post one); the comment carries ${hasAcliPrLink(notice.prUrl) ? "the pull request link" : "the supplied URL as plain text"}`
+    : "; no pull request to link";
+  return writebackDone(`commented${link}`);
+}
+
+/** Every status read has fresh site proof on both sides, including an already-there read. */
+async function readStatus(
+  cfg: JiraConfig, key: string, ctx: SweepContext, deps: JiraAcliDeps,
+): Promise<{ status: string; body: unknown } | { problem: string }> {
+  const gate = await acliSiteGate(cfg, ctx, deps);
+  if (gate) return { problem: gate };
+  const res = await deps.run(acliBin(), ["jira", "workitem", "view", key, "--fields", "status", "--json"], {
+    cwd: ctx.repoRoot, timeoutMs: ACLI_TIMEOUT_MS, input: "",
+  });
+  if (res.code !== 0 || res.outcomeUnknown) return { problem: `${key} could not be read - ${acliFailure(res)}` };
+  const body = jsonBody(res.stdout);
+  const site = responseSiteProblem(body, cfg);
+  if (site) return { problem: site };
+  const status = currentStatusFrom(body);
+  if (!status) return { problem: `${key}'s current status could not be read from acli's answer` };
+  const after = await acliSiteGate(cfg, ctx, deps);
+  return after ? { problem: after } : { status, body };
+}
+
+/** Read explicit failures from acli's JSON write result. */
+function writeResponseFailure(body: unknown): string | null {
+  if (Array.isArray(body)) {
+    for (const entry of body) {
+      const problem = writeResponseFailure(entry);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  const row = record(body);
+  if (!row) return null;
+  for (const name of ["error", "errors", "errorMessages"]) {
+    const value = row[name];
+    if (value && value !== "" && JSON.stringify(value) !== "[]" && JSON.stringify(value) !== "{}") {
+      const reason = typeof value === "string" ? value
+        : Array.isArray(value) && value.every((part) => typeof part === "string") ? value.join("; ")
+        : "acli reported a structured error";
+      return writeDiagnostic(reason).slice(0, 500);
+    }
+  }
+  if (row.success === false || /^(failed|failure|error)$/i.test(String(row.status))) {
+    const reason = typeof row.message === "string" ? row.message : String(row.status || "acli reported failure");
+    return writeDiagnostic(reason).slice(0, 500);
+  }
+  for (const value of Object.values(row)) {
+    const problem = writeResponseFailure(value);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+export async function acliResolve(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps = defaultDeps,
+): Promise<WritebackResult> {
+  return writeResult(await resolveAcli(cfg, notice, ctx, writeDeps(deps)));
+}
+
+async function resolveAcli(
+  cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext, deps: JiraAcliDeps,
+): Promise<WritebackResult> {
+  const wanted = cfg.resolveTransition.trim();
+  if (!wanted) return writebackRefusal(NO_TARGET_STATUS);
+  const target = writeTarget(cfg, notice);
+  if ("problem" in target) return writebackRefusal(target.problem);
+  const key = target.key;
+  const read = await readStatus(cfg, key, ctx, deps);
+  if ("problem" in read) return writebackRefusal(`${read.problem}, so nothing was written`);
+  if (read.status.toLowerCase() === wanted.toLowerCase()) return writebackDone(`already "${read.status}"`);
+  // Captured *all has transitions:null, so there is no speculative extra probe. Honor a
+  // list if supplied, including an empty list, and use the destination status for --status.
+  let destination = wanted;
+  if (Array.isArray(record(read.body)?.transitions)) {
+    const match = transitionFor(read.body, wanted, { key, status: read.status });
+    if ("problem" in match) return writebackRefusal(match.problem);
+    const transition = transitionsFrom(read.body).find((t) => t.id === match.id)!;
+    destination = transition.to || transition.name;
+    if (read.status.toLowerCase() === destination.toLowerCase()) return writebackDone(`already "${read.status}"`);
+  }
+  // readStatus's final gate is immediately before this write, with only pure parsing between.
+  const res = await deps.run(acliBin(), ["jira", "workitem", "transition", "--key", key, "--status", destination, "--yes", "--json"], {
+    cwd: ctx.repoRoot, timeoutMs: ACLI_TIMEOUT_MS, input: "",
+  });
+  const uncertain = await afterWrite(cfg, key, res, ctx, deps);
+  if (uncertain) return uncertain;
+  const refused = (status: string, reason: string) => writebackRefusal(
+    `${key} cannot move to "${wanted}" from "${status}" - acli said: ${reason}. Set this source's resolve status to one the issue can reach`,
+  );
+  if (res.code !== 0) return refused(read.status, writeReason(res));
+  const response = jsonBody(res.stdout);
+  const failure = writeResponseFailure(response);
+  if (failure) return refused(read.status, failure);
+  const confirmed = await readStatus(cfg, key, ctx, deps);
+  if ("problem" in confirmed) return unknownWrite(key, cfg, `the move could not be confirmed - ${confirmed.problem}`);
+  if (confirmed.status.toLowerCase() !== destination.toLowerCase()) {
+    const message = record(response)?.message;
+    const reason = res.stderr.trim() || (typeof message === "string" ? message : "the confirming read still shows another status");
+    return refused(confirmed.status, writeDiagnostic(reason).slice(0, 500));
+  }
+  return writebackDone(`moved to "${confirmed.status}"`);
 }

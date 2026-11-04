@@ -140,6 +140,37 @@ function latestAssistantUsage(
   return null;
 }
 
+/**
+ * The advisor model the newest main-chain assistant record names, or null when it names none.
+ *
+ * Claude Code stamps a top-level `advisorModel` (a full id such as `claude-opus-5-5`) on
+ * every assistant record of a turn that called the advisor (observed on 2.1.317). That it
+ * also stamps a turn that offered the advisor without calling it is inferred from the CLI's
+ * code, not captured. Only the top-level field is read, because that is the only place a
+ * capture has shown it.
+ *
+ * The NEWEST eligible record decides, stamped or not. An unstamped turn after an advisor turn
+ * means the advisor is no longer attached - `/advisor off`, say - and an older stamp must not
+ * keep the chip claiming otherwise until it scrolls out of the tail. Sidechain and API-error
+ * records are not eligible: a subagent's request and an error record describe no main turn,
+ * so they neither set nor clear it.
+ */
+function latestAdvisorModel(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line || line.indexOf('"assistant"') < 0) continue;
+    let o: Record<string, unknown>;
+    try {
+      o = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (o.type !== "assistant" || o.isSidechain || o.isApiErrorMessage) continue;
+    return typeof o.advisorModel === "string" && o.advisorModel ? o.advisorModel : null;
+  }
+  return null;
+}
+
 /** Context length = input + both cache tiers; output is excluded (matches ccstatusline). */
 function contextTokensFromUsage(usage: Record<string, unknown>): number | null {
   const n = (k: string): number => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
@@ -160,6 +191,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
   const contextTokens = usage?.tokens ?? null;
 
   if (!modelId && contextTokens === null && !thinkingLevel) return null;
+  const advisorModel = latestAdvisorModel(lines);
 
   // The transcript's model id drops the `[1m]` marker, so infer the window from the
   // id but let the observed token count correct it upward (489k tokens can't fit a
@@ -176,6 +208,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
     longContext: isLongContext(size),
     thinkingLevel,
     effortRevision: effort.revision,
+    ...(advisorModel ? { advisorModel } : {}),
   };
 }
 

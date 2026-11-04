@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
 import { createHash } from "node:crypto";
+import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -528,6 +529,18 @@ async function poll(ops, timeout, check, message) {
   throw new Error(typeof message === "function" ? message() : message);
 }
 
+async function describeBundleHolder(row, bundle, ops) {
+  if (isMain(row.executable, bundle)) return `pid ${row.pid} (the Mission Control app is still running)`;
+  let args = "";
+  try {
+    const result = await ops.run("/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="], COMMAND_TIMEOUT_MS);
+    if (result.code === 0) args = result.stdout;
+  } catch { /* The executable still identifies a helper below. */ }
+  const orphaned = row.ppid === 1 ? " whose parent already exited" : "";
+  if (args.includes(CHECK_SUPERVISOR_MARKER)) return `pid ${row.pid} (a workflow check${orphaned} is still running)`;
+  return `pid ${row.pid} (${basename(row.executable)}${orphaned} is still running)`;
+}
+
 export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaiting, owners = []) {
   let remaining = [];
   const started = ops.now();
@@ -541,28 +554,42 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaitin
     return candidates.find((owner) => owner.fingerprint === fingerprint);
   };
   const describe = (row) => `${row.pid} (${row.executable}; ${row.work}; parent ${row.ppid}; state ${row.state})`;
-  await poll(ops, timeout, async (budget) => {
-    remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
-    for (const row of remaining) {
-      const owner = ownerOf(row);
-      row.work = owner?.work ?? 'Mission Control bundle process; work ownership could not be verified';
-      // A captured exact identity, never an executable path or recycled PID, authorizes cleanup.
-      // Checks retain their group leader identity, so the signal also reaches branch children.
-      if (!owner || row.pid <= 1 || row.pid === process.pid || ops.now() - started < 5000) continue;
-      const previous = signalled.get(owner.fingerprint);
-      if (previous?.signal === 'SIGKILL') continue;
-      const signal = previous ? 'SIGKILL' : 'SIGTERM';
-      if (previous && ops.now() - previous.at < 5000) continue;
-      if (ownerOf(row) !== owner) continue;
-      try {
-        ops.kill(owner.group ? -row.pid : row.pid, signal);
-        signalled.set(owner.fingerprint, {signal, at: ops.now()});
-      } catch { /* Reinspect exit/identity on the next poll; report a persistent blocker. */ }
-    }
-    if (remaining.length) onWaiting?.(`Waiting for background work to stop: ${remaining.map(describe).join(", ")}. Mission Control is cleaning up owned work and will reopen automatically.`);
-    return remaining.length === 0;
-  }, () => `Mission Control bundle processes did not exit: ${remaining.map(describe).join(", ")}. The update was cancelled safely. Mission Control will reopen the previous build automatically.`);
+  let timedOut = false;
+  try {
+    await poll(ops, timeout, async (budget) => {
+      remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
+      for (const row of remaining) {
+        const owner = ownerOf(row);
+        row.work = owner?.work ?? 'Mission Control bundle process; work ownership could not be verified';
+        // A captured exact identity, never an executable path or recycled PID, authorizes cleanup.
+        // Checks retain their group leader identity, so the signal also reaches branch children.
+        if (!owner || row.pid <= 1 || row.pid === process.pid || ops.now() - started < 5000) continue;
+        const previous = signalled.get(owner.fingerprint);
+        if (previous?.signal === 'SIGKILL') continue;
+        const signal = previous ? 'SIGKILL' : 'SIGTERM';
+        if (previous && ops.now() - previous.at < 5000) continue;
+        if (ownerOf(row) !== owner) continue;
+        try {
+          ops.kill(owner.group ? -row.pid : row.pid, signal);
+          signalled.set(owner.fingerprint, {signal, at: ops.now()});
+        } catch { /* Reinspect exit/identity on the next poll; report a persistent blocker. */ }
+      }
+      if (remaining.length) onWaiting?.(`Waiting for background work to stop: ${remaining.map(describe).join(", ")}. Mission Control is cleaning up owned work and will reopen automatically.`);
+      return remaining.length === 0;
+    }, () => { timedOut = true; return "Mission Control bundle processes did not exit."; });
+  } catch (error) {
+    if (!timedOut || !remaining.length) throw error;
+    const named = remaining.slice(0, BUNDLE_HOLDERS_NAMED);
+    const holders = await Promise.all(named.map((row) => ownerOf(row)
+      ? `pid ${describe(row)}` : describeBundleHolder(row, bundle, ops)));
+    const more = remaining.length - named.length;
+    const unverified = named.some((row) => !ownerOf(row)) ? "; work ownership could not be verified" : "";
+    throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}${more ? `; and ${more} more` : ""}${unverified}. Mission Control will reopen the previous build automatically.`);
+  }
 }
+
+/** How many blocking processes a bundle-exit timeout describes by name. */
+export const BUNDLE_HOLDERS_NAMED = 3;
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
   await read(ops, LSREGISTER, ["-f", bundle], timeout);

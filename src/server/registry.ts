@@ -243,6 +243,7 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskResidentRestartSummaries,
   taskSessionClosureForSession,
   getTaskSessionClosure,
   retireTaskSessionClosure,
@@ -2911,7 +2912,12 @@ export class Registry extends EventEmitter {
   applyDriverEvent(
     id: string,
     evt: SdkEvent,
-    options: { deferIdle?: boolean } = {},
+    options: {
+      deferIdle?: boolean;
+      retryPending?: string | null;
+      workCycleKey?: string;
+      holdWorkCycle?: boolean;
+    } = {},
   ): void {
     const s = this.sessions.get(id);
     if (!s || s.runtime !== "sdk") return;
@@ -2953,7 +2959,22 @@ export class Registry extends EventEmitter {
         // the session first is silently reverted by it - the ledger row survives, the card's
         // own figure does not, and the fleet total then disagrees with every chip on it.
         // Recording last means `applyDurableUsage` re-reads the session it is updating.
-        if (!options.deferIdle) {
+        if (options.retryPending) {
+          // The provider ended the turn at capacity and the supervisor will retry it. The
+          // work is unfinished, so the cycle must not complete and the card must not go
+          // idle: either would hand half-done work to whatever is waiting on this turn.
+          this.applyDriverState(s, "working", options.retryPending, now, null);
+        } else if (options.workCycleKey && options.workCycleKey !== noteKeyFor(s)) {
+          // The turn belonged to a conversation a clear has since replaced on this card. Its
+          // completion is recorded against that conversation, never the replacement, whose
+          // cycle has not started; the card itself is idle either way.
+          completeWorkCycle(options.workCycleKey, now, now);
+          this.applyDriverState(s, "idle", null, now, null);
+        } else if (options.holdWorkCycle) {
+          // A capacity failure with an accepted turn still queued: that turn continues the
+          // unfinished work, so this ending is neither idle nor a completed cycle. The queued
+          // turn's own completion settles both.
+        } else if (!options.deferIdle) {
           this.applyDriverState(s, "idle", null, now, "turn_completed");
         } else {
           // The next accepted turn keeps the card working, but the cycle that just ended
@@ -3295,9 +3316,30 @@ export class Registry extends EventEmitter {
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
-      // A PR link sniffed from `gh pr create` decorates the card at once as an
-      // open PR; the poller confirms it and later flips it to merged.
-      const pr = evt.prUrl
+      // A PR link from `gh pr create` decorates the card at once as an open PR; the poller
+      // confirms it and later flips it to merged.
+      //
+      // Only when the agent OPENED the pull request, and only for a session the poller can
+      // retract. The hook bridge sniffs a URL out of ANY tool output, so `prUrl` alone is
+      // also what `gh pr view` trips: an agent that merely READ someone else's pull request
+      // would wear its chip. `prCreated` is the command-side proof that it was
+      // `gh pr create`. A session whose task has no repository (a resident in its own
+      // workspace) is outside both `prPollTargets` and `reconcilePrs`, so nothing would
+      // ever confirm or clear a chip there. Same two conditions `applyDriverPrCreated`
+      // holds the SDK drivers to.
+      //
+      // The poller (`reconcilePrs`) is the only other writer, and it does NOT require
+      // creation provenance. It asks `gh` only for the branch checked out in this session's
+      // own worktree, and `acceptPrForEpisode` refuses a pull request created before this
+      // session's current work episode began - but a PR on that branch created DURING the
+      // episode is accepted whoever opened it (the agent, a person in the GitHub UI, `gh
+      // api`, an MCP tool). That is deliberate for now: the operator chose to keep the poller
+      // as it is, because `prCreated` is held in memory and never persisted, and requiring
+      // it there would stop such PRs from completing their tasks on merge. Strict creation
+      // provenance for the poller was requested later in review and remains an open scope
+      // question, not a guarantee this code makes. What the hook path above does guarantee
+      // is that a URL an agent merely printed (`gh pr view`) never decorates a card.
+      const pr = evt.prUrl && evt.prCreated && taskHasRepository(target.task ?? {})
         ? {
             prUrl: evt.prUrl,
             prNumber: prNumberFromUrl(evt.prUrl),
@@ -5942,9 +5984,12 @@ export class Registry extends EventEmitter {
     );
     const rejectedStatusLineEffort =
       guarded.rejectedStatusLineEffort || reconciled.rejectedStatusLineEffort;
-    const meta = rejectedStatusLineEffort && s.meta
+    const statusLineMeta = rejectedStatusLineEffort && s.meta
       ? { ...reconciled.meta, source: s.meta.source, updatedAt: s.meta.updatedAt }
       : reconciled.meta;
+    // A statusLine does not report the advisor, so the transcript's last reading stands -
+    // unless the agent session rebound, when it described a conversation this no longer is.
+    const meta = agentRebound ? statusLineMeta : withAdvisorModel(statusLineMeta, s.meta?.advisorModel);
     const next: Session = { ...s, meta, agentSessionId, transcriptPath };
     this.clearEffortTrackingOnRebind(s, next);
     // A statusLine can be the first thing to bind an agent session id (it carries one and
@@ -6365,8 +6410,11 @@ export class Registry extends EventEmitter {
       now - s.meta.updatedAt < STATUSLINE_TTL_MS;
     const hasEffortFreshnessGuard = this.effortFreshnessGuards.has(sessionId);
     if (statusLineHasPrecedence && !hasEffortFreshnessGuard) {
-      if (!s.effortBaselineReady) {
-        const next: Session = { ...s, effortBaselineReady: true };
+      // The statusLine owns every field it reports. The advisor model is not one of them,
+      // so the transcript still supplies it here.
+      const advised = s.meta ? withAdvisorModel(s.meta, read.advisorModel) : s.meta;
+      if (!s.effortBaselineReady || advised !== s.meta) {
+        const next: Session = { ...s, meta: advised, effortBaselineReady: true };
         this.sessions.set(sessionId, next);
         this.emitSession(next);
       }
@@ -6392,7 +6440,7 @@ export class Registry extends EventEmitter {
       null,
     );
     const meta = statusLineHasPrecedence && s.meta
-      ? { ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }
+      ? withAdvisorModel({ ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }, read.advisorModel)
       : reconciled.meta;
     const pendingEffort = this.reconcilePendingEffort(
       sessionId,
@@ -6983,7 +7031,29 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "task_upsert", task: next });
   }
 
-  private publishTask(task: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+  /**
+   * Re-derive one task's `residentRestart` record and broadcast it on the ordinary `task_upsert`,
+   * the way `refreshTaskAutomaticCleanup` does. Restart calls it after it ends the old run and
+   * again after the replacement launch settles, so the replaced session's Complete offer appears
+   * at once and names its replacement as soon as one exists.
+   */
+  refreshTaskResidentRestart(taskId: string): void {
+    const current = this.tasks.get(taskId);
+    if (!current) return;
+    const record = taskResidentRestartSummaries([taskId]).get(taskId) ?? null;
+    if (JSON.stringify(record) === JSON.stringify(current.residentRestart ?? null)) return;
+    const next = { ...current, residentRestart: record };
+    this.tasks.set(taskId, next);
+    this.emitEvent({ type: "task_upsert", task: next });
+  }
+
+  private publishTask(written: Task, displaced: readonly string[], deferDependencyCleanup: boolean): void {
+    // Re-derived on every resident write rather than trusted from the caller. A writer that
+    // built its row from a copy taken before Restart ended the run would otherwise broadcast it
+    // without the record, and the replaced session would silently lose its Complete offer.
+    const task: Task = written.kind === "resident"
+      ? { ...written, residentRestart: taskResidentRestartSummaries([written.id]).get(written.id) ?? null }
+      : written;
     const previous = this.tasks.get(task.id);
     const dependenciesChanged = Boolean(
       previous && JSON.stringify(previous.dependencies) !== JSON.stringify(task.dependencies),
@@ -10162,8 +10232,22 @@ function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean
     a.thinkingLevel === b.thinkingLevel &&
     a.nativeEffort === b.nativeEffort &&
     a.thinkingEnabled === b.thinkingEnabled &&
-    a.contextPct === b.contextPct
+    a.contextPct === b.contextPct &&
+    (a.advisorModel ?? null) === (b.advisorModel ?? null)
   );
+}
+
+/**
+ * `meta` carrying the given advisor model, or without one when there is none. Returns `meta`
+ * itself when nothing changes, so a caller can compare by identity. Absent rather than null,
+ * so a session that never ran with an advisor keeps exactly the meta shape it always had.
+ */
+function withAdvisorModel(meta: SessionMeta, advisorModel: string | null | undefined): SessionMeta {
+  if (advisorModel) return meta.advisorModel === advisorModel ? meta : { ...meta, advisorModel };
+  if (meta.advisorModel === undefined) return meta;
+  const next = { ...meta };
+  delete next.advisorModel;
+  return next;
 }
 
 /** Build a SessionMeta from a transcript/rollout read (friendly name applied). */
@@ -10179,6 +10263,7 @@ function metaFromRead(read: RuntimeMetaRead, source: MetaSource, now: number): S
     contextWindow: read.contextWindow,
     source,
     updatedAt: now,
+    ...(read.advisorModel ? { advisorModel: read.advisorModel } : {}),
   };
 }
 

@@ -23,6 +23,20 @@ export function isTokenExhaustion(message: string, code?: string | null): boolea
     || /\b(?:usage limit reached|hit your usage limit|out of credits|credits exhausted)\b/i.test(message);
 }
 
+/**
+ * True when a provider's error text says the MODEL is out of capacity, not the account.
+ *
+ * Covers the wording each harness ends a turn with once its own retries are spent: Codex's
+ * "Selected model is at capacity", Claude Code's "Repeated 529 Overloaded errors" and its
+ * "Opus is experiencing high load" off-switch, a raw `overloaded_error` envelope, and the
+ * API's "temporarily limiting requests (not your usage limit)". Usage and quota exhaustion
+ * never match: waiting a minute does not refill a plan.
+ */
+export function isProviderCapacityMessage(message: string): boolean {
+  if (isTokenExhaustion(message)) return false;
+  return /\b(?:at capacity|overloaded(?:_error)?|repeated 529|529 overloaded|experiencing high load|temporarily limiting requests)\b/i.test(message);
+}
+
 export class ProviderFailure extends Error {
   readonly kind: ProviderFailureKind;
 

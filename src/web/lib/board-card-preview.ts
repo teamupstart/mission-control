@@ -236,6 +236,7 @@ export const PREVIEW_WORKFLOW_RUN: WorkflowRunSummary = {
  */
 export const PREVIEW_RESIDENT: ResidentSessionMark = {
   runId: "board-card-preview-resident-run",
+  taskId: "board-card-preview-resident-task",
   profileId: "board-card-preview-resident",
   name: "Triage Bot",
   personaName: "Fleet Triage",

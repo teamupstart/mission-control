@@ -2128,7 +2128,11 @@ The MCP tools are:
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer
+  can be dismissed without sending an answer. An ask its card could not carry is refused
+  before anything is shown: an empty question, an option with an empty label, or two options
+  with the same label (compared ignoring case and surrounding spaces), since the answer
+  comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
+  nothing waits on the human
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,

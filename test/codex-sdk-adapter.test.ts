@@ -1920,3 +1920,91 @@ test("an image rides as a local path, and the text follows it", () => {
     { type: "text", text: "what is wrong here?", text_elements: [] },
   ]);
 });
+
+test("a turn Codex failed at capacity reports the failure on turn_done; other endings do not", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  const capacity = "Selected model is at capacity. Please try a different model.";
+
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-1", status: "failed", error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // A failure Codex will retry itself, then an interrupted turn: neither owes a retry here.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-2",
+    willRetry: true,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2", status: "interrupted", error: null } });
+  // The backstop path: the `error` frame alone carries the failure when the turn closes idle.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-3" } });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "active", activeFlags: [] } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-3",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  // A turn that failed for another reason owes no retry: only capacity is retried.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-4" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-4", status: "failed", error: { message: "Your access token could not be refreshed.", codexErrorInfo: "unauthorized", additionalDetails: null } },
+  });
+  // An earlier capacity notice does not outlive a final error that says something else...
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-5" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-5",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-5", status: "failed", error: { message: "Bad request.", codexErrorInfo: "badRequest", additionalDetails: null } },
+  });
+  // A failure with no message is not capacity unless Codex's own code says so.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-7" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-7", status: "failed", error: { message: "", codexErrorInfo: "internalServerError", additionalDetails: null } },
+  });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-8" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-8", status: "failed", error: { message: "", codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // ...but fills in for a failed turn that completed without a final error.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-6" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-6",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-6", status: "failed", error: null } });
+  await settle();
+
+  const done = events.filter((e) => e.kind === "turn_done");
+  assert.deepEqual(
+    done.map((e) => e.kind === "turn_done" ? e.failure ?? null : null),
+    [
+      { kind: "capacity", message: capacity },
+      null,
+      { kind: "capacity", message: capacity },
+      null,
+      null,
+      null,
+      { kind: "capacity", message: "Selected model is at capacity." },
+      { kind: "capacity", message: capacity },
+    ],
+  );
+  await handle.stop();
+  await drained;
+});

@@ -4,11 +4,19 @@ import { ResidentSkillSourcesPanel } from "./ResidentSkillSources.tsx";
 import { ResidentMcpServersPanel } from "./ResidentMcpServers.tsx";
 import { useEffect, useState } from "react";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
+import {
+  type ResidentProfile,
+  type ResidentProfileRevision,
+  type ResidentRunSummary,
+} from "@shared/residents.ts";
+import type { Session } from "@shared/types.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { LibraryRailGroup, LibraryRailRow } from "../library/LibraryRail.tsx";
 import { ResidentProfileEditor } from "./ResidentProfileEditor.tsx";
+
+/** A built-in's rail tag: an application-owned identity, as the Library marks its own. */
+const BUILTIN_TAGS = [{ label: "built-in", tone: "system" }] as const;
 
 /** The rail row's distinguishing facts: whose role it is, and on which harness. */
 export function residentProfileFact(profile: ResidentProfile, personas: readonly PersonaView[]): string {
@@ -38,6 +46,7 @@ export function residentProfileFact(profile: ResidentProfile, personas: readonly
 export function ResidentsPage({
   profiles,
   runs = [],
+  sessions = [],
   personas,
   selectedId,
   creating,
@@ -54,6 +63,7 @@ export function ResidentsPage({
 }: {
   profiles: readonly ResidentProfile[];
   runs?: readonly ResidentRunSummary[];
+  sessions?: readonly Session[];
   personas: readonly PersonaView[];
   /** From the route. Null shows the rail with nothing open. */
   selectedId: string | null;
@@ -77,6 +87,28 @@ export function ResidentsPage({
 }): React.JSX.Element {
   const [dirty, setDirty] = useState(false);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  /**
+   * The settings Duplicate opened the new-profile editor with. Set before the route moves to
+   * `creating` (the router may land that a render later), dropped when the route LEAVES
+   * `creating`, and cleared by New, so a blank profile never inherits a copy's settings.
+   */
+  const [seed, setSeed] = useState<{ key: number; settings: ResidentProfileRevision } | null>(null);
+  const [wasCreating, setWasCreating] = useState(creating);
+  if (creating !== wasCreating) {
+    setWasCreating(creating);
+    if (!creating) setSeed(null);
+  }
+  const duplicate = (settings: ResidentProfileRevision): void => {
+    setSeed({
+      key: (seed?.key ?? 0) + 1,
+      settings: { ...settings, identity: { ...settings.identity, name: `${settings.identity.name} copy` } },
+    });
+    onCreate();
+  };
+  // Both groups are always listed: a profile of the operator's that predates a built-in of the
+  // same name stays under Yours, and the built-in under Built-in, so neither hides the other.
+  const builtins = profiles.filter((profile) => profile.builtin);
+  const own = profiles.filter((profile) => !profile.builtin);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   // A profile saved or archived here may beat its SSE frame back; hold it until the frame lands.
   const [local, setLocal] = useState<ResidentProfile | null>(null);
@@ -117,14 +149,39 @@ export function ResidentsPage({
               <p>{profiles.length} live</p>
             </div>
             <Tooltip label="Author a new resident profile">
-              <button type="button" className="btn" onClick={onCreate}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  // Only on the way INTO a new profile. Already on one, New is the same route and
+                  // the router's gate never runs, so clearing here would discard a copy unasked.
+                  if (!creating) setSeed(null);
+                  onCreate();
+                }}
+              >
                 New
               </button>
             </Tooltip>
           </div>
           <div className="residents-rail-list">
-            <LibraryRailGroup label="Yours" count={profiles.length}>
-              {profiles.map((profile) => (
+            {builtins.length > 0 && (
+              <LibraryRailGroup label="Built-in" count={builtins.length}>
+                {builtins.map((profile) => (
+                  <LibraryRailRow
+                    key={profile.id}
+                    className="resident-list-item"
+                    name={profile.name}
+                    detail={residentProfileFact(profile, personas)}
+                    tags={BUILTIN_TAGS}
+                    selected={!creating && profile.id === selectedId}
+                    tooltip={`Open ${profile.name}, which ships with Mission Control`}
+                    onSelect={() => onSelect(profile.id)}
+                  />
+                ))}
+              </LibraryRailGroup>
+            )}
+            <LibraryRailGroup label="Yours" count={own.length}>
+              {own.map((profile) => (
                 <LibraryRailRow
                   key={profile.id}
                   className="resident-list-item"
@@ -135,9 +192,11 @@ export function ResidentsPage({
                   onSelect={() => onSelect(profile.id)}
                 />
               ))}
-              {profiles.length === 0 && (
+              {own.length === 0 && (
                 <p className="lib-rail-group-empty">
-                  No resident profiles yet. Choose New to author one.
+                  {builtins.length > 0
+                    ? "No profiles of your own yet. Duplicate a built-in, or choose New to author one."
+                    : "No resident profiles yet. Choose New to author one."}
                 </p>
               )}
             </LibraryRailGroup>
@@ -151,14 +210,15 @@ export function ResidentsPage({
           {selected && !skillSources && !mcpServers && runs.filter((run) => run.profileId === selected.id).map((run) =>
             <section className="resident-live-run" aria-label={`Live run of ${selected.name}`} key={run.id}>
               <strong>Revision {run.profileRevision}</strong>
-              <ResidentLoopStatusLine loop={run} />
+              <ResidentLoopStatusLine loop={run} session={sessions.find(session => session.task?.id === run.taskId)} />
               <ResidentLoopControls mark={residentSessionMark(run, selected)} />
             </section>
           )}
           {skillSources ? <ResidentSkillSourcesPanel /> : mcpServers ? <ResidentMcpServersPanel /> : creating ? (
             <ResidentProfileEditor
-              key="new"
+              key={`new:${seed?.key ?? 0}`}
               profile={null}
+              seed={seed?.settings}
               personas={personas}
               onDirtyChange={setDirty}
               onSaved={(profile) => {
@@ -186,6 +246,7 @@ export function ResidentsPage({
                 onSettle(null);
               }}
               onLaunch={onLaunch}
+              onDuplicate={duplicate}
               onCreatePersona={onCreatePersona}
             />
           ) : (

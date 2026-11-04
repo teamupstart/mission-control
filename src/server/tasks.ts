@@ -45,7 +45,7 @@ import {
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
-import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
@@ -236,6 +236,8 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Pin this launch's advisor; omitted inherits the operator's Claude settings. */
+  advisorModel?: import("@shared/types.ts").AdvisorChoice;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -353,6 +355,9 @@ export class TaskKindBacklogError extends Error {}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
+
+/** An advisor pin named for a harness that has no advisor to pin. */
+export class TaskAdvisorUnsupportedError extends Error {}
 
 /**
  * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
@@ -2829,6 +2834,12 @@ export class TaskManager {
         `reasoning effort ${input.effort} is not supported by ${agent}`,
       );
     }
+    // The same half of `DispatchSchema`'s advisor refinement, for the same reason.
+    if (input.advisorModel && !supportsAdvisor(agent, input.advisorModel)) {
+      throw new TaskAdvisorUnsupportedError(
+        `an advisor override (${input.advisorModel}) is not supported by ${agent}`,
+      );
+    }
     const id = internal?.id ?? randomUUID();
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
@@ -2851,6 +2862,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== (input.advisorModel ?? null) ||
             existing.workflowId !== null
           ) {
             throw new TaskIdCollisionError(
@@ -2880,6 +2892,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== (input.advisorModel ?? null) ||
             existing.workflowId !== workflowId ||
             existing.scheduleId !== null
           ) {
@@ -2945,6 +2958,9 @@ export class TaskManager {
       // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
+      // No harness default to defer to: null renders nothing at launch and the operator's
+      // own Claude settings decide, which is what Inherit means.
+      advisorModel: input.advisorModel ?? null,
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3752,6 +3768,14 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
+    // Reset with the model and effort on an agent change: a pin chosen for Claude means
+    // nothing to a harness with no advisor, and carrying it would only be refused below.
+    const advisorModel = patch.advisorModel === undefined
+      ? (agentChanged ? null : t.advisorModel)
+      : patch.advisorModel;
+    if (advisorModel !== null && !supportsAdvisor(agent, advisorModel)) {
+      return { ok: false, error: `an advisor override (${advisorModel}) is not supported by ${agent}` };
+    }
     // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
     // rebuild the entries from roots because the status guard above has already refused
     // any patch that is not annotation on a task that left the backlog - so nothing here
@@ -3869,6 +3893,7 @@ export class TaskManager {
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
       effort,
+      advisorModel,
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
       workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,

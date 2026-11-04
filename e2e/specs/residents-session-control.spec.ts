@@ -9,11 +9,13 @@ import { buildSync } from "esbuild";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import type { ResidentProfile } from "../../src/shared/residents.ts";
 
 // A resident profile with Control other sessions on gets the existing session-control grant only
-// from the operator's Launch click in the desktop app: the shell arms that one launch, the daemon
-// consumes it over its private channel, and the grant survives a daemon restart for the same
-// conversation. Launched from the standalone browser it starts without control and says so, in
+// from the operator's Launch or Restart on new profile click in the desktop app: the shell arms
+// that one launch, the daemon consumes it over its private channel, and the grant survives a
+// daemon restart for the same conversation. A standalone browser launch starts without control and says so, in
 // Dispatch, in the dock and in the Console band. No model tokens are spent: every agent binary is
 // the fake from `fixtures/fake-agents.ts`.
 
@@ -105,6 +107,35 @@ function createControlProfile(daemon: DaemonHandle): Promise<{ id: string; revis
   });
 }
 
+async function restartOnNewProfile(page: Page, daemon: DaemonHandle, profileId: string, granted: boolean) {
+  const profile = (await api<ResidentProfile[]>(daemon, "/api/residents/profiles")).find((entry) => entry.id === profileId)!;
+  await api(daemon, `/api/residents/profiles/${profileId}`, {
+    expectedRevision: profile.revision,
+    settings: { ...profile.settings, instructions: { markdown: "Watch the updated fleet." } },
+  }, "PATCH");
+  const residentBand = await band(page, daemon);
+  await residentBand.getByRole("button", { name: "Restart on new profile", exact: true }).click();
+  const prompt = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(prompt).toBeVisible();
+  await expectContentClearsBorder(prompt);
+  await prompt.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Open new session", exact: true }).click();
+  await idleResident(daemon, 2);
+  await expect(residentBand).toContainText("revision 2");
+  await expect(residentBand.getByRole("status").filter({ hasText: granted ? "control granted" : "control not granted" })).toBeVisible();
+  await expect(page.locator(".console-detail").getByRole("button", { name: granted ? "Session control: On" : "Session control: Off" }).first()).toBeVisible();
+  await capture(page, granted ? "11-upgraded-resident-control-granted" : "12-browser-upgraded-resident-no-control");
+}
+
+test("a browser Restart on new profile does not grant session control", async ({ dashboard, daemon }) => {
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+  const profile = await createControlProfile(daemon);
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "browser-original" });
+  await idleResident(daemon);
+  await restartOnNewProfile(dashboard, daemon, profile.id, false);
+  for (const session of await residentSessions(daemon)) expect(session.sessionControlEnabled).toBe(false);
+});
+
 test("a resident launched from the standalone browser starts without session control, and every launch surface says so", async ({
   dashboard,
   daemon,
@@ -160,7 +191,10 @@ test("a resident launched from the standalone browser starts without session con
   await dock.getByRole("button", { name: `Launch ${PROFILE}` }).click();
   await expect(dock.getByRole("status").filter({ hasText: "Started without session control" })).toBeVisible({ timeout: 60_000 });
   await idleResident(daemon, 2);
-  await expect(dock.getByRole("status").filter({ hasText: "control not granted" })).toHaveCount(2);
+  // Each live card's footer badge: one word, named by the band's full sentence.
+  const badges = dock.getByRole("status", { name: "control not granted", exact: true });
+  await expect(badges).toHaveCount(2);
+  await expect(badges).toHaveText(["No control", "No control"]);
   await capture(dashboard, "04-dock-control-not-granted");
   for (const session of await residentSessions(daemon)) expect(session.sessionControlEnabled).toBe(false);
 });
@@ -198,7 +232,7 @@ test("a launch whose session control is still pending closes Dispatch at once, a
   await capture(dashboard, "10-dock-control-pending");
 });
 
-test("a desktop Launch click grants the resident session control, and a daemon restart keeps it for the same conversation", async ({ daemon }) => {
+test("desktop Launch and Restart on new profile clicks grant session control, and daemon restart keeps it", async ({ daemon }) => {
   test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
   // Hand this fixture's isolated state to a real Electron-owned utility process, so the daemon
   // has the private shell channel a Launch click is consumed over. No HTTP or environment
@@ -250,6 +284,15 @@ test("a desktop Launch click grants the resident session control, and a daemon r
     const toolbarControl = dashboard.locator(".console-detail").getByRole("button", { name: "Session control: On" });
     await expect(toolbarControl).toBeVisible();
     await capture(dashboard, "06-band-control-granted");
+    // The dock's live card reads the same grant on its footer badge, with no menu beside it.
+    await dashboard.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
+    const dock = dashboard.getByRole("dialog", { name: "Residents", exact: true });
+    await expect(dock.getByRole("status", { name: "control granted", exact: true })).toHaveText("Control");
+    await expect(dock.getByRole("button", { name: "Session control: Off" })).toHaveCount(0);
+    await dashboard.mouse.move(0, 0);
+    await capture(dock, "06b-dock-control-granted");
+    await dashboard.keyboard.press("Escape");
+    await expect(dock).toBeHidden();
 
     // Restart the daemon. The same conversation comes back through SDK restore, and its grant with it.
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
@@ -262,6 +305,9 @@ test("a desktop Launch click grants the resident session control, and a daemon r
     residentBand = await band(dashboard, daemon);
     await expect(residentBand.getByRole("status").filter({ hasText: "control granted" })).toBeVisible();
     await capture(dashboard, "07-band-control-granted-after-restart");
+    await restartOnNewProfile(dashboard, daemon, profile.id, true);
+    const replacement = (await residentSessions(daemon)).find((session) => session.id !== resident.id)!;
+    expect(replacement.sessionControlEnabled).toBe(true);
   } finally {
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
     await application.close();

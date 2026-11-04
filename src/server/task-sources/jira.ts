@@ -25,7 +25,8 @@ import { defaultEnvironmentDeps } from "../environment/index.ts";
 import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
-import { acliPreflight, readAcli } from "./jira-acli.ts";
+import { acliAnnotate, acliPreflight, acliResolve, readAcli } from "./jira-acli.ts";
+import { repoRootGone } from "./repo-root.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -568,7 +569,7 @@ export function issuesFrom(
 }
 
 /** First non-empty line of some output, for a one-line "why". */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   return text.trim().split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
 }
 
@@ -607,7 +608,7 @@ function looksUnconfigured(text: string): boolean {
 const CLI_EMPTY = /no result found/i;
 
 /** What one `jira` run reported, as much of it as any of these decisions need. */
-type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
+type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown" | "missingCwd">;
 
 /**
  * What a failed `jira` run says about the CLI ITSELF, rather than about the request.
@@ -624,6 +625,7 @@ type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
  */
 export type CliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unconfigured"
   | "unauthenticated"
@@ -633,6 +635,8 @@ export type CliFault =
 export function cliFault(res: CliRun): CliFault {
   // The child DIED rather than answering. Whether it did its work first is unknowable.
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   const said = `${res.stderr}\n${res.stdout}`;
   // `run` reports a missing binary through the callback with Node's own message, so this
   // covers a `jira` that vanished between the PATH check and the spawn. Matched narrowly:
@@ -683,6 +687,8 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
       return `the jira CLI did not answer within ${Math.round(JIRA_TIMEOUT_MS / 1000)}s${
         why ? ` - ${why}` : ""
       } - it may be waiting for input, which a background sweep cannot give it`;
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
       return "the jira CLI could not be run - reinstall it (`brew install ankitpokhrel/jira-cli/jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback";
     case "unconfigured":
@@ -1004,18 +1010,26 @@ async function restSearch(
 async function readCli(
   cfg: JiraConfig,
   ctx: SweepContext,
-): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean }> {
-  if (ctx.signal.aborted) return { issues: [], error: "the sweep was abandoned", hasMore: false };
+): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean; repoGone: boolean }> {
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", hasMore: false, repoGone: false };
+  }
   // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is for the
-  // operators who have one - so nothing has to be passed through explicitly.
-  const page = pageFromCli(await run(jiraBin(), jiraIssueListArgs(cfg), { timeoutMs: JIRA_TIMEOUT_MS }));
-  if (page.error) return { issues: [], error: page.error, hasMore: false };
+  // operators who have one - so nothing has to be passed through explicitly. It starts in the
+  // source's checkout, as acli and gh do, so a checkout that has gone is named as one here rather
+  // than surfacing later as every candidate refused at ingest.
+  const res = await run(jiraBin(), jiraIssueListArgs(cfg), { cwd: ctx.repoRoot, timeoutMs: JIRA_TIMEOUT_MS });
+  const page = pageFromCli(res);
+  if (page.error) {
+    return { issues: [], error: page.error, hasMore: false, repoGone: res.missingCwd !== undefined };
+  }
   // The extra row is a probe, not a candidate: it answers the question and is then dropped, so a
   // sweep files exactly the page size it was configured for.
   return {
     issues: page.issues.slice(0, cfg.limit),
     error: null,
     hasMore: page.issues.length > cfg.limit,
+    repoGone: false,
   };
 }
 
@@ -1347,7 +1361,9 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
         advisory: targetProblem ?? cliCannotPage(cfg),
       };
     }
-    if (!restCred || ctx.signal.aborted) {
+    // A vanished checkout is not a CLI problem the REST rung can route around: REST would read
+    // Jira and every candidate would then be refused at ingest for the same missing repository.
+    if (viaCli.repoGone || !restCred || ctx.signal.aborted) {
       // The CLI failed and there is no second rung to try. A credential that exists but may not be
       // used for this host is worth saying alongside the CLI's own failure, since the operator
       // would otherwise reasonably assume the fallback was attempted.
@@ -1463,9 +1479,6 @@ const UPSTARTCLAW_READ_ONLY =
   "the UpstartClaw connection is read-only - write-back needs the jira CLI, or " +
   "JIRA_API_TOKEN and JIRA_EMAIL in the daemon's environment";
 
-export const ACLI_WRITE_PENDING =
-  "write-back through acli is not available in this build - select the local Jira query method to write back today";
-
 /**
  * What to say when this machine cannot meet the refusal contract a resolve is held to.
  *
@@ -1489,7 +1502,7 @@ const RESOLVE_NEEDS_READ =
   "can reach instead. Set them, or turn this source's resolve switch off";
 
 /** What to say when a source resolves issues without naming where they should land. */
-const NO_TARGET_STATUS =
+export const NO_TARGET_STATUS =
   "this source resolves issues but names no target status - set it to the status a finished " +
   "issue should land in, e.g. Done";
 
@@ -1555,8 +1568,10 @@ export function commentBodyText(notice: WritebackNotice): string {
  * does NOT auto-link the way the older wiki-markup one did - a url posted as plain text
  * stays plain text, and the whole point of this comment is that somebody can click it.
  */
-export function commentBodyAdf(notice: WritebackNotice): unknown {
-  const url = notice.prUrl ?? "";
+export function commentBodyAdf(notice: WritebackNotice, options: { linkPrUrl?: boolean } = {}): unknown {
+  // Callers may retain an untrusted URL's words without making it a clickable link.
+  // The default preserves the existing local and UpstartClaw formatting contract.
+  const url = options.linkPrUrl === false ? "" : notice.prUrl ?? "";
   /**
    * Plain text as inline nodes, with every newline as a `hardBreak`.
    *
@@ -1754,19 +1769,19 @@ export function restWriteFailure(res: RestAnswer, cfg: JiraConfig): string {
 }
 
 /** A write-back that never left the process. `outcomeUnknown: false` is a fact, not a hope. */
-function writebackRefusal(error: string): WritebackResult {
+export function writebackRefusal(error: string): WritebackResult {
   return { error, outcomeUnknown: false, detail: null };
 }
 
 /** A write-back that landed, with the one line the panel shows for it. */
-function writebackDone(detail: string): WritebackResult {
+export function writebackDone(detail: string): WritebackResult {
   return { error: null, outcomeUnknown: false, detail };
 }
 
 /**
  * The hedge a write that MAY have landed carries. See `WritebackResult.outcomeUnknown`.
  */
-const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
+export const UNKNOWN_OUTCOME = " - the write may have landed; check the issue in Jira before retrying";
 
 /**
  * Read one failed REST write.
@@ -1921,11 +1936,10 @@ async function restIssueCall(
 }
 
 /** The checks both verbs make before anything leaves the process. */
-function writeTarget(
+export function writeTarget(
   cfg: JiraConfig,
   notice: WritebackNotice,
 ): { key: string } | { problem: string } {
-  if (cfg.queryVia === "acli") return { problem: ACLI_WRITE_PENDING };
   if (cfg.queryVia === "upstartclaw") return { problem: UPSTARTCLAW_READ_ONLY };
   const site = siteProblem(cfg.site);
   if (site) return { problem: site };
@@ -1980,11 +1994,11 @@ async function postComment(
  * would retry a comment that has no idempotency of its own, so a machine that can never post
  * the link would accumulate one comment per attempt while still never posting it.
  *
- * `ctx` is not read, so it is not taken. Nothing cancels a write that has already left, and
- * the CLI rung reads its own configuration rather than the repo's - the two things a
- * `WritebackContext` could offer.
+ * The acli branch uses `ctx` for site checks and its subprocess cwd. Local writes retain
+ * their existing credential ladder and do not cancel a write that has already left.
  */
-async function annotate(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function annotate(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliAnnotate(cfg, notice, ctx);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);
@@ -2103,12 +2117,12 @@ async function restResolve(
  * token and already knows the site. It hands off to REST only when the CLI itself is
  * unusable, never when Jira refused the move: that request already arrived.
  */
-async function resolve(cfg: JiraConfig, notice: WritebackNotice): Promise<WritebackResult> {
+async function resolve(cfg: JiraConfig, notice: WritebackNotice, ctx: SweepContext): Promise<WritebackResult> {
+  if (cfg.queryVia === "acli") return acliResolve(cfg, notice, ctx);
   const wanted = cfg.resolveTransition.trim();
   // First, and without a subprocess or a round trip: a resolve with nowhere to go is a
   // misconfiguration, and no amount of asking Jira will discover what the operator meant.
-  // acli's build-level refusal takes precedence over an unconfigured future write setting.
-  if (!wanted && cfg.queryVia !== "acli") return writebackRefusal(NO_TARGET_STATUS);
+  if (!wanted) return writebackRefusal(NO_TARGET_STATUS);
   const target = writeTarget(cfg, notice);
   if ("problem" in target) return writebackRefusal(target.problem);
   const rungs = await writeRungs(cfg);

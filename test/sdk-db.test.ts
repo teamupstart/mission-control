@@ -105,6 +105,7 @@ test("the table reaches a database that already had rows", () => {
       "display_name",
       "recovery_process_json",
       "resident_compaction_token_limit",
+      "advisor_model",
     ],
   );
   // The id is the registry's map key as well as this primary key, which is what lets a

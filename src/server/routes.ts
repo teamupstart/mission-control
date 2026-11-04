@@ -56,7 +56,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
-import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
+import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -285,6 +285,7 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
+  TaskAdvisorUnsupportedError,
   TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
@@ -341,6 +342,7 @@ import {
   getForemanConfig,
   recordForemanPlannerHealth,
   recordForemanHealth,
+  dismissForemanHealthIssues,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -449,6 +451,7 @@ import {
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
 import { startSetupService } from "./setup/service.ts";
+import { locateExecutable } from "./executables/locator.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -4884,6 +4887,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
+        advisorModel: data.advisorModel ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -4894,7 +4898,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+        return c.json({ error: error.message }, 400);
+      }
       throw error;
     }
   }
@@ -6841,6 +6847,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return c.json({ ok: true });
   });
+  // The operator's acknowledgement. Filters the projection only; the worker's report is kept.
+  app.post("/api/foreman/health/dismiss", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ dismissed: dismissForemanHealthIssues(parsed.data.issues) });
+  });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
   app.get("/api/foreman/planner/control", (c) => c.json(foremanPlannerControl()));
@@ -8111,6 +8123,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
       prepareProviderInstaller:
         setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+      resolveExecutable:
+        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
       launchTerminal: terminalLauncher,
     });
     return c.json(result.body, result.status as ContentfulStatusCode);
@@ -8197,7 +8211,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) return { ok: false, status: 400, body: { error: error.message } };
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+        return { ok: false, status: 400, body: { error: error.message } };
+      }
       throw error;
     }
   }
@@ -8348,6 +8364,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
+      advisorModel: task.advisorModel ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,
@@ -8362,7 +8379,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ ok: true, task: filed });
   }
 
-  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -8502,7 +8519,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // `answerWhen: "accepted"` is answered once the run's task exists, so Dispatch closes as
   // quickly as a task dispatch; its still-starting run answers 202.
   //
-  // It is also the one place a desktop Launch click can be consumed for session control. A
+  // Like the resident restart route, it lets the manager consume a desktop launch click. A
   // tool, an agent or a foreign origin still launches, but never consumes a click: its run
   // starts without control, exactly as a launch from the standalone browser does.
   app.post("/api/residents/profiles/:id/launch", async (c) => {

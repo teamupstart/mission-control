@@ -22,10 +22,12 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkTurnFailure,
   SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
+import { isProviderCapacityMessage } from "../../llm/provider-failure.ts";
 import type { LlmSpendModelUsage } from "@shared/llm-spend.ts";
 import { claudeEnvelopeModels, claudeEnvelopeTurnId } from "./envelope.ts";
 import type {
@@ -42,6 +44,7 @@ import type {
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
 import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
@@ -395,6 +398,12 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * where the old counter had no path back to zero at all.
    */
   private turnActive = false;
+  /**
+   * The capacity failure the running turn's own API-error message reported, held until the
+   * `result` that closes the turn. Claude Code reports the error on an assistant frame and
+   * closes the turn on the next `result`, so the two have to be joined here.
+   */
+  private turnFailure: SdkTurnFailure | null = null;
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -1014,11 +1023,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // to dequeue after a `result` we had already read as the end of the work - re-arms the
       // flag here, on its own first frame, without the driver having to predict it.
       this.turnActive = true;
+      const failure = claudeCapacityFailure(message);
+      if (failure) this.turnFailure = failure;
       this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
       return;
     }
     if (message.type === "result") {
       this.turnActive = false;
+      const failure = this.turnFailure ?? claudeResultCapacityFailure(message);
+      this.turnFailure = null;
       const cumulative = claudeTurnUsage(message, this.modelId);
       const usage = cumulative ? claudeUsageDelta(cumulative, this.cumulativeUsage) : null;
       // Advance only from a snapshot the ledger can actually accept. Otherwise a result
@@ -1029,7 +1042,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (cumulative?.turnId && cumulative.models?.length) {
         this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
       }
-      this.out.emit({ kind: "turn_done", usage });
+      this.out.emit({ kind: "turn_done", usage, ...(failure ? { failure } : {}) });
       this.compaction.finish();
       this.refreshRateLimits();
       return;
@@ -1251,6 +1264,49 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
   return null;
 }
 
+/** The API-error categories Claude Code tags a capacity failure with. */
+const CLAUDE_CAPACITY_ERRORS = new Set(["overloaded", "server_error", "rate_limit"]);
+
+/**
+ * The capacity failure a top-level assistant frame reports, or null.
+ *
+ * Claude Code retries a 529 on its own and, once those retries are spent, ends the turn with
+ * a synthetic assistant message. Its `error` tag alone is not enough: "Repeated 529
+ * Overloaded errors" is tagged `server_error` and the "Opus is experiencing high load"
+ * off-switch is tagged `rate_limit`, tags that also cover failures waiting cannot fix. So
+ * `overloaded` is trusted outright and the other two only when the text says capacity. A
+ * subagent's error is ignored: it ends the subagent, not this turn.
+ */
+export function claudeCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.type !== "assistant" || message.parent_tool_use_id) return null;
+  const error = typeof message.error === "string" ? message.error : null;
+  if (!error || !CLAUDE_CAPACITY_ERRORS.has(error)) return null;
+  const text = assistantText(message);
+  if (error === "overloaded" || isProviderCapacityMessage(text)) {
+    return { kind: "capacity", message: text || "Claude's API is overloaded." };
+  }
+  return null;
+}
+
+/** The same verdict read off an error `result`, for a stream that carried no error frame. */
+function claudeResultCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.is_error !== true || typeof message.result !== "string") return null;
+  const text = message.result.trim();
+  return isProviderCapacityMessage(text) ? { kind: "capacity", message: text } : null;
+}
+
+function assistantText(message: ClaudeSdkMessage): string {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text"
+      ? String((block as { text?: unknown }).text ?? "")
+      : ""))
+    .join("\n")
+    .trim();
+}
+
 /**
  * Claude's `SdkSpec`: start (or resume) an embedded session.
  *
@@ -1278,6 +1334,18 @@ function withArtifactTool(env: Record<string, string | undefined>): Record<strin
   return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
 }
 
+/**
+ * The task's advisor pin as session environment: `off` sets the one switch that also beats
+ * an inherited user setting. Inherit (`null`) and a model pin leave the env as it was.
+ */
+function withAdvisorEnv(
+  env: Record<string, string | undefined>,
+  choice: SdkLaunchOptions["advisorModel"],
+): Record<string, string | undefined> {
+  const extra = choice ? capabilitiesFor("claude").advisor?.launchEnv(choice) ?? {} : {};
+  return Object.keys(extra).length > 0 ? { ...env, ...extra } : env;
+}
+
 /** One resident entry as Claude Code's `mcpServers` value. */
 function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> {
   const claude = entry.options.claude ?? {};
@@ -1285,7 +1353,9 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
     ...(claude.timeoutMs !== undefined ? { timeout: claude.timeoutMs } : {}),
     ...(claude.alwaysLoad !== undefined ? { alwaysLoad: claude.alwaysLoad } : {}),
   };
-  if (entry.shape === "http") return { type: "http", url: entry.url, headers: entry.headers, ...options };
+  // Type, URL and headers exactly as configured, `{}` included: Claude Code keys a stored OAuth
+  // login by the name and a hash of these three, so this is how a resident finds the operator's.
+  if (entry.shape === "http") return { type: entry.transport, url: entry.url, headers: entry.headers, ...options };
   return { type: "stdio", command: entry.command, args: entry.args, env: entry.env, ...options };
 }
 
@@ -1312,6 +1382,21 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
 }
 
 /**
+ * `claudeMcpOptions` plus the task's advisor pin, as ONE flag-layer `settings` object.
+ *
+ * Both write the same option, and the SDK takes a single value for it, so a resident run
+ * pinned to an advisor has to carry `disableClaudeAiConnectors` and `advisorModel` together;
+ * spreading the two separately would let whichever came second erase the other. Inherit adds
+ * nothing, so an unpinned launch's options are exactly what they were before the pin existed.
+ */
+function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
+  const mcp = claudeMcpOptions(opts);
+  const advisor = opts.advisorModel ? capabilitiesFor("claude").advisor?.sdkSettings(opts.advisorModel) ?? {} : {};
+  if (Object.keys(advisor).length === 0) return mcp;
+  return { ...mcp, settings: { ...mcp.settings, ...advisor } };
+}
+
+/**
  * How long a resident's start waits for Claude to report its servers and for them to stop
  * pending. Long enough for a server fetched on first use, such as an `npx` package, to come up.
  */
@@ -1321,8 +1406,13 @@ const RESIDENT_MCP_POLL_MS = 200;
 /**
  * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
  * the set must be configured and must not have failed, be switched off, or wait on a login: a
- * resident never runs silently without one of its servers. A remote server behind an OAuth login
- * Claude Code holds lands here as failed, because the launcher's bridge cannot present that login.
+ * resident never runs silently without one of its servers.
+ *
+ * A remote server Claude Code connects to itself presents the operator's stored OAuth login. With
+ * no usable login - never signed in, or a token it could not refresh - Claude reports it
+ * `needs-auth` (measured on Claude Code 2.1.317), and caches that verdict by server name alone, so
+ * a later start may report it again without trying. A server behind a login that is reached through the
+ * launcher's bridge instead is reported `failed`, because the bridge cannot present one.
  */
 function residentMcpStatusProblem(
   statuses: ReadonlyArray<{ name: string; status: string }>,
@@ -1335,7 +1425,9 @@ function residentMcpStatusProblem(
     const state = reported.get(name);
     if (state === undefined) return `did not configure its MCP server ${name}`;
     if (state === "disabled") return `has its MCP server ${name} switched off`;
-    if (state === "needs-auth") return `cannot use its MCP server ${name}, which needs a login a resident cannot present`;
+    if (state === "needs-auth") {
+      return `cannot use its MCP server ${name}, which needs a login Claude Code does not have or could not refresh; sign in to ${name} with /mcp in Claude Code, then launch again`;
+    }
     if (state === "failed") return `could not connect to its MCP server ${name}`;
   }
   return null;
@@ -1410,7 +1502,10 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // This session's trace context, which also clears any `TRACEPARENT` the daemon
         // inherited. Claude Code reads it at each interaction span in an SDK session; it
         // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
-        env: withAgentTraceContext(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.traceContext),
+        env: withAgentTraceContext(
+          withAdvisorEnv(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.advisorModel),
+          opts.traceContext,
+        ),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
@@ -1461,7 +1556,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // every session that started in any other mode unable to reach bypass at all.
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
-        ...claudeMcpOptions(opts),
+        ...claudeFlagOptions(opts),
         // The ask channel's disallow + redirect are deliberately NOT rendered here. They
         // exist because a menu on a child's screen is unreadable to the dashboard; a
         // driver request IS the dashboard's own control, so the native tool is better
@@ -1483,7 +1578,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // replaced, so the replacement mints its own.
         const fresh = await deps.query({ prompt, options: {
           ...base,
-          ...claudeMcpOptions(opts),
+          ...claudeFlagOptions(opts),
           // The original options predate any accepted live model change.
           ...(modelOverride ? { model: modelOverride } : {}),
           resume,

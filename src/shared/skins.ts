@@ -71,6 +71,48 @@ export const SKINS = [
       attention: "#9e5400",
     },
   },
+  {
+    id: "paper",
+    label: "Paper",
+    description: "Warm cream and ink with serif headings, tuned for long reading.",
+    colorScheme: "light",
+    swatches: {
+      bg: "#f2ebde",
+      panel: "#fbf7ef",
+      fg: "#2a2318",
+      working: "#2c5c99",
+      idle: "#3a7334",
+      attention: "#9a5300",
+    },
+  },
+  {
+    id: "blueprint",
+    label: "Blueprint",
+    description: "Engineering drawing: deep cobalt, drafting grid, crisp white linework.",
+    colorScheme: "dark",
+    swatches: {
+      bg: "#0b2547",
+      panel: "#10315e",
+      fg: "#eef5ff",
+      working: "#86ccff",
+      idle: "#62e8b4",
+      attention: "#ffc857",
+    },
+  },
+  {
+    id: "neon-dusk",
+    label: "Neon Dusk",
+    description: "Late-night synth palette: violet surfaces, magenta and cyan glow.",
+    colorScheme: "dark",
+    swatches: {
+      bg: "#120a1f",
+      panel: "#1e1233",
+      fg: "#f4ecff",
+      working: "#3fd0ff",
+      idle: "#36f1a8",
+      attention: "#ffb13d",
+    },
+  },
 ] as const satisfies readonly Skin[];
 
 export type ShippedSkin = (typeof SKINS)[number];

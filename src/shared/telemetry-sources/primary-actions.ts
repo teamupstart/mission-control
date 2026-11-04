@@ -145,6 +145,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/foreman/config", "foreman.configure", "foreman"],
   ["PUT", "/api/foreman/instructions", "foreman.instructions", "foreman"],
   ["POST", "/api/foreman/planner/retry", "foreman.planner_retry", "foreman"],
+  ["POST", "/api/foreman/health/dismiss", "foreman.health_dismiss", "foreman"],
   ["POST", "/api/pipelines/foreman-episode", "foreman.pipeline_episode", "foreman"],
   ["PUT", "/api/away", "away.configure", "foreman"],
   ["PUT", "/api/sessions/:id/note", "foreman.note", "foreman"],

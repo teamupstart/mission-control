@@ -1,21 +1,18 @@
 import type { Hono } from "hono";
 import { ScheduleNextIterationRequestSchema } from "@shared/protocol.ts";
 import { taskHasRepository } from "@shared/task.ts";
+import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { checkToken } from "../auth.ts";
-import { sessionControlCaller } from "../session-control.ts";
+import { sessionControlCaller, sessionControlCallerRefusal } from "../session-control.ts";
 import type { Registry } from "../registry.ts";
-import type { TaskManager } from "../tasks.ts";
 import type { ResidentManager } from "./manager.ts";
 import type { ResidentLoop } from "./loop.ts";
 import { ResidentLoopRefusal, liveRun } from "./loop-store.ts";
 import { getResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
 
-const RESTART_PAUSE = "Restarting on new profile";
-const RESTART_OUTCOME = "Restarted on new resident profile";
-
 export function registerResidentLoopRoutes(app: Hono, deps: {
-  registry: Registry; loop: ResidentLoop; residents: ResidentManager; tasks: TaskManager;
+  registry: Registry; loop: ResidentLoop; residents: ResidentManager;
 }): void {
   app.post("/mcp/residents/schedule-next-iteration", async (c) => {
     const refused = (error: string) => c.json({ code: "not_recorded", error }, 409);
@@ -41,25 +38,34 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           if (!stored) throw new ResidentLoopRefusal("No such resident.");
           const task = deps.registry.getTask(stored.run.taskId);
           if (!task) throw new ResidentLoopRefusal("The original task is unavailable.");
-          const request = { repoRoot: taskHasRepository(task) ? task.repoRoot : null, instructions: stored.run.runInstructions, requestId: `resident-restart:${id}` };
+          const request = { repoRoot: taskHasRepository(task) ? task.repoRoot : null, instructions: stored.run.runInstructions, requestId: residentRestartRequestId(id) };
           if (residentRunIdentityByRequest(request.requestId)) {
             const replay = await deps.residents.launch(stored.run.profileId, request);
             return "result" in replay ? c.json(replay.result, replay.status) : c.json({ error: replay.error }, replay.status);
           }
-          // Completion and launch cannot share a transaction. The persisted pause and
-          // task outcome prove this ended run was closed by this restart request, so a
-          // retry can finish the gap before the replacement reserved its request id.
-          const completedRestart = task.status === "done" && task.outcome === RESTART_OUTCOME && stored.run.pauseReason === RESTART_PAUSE;
-          if (!completedRestart) liveRun(id);
+          // Ending the run and launching cannot share a transaction. The persisted pause on an
+          // ended run proves this restart request ended it, so a retry can finish the gap before
+          // the replacement reserved its request id. Builds that completed the old task here
+          // left the same proof, so their interrupted restarts finish too.
+          const endedByRestart = stored.run.endedAt !== null && stored.run.pauseReason === RESIDENT_RESTART_PAUSE_REASON;
+          if (!endedByRestart) liveRun(id);
           const profile = getResidentProfile(stored.run.profileId);
           if (!profile || profile.archivedAt !== null || profile.revision <= stored.run.profileRevision) throw new ResidentLoopRefusal("No newer live profile revision is available.");
           const problem = deps.residents.settingsProblem(profile.settings);
           if (problem) throw new ResidentLoopRefusal(problem);
-          if (!completedRestart) {
-            deps.loop.pause(id, RESTART_PAUSE);
-            if (!await deps.tasks.complete(task.id, RESTART_OUTCOME)) throw new ResidentLoopRefusal("The original task could not be completed.");
+          if (!endedByRestart) {
+            // The old run stops waking, but its task and session stay open: the operator is
+            // offered Complete on the replaced session rather than having it closed for them.
+            deps.loop.pause(id, RESIDENT_RESTART_PAUSE_REASON);
+            deps.residents.endRun(id);
+            deps.registry.refreshTaskResidentRestart(task.id);
           }
-          const result = await deps.residents.launch(profile.id, request);
+          // Settled or not, the replacement's run is reserved by now, so the replaced session's
+          // record can name it. A launch that threw leaves the offer to complete in place.
+          const result = await deps.residents.launch(profile.id, request, {
+            mayConsumeControlClick: sessionControlCallerRefusal(c) === null,
+          })
+            .finally(() => deps.registry.refreshTaskResidentRestart(task.id));
           return "result" in result ? c.json(result.result, result.status) : c.json({ error: result.error }, result.status);
         }
         liveRun(id);

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
+import { CHECK_SUPERVISOR_MARKER, resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
 import { currentOwnedRuntime } from "../owned-runtime.ts";
 import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
@@ -134,8 +134,13 @@ const DRAIN_MS = 2_000;
  * Written in plain CommonJS ES5-ish JavaScript because it runs under `node -e` with no loader,
  * and with no backslash escapes at all - it lives inside a template literal, where an escape
  * means something to the OUTER file first.
+ *
+ * **Its first line is `CHECK_SUPERVISOR_MARKER`.** In a packaged app the owned runtime is an
+ * executable inside the app bundle, so a supervisor that outlives its daemon keeps the bundle
+ * busy and an in-place update cannot proceed. The update helper recognises this marker in a
+ * lingering process's command line, without printing it, so its outcome can name the cause.
  */
-const SHIM = `
+const SHIM = `// ${CHECK_SUPERVISOR_MARKER}
 const net = require("node:net");
 const cp = require("node:child_process");
 const NL = String.fromCharCode(10);

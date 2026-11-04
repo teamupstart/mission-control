@@ -93,6 +93,11 @@ Tours start at their first stop and do not save progress or resume. See the
 
 ## The board
 
+With Board selected, **Settings > Display > Layout > Board view settings** offers
+**Show all sessions in sidebar**. Enable it to switch between sessions grouped by state
+without returning to the board. Backlog tasks remain on the overview; the default sidebar
+continues to show only the selected session's state group.
+
 The board turns a directory full of agent sessions into an operational view. One column per state
 answers what is working, what is idle, and what needs a decision. Cards group by repository and can
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
@@ -104,7 +109,7 @@ large Codex logs do not substitute an older model from the start of the conversa
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
 **Settings > Display > Appearance** repaints the whole dashboard in another
-[skin](docs/ui.md#skins), such as the light Daylight theme, the moment you pick it.
+[skin](docs/ui.md#skins) - Daylight, Paper, Blueprint or Neon Dusk - the moment you pick it.
 
 Read more in [The Line and fleet UI](docs/ui.md) and
 [Attention, alerts, and Away mode](docs/attention-and-alerts.md).

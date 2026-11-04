@@ -398,11 +398,15 @@ export function SessionTile({
         {jump && <Keycap chord={jump} />}
       </span>
 
-      {resident?.loop && <span className="resident-card-loop" onClick={(event) => event.stopPropagation()}>
-        <ResidentLoopStatusLine loop={resident.loop} />
-        <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
-          {() => <ResidentLoopControls mark={resident} menu />}
-        </SessionToolbarMenu>
+      {/* The menu's popover is portalled, and React still bubbles a portal's clicks through
+          this tree, so without the stop every menu action would also open the session. */}
+      {resident?.loop && <span className="resident-card-loop">
+        <ResidentLoopStatusLine loop={resident.loop} session={session} />
+        <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
+          <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
+            {() => <ResidentLoopControls mark={resident} menu />}
+          </SessionToolbarMenu>
+        </span>
       </span>}
 
       {shown("goal") && session.goal?.text && (

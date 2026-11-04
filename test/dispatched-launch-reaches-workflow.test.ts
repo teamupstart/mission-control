@@ -78,6 +78,7 @@ function mkTask(): Task {
     enabled: true,
     model: null,
     effort: null,
+    advisorModel: null,
     workflowId: null,
     source: null,
     repoRoot: "/repo",

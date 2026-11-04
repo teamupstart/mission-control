@@ -20,7 +20,6 @@ import {
   writebackBlocks,
   cliFailure,
   cliFault,
-  ACLI_WRITE_PENDING,
   restReadFailure,
   restWritebackFailure,
 } from "../src/server/task-sources/jira.ts";
@@ -478,6 +477,13 @@ test("every CLI failure state is classified once, and the sentence follows the c
   const cases = [
     { run: res({ outcomeUnknown: true }), fault: "no-answer", says: /did not answer within/ },
     { run: res({ code: 127 }), fault: "not-installed", says: /could not be run - reinstall it/ },
+    {
+      // A vanished checkout refuses the spawn with ENOENT too. It is not an install problem,
+      // and it must not send the write down the REST rung as if the CLI were unusable.
+      run: res({ code: 1, stderr: "jira could not start because its working directory /gone does not exist", missingCwd: "/gone" }),
+      fault: "missing-repo",
+      says: /files tasks against \/gone, which no longer exists/,
+    },
     {
       run: res({ code: 1, stderr: "Error: config file not found. Run 'jira init'" }),
       fault: "unconfigured",
@@ -1281,23 +1287,4 @@ test("a thrown fetch is read as never-arrived or unknown, by its cause code", as
   const timedOut = await throwWith("UND_ERR_HEADERS_TIMEOUT");
   assert.equal(timedOut.outcomeUnknown, true, "a timeout was called a refusal");
   assert.match(timedOut.error!, /check the issue in Jira before retrying/);
-});
-
-test("acli sources refuse both write-back verbs before spawning any CLI", async () => {
-  const argv = join(home, "acli-write-pending-argv");
-  writeFileSync(argv, "");
-  machine({ cli: true, argv });
-  process.env.MISSION_ACLI_BIN = join(withJira, "jira");
-  try {
-    for (const resolveTransition of ["", "Done"]) {
-      for (const verb of [jira.annotate!, jira.resolve!]) {
-        const result = await verb(cfg({ queryVia: "acli", resolveTransition }), notice(), ctx);
-        assert.equal(result.error, ACLI_WRITE_PENDING);
-        assert.equal(result.outcomeUnknown, false);
-      }
-    }
-    assert.deepEqual(argvIn(argv), []);
-  } finally {
-    delete process.env.MISSION_ACLI_BIN;
-  }
 });

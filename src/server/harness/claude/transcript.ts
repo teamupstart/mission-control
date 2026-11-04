@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
+import type { Session, ToolCall, TranscriptAdvisor, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { readRange } from "../../util/file-tail.ts";
@@ -92,9 +92,40 @@ function toolCall(block: Record<string, unknown>): ToolCall {
 }
 
 /**
+ * Read one `advisor_tool_result` block, or undefined for a shape Claude Code itself ignores.
+ *
+ * Shapes measured on Claude Code 2.1.317: the CLI writes each content block of an advisor
+ * call as its own assistant record - a `server_tool_use` named `advisor` (the call marker,
+ * which carries no input and which the CLI does not draw), then this result - and stamps
+ * every record of that turn with a top-level `advisorModel`. The result's
+ * `content.type` is `advisor_result` (with `text`), `advisor_redacted_result` (encrypted,
+ * no text) or `advisor_tool_result_error` (with `error_code`). Either success shape with
+ * `stop_reason: "refusal"` is the advisor declining, which the CLI reports instead of the
+ * review. Any other content is dropped, as the CLI drops it.
+ */
+function advisorResult(
+  block: Record<string, unknown>,
+  rec: Record<string, unknown>,
+): TranscriptAdvisor | undefined {
+  const content = block.content as Record<string, unknown> | undefined;
+  if (!content || typeof content !== "object") return undefined;
+  const model = typeof rec.advisorModel === "string" && rec.advisorModel ? rec.advisorModel : null;
+  if (content.type === "advisor_tool_result_error") {
+    const code = content.error_code;
+    return { model, outcome: "error", ...(typeof code === "string" && code ? { errorCode: code } : {}) };
+  }
+  if (content.type !== "advisor_result" && content.type !== "advisor_redacted_result") return undefined;
+  const text = content.type === "advisor_result" && typeof content.text === "string" ? content.text.trim() : "";
+  const outcome = content.stop_reason === "refusal"
+    ? "declined"
+    : content.type === "advisor_result" ? "advised" : "redacted";
+  return { model, outcome, ...(text ? { text } : {}) };
+}
+
+/**
  * Turn one parsed JSONL record into a renderable message, or null to drop it.
- * Keeps main-thread user prompts and assistant turns (text and/or tool calls);
- * drops sidechain (subagent) noise and the tool-result user records.
+ * Keeps main-thread user prompts and assistant turns (text, tool calls and/or an advisor
+ * result); drops sidechain (subagent) noise and the tool-result user records.
  */
 export function toMessage(o: unknown): TranscriptMessage | null {
   if (!o || typeof o !== "object") return null;
@@ -118,6 +149,7 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   let text = "";
   const tools: ToolCall[] = [];
   let hasToolResult = false;
+  let advisor: TranscriptAdvisor | undefined;
   const content = m.content;
   if (typeof content === "string") {
     text = content;
@@ -129,6 +161,7 @@ export function toMessage(o: unknown): TranscriptMessage | null {
         if (block.type === "text") text += String(block.text ?? "");
         else if (block.type === "tool_use") tools.push(toolCall(block));
         else if (block.type === "tool_result") hasToolResult = true;
+        else if (block.type === "advisor_tool_result") advisor = advisorResult(block, rec) ?? advisor;
       }
     }
   }
@@ -140,9 +173,12 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   if (role === "user") text = conversationText(text);
   // A user turn that's purely a tool result is machine noise, not conversation.
   if (role === "user" && !text && hasToolResult) return null;
-  if (!text && tools.length === 0) return null;
+  // An advisor result is a record of its own (see `advisorResult`), so it has no text and no
+  // tool call beside it and must not fall out here.
+  if (!text && tools.length === 0 && !advisor) return null;
 
-  return withIdentity(rec, role, text, tools);
+  const message = withIdentity(rec, role, text, tools);
+  return advisor ? { ...message, advisor } : message;
 }
 
 function withIdentity(

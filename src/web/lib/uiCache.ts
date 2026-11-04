@@ -181,6 +181,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     groupBoardByRepo: raw?.groupBoardByRepo ?? UI_CONFIG_DEFAULTS.groupBoardByRepo,
     // `??` for the same reason: a stored `false` is the operator hiding the stash.
     showEmptyColumnStash: raw?.showEmptyColumnStash ?? UI_CONFIG_DEFAULTS.showEmptyColumnStash,
+    boardSidebarAllSessions: raw?.boardSidebarAllSessions ?? UI_CONFIG_DEFAULTS.boardSidebarAllSessions,
     // A fresh array, like `trustStaged`: the column-width store builds its next patch from
     // what it reads here.
     collapsedBoardColumns: Array.isArray(raw?.collapsedBoardColumns)

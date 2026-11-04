@@ -1,8 +1,10 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
@@ -1682,6 +1684,105 @@ for (const failure of ["missing", "invalid_utf8"] as const) {
     assert.equal(h.store.listReservedWorkflowEvidence(child.id).some((item) => item.clientItemId === "original-handoff"), false);
     assert.deepEqual(h.store.getSubmission(original.id), original);
     assert.deepEqual(h.store.listReservedWorkflowEvidence(original.id), reservations);
+  });
+}
+
+async function secondaryCaptureFailureHarness(t: TestContext, id: string, uncertainDelivery = false) {
+  const h = await harness(t, id, undefined, { uncertainDelivery });
+  const canonical = join(realpathSync(home), `${id}-canonical`);
+  const checkout = join(realpathSync(home), `${id}-worktree`);
+  execFileSync("git", ["init", "-q", "-b", "main", canonical]);
+  writeFileSync(join(canonical, ".gitignore"), "proof.log\n");
+  execFileSync("git", ["-C", canonical, "add", ".gitignore"]);
+  execFileSync("git", ["-C", canonical, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "-qm", "fixture"]);
+  execFileSync("git", ["-C", canonical, "worktree", "add", "-q", "-b", "repair", checkout]);
+  const task = mkTask({ id: `${id}-task`, sessionId: id, status: "running",
+    repoRoot: repositoryRoot, worktreePath: repositoryRoot,
+    extraRepos: [{ repoRoot: canonical, worktreePath: checkout, baseSha: null,
+      branch: "repair", provider: "git", worktreeLeaseId: null, prUrl: null, prState: null, mergedAt: null }] });
+  h.registry.upsertTask(task);
+  const secondary = h.store.insertBinding({ ...h.binding, id: `${id}-binding`,
+    sessionId: id, sessionAgent: "claude", sessionName: id,
+    repoRoot: canonical, sessionRepoRoot: canonical, sessionCwd: checkout, now: Date.now() });
+  const stage = (clientItemId: string) => h.manager.stageAgentEvidence(id, {
+    images: [], artifacts: [{ kind: "text", clientItemId, path: "proof.log",
+      caption: "Secondary capture proof", repositoryScope: "repo-02" }],
+    coverage: [{ clientCriterionId: "claim-0", criterion: "Rendered workflow state is inspectable",
+      proofClass: "focused_execution", repositoryScope: "repo-02", links: [{ clientItemId, role: "execution" }] }],
+  });
+  writeFileSync(join(canonical, "proof.log"), "Canonical checkout must not supply the proof\n");
+  writeFileSync(join(checkout, "proof.log"), "Original proof\n");
+  await stage("original-secondary-proof");
+  rmSync(join(checkout, "proof.log"));
+  const result = await h.manager.submit(secondary.id, { requestId: `${id}-source` });
+  assert.equal(result.ok, false);
+  const run = h.store.activeRunForBinding(secondary.id)!;
+  const parent = h.store.latestSubmission(run.id)!;
+  const failure = h.store.evidencePreparationFailure(parent.id);
+  assert.equal(failure?.itemClientId, "original-secondary-proof");
+  await waitFor(() => h.store.listDeliveries(run.id).some(delivery =>
+    delivery.kind === "evidence_capture_repair" && delivery.state === (uncertainDelivery ? "uncertain" : "delivered")),
+  "secondary capture repair did not reach the injected delivery boundary");
+  assert.equal(h.injected.length, 1);
+  return { ...h, secondary, task, canonical, checkout, run, parent, stage };
+}
+
+test("secondary capture repair uses its issued worktree generation and freezes corrected proof through the manager", async (t) => {
+  const id = "secondary-capture-repair";
+  const h = await secondaryCaptureFailureHarness(t, id);
+  h.registry.getSession(id)!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "unchanged proof cannot spend a repair segment");
+  assert.equal(h.injected.length, 1, "unchanged proof cannot send another repair packet");
+
+  const corrected = "Corrected proof from the issued secondary worktree\n";
+  writeFileSync(join(h.checkout, "proof.log"), corrected);
+  const registered = await h.stage("corrected-secondary-proof");
+  assert.ok(registered.generation > h.parent.stagedImageGeneration!);
+  assert.equal(h.store.workflowEvidenceGeneration(h.binding.noteKey, h.checkout), registered.generation);
+  assert.equal(h.store.workflowEvidenceGeneration(h.binding.noteKey, h.canonical), 0);
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "secondary corrected proof did not reach review");
+  const child = h.store.latestSubmission(h.run.id)!;
+  assert.equal(child.round, h.parent.round);
+  assert.equal(child.segment, h.parent.segment + 1);
+  assert.equal(child.refinementReason, "evidence_capture_repair");
+  assert.equal(child.stagedImageGeneration, registered.generation);
+  assert.equal(child.triggerKey, `evidence-capture-repair:${h.parent.id}:${registered.generation}`);
+  assert.deepEqual(h.store.listSubmissionTextArtifacts(child.id).map(artifact => artifact.content), [corrected]);
+  assert.deepEqual(h.store.submissionFrozenEvidenceIdentities(child.id).map(item => item.clientItemId),
+    ["corrected-secondary-proof"]);
+  assert.equal(child.readiness?.status, "ready");
+  assert.equal(h.store.listAttempts(child.id).filter(attempt => attempt.persona).length, 1);
+  assert.deepEqual(h.store.getSubmission(h.parent.id), h.parent, "the failed capture remains immutable");
+});
+
+for (const changed of ["worktree", "repository", "released", "detached", "primary-cwd", "conversation", "uncertain"] as const) {
+  test(`secondary capture repair refuses ${changed} ownership or delivery`, async (t) => {
+    const id = `secondary-capture-${changed}`;
+    const h = await secondaryCaptureFailureHarness(t, id, changed === "uncertain");
+    writeFileSync(join(h.checkout, "proof.log"), "Corrected secondary proof\n");
+    await h.stage("corrected-secondary-proof");
+    const session = h.registry.getSession(id)!;
+    session.state = "idle";
+    if (changed === "primary-cwd") session.cwd = `${repositoryRoot}-moved`;
+    else if (changed === "conversation") session.agentSessionId = "replacement-conversation";
+    else if (changed === "worktree") {
+      // Persisted assignment wins even while the Registry still has its old projection.
+      openDb().prepare("UPDATE task_repos SET worktree_path = ? WHERE task_id = ?")
+        .run(`${h.checkout}-reissued`, h.task.id);
+    } else if (changed !== "uncertain") {
+      const entry = h.task.extraRepos[0]!;
+      h.registry.upsertTask({ ...h.task, extraRepos: changed === "detached" ? [] : [{ ...entry,
+        ...(changed === "released" ? { worktreePath: null } : { repoRoot: `${h.canonical}-different` }),
+      }] });
+    }
+    await h.manager.sweepResumptions(Date.now() + 60_000);
+    assert.equal(h.store.listSubmissions(h.run.id).length, 1, "stale authority cannot reserve a new segment");
+    assert.equal(h.store.listSubmissionTextArtifacts(h.parent.id).length, 0);
+    assert.equal(h.injected.length, 1);
+    if (changed === "uncertain") assert.equal(h.store.listDeliveries(h.run.id)[0]?.state, "uncertain");
   });
 }
 

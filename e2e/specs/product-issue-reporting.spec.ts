@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
+import type { ProductIssuePreflight } from "../../src/shared/product-issues.ts";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -285,7 +286,18 @@ test("all five types file their own labels, and the browser chooses none of them
  */
 test("the submission carries reporter content and nothing that steers GitHub", async ({
   dashboard,
+  daemon,
 }) => {
+  // This case inspects POST bytes, not CLI readiness. An unanswered fake `gh repo view`
+  // previously disabled Report for the whole test despite a valid preview. Control only
+  // this prerequisite; preview, consent, submission and the recorded create stay real.
+  // Refuse the CLI check so accidentally depending on it cannot pass by scheduling luck.
+  script(daemon, { preflight: "repository", issueCreate: "created" });
+  const ready: ProductIssuePreflight = {
+    ready: true, target: "acme/public-issues",
+    attachments: { enabled: true, reason: null }, problems: [],
+  };
+  await dashboard.route("**/api/product-issues/preflight", (route) => route.fulfill({ json: ready }));
   const bodies: string[] = [];
   await dashboard.route("**/api/product-issues", async (route) => {
     bodies.push(route.request().postData() ?? "");
@@ -294,6 +306,7 @@ test("the submission carries reporter content and nothing that steers GitHub", a
 
   await openFromTopbar(dashboard);
   await fill(dashboard, "Usability", "The rail hides its own scroll", "I could not find it.");
+  await expect(submit(dashboard)).toBeEnabled();
   await publish(dashboard);
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
 
@@ -313,6 +326,7 @@ test("the submission carries reporter content and nothing that steers GitHub", a
   expect(bodies[0]).not.toContain("acme/public-issues");
   expect(bodies[0]).not.toContain("status:needs-triage");
   expect(bodies[0]).not.toContain("source:");
+  expect(productCreates(daemon)).toHaveLength(1);
 });
 
 /**

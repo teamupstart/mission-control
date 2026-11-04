@@ -86,6 +86,8 @@ import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/ind
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
+import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
+import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
 import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -200,6 +202,14 @@ const reconcileManagedResumeResources = () => {
 };
 reconcileManagedResumeResources();
 setInterval(reconcileManagedResumeResources, 30_000).unref();
+// Install this build's built-in residents before the Registry reads the profile catalog, so the
+// first snapshot already carries them and an upgrade's new revision. A failure costs the
+// built-ins, never startup: operator profiles are untouched by it.
+try {
+  reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+} catch (error) {
+  console.error("[residents] could not install the built-in resident profiles:", error);
+}
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.

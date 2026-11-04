@@ -30,6 +30,7 @@ import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
+import { ConsoleView } from "./ConsoleView.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
@@ -162,7 +163,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash, boardSidebarAllSessions } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -349,6 +350,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       resident={props.residentBySession?.get(s.id) ?? null}
     />
   };
+
+  // Reuse the full Console rail, including state, repository and workflow grouping.
+  // App still owns Board selection and Escape, so returning preserves the overview.
+  if (selected && boardSidebarAllSessions) {
+    return (
+      <main ref={boardTourRef} className="board board-all-sessions" data-focus={focusedTone}>
+        <ConsoleView {...props} onBackToBoard={props.onDeselect} />
+      </main>
+    );
+  }
 
   return (
     <main

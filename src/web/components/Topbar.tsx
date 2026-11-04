@@ -153,7 +153,9 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
             className="filter-input"
             type="text"
             placeholder={`Filter (${formatChord(bindings.filter)})`}
-            aria-label="Filter sessions by title, status, agent, or PR number"
+            aria-label={page === "library"
+              ? "Filter Library cards"
+              : "Filter sessions by title, status, agent, or PR number"}
             value={filter}
             onChange={(e) => onFilterChange(e.target.value)}
             onKeyDown={(e) => {

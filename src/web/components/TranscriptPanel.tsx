@@ -90,6 +90,7 @@ import {
 } from "./ImageDrop.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ConversationArtifacts } from "./ConversationArtifacts.tsx";
+import { AdvisorNote } from "./AdvisorNote.tsx";
 import { InProgressRow } from "./InProgressRow.tsx";
 import { useDisplayItems } from "../lib/board-card.ts";
 import { currentTurnStartedAt } from "../lib/working-indicator.ts";
@@ -1864,6 +1865,7 @@ function Turn({
           />
         </div>
       )}
+      {m.advisor && <AdvisorNote advisor={m.advisor} />}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} />}
       <ConversationArtifacts
         sessionId={sessionId}
@@ -2108,6 +2110,7 @@ function TerminalTurn({
           the same way. Not a nicety: the panel searches this rendering with
           `toolLineText`, and a call drawn as a chip here would be searched over text it
           does not show. */}
+      {m.advisor && <AdvisorNote advisor={m.advisor} />}
       {m.tools.length > 0 && <ToolChips tools={m.tools} find={find} lines />}
       <ConversationArtifacts
         sessionId={sessionId}

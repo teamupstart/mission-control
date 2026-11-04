@@ -43,6 +43,7 @@ import {
   RESIDENT_LIMITS,
   ResidentProfileRevisionSchema,
   canonicalResidentJson,
+  isBuiltinResidentProfileId,
   type ResidentProfile,
 } from "@shared/residents.ts";
 import { listAllResidentProfiles, normalizeResidentName, storedResidentSettings } from "../residents/store.ts";
@@ -249,6 +250,10 @@ function residentProfileRestore(staged: StagedSettingsBackup): {
     );
   }
   for (const row of staged.residentProfiles) {
+    // Built-ins are app data and never captured; a snapshot naming one was not written by capture.
+    if (isBuiltinResidentProfileId(row.id)) {
+      blockers.push(`Resident profile ${row.id} belongs to a built-in`);
+    }
     if (row.normalizedName !== normalizeResidentName(row.name)) {
       blockers.push(`Resident profile ${row.id} has a normalized name that does not match its name`);
     }

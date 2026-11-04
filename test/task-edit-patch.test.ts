@@ -122,6 +122,20 @@ test("un-pinning effort sends null, and pinning one sends the level", () => {
   });
 });
 
+test("un-pinning an advisor sends null, pinning one sends the choice, and a stored pin reads back", () => {
+  const pinned = mkTask({ advisorModel: "opus" });
+  assert.equal(draftFromTask(pinned).advisorModel, "opus");
+  assert.equal(draftFromTask(mkTask()).advisorModel, "", "Inherit reads back as the empty option");
+  assert.deepEqual(taskUpdatePatch(pinned, edited(pinned, { advisorModel: "" }), pinned.intent), {
+    advisorModel: null,
+  });
+  const free = mkTask();
+  assert.deepEqual(taskUpdatePatch(free, edited(free, { advisorModel: "sonnet" }), free.intent), {
+    advisorModel: "sonnet",
+  });
+  assert.equal(draftsEqual(draftFromTask(pinned), draftFromTask(free)), false);
+});
+
 test("the composed intent is what the patch compares, so an attachment alone is a change", () => {
   // The stored intent carries the paths `withAttachments` appended, so a drop with no
   // typing still rewrites it - and a save that only re-composed the same text does not.
@@ -178,6 +192,7 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
+    advisorModel: "off",
     workflowId: "workflow-review",
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],

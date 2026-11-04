@@ -5557,7 +5557,7 @@ export class WorkflowStore {
         // Global withdrawal retires every live version, including earlier shared proof
         // retained for siblings and legacy versions that survive only in frozen packets.
         const frozen = this.db.prepare(`SELECT c.staging_id AS id, c.repository_scope,
-            CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+            b.session_cwd AS source_root
           FROM workflow_submission_evidence_coverage c JOIN workflow_submissions s ON s.id = c.submission_id
           JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{
@@ -6122,7 +6122,7 @@ export class WorkflowStore {
   /** Retirement is bounded by both the target reservation and its receiving repository. */
   private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
     if (stagingIds.length === 0) return new Set();
-    const target = this.db.prepare(`SELECT CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+    const target = this.db.prepare(`SELECT b.session_cwd AS source_root
       FROM workflow_submissions s JOIN workflow_runs r ON r.id = s.run_id
       JOIN workflow_bindings b ON b.id = r.binding_id WHERE s.id = ?`).get(targetId) as { source_root: string | null } | undefined;
     if (!target) return new Set();
@@ -9573,7 +9573,7 @@ export class WorkflowStore {
             )
           )
         ) LIMIT 1`)
-      .get(binding.noteKey, binding.repoRoot || binding.sessionCwd || "", parent.id,
+      .get(binding.noteKey, canonicalWorktreePath(binding.sessionCwd || ""), parent.id,
         typeof failure?.itemClientId === "string" ? failure.itemClientId : null,
         parent.stagedImageGeneration ?? 0));
   }
@@ -9621,7 +9621,7 @@ export class WorkflowStore {
       if (!deliveries.some((delivery) => delivery.submissionId === parent.id
           && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered")
           || deliveries.some((delivery) => ["sending", "uncertain", "prepared"].includes(delivery.state))) return null;
-      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || "");
+      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || "");
       if (!this.captureRepairInputsChanged(parent, binding)) return null;
       const attempts = this.listSubmissions(run.id).filter((candidate) => candidate.round === parent.round
         && candidate.refinementReason === "evidence_capture_repair").length;
@@ -9685,7 +9685,7 @@ export class WorkflowStore {
       });
       // Keep the parent's frozen proof, but honor withdrawals committed before this recovery.
       const generation = Math.max(parent.stagedImageGeneration ?? 0,
-        this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
+        this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""));
       this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
         .run(generation, input.id);
       this.inheritSubmissionEvidenceInTransaction({
@@ -9746,7 +9746,7 @@ export class WorkflowStore {
       if (!binding) return { ok: false, reason: "not_waiting" };
       const generation = this.workflowEvidenceGeneration(
         binding.noteKey,
-        binding.repoRoot || binding.sessionCwd || "",
+        binding.sessionCwd || "",
       );
       if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
@@ -10849,6 +10849,79 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The delivery another of this conversation's reviews is still owed a turn for, or null
+   * when the pane is free.
+   *
+   * A multi-repo task's session runs one review per repository it changed, and they share one
+   * pane, one transcript and one turn. At most one may have a packet outstanding: two
+   * instructions typed into one conversation interleave into a turn neither expects, and the
+   * transcript anchor that proves a packet was picked up cannot say which of them the session
+   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
+   * contract is per run and is unchanged; this one is between runs, where serializing is the
+   * only available answer because the runs are genuinely independent reviews.
+   *
+   * A conversation with one active binding - every single-repo session - returns null from
+   * the first line and pays one indexed read, so nothing about its delivery path moves.
+   *
+   * What counts as outstanding is "the session still owes this packet a turn":
+   *
+   *  - `sending`: being typed right now, and the only truly concurrent case.
+   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
+   *    read and the action has not completed.
+   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
+   *    the agent is repairing that repository, and handing it a second repository's findings
+   *    mid-repair is the interleaving this exists to prevent.
+   *
+   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
+   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
+   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
+   */
+  conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
+    const bindings = this.activeBindingsForNote(delivery.noteKey);
+    if (bindings.length < 2) return null;
+    for (const binding of bindings) {
+      const run = this.activeRunForBinding(binding.id);
+      if (!run || run.id === delivery.runId || ["completed", "cancelled", "failed"].includes(run.status)) continue;
+      const latest = this.latestSubmission(run.id);
+      for (const other of this.listDeliveries(run.id)) {
+        if (other.state === "sending") return other;
+        if (other.state !== "delivered") continue;
+        if (other.kind === "session_action") {
+          const attempt = other.nodeAttemptId ? this.getAttempt(other.nodeAttemptId) : null;
+          if (attempt?.state === "waiting") return other;
+          continue;
+        }
+        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
+        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
+            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
+            && other.submissionId === latest?.id) return other;
+      }
+    }
+    return null;
+  }
+
+  /** Current queue ownership, derived from the same predicate that guards delivery. */
+  private runDeliveryHold(run: WorkflowRun, binding: WorkflowBinding): WorkflowRunDetail["deliveryHold"] {
+    if (binding.state !== "active" || binding.deliveryMode !== "live"
+        || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+    const latest = this.latestSubmission(run.id);
+    for (const delivery of this.listDeliveries(run.id)) {
+      if (delivery.state !== "prepared" || delivery.submissionId !== latest?.id) continue;
+      const hold = this.conversationDeliveryHold(delivery);
+      const holdingRun = hold ? this.getRun(hold.runId) : null;
+      const holdingBinding = holdingRun ? this.getBinding(holdingRun.bindingId) : null;
+      if (hold && holdingRun && holdingBinding) return {
+        runId: holdingRun.id,
+        deliveryId: hold.id,
+        repoRoot: holdingBinding.repoRoot || holdingBinding.sessionRepoRoot || holdingBinding.sessionCwd,
+        kind: hold.kind,
+        state: hold.state,
+      };
+    }
+    return null;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -10892,6 +10965,7 @@ export class WorkflowStore {
       repairGrant: this.runRepairGrant(id),
       refusedCompletion: this.runRefusedCompletion(id),
       resumption: this.runResumptionState(run, binding, version),
+      deliveryHold: this.runDeliveryHold(run, binding),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.
@@ -11349,7 +11423,7 @@ export class WorkflowStore {
   ): void {
     const owner = this.db.prepare(
       `SELECT b.note_key,
-              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+              b.session_cwd AS checkout_root
          FROM workflow_submissions s
          JOIN workflow_runs r ON r.id = s.run_id
          JOIN workflow_bindings b ON b.id = r.binding_id
@@ -11522,7 +11596,7 @@ export class WorkflowStore {
       if (!submission) return { frozen: [], unresolved: [] };
       const owner = this.db.prepare(
         `SELECT b.note_key,
-                CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+                b.session_cwd AS checkout_root
            FROM workflow_runs r
            JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE r.id = ?`,

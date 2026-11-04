@@ -20,10 +20,13 @@ const home = mkdtempSync(join(tmpdir(), "mission-sdk-sup-"));
 // Set before importing anything that resolves the state dir (see db-isolation.test.ts).
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure, getTask } = await import("../src/server/db.ts");
+const { openDb, workCycleFor, openTaskSessionClosure, getTaskSessionClosure, clearTaskSessionClosure, getTask } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
   "../src/server/sdk/supervisor.ts"
+);
+const { CAPACITY_CONTINUATION_PROMPT, CAPACITY_RETRY_MAX_ATTEMPTS, capacityRetryPlan } = await import(
+  "../src/server/sdk/capacity-retry.ts"
 );
 const { getSdkSession, listSdkSessions, upsertSdkSession, getSdkSessionProcess } = await import(
   "../src/server/sdk/store.ts"
@@ -243,6 +246,37 @@ test("a resident's measured native limit is persisted and replayed by a fresh su
   assert.deepEqual(fake.calls[1]?.residentCompaction, { threshold: 70, tokenLimit: 180880 });
   assert.equal(getSdkSession(session.id)?.residentCompactionTokenLimit, 180880);
   assert.equal(residents.getResidentRun("native-run")?.run.endedAt, null);
+});
+
+test("a task's advisor pin is kept on the driver row and replayed by a restore", async t => {
+  const first = fakeHandle();
+  const handles = [first, fakeHandle()];
+  const fake = withFakeDriver(async () => handles.shift()!);
+  t.after(fake.restore);
+  const original = new SdkSupervisor(new Registry());
+  const session = await original.start({ ...START, cwd: "/wt/advisor-pin", advisorModel: "opus" });
+  assert.equal(fake.calls[0]?.advisorModel, "opus");
+  first.push({ kind: "bound", agentSessionId: "advisor-pin-thread", transcriptPath: null, modelId: null, pid: null });
+  await drain();
+  assert.equal(getSdkSession(session.id)?.advisorModel, "opus");
+  await original.stopAll();
+
+  const restored = new SdkSupervisor(new Registry());
+  t.after(() => restored.stopAll());
+  await restored.restore();
+  const relaunch = fake.calls.slice(1).find((call) => call.resume === "advisor-pin-thread");
+  assert.ok(relaunch, "the suspended row should have been resumed");
+  assert.equal(relaunch.advisorModel, "opus", "a restart renders the flag layer the first launch did");
+  assert.equal(getSdkSession(session.id)?.advisorModel, "opus");
+
+  // An omitted pin writes NULL, which is Inherit - every row from before the column existed.
+  const inheritHandle = fakeHandle();
+  const inherit = withFakeDriver(async () => inheritHandle);
+  t.after(inherit.restore);
+  const plainSupervisor = new SdkSupervisor(new Registry());
+  t.after(() => plainSupervisor.stopAll());
+  const plain = await plainSupervisor.start({ ...START, cwd: "/wt/advisor-inherit" });
+  assert.equal(getSdkSession(plain.id)?.advisorModel, null);
 });
 
 test("the supervisor persists the observed child lifetime after the stream ends and clears it on replacement", async (t) => {
@@ -2414,3 +2448,349 @@ for (const { scenario, status, pointer, reused, retire, turnInProgress } of [
     assert.equal(task.sessionId, pointer);
   });
 }
+
+// A provider at capacity ends the turn with the work half done. Reporting that as a completed
+// turn is what sent a workflow review after an unfinished Codex turn and then a repair round
+// straight into the same outage. The supervisor holds the turn open and retries instead.
+const CAPACITY = { kind: "capacity" as const, message: "Selected model is at capacity. Please try a different model." };
+
+async function startWorking(t: import("node:test").TestContext) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const handle = fakeHandle();
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const session = await supervisor.start(START);
+  handle.push({ kind: "state", state: "working", activity: null });
+  await drain();
+  const sentBefore = handle.sent.length;
+  const continuations = () =>
+    handle.sent.slice(sentBefore).filter((turn) => turn.text === CAPACITY_CONTINUATION_PROMPT).length;
+  return { handle, registry, supervisor, session, continuations };
+}
+
+test("a capacity failure holds the turn open and retries with progressive backoff", async (t) => {
+  const { handle, registry, session, continuations } = await startWorking(t);
+  const generation = registry.getSession(session.id)?.workCycle?.generation;
+
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  let card = registry.getSession(session.id);
+  assert.equal(card?.state, "working", "the card does not go idle on unfinished work");
+  assert.equal(card?.activity, "Model at capacity - retrying in 15s (attempt 1 of 8)");
+  assert.equal(card?.workCycle?.active, true, "the work cycle is not completed");
+  assert.equal(card?.workCycle?.generation, generation);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true, "a restart would continue the work");
+
+  t.mock.timers.tick(14_999);
+  await drain();
+  assert.equal(continuations(), 0, "nothing is sent before the backoff elapses");
+  t.mock.timers.tick(1);
+  await drain();
+  assert.equal(continuations(), 1, "the continuation is sent after 15 seconds");
+  assert.equal(originOf(session.id, CAPACITY_CONTINUATION_PROMPT), "harness", "the retry is not the operator's words");
+
+  handle.push({ kind: "state", state: "working", activity: null });
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.activity, "Model at capacity - retrying in 30s (attempt 2 of 8)");
+  t.mock.timers.tick(29_999);
+  await drain();
+  assert.equal(continuations(), 1);
+  t.mock.timers.tick(1);
+  await drain();
+  assert.equal(continuations(), 2, "the second wait is twice the first");
+
+  handle.push({ kind: "state", state: "working", activity: null });
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+  card = registry.getSession(session.id);
+  assert.equal(card?.state, "idle", "a turn that finishes settles the card as usual");
+  assert.equal(card?.workCycle?.active, false);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+
+  handle.push({ kind: "state", state: "working", activity: null });
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  assert.equal(
+    registry.getSession(session.id)?.activity,
+    "Model at capacity - retrying in 15s (attempt 1 of 8)",
+    "a successful turn resets the backoff",
+  );
+});
+
+test("a message delivered during the backoff replaces the retry", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  assert.equal(await supervisor.send(session.id, { text: "carry on with the tests" }), "started");
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "the delivered message already resumed the work");
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.state, "idle");
+});
+
+test("an interrupt during the backoff cancels the retry and settles the turn", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+
+  assert.equal(await supervisor.interrupt(session.id), "interrupted", "the waiting retry was the running work");
+  assert.equal(registry.getSession(session.id)?.state, "idle");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, false);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0);
+});
+
+test("a model that stays at capacity is reported as a finished turn once the attempts run out", async (t) => {
+  const { handle, registry, session, continuations } = await startWorking(t);
+  for (let attempt = 1; attempt <= CAPACITY_RETRY_MAX_ATTEMPTS; attempt++) {
+    handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+    await drain();
+    assert.equal(registry.getSession(session.id)?.state, "working");
+    t.mock.timers.tick(capacityRetryPlan(attempt)!.delayMs);
+    await drain();
+    assert.equal(continuations(), attempt);
+    handle.push({ kind: "state", state: "working", activity: null });
+  }
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.state, "idle", "the session is not held busy for ever");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, false);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+});
+
+test("a retry that finds the driver already busy leaves that turn to settle the card", async (t) => {
+  const { handle, registry, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  handle.sendIfIdle = async () => null;
+
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0);
+  assert.equal(originOf(session.id, CAPACITY_CONTINUATION_PROMPT), undefined, "the unsent retry claims no authorship");
+  assert.equal(registry.getSession(session.id)?.state, "working", "the running turn still owns the card");
+
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+  assert.equal(registry.getSession(session.id)?.state, "idle");
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+});
+
+test("a retry the driver refuses settles the card and claims no authorship", async (t) => {
+  const { handle, registry, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+  handle.sendIfIdle = async () => {
+    throw new Error("driver refused the turn");
+  };
+
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0);
+  assert.equal(originOf(session.id, CAPACITY_CONTINUATION_PROMPT), undefined, "the refused retry claims no authorship");
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "idle", "nothing will finish the turn, so it is reported finished");
+  assert.equal(card?.workCycle?.active, false);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, false, "a restart owes no continuation");
+});
+
+/** Every state and work cycle the card was published with, from now on. */
+function watchCard(registry: InstanceType<typeof Registry>, id: string) {
+  const seen: Array<{ state: string; active?: boolean; generation?: number }> = [];
+  registry.subscribe((event: ServerEvent) => {
+    if (event.type !== "session_upsert" || event.session.id !== id) return;
+    seen.push({
+      state: event.session.state,
+      active: event.session.workCycle?.active,
+      generation: event.session.workCycle?.generation,
+    });
+  });
+  return seen;
+}
+
+for (const rebind of ["after", "before"] as const) {
+  test(`clearing context during the backoff completes the old turn only once the clear lands (rebind ${rebind} it resolves)`, async (t) => {
+    const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+    handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+    await drain();
+    const oldConversation = registry.getSession(session.id)!.agentSessionId ?? session.id;
+    const before = workCycleFor(oldConversation)!;
+    assert.equal(before.active, true);
+    const duringClear: Array<{ state?: string; active?: boolean }> = [];
+    handle.clearContext = async () => {
+      duringClear.push({
+        state: registry.getSession(session.id)?.state,
+        active: workCycleFor(oldConversation)?.active,
+      });
+      if (rebind === "before") {
+        // The replacement's identity reaches the card before the clear call resolves.
+        handle.push({
+          kind: "bound",
+          agentSessionId: "replacement-conversation",
+          transcriptPath: null,
+          modelId: null,
+          pid: null,
+          cleared: true,
+        });
+        await drain();
+      }
+    };
+
+    assert.equal(await supervisor.clearContext(session.id), true);
+    assert.deepEqual(duringClear, [{ state: "working", active: true }], "nothing is reported finished before the clear lands");
+    if (rebind === "after") {
+      handle.push({
+        kind: "bound",
+        agentSessionId: "replacement-conversation",
+        transcriptPath: null,
+        modelId: null,
+        pid: null,
+        cleared: true,
+      });
+      await drain();
+    }
+    const after = workCycleFor(oldConversation)!;
+    assert.equal(after.active, false, "the old conversation's turn is completed");
+    assert.equal(after.generation, before.generation + 1);
+    assert.equal(workCycleFor("replacement-conversation")?.active ?? false, false, "the replacement has no work to complete");
+    assert.equal(registry.getSession(session.id)?.state, "idle");
+    assert.equal(getSdkSession(session.id)?.turnInProgress, false);
+    t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+    await drain();
+    assert.equal(continuations(), 0, "the wiped conversation is not continued");
+  });
+}
+
+test("stopping the session during the backoff sends no retry, even while the stop drains", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  const generation = registry.getSession(session.id)?.workCycle?.generation;
+  // A driver that takes longer to exit than the backoff: teardown has not run yet when the
+  // timer is due, so only the stop itself can have cancelled the retry.
+  let finishStop = (): void => {};
+  handle.stop = () => new Promise<void>((resolve) => {
+    finishStop = () => {
+      handle.stopped = true;
+      handle.push({ kind: "exited", reason: "stopped", resumable: true });
+      resolve();
+    };
+  });
+
+  assert.equal(supervisor.requestStop(session.id), true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "a stopping session is not continued");
+  const card = registry.getSession(session.id);
+  assert.equal(card?.workCycle?.active, true, "the unfinished turn is not reported complete by a stop");
+  assert.equal(card?.workCycle?.generation, generation);
+
+  finishStop();
+  await drain();
+  assert.equal(handle.stopped, true);
+  assert.equal(supervisor.handleFor(session.id), null);
+});
+
+// A control that set the retry aside and then failed leaves the session live with its work
+// unfinished. Without the retry nothing would ever continue or settle that turn.
+test("a refused clear during the backoff never reports the turn finished, and keeps the retry", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  const generation = registry.getSession(session.id)?.workCycle?.generation;
+  const published = watchCard(registry, session.id);
+  handle.clearContext = async () => {
+    throw new Error("driver refused the clear");
+  };
+
+  await assert.rejects(supervisor.clearContext(session.id), /driver refused the clear/);
+  assert.deepEqual(
+    published.filter((card) => card.state === "idle" || card.active === false || card.generation !== generation),
+    [],
+    "no idle card or completed cycle was ever published for a listener to act on",
+  );
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "working");
+  assert.equal(card?.workCycle?.active, true);
+  assert.equal(card?.workCycle?.generation, generation);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 1, "the unfinished work is still continued");
+});
+
+test("a refused stop during the backoff puts the retry back", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  handle.stop = async () => {
+    throw new Error("driver refused stop");
+  };
+
+  assert.equal(supervisor.requestStop(session.id), true);
+  await drain();
+  assert.equal(supervisor.handleFor(session.id), handle, "the driver is still live");
+  assert.equal(registry.getSession(session.id)?.state, "working");
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 1, "the live session still continues its work");
+});
+
+test("a refused interrupt during the backoff puts the retry back", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.push({ kind: "turn_done", usage: null, failure: CAPACITY });
+  await drain();
+  handle.interrupt = async () => {
+    throw new Error("driver refused the interrupt");
+  };
+
+  await assert.rejects(supervisor.interrupt(session.id), /driver refused the interrupt/);
+  assert.equal(registry.getSession(session.id)?.state, "working");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 1);
+});
+
+test("a capacity failure with a queued turn keeps the cycle open until that turn ends", async (t) => {
+  const { handle, registry, supervisor, session, continuations } = await startWorking(t);
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    return "queued";
+  };
+  assert.equal(await supervisor.send(session.id, { text: "and then run the tests" }), "queued");
+  const generation = registry.getSession(session.id)?.workCycle?.generation;
+  const published = watchCard(registry, session.id);
+  const usage = { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, modelId: "claude-test", costUsd: null };
+
+  handle.push({ kind: "turn_done", usage, failure: CAPACITY });
+  await drain();
+  assert.deepEqual(
+    published.filter((card) => card.state === "idle" || card.active === false || card.generation !== generation),
+    [],
+    "no completion is published while the queued turn still has the unfinished work",
+  );
+  assert.equal(registry.getSession(session.id)?.state, "working");
+  assert.equal(registry.getSession(session.id)?.workCycle?.active, true);
+  assert.equal(getSdkSession(session.id)?.turnInProgress, true);
+  t.mock.timers.tick(capacityRetryPlan(1)!.delayMs);
+  await drain();
+  assert.equal(continuations(), 0, "the queued turn is the retry");
+
+  handle.push({ kind: "turn_done", usage: null });
+  await drain();
+  const card = registry.getSession(session.id);
+  assert.equal(card?.state, "idle", "the queued turn's completion settles the card");
+  assert.equal(card?.workCycle?.active, false);
+  assert.equal(card?.workCycle?.generation, generation! + 1);
+});

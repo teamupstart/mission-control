@@ -544,7 +544,9 @@ comes back seeded with that repo, not blank. A submit that fails leaves the form
 your fields intact so you can retry.
 
 A backdrop click closes the form only when both the press and release happen outside it.
-Selecting text inside the form and releasing the mouse outside keeps the form open.
+Selecting text inside the form and releasing the mouse outside keeps the form open. See
+[Overlays and shortcuts](agent-guides/change-contracts.md#overlays-and-shortcuts) for the
+shared backdrop rule.
 
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
@@ -1183,6 +1185,99 @@ that harness offers it *for the model this launch resolved*. Codex drops `max` o
 but its newest two, so a `max` chosen for `plan` reaches a Codex launch on one of those and
 falls back to this card's default on the others rather than passing a flag the CLI rejects.
 
+### Advisor
+
+Claude Code's **advisor** lets the model a session runs on (the executor) consult a stronger
+model at key moments. The executor gets a server-side `advisor` tool; when it calls it, the
+Anthropic API forwards the conversation to the advisor model and hands its review back. Claude
+Code stores the choice as `advisorModel` in its settings, and `/advisor opus` (or `sonnet`, or
+`off`) sets it. Claude Code's own recommended pairing is Sonnet as the executor with Opus as the
+advisor.
+
+**Mission Control inherits it.** Both Claude runtimes load the operator's Claude Code settings:
+a Terminal pane starts the `claude` CLI with no settings-source restriction, and an Agent SDK
+session loads the user, project and local layers. So when `advisorModel` is set in
+`~/.claude/settings.json`, or in a project's `.claude/settings.json` or
+`.claude/settings.local.json`, every eligible Claude session Mission Control dispatches runs with
+that advisor. Codex and Pi have no advisor.
+
+**Eligibility is the CLI's decision, not Mission Control's.** The advisor works only:
+
+- on the first-party Anthropic API, not Bedrock or Vertex;
+- when the advisor feature is enabled for the account (a server-side flag, which
+  `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` overrides);
+- when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is not set, which turns it off completely;
+- when the advisor is at least as capable as the executor. An Opus session with a Sonnet advisor
+  does not consult it on the main conversation, though its subagents still may.
+
+**Typing `/advisor` writes your global settings.** In any Claude session, including the composer
+of an Agent SDK session, `/advisor` writes `advisorModel` to `~/.claude/settings.json`. That
+changes every Claude session you start afterwards, inside Mission Control and out of it.
+
+**Where you see it.** Each advisor call appears in the session's conversation as one line in
+both renderings. A review reads "Advisor (Opus 5.5) reviewed the conversation"; when the API
+returned the advisor's words, clicking the line shows them. The API can return the review
+encrypted, in which case there are no words to show. A refusal reads "Advisor declined to
+advise on this request", and a failed call reads "Advisor unavailable" with the API's error
+code. A session whose newest turn names an advisor model carries a read-only
+**Advisor: Opus 5.5** chip beside its model, on the board card and in the console header. The
+chip shows only what the transcript records, never what a settings file says, so a session that
+has not run a turn yet shows no chip even when an advisor is configured, and a turn that runs
+without the advisor (after `/advisor off`, for example) clears it.
+
+What the transcript records was observed on Claude Code 2.1.317 on 2026-11-03, from one
+captured headless turn that called the advisor: every assistant record of that turn, including
+the reply after the advisor call, carries a top-level `advisorModel`. So the chip appears from
+the first turn that calls the advisor. Whether Claude Code also stamps a turn that offered the
+advisor but did not call it is **inferred, not verified**: the CLI's code appears to stamp every
+record of a request that carries the advisor tool, but no such turn has been captured. If it does
+not, the chip shows only after turns that called the advisor, and clears after a turn that did
+not. A later Claude Code version may change either behaviour.
+
+**Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
+2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,
+committed as `test/fixtures/claude-advisor/result-frame.json`), the per-model usage
+(`modelUsage`) listed the advisor model, `claude-opus-5-5`, with its own token counts and reported
+cost. The per-model costs added up to the turn's `total_cost_usd`. So the session's cost and the
+usage ledger carry the advisor as its own model row next to the executor's. That is what one
+capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
+version may report it differently.
+
+#### Per-dispatch override
+
+The dispatch form's **Advisor** select pins one Claude task's advisor without changing any other
+session. It appears beside Effort only for a harness that declares an advisor, which today is
+Claude Code alone; Codex and Pi do not show it. The choices are:
+
+- **Inherit from Claude settings**, the default. Mission Control renders nothing, so the session
+  gets whatever your Claude Code settings name, exactly as it did before the select existed.
+- **Opus** or **Sonnet**. The launch carries `advisorModel` in Claude Code's session-scoped flag
+  layer: `--settings '{"advisorModel":"opus"}'` on a Terminal launch, and `Options.settings` on an
+  Agent SDK launch. That layer sits above your user, project and local settings for this session
+  only, and Mission Control never writes any settings file.
+- **Off**. The launch sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` in the session's environment,
+  the switch the eligibility list above says turns the advisor off completely, so it is expected
+  to apply even when your settings name one. The verified case is the variable beside an Opus pin
+  on the same launch, described below.
+
+The pin is stored on the task, so reopening a backlog task shows it and a save can change or
+clear it. Switching the task's agent clears it, along with the model and effort overrides. It
+also survives a resume: an Agent SDK session restarted by the daemon relaunches with the pin it
+started with, and continuing a conversation in a terminal renders the task's pin again.
+
+Mission Control does not check whether the pairing makes sense or whether your account has the
+advisor feature; it passes the pin and leaves both to the CLI, under the eligibility rules listed
+above. What was verified, on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched
+with an Opus pin marks Opus as the current choice in `/advisor`, where the same launch without the
+pin marks "No advisor", and that the Off variable removes the `/advisor` command even with an Opus
+pin on the same launch.
+
+How the CLI treats a pin that breaks the pairing rule (a Sonnet advisor on an Opus session, for
+example) or a pin on an account without the advisor feature is **inferred, not verified**: no
+such launch has been observed, so the session may ignore the pin, or the CLI may refuse to start.
+If the CLI refuses a launch outright, the refusal is reported as a launch failure. Fable is not
+offered as an advisor, and an advisor cannot be changed on a session that is already running.
+
 ### Session runtime
 
 **Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
@@ -1465,12 +1560,19 @@ The local method uses this ladder:
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
 
-The **Atlassian CLI (acli)** method needs a one-time install and login:
+The **Atlassian CLI (acli)** method needs a one-time install and sign-in. **Settings → Setup →
+Jira** checks both and runs each in a visible terminal, or run them yourself:
 
 ```sh
-brew tap atlassian/homebrew-acli && brew install acli
+brew install atlassian/acli/acli
 acli jira auth login --web
 ```
+
+If Mission Control cannot find an installed acli, set `MISSION_ACLI_BIN` to its path. When a
+source's **Files tasks against** checkout has been moved or deleted, every check, sweep and
+write-back names that directory instead: the CLI starts in the checkout, and a missing working
+directory is refused with the same `ENOENT` a missing binary produces, so it is reported as
+its own fault rather than as "not installed".
 
 The contract behavior below was verified on **2026-11-02** with `acli version 1.3.40-stable`;
 see the [read-only capture record](../test/fixtures/acli/README.md). These are version-specific
@@ -1496,8 +1598,9 @@ total `--limit` in the verified version; **Issues per page** does not change thi
 A larger filter files the bounded results and shows the
 existing too-broad advisory so you can narrow the JQL. Empty results are healthy. The
 same summary, ADF description, browse link and priority mapper serves every query method.
-Write-back through acli is not available in this build; select the local method to write
-back today. acli comment and resolve support belongs to the next phase.
+
+For comments, pull request links, status moves and write-site safety, see
+[Writing the pull request back onto the issue](#writing-the-pull-request-back-onto-the-issue).
 
 The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
 exposes only `Skill`, `ToolSearch`, and the five exact read-only `searchJiraIssuesUsingJql`
@@ -1587,10 +1690,10 @@ ticket is consent, not configuration. Two things can be written:
   what opened the pull request, the pull request's URL, the completion's own words when it
   left any, and the task's title. Nothing about Mission Control's internals goes in it.
 
-Both by default, because they answer different questions. A source can be set to one or the
-other.
+Both by default, because they answer different questions. A local source can be set to one
+or the other.
 
-**The remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
+**For the local method, the remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
 command at all, so on a CLI-only machine that half cannot run. The comment still goes, and
 the source reports what it did and what it could not - rather than failing the whole
 delivery, which would retry a comment that has no idempotency of its own and leave one per
@@ -1601,11 +1704,11 @@ refuses and says so, because then there is nothing it can do at all.
 project's own workflow decides both what finished is called and which transitions are
 reachable from where an issue is standing right now. So the status is per source and typed
 by a person - it cannot be inferred, and inferring it would move somebody's ticket somewhere
-they did not ask for. It is matched case-insensitively against both the transition's own
+they did not ask for. On the local method it is matched case-insensitively against both the transition's own
 name and the status it lands in, since the board shows one and the workflow button may say
 the other.
 
-When it does not fit, the refusal names the transitions that **are** available from where
+When it does not fit, the local method's refusal names the transitions that **are** available from where
 the issue is:
 
 ```
@@ -1618,7 +1721,7 @@ sends the reader to Jira's workflow administration screens to work out what this
 should have said. An issue already standing in the target status is reported as **already
 there** rather than transitioned again.
 
-**Resolving therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
+**Resolving through the local method therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
 them.** That list is the reason. The `jira` CLI can *move* an issue but cannot be asked what
 an issue is able to do - jira-cli ships no command that lists transitions, and its own move
 error prints them on recent versions and not on older ones. On a CLI-only machine the good
@@ -1628,6 +1731,38 @@ before it spawns anything, naming the credential as the fix. With the credential
 CLI still goes first, exactly as a sweep does, and only a move it *refuses* is handed to the
 credential rung - which then either performs it or refuses with the list above. Commenting
 and remote links are unaffected: `annotate` still works on the CLI alone.
+
+**acli write-back uses its OAuth login, with no Jira environment variables.** Every link style
+posts the Mission Control comment with a clickable pull request link. acli has no remote-link
+command: **Remote link and comment** and **Remote link only** report that link as unavailable
+while delivering the comment. A completion without a pull request still posts its comment.
+Only `https://github.com/<owner>/<repo>/pull/<number>` URLs receive a clickable link in an
+acli comment; query strings, fragments and a trailing slash are allowed. Other supplied
+completion URLs remain readable as plain text.
+Write diagnostics redact known credential shapes, Authorization fields, email addresses and SSN-like
+identifiers before reaching the ledger, logs or settings. Normal workflow reasons remain
+available; an unrecognized transition response is not copied into the diagnostic.
+No local CLI or REST credential fallback is attempted.
+
+Resolving reads the current status, moves to the configured **Target status**, and confirms it
+with another read. The Phase 1
+[read-only capture record](../test/fixtures/acli/README.md), verified on **2026-11-02** with
+`acli version 1.3.40-stable`, records `transitions: null` in both the
+[status view](../test/fixtures/acli/view-status.json) and
+[`*all` view](../test/fixtures/acli/view-all.json). These captures cover one issue in that
+version; transition data may differ for other issues, workflows or releases. Recheck when
+updating acli. On this evidence Mission Control skips an extra transition probe and moves by
+status name. If a status response supplies a transition list, it constrains the move. A configured
+status or a matched transition destination that is already current settles without writing. A refusal
+names the current status and quotes acli's reason, which may list reachable statuses. Select a
+reachable status in the source settings.
+
+Each write requires fresh positive proof of the configured site and checks it again afterwards.
+Status reads also check the site before and after. A missing, unknown or mismatched site before
+the write refuses without writing. A site change after a write, a killed write, or a failed
+confirming read reports an unknown outcome and is never retried automatically. Check the issue
+on both named sites before manually retrying a site mismatch. The verified CLI version cannot
+pin a command to a site, so switching away and back entirely within a command remains undetectable.
 
 Everything else about a resolve is arranged around one rule: **an outcome that cannot be
 read is never retried automatically**. A refusal Jira actually sent means nothing was

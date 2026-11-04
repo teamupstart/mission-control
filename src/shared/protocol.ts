@@ -80,9 +80,10 @@ import {
   SESSION_RUNTIMES,
   TASK_KINDS,
   THINKING_LEVELS,
+  ADVISOR_CHOICES,
 } from "./types.ts";
 import type { AgentType, SessionRuntime, Task } from "./types.ts";
-import { supportsEffort } from "./harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -195,6 +196,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
+const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
   EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
     message: "reasoning effort is not supported by this harness",
@@ -518,6 +521,32 @@ export const PlanDecisionSchema = z.object({
 export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
 
 /**
+ * Why a `request_input` ask could not be answered on its dashboard card, or null when it can.
+ *
+ * The card is the human's only way to answer, so an ask it cannot carry is refused before a
+ * review exists rather than shown as something nobody can act on: a blank question has nothing
+ * to read, a blank option label is a radio with no name, and two options with the same label
+ * cannot be told apart - neither by the person choosing nor by the agent, which receives the
+ * chosen option back as its LABEL. Shared by the MCP tool, which explains the refusal to the
+ * agent in its own words, and by `CreateReviewSchema`, which holds the line for any client.
+ */
+export function inputQuestionProblem(
+  question: string,
+  options: ReadonlyArray<{ label: string }> | undefined,
+): string | null {
+  if (!question.trim()) return "the question is empty";
+  const seen = new Set<string>();
+  for (const [index, option] of (options ?? []).entries()) {
+    const label = option.label.trim();
+    if (!label) return `option ${index + 1} has an empty label`;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return `more than one option is labelled "${label}", so the answer could not say which was chosen`;
+    seen.add(key);
+  }
+  return null;
+}
+
+/**
  * An MCP-driven agent creating a review item bound to its session's pane.
  *
  * A `plan-decisions` review must carry at least one decision: the whole point of the
@@ -554,6 +583,12 @@ export const CreateReviewSchema = z
   .refine((r) => r.kind !== "input" || (r.decisions?.length ?? 0) <= 1, {
     message: "kind 'input' carries at most one decision",
     path: ["decisions"],
+  })
+  .superRefine((r, ctx) => {
+    if (r.kind !== "input") return;
+    const decision = r.decisions?.[0];
+    const problem = inputQuestionProblem(decision ? decision.question : r.body.trim() || r.title, decision?.options);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `This question cannot be answered on its card: ${problem}`, path: ["decisions"] });
   })
   .refine((r) => r.kind === "plan-decisions" || r.kind === "input" || !r.decisions?.length, {
     message: "only kinds 'plan-decisions' and 'input' can carry decisions",
@@ -1071,6 +1106,11 @@ export const DispatchSchema = z
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
     /**
+     * Advisor override for a harness that declares `advisor`; omitted inherits the operator's
+     * own Claude settings. Never `null` here: there is no stored pin to clear on a create.
+     */
+    advisorModel: AdvisorChoiceSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
      * and the machine default for other kinds.
@@ -1094,6 +1134,12 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || o.agent === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
+  })
+  // The same split for the advisor, and `TaskManager.create` refuses the same pair when the
+  // harness is only known from the kind.
+  .refine((o) => o.advisorModel === undefined || o.agent === undefined || supportsAdvisor(o.agent, o.advisorModel), {
+    path: ["advisorModel"],
+    message: "an advisor override is not supported by this harness",
   })
   .superRefine((o, ctx) => {
     // A resident is created only by its profile's launch, which reserves the run first.
@@ -1334,7 +1380,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
+ * `model`, `effort` and `advisorModel` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
@@ -1368,6 +1414,7 @@ const UpdateTaskFieldsSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    advisorModel: AdvisorChoiceSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
@@ -1378,6 +1425,10 @@ export const UpdateTaskSchema = UpdateTaskFieldsSchema
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+  )
+  .refine(
+    (o) => o.agent === undefined || o.advisorModel == null || supportsAdvisor(o.agent, o.advisorModel),
+    { path: ["advisorModel"], message: "an advisor override is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
@@ -3524,6 +3575,8 @@ export const UI_CONFIG_DEFAULTS = {
    * the board spent those pixels on the columns that hold sessions.
    */
   showEmptyColumnStash: true,
+  /** Show every state group in the Board drill-in sidebar. */
+  boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
   /**
@@ -3681,6 +3734,7 @@ export const UiConfigSchema = z.object({
    * something needs you.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
+  boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *
@@ -8251,8 +8305,11 @@ export const ArchiveResidentProfileSchema = z
   .strict();
 export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
 
-/** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
-export const LaunchResidentRequestSchema = LaunchResidentSchema;
+/** `POST /api/residents/profiles/:id/launch`. Restart IDs belong only to the restart route. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema.refine(
+  (input) => !input.requestId.startsWith("resident-restart:"),
+  { message: "This request ID is reserved for profile restarts.", path: ["requestId"] },
+);
 
 export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";
 /** Skill-source mutations share one validated config contract. */

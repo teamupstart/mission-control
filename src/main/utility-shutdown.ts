@@ -1,9 +1,12 @@
-/** Keep Electron alive until its owned utility has exited. Request an orderly drain first. */
+/**
+ * Keep Electron alive until its owned utility exits; request an orderly drain first.
+ * Leave time for forced termination inside the shell's 30-second quit deadline.
+ */
 export function stopUtilityProcess(child: {
   postMessage(message: unknown): void;
   once(event: 'exit', listener: () => void): unknown;
   kill(): unknown;
-}, timeoutMs = 30_000): Promise<void> {
+}, timeoutMs = 25_000): Promise<void> {
   return new Promise((resolve) => {
     // kill() requests termination; only the exit event proves the process is gone.
     const timer = setTimeout(() => { child.kill(); }, timeoutMs);

@@ -22,7 +22,7 @@ import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
-import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
@@ -85,6 +85,7 @@ import type {
   Task,
   TaskAutomaticCleanup,
   TaskPriority,
+  TaskResidentRestart,
   TaskRepoEntry,
   TaskStatus,
   TrackedGap,
@@ -98,6 +99,7 @@ import {
   PROMPTED_COMPLETION_OUTCOMES,
   TASK_KINDS,
 } from "@shared/types.ts";
+import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -190,7 +192,9 @@ let db: DatabaseSync | undefined;
 //     marker (`tasks.launch_report_for`), with no historical backfill.
 // 16: task work-episode ownership end times and retained branch commits.
 // 17: retain per-repository episode change evidence across checkout teardown.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 17;
+// 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
+//     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 18;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -376,6 +380,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       enabled       INTEGER NOT NULL DEFAULT 1,
       model         TEXT,
       effort        TEXT,
+      -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
+      advisor_model TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -1899,6 +1905,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       task_id           TEXT,
       model             TEXT,
       effort            TEXT,
+      advisor_model     TEXT,
       permission_mode   TEXT,
       status            TEXT NOT NULL,
       -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
@@ -3422,6 +3429,9 @@ function migrate(d: DatabaseSync): void {
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
   addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
+  // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
+  // layer the first launch did. NULL inherits, which is what every older row did.
+  addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -4055,6 +4065,9 @@ function migrate(d: DatabaseSync): void {
   // `effort`: the per-task reasoning override. NULL follows the launch-time harness
   // default, which is also the truthful value for every task created before it existed.
   addColumn(d, "tasks", "effort", "TEXT");
+  // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
+  // Claude settings, which is exactly what every task dispatched before it existed did.
+  addColumn(d, "tasks", "advisor_model", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -5505,6 +5518,7 @@ interface TaskRow {
   backlog_rank: unknown;
   model: string | null;
   effort: string | null;
+  advisor_model: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -5676,7 +5690,8 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
   // every browser gets on connect. The map is almost always empty - only a task whose
   // automatic cleanup is mid-retry has a row that projects to anything.
   const cleanup = taskAutomaticCleanupSummaries(rows.map((r) => r.id));
-  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
+  const restarts = taskResidentRestartSummaries(rows.map((r) => r.id));
+  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null, restarts.get(r.id) ?? null));
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
@@ -5785,6 +5800,16 @@ function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
 }
 
 /**
+ * The same rule for the advisor pin: a value this harness no longer offers reads back as
+ * Inherit rather than reaching a launch.
+ */
+function parseAdvisor(agent: Task["agent"], raw: string | null): Task["advisorModel"] {
+  return raw && supportsAdvisor(agent, raw as NonNullable<Task["advisorModel"]>)
+    ? (raw as Task["advisorModel"])
+    : null;
+}
+
+/**
  * `extraRepos` is a REQUIRED argument with no default, which is what keeps
  * `rows.map(rowToTask)` from compiling: `map` would pass the index there, and the
  * resulting type error is the whole point - see `rowsToTasks`.
@@ -5793,6 +5818,7 @@ function rowToTask(
   r: TaskRow,
   extraRepos: TaskRepoEntry[],
   automaticCleanup: TaskAutomaticCleanup | null = null,
+  residentRestart: TaskResidentRestart | null = null,
 ): Task {
   return {
     id: r.id,
@@ -5836,6 +5862,7 @@ function rowToTask(
     backlogRank: Number.isSafeInteger(r.backlog_rank) ? (r.backlog_rank as number) : null,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
+    advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -5872,6 +5899,7 @@ function rowToTask(
     launchFailure: parseLaunchFailure(r.launch_failure),
     launchReportFor: r.launch_report_for,
     automaticCleanup,
+    residentRestart,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -5908,7 +5936,7 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
-         model, effort,
+         model, effort, advisor_model,
          workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
@@ -5917,13 +5945,13 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
-         model=excluded.model, effort=excluded.effort,
+         model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
@@ -5961,6 +5989,7 @@ export function upsertTask(t: Task): string[] {
       t.backlogRank,
       t.model,
       t.effort,
+      t.advisorModel,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
@@ -6021,7 +6050,12 @@ export function getTask(id: string): Task | undefined {
     | TaskRow
     | undefined;
   if (!r) return undefined;
-  return rowToTask(r, taskReposFor(r.id), taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null);
+  return rowToTask(
+    r,
+    taskReposFor(r.id),
+    taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null,
+    taskResidentRestartSummaries([r.id]).get(r.id) ?? null,
+  );
 }
 
 export function taskIdForSession(sessionId: string): string | null {
@@ -8137,6 +8171,39 @@ export function clearTaskSessionClosure(taskId: string): void {
 export function retireTaskSessionClosure(taskId: string, sessionId: string, at: number): void {
   openDb().prepare(`UPDATE task_session_closures SET retired_at = COALESCE(retired_at, ?)
     WHERE task_id = ? AND session_id = ?`).run(at, taskId, sessionId);
+}
+
+/**
+ * Each still-open resident task whose run Restart on new profile ended, with the replacement
+ * that restart's request id names. See `TaskResidentRestart`.
+ *
+ * Selected from the ended runs themselves rather than `IN (...)` over the caller's ids, for the
+ * reason `taskAutomaticCleanupSummaries` gives: `listTasks` passes every task ever filed. Only
+ * open tasks join, so the rows are the replaced sessions nobody has completed yet - normally none.
+ * The replacement's request id is built in SQL from the shared helper's prefix, bound as a
+ * parameter, so the two spellings cannot drift apart.
+ */
+export function taskResidentRestartSummaries(
+  taskIds: readonly string[],
+): Map<string, TaskResidentRestart> {
+  const out = new Map<string, TaskResidentRestart>();
+  if (taskIds.length === 0) return out;
+  const wanted = new Set(taskIds);
+  const rows = openDb().prepare(
+    `SELECT old.task_id AS task_id, rep.task_id AS replacement_task_id, rep.profile_revision AS revision
+       FROM resident_runs old
+       JOIN tasks t ON t.id = old.task_id AND t.status NOT IN ('done', 'cancelled', 'failed')
+       LEFT JOIN resident_runs rep ON rep.launch_request_id = (? || old.id)
+      WHERE old.ended_at IS NOT NULL AND old.pause_reason = ?
+      ORDER BY old.created_at`,
+  ).all(residentRestartRequestId(""), RESIDENT_RESTART_PAUSE_REASON) as Array<{
+    task_id: string; replacement_task_id: string | null; revision: number | null;
+  }>;
+  for (const row of rows) {
+    if (!wanted.has(row.task_id)) continue;
+    out.set(row.task_id, { replacementTaskId: row.replacement_task_id, revision: row.revision });
+  }
+  return out;
 }
 
 /**

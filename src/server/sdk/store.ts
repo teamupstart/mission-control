@@ -1,5 +1,5 @@
-import { AGENT_TYPES, THINKING_LEVELS, PERMISSION_MODES } from "@shared/types.ts";
-import type { AgentType, PermissionMode, ThinkingLevel } from "@shared/types.ts";
+import { ADVISOR_CHOICES, AGENT_TYPES, THINKING_LEVELS, PERMISSION_MODES } from "@shared/types.ts";
+import type { AdvisorChoice, AgentType, PermissionMode, ThinkingLevel } from "@shared/types.ts";
 // The same helper the schedule store narrows its five persisted enums with, and for the
 // same doctrine: a stored value this build has never heard of reads as `null`, never as the
 // nearest thing we do know.
@@ -94,6 +94,8 @@ export interface SdkSessionRow {
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
+  /** The task's advisor pin at launch, or null to inherit the operator's Claude settings. */
+  advisorModel: AdvisorChoice | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus | null;
   /**
@@ -129,6 +131,8 @@ export interface SdkSessionWrite {
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
+  /** Omitted writes NULL: inherit. */
+  advisorModel?: AdvisorChoice | null;
   permissionMode: PermissionMode | null;
   status: SdkSessionStatus;
   turnInProgress: boolean;
@@ -143,6 +147,7 @@ interface Row {
   task_id: string | null;
   model: string | null;
   effort: string | null;
+  advisor_model: string | null;
   permission_mode: string | null;
   status: string;
   turn_in_progress: number;
@@ -162,6 +167,7 @@ function mapRow(r: Row): SdkSessionRow {
     taskId: r.task_id,
     model: r.model,
     effort: readPersistedEnum(THINKING_LEVELS, r.effort),
+    advisorModel: readPersistedEnum(ADVISOR_CHOICES, r.advisor_model),
     permissionMode: readPersistedEnum(PERMISSION_MODES, r.permission_mode),
     status: readPersistedEnum(SDK_SESSION_STATUSES, r.status),
     turnInProgress: r.turn_in_progress === 1,
@@ -192,7 +198,7 @@ export function sdkSessionIsLive(row: SdkSessionRow): boolean {
 export function listSdkSessions(): SdkSessionRow[] {
   return openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
+      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
               status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions ORDER BY created_at ASC`,
     )
@@ -216,7 +222,7 @@ export function sdkSessionIdsForTask(taskId: string): string[] {
 export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, permission_mode,
+      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
               status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions WHERE id = ?`,
     )
@@ -234,9 +240,9 @@ export function getSdkSession(id: string): SdkSessionRow | null {
 export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void {
   openDb()
     .prepare(
-      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort,
+      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model,
                                  permission_mode, status, turn_in_progress, resident_compaction_token_limit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          agent = excluded.agent,
          agent_session_id = excluded.agent_session_id,
@@ -244,6 +250,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
          task_id = excluded.task_id,
          model = excluded.model,
          effort = excluded.effort,
+         advisor_model = excluded.advisor_model,
          permission_mode = excluded.permission_mode,
          status = excluded.status,
          turn_in_progress = excluded.turn_in_progress,
@@ -259,6 +266,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
       write.taskId,
       write.model,
       write.effort,
+      write.advisorModel ?? null,
       write.permissionMode,
       write.status,
       write.turnInProgress ? 1 : 0,

@@ -79,6 +79,14 @@ const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
   : null;
 const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
 const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
+/**
+ * Ends its turn the way Claude Code does once its own 529 retries are spent: an assistant
+ * API-error frame tagged `server_error`, then an error `result`. Only the prompt itself fails;
+ * Mission Control's continuation that follows is answered normally.
+ */
+const CAPACITY_TURN = "E2E_CLAUDE_AT_CAPACITY";
+const CAPACITY_ERROR =
+  "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
 let authenticationExpired = false;
 
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
@@ -247,6 +255,21 @@ const TOOL_TURN = "E2E_OBSERVED_TOOLS";
  * is a fold that never had to decide anything.
  */
 const TOOL_RUN_TURN = "E2E_TERMINAL_RUN";
+/**
+ * The prompt that leaves three calls to Claude's server-side advisor in the transcript, in
+ * the record shape a real Claude Code 2.1.317 turn writes (captured, sanitized, in
+ * `test/fixtures/claude-advisor/transcript.jsonl`): each content block is its own assistant
+ * record, every record of the turn carries a top-level `advisorModel`, and each call is a
+ * `server_tool_use` named `advisor` followed by an `advisor_tool_result`.
+ *
+ * The three results are the three shapes a reader has to tell apart: advice with words
+ * (`advisor_result`), the encrypted result the capture actually returned
+ * (`advisor_redacted_result`), and an error (`advisor_tool_result_error`). Phase 2 of the
+ * advisor plan relies on this output; extend it, do not change it.
+ */
+const ADVISOR_TURN = "E2E_ADVISOR_CALLS";
+const ADVISOR_MODEL = "claude-opus-5-5";
+const ADVISOR_TEXT = "E2E advisor guidance: check the empty input before the loop.";
 
 const recordDir = process.env.MC_E2E_RECORD_DIR;
 if (process.env.MC_E2E_RESUME_TOOLS === "1" && RESUME_ID && !process.argv.includes("--output-format")) {
@@ -342,6 +365,9 @@ if (recordDir) {
         stateProbe,
         hasMissionApiToken: Boolean(process.env.MISSION_API_TOKEN),
         missionApiTokenFile: process.env.MISSION_API_TOKEN_FILE ?? null,
+        // The advisor's Off switch, so a spec can prove a pin reached the environment and an
+        // Inherit launch left it alone.
+        disableAdvisorTool: process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL ?? null,
       },
       null,
       2,
@@ -814,7 +840,7 @@ const resumedRecordCount = resumedTranscript
   ? readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean).length
   : 0;
 let turn = resumedRecordCount;
-function appendTurn(role, content) {
+function appendTurn(role, content, record = {}) {
   turn += 1;
   const runtime = role === "assistant"
     ? {
@@ -842,6 +868,7 @@ function appendTurn(role, content) {
       // Top level, beside the record's own type - not inside `message`, where the model and
       // usage live. That is where the real CLI puts it, and where the daemon reads it.
       ...(role === "assistant" ? { effort } : {}),
+      ...record,
       message: { role, content, ...runtime },
     })}\n`,
   );
@@ -1202,10 +1229,10 @@ function turnUsage() {
  * One `result` however many prompts the turn took in, because that is the vendor's shape:
  * `result` means the CLI stopped, not that one message was retired.
  */
-function answer(prompts) {
+function answer(prompts, record = {}) {
   for (const prompt of prompts) {
     const text = replyTo(prompt);
-    appendTurn("assistant", [{ type: "text", text }]);
+    appendTurn("assistant", [{ type: "text", text }], record);
     emit({
       type: "assistant",
       session_id: SESSION_ID,
@@ -1213,6 +1240,25 @@ function answer(prompts) {
     });
   }
   emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+}
+
+function answerCapacityFailure() {
+  appendTurn("assistant", [{ type: "text", text: CAPACITY_ERROR }]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: CAPACITY_ERROR }] },
+  });
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    result: CAPACITY_ERROR,
+    session_id: SESSION_ID,
+    ...turnUsage(),
+  });
 }
 
 /** Emit the structured failure and visible transcript text produced by an expired login. */
@@ -1264,21 +1310,10 @@ function missionMcpDescriptor() {
   return config.mcpServers?.["mission-control"] ?? null;
 }
 
-/**
- * Do what the brief asks, with no model call: start the session's own bundled MCP server, the
- * way the real CLI would from its `--mcp-config`, and call `report_product_issue`. That call
- * blocks inside the real tool until a human submits or dismisses the public preview, which is
- * the review-before-submit step a spec drives from the dashboard. Its answer becomes the turn.
- *
- * The draft is generalised from the brief rather than copied: the brief carries private paths,
- * and the tool's issue is public.
- */
-async function runReportBug(prompt) {
+/** Run real Mission Control tools from this fake agent, without a model call. */
+async function withMissionMcp(work) {
   const descriptor = missionMcpDescriptor();
   if (!descriptor) return "This session has no Mission Control MCP server, so nothing was reported.";
-  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
-  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
-  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
   const child = spawn(descriptor.command, descriptor.args ?? [], {
     cwd: process.cwd(),
     env: { ...process.env, ...descriptor.env },
@@ -1305,8 +1340,20 @@ async function runReportBug(prompt) {
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
   try {
-    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-report-bug", version: "1" } });
+    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-mission-tools", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    return await work(request);
+  } finally {
+    child.stdin.end();
+  }
+}
+
+/** The bug-report scenario waits for the public issue preview's human response. */
+async function runReportBug(prompt) {
+  const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
+  const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
+  const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  return withMissionMcp(async (request) => {
     const called = await request("tools/call", {
       name: "report_product_issue",
       arguments: {
@@ -1321,9 +1368,18 @@ async function runReportBug(prompt) {
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
-  } finally {
-    child.stdin.end();
-  }
+  });
+}
+
+/** A resident records its pacing, then waits inside the real review tool. */
+async function runResidentReview() {
+  return withMissionMcp(async (request) => {
+    const pacing = await request("tools/call", { name: "schedule_next_iteration", arguments: {
+      callId: "resident-review-before", delaySeconds: 2, reason: "Review cadence" } });
+    const result = await request("tools/call", { name: "request_input", arguments: {
+      question: "Continue resident triage?", options: [{ label: "Continue" }, { label: "Defer" }] } });
+    return `Resident review resolved: ${JSON.stringify(result)}; pacing: ${JSON.stringify(pacing)}`;
+  });
 }
 
 /** Hold an SDK turn open across real I/O, then answer it with the text the work produced. */
@@ -1413,10 +1469,19 @@ rl.on("line", (line) => {
     }
     // The configured MCP servers, as the real CLI reports them: what `--mcp-config` named. A
     // resident launch checks this against its snapshot, so answering with the argv keeps that
-    // check exercised without starting any server.
+    // check exercised without starting any server. A remote server on a `needs-login.` host
+    // stands for one behind an OAuth login Claude Code holds no usable token for, which the real
+    // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
+    // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
+    // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
-      ok(frame.request_id, { mcpServers: Object.keys(configured).map((name) => ({ name, status: "connected" })) });
+      const status = (server) => {
+        if (server?.url === undefined) return { status: "connected" };
+        if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
+        return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
+      };
+      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});
@@ -1470,6 +1535,10 @@ rl.on("line", (line) => {
       answerAuthenticationFailure();
       return;
     }
+    if (prompt === CAPACITY_TURN) {
+      answerCapacityFailure();
+      return;
+    }
 
     // A message that arrives while a turn is open is ABSORBED BY THAT TURN, and the turn
     // still ends with exactly one `result`. That is what Claude Code does - it attaches the
@@ -1511,6 +1580,11 @@ rl.on("line", (line) => {
 
     // A Report bug session, recognised by the brief the daemon wrote. The turn is held open
     // while the real `report_product_issue` call waits for the human's review.
+    if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {
+      beginHeldTurn(runResidentReview());
+      return;
+    }
+
     if (prompt.includes(REPORT_BUG_MARKER)) {
       beginHeldTurn(runReportBug(prompt));
       return;
@@ -1547,6 +1621,24 @@ rl.on("line", (line) => {
         { type: "tool_use", id: `run-${turn}-c`, name: "Read", input: { file_path: "src/server/registry.ts" } },
       ]);
       answer([prompt]);
+      return;
+    }
+
+    // Three advisor calls, then the echoed reply, all stamped with the advisor model as the
+    // real CLI stamps every record of an advisor-enabled request. See `ADVISOR_TURN`.
+    if (prompt === ADVISOR_TURN) {
+      const stamped = { advisorModel: ADVISOR_MODEL };
+      const advisorResults = [
+        { type: "advisor_result", text: ADVISOR_TEXT },
+        { type: "advisor_redacted_result", encrypted_content: "ENCRYPTED_CONTENT_REMOVED_FOR_FIXTURE" },
+        { type: "advisor_tool_result_error", error_code: "overloaded" },
+      ];
+      advisorResults.forEach((content, call) => {
+        const id = `srvtoolu_e2e_${turn}_${call}`;
+        appendTurn("assistant", [{ type: "server_tool_use", id, name: "advisor", input: {} }], stamped);
+        appendTurn("assistant", [{ type: "advisor_tool_result", tool_use_id: id, content }], stamped);
+      });
+      answer([prompt], stamped);
       return;
     }
 

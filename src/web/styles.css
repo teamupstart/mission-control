@@ -126,6 +126,16 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The face of headings, card titles and session tile names. Default draws them in --sans,
+     the face they inherited anyway, so this token changes nothing until a skin restates it
+     (Paper's serif, Blueprint's mono). A skin may change the FAMILY only: size, weight,
+     line height and letter spacing stay where they are declared, because the Line strip
+     geometry test and the measured topbar and detail-head ladders depend on them. */
+  --font-display: var(--sans);
+  /* The small uppercase labels on the Line - its stage names. Mono by default, which is why
+     they cannot simply read --font-display; a skin whose display face should reach them too
+     (Paper) points this at it. */
+  --font-label: var(--mono);
 
   /* ---- Role tokens: chrome below `:root` paints with these or a token above ----
      Each value is exactly the literal it replaced, so the default look is unchanged. Roles
@@ -3826,6 +3836,13 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Headings take the skin's display face. `:where()` keeps this at zero specificity, so a
+   heading whose own rule names a family (a mono eyebrow, say) keeps it, and under Default
+   `--font-display` is the --sans every heading already inherited. */
+:where(h1, h2, h3, h4) {
+  font-family: var(--font-display);
+}
+
 .app {
   max-width: 1400px;
   margin: 0 auto;
@@ -5257,6 +5274,10 @@ body {
 .rt-model {
   color: var(--fg);
   font-weight: 550;
+}
+/* Read only: the advisor Claude ran with, beside the model it advised. */
+.rt-advisor {
+  color: var(--muted);
 }
 .rt-1m {
   font-size: 8.5px;
@@ -8658,6 +8679,33 @@ kbd {
   color: var(--fg);
   overflow-wrap: anywhere;
 }
+/* One call to Claude's advisor, drawn in both conversation renderings (`AdvisorNote`). Set
+   in the tool chips' mono line rather than as prose: it is something the agent did, not
+   something it said. The advisor's own words open beneath a disclosure. */
+.advisor-note {
+  margin: 0;
+  font: 500 11px/1.5 var(--mono);
+  color: var(--muted);
+}
+.advisor-note > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.advisor-note > summary:hover {
+  color: var(--fg);
+}
+.advisor-note-text {
+  margin-top: 4px;
+  padding: 6px 9px;
+  border-left: 2px solid var(--border-soft);
+  font: 12px/1.5 var(--sans);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.advisor-note-error {
+  color: var(--danger-text);
+}
 /* A folded run is one line of the conversation, so it sits tight against its label
    instead of wearing a full turn's worth of vertical frame. */
 .turn-toolrun {
@@ -10416,6 +10464,16 @@ mark.find-hit.is-current {
 .task-outcome:hover {
   text-decoration: underline;
 }
+/* Alone in the chip - a session named after its task, with no schedule origin - there is no
+   title to share the row with, so pinning it right under a 60% cap drew a mostly empty bar
+   whose only text was cut off at its far end. It reads from the left and uses the width. */
+.task-outcome:only-child {
+  margin-left: 0;
+  max-width: none;
+}
+span.task-outcome:hover {
+  text-decoration: none;
+}
 
 /* ---- One pull request per changed repo (multi-repo tasks only) ---- */
 /* Its own row rather than more chips inside the task pill, because the list is as wide as
@@ -10860,6 +10918,11 @@ mark.find-hit.is-current {
   display: grid;
   grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
   gap: 10px;
+}
+/* A fifth column for a harness that declares an advisor. One class, so the narrow-viewport
+   rule further down still collapses it to two columns like the four-field row. */
+.dispatch-crew--advisor {
+  grid-template-columns: 1fr 0.55fr 1.1fr 0.9fr 1fr;
 }
 /* Agent and Kind sit in a cell rather than being grid items themselves, so the guided
    pass's list can hang off the field from OUTSIDE its `<label>` - see the note at that
@@ -12085,6 +12148,16 @@ select:not([multiple]) option:focus-visible {
   align-items: center;
   gap: 8px;
   margin: 0 0 14px;
+}
+/* Why the dialog opened by itself - Restart on new profile's offer. A note above the subject,
+   not a warning: dismissing it is a legitimate answer. */
+.complete-why {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--working);
+  background: color-mix(in oklab, var(--working) 8%, var(--panel-2));
+  border-radius: 6px;
+  color: var(--fg);
 }
 .complete-lead .agent-dot,
 .kill-lead .agent-dot,
@@ -16105,6 +16178,30 @@ select.ensemble-judge-persona {
 }
 .resident-problem {
   margin: 0;
+}
+/* Marks a built-in resident wherever profiles are chosen, beside an operator's same-named one. */
+.resident-builtin-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purple);
+  border: 1px solid color-mix(in oklab, var(--purple) 40%, var(--border));
+  border-radius: 4px;
+  vertical-align: 1px;
+}
+/* A built-in resident: why nothing here can be saved, and the way to a copy that can. */
+.resident-builtin-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
 }
 /* A revision saved elsewhere over unsaved edits: said, with the choice beside it. */
 .resident-conflict {
@@ -24557,6 +24654,10 @@ button.sc-row:focus-visible {
   font-weight: 500;
   line-height: 1.4;
   text-align: center;
+  /* A path has no spaces to wrap at, so without this a repo option's tooltip ran out of its
+     own bubble - and, beside a list, toward the window edge. `break-word` rather than
+     `anywhere`: it breaks only what would overflow and leaves the bubble's sizing alone. */
+  overflow-wrap: break-word;
   color: var(--fg);
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -24578,6 +24679,18 @@ button.sc-row:focus-visible {
 }
 .tt-below {
   transform: translate(-50%, 8px);
+}
+/* Beside the trigger: a dropdown option's bubble, which above or below would cover the
+   neighbouring options (issue #1315). `left` is the trigger's right or left edge and `top`
+   its vertical centre. Left-aligned, because it reads as a note beside a row, not a label
+   under a button. */
+.tt-right {
+  transform: translate(8px, -50%);
+  text-align: left;
+}
+.tt-left {
+  transform: translate(calc(-100% - 8px), -50%);
+  text-align: left;
 }
 /* The always-rendered accessible description behind every tooltip. Out of flow, so a
    trigger's own layout - flex item, grid cell, inline chip - is untouched by its
@@ -24625,6 +24738,23 @@ button.sc-row:focus-visible {
   top: -4px;
   border-bottom: none;
   border-right: none;
+}
+/* A side caret rides `--tt-caret-y`, which walks back any vertical slide the same way. */
+.tt-right::after,
+.tt-left::after {
+  top: var(--tt-caret-y, 50%);
+  transform: translateY(-50%) rotate(45deg);
+}
+.tt-right::after {
+  left: -4px;
+  border-top: none;
+  border-right: none;
+}
+.tt-left::after {
+  left: auto;
+  right: -4px;
+  border-bottom: none;
+  border-left: none;
 }
 
 /* ---- work queue (the batch of work queued for one session) ---- */
@@ -25493,8 +25623,13 @@ button.sc-row:focus-visible {
   color: var(--muted);
 }
 .ls-name {
-  font-family: var(--mono);
+  font-family: var(--font-label);
   font-size: 10px;
+  /* A 10px label inside a row the 17px count already sets, so it never adds height. Pinned
+     rather than `normal` because a skin may change its face (Paper's serif), and a normal
+     line height follows the face's ascent and descent: Paper's grew the condensed band by a
+     fraction of a pixel. At 1 the label sits inside the count's line box in any face. */
+  line-height: 1;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
@@ -26862,6 +26997,9 @@ span.line-run-prov {
   grid-template-columns: minmax(260px, 340px) 1fr;
   overflow: hidden;
 }
+.board-all-sessions > .console {
+  min-width: 0;
+}
 .console-rail {
   overflow-y: auto;
   border-right: 1px solid var(--border-soft);
@@ -27389,8 +27527,10 @@ span.line-run-prov {
    whole controls rather than words. Both are ticking ESTIMATES of what the session is spending
    rather than facts about what it is, both are drawn on the board's card for the same session
    (`SessionTile`), and the fleet's own spend chip is on the topbar. Cost leads because the
-   figure is the wider of the two. */
+   figure is the wider of the two. The advisor pill goes with them: it is also drawn on the
+   board card, and it restates a Claude Code setting rather than anything this row acts on. */
 .detail-head[data-rung~="4"] .cost-chip,
+.detail-head[data-rung~="4"] .rt-advisor,
 .detail-head[data-rung~="4"] .rt-ctx {
   display: none;
 }
@@ -29379,6 +29519,7 @@ span.line-run-prov {
 .bl-title {
   padding: 0;
   font: inherit;
+  font-family: var(--font-display);
   font-size: 12px;
   line-height: 1.42;
   text-align: left;
@@ -30362,6 +30503,7 @@ span.line-run-prov {
 .tile-name {
   flex: 1;
   min-width: 0;
+  font-family: var(--font-display);
   font-size: 12.5px;
   font-weight: 640;
   white-space: nowrap;
@@ -37040,6 +37182,16 @@ body.foreman-sidecar-open .modal-backdrop {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A replaced session whose replacement is no longer live has no marker colour to borrow. */
+.resident-band-replaced {
+  --resident: var(--border);
+}
+/* The one sentence a replaced session's band exists to say, so it wraps rather than clips. */
+.resident-band-replaced-note {
+  color: var(--fg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .resident-band-spacer {
   flex: 1 0 0;
 }
@@ -37069,6 +37221,49 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-control .session-toolbar-btn {
   min-height: 24px;
   padding-block: 1px;
+}
+/* The dock card's footer badge: a shield and one word, green while granted. */
+.resident-control.is-badge {
+  gap: 3px;
+}
+.resident-control.is-badge .resident-control-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 540;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.resident-control.is-badge.is-granted .resident-control-state {
+  color: color-mix(in oklab, var(--idle) 85%, var(--fg));
+  background: color-mix(in oklab, var(--idle) 14%, transparent);
+  border-color: color-mix(in oklab, var(--idle) 40%, transparent);
+}
+.resident-control-shield {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Its menu sits beside the badge on the card's footer line, which also holds Resume and Run
+   now: tightened to its glyph and caret. */
+.resident-control.is-badge .session-toolbar-btn {
+  min-height: 22px;
+  min-width: 0;
+  padding: 0 4px;
+  gap: 2px;
+  border-radius: 6px;
+}
+.resident-control.is-badge .session-toolbar-caret {
+  font-size: 10px;
 }
 
 /* The profile editor's swatches: one round button per palette id. */
@@ -37130,9 +37325,12 @@ body.foreman-sidecar-open .modal-backdrop {
   color: var(--fg);
   background: color-mix(in oklab, var(--fg) 12%, transparent);
 }
+/* 12.5px rather than the page's body size: at 15px a resident's name was the largest text in
+   the top bar's popovers, and the dock's secondary lines and buttons are 11-11.5px beside it. */
 .residents-pop {
   width: 340px;
   gap: 12px;
+  font-size: 12.5px;
 }
 /* On a window too narrow to hang 340px off the button without crossing the left edge, the
    dock spans the window under the bar instead. `--topbar-h` is what App publishes from the
@@ -37158,26 +37356,48 @@ body.foreman-sidecar-open .modal-backdrop {
 .residents-pop-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.residents-pop-row {
+/* The profiles share one column grid through subgrid, so the chip column is as wide as the
+   widest chip and every name starts on the same line, whatever each label's length. */
+.residents-pop-profiles {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+}
+.residents-pop-profiles > .residents-pop-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 8px;
-  min-height: 30px;
+  row-gap: 2px;
+  min-height: 28px;
+}
+.residents-pop-profiles .resident-chip {
+  justify-self: start;
 }
 .residents-pop-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   font-weight: 600;
   white-space: nowrap;
+}
+/* The name gives way first, so a built-in's tag is never the part that is clipped. */
+.residents-pop-name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.residents-pop-name > .resident-builtin-tag {
+  flex: none;
+}
 .residents-pop-state {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--muted);
   max-width: 120px;
   overflow: hidden;
@@ -37185,31 +37405,115 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: nowrap;
 }
 .residents-pop-action {
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+/* Launch and Launch... are one width, so the profile buttons form a straight column. */
+.residents-pop-profiles .residents-pop-action {
+  min-width: 66px;
+  text-align: center;
 }
 .residents-pop-error {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--danger);
   overflow-wrap: anywhere;
 }
 .residents-pop-note {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--muted);
 }
-/* A live row's session control, on its own line under the row: a status and a menu would not
-   fit beside the name, state and Open in a 340px panel. Indented to the name, past the chip. */
-.residents-pop-control {
-  grid-column: 2 / -1;
+
+/* A live resident: a card tinted in its own `--resident` color, so a running resident reads as
+   a different kind of thing from the profiles below. The name and state head it, the loop's
+   facts follow, and one footer carries every action. */
+.residents-pop-card {
   display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px 8px;
+  border: 1px solid color-mix(in oklab, var(--resident) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--resident) 5%, var(--panel));
   min-width: 0;
 }
+.residents-pop-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.residents-pop-card-head > .residents-pop-name {
+  flex: 1 1 auto;
+}
+.residents-pop-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+.residents-pop-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone, var(--neutral));
+}
+/* Wraps: the run controls and the control status share one line in a 340px dock, and a
+   third run control (Restart on new profile) or a refusal takes the next line rather than
+   squeezing the others. The controls' wrapper steps aside so its buttons and its refusal are
+   the footer's own items, and the refusal can take a whole line of its own. */
+.residents-pop-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 3px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in oklab, var(--resident) 18%, var(--border-soft));
+}
+.residents-pop-card-foot > .resident-loop-controls {
+  display: contents;
+}
+.residents-pop-card-foot .resident-loop-controls .btn {
+  padding: 2px 7px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+.residents-pop-card-foot .resident-loop-error {
+  order: 1;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.residents-pop-spacer {
+  flex: 1 0 0;
+}
+/* Open ends the card's top line, after the state, and never gives way to the name. */
+.residents-pop-card-head > .residents-pop-action {
+  flex: none;
+}
 .residents-pop-manage {
-  align-self: flex-start;
+  align-self: stretch;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  font-size: 11.5px;
+}
+.residents-pop-manage:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--border-soft);
 }
 
 /* Resident controls share their layout across the dock, Console, card and page. */
@@ -37219,8 +37523,19 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-loop-error { color: var(--danger); flex-basis: 100%; font-size: 12px; }
 .resident-live-run { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
 .resident-card-loop { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.residents-pop-row > .resident-loop-status,
-.residents-pop-row > .resident-loop-controls { grid-column: 1 / -1; }
+.resident-card-loop-menu { display: inline-flex; flex: none; }
+/* The dock card's loop facts: the short ones as tags, a reason as its sentence, compaction as
+   one line under them. Paused is the one tag in a state color, since it is the one that asks for
+   a decision. */
+.resident-loop-tags { display: flex; flex-direction: column; gap: 5px; line-height: 1.45; }
+.resident-loop-tag-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.resident-loop-tag { font-size: 10.5px; line-height: 16px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.resident-loop-tag.is-paused { color: var(--attention); border-color: color-mix(in oklab, var(--attention) 40%, var(--border)); }
+.resident-loop-reason { color: var(--muted); }
+.resident-loop-tags > .resident-compaction-layers { margin-top: 0; color: var(--dim); }
+.resident-loop-tags > .resident-compaction-layers b { font-weight: 550; color: var(--muted); }
+/* Each layer breaks whole, so a narrow card never leaves a lone "unavailable" on a line. */
+.resident-compaction-layer { white-space: nowrap; }
 .resident-band { flex-wrap: wrap; }
 
 /* Resident MCP servers: the custom-server editor and the profile section's selection. */

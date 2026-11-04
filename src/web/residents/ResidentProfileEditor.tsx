@@ -57,12 +57,18 @@ export function ResidentProfileEditor({
   onSaved,
   onArchived,
   onLaunch,
+  onDuplicate,
   onDirtyChange,
   onCreatePersona,
+  seed,
   archivedElsewhere = false,
 }: {
   /** The profile being edited, or null for a new one. The parent keys this per profile. */
   profile: ResidentProfile | null;
+  /** A new profile's starting settings, from Duplicate. Ignored when editing a profile. */
+  seed?: ResidentProfileRevision;
+  /** Open a new, unsaved profile seeded with these settings. */
+  onDuplicate?: (settings: ResidentProfileRevision) => void;
   /**
    * Another window archived this profile while the draft here had unsaved edits. The editor
    * stays mounted to say so: the draft can be read and copied, then discarded, but not saved.
@@ -76,7 +82,9 @@ export function ResidentProfileEditor({
   /** Open the Library's blank Persona editor, offered at the end of the Persona picker. */
   onCreatePersona?: () => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState<ResidentProfileRevision>(() => profile?.settings ?? blankResidentDraft());
+  const [draft, setDraft] = useState<ResidentProfileRevision>(() => profile?.settings ?? seed ?? blankResidentDraft());
+  // A built-in ships with Mission Control and is replaced on upgrade: nothing here can save it.
+  const readOnly = profile?.builtin === true;
   const [dirty, setDirtyState] = useState(profile === null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,20 +215,40 @@ export function ResidentProfileEditor({
         <div>
           <h3>{title}</h3>
           <p className="resident-editor-meta">
-            {base
+            {readOnly && base
+              ? `Built-in · revision ${base.revision}. Updated with Mission Control.`
+              : base
               ? `Revision ${base.revision}${dirty ? " · unsaved changes" : ""}. Edits apply at the next launch.`
               : "Not saved yet."}
           </p>
         </div>
         <div className="resident-editor-actions">
-          {profile && (
+          {profile && onDuplicate && (
+            <Tooltip
+              label={dirty
+                ? "Save or discard your changes before duplicating"
+                : readOnly
+                ? "Start an editable copy of this built-in resident"
+                : "Start a new profile from a copy of this one"}
+            >
+              <button
+                type="button"
+                className={readOnly ? "btn" : "btn btn-ghost"}
+                disabled={busy || dirty || archivedElsewhere}
+                onClick={() => onDuplicate(base?.settings ?? draft)}
+              >
+                {readOnly ? "Duplicate to edit" : "Duplicate"}
+              </button>
+            </Tooltip>
+          )}
+          {profile && !readOnly && (
             <Tooltip label="Move this profile to the archive; running residents keep their revision">
               <button type="button" className="btn btn-ghost" disabled={busy || archivedElsewhere} onClick={requestArchive}>
                 Archive
               </button>
             </Tooltip>
           )}
-          <Tooltip
+          {!readOnly && <Tooltip
             label={archivedElsewhere
               ? "This profile was archived elsewhere, so there is nothing to save to"
               : conflict
@@ -235,7 +263,7 @@ export function ResidentProfileEditor({
             >
               {busy ? "Saving…" : "Save"}
             </button>
-          </Tooltip>
+          </Tooltip>}
           <Tooltip
             label={!profile
               ? "Save the profile before launching it"
@@ -254,6 +282,13 @@ export function ResidentProfileEditor({
           </Tooltip>
         </div>
       </header>
+      {readOnly && (
+        <p className="resident-builtin-note">
+          {profile?.name ?? "This resident"} ships with Mission Control and is read-only. Upgrading
+          Mission Control updates it; a running resident keeps the revision it launched with until
+          you restart it on the new profile. Duplicate it to make a copy you can edit.
+        </p>
+      )}
       {archivedElsewhere && (
         <div className="resident-conflict" role="alert">
           <p>
@@ -300,7 +335,7 @@ export function ResidentProfileEditor({
         <section key={id} className="resident-section" aria-labelledby={`resident-section-${id}`}>
           <h4 id={`resident-section-${id}`}>{heading}</h4>
           <p className="resident-section-blurb">{blurb}</p>
-          <Body draft={draft} update={update} personas={personas} disabled={busy} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+          <Body draft={draft} update={update} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
         </section>
       ))}
       {confirm && <WorkflowConfirmModal request={confirm} onClose={() => setConfirm(null)} />}

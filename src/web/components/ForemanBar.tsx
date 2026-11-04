@@ -6,6 +6,7 @@ import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { ForemanGuide, ForemanInfoButton } from "./ForemanGuide.tsx";
 import { ForemanErrors } from "./ForemanErrors.tsx";
+import type { ForemanHealthIssue } from "@shared/foreman-health.ts";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
@@ -343,7 +344,7 @@ export function ForemanPopover({
   onOpenGuide: () => void;
   onOpenModels?: () => void;
 }): React.JSX.Element | null {
-  const { config, status, update, error } = state;
+  const { config, status, update, refresh, error } = state;
   const planner = status?.planner;
   const [plannerRetry, setPlannerRetry] = useState<"idle" | "requesting" | "requested" | "failed">("idle");
   const requestedPlannerBasis = useRef<string | null>(null);
@@ -369,6 +370,20 @@ export function ForemanPopover({
     setPlannerRetry(result.ok ? "requested" : "failed");
   }
 
+  async function dismissErrors(issues: ForemanHealthIssue[]): Promise<string | null> {
+    const result = await api.dismissForemanErrors(
+      issues.map(({ id, occurrenceId }) => ({ id, occurrenceId })),
+    );
+    if (!result.ok) return `Could not dismiss. ${result.error ?? "The daemon refused the request."}`;
+    await refresh();
+    // Fewer hidden than asked: the error happened again after it was drawn, and the newer
+    // occurrence is now on screen for the operator to read before dismissing it.
+    if ((result.dismissed ?? 0) >= issues.length) return null;
+    return issues.length === 1
+      ? "Not dismissed: this error happened again. Review the latest occurrence, then dismiss it."
+      : "Some errors happened again and were not dismissed. Review the latest occurrences, then dismiss them.";
+  }
+
   if (!config) return null;
   const { enabled, mode, wrapup } = config;
   const triggers = config.wrapupTriggers;
@@ -377,7 +392,8 @@ export function ForemanPopover({
   return (
     <div className={`alert-pop foreman-pop${status?.health?.issues.length ? " has-errors" : ""}`} role="dialog" aria-label="Foreman settings">
       {status?.health && status.health.issues.length > 0 && (
-        <ForemanErrors health={status.health} running={running} enabled={enabled} onOpenModels={onOpenModels} />
+        <ForemanErrors health={status.health} running={running} enabled={enabled} onOpenModels={onOpenModels}
+          onDismiss={dismissErrors} />
       )}
       <div className="foreman-info-row foreman-enable-row">
         <Tooltip label="Let Foreman watch sessions and answer them for you">

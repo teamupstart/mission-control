@@ -43,6 +43,7 @@ import {
 import { openLaunchFailureGroups } from "@shared/launch-failure.ts";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
+import { ResidentRestartPromptContext } from "./residents/restart-prompt.ts";
 import { KillModal } from "./components/KillModal.tsx";
 import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
@@ -147,7 +148,7 @@ import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
-import { pinnedResidentSessions, residentMarksBySession } from "./residents/marker.ts";
+import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -608,6 +609,8 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  /** Set while the Complete dialog is Restart's offer, so it can say why it opened. */
+  const [restartPromptSessionId, setRestartPromptSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   // The session the Return to backlog confirm was showing when it sent its request. Requeueing
@@ -837,7 +840,22 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeComplete = useCallback(() => {
+    setCompleteSessionId(null);
+    setRestartPromptSessionId(null);
+  }, []);
+  /**
+   * Restart on new profile succeeded somewhere - a card menu, the band, the dock or the
+   * Residents page - and left the original task open. Offer to complete it now, with the
+   * ordinary Complete dialog over whatever page the operator is on; Cancel keeps it open, and
+   * the replaced session's band keeps the offer afterwards.
+   */
+  const promptRestartCompletion = useCallback((replacedTaskId: string) => {
+    const session = sessionsRef.current.find((candidate) => candidate.task?.id === replacedTaskId);
+    if (!session) return;
+    setRestartPromptSessionId(session.id);
+    setCompleteSessionId(session.id);
+  }, []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -2191,12 +2209,17 @@ export function App(): React.JSX.Element {
     [sessions, residentRuns, residentProfiles],
   );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
+  const residentReplacementBySession = useMemo(
+    () => residentReplacementsBySession(sessions, tasks, residentRuns),
+    [sessions, tasks, residentRuns],
+  );
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
     return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
   }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
   const visible = fleet.sessions;
+  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
   // nav-bar filter contract as real session cards: title, displayed state, and agent. Keep
@@ -2352,8 +2375,12 @@ export function App(): React.JSX.Element {
   // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
-  const collapsedColumns = useUiConfig().collapsedBoardColumns;
-  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  // A filter can hide the selected detail without clearing the saved drill-in intent.
+  // Navigation follows the overview that BoardView renders until a detail is visible again.
+  const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
+  const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
     if (!hideCollapsedColumns) return folded;
@@ -2713,7 +2740,6 @@ export function App(): React.JSX.Element {
   tourBindingsRef.current = tourBindings;
   const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
 
-  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
@@ -2842,6 +2868,8 @@ export function App(): React.JSX.Element {
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
     residentBySession,
+    residentReplacementBySession,
+    onFocusSession: focusSession,
     onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
@@ -3351,7 +3379,7 @@ export function App(): React.JSX.Element {
             if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
-            mode: layout,
+            mode: allSessionsRail ? "console" : layout,
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
@@ -3361,11 +3389,14 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console") focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
-            if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
+            if (layout === "board" && !boardDetailOpen) {
+              setBoardOpen(false);
+              pendingTileFocus.current = nextId;
+            }
           }
           return;
         }
@@ -3616,7 +3647,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -3796,6 +3827,7 @@ export function App(): React.JSX.Element {
         )
         : (
           <LibraryPage
+            filter={filter}
             workflowSummaries={workflowSummaries}
             personas={personas}
             foremanSummary={{
@@ -3824,6 +3856,7 @@ export function App(): React.JSX.Element {
   return (
     <OverlayHost value={overlays}>
       <LaunchFailureProvider value={launchFailureControls}>
+      <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -4065,6 +4098,7 @@ export function App(): React.JSX.Element {
           )}
           residents={route.page === "residents" ? (
             <ResidentsPage
+              sessions={sessions}
               runs={residentRuns}
               profiles={residentProfiles}
               personas={personas}
@@ -4300,18 +4334,6 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {completeSession && (
-          <CompleteModal
-            session={completeSession}
-            tasks={tasks}
-            tourOutcome={
-              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
-            }
-            onCompleted={() => onKilled(completeSession.id)}
-            onClose={closeComplete}
-          />
-        )}
-
         {killSession && (
           <KillModal
             session={killSession}
@@ -4400,6 +4422,22 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* In the slot every page shares: Restart on new profile offers it from the
+                  Residents page and the dock as well as the fleet. */}
+              {completeSession && (
+                <CompleteModal
+                  session={completeSession}
+                  tasks={tasks}
+                  tourOutcome={
+                    completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+                  }
+                  lead={restartPromptSessionId === completeSession.id
+                    ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
+                    : undefined}
+                  onCompleted={() => onKilled(completeSession.id)}
+                  onClose={closeComplete}
+                />
+              )}
               {/* The everything-palette lives in the slot every page shares, because it
                   indexes every page: it opens over the fleet, the Library, a run reader and
                   Settings alike, and a row's navigation must not unmount the surface that
@@ -4606,6 +4644,7 @@ export function App(): React.JSX.Element {
         />
       </div>
       </TourTargetHost>
+      </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
     </OverlayHost>
   );

@@ -25,6 +25,19 @@ import { THINKING_LEVELS } from "./types.ts";
 import type { AgentType } from "./types.ts";
 
 export const RESIDENT_OPERATOR_PAUSE_REASON = "Paused by operator";
+/**
+ * The pause reason Restart on new profile records on the run it ends. Durable proof that the
+ * run was ended by a restart, which both an interrupted restart's retry and the replaced task's
+ * `residentRestart` record read back.
+ */
+export const RESIDENT_RESTART_PAUSE_REASON = "Restarting on new profile";
+/**
+ * The automatic pause reason older daemons recorded while a resident's session needed a person.
+ * The loop no longer writes it - an open request now holds wakes without pausing - but runs
+ * persisted with it still exist, and the loop releases them on observation. Stored under this
+ * exact spelling, so it is never reworded.
+ */
+export const RESIDENT_NEEDS_YOU_PAUSE_REASON = "needs-you";
 
 /**
  * The harnesses a resident may run on, in picker order.
@@ -398,6 +411,30 @@ export interface ResidentProfile {
   updatedAt: number;
   /** The current revision's body. New launches pin this revision. */
   settings: ResidentProfileRevision;
+  /**
+   * Ships with Mission Control (`residents/*.md`): read-only, never archived, and replaced by a
+   * new revision when an upgrade changes it. Absent on an operator's profile.
+   */
+  builtin?: true;
+}
+
+/**
+ * The id prefix of a built-in resident profile, `builtin:<document slug>`. Durable: a run and
+ * its history name the id, so a shipped slug is never renamed.
+ */
+export const BUILTIN_RESIDENT_PROFILE_ID_PREFIX = "builtin:";
+
+export function isBuiltinResidentProfileId(id: string): boolean {
+  return id.startsWith(BUILTIN_RESIDENT_PROFILE_ID_PREFIX);
+}
+
+/**
+ * How a choice names a profile where a built-in and an operator's own profile may read the same:
+ * an operator profile authored under a built-in's name before it shipped keeps that name, and
+ * both are listed, so a built-in says so.
+ */
+export function residentProfileChoiceName(profile: Pick<ResidentProfile, "name" | "builtin">): string {
+  return profile.builtin ? `${profile.name} (built-in)` : profile.name;
 }
 
 /**
@@ -498,6 +535,11 @@ export interface ResidentRunSummary extends ResidentLoopStatus {
   /** The pinned revision's `RESIDENT_RUN_SUMMARY_SECTIONS`, never the profile's current one. */
   settings: ResidentRunSummarySettings;
   createdAt: number;
+}
+
+/** The launch request id Restart on new profile uses: one replacement per replaced run. */
+export function residentRestartRequestId(runId: string): string {
+  return `resident-restart:${runId}`;
 }
 
 /** Project a pinned revision to the sections a run summary carries. */

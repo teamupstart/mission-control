@@ -1,5 +1,6 @@
 import type { HookIngest } from "@shared/protocol.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   MetaSource,
   PaneDialog,
@@ -55,6 +56,11 @@ export interface RuntimeMetaRead {
   thinkingLevel: ThinkingLevel | null;
   /** Source revision; only orderable revisions can release a verified effort change. */
   effortRevision: string | null;
+  /**
+   * Claude only: the advisor model named by the newest eligible main-chain assistant record,
+   * or absent when that record is unstamped (`SessionMeta.advisorModel`).
+   */
+  advisorModel?: string | null;
 }
 
 /** What a passive read yields about a session's liveness. */
@@ -762,7 +768,11 @@ export interface ResidentMcpOptions {
  */
 export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
   | { shape: "stdio"; command: string; args: string[]; env: Record<string, string> }
-  | { shape: "http"; url: string; headers: Record<string, string> }
+  /**
+   * A remote server the harness connects to itself. `transport` is the configured one: Claude
+   * Code keys a stored OAuth login by it, so an SSE server rendered as HTTP would find none.
+   */
+  | { shape: "http"; transport: "http" | "sse"; url: string; headers: Record<string, string> }
   | { shape: "launcher"; command: string; args: string[]; env: Record<string, string> }
 );
 
@@ -801,6 +811,11 @@ export interface SdkLaunchOptions {
   prompt: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * The task's advisor pin; omitted or null inherits the operator's Claude settings. Rendered
+   * only by a driver whose harness declares `advisor`; every other driver ignores it.
+   */
+  advisorModel?: AdvisorChoice | null;
   /** From `dispatchPermissionMode` - the same source the terminal path renders as argv. */
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
@@ -1039,6 +1054,15 @@ export interface SdkUsage {
 }
 
 /**
+ * Why a provider ended a turn early, when the supervisor can do something about it.
+ *
+ * `capacity`: the selected model was overloaded and the harness's own retries are spent.
+ * The work is unfinished, so the supervisor retries with backoff instead of reporting the
+ * turn as complete. `message` is the provider's own sentence, for the card.
+ */
+export type SdkTurnFailure = { kind: "capacity"; message: string };
+
+/**
  * What a driver tells the daemon about its session.
  *
  * The counterpart of a hook ingest, with one difference that removes a whole class of
@@ -1092,7 +1116,12 @@ export type SdkEvent =
   | { kind: "rate_limits"; rateLimits: import("@shared/types.ts").RateLimits }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
-  | { kind: "turn_done"; usage: SdkUsage | null }
+  /**
+   * The turn ended. `failure` is present only when the provider ended it for a reason the
+   * supervisor can act on - today, the model being at capacity - and absent for every
+   * ordinary completion, interrupt, or failure nobody can retry.
+   */
+  | { kind: "turn_done"; usage: SdkUsage | null; failure?: SdkTurnFailure }
   /**
    * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
    *

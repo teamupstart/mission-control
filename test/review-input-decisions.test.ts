@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
-import { CreateReviewSchema } from "../src/shared/protocol.ts";
+import { CreateReviewSchema, inputQuestionProblem } from "../src/shared/protocol.ts";
 import { decisionLead } from "../src/shared/review-item.ts";
 import { reviewDecisions, showsBody } from "../src/web/lib/reviews.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
@@ -194,4 +194,36 @@ test("two forms in one document do not share a radio group", () => {
     first.every((n) => n.endsWith(`-${decision.id}`)),
     "the prefix namespaces the id rather than replacing it",
   );
+});
+
+test("an input review a human could not answer on its card is refused before it exists", () => {
+  // The issue's own shape still passes: four detailed options, a recommendation, Other allowed,
+  // and a long multi-paragraph Markdown question.
+  const long = `Which rollout?\n\n${"- context line explaining the decision\n".repeat(50)}`;
+  const issueShape = { ...decision, question: long, allowOther: true, options: [
+    { id: "o0", label: "Run it tonight", detail: "Same window as staging.", recommended: true },
+    { id: "o1", label: "Split by tenant", detail: "Smaller batches." },
+    { id: "o2", label: "Wait for on-call", detail: "After the rotation." },
+    { id: "o3", label: "Skip this cycle", detail: "Re-plan next iteration." },
+  ] };
+  assert.equal(inputQuestionProblem(long, issueShape.options), null);
+  assert.ok(CreateReviewSchema.safeParse({ ...base, body: long, decisions: [issueShape] }).success);
+
+  assert.equal(inputQuestionProblem("   ", undefined), "the question is empty");
+  assert.equal(inputQuestionProblem("Pick one", [{ label: "a" }, { label: "  " }]), "option 2 has an empty label");
+  assert.match(inputQuestionProblem("Pick one", [{ label: "Ship" }, { label: " ship " }]) ?? "", /more than one option is labelled "ship"/);
+  for (const bad of [
+    { ...decision, question: " \n " },
+    { ...decision, options: [{ id: "o0", label: " " }] },
+    { ...decision, options: [{ id: "o0", label: "eslint" }, { id: "o1", label: "ESLint" }] },
+  ]) {
+    const parsed = CreateReviewSchema.safeParse({ ...base, decisions: [bad] });
+    assert.equal(parsed.success, false);
+    assert.match(parsed.error!.issues[0]!.message, /cannot be answered on its card/);
+  }
+  assert.equal(CreateReviewSchema.safeParse({ ...base, title: "q", body: "  " }).success, true,
+    "a free-text ask still reads its heading when the body is blank");
+  // The rule belongs to `input`: plan-decisions keep their own contract.
+  assert.ok(CreateReviewSchema.safeParse({ ...base, kind: "plan-decisions",
+    decisions: [{ ...decision, options: [{ id: "o0", label: "x" }, { id: "o1", label: "x" }] }] }).success);
 });

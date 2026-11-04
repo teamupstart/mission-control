@@ -728,7 +728,13 @@ through every rule here.
   non-empty `repo_root` reviews a secondary repository of the session's task, and its
   `session_cwd`/`session_repo_root` hold that repository's worktree and root - which is what
   scopes evidence capture, check execution, the capture root and the gate's adoption match
-  without any of them knowing why.
+  without any of them knowing why. Scoped evidence and coverage use `session_cwd`, never
+  the canonical repository identity in `repo_root`, for criterion recipients, reservations,
+  generation tracking, carry-forward and retirement. Filesystem realpath normalization does
+  not map a canonical Git checkout to a linked worktree. Automatic evidence preparation
+  validates conversation identity against the primary binding and a secondary checkout against
+  the owning task's current persisted repository assignment. A detached, released or reassigned
+  worktree cannot admit a repair merely because its old binding remains active.
 - **`activeBindingForNote` means the session's OWN binding** and must keep meaning it: the
   create conflict check, dispatch arming, the Foreman claim and reattach all ask that question.
   `activeBindingsForNote` sees the siblings.
@@ -1113,6 +1119,11 @@ Hook event vocabularies have one owner per harness. Launch-scoped Codex hooks an
 
 The two layouts are `console` and `board`. `App.tsx` owns session state; layouts arrange it.
 
+The optional `boardSidebarAllSessions` UI preference reuses `ConsoleView` for the Board's
+open detail, with a back control. Board still owns selection and dismissal; its overview and
+backlog remain unchanged. While that rail is open, vertical keyboard navigation uses the
+Console ordering across state groups. The setting is offered only with Board selected.
+
 A session appears in three components:
 
 - `layouts/ConsoleDetail.tsx`
@@ -1139,6 +1150,8 @@ Route every server-side reset through `resetSession` in `src/server/reset.ts`; i
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
+
+A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
 
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
@@ -1235,11 +1248,13 @@ These rules hold across phases:
 4. **Persona and instructions are standing instructions**, appended after repository standing
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
-5. **Session control comes only from the desktop Launch click.** `launchResident()` arms it, the
-   launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
+5. **Session control comes only from desktop Launch or Restart on new profile clicks.**
+   `launchResident()` arms it, the launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
    applied and recorded in the four `control_*` columns of `resident_runs`. No later phase may
-   create a resident grant through any other path, including Restart on new profile, which is a
-   new launch and needs its own click. The rule is stated in
+   create a resident grant through any other path. Restart on new profile is a new launch:
+   its desktop click arms the same capability for the replacement request and displayed new
+   revision, and its route uses the same caller check and manager consumption. It never copies
+   the old run's grant. The rule is stated in
    [security](../security.md#resident-launch-grants).
 
 6. **A run's MCP servers come only from its snapshot.** The launch resolves the effective set once
@@ -1257,6 +1272,18 @@ These rules hold across phases:
    argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
+7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`
+   document compiled in by `npm run residents`, plus its other settings in `BUILTIN_RESIDENTS`
+   (`src/server/residents/builtin-residents.ts`). Its id is `builtin:<slug>`, durable and
+   append-only. `reconcileBuiltinResidentProfiles` runs at daemon start before the Registry loads,
+   inserts a missing built-in, and gives a changed one a NEW revision, so rule 2 holds across
+   upgrades. Unlike built-in Personas, a built-in resident is stored, because a run joins
+   `resident_profile_revisions` for its pinned revision. The store refuses every edit and archive of
+   a `builtin:` id. It reserves a built-in's name for create and rename. It leaves built-ins out of
+   the live-profile bound, settings snapshots and restores. A built-in's `normalized_name` is a
+   sentinel, so an operator profile that already held the name keeps it, and both are listed.
+   Every surface that offers profiles as choices names a built-in through
+   `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
@@ -1355,9 +1382,17 @@ A skin is CSS only, and it is added in four places:
    `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
    thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
    registered skin with no new case, so a skin may change colours, fonts and corners but
-   never padding, borders, font size or line height.
+   never padding, borders, font size or line height. A skin changes a face through
+   `--font-display` (headings, card titles, tile names) and `--font-label` (the Line's stage
+   names), never by restating a font rule.
+   Any rule beside the token block is decoration, and `test/skin-decoration.test.ts` holds
+   it to paint: backgrounds, `box-shadow`, `text-shadow`, `text-transform`, `color` and
+   `border-color`. Nothing that sizes a box, and no `filter`, `backdrop-filter`,
+   `transition` or animation. A glow restates the shadow it replaces, rings included.
 4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
-   assert its background and persistence.
+   assert its background and persistence. A skin that changes a face or adds decoration also
+   joins `DECORATED_SKINS` there, which holds the top bar, the Line and the Dispatch button to
+   Default's measured geometry.
 
 `src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
 document's `color-scheme`, and no component branches on the skin id. The daemon serves the

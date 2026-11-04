@@ -475,3 +475,18 @@ test("each override renders as model, advisor and a remove control, with a pairi
   // Before the settings read lands, the status says what it can without guessing.
   assert.match(card, /On: sessions may consult Opus\./);
 });
+
+test("the advisor status follows the default model's override, not the default beside it", () => {
+  const card = cardOf(render({
+    defaultModel: { claude: "claude-opus-5-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-5-5": "off" } } },
+  }), "claude");
+  assert.match(card, /Opus 5\.5 uses its override\. Off: dispatched sessions launch with the advisor tool disabled\./);
+  assert.doesNotMatch(card, /On: sessions may consult Opus/);
+  // A default model with no override still reports the default.
+  const plain = cardOf(render({
+    defaultModel: { claude: "claude-sonnet-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-5-5": "off" } } },
+  }), "claude");
+  assert.match(plain, /On: sessions may consult Opus\./);
+});

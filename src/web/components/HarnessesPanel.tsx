@@ -10,6 +10,7 @@ import {
   ADVISOR_CHOICE_LABELS,
   advisorOverrideKey,
   advisorStatus,
+  resolveLaunchAdvisor,
 } from "@shared/advisor.ts";
 import type {
   AdvisorEnvironment,
@@ -182,10 +183,14 @@ function AdvisorDefaultField({
   const id = `harness-advisor-${agent}`;
   // Narrowed like every stored advisor value: one this build cannot pin reads as the default.
   const choice = spec.values.find((value) => value === advisor.default) ?? null;
-  // The pairing is judged against the card's default model only when no override answers
-  // for it - otherwise the default is not what that model gets.
-  const governed = model && !advisor.overrides[advisorOverrideKey(model)] ? model : null;
-  const status = advisorStatus(agent, choice, governed, environment);
+  // The status describes what a launch on the card's default model actually gets, through
+  // the same resolver the dispatcher uses - so when that model has an override, the override
+  // is what the line reports, not the default beside it.
+  const launch = resolveLaunchAdvisor({ advisor: { ...EMPTY_ADVISOR, [agent]: advisor } }, agent, model);
+  const resolved = advisorStatus(agent, launch.choice, model, environment);
+  const status = launch.source === "override" && model
+    ? { ...resolved, text: `${modelLabel(model) ?? model} uses its override. ${resolved.text}` }
+    : resolved;
   return (
     <>
       <label className="harness-card-field-label harness-card-field-label--top" htmlFor={id}>

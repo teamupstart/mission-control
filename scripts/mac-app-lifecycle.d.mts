@@ -32,4 +32,4 @@ export function prepareAppLaunch(bundle: string, ops: MacAppOps, timeout?: numbe
 export function verifyAppLaunch(bundle: string, nonce: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function stopAttemptLaunch(bundle: string, nonce: string, ops: MacAppOps): Promise<void>;
 
-export function showUpdateProgress(message: string, launch?: typeof import("node:child_process").spawn): () => void;
+export function showUpdateProgress(message: string, launch?: typeof import("node:child_process").spawn, onHidden?: () => void): () => void;

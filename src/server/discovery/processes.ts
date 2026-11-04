@@ -308,10 +308,10 @@ export interface ProcessSnapshot {
  * The process snapshot plus the health of the two underlying reads. Discovery may use the
  * partial rows, but destructive worktree decisions must treat `unknownReason` as a refusal.
  */
-export async function listProcessesSnapshot(): Promise<ProcessSnapshot> {
+export async function listProcessesSnapshot(runCommand: typeof run = run): Promise<ProcessSnapshot> {
   const [a, b] = await Promise.all([
-    run("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
-    run("ps", ["-Ao", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
+    runCommand("ps", ["-Ao", "uid=,pid=,ppid=,state=,tty=,lstart="], { timeoutMs: PS_TIMEOUT_MS }),
+    runCommand("ps", ["-ww", "-A", "-o", "pid=,command="], { timeoutMs: PS_TIMEOUT_MS }),
   ]);
 
   const commands = new Map<number, string>();

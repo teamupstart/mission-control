@@ -129,6 +129,12 @@ int main(void) {
     await waiting;
     expect(await exited).toEqual([null, 'SIGKILL']);
     expect(processIsAlive(pid)).toBe(false);
+    if (!legacy) {
+      await expect.poll(() => progressWindow(process.pid)?.command)
+        .toContain('Waiting for Mission Control and its background work to close.');
+      expect(progressWindow(process.pid)!.command).not.toContain(`Waiting for background work to stop: ${pid}`);
+      console.log('Verified: after the blocker exits, transaction progress replaces the resolved blocker text.');
+    }
     closeProgress?.();
     await expect.poll(() => progressWindow(process.pid)).toBeNull();
     console.log(`Verified: ${legacy ? 'legacy update without a migration handoff started' : 'transaction wait updated'} the visible native dialog with the owned blocker PID and work, then automatically reaped the blocker, closed progress and finished.`);

@@ -370,7 +370,7 @@ startup recovery reconciles the remaining lease record.
 
 The detached helper displays a macOS progress dialog while waiting for the old app and its
 background processes. If a bundle process remains, the dialog names its PID, executable,
-parent and owning work. **Hide** dismisses the message without cancelling the update. Reopening an in-place
+parent and owning work. **Hide** keeps progress hidden across message changes without cancelling the update. Once a blocker exits, transaction progress replaces its stale wait message. Reopening an in-place
 update while its helper is alive leaves the update alone and exits promptly; the helper opens
 the completed app. A dead helper still follows interrupted-update recovery. Rollback outcomes
 retain the original blocking reason, alongside confirmation that the previous app and receipt

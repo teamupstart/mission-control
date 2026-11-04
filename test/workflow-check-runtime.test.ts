@@ -1379,3 +1379,22 @@ test("changed paths that cannot be listed are infrastructure, before any tree is
   assert.deepEqual(f.pool.calls.filter((call) => call.cmd === "get"), []);
   store.cancelRun(ref.runId, "test_cleanup", 99);
 });
+
+test('an already aborted check acquires no worktree and never reaches platform lookup or supervision', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  const runtime = new CheckRuntime(f.leases, {
+    leaseStore: leaseRows,
+    platform: () => { calls.push('platform'); return {supported: false, note: 'must not probe'}; },
+    supervise: async () => { throw new Error('must not spawn'); },
+  });
+  const shutdown = new AbortController();
+  shutdown.abort();
+  const outcome = await runtime.executorFor(attemptRef())({slot: 'test', command: PASSES,
+    repoRoot: f.repoRoot, workingSubpath: '', headSha: f.headSha, signal: shutdown.signal});
+  assert.deepEqual(outcome, {kind: 'infrastructure', started: false,
+    reason: 'check interrupted because Mission Control is shutting down'});
+  assert.deepEqual(calls, []);
+  assert.deepEqual(f.pool.calls, []);
+  assert.deepEqual(liveRows(), []);
+});

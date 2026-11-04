@@ -144,6 +144,7 @@ export function openAppForRelaunch(
 export function realApplyOperations(
   logPath: string,
   installTimeoutMs?: number,
+  displayProgress?: typeof import("./mac-app-lifecycle.mjs").showUpdateProgress,
 ): ApplyOperations;
 export function runApplyUpdate(
   args: ApplyUpdateArgs,

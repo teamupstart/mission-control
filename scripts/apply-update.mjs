@@ -205,21 +205,24 @@ export function openAppForRelaunch(appPath, nonce, spawn = spawnSync) {
 export function realApplyOperations(
   logPath,
   installTimeoutMs = INSTALL_TIMEOUT_MS,
+  displayProgress = showUpdateProgress,
 ) {
   const mac = realMacAppOps(dirname(logPath));
   let closeProgress = null;
   let progressMessage = "";
+  let progressHidden = false;
   let processOwners = [];
   let lastWaiting = '';
   let requestPath = null;
   const revealProgress = () => {
     closeProgress?.();
-    closeProgress = showUpdateProgress(progressMessage);
+    progressHidden = false;
+    closeProgress = displayProgress(progressMessage, undefined, () => { progressHidden = true; });
   };
   const progress = (message, nonce) => {
     if (message !== progressMessage) {
       progressMessage = message;
-      revealProgress();
+      if (!progressHidden) revealProgress();
     }
     if (nonce && !requestPath) {
       requestPath = updateProgressRequestPath(dirname(logPath), nonce);
@@ -229,7 +232,7 @@ export function realApplyOperations(
     }
     return () => {
       if (requestPath) { unwatchFile(requestPath); rmSync(requestPath, {force: true}); requestPath = null; }
-      closeProgress?.(); closeProgress = null; progressMessage = "";
+      closeProgress?.(); closeProgress = null; progressMessage = ""; progressHidden = false;
     };
   };
   const log = (line) => {
@@ -257,6 +260,7 @@ export function realApplyOperations(
     },
     waitForBundle: async (bundle) => {
       let closeWaitProgress;
+      const previousMessage = closeProgress ? progressMessage : null;
       try {
         await waitForBundleExit(bundle, mac, 120_000, (message) => {
           // A transaction already owns a progress dialog. The legacy path has no
@@ -265,7 +269,10 @@ export function realApplyOperations(
           else progress(message);
           if (message !== lastWaiting) { log(message); lastWaiting = message; }
         }, [...readCheckProcessOwners(dirname(logPath), mac), ...processOwners]);
-      } finally { closeWaitProgress?.(); }
+      } finally {
+        closeWaitProgress?.();
+        if (previousMessage && closeProgress && progressMessage !== previousMessage) progress(previousMessage);
+      }
     },
     prepareLaunch: (bundle) => prepareAppLaunch(bundle, mac),
     verifyLaunch: (bundle, nonce) => verifyAppLaunch(bundle, nonce, mac),

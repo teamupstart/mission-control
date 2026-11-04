@@ -629,11 +629,13 @@ export async function stopAttemptLaunch(bundle, nonce, ops) {
 }
 
 /** A separate OS process keeps progress visible without holding either app bundle open. */
-export function showUpdateProgress(message, launch = spawn) {
+export function showUpdateProgress(message, launch = spawn, onHidden = () => {}) {
   const child = launch("/usr/bin/osascript", ["-e", `on run argv
     display dialog (item 1 of argv) with title "Updating Mission Control" buttons {"Hide"} default button "Hide" giving up after 600
   end run`, message], {stdio: "ignore"});
   // A missing GUI session must not turn presentation into a failed install.
   child.on("error", () => {});
-  return () => { child.kill(); };
+  let closed = false;
+  child.once("exit", (code) => { if (!closed && code === 0) onHidden(); });
+  return () => { closed = true; child.kill(); };
 }

@@ -25,8 +25,8 @@ keep their own prerequisites.
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
-agent CLIs, terminal backends, GitHub CLI authentication, agent extensions,
-ai-conductor, and the system Node.js runtime.
+agent CLIs, terminal backends, GitHub CLI authentication, the Atlassian CLI for Jira,
+agent extensions, ai-conductor, and the system Node.js runtime.
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
 checks are ready, and whether any gap is a required one - above a rail of dependency families.
@@ -43,6 +43,18 @@ choose an available backend and Mission Control opens a visible terminal running
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+
+The **Jira** family covers the Atlassian CLI (acli) that Jira task sources can read through.
+**Atlassian CLI** reports the binary Mission Control resolves and where it found it, and offers
+`brew install atlassian/acli/acli`, which taps Atlassian's Homebrew tap and installs in one
+step. **Atlassian CLI sign-in** reads `acli jira auth status` the same way every sweep does: it
+reports the active Jira site (never the account email), **Needs setup** when acli is not signed
+in, and **Needs setup** when a configured acli source reads a different site, naming the
+`acli jira auth switch --site <site>` to run. Its **Run in a terminal** opens
+`acli jira auth login --web` for the same acli binary the daemon runs - a `MISSION_ACLI_BIN`
+override included - so you finish the OAuth sign-in in your browser, choose the site your
+sources use, then press **Re-check**. Sign-in commands are a closed list of exact argvs the
+daemon checks before opening anything; they are never assembled from the browser.
 
 Pi's **Agent SDK** runtime is unlocked only when Setup reports two ready rows: the global Pi
 CLI in **Agent CLIs** and the Mission Control Pi extension in **Agent extensions**. The Pi CLI

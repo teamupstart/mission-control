@@ -19,6 +19,7 @@ import { ghBin } from "../config.ts";
 import { githubIssueCreateOutcome } from "../github/issue-create.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
+import { repoRootGone } from "./repo-root.ts";
 
 // The first task source, and the proof the interface is the right shape.
 //
@@ -183,10 +184,12 @@ export function candidateFrom(
  * it takes somebody to wonder why the backlog stopped growing.
  */
 export function sweepResultFrom(
-  res: Pick<RunResult, "stdout" | "stderr" | "code">,
+  res: Pick<RunResult, "stdout" | "stderr" | "code" | "missingCwd">,
   cfg: GithubIssuesConfig,
   ctx: SweepContext,
 ): SweepResult {
+  const gone = repoRootGone(res);
+  if (gone) return { items: [], error: gone };
   if (res.code !== 0) {
     const why = (res.stderr || res.stdout).trim().split("\n")[0] ?? "";
     return { items: [], error: `gh issue list failed${why ? `: ${why}` : ""}` };
@@ -227,6 +230,8 @@ async function sweep(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<SweepR
 async function preflight(cfg: GithubIssuesConfig, ctx: SweepContext): Promise<string | null> {
   const auth = await run(ghBin(), ["auth", "status"], { cwd: ctx.repoRoot, timeoutMs: 10_000 });
   if (auth.code !== 0) {
+    const gone = repoRootGone(auth);
+    if (gone) return gone;
     return auth.stderr.includes("not found") || auth.code === 127
       ? "the gh CLI is not installed - install it and run `gh auth login`"
       : "gh is not authenticated - run `gh auth login`";

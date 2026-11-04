@@ -451,6 +451,7 @@ import {
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
 import { startSetupService } from "./setup/service.ts";
+import { locateExecutable } from "./executables/locator.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -8122,6 +8123,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
       prepareProviderInstaller:
         setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+      resolveExecutable:
+        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
       launchTerminal: terminalLauncher,
     });
     return c.json(result.body, result.status as ContentfulStatusCode);

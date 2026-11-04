@@ -26,6 +26,7 @@ import { upstartclawCoreReady } from "../environment/upstartclaw.ts";
 import { hasBin, run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";
 import { acliAnnotate, acliPreflight, acliResolve, readAcli } from "./jira-acli.ts";
+import { repoRootGone } from "./repo-root.ts";
 
 // The second task source: a JQL filter as a backlog queue.
 //
@@ -568,7 +569,7 @@ export function issuesFrom(
 }
 
 /** First non-empty line of some output, for a one-line "why". */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   return text.trim().split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
 }
 
@@ -607,7 +608,7 @@ function looksUnconfigured(text: string): boolean {
 const CLI_EMPTY = /no result found/i;
 
 /** What one `jira` run reported, as much of it as any of these decisions need. */
-type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
+type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown" | "missingCwd">;
 
 /**
  * What a failed `jira` run says about the CLI ITSELF, rather than about the request.
@@ -624,6 +625,7 @@ type CliRun = Pick<RunResult, "stdout" | "stderr" | "code" | "outcomeUnknown">;
  */
 export type CliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unconfigured"
   | "unauthenticated"
@@ -633,6 +635,8 @@ export type CliFault =
 export function cliFault(res: CliRun): CliFault {
   // The child DIED rather than answering. Whether it did its work first is unknowable.
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   const said = `${res.stderr}\n${res.stdout}`;
   // `run` reports a missing binary through the callback with Node's own message, so this
   // covers a `jira` that vanished between the PATH check and the spawn. Matched narrowly:
@@ -683,6 +687,8 @@ export function cliFailure(res: CliRun, verb = "jira issue list"): string {
       return `the jira CLI did not answer within ${Math.round(JIRA_TIMEOUT_MS / 1000)}s${
         why ? ` - ${why}` : ""
       } - it may be waiting for input, which a background sweep cannot give it`;
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
       return "the jira CLI could not be run - reinstall it (`brew install ankitpokhrel/jira-cli/jira-cli`), or set JIRA_API_TOKEN and JIRA_EMAIL to use the REST fallback";
     case "unconfigured":
@@ -1004,18 +1010,26 @@ async function restSearch(
 async function readCli(
   cfg: JiraConfig,
   ctx: SweepContext,
-): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean }> {
-  if (ctx.signal.aborted) return { issues: [], error: "the sweep was abandoned", hasMore: false };
+): Promise<{ issues: JiraIssue[]; error: string | null; hasMore: boolean; repoGone: boolean }> {
+  if (ctx.signal.aborted) {
+    return { issues: [], error: "the sweep was abandoned", hasMore: false, repoGone: false };
+  }
   // The CLI inherits the daemon's environment, which is where `JIRA_API_TOKEN` already is for the
-  // operators who have one - so nothing has to be passed through explicitly.
-  const page = pageFromCli(await run(jiraBin(), jiraIssueListArgs(cfg), { timeoutMs: JIRA_TIMEOUT_MS }));
-  if (page.error) return { issues: [], error: page.error, hasMore: false };
+  // operators who have one - so nothing has to be passed through explicitly. It starts in the
+  // source's checkout, as acli and gh do, so a checkout that has gone is named as one here rather
+  // than surfacing later as every candidate refused at ingest.
+  const res = await run(jiraBin(), jiraIssueListArgs(cfg), { cwd: ctx.repoRoot, timeoutMs: JIRA_TIMEOUT_MS });
+  const page = pageFromCli(res);
+  if (page.error) {
+    return { issues: [], error: page.error, hasMore: false, repoGone: res.missingCwd !== undefined };
+  }
   // The extra row is a probe, not a candidate: it answers the question and is then dropped, so a
   // sweep files exactly the page size it was configured for.
   return {
     issues: page.issues.slice(0, cfg.limit),
     error: null,
     hasMore: page.issues.length > cfg.limit,
+    repoGone: false,
   };
 }
 
@@ -1347,7 +1361,9 @@ async function ladder(cfg: JiraConfig, ctx: SweepContext, maxPages: number): Pro
         advisory: targetProblem ?? cliCannotPage(cfg),
       };
     }
-    if (!restCred || ctx.signal.aborted) {
+    // A vanished checkout is not a CLI problem the REST rung can route around: REST would read
+    // Jira and every candidate would then be refused at ingest for the same missing repository.
+    if (viaCli.repoGone || !restCred || ctx.signal.aborted) {
       // The CLI failed and there is no second rung to try. A credential that exists but may not be
       // used for this host is worth saying alongside the CLI's own failure, since the operator
       // would otherwise reasonably assume the fallback was attempted.

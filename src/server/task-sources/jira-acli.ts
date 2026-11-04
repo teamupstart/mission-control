@@ -3,6 +3,7 @@ import { PR_URL_RE } from "@shared/pr-command.mjs";
 import { acliBin } from "../config.ts";
 import { run, type RunResult } from "../util/exec.ts";
 import { scrubSecrets } from "../inspector/scrub.ts";
+import { repoRootGone } from "./repo-root.ts";
 import {
   commentBodyAdf, currentStatusFrom, issuesFrom, MAX_SWEEP_ISSUES, NO_TARGET_STATUS,
   siteHost, tooBroad, transitionFor, transitionsFrom, UNKNOWN_OUTCOME,
@@ -10,7 +11,7 @@ import {
 } from "./jira.ts";
 
 /** Status, search and status again fit inside the sweeper's 60-second deadline. */
-const ACLI_TIMEOUT_MS = 15_000;
+export const ACLI_TIMEOUT_MS = 15_000;
 
 export interface JiraAcliDeps {
   run: typeof run;
@@ -18,7 +19,7 @@ export interface JiraAcliDeps {
 const defaultDeps: JiraAcliDeps = { run };
 
 /** Preserve useful workflow reasons without retaining credential or common PII shapes. */
-function writeDiagnostic(text: string): string {
+export function writeDiagnostic(text: string): string {
   return scrubSecrets(text)
     .replace(/(\bauthorization\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/gi, "$1[redacted]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, "Bearer [redacted]")
@@ -58,6 +59,7 @@ export function acliSearchArgs(cfg: JiraConfig, limit: number): string[] {
 
 export type AcliFault =
   | "no-answer"
+  | "missing-repo"
   | "not-installed"
   | "unauthenticated"
   | "unsupported-flag"
@@ -65,6 +67,8 @@ export type AcliFault =
 
 export function acliFault(res: RunResult): AcliFault {
   if (res.outcomeUnknown) return "no-answer";
+  // Before the ENOENT test below: a vanished checkout refuses the spawn with that code too.
+  if (res.missingCwd !== undefined) return "missing-repo";
   if (res.code === 127 || /\bENOENT\b|was not found in the executable environment/i.test(res.stderr)) return "not-installed";
   if (/unauthorized|auth login/i.test(res.stderr)) return "unauthenticated";
   if (/unknown flag/i.test(res.stderr)) return "unsupported-flag";
@@ -77,10 +81,12 @@ export function acliFailure(res: RunResult): string {
     case "no-answer":
       if (res.overflowed) return "acli returned too much output to read - narrow the JQL and run Check it works again";
       return "acli did not answer - check your connection and run Check it works again";
+    case "missing-repo":
+      return repoRootGone(res)!;
     case "not-installed":
-      return "acli is not installed - run `brew tap atlassian/homebrew-acli && brew install acli`";
+      return "Mission Control cannot find acli - install it from Settings > Setup > Jira, or run `brew install atlassian/acli/acli`. If it is installed somewhere unusual, set MISSION_ACLI_BIN to its path";
     case "unauthenticated":
-      return "acli is not logged in to Jira - run `acli jira auth login --web`";
+      return "acli is not signed in to Jira - sign in from Settings > Setup > Jira, or run `acli jira auth login --web`";
     case "unsupported-flag":
       return "acli does not support the required flags - run `brew upgrade acli`";
     case "refused": {

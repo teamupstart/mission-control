@@ -1560,12 +1560,19 @@ The local method uses this ladder:
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
 
-The **Atlassian CLI (acli)** method needs a one-time install and login:
+The **Atlassian CLI (acli)** method needs a one-time install and sign-in. **Settings → Setup →
+Jira** checks both and runs each in a visible terminal, or run them yourself:
 
 ```sh
-brew tap atlassian/homebrew-acli && brew install acli
+brew install atlassian/acli/acli
 acli jira auth login --web
 ```
+
+If Mission Control cannot find an installed acli, set `MISSION_ACLI_BIN` to its path. When a
+source's **Files tasks against** checkout has been moved or deleted, every check, sweep and
+write-back names that directory instead: the CLI starts in the checkout, and a missing working
+directory is refused with the same `ENOENT` a missing binary produces, so it is reported as
+its own fault rather than as "not installed".
 
 The contract behavior below was verified on **2026-11-02** with `acli version 1.3.40-stable`;
 see the [read-only capture record](../test/fixtures/acli/README.md). These are version-specific

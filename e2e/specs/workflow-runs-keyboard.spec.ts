@@ -3,6 +3,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -251,6 +252,25 @@ test("keyboard moves from runs into stages and loads completed stage detail", as
   await dashboard.keyboard.press("Escape");
   await expect(stateFilter).not.toBeFocused();
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${first!.id}$`));
+
+  // A Runs confirmation owns the first Escape; it must not navigate behind the dialog.
+  await dashboard.getByRole("button", { name: "Preview this review again" }).click();
+  const overlay = dashboard.getByRole("dialog", { name: "Preview this review again" });
+  await expect(overlay).toBeVisible();
+  await expectContentClearsBorder(overlay);
+  await overlay.getByRole("button", { name: /^Close$/ }).focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(overlay).toBeHidden();
+  expect(new URL(dashboard.url()).hash).toBe(`#/runs/${first!.id}`);
+  await expect(firstRow).toHaveAttribute("aria-current", "true");
+  await expect(dashboard.locator(".wf-run-reader").getByRole("heading", {
+    name: first!.workflowName,
+  })).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("workflow-runs-keyboard");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.screenshot({ path: `${dir}escape-overlay-closed.png` });
+  }
 
   // Escape returns to the run's bound session, opening the board detail.
   await dashboard.keyboard.press("Escape");

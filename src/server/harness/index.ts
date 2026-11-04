@@ -1,3 +1,4 @@
+import { claudeAdvisorEnvironment } from "./claude/advisor-environment.ts";
 import { piHooks } from "./pi/hooks.ts";
 import { claudeResumeTools, codexResumeTools, piResumeTools } from "./resume-tools.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
@@ -128,6 +129,10 @@ export const HARNESSES: Record<AgentType, Harness> = {
         ...claudeResumeModeArgs(permissionMode),
       ],
     },
+
+    // Non-null exactly because `HARNESS_CAPABILITIES.claude.advisor` is: the panel reads
+    // what Inherit resolves to here (`harness-capabilities.test.ts` pins the pairing).
+    advisorEnvironment: claudeAdvisorEnvironment,
   },
   // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
   // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
@@ -185,6 +190,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
         ...codexResumeModeArgs(permissionMode),
       ],
     },
+
+    advisorEnvironment: null,
   },
   // Pi (`@earendil-works/pi-coding-agent`), the Phase 5 acceptance harness. The mirror image
   // of Codex on this axis: `hooks: null` (pi pushes nothing - its extensions are in-process
@@ -236,6 +243,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     // unread: pi declares `permissionModes: null`, so there is no mode to carry and no
     // flag to spell one with.
     resume: { argv: (agentSessionId) => ["--session", agentSessionId] },
+
+    advisorEnvironment: null,
   },
 };
 

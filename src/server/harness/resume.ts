@@ -19,9 +19,9 @@ export interface ResumeContext {
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
   /**
-   * The owning task's advisor pin, rendered exactly as its first terminal launch rendered
-   * it, so a reopened conversation keeps the advisor it was dispatched with. Omitted or null
-   * inherits.
+   * The advisor the owning task resolves to for the model this conversation runs on - the
+   * Settings -> Harnesses choice, or a pin the task saved before that move - rendered the way
+   * a terminal dispatch renders it. Omitted or null inherits.
    */
   advisorModel?: AdvisorChoice | null;
 }

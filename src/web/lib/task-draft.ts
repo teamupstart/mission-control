@@ -63,9 +63,9 @@ export type DispatchDraft = {
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
   /**
-   * Advisor override, or "" to inherit the operator's own Claude settings. Unlike model and
-   * effort there is no Mission Control default behind the empty option: "" is omitted on a
-   * dispatch and sent as `null` on an update, so the launch renders nothing either way.
+   * An advisor pin the task was saved with before the advisor moved to Settings -> Harnesses,
+   * or "". Never chosen on the form: it is seeded from the task, and the form's "Use Settings"
+   * action sets it back to "", which an update sends as `null`. A new dispatch never sends it.
    */
   advisorModel: AdvisorChoice | "";
   /**
@@ -257,8 +257,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
-  const advisorModel = draft.advisorModel || null;
-  if (advisorModel !== task.advisorModel) patch.advisorModel = advisorModel;
+  // A pin can only be taken OFF now - the advisor is chosen on Settings -> Harnesses - so the
+  // one change a draft can carry is a cleared legacy pin.
+  if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }

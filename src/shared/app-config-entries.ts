@@ -128,6 +128,7 @@ const harnessesFields = {
   sessionRuntime: "setting",
   terminalBackend: "setting",
   kindDefaults: "setting",
+  advisor: "setting",
 } satisfies Record<keyof HarnessesConfig, AppConfigValueClass>;
 
 const terminalsFields = {

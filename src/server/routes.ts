@@ -110,6 +110,7 @@ import {
   ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
+  HarnessAdvisorEnvironmentsSchema,
   HarnessModelCatalogQuerySchema,
   HarnessModelCatalogsSchema,
   TerminalsConfigPatchSchema,
@@ -285,7 +286,6 @@ import {
   MANUAL_DISPATCH_TASK_CREATE,
   ScoutArchiveNotReadyError,
   TaskDependencyError,
-  TaskAdvisorUnsupportedError,
   TaskEffortUnsupportedError,
   TaskStatusConflictError,
   type TaskManager,
@@ -4887,7 +4887,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
-        advisorModel: data.advisorModel ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -4898,7 +4897,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
-      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+      if (error instanceof TaskEffortUnsupportedError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;
@@ -7243,6 +7242,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  // What each harness's own settings say about its advisor, so the panel can tell the
+  // operator whether a dispatched session will consult one. Read-only and read fresh: the
+  // operator edits those files outside Mission Control.
+  app.get("/api/harnesses/advisor", (c) => {
+    const view = Object.fromEntries(
+      AGENT_TYPES.map((agent) => [agent, harnessFor(agent).advisorEnvironment?.() ?? null]),
+    );
+    return c.json(HarnessAdvisorEnvironmentsSchema.parse(view));
+  });
   app.get("/api/harnesses/models", async (c) => {
     if (!modelCatalogs) return c.json({ error: "Harness model catalog service unavailable" }, 503);
     const query = HarnessModelCatalogQuerySchema.safeParse(c.req.query());
@@ -8211,7 +8219,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskAdvisorUnsupportedError) {
+      if (error instanceof TaskEffortUnsupportedError) {
         return { ok: false, status: 400, body: { error: error.message } };
       }
       throw error;
@@ -8364,7 +8372,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
-      advisorModel: task.advisorModel ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,

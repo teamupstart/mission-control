@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
-import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { meta, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "managed-resume-"));
 process.env.MISSION_HOME = home;
@@ -19,6 +19,8 @@ process.env.MISSION_PI_BIN = process.execPath;
 await managedResumeFixture(home);
 const { prepareTerminalResume, managedResumeRoot, RESUME_GUARD_CHECK_TIMEOUT_MS } = await import("../src/server/harness/resume.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
+const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
+const { openDb } = await import("../src/server/db.ts");
 const { MISSION_MCP_TOOLS, verifyMissionMcpTools } = await import("../src/server/mission-mcp.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { claimResumeLease, completeResumeLease, createResumeLease, beginResumeLaunch, readResumeLease,
@@ -182,6 +184,39 @@ test("a terminal resume renders the task's advisor pin exactly as its first laun
   assert.deepEqual(await read("advisor-resume-opus", "opus"), { settings: { advisorModel: "opus" }, off: undefined });
   assert.deepEqual(await read("advisor-resume-off", "off"), { settings: null, off: "1" });
   assert.deepEqual(await read("advisor-resume-inherit", null), { settings: null, off: undefined });
+});
+
+test("a terminal resume chooses the advisor for the model the conversation runs on", async () => {
+  // Settings -> Harnesses chooses the advisor per model, so resume asks the same question the
+  // dispatch did: the session's reported model first, and the task's resolved launch model
+  // when the session has not reported one.
+  setHarnessesConfig({
+    defaultModel: { claude: "claude-sonnet-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-4-8": "off", "claude-sonnet-5": "sonnet" } } },
+  });
+  try {
+    const task = mkTask({ agent: "claude", model: null, advisorModel: null });
+    // Reported as a long-context id; the override is keyed by the bare one.
+    const reported = mkSession({ ...session("advisor-model-reported"), meta: meta({ modelId: "claude-opus-4-8[1m]" }) });
+    const unreported = mkSession({ ...session("advisor-model-unreported"), meta: null });
+    assert.equal(resumeContext(reported, task, false, false).advisorModel, "off");
+    // No reported model: the harness default (Sonnet 5) supplies it, and its override applies.
+    assert.equal(resumeContext(unreported, task, false, false).advisorModel, "sonnet");
+    // A task pin supplies it instead, and a model with no override gets the default.
+    assert.equal(resumeContext(unreported, mkTask({ agent: "claude", model: "claude-haiku-4-5", advisorModel: null }), false, false).advisorModel, "opus");
+
+    // And the resolved choice is what the reopened CLI is handed.
+    const prepared = await prepareTerminalResume(reported, resumeContext(reported, task, false, false));
+    try {
+      const launch = JSON.parse(readFileSync(join(prepared.stateHome, "launch.json"), "utf8")) as {
+        argv: string[]; env: Record<string, string>;
+      };
+      assert.equal(launch.argv.includes("--settings"), false);
+      assert.equal(launch.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
+    } finally { prepared.dispose(); }
+  } finally {
+    openDb().exec("DELETE FROM app_config");
+  }
 });
 
 test("missing tools and renderer exceptions revoke preparation without retaining secrets", async (t) => {

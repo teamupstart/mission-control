@@ -1,4 +1,5 @@
 import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts";
+import { mergeAdvisor } from "@shared/advisor.ts";
 
 // The two decisions `useHarnesses` makes about the harnesses config, extracted so they can
 // be tested without rendering a hook: how a patch merges over what the panel is showing,
@@ -32,6 +33,7 @@ export function mergeHarnessesPatch(
     sessionRuntime: { ...before.sessionRuntime, ...patch.sessionRuntime },
     terminalBackend: { ...before.terminalBackend, ...patch.terminalBackend },
     kindDefaults: mergeKindDefaults(before.kindDefaults, patch.kindDefaults),
+    advisor: mergeAdvisor(before.advisor, patch.advisor),
   };
 }
 

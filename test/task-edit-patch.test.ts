@@ -122,17 +122,19 @@ test("un-pinning effort sends null, and pinning one sends the level", () => {
   });
 });
 
-test("un-pinning an advisor sends null, pinning one sends the choice, and a stored pin reads back", () => {
+test("a legacy advisor pin reads back and can only be cleared, never set", () => {
   const pinned = mkTask({ advisorModel: "opus" });
   assert.equal(draftFromTask(pinned).advisorModel, "opus");
-  assert.equal(draftFromTask(mkTask()).advisorModel, "", "Inherit reads back as the empty option");
+  assert.equal(draftFromTask(mkTask()).advisorModel, "", "no pin reads back as the empty value");
+  // "Use Settings" empties the draft's pin, and the save sends the clear.
   assert.deepEqual(taskUpdatePatch(pinned, edited(pinned, { advisorModel: "" }), pinned.intent), {
     advisorModel: null,
   });
+  // Saving a pinned task without clearing it leaves the pin alone.
+  assert.equal(taskUpdatePatch(pinned, draftFromTask(pinned), pinned.intent), null);
+  // The advisor is chosen on Settings -> Harnesses, so a draft cannot pin one.
   const free = mkTask();
-  assert.deepEqual(taskUpdatePatch(free, edited(free, { advisorModel: "sonnet" }), free.intent), {
-    advisorModel: "sonnet",
-  });
+  assert.equal(taskUpdatePatch(free, edited(free, { advisorModel: "sonnet" }), free.intent), null);
   assert.equal(draftsEqual(draftFromTask(pinned), draftFromTask(free)), false);
 });
 
@@ -192,7 +194,9 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
-    advisorModel: "off",
+    // The one change the form can make to a pin is clearing one saved before the advisor
+    // moved to Settings -> Harnesses, so it is judged against a task that has one.
+    advisorModel: "",
     workflowId: "workflow-review",
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
@@ -211,8 +215,8 @@ test("every field on the form reaches the patch", () => {
     "a field on the form with no entry here is a field nobody has decided how to save",
   );
 
-  const t = mkTask();
   for (const [field, value] of Object.entries(changed)) {
+    const t = field === "advisorModel" ? mkTask({ advisorModel: "opus" }) : mkTask();
     // `intent` is the one field that does not reach the patch off the draft: what gets
     // stored is the typed text with the attachment paths appended, so the modal composes
     // it and passes it in. Changing the draft's copy alone must therefore do nothing.

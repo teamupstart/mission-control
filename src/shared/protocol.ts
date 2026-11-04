@@ -902,6 +902,7 @@ export const PlanDecisionAnswerSchema = z.object({
   selected: z.array(z.string().min(1)),
   other: z.string().nullable().optional().default(null),
   note: z.string().nullable().optional(),
+  chat: z.boolean().optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 

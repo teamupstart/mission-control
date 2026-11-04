@@ -147,6 +147,14 @@ export async function reportProductIssueWithConfirmation(
       isError: true,
     };
   }
+  // "Chat about it" is not a confirmation. Nothing is published, and the agent gets the
+  // instruction to discuss the report rather than a bare refusal it might retry.
+  if (review.status === "answered" && review.selections?.some((answer) => answer.chat)) {
+    return {
+      text: `outcome=cancelled reason=chat published=false\n\n${review.response ?? ""}`.trimEnd(),
+      isError: false,
+    };
+  }
   if (!selectedSubmit(review)) {
     return {
       text: "outcome=cancelled reason=unconfirmed published=false",

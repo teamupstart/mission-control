@@ -7665,6 +7665,51 @@ a.btn {
   justify-content: space-between;
   gap: 9px;
 }
+/* "Chat about it": the way out of a question into the conversation. Blue, the human's
+   voice in a transcript, and drawn apart from the agent's options (dashed, muted, after a
+   rule) so it never reads as one of the choices the agent offered. */
+.decision-chat {
+  margin-top: 2px;
+  border-style: dashed;
+  color: var(--muted);
+}
+.decision-chat input {
+  accent-color: var(--working);
+}
+.decision-chat:hover {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.decision-chat.is-chat {
+  border-style: solid;
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--bg-2));
+  color: var(--fg);
+}
+.decision-chat .decision-option-label,
+.btn-chat,
+.review-answer-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-glyph {
+  flex: none;
+  width: 14px;
+  height: 12px;
+}
+.btn-chat {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+/* With no standing-approval box to push it right, "Chat about all" sits beside Submit. */
+.decisions-chat-all {
+  margin-left: auto;
+}
+.review-answer-chat {
+  margin: 0;
+  font: 600 12px/1.45 var(--sans);
+  color: var(--working);
+}
 /* Sits against Submit, which it qualifies, rather than centred between the two buttons. */
 .decisions-standing-approval {
   display: flex;

@@ -59,6 +59,7 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
+import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
@@ -388,6 +389,8 @@ export function ConsoleDetail({
     focusPending.current = false;
     transcriptRef.current?.focusReply();
   }, [tab]);
+
+  useComposerFocusRequest(session.id, focusReply);
 
   // Both pieces of local state that are really claims ABOUT the invite, retired the moment
   // the invite itself moves - however it moved.

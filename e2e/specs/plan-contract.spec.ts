@@ -220,7 +220,9 @@ for (const storage of ["repository", "local"] as const) {
         await dashboard.locator(".console-detail").getByRole("button", { name: "to review" }).click();
         const form = dashboard.locator(".review-modal");
         await expect(form).toContainText(followUp.question);
-        await expect(form.getByRole("radio")).toHaveCount(2);
+        // The two follow-up options, plus the "Chat about it" row every question carries.
+        await expect(form.getByRole("radio")).toHaveCount(3);
+        await expect(form.getByRole("radio", { name: "Chat about it" })).not.toBeChecked();
         const phase = form.getByRole("radio", { name: /Create phased implementation plan/ });
         const stop = form.getByRole("radio", { name: /Stop after this plan/ });
         await expect(phase).not.toBeChecked();

@@ -229,6 +229,22 @@ test("free-form, malformed, and non-human answers cannot publish", async (t) => 
   }
 });
 
+test("moving the confirmation to chat publishes nothing and passes the discussion on", async () => {
+  const observed = { reviews: [] as Array<Parameters<ProductIssueMcpDependencies["createReview"]>[0]>, submissions: [] as unknown[] };
+  const response = "Answered:\n\n• Publish this public issue?\n  → Chat about it\n\nThe human wants to discuss this decision";
+  const result = await reportProductIssueWithConfirmation(
+    DRAFT,
+    "browser",
+    dependencies(review({
+      response,
+      selections: [{ decisionId: PRODUCT_ISSUE_REVIEW_DECISION_ID, selected: [], other: null, chat: true }],
+    }), observed),
+  );
+  assert.equal(result.isError, false);
+  assert.equal(result.text, `outcome=cancelled reason=chat published=false\n\n${response}`);
+  assert.equal(observed.submissions.length, 0);
+});
+
 test("preview and submit failures preserve retry-safety guidance", async () => {
   let createdReview = false;
   const previewFailure = await reportProductIssueWithConfirmation(DRAFT, "browser", {

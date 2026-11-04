@@ -478,6 +478,13 @@ test("every CLI failure state is classified once, and the sentence follows the c
     { run: res({ outcomeUnknown: true }), fault: "no-answer", says: /did not answer within/ },
     { run: res({ code: 127 }), fault: "not-installed", says: /could not be run - reinstall it/ },
     {
+      // A vanished checkout refuses the spawn with ENOENT too. It is not an install problem,
+      // and it must not send the write down the REST rung as if the CLI were unusable.
+      run: res({ code: 1, stderr: "jira could not start because its working directory /gone does not exist", missingCwd: "/gone" }),
+      fault: "missing-repo",
+      says: /files tasks against \/gone, which no longer exists/,
+    },
+    {
       run: res({ code: 1, stderr: "Error: config file not found. Run 'jira init'" }),
       fault: "unconfigured",
       says: /installed but not configured/,

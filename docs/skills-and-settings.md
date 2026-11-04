@@ -266,7 +266,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -274,6 +274,10 @@ these stays in this browser, and which of them acts publicly under your account.
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+Display's **Skin** is the exception in the other group: it sits under *This screen*, but the
+choice is the machine's, not one browser's. It is stored once in `app_config.ui.skin`, every
+browser profile and the desktop window open in it, and the daemon also records the skin's
+background in the state home so the desktop window's first frame matches it.
 
 **Cost** and **Telemetry** sit next to each other because they are the pair people confuse, and
 reading them side by side is what separates them. Cost configures Claude Code reporting its usage
@@ -290,6 +294,12 @@ In the desktop app, **Application updates** also offers **Check for updates** an
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
+
+Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
+(today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
+and **Neon Dusk** skins. A tile applies the moment it is picked,
+repainting the page behind the settings and persisting per machine in `app_config.ui.skin`,
+which settings backup carries with the rest of Display. See [Skins](ui.md#skins).
 
 Display's **Layout** panel also carries **Group by repository**, which ships checked: it
 collects each fleet column's cards under a coloured heading naming the repository their session
@@ -322,6 +332,10 @@ The same panel holds two **Task type** pickers, one under **Board card** and one
 how: a tab on the card's top edge, a chip beside the name, a band across the top or an icon
 medallion for a card; a badge before the name, an eyebrow over it, a kind tile or an anchor on
 the tab strip for the console. Each has **Off**. They ship as the edge tab and the title badge.
+Each group has its own live preview, so picking a style shows what it changes without leaving
+Settings: the card's for **Board card**, and a console header for **Conversation header**. Each
+preview sits beside its group's controls, or under the group's heading when Settings is too
+narrow to hold it beside them.
 
 Display's last panel is **Top bar**, which chooses what the bar across the top of every page
 draws. A live preview of the real bar sits above its two lists and redraws as you change them.
@@ -597,3 +611,39 @@ another review-only workflow validates the frozen approved text; explicit None u
 merge edges stay blocked until their normal publication condition. Missing tools never permit
 fallback writes into Git. Settings backups preserve the preferences; back up the Mission state
 home separately to retain plan contents and their daemon ledger.
+
+## Resident skill catalog
+
+**Residents > Skill sources** indexes global skills and operator-registered folders, independently
+of the Mission skill switches in Settings. It reads each skill's `name` and `description` from
+YAML frontmatter, including folded descriptions, and reports source problems in place. The index
+is fetched on demand, not streamed to every dashboard. **Rescan** adopts filesystem changes.
+Rescans and source saves share a one-second cooldown after completion across windows and local
+API clients. An early retry reports how long to wait without starting another scan or changing
+registrations. The panel briefly disables its source controls after a request before allowing
+another action.
+Concurrent source edits are compared against the list a window loaded. A stale add or removal
+is refused and refreshes the list so the operator can review it before retrying.
+If restored registrations have an invalid shape, the catalog still shows global skills and
+explains the problem. **Reset source list** explicitly replaces those invalid registrations
+with an empty list before new folders can be added. Reads and rescans leave the stored value
+intact, and a reset also refuses a stale revision.
+
+The predefined roots are Mission Control's `skills/`, `~/.claude/skills`,
+`~/.agents/skills`, and the daemon's `$CODEX_HOME/skills` or `~/.codex/skills`. Additional folders
+must be absolute or start with `~/`; broad roots and canonical duplicates are refused. Child
+directory links resolving to the home directory or an ancestor are also refused. Claude entries
+are omitted only when their resolved directory is already indexed by the Mission Control source;
+independent `mission-*` skills remain indexed. Enumeration is bounded to 5,000 entries per source,
+including the source root, each SKILL.md read, ordinary files and hidden entries. An over-limit source reports
+truncation; the retained subset follows filesystem enumeration order. The complete serialized
+catalog is capped at 4 MiB, including source metadata, escaped descriptions and scan problems.
+Scanning stops before retaining an entry that would exceed that total; the panel explicitly
+reports the partial catalog. Remove unneeded sources or shorten descriptions, then rescan.
+The
+`residents.skillSources` setting stores stable ids and paths, backed up under
+`resident-skill-sources`. Skill content is never included in settings backups.
+
+This catalog is read-only with respect to the skills themselves. It currently offers no profile
+selection because neither harness has a verified frozen-isolation mechanism. See
+[Residents](residents.md#skill-sources) for the launch policy and current limitation.

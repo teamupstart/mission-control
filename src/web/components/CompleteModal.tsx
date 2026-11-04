@@ -28,6 +28,7 @@ export function CompleteModal({
   session,
   tasks,
   tourOutcome,
+  lead,
   onCompleted,
   onClose,
 }: {
@@ -39,6 +40,8 @@ export function CompleteModal({
    * actions inert; the tour controller owns the one fixed completion path.
    */
   tourOutcome?: string;
+  /** Why the dialog opened on its own, when it did - Restart on new profile's offer. */
+  lead?: string;
   /** Fired once the task is closed and session shutdown is accepted, so App drops detail. */
   onCompleted?: () => void;
   onClose: () => void;
@@ -212,6 +215,7 @@ export function CompleteModal({
         </header>
 
         <div className="modal-bleed complete-body">
+          {lead && <p className="complete-why" role="status">{lead}</p>}
           <p className="complete-lead">
             <AgentDot agent={session.agent} />
             <span className="complete-name">{session.name || "(unnamed)"}</span>
@@ -294,9 +298,9 @@ export function CompleteModal({
 
           {activeScoutWarning && (
             <div className="complete-warning" role="alert">
-              <strong>No scout report will be archived.</strong>
+              <strong>No submitted scout report is ready to archive.</strong>
               <p>{activeScoutWarning.join("; ")}</p>
-              <p>Close without a report only if you do not need this scout's findings in Scouts.</p>
+              <p>Close only if you do not need a verified report. Cleanup may still preserve report files already in the checkout.</p>
             </div>
           )}
           {error && <p className="complete-error">{error}</p>}

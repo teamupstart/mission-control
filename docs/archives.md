@@ -216,6 +216,11 @@ or explicitly choose **Close without report**. That confirmed exit marks the tas
 inventing a transcript-derived report; no older client or automatic completion path can take it
 because the confirmation flag defaults to false.
 
+That confirmation waives the submitted-report requirement, not the checkout's cleanup guard.
+Before returning the checkout, cleanup still preserves report files already on disk. This
+recovery and its search indexing finish asynchronously after the session closes; it never
+invents a report from the conversation.
+
 **An assignment asks a third question, because it targets an agent that is already running.**
 That agent's MCP server is a child it spawned at launch, holding whatever the bundle contained
 at that moment - so rebuilding the bundle afterwards does not change what the agent can call.

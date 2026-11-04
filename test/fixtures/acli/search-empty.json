@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "jira",
+    "workitem",
+    "search",
+    "--jql",
+    "key = MC-2 AND key != MC-2",
+    "--fields",
+    "key,summary,description,priority",
+    "--json",
+    "--limit",
+    "1"
+  ],
+  "code": 0,
+  "stdout": "[]\n",
+  "stderr": ""
+}

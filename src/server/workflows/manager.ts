@@ -225,6 +225,7 @@ import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
+import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -387,6 +388,7 @@ export interface WorkflowManagerOptions {
    * single spender, so it is passed straight through rather than held here.
    */
   checkScheduler?: CheckScheduler;
+  commandArtifacts?: WorkflowCommandArtifactService;
   /**
    * The execution runtime a Check node reaches, bound per attempt.
    *
@@ -681,6 +683,7 @@ export class WorkflowManager {
     this.registry.initializeWorkflowBindings(this.bindingSummaries());
     this.registry.registerWorkflowReset((noteKey) => {
       const removed = this.store.resetForNoteKey(noteKey);
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       for (const id of removed.runIds) this.registry.removeWorkflowRun(id);
@@ -1145,6 +1148,13 @@ export class WorkflowManager {
     return result.kind === "found"
       ? { kind: "found", detail: this.decorateRun(result.detail) }
       : result;
+  }
+
+  readCommandOutput(input: {
+    runId: string; attemptId: string; artifactId: string;
+    cursor?: string | null; limit?: number;
+  }) {
+    return this.options.commandArtifacts?.read(input) ?? null;
   }
 
   /** Add current recovery facts at the response boundary, never to persisted run rows. */
@@ -2578,7 +2588,7 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     if (!run) return { ok: false, reason: "not_found", message: "No such workflow run" };
     const existingEvent = this.store.listEvents(run.id).find((event) =>
-      event.kind === "manual_infrastructure_retry" &&
+      (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry") &&
       event.payload &&
       !Array.isArray(event.payload) &&
       typeof event.payload === "object" &&
@@ -4977,8 +4987,20 @@ export class WorkflowManager {
     if (version?.resumptionPolicy !== "auto" || binding.deliveryMode !== "live"
         || binding.state !== "active" || submission.mode !== "full_workflow"
         || !session || session.state === "exited" || noteKeyFor(session) !== binding.noteKey
-        || binding.sessionCwd !== session.cwd || binding.sessionRepoRoot !== session.repoRoot
         || (binding.sessionAgent !== null && binding.sessionAgent !== session.agent)) return false;
+    // A secondary binding stores the reviewed worktree, not the conversation's cwd.
+    // Keep the conversation guard on its own binding, then verify the secondary against
+    // the current issued task checkout. A detached, released or reissued tree is not ours.
+    const conversation = binding.repoRoot ? this.store.activeBindingForNote(binding.noteKey) : binding;
+    if (!conversation || conversation.sessionId !== session.id
+        || conversation.sessionCwd !== session.cwd || conversation.sessionRepoRoot !== session.repoRoot
+        || (conversation.sessionAgent !== null && conversation.sessionAgent !== session.agent)) return false;
+    if (binding.repoRoot) {
+      const task = this.registry.taskForSession(session.id, session.cwd);
+      if (!task || task.sessionId !== session.id || binding.sessionRepoRoot !== binding.repoRoot
+          || !taskReposFor(task.id).some((repo) => repo.repoRoot === binding.repoRoot
+            && repo.worktreePath !== null && repo.worktreePath === binding.sessionCwd)) return false;
+    }
     // Action continuations and external artifacts own a different activation route. Never
     // turn a shipping capture into a new review from Session, or discard an expected HEAD.
     let current: WorkflowSubmission | null = submission;
@@ -6189,57 +6211,6 @@ export class WorkflowManager {
     return this.registry.promptResourceBlockerForSession(session.id);
   }
 
-  /**
-   * The delivery another of this conversation's reviews is still owed a turn for, or null
-   * when the pane is free.
-   *
-   * A multi-repo task's session runs one review per repository it changed, and they share one
-   * pane, one transcript and one turn. At most one may have a packet outstanding: two
-   * instructions typed into one conversation interleave into a turn neither expects, and the
-   * transcript anchor that proves a packet was picked up cannot say which of them the session
-   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
-   * contract is per run and is unchanged; this one is between runs, where serializing is the
-   * only available answer because the runs are genuinely independent reviews.
-   *
-   * A conversation with one active binding - every single-repo session - returns null from
-   * the first line and pays one indexed read, so nothing about its delivery path moves.
-   *
-   * What counts as outstanding is "the session still owes this packet a turn":
-   *
-   *  - `sending`: being typed right now, and the only truly concurrent case.
-   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
-   *    read and the action has not completed.
-   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
-   *    the agent is repairing that repository, and handing it a second repository's findings
-   *    mid-repair is the interleaving this exists to prevent.
-   *
-   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
-   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
-   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
-   */
-  private conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
-    const bindings = this.store.activeBindingsForNote(delivery.noteKey);
-    if (bindings.length < 2) return null;
-    for (const binding of bindings) {
-      const run = this.store.activeRunForBinding(binding.id);
-      if (!run || run.id === delivery.runId || runIsTerminal(run)) continue;
-      const latest = this.store.latestSubmission(run.id);
-      for (const other of this.store.listDeliveries(run.id)) {
-        if (other.state === "sending") return other;
-        if (other.state !== "delivered") continue;
-        if (other.kind === "session_action") {
-          const attempt = other.nodeAttemptId ? this.store.getAttempt(other.nodeAttemptId) : null;
-          if (attempt?.state === "waiting") return other;
-          continue;
-        }
-        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
-        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
-            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
-            && other.submissionId === latest?.id) return other;
-      }
-    }
-    return null;
-  }
 
   /**
    * Hold a packet behind the sibling review currently using the conversation's turn.
@@ -6376,7 +6347,7 @@ export class WorkflowManager {
     // AFTER the consent gate and before the first byte. A packet that is going to be refused
     // should be refused now rather than after waiting its turn, and a packet that is going to
     // be typed must not be typed while a sibling repository's review still owns the turn.
-    const hold = this.conversationDeliveryHold(delivery);
+    const hold = this.store.conversationDeliveryHold(delivery);
     if (hold) {
       this.queueDeliveryBehind(delivery, hold);
       return;
@@ -6651,6 +6622,7 @@ export class WorkflowManager {
         };
       }
       const frozenIntent = runRow.intent ?? null;
+      const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
       const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
@@ -6663,6 +6635,7 @@ export class WorkflowManager {
             binding.noteKey,
           ),
           frozenIntent,
+          version?.graph,
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
@@ -7071,7 +7044,6 @@ export class WorkflowManager {
       });
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
-      const version = this.store.getWorkflowVersionById(run.workflowVersionId);
       const shippingOnlyContinuation = submission.refinementReason === "session_action"
         && submission.continuationNodeId !== null
         && version !== null
@@ -7526,6 +7498,7 @@ export class WorkflowManager {
         this.store,
         getWorkflowPolicy().retention,
       );
+      this.options.commandArtifacts?.reconcile();
       reconcileWorkflowEvidenceFiles(this.store);
       this.orphanedEvidenceImages = workflowEvidenceOrphanCount(this.store);
       this.lastRetentionAt = Date.now();
@@ -7706,7 +7679,7 @@ export class WorkflowManager {
       parent = latest;
       const generation = this.store.workflowEvidenceGeneration(
         binding.noteKey,
-        binding.repoRoot || binding.sessionCwd || "",
+        binding.sessionCwd || "",
       );
       triggerKey = `evidence-preflight:${run.id}:${parent.id}:${generation}`;
     } else if (
@@ -7907,7 +7880,7 @@ export class WorkflowManager {
     if (!parsed.success) return null;
     probe.stagedImageGeneration = this.store.workflowEvidenceGeneration(
       binding.noteKey,
-      binding.repoRoot || binding.sessionCwd || "",
+      binding.sessionCwd || "",
     );
     return probeMatchesEvidence(probe, parsed.data.evidence);
   }

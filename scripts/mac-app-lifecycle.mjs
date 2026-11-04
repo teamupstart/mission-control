@@ -1,10 +1,12 @@
 // Shared by Electron and its detached updater. OS reads are bounded, read-only and
 // fail closed. Never print launchd environments or process command lines.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
+import { createHash } from "node:crypto";
+import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -17,9 +19,20 @@ export const LAUNCH_TIMEOUT_MS = 25_000;
  * that update's recovery. A caller that has a deadline passes what is left of it instead.
  */
 export const COMMAND_TIMEOUT_MS = 15_000;
+/**
+ * How long a WHOLE launch-conflict inspection may take when its caller has no deadline to give:
+ * the startup health check and the interactive preflight, both of which a person is waiting on.
+ * Sized above the sweep's real cost (see `inspectAppLaunches`) and well below a migration's own
+ * budget. A caller that owns a deadline passes what is left of it instead.
+ */
+export const LAUNCH_INSPECTION_TIMEOUT_MS = 60_000;
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const POLL_MS = 250;
 export const launchAckPath = (directory, nonce) => join(directory, `update-launch-${nonce}.json`);
+export function updateProgressRequestPath(directory, nonce) {
+  if (!/^[a-f0-9]{64}$/.test(nonce)) throw new Error('Invalid update progress identity');
+  return join(directory, `update-progress-${nonce}.json`);
+}
 
 export function realMacAppOps(directory) {
   return {
@@ -28,9 +41,15 @@ export function realMacAppOps(directory) {
     run: (command, args, timeout = COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
       const env = {...process.env};
       if (command === "/usr/bin/open") delete env.ELECTRON_RUN_AS_NODE;
-      execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024, env }, (error, stdout) => {
-        if (error && (typeof error.code !== "number" || error.killed)) {
-          reject(new Error("Could not inspect macOS launch state within the time limit."));
+      // `launchctl dumpstate` is the largest read: 6.5MB on a developer Mac with ~470 GUI jobs.
+      execFile(command, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", maxBuffer: 128 * 1024 * 1024, env }, (error, stdout) => {
+        if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+          reject(new Error(`macOS launch state was larger than this inspection reads (${basename(command)}).`));
+        } else if (error && (typeof error.code !== "number" || error.killed)) {
+          // Name the executable, never its arguments: `launchctl print gui/<uid>/<label>` and
+          // `lsregister -f <bundle>` carry a job label and a bundle path, and this message is
+          // written to update.log. The name is what tells one probe's timeout from another's.
+          reject(new Error(`Could not inspect macOS launch state within the time limit (${basename(command)}).`));
         } else resolve({code: error?.code ?? 0, stdout});
       });
     }),
@@ -51,8 +70,10 @@ async function read(ops, command, args, timeout) {
 
 export function parseAppProcesses(output) {
   return output.split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
     const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
-    return match ? [{pid: Number(match[1]), ppid: Number(match[2]), state: match[3], executable: match[4]}] : [];
+    if (!match) throw new Error("Could not inspect macOS bundle processes: incomplete process snapshot.");
+    return [{pid: Number(match[1]), ppid: Number(match[2]), state: match[3], executable: match[4]}];
   });
 }
 
@@ -270,11 +291,168 @@ export function jobLaunchesBundle(text, bundle) {
     .map((value) => ({value, expanded: false, operator: false})), bundle);
 }
 
+/**
+ * Every job in the user's GUI launchd domain, read from ONE `launchctl dumpstate`, or null when
+ * that dump cannot be proven complete.
+ *
+ * `dumpstate` prints each service in exactly the shape `launchctl print gui/<uid>/<label>`
+ * does, headed `gui/<uid>/<label> = {`, and launchd answers it from memory in a fraction of a
+ * second where ~470 serial prints took 4-31s. A null sends the caller back to printing each job.
+ *
+ * A block runs from its header to the next column-0 header, never to the first closing brace,
+ * because an argument with an embedded newline can print a `}` of its own at column 0. The same
+ * newline can print a line that LOOKS like a header, which would end a job early and hand the
+ * rest of its source - an `exec` of this bundle, say - to a section nobody reads. One dump holds
+ * every domain, so it is accepted only when the whole of it is accounted for:
+ *
+ * - every column-0 line is a header in launchd's own grammar (`system`, `<kind>/<id>` or a
+ *   service beneath one) or a bare `}`; launchd indents everything else with tabs;
+ * - no header appears twice;
+ * - launchd prints every service in one unbroken run directly after its own domain's block, so a
+ *   service header beneath any other domain - `pid/1/<x>` inside a GUI job, say - is refused;
+ * - every domain that states a service count holds exactly that many service blocks, and the
+ *   GUI domain's blocks are exactly the labels it lists.
+ *
+ * Together these bound every GUI job but one by the next GUI job's own header: a forged header
+ * of any kind inside it would interrupt the run. The run's LAST job is the exception, because a
+ * forged DOMAIN header after it reads like the next domain launchd prints. The caller therefore
+ * reads that one job with `launchctl print` rather than from the dump - see `readGuiJobs` - which
+ * is exactly the evidence the per-job fallback holds for every job. Map order is dump order.
+ */
+const DUMP_HEADER = /^(system|(?:gui|user|login|pid)\/\d+)(?:\/.+)? = \{$/;
+export function parseGuiJobs(dump, uid) {
+  const domain = `gui/${uid}`;
+  if (dump.split("\n").some((line) => line && !line.startsWith("\t") && line !== "}" && !DUMP_HEADER.test(line))) return null;
+  const sections = new Map();
+  const counted = new Map();
+  const headers = [...dump.matchAll(/^(\S.*) = \{$/gm)];
+  let current = null;
+  for (const [index, header] of headers.entries()) {
+    const name = header[1];
+    if (sections.has(name)) return null;
+    sections.set(name, dump.slice(header.index, headers[index + 1]?.index ?? dump.length));
+    const owner = DUMP_HEADER.exec(header[0])?.[1];
+    if (owner === name) { current = name; continue; }
+    if (owner !== current) return null;
+    counted.set(owner, (counted.get(owner) ?? 0) + 1);
+  }
+  for (const [name, text] of sections) {
+    if (DUMP_HEADER.exec(`${name} = {`)?.[1] !== name) continue; // a service, not a domain
+    const stated = /^\tservice count = (\d+)$/m.exec(text)?.[1];
+    if (stated !== undefined && Number(stated) !== (counted.get(name) ?? 0)) return null;
+  }
+  const summary = sections.get(domain);
+  if (!summary) return null;
+  const count = Number(/^\s*service count = (\d+)\s*$/m.exec(summary)?.[1] ?? NaN);
+  const listing = /^\s*services = \{\n([\s\S]*?)^\s*\}\s*$/m.exec(summary)?.[1];
+  if (!Number.isInteger(count) || listing === undefined) return null;
+  const listed = new Set();
+  for (const line of listing.split("\n")) {
+    if (!line.trim()) continue;
+    const label = /^\s*\S+\s+\S+\s*\t(.+)$/.exec(line)?.[1];
+    if (!label || listed.has(label)) return null;
+    listed.add(label);
+  }
+  const jobs = new Map();
+  for (const [name, text] of sections) if (name.startsWith(`${domain}/`)) jobs.set(name.slice(domain.length + 1), text);
+  if (listed.size !== count || jobs.size !== count || [...listed].some((label) => !jobs.has(label))) return null;
+  return jobs;
+}
+
+/**
+ * The fallback when `dumpstate` is unreadable: `launchctl list`, then one print per label. Its
+ * cost is the one recorded on `inspectAppLaunches`, and it is what every sweep paid before.
+ */
+async function printGuiJobs(ops, budget, evaluate) {
+  const listing = await read(ops, "/bin/launchctl", ["list"], budget());
+  if (!/^PID\s+Status\s+Label/m.test(listing)) throw new Error("Could not inspect the user launchd job list.");
+  const labels = listing.split("\n").flatMap((line) => {
+    const match = /^(?:\d+|-)\s+-?\d+\s+(.+)$/.exec(line);
+    return match ? [match[1]] : [];
+  });
+  // Bounded concurrency avoids serially paying one subprocess startup per login item.
+  let next = 0;
+  await Promise.all(Array.from({length: Math.min(8, labels.length)}, async () => {
+    while (next < labels.length) {
+      const label = labels[next++];
+      const printed = await printGuiJob(ops, label, budget());
+      if (printed !== null) evaluate(label, printed);
+    }
+  }));
+}
+
+/** A GUI job's `launchctl print`, or null when it left the domain mid-read. */
+async function printGuiJob(ops, label, timeout) {
+  const result = await ops.run("/bin/launchctl", ["print", `gui/${ops.uid}/${label}`], timeout);
+  // launchctl list includes inherited user-domain services, and jobs can exit mid-read.
+  if (result.code === 113) return null; // no service in this GUI domain
+  if (result.code !== 0) throw new Error("Could not inspect a GUI launchd job. Check launchctl before retrying.");
+  return result.stdout;
+}
+
+/**
+ * Evaluate every GUI job from one `dumpstate`, re-reading only the run's last job with `launchctl
+ * print` because nothing in the dump bounds it (see `parseGuiJobs`). Returns false, having
+ * evaluated nothing, when the dump is unreadable or unproven, so the caller prints each job.
+ */
+async function readGuiJobs(ops, budget, evaluate) {
+  let result;
+  const timeout = budget();
+  try { result = await ops.run("/bin/launchctl", ["dumpstate"], timeout); } catch { return false; }
+  const jobs = result.code === 0 ? parseGuiJobs(result.stdout, ops.uid) : null;
+  if (!jobs) return false;
+  const last = [...jobs.keys()].at(-1);
+  for (const [label, text] of jobs) if (label !== last) evaluate(label, text);
+  if (last !== undefined) {
+    const printed = await printGuiJob(ops, last, budget());
+    if (printed !== null) evaluate(last, printed);
+  }
+  return true;
+}
+
 // A probe gets whatever is left of its caller's deadline, never a smaller fixed slice. A probe
 // that runs out of time rejects rather than being retried, so a per-probe cap bought nothing but
 // an earlier failure: on a busy Mac one `ps` or `launchctl print` taking more than two seconds
 // failed the whole update and then its recovery, well inside the deadline the caller had set.
-export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 15_000) {
+//
+// That holds for the whole sweep, not only the probes inside it, so the budget is a parameter all
+// the way out to `assertSafeAppLaunch`.
+export async function inspectAppLaunch(
+  bundle,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  return (await inspectAppLaunches([bundle], ops, timeout))[0];
+}
+
+/**
+ * ONE launchd sweep, evaluated for every bundle in `bundles`, in order.
+ *
+ * The sweep is machine-wide: `launchctl list` plus one `launchctl print` per user launchd label,
+ * and nothing in it depends on which bundle is being asked about until the very last step, where
+ * each printed job is tested against a bundle path. So several bundles share one sweep, and
+ * every bundle still receives both checks - a respawn job that launches it, and a main process
+ * that is not a registered Foreground app - against a snapshot at least as fresh as a second,
+ * later sweep would have read.
+ *
+ * What a sweep costs, because it sets every deadline that guards one. This is the one place
+ * these numbers are recorded; callers say only why they need their own deadline. The jobs come
+ * from one `launchctl dumpstate` plus one print of its last GUI job (see `readGuiJobs`): about
+ * 0.14s for the dump of 468 GUI jobs on a Mac whose
+ * load average was 18, where printing them one at a time took 24s. The per-label fallback, and
+ * every sweep before the dump, costs what follows. launchd answers
+ * the prints essentially serially, so extra concurrency buys nothing (554 labels: 4.7s at 8-wide,
+ * 4.1-4.4s at 16, 32 and 64), and the cost is set by the host's label count, which this app does
+ * not control. On a developer Mac with ~550 labels one sweep took 4.1-5.3s idle and 19-31s under
+ * a concurrency-6 test suite, which is why a fixed 15s cap refused 20 of 25 loaded sweeps. A
+ * detached install used to run five sweeps - its parent-exit checkpoint asked about the source
+ * and the target separately, twice - and now runs three (2,855 probe calls down to 1,738).
+ */
+export async function inspectAppLaunches(
+  bundles,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
   const deadline = ops.now() + timeout;
   const budget = () => {
     const remaining = deadline - ops.now();
@@ -283,33 +461,22 @@ export async function inspectAppLaunch(bundle, ops = realMacAppOps(), timeout = 
   };
   const registrations = await apps(ops, budget());
   const running = await processes(ops, budget());
-  const listing = await read(ops, "/bin/launchctl", ["list"], budget());
-  if (!/^PID\s+Status\s+Label/m.test(listing)) throw new Error("Could not inspect the user launchd job list.");
-  const labels = listing.split("\n").flatMap((line) => {
-    const match = /^(?:\d+|-)\s+-?\d+\s+(.+)$/.exec(line);
-    return match ? [match[1]] : [];
-  });
-  const jobs = [];
-  // Bounded concurrency avoids serially paying one subprocess startup per login item.
-  let next = 0;
-  await Promise.all(Array.from({length: Math.min(8, labels.length)}, async () => {
-    while (next < labels.length) {
-      const label = labels[next++];
-      const result = await ops.run("/bin/launchctl", ["print", `gui/${ops.uid}/${label}`], budget());
-      // launchctl list includes inherited user-domain services, and jobs can exit mid-read.
-      if (result.code === 113) continue; // no service in this GUI domain
-      if (result.code !== 0) throw new Error("Could not inspect a GUI launchd job. Check launchctl before retrying.");
-      if (!jobLaunchesBundle(result.stdout, bundle)) continue;
-      const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1]);
-      const managed = /^\s*managed_by = com\.apple\.runningboard\s*$/m.test(result.stdout);
+  const jobs = bundles.map(() => []);
+  const evaluate = (label, text) => {
+    // Read once per job; only the bundle comparison below differs between bundles.
+    const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(text)?.[1]);
+    const managed = /^\s*managed_by = com\.apple\.runningboard\s*$/m.test(text);
+    for (const [index, bundle] of bundles.entries()) {
+      if (!jobLaunchesBundle(text, bundle)) continue;
       if (managed && registered(registrations, bundle, pid)) continue;
-      jobs.push(label);
+      jobs[index].push(label);
     }
-  }));
-  return {
-    jobs: jobs.sort(),
-    unregistered: running.filter((row) => isMain(row.executable, bundle) && !registered(registrations, bundle, row.pid)).map((row) => row.pid),
   };
+  if (!(await readGuiJobs(ops, budget, evaluate))) await printGuiJobs(ops, budget, evaluate);
+  return bundles.map((bundle, index) => ({
+    jobs: jobs[index].sort(),
+    unregistered: running.filter((row) => isMain(row.executable, bundle) && !registered(registrations, bundle, row.pid)).map((row) => row.pid),
+  }));
 }
 
 const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
@@ -327,9 +494,29 @@ export function launchConflictMessage(conflicts, uid) {
   return lines.length ? `${lines.join("\n")}\nNo launchd job was removed. Retry the update after resolving this launch conflict.` : null;
 }
 
-export async function assertSafeAppLaunch(bundle, ops = realMacAppOps()) {
-  const message = launchConflictMessage(await inspectAppLaunch(bundle, ops), ops.uid);
-  if (message) throw new Error(message);
+export async function assertSafeAppLaunch(
+  bundle,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  await assertSafeAppLaunches([bundle], ops, timeout);
+}
+
+/**
+ * `assertSafeAppLaunch` for several bundles from ONE sweep - see `inspectAppLaunches`.
+ *
+ * Refuses on the first bundle, in the order given, that has a conflict, which is the same
+ * refusal a run of sequential single-bundle checks would have raised first.
+ */
+export async function assertSafeAppLaunches(
+  bundles,
+  ops = realMacAppOps(),
+  timeout = LAUNCH_INSPECTION_TIMEOUT_MS,
+) {
+  for (const inspection of await inspectAppLaunches(bundles, ops, timeout)) {
+    const message = launchConflictMessage(inspection, ops.uid);
+    if (message) throw new Error(message);
+  }
 }
 
 async function poll(ops, timeout, check, message) {
@@ -344,13 +531,68 @@ async function poll(ops, timeout, check, message) {
   throw new Error(typeof message === "function" ? message() : message);
 }
 
-export async function waitForBundleExit(bundle, ops, timeout = 120_000) {
-  let remaining = [];
-  await poll(ops, timeout, async (budget) => {
-    remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
-    return remaining.length === 0;
-  }, () => `Mission Control bundle processes did not exit: ${remaining.map((row) => row.pid).join(", ")}. Close them before retrying; no further bundle replacement is safe while they remain.`);
+async function describeBundleHolder(row, bundle, ops) {
+  if (isMain(row.executable, bundle)) return `pid ${row.pid} (the Mission Control app is still running)`;
+  let args = "";
+  try {
+    const result = await ops.run("/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="], COMMAND_TIMEOUT_MS);
+    if (result.code === 0) args = result.stdout;
+  } catch { /* The executable still identifies a helper below. */ }
+  const orphaned = row.ppid === 1 ? " whose parent already exited" : "";
+  if (args.includes(CHECK_SUPERVISOR_MARKER)) return `pid ${row.pid} (a workflow check${orphaned} is still running)`;
+  return `pid ${row.pid} (${basename(row.executable)}${orphaned} is still running)`;
 }
+
+export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaiting, owners = []) {
+  let remaining = [];
+  const started = ops.now();
+  const signalled = new Map();
+  const ownerOf = (row) => {
+    const candidates = owners.filter((owner) => owner.pid === row.pid);
+    if (!candidates.length) return null;
+    const identity = ops.identity(row.pid);
+    if (!identity) return null;
+    const fingerprint = createHash('sha256').update(identity).digest('hex');
+    return candidates.find((owner) => owner.fingerprint === fingerprint);
+  };
+  const describe = (row) => `${row.pid} (${row.executable}; ${row.work}; parent ${row.ppid}; state ${row.state})`;
+  let timedOut = false;
+  try {
+    await poll(ops, timeout, async (budget) => {
+      remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
+      for (const row of remaining) {
+        const owner = ownerOf(row);
+        row.work = owner?.work ?? 'Mission Control bundle process; work ownership could not be verified';
+        // A captured exact identity, never an executable path or recycled PID, authorizes cleanup.
+        // Checks retain their group leader identity, so the signal also reaches branch children.
+        if (!owner || row.pid <= 1 || row.pid === process.pid || ops.now() - started < 5000) continue;
+        const signalKey = `${row.pid}:${owner.fingerprint}`;
+        const previous = signalled.get(signalKey);
+        if (previous?.signal === 'SIGKILL') continue;
+        const signal = previous ? 'SIGKILL' : 'SIGTERM';
+        if (previous && ops.now() - previous.at < 5000) continue;
+        if (ownerOf(row) !== owner) continue;
+        try {
+          ops.kill(owner.group ? -row.pid : row.pid, signal);
+          signalled.set(signalKey, {signal, at: ops.now()});
+        } catch { /* Reinspect exit/identity on the next poll; report a persistent blocker. */ }
+      }
+      if (remaining.length) onWaiting?.(`Waiting for background work to stop: ${remaining.map(describe).join(", ")}. Mission Control is cleaning up owned work and will reopen automatically.`);
+      return remaining.length === 0;
+    }, () => { timedOut = true; return "Mission Control bundle processes did not exit."; });
+  } catch (error) {
+    if (!timedOut || !remaining.length) throw error;
+    const named = remaining.slice(0, BUNDLE_HOLDERS_NAMED);
+    const holders = await Promise.all(named.map((row) => ownerOf(row)
+      ? `pid ${describe(row)}` : describeBundleHolder(row, bundle, ops)));
+    const more = remaining.length - named.length;
+    const unverified = named.some((row) => !ownerOf(row)) ? "; work ownership could not be verified" : "";
+    throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}${more ? `; and ${more} more` : ""}${unverified}. Mission Control will reopen the previous build automatically.`);
+  }
+}
+
+/** How many blocking processes a bundle-exit timeout describes by name. */
+export const BUNDLE_HOLDERS_NAMED = 3;
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
   await read(ops, LSREGISTER, ["-f", bundle], timeout);
@@ -387,4 +629,16 @@ export async function stopAttemptLaunch(bundle, nonce, ops) {
     for (const row of owned) if (ops.identity(row.pid) === row.identity) ops.kill(row.pid, "SIGKILL");
     await waitForBundleExit(bundle, ops, 5000);
   }
+}
+
+/** A separate OS process keeps progress visible without holding either app bundle open. */
+export function showUpdateProgress(message, launch = spawn, onHidden = () => {}) {
+  const child = launch("/usr/bin/osascript", ["-e", `on run argv
+    display dialog (item 1 of argv) with title "Updating Mission Control" buttons {"Hide"} default button "Hide"
+  end run`, message], {stdio: "ignore"});
+  // A missing GUI session must not turn presentation into a failed install.
+  child.on("error", () => {});
+  let closed = false;
+  child.once("exit", (code) => { if (!closed && code === 0) onHidden(); });
+  return () => { closed = true; child.kill(); };
 }

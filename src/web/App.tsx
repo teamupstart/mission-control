@@ -1,3 +1,4 @@
+import { taskHasRepository } from "@shared/task.ts";
 import { featureVisit, endFeatureVisit } from "./lib/experience.ts";
 import type { FeatureId } from "@shared/telemetry-sources/experience.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -28,12 +29,22 @@ import type {
   TranscriptScrollDistance,
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
+import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
+import {
+  LaunchFailureProvider,
+  LaunchFailureToasts,
+  ReportLaunchFailureDialog,
+  revealLaunchFailure,
+  type LaunchFailureControls,
+} from "./components/LaunchFailures.tsx";
+import { openLaunchFailureGroups } from "@shared/launch-failure.ts";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { CompleteModal } from "./components/CompleteModal.tsx";
+import { ResidentRestartPromptContext } from "./residents/restart-prompt.ts";
 import { KillModal } from "./components/KillModal.tsx";
 import { RequeueModal } from "./components/RequeueModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
@@ -89,7 +100,7 @@ import {
 } from "./lib/card-shortcuts.ts";
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
-import { collapsedColumnSessionIds } from "./lib/column-width.ts";
+import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
@@ -137,6 +148,8 @@ import { CommandLibrary } from "./workflows/CommandLibrary.tsx";
 import { WorkflowLibrary } from "./workflows/WorkflowLibrary.tsx";
 import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
+import { ResidentsPage } from "./residents/ResidentsPage.tsx";
+import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -321,6 +334,8 @@ export function App(): React.JSX.Element {
     archivesRevision,
     settingsRestoreNotice,
     schedules,
+    residentProfiles,
+    residentRuns,
     connected,
     hasSnapshot,
     sessionTransfers,
@@ -345,6 +360,7 @@ export function App(): React.JSX.Element {
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
+      : route.page === "residents" ? "residents"
       : route.kind === "pipelines" ? "pipelines" : "runs";
     featureVisit("page", JSON.stringify(route), feature);
   }, [route]);
@@ -505,6 +521,9 @@ export function App(): React.JSX.Element {
   // A one-shot request rather than lifted popover state: ForemanBar still owns its ordinary
   // toggle/close lifecycle, while the System profile can ask that existing control to open.
   const [foremanOpenRequest, setForemanOpenRequest] = useState(0);
+  // The same one-shot shape for the Residents dock beside it: its chord and its palette row.
+  const [residentsDockRequest, setResidentsDockRequest] = useState(0);
+  const openResidentsDock = useCallback(() => setResidentsDockRequest((n) => n + 1), []);
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The Recurring Missions overlay. `missionsTarget` carries an optional deep link from a
@@ -591,6 +610,8 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [completeSessionId, setCompleteSessionId] = useState<string | null>(null);
+  /** Set while the Complete dialog is Restart's offer, so it can say why it opened. */
+  const [restartPromptSessionId, setRestartPromptSessionId] = useState<string | null>(null);
   const [killSessionId, setKillSessionId] = useState<string | null>(null);
   const [requeueSessionId, setRequeueSessionId] = useState<string | null>(null);
   // The session the Return to backlog confirm was showing when it sent its request. Requeueing
@@ -820,7 +841,22 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const closeComplete = useCallback(() => setCompleteSessionId(null), []);
+  const closeComplete = useCallback(() => {
+    setCompleteSessionId(null);
+    setRestartPromptSessionId(null);
+  }, []);
+  /**
+   * Restart on new profile succeeded somewhere - a card menu, the band, the dock or the
+   * Residents page - and left the original task open. Offer to complete it now, with the
+   * ordinary Complete dialog over whatever page the operator is on; Cancel keeps it open, and
+   * the replaced session's band keeps the offer afterwards.
+   */
+  const promptRestartCompletion = useCallback((replacedTaskId: string) => {
+    const session = sessionsRef.current.find((candidate) => candidate.task?.id === replacedTaskId);
+    if (!session) return;
+    setRestartPromptSessionId(session.id);
+    setCompleteSessionId(session.id);
+  }, []);
   /**
    * Open the dispatch modal over a backlog task.
    *
@@ -832,6 +868,11 @@ export function App(): React.JSX.Element {
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
   const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
+  const openResidentLaunch = useCallback(
+    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
+    [],
+  );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
    * Ensemble mode on that strategy.
@@ -1007,7 +1048,7 @@ export function App(): React.JSX.Element {
     setSeeWorkTourBriefReady(false);
     const preferredRepo = run.sessionId
       ? sessions.find((session) => session.id === run.sessionId)?.repoRoot ?? null
-      : tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+      : tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setSeeWorkTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1070,7 +1111,7 @@ export function App(): React.JSX.Element {
       setWorkflowsTourRepoRoot(null);
       return;
     }
-    const preferredRepo = tasks.find((task) => task.repoRoot)?.repoRoot ?? null;
+    const preferredRepo = tasks.find((task) => taskHasRepository(task) && task.repoRoot)?.repoRoot ?? null;
     setWorkflowsTourRepoRoot(preferredRepo);
     if (preferredRepo) return;
     void fetchRepos().then((repos) => {
@@ -1613,6 +1654,9 @@ export function App(): React.JSX.Element {
         case "open-mission":
           onOpenSchedule(target.scheduleId);
           return;
+        case "residents-dock":
+          openResidentsDock();
+          return;
         default: {
           // Exhaustiveness: a new target kind fails to compile here rather than silently
           // doing nothing when its row is pressed.
@@ -1625,6 +1669,7 @@ export function App(): React.JSX.Element {
       navigate,
       openDispatch,
       openFeedback,
+      openResidentsDock,
       launchEnsemble,
       onOpenSchedule,
       paletteBindings,
@@ -1739,6 +1784,42 @@ export function App(): React.JSX.Element {
       if (layout === "board") setBoardOpen(true);
     },
     [navigate, layout],
+  );
+  // The failure a Report bug press is confirming, or null.
+  const [reportingLaunchFailure, setReportingLaunchFailure] = useState<Task | null>(null);
+  const launchFailureControls = useMemo<LaunchFailureControls>(
+    () => ({
+      tasks,
+      openReport: setReportingLaunchFailure,
+      launchResident: (profileId) => openResidentLaunch(profileId),
+      openProfile: (profileId) => navigate({ page: "residents", profileId }),
+      openSession: openSessionOnFleet,
+    }),
+    [tasks, openResidentLaunch, navigate, openSessionOnFleet],
+  );
+  // "Show" from a toast or the top bar: back to the fleet, then to the surface drawing it once
+  // that page has painted. The failure is drawn from the task row, so it is there to find.
+  const showLaunchFailure = useCallback(
+    (taskId: string): void => {
+      navigate({ page: "fleet" });
+      const afterPaint = (then: () => void): void => {
+        requestAnimationFrame(() => requestAnimationFrame(then));
+      };
+      // Drawn, but inert: a drilled-in session makes every other column inert, so close the
+      // drill-in. Not drawn: a folded Working column draws only its strip, so unfold it. Both can
+      // hold at once - a folded Working behind a drilled-in Idle session - so each fix is followed
+      // by another look, and there are at most two to make. A failure already on the drilled rail
+      // is shown on the first look, and the open session stays put.
+      const look = (fixesLeft: number): void => afterPaint(() => {
+        const seen = revealLaunchFailure(tasks, taskId);
+        if (seen === "shown" || layout !== "board" || fixesLeft === 0) return;
+        if (seen === "inert") setBoardOpen(false);
+        else setColumnWidth("working", "normal");
+        look(fixesLeft - 1);
+      });
+      look(2);
+    },
+    [navigate, tasks, layout],
   );
   /**
    * Run a Line stage click.
@@ -2121,12 +2202,25 @@ export function App(): React.JSX.Element {
   // arrays. Read from the same `useUiConfig` store BoardView and ConsoleView read it from, so
   // all three orderings agree by construction rather than by a prop being threaded correctly.
   const groupByRepo = useUiConfig().groupBoardByRepo;
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
+    [sessions, residentRuns, residentProfiles],
+  );
+  const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
+  const residentReplacementBySession = useMemo(
+    () => residentReplacementsBySession(sessions, tasks, residentRuns),
+    [sessions, tasks, residentRuns],
+  );
   const fleet = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const matched = q ? sessions.filter((s) => matchesSessionFilter(s, q)) : sessions;
-    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey);
-  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey]);
+    return orderSessions(matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents);
+  }, [sessions, filter, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents]);
   const visible = fleet.sessions;
+  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
 
   // Restoring rows are Board-only, but while they are visible there they obey the same
   // nav-bar filter contract as real session cards: title, displayed state, and agent. Keep
@@ -2154,6 +2248,12 @@ export function App(): React.JSX.Element {
   // is the answer to "did my dispatch land?", asked in the seconds after pressing Dispatch,
   // and a filter left over from browsing the fleet must not make the reply look like "no".
   const dispatchingTasks = useMemo(() => provisioningTasks(tasks), [tasks]);
+  // Dispatches that never started and have not been dismissed: the failed tiles, the Backlog
+  // and session-card notices, and the top bar's `did not start` count all read these groups.
+  const launchFailureGroups = useMemo(() => openLaunchFailureGroups(tasks), [tasks]);
+  // Any open failure keeps the layout mounted: on the Console rail every one of them is a row,
+  // and on the Board a returned one whose Backlog card is hidden becomes a tile.
+  const failedLaunchTiles = launchFailureGroups.length;
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
@@ -2212,12 +2312,13 @@ export function App(): React.JSX.Element {
       foldAttention({
         sessions,
         reviews: answerableReviews,
+        residentRuns,
         ensembles: ensembleSummaries,
         pipelineRuns,
         pipelineCommissions,
         tasks,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks],
+    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, residentRuns],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -2275,8 +2376,12 @@ export function App(): React.JSX.Element {
   // Board OVERVIEW: the Console rail has no columns to collapse, and once you drill in the
   // focused column is drawn as the rail in full whatever the overview had folded, so its rows
   // have to stay walkable there.
-  const collapsedColumns = useUiConfig().collapsedBoardColumns;
-  const hideCollapsedColumns = layout === "board" && !boardOpen && collapsedColumns.length > 0;
+  const { collapsedBoardColumns: collapsedColumns, boardSidebarAllSessions } = useUiConfig();
+  // A filter can hide the selected detail without clearing the saved drill-in intent.
+  // Navigation follows the overview that BoardView renders until a detail is visible again.
+  const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
+  const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   const foldedIds = useMemo(() => {
     const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
     if (!hideCollapsedColumns) return folded;
@@ -2636,7 +2741,6 @@ export function App(): React.JSX.Element {
   tourBindingsRef.current = tourBindings;
   const activeTourBinding = activeTour ? tourBindings[activeTour.tourId] : null;
 
-  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const visibleSelectedId = selected?.id ?? null;
   const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
   const completeSession = completeSessionId
@@ -2672,6 +2776,7 @@ export function App(): React.JSX.Element {
   const layoutHasContent =
     visible.length > 0 ||
     dispatchingTasks.length > 0 ||
+    failedLaunchTiles > 0 ||
     (layout === "board" && (visibleBacklog.length > 0 || visibleRestoringSessions.length > 0));
   const filterableSessionCount =
     sessions.length + (layout === "board" ? restoringSessions.length : 0);
@@ -2763,6 +2868,10 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    residentBySession,
+    residentReplacementBySession,
+    onFocusSession: focusSession,
+    onOpenResidentProfile: (profileId) => navigate({ page: "residents", profileId }),
   };
 
   // Drop selection / collapse / close the diff if the session disappears
@@ -3019,6 +3128,22 @@ export function App(): React.JSX.Element {
         navigate(shortcutTarget);
         return;
       }
+      // Residents is a route rather than a title-bar segment, with the same stand-downs.
+      if (
+        chord === bindings.residents && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        navigate({ page: "residents" });
+        return;
+      }
+      // The dock lives in the top bar on every page, so its chord works from every page too.
+      if (
+        chord === bindings.residentsDock && !typing && !renamingId && !overlaysRef.current.anyOpen
+      ) {
+        e.preventDefault();
+        openResidentsDock();
+        return;
+      }
 
       // Every page that is not the fleet owns its own keys - the Workflows editor, the
       // Settings rail and its Escape. Fleet shortcuts must not dispatch, select, or drive a
@@ -3255,7 +3380,7 @@ export function App(): React.JSX.Element {
             if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
-            mode: layout,
+            mode: allSessionsRail ? "console" : layout,
             key: e.key as ArrowKey,
             ids,
             currentId: selectedId,
@@ -3265,11 +3390,14 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console") focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.
-            if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
+            if (layout === "board" && !boardDetailOpen) {
+              setBoardOpen(false);
+              pendingTileFocus.current = nextId;
+            }
           }
           return;
         }
@@ -3520,7 +3648,7 @@ export function App(): React.JSX.Element {
     // every render. It is safe to close over because everything it reads that can go stale
     // - `navigate` and `layout` - is already a dependency here, so the copy this listener
     // holds is rebuilt whenever either of them moves.
-  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
+  }, [visible, foldedIds, selectedId, selected, consoleZone, boardOpen, boardDetailOpen, allSessionsRail, renamingId, bindings, layout, files.ensure, requestFilesTab, requestConversationTab, requestWorkflowsTab, showLauncherFocusError, openDiff, route.page, navigate, focusReaderRail, focusReaderBody, closeLineDrawer]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -3700,6 +3828,7 @@ export function App(): React.JSX.Element {
         )
         : (
           <LibraryPage
+            filter={filter}
             workflowSummaries={workflowSummaries}
             personas={personas}
             foremanSummary={{
@@ -3727,6 +3856,8 @@ export function App(): React.JSX.Element {
 
   return (
     <OverlayHost value={overlays}>
+      <LaunchFailureProvider value={launchFailureControls}>
+      <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
       <TourTargetHost
         registry={tourTargets}
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
@@ -3749,6 +3880,11 @@ export function App(): React.JSX.Element {
           working={counts.working}
           inbox={attention.total}
           onOpenInbox={() => setInboxOpen(true)}
+          didNotStart={launchFailureGroups.length}
+          onShowDidNotStart={() => {
+            const first = launchFailureGroups[0];
+            if (first) showLaunchFailure(first.tasks[0]!.id);
+          }}
           launcherFocusError={launcherFocusError}
           fleetCost={fleetCost}
           costView={cost.status?.config.view ?? "usd"}
@@ -3759,6 +3895,15 @@ export function App(): React.JSX.Element {
           foremanOpenRequest={foremanOpenRequest}
           onOpenModels={() => navigate({ page: "settings", category: "models" })}
           onOpenForemanSettings={() => navigate({ page: "settings", category: "foreman" })}
+          residents={{
+            runs: residentRuns,
+            profiles: residentProfiles,
+            sessions,
+            openRequest: residentsDockRequest,
+            onOpenSession: openSessionOnFleet,
+            onOpenLaunch: openResidentLaunch,
+            onManage: () => navigate({ page: "residents" }),
+          }}
           onOpenDispatch={openDispatch}
           dispatchRef={dispatchTourRef}
           onOpenFeedback={openFeedback}
@@ -3899,6 +4044,7 @@ export function App(): React.JSX.Element {
                     filters,
                   })}
                   onOpenSession={openSessionOnFleet}
+                  isOverlayOpen={isOverlayOpen}
                   // The worklist's "Open file" on a change that cites one, through the same
                   // reveal the diff's "Open in Files" uses, so one path opens one way.
                   onOpenSessionPath={openSessionPath}
@@ -3952,6 +4098,27 @@ export function App(): React.JSX.Element {
               />
             </ExecutionPage>
           )}
+          residents={route.page === "residents" ? (
+            <ResidentsPage
+              sessions={sessions}
+              runs={residentRuns}
+              profiles={residentProfiles}
+              personas={personas}
+              selectedId={route.profileId ?? null}
+              creating={route.creating === true}
+              skillSources={route.skillSources === true}
+              onSkillSources={() => navigate({ page: "residents", skillSources: true })}
+              mcpServers={route.mcpServers === true}
+              onMcpServers={() => navigate({ page: "residents", mcpServers: true })}
+              onSelect={(profileId) => navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onCreate={() => navigate({ page: "residents", creating: true })}
+              // Ungated: the page itself just settled the draft (saved, archived, discarded).
+              onSettle={(profileId) => replace(profileId ? { page: "residents", profileId } : { page: "residents" })}
+              onDirtyChange={setWorkflowDirty}
+              onLaunch={(profile) => openResidentLaunch(profile.id)}
+              onCreatePersona={() => navigate({ page: "library", shelf: "personas", creating: true })}
+            />
+          ) : null}
           scouts={
             // Mounted only when the route IS Scouts, like every other slot, so the archive
             // list and detail fetches never run while somebody is on the fleet. The page
@@ -4169,18 +4336,6 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        {completeSession && (
-          <CompleteModal
-            session={completeSession}
-            tasks={tasks}
-            tourOutcome={
-              completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
-            }
-            onCompleted={() => onKilled(completeSession.id)}
-            onClose={closeComplete}
-          />
-        )}
-
         {killSession && (
           <KillModal
             session={killSession}
@@ -4211,7 +4366,8 @@ export function App(): React.JSX.Element {
             the placeholder remains mounted even when there are no sessions yet. */}
         {sessions.length === 0 &&
           (layout !== "board" || restoringSessions.length === 0) &&
-          dispatchingTasks.length === 0 && (
+          dispatchingTasks.length === 0 &&
+          failedLaunchTiles === 0 && (
           hasSnapshot ? (
             <div className="empty">
               <p className="empty-title">No agent sessions detected</p>
@@ -4268,6 +4424,22 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
+              {/* In the slot every page shares: Restart on new profile offers it from the
+                  Residents page and the dock as well as the fleet. */}
+              {completeSession && (
+                <CompleteModal
+                  session={completeSession}
+                  tasks={tasks}
+                  tourOutcome={
+                    completeSession.task?.id === seeWorkTourTaskId ? "Tour demo" : undefined
+                  }
+                  lead={restartPromptSessionId === completeSession.id
+                    ? "Restart ended this session's run and is moving the resident to its new profile revision. This session stays open: complete it now, or cancel to keep it - its band keeps this offer."
+                    : undefined}
+                  onCompleted={() => onKilled(completeSession.id)}
+                  onClose={closeComplete}
+                />
+              )}
               {/* The everything-palette lives in the slot every page shares, because it
                   indexes every page: it opens over the fleet, the Library, a run reader and
                   Settings alike, and a row's navigation must not unmount the surface that
@@ -4311,6 +4483,14 @@ export function App(): React.JSX.Element {
                     delete document.documentElement.dataset.mcTourReview;
                     setReviewSessionId(null);
                   }}
+                  // "Chat about it": the conversation is the next stop, so close the modal even
+                  // with other reviews still pending, and land in the session's message box.
+                  onMovedToChat={(sessionId) => {
+                    delete document.documentElement.dataset.mcTourReview;
+                    setReviewSessionId(null);
+                    focusSession(sessionId);
+                    requestComposerFocus(sessionId);
+                  }}
                 />
               )}
 
@@ -4334,6 +4514,9 @@ export function App(): React.JSX.Element {
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
                 onEnsembleLaunched={openEnsembleRun}
+                residentProfiles={residentProfiles}
+                onEditResidentProfile={(profileId) =>
+                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
               />
 
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
@@ -4447,7 +4630,7 @@ export function App(): React.JSX.Element {
             request={{
               title: "Leave with unsaved changes",
               body:
-                "The workflow or Persona open in the editor has changes that have not been "
+                "The workflow, Persona or resident profile open in the editor has changes that have not been "
                 + "saved. Leaving this page discards them.",
               confirmLabel: "Discard and leave",
               confirmHint: "Throw the unsaved edits away and go to the page you asked for",
@@ -4457,8 +4640,22 @@ export function App(): React.JSX.Element {
             onClose={cancelPending}
           />
         )}
+        {reportingLaunchFailure && (
+          <ReportLaunchFailureDialog
+            task={reportingLaunchFailure}
+            onClose={() => setReportingLaunchFailure(null)}
+          />
+        )}
+        <LaunchFailureToasts
+          tasks={tasks}
+          ready={hasSnapshot}
+          onShow={showLaunchFailure}
+          onReport={setReportingLaunchFailure}
+        />
       </div>
       </TourTargetHost>
+      </ResidentRestartPromptContext.Provider>
+      </LaunchFailureProvider>
     </OverlayHost>
   );
 }

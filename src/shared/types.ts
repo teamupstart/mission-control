@@ -9,6 +9,8 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // Same type-only, cycle-free relationship: `schedules.ts` reads `AgentType`, `TaskKind`,
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
+import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
+import type { TaskLaunchFailure } from "./launch-failure.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -246,6 +248,15 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
+ * A per-task advisor override for a Claude dispatch: the model aliases Claude Code's
+ * `advisorModel` setting accepts, plus `off`, which disables the advisor tool outright.
+ * Inherit is not a value here - it is `null` on the task, and the launch renders nothing.
+ * Fable is deliberately absent; see `docs/dispatch-and-backlog.md#advisor`.
+ */
+export const ADVISOR_CHOICES = ["opus", "sonnet", "off"] as const;
+export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
+
+/**
  * A harness's live permission posture.
  *
  * The first six values are Claude's exact hook/footer strings. The remaining four
@@ -304,6 +315,15 @@ export interface SessionMeta {
   source: MetaSource;
   /** epoch ms these values were observed (drives precedence + freshness TTL). */
   updatedAt: number;
+  /**
+   * Raw id of the advisor model named by the newest eligible main-chain assistant record in
+   * the transcript (its top-level `advisorModel`), e.g. `claude-opus-5-5`. Sidechain and
+   * API-error records are not eligible. Absent when that newest record is unstamped, even if
+   * an older stamped turn is still in the scanned tail, and absent when no eligible record is
+   * in the tail. Only the transcript reports it, so a statusLine reading keeps the last
+   * transcript value.
+   */
+  advisorModel?: string | null;
 }
 
 /** Which estimator produced the API-equivalent dollar figure. */
@@ -1906,7 +1926,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document", "resident"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 
@@ -2058,6 +2078,21 @@ export const TASK_WORKTREE_RETENTION_DAYS = 30;
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
 
 /**
+ * A resident task whose run Restart on new profile ended, while the task itself is still open.
+ *
+ * Restart leaves completing the replaced session to the operator, so the Console keeps offering
+ * Complete until the task is done - whatever happened to the replacement since. Derived on read
+ * from the resident runs (the ended run's restart pause and the replacement its request id
+ * names), never stored on the `tasks` row, and absent once the task is terminal.
+ */
+export interface TaskResidentRestart {
+  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
+  replacementTaskId: string | null;
+  /** The profile revision the replacement pinned; null with no replacement. */
+  revision: number | null;
+}
+
+/**
  * What automatic worktree cleanup has to say about this task, or null when it has nothing.
  *
  * Null in every ordinary case: a task with no checkout, a checkout inside its 30-day window,
@@ -2083,6 +2118,8 @@ export interface TaskAutomaticCleanup {
 }
 
 export interface Task {
+  /** Null or absent on historical tasks means a Git checkout. */
+  workspaceKind?: "resident-workspace" | null;
   id: string;
   /** Short label - source of the terminal home name slug and the card title. */
   title: string;
@@ -2165,6 +2202,12 @@ export interface Task {
    */
   effort: ThinkingLevel | null;
   /**
+   * Advisor override for this task, or null to inherit whatever the operator's Claude
+   * Code settings say. Unlike `model` and `effort` there is no Mission Control default
+   * to resolve: null renders nothing at launch, so the CLI's own settings decide.
+   */
+  advisorModel: AdvisorChoice | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until
@@ -2199,9 +2242,9 @@ export interface Task {
    * this path belongs to the Pipeline provider and is only a Files and Diff projection.
    */
   pipelineWorkspacePath?: string | null;
-  /** Absolute path of the source repo the worktree is cut from. */
+  /** Source repository, or the run cwd when taskHasRepository is false. */
   repoRoot: string;
-  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
+  /** Isolated Git worktree (realpath). Null before provisioning and for repo-less residents. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
@@ -2303,6 +2346,18 @@ export interface Task {
   /** Failure reason, including one carried by a backlog task that is safe to retry. */
   error: string | null;
   /**
+   * Set by the dispatcher when this attempt failed before its session started, and cleared
+   * when the task is dispatched again. Absent or null on every other task, including one
+   * whose session ran and was later lost. See `@shared/launch-failure.ts`.
+   */
+  launchFailure?: TaskLaunchFailure | null;
+  /**
+   * Set on a Report bug session: the failed task it was started to report. The session's own
+   * identity, persisted on it, so a report session that itself fails to start never offers a
+   * Report bug of its own - whatever has happened to the failure that started it since.
+   */
+  launchReportFor?: string | null;
+  /**
    * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.
    *
    * Derived from the retention ledger every time the task is loaded or refreshed, so it rides
@@ -2311,6 +2366,11 @@ export interface Task {
    * FAILED are the task's own record, and a maintenance note must never overwrite either.
    */
   automaticCleanup: TaskAutomaticCleanup | null;
+  /**
+   * Set while this resident task's run was ended by Restart on new profile and the task is still
+   * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
+   */
+  residentRestart?: TaskResidentRestart | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2354,6 +2414,7 @@ export interface BacklogPlan {
 
 /** Compact task view denormalized onto a Session card. */
 export interface TaskSummary {
+  workspaceKind?: Task["workspaceKind"];
   planPolicy?: ManagedPlanPolicy | null;
   planInputs?: TaskPlanInput[];
   id: string;
@@ -2537,6 +2598,22 @@ export interface PlanDecisionAnswer {
   selected: string[];
   /** What was typed into "Other", when the decision allowed it and the human used it. */
   other: string | null;
+  /**
+   * An optional note to the agent typed beside the selection, on a `plan-decisions` form.
+   *
+   * Separate from `other` because it qualifies a choice rather than replacing one: "Other"
+   * is an answer outside the options, a note is instructions that travel with whichever
+   * option was taken. It never answers a decision on its own. Optional because rows written
+   * before it, and every answer a form without the note box produces, simply lack it.
+   */
+  note?: string | null;
+  /**
+   * The human moved this question to the conversation instead of answering it ("Chat about
+   * it"). It counts as answered for the form, with `selected` empty and `other` null, and
+   * the agent is told to discuss it rather than decide it. Absent on every other answer,
+   * so rows written before it read exactly as they did.
+   */
+  chat?: boolean;
 }
 
 export interface ReviewItem {
@@ -3092,6 +3169,21 @@ export type ServerEvent =
        */
       schedules: MissionSchedule[];
       /**
+       * Live resident profiles, each with its current revision. Bounded by
+       * `RESIDENT_LIMITS.liveProfiles` (200): creation past it is refused, so the collection
+       * is never truncated. Archived profiles leave through `resident_profile_remove`.
+       * Optional so a snapshot from a build that predates residents still parses.
+       */
+      residentProfiles?: ResidentProfile[];
+      /**
+       * Live resident runs - launched or still launching, never ended or failed - each with
+       * its pinned revision's settings, so the board joins a session to its run (marker,
+       * label, pin) through its task id. Bounded by the residents actually running: a run
+       * leaves through `resident_run_remove` when it ends. Optional so a snapshot from a
+       * build that predates the collection still parses.
+       */
+      residentRuns?: ResidentRunSummary[];
+      /**
        * Every pipeline run the daemon is projecting, for the repositories an operator has
        * consented to. EMPTY on every fleet with no pipeline provider enabled, which is the
        * shipped state - so this collection costs an ordinary installation one `[]`.
@@ -3215,6 +3307,19 @@ export type ServerEvent =
    */
   | { type: "schedule_upsert"; schedule: MissionSchedule }
   | { type: "schedule_remove"; id: string }
+  /**
+   * A resident profile was created, edited, or restored - carrying the whole profile with its
+   * current revision, so a browser never fetches to reconcile. `resident_profile_remove`
+   * fires on archive, after the durable write.
+   */
+  | { type: "resident_profile_upsert"; profile: ResidentProfile }
+  | { type: "resident_profile_remove"; id: string }
+  /**
+   * A resident run was reserved or settled its launch. Carries the whole live summary.
+   * `resident_run_remove` fires when the run ends or its launch failed, after the write.
+   */
+  | { type: "resident_run_upsert"; run: ResidentRunSummary }
+  | { type: "resident_run_remove"; id: string }
   /**
    * A pipeline run's projection moved - a step changed state, a gate answered, the engine
    * halted, or the run appeared for the first time. Carries the WHOLE run, like
@@ -3401,6 +3506,26 @@ export interface TranscriptMessage {
    * on it.
    */
   presentation?: TranscriptPresentation;
+  /**
+   * One call to Claude's server-side advisor, when this assistant turn carries its result.
+   *
+   * Read from the `advisor_tool_result` content block Claude Code writes after a
+   * `server_tool_use` block named `advisor`. The call marker itself carries nothing to draw,
+   * so only the result produces this field. `model` is the record's top-level
+   * `advisorModel` (a full model id such as `claude-opus-5-5`), or null when the record
+   * does not name one. `text` is present only for an `advisor_result` that carries text;
+   * a redacted result is encrypted and has none. `errorCode` is the API's `error_code`.
+   * A result shape Claude Code does not recognise is ignored, as the CLI ignores it.
+   */
+  advisor?: TranscriptAdvisor;
+}
+
+/** What an advisor call produced, as `TranscriptMessage.advisor` reports it. */
+export interface TranscriptAdvisor {
+  model: string | null;
+  outcome: "advised" | "redacted" | "declined" | "error";
+  text?: string;
+  errorCode?: string;
 }
 
 /**
@@ -3420,7 +3545,7 @@ export interface TranscriptMessage {
  * log rather than drawn as platform instructions or invented prose.
  */
 export type TranscriptPresentation = {
-  kind: "launch";
+  kind: "launch" | "resident";
   displayText: string | null;
 };
 
@@ -3432,7 +3557,7 @@ export type TranscriptPresentation = {
  * The transcript file records all of them exactly as it records a person's typing, so without this the log credits the human
  * with instructions they never wrote - and hides the machinery doing its job.
  */
-export type TurnOrigin = "foreman" | "harness" | "workflow" | "session";
+export type TurnOrigin = "foreman" | "harness" | "workflow" | "session" | "resident";
 
 /** The session that typed a delegated turn: its id, and its name when the turn was sent. */
 export interface TurnOriginSession {

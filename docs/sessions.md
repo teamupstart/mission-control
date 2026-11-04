@@ -936,6 +936,8 @@ it does not change dispatch defaults. Until the conversation reports the selecte
 the badge marks it **selected**, including while runtime metadata is absent. Claude's `[1m]`
 context marker does not make an otherwise matching model pending. A response already underway
 can still report its previous model; rebinding does not replace the saved selection.
+Claude also retains an accepted model selection when authentication recovery replaces its
+subprocess and resumes the conversation, instead of replaying the original launch model.
 If the driver refuses the change, the dropdown shows the error and keeps the previous
 selection. If saving an accepted change fails, Mission Control restores the previously saved model,
 including after repeated failed attempts.
@@ -1610,7 +1612,7 @@ reason: its hook delivery is the first arrival and so is the capture.
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
-restart are all typed into the session exactly the way you type, and the agent reports each
+restart, and resident loop wakes are all typed into the session exactly the way you type, and the agent reports each
 one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
 arrivals are recognized and discarded rather than captured. Without that rule a
 completion-review packet became the session's ask, was frozen onto the next workflow run, and
@@ -1628,6 +1630,10 @@ the session, it is heard and the Goal moves. The conversation log still credits 
 originally typed each turn; only the recognition is used up. Recognition is also in-memory, so
 a daemon restart landing between a delivery and its echo lets that single turn through as
 though you had typed it.
+
+Resident wake turns carry the `resident` origin. The conversation displays the loop prompt
+without its delivery marker; the native transcript retains that marker for crash reconciliation.
+Human and compaction turns are not resident iterations. See [the resident loop](residents.md#the-persistent-loop).
 
 Each reconciliation records one of five relationships:
 
@@ -1963,6 +1969,10 @@ at any time; subsequent reads and actions refuse immediately. An action already 
 may finish. The grant lasts only for the current conversation, task and work episode in this
 daemon run. A reset, replacement conversation, different task, session removal or Mission
 Control restart requires another explicit opt-in. There is no global, dispatch or task default.
+The one exception is a [resident](residents.md#session-control) whose profile turns
+**Control other sessions** on: launched with a click in the desktop app, its run gets the grant,
+and the grant survives a restart only when the conversation, task, working directory and work
+episode all still match.
 
 Changing this setting requires a real desktop click. Browser dashboards show the menu's options disabled.
 The adjacent **Conversation view** icon menu lets you choose **Chat** or **Terminal** for this session.
@@ -2075,10 +2085,13 @@ review request.
 
 The MCP tools are:
 
-- `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices or
-  dismisses that decision set without an answer
+  dismisses that decision set without an answer. Every decision also has an optional note
+  box, so the human can pick an option and send instructions with it; a note returns to the
+  agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
+  an empty `decisions` list to show a plan for approval with no open choices. Any decision
+  can be [moved to chat](#chat-about-it) instead of answered
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2116,15 +2129,12 @@ The MCP tools are:
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer
-- `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
-  the session to report Mission Control feedback, publishes a public GitHub issue automatically
-  and returns its URL without a second dashboard approval. The tool prepares the daemon preview
-  and submits the same bounded draft, with the daemon choosing the destination and labels.
-  Both MCP tools inherit the dashboard report schema and use its `ProductIssueService` for
-  issue formatting, destination, labels, attachments, and publication. Only caller attribution
-  and approval differ. Include only public-safe content. Screenshot limits and retry guidance
-  match the tool below.
+  can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
+  card could not carry is refused
+  before anything is shown: an empty question, an option with an empty label, or two options
+  with the same label (compared ignoring case and surrounding spaces), since the answer
+  comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
+  nothing waits on the human
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -2221,9 +2231,9 @@ how you were asked:
 
 | You answered | The entry shows |
 |---|---|
-| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** |
+| **A question with options** (`request_input` with `options`, or `request_plan_decisions`) | the question replayed as a form - every option it offered, with the one(s) you took marked - plus any free-text **Other** and any **Note** you added |
 | **A direct-text question** (`request_input` with no options) | the text you submitted |
-| **A diff or plan** (`request_review`, `share_plan`) | what you did - approved, or requested changes - and the note you left, if any |
+| **A diff** (`request_review`) | what you did - approved, or requested changes - and the note you left, if any |
 | **A dismissal** | that you closed it without choosing, and nothing more |
 
 It is a record, not a control: nothing on it can be clicked, and a resolved review cannot be
@@ -2254,6 +2264,27 @@ the first is evidence of your intent.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+#### Chat about it
+
+Every question with options, on a `request_plan_decisions` card or an option-carrying
+`request_input` card, has a **Chat about it** row below the agent's options. An open-ended
+`request_input`, which has no options, has a **Chat about it** button beside **Send answer**
+instead. Use it when you need more context before choosing. A moved question
+counts as answered, so you can still pick options for the others; Submit then reads
+**Submit & chat (N)**, and a form with several questions also offers **Chat about all**. Picking
+the row clears that question's options, and picking an option takes it back out of chat. A note
+typed beside a moved question, or text already in an open-ended answer box, goes along as what
+is unclear.
+
+Submitting resolves the review as answered, so the agent unblocks with one tool result: the
+real answers, `→ Chat about it` under each moved question, and an instruction not to decide the
+moved questions or ask them again, to act on the other answers only where they stand alone, and
+to explain each moved question in its next message before ending its turn. The dialog closes
+and the cursor lands in the session's message box. The conversation's record of the answer
+marks each moved question **Moved to chat** rather than **No option chosen**. The structured
+answer carries `chat: true` on each moved decision. A product-issue confirmation moved to chat
+publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 

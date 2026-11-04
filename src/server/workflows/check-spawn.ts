@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
+import { CHECK_SUPERVISOR_MARKER, resolveOwnedRuntime } from "@shared/owned-runtime.mjs";
 import { currentOwnedRuntime } from "../owned-runtime.ts";
 import type { Socket } from "node:net";
 import { WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
@@ -43,6 +43,8 @@ export interface CheckSupervisorIdentity {
 }
 
 export interface CheckSpawnRequest {
+  /** The owning workflow engine is draining for shutdown. */
+  signal?: AbortSignal;
   /**
    * The attempt this check belongs to. Passed to the shim as an argument so the supervisor's
    * COMMAND LINE is unique to one attempt - the half of the start identity that a whole-second
@@ -58,6 +60,8 @@ export interface CheckSpawnRequest {
   timeoutMs: number;
   /** Defaults to `WORKFLOW_EXECUTION_LIMITS.checkOutput`; there is no second output bound. */
   maxOutputBytes?: number;
+  /** Optional attempt-owned retained body sink. It never controls process lifetime. */
+  capture?: { push(kind: "stdout" | "stderr", chunk: Buffer): void };
   /** How long the shim gets to report readiness before the attempt is abandoned. */
   readyMs?: number;
   teardown?: CheckGroupTeardownOptions;
@@ -130,8 +134,13 @@ const DRAIN_MS = 2_000;
  * Written in plain CommonJS ES5-ish JavaScript because it runs under `node -e` with no loader,
  * and with no backslash escapes at all - it lives inside a template literal, where an escape
  * means something to the OUTER file first.
+ *
+ * **Its first line is `CHECK_SUPERVISOR_MARKER`.** In a packaged app the owned runtime is an
+ * executable inside the app bundle, so a supervisor that outlives its daemon keeps the bundle
+ * busy and an in-place update cannot proceed. The update helper recognises this marker in a
+ * lingering process's command line, without printing it, so its outcome can name the cause.
  */
-const SHIM = `
+const SHIM = `// ${CHECK_SUPERVISOR_MARKER}
 const net = require("node:net");
 const cp = require("node:child_process");
 const NL = String.fromCharCode(10);
@@ -143,6 +152,11 @@ const report = new net.Socket({ fd: 4 });
 gate.on("error", function () {});
 report.on("error", function () {});
 let released = false;
+// The private report pipe is the owner's lifetime. A crashed/killed utility process cannot
+// run its exit hook. Tear down our own group on EOF, including an in-flight command.
+// The shim is still the group leader here, so no persisted PID or identity guess is involved.
+report.on("end", function () { process.kill(-process.pid, "SIGKILL"); });
+report.on("close", function () { process.kill(-process.pid, "SIGKILL"); });
 function say(o) {
   try { report.write(JSON.stringify(o) + NL); } catch (e) {}
 }
@@ -345,8 +359,14 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
   const report = child.stdio[4] as Socket;
   gate.on("error", () => {});
   report.on("error", () => {});
-  child.stdout?.on("data", (chunk: Buffer) => ring.push(chunk));
-  child.stderr?.on("data", (chunk: Buffer) => ring.push(chunk));
+  child.stdout?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stdout", chunk);
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    ring.push(chunk);
+    request.capture?.push("stderr", chunk);
+  });
 
   let supervisor: CheckSupervisorIdentity | null = null;
   let failure: CheckExecutionResult | null = null;
@@ -488,6 +508,10 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       );
       return;
     }
+    if (request.signal?.aborted) {
+      abortBeforeRelease("check interrupted because Mission Control is shutting down");
+      return;
+    }
     const ready: CheckSupervisorIdentity = { pid, identity };
     try {
       request.onSupervisorReady?.(ready);
@@ -500,7 +524,9 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     }
     // Only now is there a durable owner, and only now may branch code run.
     supervisor = ready;
-    watchCheckGroup(pid, identity);
+    watchCheckGroup(pid, identity, () => {
+      failure = infrastructure("check interrupted because Mission Control is shutting down");
+    });
     gate.write("G");
   }
 

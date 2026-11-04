@@ -224,6 +224,32 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
 });
 
+for (const mismatch of ['parent', 'directory']) test(`legacy ownership refuses a snapshot for another ${mismatch} before acknowledgment or bundle cleanup`, async (t) => {
+  const state = await realpath(await mkdtemp(join(tmpdir(), 'mission-legacy-owner-')));
+  t.after(() => rm(state, {recursive: true, force: true}));
+  const attemptDirectory = join(state, 'attempt');
+  await mkdir(attemptDirectory);
+  await writeFile(join(attemptDirectory, 'owner.json'), JSON.stringify({
+    protocol: 1, nonce: 'a'.repeat(64),
+    path: mismatch === 'directory' ? join(state, 'another-attempt') : attemptDirectory,
+    parent: {pid: mismatch === 'parent' ? 99 : 42, identity: 'captured-parent'},
+    processOwners: [{pid: 43, fingerprint: 'b'.repeat(64), group: false, work: 'another owner'}],
+  }));
+  const f = operations();
+  let ownershipLoaded = false;
+  let waited = false;
+  const result = await runApplyUpdate({...args(state), attemptDirectory}, {...f.ops,
+    setProcessOwners: () => { ownershipLoaded = true; },
+    waitForBundle: async () => { waited = true; },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.message!, /helper ownership changed/);
+  assert.equal(ownershipLoaded, false);
+  assert.equal(waited, false);
+  assert.equal((await readdir(attemptDirectory)).includes('ready.json'), false);
+  assert.equal(f.actions.some(action => action.startsWith('install:')), false);
+});
+
 test("a stable upgrade from a legacy bundle succeeds when the new app has commit metadata", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "mission-stable-legacy-helper-"));
   t.after(() => rm(state, { recursive: true, force: true }));

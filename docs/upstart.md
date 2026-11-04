@@ -11,6 +11,10 @@ the full comparison and the boundaries this section summarizes.
 **Nothing here is required to run Mission Control**, and a machine without UpstartClaw
 installed behaves exactly as the rest of this README describes.
 
+For Upstart Jira without daemon environment variables, use **Atlassian CLI (acli)** with
+its own OAuth login. See [Jira task sources](dispatch-and-backlog.md#jira) for setup and
+supported behavior.
+
 Jira task sources can also select **UpstartClaw Claude skill** as their query method. That
 background path invokes `upstartclaw-core:working-with-jira`, discovers the Atlassian JQL search
 tool, and calls it directly with the stored JQL. It is read-only, limited to Upstart Jira, and
@@ -195,6 +199,13 @@ branches, repository or pull request URLs, terminal output, names, hostnames or 
 [What travels, and what never does](observability.md#what-travels-and-what-never-does). The
 gateway also copies metrics to a second metrics destination run by the gateway's owners. That is
 the gateway owners' policy, not something Mission Control controls.
+
+**Agent traces join the session's trace.** Upstart's device management also sends Claude
+Code's and Codex's own telemetry straight to the same gateway. When this lane is sending, an
+embedded (Agent SDK) Claude or Codex session is launched with a `TRACEPARENT` naming its
+`mission.session.start` span as exported here, so the agent's spans appear as children of that
+span in Datadog. Mission Control sets nothing else about the agents' telemetry. See
+[Trace context for embedded agents](observability.md#trace-context-for-embedded-agents).
 
 **Default-on and withdrawal.** The pilot enrollment route now answers 409; it cannot switch
 the managed destination off. If the Mac later leaves Upstart's device

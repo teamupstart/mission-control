@@ -177,8 +177,9 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/teamupstart/mi
 The binary bootstrap downloads a canonical signed DMG and ready manifest, verifies them with
 native macOS tools, and uses a private copy of the app's embedded runtime for installation.
 It requires macOS 12+ on Apple Silicon and authenticated native `gh`, without host Node, npm,
-npx, Git or build tools. Signed publication and clean-account qualification are still pending;
-an unavailable binary is refused. See [binary recovery and enrollment](desktop-and-packaging.md#binary-installation-and-manual-recovery).
+npx, Git or build tools. Clean-account qualification is still pending. Without `--ref` it
+installs the newest release with a ready binary, never one still publishing, and installs the
+newest alpha while no stable release has one; an unavailable pinned binary is refused. See [binary recovery and enrollment](desktop-and-packaging.md#binary-installation-and-manual-recovery).
 Quit the existing app before replacement. Reruns preserve its state and recorded destination.
 Bash installs into `~/Applications` by default on a new installation. Reruns preserve an
 existing receipt's system, personal, or custom destination. Pass `--scope user`,

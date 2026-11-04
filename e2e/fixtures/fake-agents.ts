@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeNativeTerminalProbe } from "./native-terminal-probes.ts";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
   PRODUCT_ISSUE_STATUS_LABEL,
@@ -40,6 +41,7 @@ export interface FakeAgents {
     keepAwake: string;
     gh: string;
     jira: string;
+    acli: string;
   };
 }
 
@@ -107,6 +109,7 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
 export interface FakePullRequest {
   headRefName?: string;
   reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  issueComments?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
   reviewError?: boolean;
   /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
   cwd: string;
@@ -263,33 +266,13 @@ export function writeGhWritebackScript(home: string, script: FakeGhWritebackScri
  * command the workspace would run, which is where a resumed conversation's argv - and the
  * permission mode it must carry - either shows up or provably does not.
  *
- * CommonJS `require`, deliberately: the file is extension-less, which Node treats as CJS,
- * and an `import` here would crash the fake at spawn time in a way that reads as a
- * launch failure rather than a broken fixture.
+ * The runtime is explicit CommonJS. Its extension-less shell entry answers native health
+ * probes without booting Node, then execs this runtime for recorded terminal commands.
  */
 const FAKE_CMUX = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const argv = process.argv.slice(2);
-
-// Answered BEFORE the record is written, and deliberately not recorded. Setup probes the
-// control socket every time the panel is read, so recording this would turn "how many
-// commands did a click run" - which several specs count - into a function of how often a
-// browser looked at a page. \`MC_E2E_CMUX_CONTROL\` reproduces the two states that stand
-// between an installed cmux and a working one, in cmux's own words.
-if (argv[0] === "capabilities") {
-  const control = process.env.MC_E2E_CMUX_CONTROL;
-  if (control === "stopped") {
-    process.stderr.write("Error: Socket not found at " + join(process.env.MISSION_HOME || "/tmp", "cmux.sock") + "\\n");
-    process.exit(1);
-  }
-  if (control === "refused") {
-    process.stderr.write("Error: ERROR: Access denied - only processes started inside cmux can connect\\n");
-    process.exit(1);
-  }
-  process.stdout.write(JSON.stringify({ access_mode: "allowAll", methods: [] }) + "\\n");
-  process.exit(0);
-}
 
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
@@ -327,12 +310,12 @@ const argv = process.argv.slice(2);
 const home = process.env.MISSION_HOME;
 const socketPath = join(home, "fake-herdr.sock");
 const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
-const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
 // "newer" is a Herdr past the supported floor on both axes, which is what a real 0.9.0 is.
 // Mission Control pins a minimum, not an equality, so this must be as ordinary as the floor.
 const newer = process.env.MC_E2E_HERDR_MODE === "newer";
-const VERSION = newer ? "0.9.0" : "0.8.2";
-const PROTOCOL = newer ? 22 : 20;
+const { version: VERSION, protocol: PROTOCOL } = JSON.parse(readFileSync(
+  join(__dirname, "herdr-" + (newer ? "newer" : "stable") + "-true.json"), "utf8",
+));
 // 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
 // without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
 // it quietly stops standing in for the server it names.
@@ -342,15 +325,6 @@ const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
 // answering with its login shell and nothing else, so a launch has something to actually fail
 // against rather than only a passing path to confirm.
 const stuck = process.env.MC_E2E_HERDR_MODE === "stuck";
-if (argv[0] === "status" && argv[1] === "server") {
-  if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
-    status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
-  } else {
-    const running = existsSync(socketPath);
-    status({ status: running ? "running" : "not_running", running, version: running ? VERSION : null, protocol: running ? PROTOCOL : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
-  }
-  process.exit(0);
-}
 if (argv[0] === "server") {
   if (!existsSync(socketPath)) {
     const child = spawn(process.execPath, [__filename, "serve", String(process.ppid)], {
@@ -718,6 +692,7 @@ if (argv[0] === "--version") {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
   } : null } } }));
 } else if (command.startsWith("pr view")) {
@@ -784,6 +759,75 @@ if (command.startsWith("issue list")) {
 }
 `;
 
+/** Read-only acli contract. Mutable canned state lets specs model a profile switch. */
+const FAKE_ACLI = `#!/usr/bin/env node
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`acli-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+}
+const file = dir && join(dir, "fake-acli-state.json");
+const state = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+const command = argv.slice(0, 3).join(" ");
+if (argv[0] === "--version") {
+  process.stdout.write("acli version 0.0.0 (fake)\\n");
+} else if (state.unauthorized) {
+  process.stderr.write("✗ Error: unauthorized: use 'acli jira auth login' to authenticate\\n");
+  process.exitCode = 1;
+} else if (command === "jira auth status") {
+  process.stdout.write(\`✓ Authenticated\\n  Site: \${state.site || "example.atlassian.net"}\\n  Email: operator@example.invalid\\n  Authentication Type: oauth\\n\`);
+} else if (command === "jira workitem search") {
+  if (state.searchError) {
+    process.stderr.write("✗ Error: " + state.searchError + "\\n");
+    process.exitCode = 1;
+  } else {
+    const limit = Number(argv[argv.indexOf("--limit") + 1]);
+    process.stdout.write(JSON.stringify((state.issues || []).slice(0, limit)) + "\\n");
+    if (file && state.afterSearchSite) {
+      writeFileSync(file, JSON.stringify({ ...state, site: state.afterSearchSite }));
+    }
+  }
+} else if (command === "jira workitem view") {
+  if (state.viewError || (state.transitioned && state.confirmError)) {
+    process.stderr.write("✗ Error: cannot read issue (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(JSON.stringify({
+      key: argv[3], self: state.self || "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/1",
+      fields: { status: { name: state.status || "In Review" } }, transitions: state.transitions ?? null,
+    }) + "\\n");
+  }
+} else if (command === "jira workitem comment" || command === "jira workitem transition") {
+  const transition = command.endsWith("transition");
+  const mode = transition ? state.transition : state.comment;
+  if (mode === "no-answer") {
+    process.kill(process.pid, "SIGKILL");
+  } else if (mode === "refused") {
+    process.stderr.write("✗ Error: " + (state.reason || "Not allowed from this status (fake)") + "\\n");
+    process.exitCode = 1;
+  } else {
+    const key = argv[argv.indexOf("--key") + 1];
+    const result = mode === "json-failure" ? [{ key, success: false, error: state.reason || "Workflow refused (fake)" }]
+      : mode === "unrecognized" ? { message: "Operation processed (fake)" }
+      : { key, success: true, ...(state.writeSelf ? { self: state.writeSelf } : {}) };
+    process.stdout.write(JSON.stringify(state.writeEnvelope ? { [state.writeEnvelope]: result } : result) + "\\n");
+    if (file) writeFileSync(file, JSON.stringify({ ...state,
+      ...(transition ? { transitioned: true,
+        status: mode === "json-failure" || mode === "unchanged" ? state.status || "In Review" : argv[argv.indexOf("--status") + 1],
+      } : {}),
+      ...(state.afterWriteSite ? { site: state.afterWriteSite } : {}),
+    }));
+  }
+} else {
+  process.stderr.write("fake acli refuses unsupported commands\\n");
+  process.exitCode = 1;
+}
+`;
+
 /**
  * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
  * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
@@ -829,7 +873,7 @@ setInterval(() => {
 `;
 
 /**
- * Write the three fakes into `home` and return their paths.
+ * Write the recording fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
  * place, because the vendored Agent SDK spawns `node <path>` for anything ending in
@@ -862,13 +906,8 @@ export function writeFakeAgents(home: string): FakeAgents {
   // so a spec can widen it without restarting the daemon.
   writeFileSync(piSdkModelsPath(home), JSON.stringify(FAKE_PI_SDK_MODELS, null, 2));
 
-  const cmux = join(binDir, "fake-cmux");
-  writeFileSync(cmux, FAKE_CMUX);
-  chmodSync(cmux, 0o755);
-
-  const herdr = join(binDir, "fake-herdr");
-  writeFileSync(herdr, FAKE_HERDR);
-  chmodSync(herdr, 0o755);
+  const cmux = writeNativeTerminalProbe(binDir, "cmux", FAKE_CMUX);
+  const herdr = writeNativeTerminalProbe(binDir, "herdr", FAKE_HERDR);
 
   const wezterm = join(binDir, "fake-wezterm");
   writeFileSync(wezterm, FAKE_WEZTERM);
@@ -886,5 +925,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(jira, FAKE_JIRA);
   chmodSync(jira, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
+  const acli = join(binDir, "fake-acli");
+  writeFileSync(acli, FAKE_ACLI);
+  chmodSync(acli, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira, acli } };
 }

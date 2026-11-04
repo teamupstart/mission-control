@@ -2,7 +2,8 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openDb } from "../src/server/db.ts";
+import { openDb, upgradeDatabaseToCurrentSchema } from "../src/server/db.ts";
+import { DatabaseSync } from "node:sqlite";
 import { WorktreeManager } from "../src/server/worktrees/manager.ts";
 import { NativeWorktreeGit } from "../src/server/worktrees/git.ts";
 import { spawn } from "node:child_process";
@@ -44,12 +45,12 @@ const operations = new WorktreeOperationsService(manager, {
 after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
 
 /** Idle, clean, merged slots: exactly what Destroy and bulk Destroy may remove. */
-async function availableSlots(prefix: string, count: number): Promise<Array<{ slotId: string; path: string }>> {
+async function availableSlots(prefix: string, count: number, allocator = manager): Promise<Array<{ slotId: string; path: string }>> {
   const { clone } = mkOriginAndClone(prefix);
   const base = gitIn(clone, "rev-parse", "HEAD");
   const leases = [];
   for (let index = 0; index < count; index += 1) {
-    const acquired = await manager.acquire({
+    const acquired = await allocator.acquire({
       repositoryPath: clone,
       baseSha: base,
       owner: { kind: "manual", key: `${prefix}${index}` },
@@ -59,7 +60,7 @@ async function availableSlots(prefix: string, count: number): Promise<Array<{ sl
     leases.push(acquired.lease);
   }
   for (const lease of leases) {
-    assert.equal((await manager.release(lease, { ownerAuthorized: true, requireClean: true })).outcome, "released");
+    assert.equal((await allocator.release(lease, { ownerAuthorized: true, requireClean: true })).outcome, "released");
   }
   return leases.map((lease) => ({ slotId: lease.slotId, path: lease.path }));
 }
@@ -245,6 +246,12 @@ test("a bulk preview measures sizes a few at a time and stops waiting at its bud
   let started = 0;
   let inFlight = 0;
   let peak = 0;
+  let scheduledMs: number | null = null;
+  let expire = (): void => {};
+  let markWorkersStarted = (): void => {};
+  const workersStarted = new Promise<void>((resolve) => {
+    markWorkersStarted = resolve;
+  });
   const bounded = new WorktreeOperationsService(manager, {
     legacy: new LegacyTreehouseService(db),
     tasks: { get: () => null, reclaim: async () => ({ ok: false, error: "unexpected task" }) },
@@ -252,25 +259,36 @@ test("a bulk preview measures sizes a few at a time and stops waiting at its bud
     checkRecovery: async () => "unknown",
     notifyChanged: () => {},
     diskMeasureBudgetMs: 150,
+    scheduleDiskMeasureDeadline: (delayMs, callback) => {
+      scheduledMs = delayMs;
+      expire = callback;
+      return () => {};
+    },
     // A walk that never finishes: the warm, dependency-heavy checkout in the worst case.
     diskBytes: () => {
       started += 1;
       inFlight += 1;
       peak = Math.max(peak, inFlight);
+      if (started === 4) markWorkersStarted();
       return new Promise<number | null>(() => {});
     },
   });
-  const began = Date.now();
-  const preview = await bounded.preview({
+  // A real-time ceiling tests the host scheduler rather than this budget. Under the full suite
+  // the event loop can be starved for seconds before a correct timer gets to run. Fire only the
+  // injected disk deadline after all four workers have reached their never-finishing walk.
+  const pending = bounded.preview({
     action: "destroy",
     target: { kind: "slots", slotIds: slots.map((slot) => slot.slotId) },
   });
-  const waited = Date.now() - began;
+  await workersStarted;
+  assert.equal(started, 4, "all four bounded workers started before the deadline");
+  assert.equal(scheduledMs, 150, "the preview schedules its configured wall-clock budget");
+  expire();
+  const preview = await pending;
   assert.equal(preview.affected.length, 6);
   assert.deepEqual(preview.affected.map((target) => target.diskBytes), [null, null, null, null, null, null]);
   assert.equal(peak, 4, "no more than four walks run at once");
   assert.equal(started, 4, "nothing new starts once the budget is spent");
-  assert.ok(waited < 5_000, `the dialog is not held by unfinished walks (waited ${waited}ms)`);
   assert.equal(preview.allowed, true, preview.blockers.join("; "));
 });
 
@@ -581,13 +599,20 @@ test("observations never overlap, and no process read runs while this daemon's G
   assert.deepEqual(violations, []);
 });
 
-test("a slow Git removal does not make an unrelated preview wait", async () => {
-  const [removing] = await availableSlots("mission-worktree-bg-slow-remove-", 2);
+test("a slow Git removal does not make an unrelated preview wait", { timeout: 120_000 }, async (t) => {
+  // Observe only this case's pool, not the growing catalog left by earlier cases.
+  const isolatedDb = new DatabaseSync(":memory:");
+  let finish = (): void => {};
+  let removal: ReturnType<WorktreeManager["removeSlot"]> | undefined;
+  t.after(async () => {
+    finish();
+    try { await removal; } finally { isolatedDb.close(); }
+  });
+  upgradeDatabaseToCurrentSchema(isolatedDb);
   let entered = (): void => {};
   const removalStarted = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  let finish = (): void => {};
   const removalGate = new Promise<void>((resolve) => {
     finish = resolve;
   });
@@ -598,26 +623,31 @@ test("a slow Git removal does not make an unrelated preview wait", async () => {
       return super.remove(...args);
     }
   }
-  const slow = new WorktreeManager(db, {
+  const slow = new WorktreeManager(isolatedDb, {
     git: new SlowRemoveGit(),
     occupancy,
     resolvePolicy: () => ({ enabled: true, maxSlots: 8, setupArgv: null }),
   });
-  const removal = slow.removeSlot({ slotId: removing!.slotId, allowDirty: false, allowUnmerged: false });
+  const [removing] = await availableSlots("mission-worktree-bg-slow-remove-", 2, slow);
+  removal = slow.removeSlot({ slotId: removing!.slotId, allowDirty: false, allowUnmerged: false });
   await removalStarted;
   // The removal is parked inside `git worktree remove`. An observation - what every preview
-  // and inventory read starts with - must still complete.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const outcome = await Promise.race([
-    slow.status().then(() => "observed" as const),
-    new Promise<"blocked">((resolve) => {
-      timer = setTimeout(() => resolve("blocked"), 10_000);
-    }),
-  ]);
-  clearTimeout(timer);
-  finish();
-  assert.equal(outcome, "observed", "status() waited behind the removal");
-  assert.equal((await removal).outcome, "removed");
+  // and inventory read starts with - must complete BEFORE we release that gate. Its
+  // real Git reads have their own deadlines, so a wall-clock race would measure
+  // Git throughput rather than lock independence.
+  let removalFinished = false;
+  void removal.then(
+    () => { removalFinished = true; },
+    () => { removalFinished = true; },
+  );
+  try {
+    const status = await slow.status();
+    assert.ok(status.flatMap((pool) => pool.slots).some((entry) => entry.slot.id === removing!.slotId));
+    assert.equal(removalFinished, false, "the observation must finish while removal is still parked");
+  } finally {
+    finish();
+    assert.equal((await removal).outcome, "removed");
+  }
 });
 
 test("a process scan during our own running worktree Git ignores it, and still sees anything else in the slot", async () => {

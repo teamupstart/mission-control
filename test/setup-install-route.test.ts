@@ -334,6 +334,7 @@ test("a bad future catalog command is refused by the runtime guard before launch
     install: {
       catalog: catalogWith("wezterm", {
         kind: "command",
+        purpose: "install",
         argv: ["npm", "exec", "arbitrary-code"],
         note: "bad future edit",
       }),
@@ -425,4 +426,78 @@ test("Pi Setup rejects cross-site simple requests and foreign origins before ins
     assert.equal(response.status, 200, origin);
   }
   assert.equal(installs, 3);
+});
+
+test("the acli sign-in opens the binary the daemon resolves, labelled as a sign-in", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async (id) => id === "acli" ? "/opt/tools/acli" : null },
+  }), { id: "acli-auth", backend: "cmux" });
+  assert.equal(response.status, 200);
+  assert.match((await response.json() as { detail: string }).detail, /opened the sign-in/);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.name, "Sign in: Atlassian CLI sign-in");
+  assert.equal(calls[0]!.cwd, home);
+  // The resolved path replaces the program word, so an override and the terminal agree.
+  assert.deepEqual(calls[0]!.argv, [
+    "/bin/sh",
+    "-c",
+    setupInstallerShell(["/opt/tools/acli", "jira", "auth", "login", "--web"], "sign-in"),
+  ]);
+  assert.match(calls[0]!.argv[2]!, /\[sign-in exited %s\]/);
+});
+
+test("the acli sign-in is refused before any terminal opens when acli cannot be found", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    install: { resolveExecutable: async () => null },
+  }), { id: "acli-auth", backend: "cmux" });
+  assert.equal(response.status, 409);
+  assert.match((await response.json() as { detail: string }).detail, /acli is not installed.*Install it first/);
+  assert.deepEqual(calls, []);
+});
+
+test("a sign-in remedy outside the closed list is refused, and the acli install is tap-qualified", async () => {
+  const calls: LaunchCall[] = [];
+  const refusedApp = appFor({
+    calls,
+    install: {
+      resolveExecutable: async () => "/opt/tools/acli",
+      catalog: catalogWith("acli-auth", {
+        kind: "command",
+        purpose: "sign-in",
+        argv: ["acli", "jira", "auth", "logout"],
+        note: "bad future edit",
+      }),
+    },
+  });
+  const refused = await post(refusedApp, { id: "acli-auth", backend: "cmux" });
+  assert.equal(refused.status, 409);
+  assert.match(await refused.text(), /not one of Mission Control's approved sign-in commands/);
+  assert.deepEqual(calls, []);
+
+  const installs: LaunchCall[] = [];
+  const installed = await post(appFor({ calls: installs }), { id: "acli-cli", backend: "cmux" });
+  assert.equal(installed.status, 200);
+  assert.equal(installs[0]!.name, "Install Atlassian CLI");
+  assert.deepEqual(installs[0]!.argv, ["/bin/sh", "-c", setupInstallerShell(["brew", "install", "atlassian/acli/acli"])]);
+});
+
+test("a terminal that refuses the acli sign-in reports a sign-in refusal, not an installer one", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({
+    calls,
+    launchResult: { ok: false, label: "cmux", status: 409 },
+    install: { resolveExecutable: async () => "/opt/tools/acli" },
+  }), { id: "acli-auth", backend: "cmux" });
+  assert.equal(response.status, 409);
+  const body = await response.json() as { ok: boolean; outcome: string; detail: string };
+  assert.equal(body.ok, false);
+  assert.equal(body.outcome, "refused");
+  assert.equal(body.detail, "cmux could not open the sign-in terminal.");
+  // The daemon did try the resolved acli, so the refusal is the terminal's, not a lookup's.
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.name, "Sign in: Atlassian CLI sign-in");
 });

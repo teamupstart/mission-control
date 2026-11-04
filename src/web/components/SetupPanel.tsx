@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
+  SETUP_SERVICE_INFO,
   homeRelative,
   setupRowAnchor,
+  type SetupCommandPurpose,
   type SetupDependencyId,
   type SetupFamilyId,
   type SetupRowView,
@@ -157,14 +159,21 @@ function RemedyNotice({
   );
 }
 
-function LaunchNotice({ result }: { result: SetupInstallerLaunchResult | null }): React.JSX.Element | null {
+function LaunchNotice({
+  result,
+  purpose = "install",
+}: {
+  result: SetupInstallerLaunchResult | null;
+  purpose?: SetupCommandPurpose;
+}): React.JSX.Element | null {
   if (!result) return null;
   const attention = result.outcome === "opened" || result.outcome === "maybe-opening";
+  const what = purpose === "sign-in" ? "sign-in" : "installer";
   return (
     <RemedyNotice
       tone={attention ? "attention" : "error"}
-      detail={result.detail || result.error || "The installer terminal was refused."}
-      hint={attention ? "When the installer finishes, press Re-check." : undefined}
+      detail={result.detail || result.error || `The ${what} terminal was refused.`}
+      hint={attention ? `When the ${what} finishes, press Re-check.` : undefined}
     />
   );
 }
@@ -173,13 +182,15 @@ function RunButton({
   disabled,
   opening,
   onClick,
+  purpose = "install",
 }: {
   disabled: boolean;
   opening: boolean;
   onClick(): void;
+  purpose?: SetupCommandPurpose;
 }): React.JSX.Element {
   return (
-    <Tooltip label="Open this daemon-owned install command in the selected visible terminal">
+    <Tooltip label={`Open this daemon-owned ${purpose === "sign-in" ? "sign-in" : "install"} command in the selected visible terminal`}>
       <button
         type="button"
         className="btn btn-primary"
@@ -195,11 +206,13 @@ function RunButton({
 function CommandRemedy({
   id,
   label,
+  purpose,
   argv,
   note,
 }: {
   id: SetupDependencyId;
   label: string;
+  purpose: SetupCommandPurpose;
   argv: readonly string[];
   note: string;
 }): React.JSX.Element {
@@ -227,9 +240,10 @@ function CommandRemedy({
           disabled={!terminal.selected || opening}
           opening={opening}
           onClick={() => void launch()}
+          purpose={purpose}
         />
       </div>
-      <LaunchNotice result={result} />
+      <LaunchNotice result={result} purpose={purpose} />
     </div>
   );
 }
@@ -255,18 +269,67 @@ function ServiceRemedy({
 }): React.JSX.Element {
   const [starting, setStarting] = useState(false);
   const [result, setResult] = useState<SetupServiceStartResult | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
-  async function start(): Promise<void> {
+  const [installDidNotRegister, setInstallDidNotRegister] = useState(false);
+
+  async function start(): Promise<SetupServiceStartResult> {
     setStarting(true);
+    // A new attempt replaces the whole outcome, including an earlier inline install failure.
     setResult(null);
+    setInstallError(null);
+    setInstallDidNotRegister(false);
     try {
       const next = await startSetupService({ service });
       setResult(next);
       if (next.ok) onRepaired();
+      return next;
     } finally {
       setStarting(false);
     }
   }
+
+  // The trust write needs a server table to edit, and only the integration install writes
+  // one. Offer that install here, where the refusal is read, then finish the trust the
+  // operator asked for - rather than a sentence pointing somewhere else on the page.
+  async function installThenStart(): Promise<void> {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      // Only the install is guarded here, so its failure sentence is never pinned on the
+      // trust retry below, which reports its own outcome through `result`.
+      let installed: { ok: boolean; message: string };
+      try {
+        installed = await window.missionDesktop!.installIntegrations();
+      } catch {
+        setInstallError("Integration install could not finish. Check the app log and retry.");
+        return;
+      }
+      if (!installed.ok) { setInstallError(installed.message); return; }
+      onRepaired();
+      const retried = await start();
+      // The installer preserves an existing entry it does not own (a disabled or custom
+      // `mission-control` table) and still reports success. Offering the same install again
+      // would loop, so say what it did and what is left to fix by hand.
+      if (retried.prerequisite === "mission-integrations") {
+        setInstallDidNotRegister(true);
+        setInstallError(`${installed.message} Codex still has no runnable mission-control server, so trust cannot apply. In config.toml, give its [mcp_servers.mission-control] table a command or url and remove enabled = false if it is there, then press Trust again.`);
+      }
+    } catch {
+      // The install already succeeded; only the trust retry can land here.
+      setInstallError("Integrations installed, but the trust request could not finish. Press Trust again.");
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  const needsIntegrations = result?.prerequisite === "mission-integrations";
+  // `request()` resolves a transport failure without an HTTP status: the daemon never
+  // answered, so no file or service is at fault and the per-service hint would mislead.
+  const unreachable = !!result && !result.ok && result.status === undefined;
+  const canInstall = typeof window !== "undefined" && !!window.missionDesktop?.installIntegrations;
+  const busy = starting || installing;
 
   return (
     <div className="setup-remedy-actions">
@@ -275,7 +338,7 @@ function ServiceRemedy({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={starting}
+            disabled={busy}
             onClick={() => void start()}
           >
             {starting ? "Starting..." : label}
@@ -285,10 +348,28 @@ function ServiceRemedy({
       {result && (
         <RemedyNotice
           tone={result.ok ? "attention" : "error"}
-          detail={result.detail || result.error || `${label} did not finish.`}
-          hint={result.ok ? undefined : "Start it yourself in a terminal, then press Re-check."}
+          detail={unreachable
+            ? `Mission Control did not answer the request${result.error ? ` (${result.error})` : ""}.`
+            : result.detail || result.error || `${label} did not finish.`}
+          hint={result.ok || installDidNotRegister ? undefined : unreachable
+            ? `Check that Mission Control is running, then press ${label} again.`
+            : needsIntegrations
+            ? canInstall
+              ? "Install Claude integrations also registers the Mission Control MCP server with Codex, then this retries the trust automatically."
+              : "Open Setup in the Mission Control desktop app and choose Install Claude integrations, which registers the MCP server with Codex too, then retry."
+            : SETUP_SERVICE_INFO[service].retry}
         />
       )}
+      {needsIntegrations && canInstall && !installDidNotRegister && (
+        <div className="setup-run-controls">
+          <Tooltip label="Register Mission Control MCP with Claude Code and Codex using this app's runtime, then retry the trust.">
+            <button type="button" className="btn" disabled={busy} onClick={() => void installThenStart()}>
+              {installing ? "Installing..." : "Install Claude integrations"}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+      {installError && <p role="status" className="settings-error">{installError}</p>}
     </div>
   );
 }
@@ -417,7 +498,7 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
   }
   if (remedy.kind === "command") {
     return row.rowId.source === "dependency"
-      ? <CommandRemedy id={row.rowId.id} label={row.label} argv={remedy.argv} note={remedy.note} />
+      ? <CommandRemedy id={row.rowId.id} label={row.label} purpose={remedy.purpose} argv={remedy.argv} note={remedy.note} />
       : <CopyCommand argv={remedy.argv} note={remedy.note} />;
   }
   if (remedy.kind === "provider-installer") {

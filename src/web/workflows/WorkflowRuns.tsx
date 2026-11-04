@@ -1,3 +1,5 @@
+import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
@@ -8,6 +10,8 @@ import type {
   WorkflowDelivery,
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
+  WorkflowCommandArtifactDescriptor,
+  WorkflowCommandOutputPage,
   WorkflowExternalSource,
   WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
@@ -327,28 +331,168 @@ function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Elem
 const checkChip = (outcome: WorkflowCheckOutcome): PipelineStatus =>
   checkStatus(outcome.status === "failed" ? "fail" : "pass", outcome.status);
 
+interface RetainedOutputState {
+  text: string;
+  nextCursor: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function RetainedCommandOutput({
+  runId,
+  attemptId,
+  artifacts,
+}: {
+  runId: string;
+  attemptId: string;
+  artifacts: readonly WorkflowCommandArtifactDescriptor[];
+}): React.JSX.Element | null {
+  const [pages, setPages] = useState<Record<string, RetainedOutputState>>({});
+
+  async function load(artifact: WorkflowCommandArtifactDescriptor): Promise<void> {
+    const current = pages[artifact.id];
+    setPages((value) => ({
+      ...value,
+      [artifact.id]: {
+        text: value[artifact.id]?.text ?? "",
+        nextCursor: value[artifact.id]?.nextCursor ?? null,
+        loading: true,
+        error: null,
+      },
+    }));
+    const query = current?.nextCursor
+      ? `?cursor=${encodeURIComponent(current.nextCursor)}`
+      : "";
+    try {
+      const page = await workflowRequest<WorkflowCommandOutputPage>(
+        `/api/workflow-runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}`
+        + `/command-output/${encodeURIComponent(artifact.id)}${query}`,
+      );
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: `${value[artifact.id]?.text ?? ""}${page.text}`,
+          nextCursor: page.nextCursor,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (caught) {
+      setPages((value) => ({
+        ...value,
+        [artifact.id]: {
+          text: value[artifact.id]?.text ?? "",
+          nextCursor: value[artifact.id]?.nextCursor ?? null,
+          loading: false,
+          error: caught instanceof Error ? caught.message : "Could not read retained output",
+        },
+      }));
+    }
+  }
+
+  if (artifacts.length === 0) return null;
+  return (
+    <div className="wf-run-command-artifacts">
+      <h5>Retained command output</h5>
+      {artifacts.map((artifact) => {
+        const page = pages[artifact.id];
+        const label = `${artifact.kind} · ${formatBytes(artifact.retainedBytes)}`;
+        if (artifact.availability !== "retained") {
+          return (
+            <p className="wf-run-meta" key={artifact.id}>
+              {label} · {artifact.availability}
+              {artifact.unavailableReason ? `: ${artifact.unavailableReason}` : ""}
+            </p>
+          );
+        }
+        const actionLabel = page?.loading
+          ? "Loading…"
+          : page?.error
+            ? page.text ? "Retry load more" : `Retry ${artifact.kind}`
+            : page ? "Load more" : `Load ${artifact.kind}`;
+        const finished = page !== undefined && page.error === null && page.nextCursor === null;
+        return (
+          <div className="wf-run-command-artifact" key={artifact.id}>
+            <div className="wf-run-command-artifact-head">
+              <strong>{label}</strong>
+              <Tooltip label={finished
+                ? "All retained output has been loaded"
+                : page?.error
+                  ? "Retry reading retained output from the last cursor"
+                  : `Read the next page of retained ${artifact.kind}`}>
+                <button
+                  className="btn btn-ghost"
+                  disabled={page?.loading || finished}
+                  onClick={() => void load(artifact)}
+                >
+                  {actionLabel}
+                </button>
+              </Tooltip>
+            </div>
+            {page?.text && <pre className="wf-run-check-output">{page.text}</pre>}
+            {page?.error && <p className="wf-error" role="alert">{page.error}</p>}
+            {(artifact.droppedBytes > 0 || artifact.captureState === "partial") && (
+              <p className="wf-run-meta">
+                {artifact.droppedBytes > 0
+                  ? `${formatBytes(artifact.droppedBytes)} exceeded the retained limit. `
+                  : ""}
+                {artifact.captureState === "partial" ? "Capture ended before the attempt settled." : ""}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CodeRabbitBlockedReview({ value }: { value: unknown }): React.JSX.Element | null {
+  const parsed = CodeRabbitReviewSummarySchema.safeParse(value);
+  return parsed.success ? <CodeRabbitReview summary={parsed.data} /> : null;
+}
+
+function CodeRabbitReview({ summary }: { summary: import("@shared/workflow.ts").CodeRabbitReviewSummary }): React.JSX.Element {
+  const { comparison } = summary;
+  return <div className="wf-run-card-body">
+    <p>CodeRabbit: {summary.status} · threshold {comparison.severity}{summary.remainingRuns === undefined ? "" : ` · ${summary.remainingRuns} executions remaining`}</p>
+    <p>{summary.diagnostic}</p>
+    {summary.expectedDuration && <p className="wf-run-meta">Expected vendor duration: {summary.expectedDuration}. The hard timeout remains fixed.</p>}
+    {summary.retryAt && <p className="wf-command-hint">Do not retry before {new Date(summary.retryAt).toLocaleString()}.</p>}
+    <p className="wf-run-meta">YAML {comparison.yaml.source}: {comparison.yaml.state} · digest {comparison.yaml.digest ?? "unavailable"}</p>
+    <p className="wf-run-meta">Head {comparison.head} · base {comparison.baseRef} at {comparison.baseTip} · merge-base {comparison.mergeBase}</p>
+    <p>{Object.entries(summary.counts).map(([severity, count]) => `${severity}: ${count}`).join(" · ")}</p>
+  </div>;
+}
+
 function CheckCard({
+  runId,
   attempt,
   outcome,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   outcome: WorkflowCheckOutcome;
 }): React.JSX.Element {
   const view = checkStatusView(outcome.status);
   const chip = checkChip(outcome);
   const parts = [
-    outcome.command ? formatCheckCommand(outcome.command) : "no command configured",
+    outcome.command ? formatCheckCommand(outcome.command) : outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
     outcome.exitCode === null ? null : `exit ${outcome.exitCode}`,
+    outcome.timeoutMs === null ? null : `timeout ${outcome.timeoutMs / 60_000} min`,
     `attempt ${attempt.attempt}`,
   ].filter((part): part is string => part !== null);
+  const artifacts = attempt.commandArtifacts ?? outcome.artifacts;
   return (
     <article className={`wf-run-card wf-run-check is-${outcome.status}`}>
       <header className="wf-run-card-head">
         <span className={`workflow-chip workflow-${chip.tone}`}>{chip.label}</span>
         <strong>Command · {outcome.slot}</strong>
       </header>
-      <p className="wf-run-summary">{outcome.note}</p>
-      <p className="wf-run-check-sentence">{view.sentence}</p>
+      <p className="wf-run-summary" role={outcome.warning ? "status" : undefined}>{outcome.note}</p>
+      {outcome.diagnosticError && <p role="alert" className="wf-error">Error: {outcome.diagnosticError}</p>}
+      {outcome.review && <CodeRabbitReview summary={outcome.review} />}
+
+      <p className="wf-run-check-sentence">{outcome.slot === "coderabbit" && ["skipped", "budget_spent"].includes(outcome.status) ? "CodeRabbit did not complete a review. See the recorded warning and configuration." : view.sentence}</p>
       {outcome.output && (
         <div className="wf-run-card-body">
           <h5>Command output</h5>
@@ -363,6 +507,15 @@ function CheckCard({
           )}
         </div>
       )}
+      {outcome.exitCode !== null && artifacts.length === 0
+        ? <p className="wf-run-meta">Extended output was not captured for this historical attempt.</p>
+        : (
+          <RetainedCommandOutput
+            runId={runId}
+            attemptId={attempt.id}
+            artifacts={artifacts}
+          />
+        )}
       <p className="wf-run-meta">{parts.join(" · ")}</p>
     </article>
   );
@@ -488,6 +641,7 @@ function SessionActionCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+
     </article>
   );
 }
@@ -561,9 +715,11 @@ function PersonaReadinessInput({ attempt }: { attempt: WorkflowNodeAttempt }): R
 }
 
 function AttemptCard({
+  runId,
   attempt,
   name,
 }: {
+  runId: string;
   attempt: WorkflowNodeAttempt;
   name: string;
 }): React.JSX.Element {
@@ -589,6 +745,13 @@ function AttemptCard({
         </details>
       )}
       <ErrorLine raw={attempt.error} />
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.setup === true && <Tooltip label="Inspect CodeRabbit installation, version and stored authentication"><a href="#/settings/setup">Settings &gt; Setup</a></Tooltip>}
+      {attempt.output && typeof attempt.output === "object" && !Array.isArray(attempt.output) && attempt.output.review && <CodeRabbitBlockedReview value={attempt.output.review} />}
+      <RetainedCommandOutput
+        runId={runId}
+        attemptId={attempt.id}
+        artifacts={attempt.commandArtifacts ?? []}
+      />
     </article>
   );
 }
@@ -840,7 +1003,7 @@ function WorklistRailRow({
           lines: [
             item.outcome.command
               ? formatCheckCommand(item.outcome.command)
-              : "no command configured",
+              : item.outcome.slot === "coderabbit" ? "review not executed" : "no command configured",
             ...(item.outcome.exitCode === null ? [] : [`exit ${item.outcome.exitCode}`]),
           ],
         };
@@ -1322,7 +1485,11 @@ function RunWorklist({
           <>
             <div className="wf-run-worklist-detail-body">
               {selected.kind === "check" && (
-                <CheckCard attempt={selected.attempt} outcome={selected.outcome} />
+                <CheckCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  outcome={selected.outcome}
+                />
               )}
               {selected.kind === "verdict" && (
                 <VerdictCard
@@ -1332,7 +1499,11 @@ function RunWorklist({
                 />
               )}
               {selected.kind === "attempt" && (
-                <AttemptCard attempt={selected.attempt} name={selected.name} />
+                <AttemptCard
+                  runId={detail.run.id}
+                  attempt={selected.attempt}
+                  name={selected.name}
+                />
               )}
               {selected.kind === "change" && (
                 <ChangeDetail
@@ -4566,6 +4737,7 @@ export function WorkflowRuns({
   onFilters = () => {},
   onOpenSession = () => {},
   onOpenSessionPath,
+  isOverlayOpen = () => false,
   onOpenInspectorSettings = () => {},
   onBindWorkflow,
 }: {
@@ -4595,6 +4767,7 @@ export function WorkflowRuns({
   onPane?: (pane: RunRecordPane, runId: string) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
+  isOverlayOpen?: () => boolean;
   /**
    * Reveal a path in the bound session's Files surface, for the worklist's "Open file".
    *
@@ -4636,8 +4809,17 @@ export function WorkflowRuns({
   const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
-  const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
+  useLibraryEscape({
+    isOverlayOpen,
+    onLeave: () => {
+      // Refuse stale detail and bindings whose session has left the live list.
+      if (detail?.run.id === selected && evidenceSession) {
+        onOpenSession(evidenceSession.id);
+      }
+    },
+  });
+  const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceScopeSet = useMemo(
     () => workflowEvidenceScopes(evidenceSession, detail?.summary.repoRoot),
     [evidenceSession, detail?.summary.repoRoot],

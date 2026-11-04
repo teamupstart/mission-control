@@ -29,7 +29,7 @@ export const CONTEXT_WINDOW_TIERS = [DEFAULT_CONTEXT_WINDOW, LONG_CONTEXT_THRESH
  * trailing dated build (`-20251001`). Strip both so the name maps cleanly and the
  * window size is inferred separately.
  */
-function coreModelId(id: string): string {
+export function coreModelId(id: string): string {
   return id
     .replace(/^[a-z0-9-]+\//i, "") // provider prefix: openai/gpt-5.5 -> gpt-5.5 (Pi's qualified ids)
     .replace(/[[(]\s*\d+\s*[mk]\s*[\])]/i, "") // [1m], (200k)

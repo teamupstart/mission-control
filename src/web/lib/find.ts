@@ -73,6 +73,7 @@ const ORIGIN_LABEL: Record<TurnOrigin, string> = {
   foreman: "foreman",
   harness: "mission control",
   workflow: "workflow",
+  resident: "resident",
 };
 
 /** Who a turn belongs to, once. Every other authorship answer here is derived from it. */

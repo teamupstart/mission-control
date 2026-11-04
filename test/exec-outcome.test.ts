@@ -161,3 +161,20 @@ test("a callback-reported spawn refusal keeps its diagnostic", async () => {
   assert.equal(res.outcomeUnknown, false, "no process existed, so the outcome is known");
   assert.equal(res.overflowed, false);
 });
+
+// Node refuses a spawn into a directory that does not exist with `spawn <binary> ENOENT` -
+// the code and text of a missing binary. Read as "not installed", that told an operator
+// with acli on PATH to go and install it, when the thing missing was the source's checkout.
+test("a missing working directory is named as such, not as a missing binary", async () => {
+  const gone = join(tmpdir(), `mission-gone-${randomUUID()}`);
+  const res = await run(process.execPath, ["-e", "0"], { cwd: gone });
+  assert.equal(res.missingCwd, gone);
+  assert.equal(res.code, 1);
+  assert.equal(res.outcomeUnknown, false, "nothing was spawned, so nothing ran");
+  assert.match(res.stderr, /working directory .* does not exist/);
+  assert.doesNotMatch(res.stderr, /ENOENT/);
+
+  const present = await run(process.execPath, ["-e", "0"], { cwd: tmpdir(), timeoutMs: 10_000 });
+  assert.equal(present.code, 0);
+  assert.equal(present.missingCwd, undefined);
+});

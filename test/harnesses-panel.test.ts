@@ -104,7 +104,7 @@ function setupView(piInstalled: boolean, piExtensionReady: boolean): SetupChecks
       family: "agents",
       requirement: "recommended",
       enables: "Pi sessions",
-      remedy: { kind: "command", argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"], note: "Install Pi." },
+      remedy: { kind: "command", purpose: "install", argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"], note: "Install Pi." },
       status: piInstalled ? { state: "satisfied", evidence: "/tools/pi" } : { state: "missing" },
     }],
   };

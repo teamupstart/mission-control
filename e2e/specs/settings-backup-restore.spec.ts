@@ -85,8 +85,14 @@ test("verified restore reloads its window and invalidates other windows without 
     `/api/workflows/${desiredWorkflow.workflow.id}/publish`,
     { body: { expectedDraftRevision: 1 } },
   );
-  const lint = await request<{ revision: number; maxRuns: number }>(daemon, "/api/workflow-commands/lint");
-  const desiredCommand = await request<{ revision: number; maxRuns: number }>(
+  const lint = await request<{
+    revision: number; maxRuns: number; timeoutMs: number | null;
+    onUnavailable: "skip" | "block"; onBudgetExhausted: "skip" | "block";
+  }>(daemon, "/api/workflow-commands/lint");
+  const desiredCommand = await request<{
+    revision: number; maxRuns: number; timeoutMs: number | null;
+    onUnavailable: "skip" | "block"; onBudgetExhausted: "skip" | "block";
+  }>(
     daemon,
     "/api/workflow-commands/lint",
     {
@@ -95,6 +101,9 @@ test("verified restore reloads its window and invalidates other windows without 
         expectedRevision: lint.revision,
         defaultCommand: ["npm", "run", "lint:snapshot"],
         maxRuns: lint.maxRuns,
+        timeoutMs: lint.timeoutMs,
+        onUnavailable: lint.onUnavailable,
+        onBudgetExhausted: lint.onBudgetExhausted,
         overrides: [],
       },
     },
@@ -188,6 +197,9 @@ test("verified restore reloads its window and invalidates other windows without 
       expectedRevision: desiredCommand.revision,
       defaultCommand: ["npm", "run", "lint:current"],
       maxRuns: desiredCommand.maxRuns,
+      timeoutMs: desiredCommand.timeoutMs,
+      onUnavailable: desiredCommand.onUnavailable,
+      onBudgetExhausted: desiredCommand.onBudgetExhausted,
       overrides: [],
     },
   });
@@ -261,6 +273,8 @@ test("verified restore reloads its window and invalidates other windows without 
   await expect(verifiedPreview).toBeVisible();
   await expect(dashboard.getByLabel("Restore sequence")).toContainText("Capture safety snapshot");
   await expect(dashboard.getByText("Workflow commands", { exact: true })).toBeVisible();
+  // Resident profiles are a catalog of their own in the preview, beside the Library's.
+  await expect(dashboard.getByText("Resident profiles", { exact: true })).toBeVisible();
   await verifiedPreview.scrollIntoViewIfNeeded();
   await shoot(dashboard, "verified-preview");
 

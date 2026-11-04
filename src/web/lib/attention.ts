@@ -1,3 +1,4 @@
+import { RESIDENT_NEEDS_YOU_PAUSE_REASON, RESIDENT_OPERATOR_PAUSE_REASON, type ResidentRunSummary } from "@shared/residents.ts";
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import {
@@ -195,6 +196,7 @@ export function ensembleRunContext(
 }
 
 export interface AttentionInput {
+  residentRuns?: readonly ResidentRunSummary[];
   sessions: readonly Session[];
   /**
    * Pending reviews NARROWED to live sessions (App's `answerableReviews`).
@@ -373,8 +375,16 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // (5) The backstop: sessions the fleet paints amber that nothing above accounts for. See
   // the `session_blocked` doc for the two populations this catches. Ordered by name then id
   // like the dialogs, because a lifecycle state carries no "waiting since" to sort on.
+  // A `needs-you` pause is not a reason of its own. Older daemons wrote it to mirror the session,
+  // and the loop releases it on observation; until it does, the session's open question or
+  // approval already has a row (or an attention tone). Surfacing it here printed
+  // "Waiting on you: needs-you" with nothing to answer once the question was gone.
+  const residentPauses = new Map((input.residentRuns ?? [])
+    .filter((run) => run.loopState === "paused" && run.pauseReason !== RESIDENT_OPERATOR_PAUSE_REASON &&
+      run.pauseReason !== RESIDENT_NEEDS_YOU_PAUSE_REASON)
+    .map((run) => [run.taskId, run.pauseReason]));
   const blocked = input.sessions
-    .filter((s) => !represented.has(s.id) && stateDisplay(s).tone === "attention")
+    .filter((s) => !represented.has(s.id) && (stateDisplay(s).tone === "attention" || (s.task && residentPauses.has(s.task.id))))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
   for (const session of blocked) {
     items.push({
@@ -382,7 +392,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
       id: `blocked:${session.id}`,
       session,
       context: contextFor(session),
-      activity: session.activity,
+      activity: (session.task && residentPauses.get(session.task.id)) || session.activity,
     });
   }
 

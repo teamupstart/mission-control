@@ -19,6 +19,10 @@ import { SETUP_PROBES, setupChecksView, setupProbeResult } from "../src/server/s
 import type { SetupDeps } from "../src/server/setup/types.ts";
 import { installedPluginsRead } from "../src/server/plugins/installed-plugins.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { ACLI_TIMEOUT_MS } from "../src/server/task-sources/jira-acli.ts";
+
+/** What `acli jira auth status` prints when signed in, with the account address it carries. */
+const ACLI_SIGNED_IN = "✓ Authenticated\n  Site: example.atlassian.net\n  Email: operator@example.invalid\n  Authentication Type: oauth\n";
 
 function conductor(found = true): PipelineProbe {
   return {
@@ -36,6 +40,7 @@ function conductor(found = true): PipelineProbe {
 
 function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
   return {
+    mcpTrust: () => ({ state: "satisfied", evidence: "fixture MCP trust" }),
     environment: {
       homeDir: "/home/operator",
       readText: async () => ({ ok: false, missing: true, reason: "missing" }),
@@ -46,8 +51,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
-    runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
+    resolveBinPath: async (bin) => bin === "coderabbit" ? "/tools/coderabbit" : bin === "node" ? "/tools/node" : bin === "acli" ? "/tools/acli" : bin.startsWith("/tools/") ? bin : null,
+    runCommand: async (bin, argv) => stubRun({ stdout: bin === "/tools/coderabbit" ? argv[0] === "--version" ? "0.9.1" : JSON.stringify({type:"status", authenticated:true}) : bin === "/tools/node" ? "24.0.0" : bin === "/tools/acli" ? ACLI_SIGNED_IN : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
       plugins: [{ plugin: "one", marketplace: "official", version: "1", installPath: "/plugins/one" }],
@@ -426,4 +431,98 @@ test("external Node gaps remain feature-scoped, preserve acknowledgements, and c
   assert.equal(writes,0,"existing node dismissal remains readable without resetting other records");
   const first = await setupChecksView(deps({resolveBinPath:async bin=>bin === "node" ? null : bin}));
   assert.equal(first.banner.visible,true,"first-launch guidance remains present");
+});
+
+test("the Atlassian CLI rows report its path, its site, and never the account address", async () => {
+  const cli = await probe("acli-cli");
+  assert.deepEqual(cli, { state: "satisfied", evidence: "/tools/acli" });
+  const auth = await probe("acli-auth", { acliSourceSites: () => ["example.atlassian.net"] });
+  assert.deepEqual(auth, { state: "satisfied", evidence: "Signed in to example.atlassian.net" });
+  assert.doesNotMatch(JSON.stringify(auth), /operator@example\.invalid/);
+  // The sign-in row is a Jira-family row with a runnable sign-in, not a link.
+  assert.equal(SETUP_DEPENDENCY_INFO["acli-auth"].family, "jira");
+  const remedy = SETUP_DEPENDENCY_INFO["acli-auth"].remedy;
+  assert.equal(remedy.kind, "command");
+  assert.equal(remedy.kind === "command" && remedy.purpose, "sign-in");
+  assert.deepEqual(remedy.kind === "command" && remedy.argv, ["acli", "jira", "auth", "login", "--web"]);
+});
+
+test("the acli sign-in row names the missing install, the missing login, and the wrong site", async () => {
+  const absent = await probe("acli-auth", { resolveBinPath: async () => null, executableDiagnostic: async () => null });
+  assert.equal(absent.state, "needs-setup");
+  assert.match("why" in absent ? absent.why : "", /Install the Atlassian CLI first/);
+
+  const loggedOut = await probe("acli-auth", {
+    runCommand: async () =>
+      stubRun({ stdout: "", stderr: "✗ Error: unauthorized: use 'acli jira auth login' to authenticate (operator@example.invalid)\nmore", code: 1 }),
+  });
+  assert.equal(loggedOut.state, "needs-setup");
+  assert.match("why" in loggedOut ? loggedOut.why : "", /installed but not signed in to Jira/);
+  assert.ok("evidence" in loggedOut && loggedOut.evidence);
+  assert.doesNotMatch(loggedOut.evidence, /operator@example\.invalid|more/);
+
+  const elsewhere = await probe("acli-auth", { acliSourceSites: () => ["example.atlassian.net", "other.atlassian.net"] });
+  assert.equal(elsewhere.state, "needs-setup");
+  assert.match("why" in elsewhere ? elsewhere.why : "", /signed in to example\.atlassian\.net, but a Jira source reads other\.atlassian\.net\. Run `acli jira auth switch --site other\.atlassian\.net`/);
+
+  const silent = await probe("acli-auth", {
+    runCommand: async () => ({ ...stubRun({ stdout: "", stderr: "", code: null }), outcomeUnknown: true }),
+  });
+  assert.equal(silent.state, "unknown");
+
+  const siteless = await probe("acli-auth", {
+    runCommand: async () => stubRun({ stdout: "✓ Authenticated\n", stderr: "", code: 0 }),
+  });
+  assert.equal(siteless.state, "unknown");
+});
+
+test("the acli sign-in probe gives auth status the sweep's own time budget", async () => {
+  const budgets: (number | undefined)[] = [];
+  await probe("acli-auth", {
+    runCommand: async (_bin, _argv, _env, timeoutMs) => {
+      budgets.push(timeoutMs);
+      return stubRun({ stdout: ACLI_SIGNED_IN, stderr: "", code: 0 });
+    },
+  });
+  assert.deepEqual(budgets, [ACLI_TIMEOUT_MS]);
+});
+
+test("an acli status failure that is not a sign-out asks for a sign-in, with a scrubbed diagnostic", async () => {
+  const broken = await probe("acli-auth", {
+    runCommand: async () => stubRun({
+      stdout: "",
+      stderr: "✗ Error: keychain read failed for operator@example.invalid token=abcdef0123456789abcdef\nsecond line",
+      code: 1,
+    }),
+  });
+  assert.equal(broken.state, "needs-setup");
+  assert.equal("why" in broken ? broken.why : "", "The Atlassian CLI could not report a Jira sign-in. Sign in again to repair it.");
+  assert.ok("evidence" in broken && broken.evidence);
+  assert.match(broken.evidence, /keychain read failed/);
+  assert.doesNotMatch(broken.evidence, /operator@example\.invalid|abcdef0123456789abcdef|second line/);
+});
+
+test("a missing acli reads Missing on its own row, which offers the tap-qualified install", async () => {
+  const absent = { resolveBinPath: async () => null, executableDiagnostic: async () => null };
+  assert.deepEqual(await probe("acli-cli", absent), { state: "missing" });
+  const view = await setupChecksView(deps(absent));
+  const row = view.rows.find((r) => r.rowId.source === "dependency" && r.rowId.id === "acli-cli");
+  assert.ok(row);
+  assert.equal(row.family, "jira");
+  assert.deepEqual(row.status, { state: "missing" });
+  assert.equal(row.remedy.kind, "command");
+  assert.equal(row.remedy.kind === "command" && row.remedy.purpose, "install");
+  assert.deepEqual(row.remedy.kind === "command" && row.remedy.argv, ["brew", "install", "atlassian/acli/acli"]);
+});
+
+test("several other configured sites are all named, with the first one's switch command", async () => {
+  const status = await probe("acli-auth", {
+    acliSourceSites: () => ["first.atlassian.net", "second.atlassian.net"],
+  });
+  assert.equal(status.state, "needs-setup");
+  assert.equal(
+    "why" in status ? status.why : "",
+    "acli is signed in to example.atlassian.net, but Jira sources read first.atlassian.net, second.atlassian.net. Run `acli jira auth switch --site first.atlassian.net`, or sign in to that site.",
+  );
+  assert.equal("evidence" in status ? status.evidence : null, "Signed in to example.atlassian.net");
 });

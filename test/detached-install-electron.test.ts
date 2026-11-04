@@ -41,7 +41,9 @@ function fixtureDiagnostic(state: string): string {
     if (parsed) journal = JSON.stringify({stage: parsed.stage, ownerRole: parsed.ownerRole, targetProcess: parsed.targetProcess});
   } catch (error) { journal = `(unreadable: ${String(error)})`; }
   return [`journal: ${journal}`, `fixture-target-waiting: ${read('fixture-target-waiting')}`,
-    `fixture-error.txt: ${read('fixture-error.txt')}`, `update-outcome.json: ${read('update-outcome.json')}`,
+    `fixture-error.txt: ${read('fixture-error.txt')}`,
+    `parent-stdout.log: ${read('parent-stdout.log')}`, `parent-stderr.log: ${read('parent-stderr.log')}`,
+    `update-outcome.json: ${read('update-outcome.json')}`,
     `update.log: ${read('update.log')}`].join('\n');
 }
 
@@ -53,7 +55,7 @@ async function waitWithDiagnostic(state: string, ...args: Parameters<typeof boun
   }
 }
 
-for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: 180_000}, async (t) => {
+for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha', 'preparation-retry', 'readiness-failure', 'interrupted-after-swap', 'legacy-staged-tamper']) test(`copied complete Electron ${mode} after parent exit with host runtimes trapped`, {skip: process.platform !== 'darwin', timeout: mode === 'readiness-failure' ? 300_000 : 180_000}, async (t) => {
   const binary = mode.startsWith('binary-');
   const rename = mode === 'binary-rename';
   const failure = mode === 'readiness-failure' || mode === 'interrupted-after-swap';
@@ -243,10 +245,12 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   const env: NodeJS.ProcessEnv = {...process.env, MISSION_HOME: state, MISSION_PORT: '59999', PATH: `${traps}:/usr/bin:/bin`,
     MISSION_RUNTIME_TRAPS: join(root, 'trap-hits')};
   delete env.ELECTRON_RUN_AS_NODE;
-  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
+  const parent = spawn('/usr/bin/open', ['-W', '-n', current, '--stdout', join(state, 'parent-stdout.log'),
+    '--stderr', join(state, 'parent-stderr.log'), '--env', `MISSION_HOME=${state}`, '--args', '--fixture-parent'], {
     env, stdio: ['ignore', 'pipe', 'pipe']});
   let output = ''; parent.stdout.on('data', (v) => {output += v;}); parent.stderr.on('data', (v) => {output += v;});
   assert.equal(await new Promise((done) => parent.once('exit', done)), 0, output);
+  assert.ok(existsSync(join(state, 'handoff.json')), `parent launch returned without a handoff at ${state}\n${output}\n${fixtureDiagnostic(state)}`);
   const handed = JSON.parse(readFileSync(join(state, 'handoff.json'), 'utf8'));
   if (mode === 'preparation-retry') assert.equal(handed.runtime,
     JSON.parse(readFileSync(join(state, 'fixture-preparation-retry.json'), 'utf8')).attempt,
@@ -259,10 +263,15 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     'legacy helper did not check the candidate', {timeout: 120_000});
     assert.deepEqual(inspectBundle(current), priorBundle, 'edited legacy candidate must never replace the accepted installation');
     assert.match(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).message, /accepted staged app bytes changed/);
-    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
-    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 10_000});
+    // The refusal is recorded BEFORE the helper relaunches the prior app, and that relaunch is real
+    // work: `prepareAppLaunch`, then a full launchd preflight sweep, then `open`. So wait for the
+    // relaunch first, with the budget every other mode here gives a relaunch, and only then for
+    // the helper to exit - which by then is teardown, as it is in every other mode. Waiting for
+    // exit first would make a teardown budget cover a sweep.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'fixture-ready.json')), 'prior app did not relaunch', {timeout: 120_000});
     const restored = JSON.parse(readFileSync(join(state, 'fixture-ready.json'), 'utf8'));
     await boundedMigrationWait(() => !processIsAlive(restored.pid), 'prior app did not exit', {timeout: 10_000});
+    await boundedMigrationWait(() => !processIsAlive(owner.helper.pid), 'legacy helper did not exit', {timeout: 10_000});
     assert.equal(restored.receipt.installedCommit, 'a'.repeat(40));
     assert.equal(restored.nodeFlag, null, 'prior GUI relaunch must clear run-as-node');
     assert.deepEqual(readFileSync(join(state, 'install-receipt.json')), receiptBytes);
@@ -301,6 +310,14 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     await new Promise<void>((done, reject) => {retry.once('spawn', done); retry.once('error', reject);});
     ownedProcesses.push({pid: retry.pid!, identity: processIdentity(retry.pid!)});
     assert.equal(await new Promise((done) => retry.once('exit', done)), 0, 'ordinary startup handed off recovery');
+  }
+  if (mode === 'readiness-failure') {
+    // This mode must first fail readiness and restore the app, then run a second real
+    // LaunchServices preflight/relaunch. Give each phase its own bounded wait, as the
+    // interruption case above does, instead of spending the relaunch budget on rollback.
+    await waitWithDiagnostic(state, () => existsSync(join(state, 'update-outcome.json'))
+      && JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result === 'failure',
+    'failed readiness did not record recovery', {timeout: 120_000});
   }
   await boundedMigrationWait(() => {
     if (mode !== 'readiness-failure' && existsSync(join(state, 'fixture-error.txt'))) throw new Error(readFileSync(join(state, 'fixture-error.txt'), 'utf8'));

@@ -137,8 +137,10 @@ export interface DaemonHandle {
    * fire, and the dashboard must fall to `reconnecting` rather than keep old claims.
    */
   crash(): Promise<void>;
+  /** Gracefully suspend SDK sessions, retaining the home and database for restart(). */
+  shutdown(): Promise<void>;
   /**
-   * Boot a fresh daemon on the same port and home after `crash()`.
+   * Boot a fresh daemon on the same port and home after `crash()` or `shutdown()`.
    *
    * `envChanges` alters the successor's environment - an `undefined` value removes a variable -
    * for the states a different launch produces on the same installation, such as a Mac its
@@ -412,6 +414,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
     // agent would write conversations into the operator's real ~/.claude.
     HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    // Keep Claude's global MCP catalog at the fixture's ~/.claude.json. An explicit
+    // config directory relocates that file too, so clear any inherited override.
+    CLAUDE_CONFIG_DIR: undefined,
+    CLAUDE_SETTINGS_PATH: join(home, ".claude", "settings.json"),
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
@@ -471,6 +478,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Linux CI drives the full manager/route/SSE path, and no test run ever places a
     // real power assertion on the machine it runs on.
     MISSION_KEEP_AWAKE_BIN: bins.keepAwake,
+    // CodeRabbit probes and reviews use only this local scripted fake.
+    MISSION_CODERABBIT_BIN: fileURLToPath(new URL("./fake-coderabbit.mjs", import.meta.url)),
+    MC_E2E_CODERABBIT_SCRIPT: join(home, "coderabbit-script.json"),
     // Every `gh` call the daemon makes, redirected at a fake. This is the one override here
     // that is not about cost: `gh issue create` PUBLISHES to a repository other people watch,
     // and on a machine where `gh` is signed in - which is every machine this is developed on -
@@ -484,6 +494,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // every run that reaches the write path. `jiraBin()` is the single seam every `jira`
     // subprocess resolves through, so this one variable covers the sweep and both verbs.
     MISSION_JIRA_BIN: bins.jira,
+    // All acli reads and writes stay inside the fixture, regardless of the host's OAuth login.
+    MISSION_ACLI_BIN: bins.acli,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR
@@ -768,7 +780,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   };
 
   const restart = async (envChanges: Record<string, string | undefined> = {}): Promise<void> => {
-    if (!exited) throw new Error("restart() is for a dead daemon - call crash() first");
+    if (!exited) throw new Error("restart() is for a dead daemon - call crash() or shutdown() first");
     for (const [key, value] of Object.entries(envChanges)) {
       if (value === undefined) delete isolatedEnv[key];
       else isolatedEnv[key] = value;
@@ -779,6 +791,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // the crash and this bind still fails loudly rather than being driven silently.
     child = spawnDaemon();
     await awaitBoot();
+  };
+
+  const shutdown = async (): Promise<void> => {
+    if (exited) throw new Error("shutdown() requires a running daemon");
+    const gone = new Promise<void>((resolve, reject) => child.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) resolve();
+      else reject(new Error(`daemon did not shut down gracefully (code ${code}, signal ${signal}):\n${log}`));
+    }));
+    child.kill("SIGTERM");
+    await gone;
   };
 
   // Prove the isolation held before any test writes through it.
@@ -819,6 +841,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     readLog: () => log,
     startForeman,
     crash,
+    shutdown,
     restart,
     desktopLaunchConfig: () => {
       if (!exited) throw new Error("Crash the fixture daemon before transferring its home to Electron");

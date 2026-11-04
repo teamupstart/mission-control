@@ -6,7 +6,8 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { recordsIn } from "../fixtures/records.ts";
+import { argvValue, recordsIn } from "../fixtures/records.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const EVIDENCE = artifactsDir("agent-sdk-auth-recovery");
 
@@ -22,7 +23,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog.getByPlaceholder("What should this agent do?").fill("start authenticated");
+  await dialog.getByRole("combobox", { name: /^Model/ }).selectOption("claude-opus-5");
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await expectContentClearsBorder(dialog);
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 }
@@ -44,11 +47,17 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
     const [session] = await api<Array<{ id: string; state: string }>>(daemon, "/api/sessions");
     return session?.state;
   }).toBe("idle");
-  const [before] = await api<Array<{ id: string; agentSessionId: string | null }>>(
+  const [before] = await api<Array<{ id: string; cwd: string; agentSessionId: string | null }>>(
     daemon,
     "/api/sessions",
   );
   expect(before?.agentSessionId).toBeTruthy();
+
+  const chip = detail.getByRole("button", { name: /^Model:/ });
+  await chip.click();
+  await dashboard.getByRole("menu", { name: "Session model" }).getByRole("menuitemradio")
+    .filter({ has: dashboard.getByText("claude-opus-5-5", { exact: true }) }).click();
+  await expect(chip).toHaveAccessibleName(/Model: claude-opus-5-5/);
 
   await reply.fill("E2E_EXPIRE_CLAUDE_AUTH");
   await reply.press("Enter");
@@ -62,10 +71,15 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
   // so only a new subprocess can observe this file.
   writeFileSync(join(daemon.recordDir, "claude-auth-restored"), "ok\n");
 
-  const sdkInvocations = (): Array<{ argv: string[] }> =>
-    recordsIn<{ argv: string[] }>(join(daemon.recordDir, "claude"))
+  // A catalog refresh is another SDK subprocess, not another conversation launch.
+  // Its record can land during recovery under contention and must not spend this count.
+  const refreshed = await dashboard.request.get(`${daemon.baseURL}/api/harnesses/models?refresh=1`);
+  expect(refreshed.ok()).toBe(true);
+
+  const sdkInvocations = (): Array<{ argv: string[]; cwd: string }> =>
+    recordsIn<{ argv: string[]; cwd: string }>(join(daemon.recordDir, "claude"))
       .filter((record) =>
-        record.argv.includes("--input-format") && !record.argv.includes("--setting-sources="),
+        record.cwd === before?.cwd && argvValue(record.argv, "--input-format") === "stream-json",
       );
   await reply.fill("continue after external login");
   await reply.press("Enter");
@@ -85,6 +99,12 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
   );
   expect(resumed?.argv.find((value) => value.startsWith("--resume=")))
     .toBe(`--resume=${before?.agentSessionId}`);
+  expect(argvValue(resumed!.argv, "--model")).toBe("claude-opus-5-5");
+  await expect.poll(async () => {
+    const [session] = await api<Array<{ meta: { modelId: string } }>>(daemon, "/api/sessions");
+    return session?.meta?.modelId;
+  }).toBe("claude-opus-5-5");
+  await expect(chip).toHaveAccessibleName("Model: claude-opus-5-5. Change model for this session");
 
   if (process.env.MC_E2E_EVIDENCE === "1") {
     mkdirSync(EVIDENCE, { recursive: true });

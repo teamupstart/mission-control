@@ -25,6 +25,7 @@ import type { RecordEpisode } from "../src/shared/protocol.ts";
 import { Registry } from "../src/server/registry.ts";
 import { Dispatcher } from "../src/server/dispatcher.ts";
 import { TaskManager } from "../src/server/tasks.ts";
+import { launchFailureOutcome } from "../src/shared/launch-failure.ts";
 import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
 import {
   getTask as getDurableTask,
@@ -457,6 +458,8 @@ test("managed SDK pipeline dispatch composes the selected host prompt with no te
     },
     model: null,
     effort: null,
+    // A pipeline host takes no task pin, exactly as it takes no model or effort.
+    advisorModel: null,
     permissionMode: "approveForMe",
     mcp: {
       ...mcp,
@@ -2492,6 +2495,10 @@ test("an SDK host loss fails before its exact run exists and ignores a different
     assert.equal(task?.status, "failed", projection);
     assert.equal(task?.sessionId, null, projection);
     assert.match(task?.error ?? "", /host ended before Conductor created pipeline run "expected-run"/, projection);
+    // The provider run this dispatch existed to create never appeared: a launch failure,
+    // drawn as "did not start" rather than vanishing from the board.
+    assert.equal(launchFailureOutcome(task!), "not-started", projection);
+    assert.equal(task?.launchFailure?.sessionKept, false, projection);
   }
 });
 

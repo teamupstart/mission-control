@@ -205,7 +205,8 @@ test("the default-on notice appears once and its dismissal survives a daemon res
   await dashboard.reload();
   const notice = dashboard.getByRole("status", { name: "Organization telemetry notice" });
   await expect(notice).toBeVisible();
-  await expect(notice).toHaveText(/^Telemetry is enabled by your organization for Claude and Codex\./);
+  await expect(notice).toContainText("Mission Control usage telemetry is enabled by your organization.");
+  await expect(notice).toContainText("Prompts, code, file paths, terminal output and names are excluded.");
   await expect(notice).not.toContainText("Upstart");
   await expect(notice.getByRole("link", { name: "View telemetry" })).toHaveAttribute("href", "#/settings/telemetry");
   await shoot(dashboard, "00-default-on-notice");

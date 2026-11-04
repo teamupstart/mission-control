@@ -32,6 +32,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](sessions.md#the-ask-channel)'s `--mcp-config`. What a bad path costs depends on what the launch asked for. An ordinary dispatch degrades quietly: the channel is skipped entirely and the session keeps Claude's built-in menu. A launch that **requires** Mission MCP tools - every scout, every ensemble member - is refused before the agent spawns instead, because a session that cannot submit its result cannot finish its normal task contract. A human may later confirm closing a scout without its report, but dispatch does not start work expecting that exception. Both launch failures are refusals: a path that does not exist, and a bundle that exists but does not publish a required tool. The daemon also reports the second at startup - see [Adding or changing a tool means rebuilding the bundle](sessions.md#review-channel-mcp). The Pi extension bakes this resolved absolute path at build time and honors the override at runtime |
 | `MISSION_GH_BIN` | `gh` | the GitHub CLI used by every GitHub subprocess, including [public product issue reporting](sessions.md#review-channel-mcp), task sources, pull-request polling, and GitHub Inspector. Mission Control passes fixed arguments directly and stores no GitHub credential; authentication remains in the CLI selected here. Product-report screenshots require version 2.99.0 or newer; text-only product reports remain available on older versions |
 | `MISSION_JIRA_BIN` | `jira` | the [Jira CLI](dispatch-and-backlog.md#jira) used by every `jira` subprocess: a Jira task source's sweep, and the comment, remote link and transition its [write-back](dispatch-and-backlog.md#jira) sends. Mission Control passes fixed arguments and stores no Jira credential; the CLI keeps its own. Point it at a wrapper script to change how it is invoked - and note that this is the seam the browser suite redirects at a fake, because a write-back **moves an issue** on somebody's board and an unfaked binary on a machine that ran `jira init` would do it for real |
+| `MISSION_ACLI_BIN` | `acli` | the [Atlassian CLI](dispatch-and-backlog.md#jira) used by acli Jira sources for auth status, sweeps, preflight and linked reads. Uses acli's own OAuth login; no Jira environment variables or stored Mission Control credential. Read per call, empty means unset. The browser suite redirects this seam at a recording fake |
 | `MISSION_PROFILES_BIN` | `/usr/bin/profiles` | macOS's configuration-profile tool. Mission Control runs only `profiles status -type enrollment`, read-only and bounded, to recognize a Mac its [organization manages](observability.md#organization-defaults). Never run on other platforms |
 | `MISSION_ORGANIZATION` | unset | Diagnostic override for [organization defaults](observability.md#organization-defaults). `none` turns organization detection off. An organization id (`upstart`) forces that organization, bypassing detection, but only together with a loopback `MISSION_ORGANIZATION_ENDPOINT`. Otherwise the force is ignored and logged. Not a Settings control |
 | `MISSION_ORGANIZATION_ENDPOINT` | unset | The collector a forced `MISSION_ORGANIZATION` sends to, replacing the organization's own endpoint. Must be an `http(s)` URL on this machine, so a forced organization can never reach a real gateway |
@@ -49,6 +50,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 | `JIRA_EMAIL` | unset | Jira task sources: the account the token belongs to. Jira basic auth is the **pair** - one without the other is reported by name in the source's preflight rather than failing as a bad password |
 | `JIRA_ALLOWED_HOSTS` | unset (Jira Cloud only) | [Jira task sources](dispatch-and-backlog.md#jira): extra hosts the REST rung may send `JIRA_API_TOKEN` to, comma-separated; `*.example.internal` allows a whole domain. Without it the credential goes only to `*.atlassian.net`, so a lookalike host - or a config written by something other than you, since the config route is localhost-reachable and dispatched agents share the machine - cannot aim the token elsewhere. Read bare, like the credential itself: widening the target and holding the token are then the same act of trust. Does not affect the `jira` CLI, which uses its own credentials |
 | `MISSION_SCOUT_RECONCILE_MS` | `60000` | [Archives](archives.md): how often the daemon rescans `$MISSION_HOME/archives`, and the legacy `$MISSION_HOME/scouts`, for new, changed, or removed bundles. The scan is the AUTHORITY - a filesystem watcher runs beside it as a latency hint, and watchers drop events on exactly the synchronised directories foreign bundles arrive through. Each pass is jittered by up to 20% so several daemons, or a daemon and a sync tool, do not settle into lockstep. An unchanged bundle costs one `stat`, so the steady-state cost is proportional to the number of archives rather than their size. `0` (or any non-positive value) turns recurring reconciliation off, leaving only the bootstrap pass and the watcher; an unparseable value falls back to the default |
+| `MISSION_RESIDENT_LAUNCH_WAIT_MS` | `120000` | [Residents](residents.md): how long a resident launch request waits for its session to start before answering "still starting". Dispatch asks to be answered once the launch is accepted, meaning its task exists, and closes then; that wait has its own bound and is not shortened by this value. The launch carries on either way, and the dock keeps its request id and replays it until the launch settles, so a lower value never creates a second resident. Non-negative integers only; anything else uses the default |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `MISSION_RETRO_SCAN_MS` | `10000` | [Repository memory](repository-memory.md#when-the-dashboard-offers-one): how often to look for a human turn beyond a live session's opening brief, which is half of whether the dashboard offers that session a retro. Far cheaper than the interval suggests: a session that has already flipped is never read again, and one whose transcript has not grown costs a single `stat`. `0` switches transcript scanning off entirely - the other half of the condition, resolved GitHub Inspector findings, comes out of a ledger query that runs anyway and keeps working |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one - though setting `MISSION_HOME` is the better isolation, because it covers every harness at once and so covers the ones added later. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own Skills selection could change the real install's links. Under the `node --test` runner a reconcile pass over any of the three real directories below is **refused outright**, whatever the config says: pinning one variable and forgetting the others is how `npm run test` came to silently uninstall the machine's live Codex and Pi skills on every run |
@@ -93,7 +95,7 @@ See [archive submission authentication](archives.md) for the live-binding checks
 
 Every configurable built-in command is declared in the executable catalog. Its override uses
 `MISSION_<TOOL>_BIN`, then the compatible `FLEET_` and `HARNESS_` forms. This applies to agent
-CLIs, `gh`, Git, Node.js, npm, Jira, Conductor, the legacy Treehouse bridge, terminal backends,
+CLIs, `gh`, Git, Node.js, npm, Jira, Atlassian CLI, Conductor, the legacy Treehouse bridge, terminal backends,
 desktop launchers, and the bounded process utilities Mission Control invokes. Existing raw `WEZTERM_BIN`, `CMUX_BIN`,
 `GHOSTTY_BIN`, and `ITERM_BIN` values remain supported after the prefixed chain, as does
 `FOREMAN_CLAUDE_BIN` for Claude. An override may be an absolute executable or a command name
@@ -238,7 +240,8 @@ the rest of `MISSION_HOME`.
 
 Format v1 includes normalized values for every registered setting, including schema defaults,
 plus every active or archived operator-owned Persona, session action, Workflow definition, its
-immutable published versions, and all four Command slots. Built-in catalog items are supplied by
+immutable published versions, and all five Command slots, including timeout and skip-or-block
+policies. Built-in catalog items are supplied by
 the application and are not copied. Snapshots also exclude tasks, queues, schedules, sessions,
 workflow bindings and runs, reviews, telemetry and spend history, operational away or lease state,
 derived reload generations, credentials, tokens, and environment secrets.
@@ -369,3 +372,48 @@ Shipping stores `codeRabbitAutoResolve` as a default-false boolean in its existi
 Settings snapshots include it; restoring an older snapshot leaves it off. It authorizes only
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+
+### CodeRabbit workflow reviews
+
+`MISSION_CODERABBIT_BIN` (with the existing `FLEET_`/`HARNESS_` compatibility prefixes) selects
+the CodeRabbit executable through the shared locator. Supported locations include
+`~/.local/bin/coderabbit` and `~/.coderabbit/bin/coderabbit`. Setup reports selected path/source,
+version and stored-auth readiness. Managed probes and reviews disable CLI auto-update with
+`CODERABBIT_CLI_DISABLE_AUTO_UPDATE=true`. Credentials are never accepted in visible Command argv;
+use stored CLI authentication in the daemon's effective HOME. Check environment credential
+stripping remains in force, while proxy and locale settings are preserved.
+
+Root `.coderabbit.yaml` explicit boolean enablement is frozen with each submission. Optional
+Library repository-root base/severity tuning shares the normal CAS catalog, settings backups
+and legacy-write preservation. Defaults are major, observed origin/HEAD, 45 minutes and ten
+executions. Enabled unavailable reviews block with Setup diagnostics; exhausted allowance
+always warns and skips. See [workflow behavior](workflows.md#local-coderabbit-command).
+
+## Mission Control MCP trust
+
+After installing the Mission Control MCP integration, open **Settings > Setup > Agent
+extensions** and use **Trust Mission Control in Claude Code** or **Trust Mission Control in
+Codex**. Each row reads the current user settings; viewing Setup never changes them.
+
+- Claude Code adds `mcp__mission-control__*` to `permissions.allow` in
+  `~/.claude/settings.json` (honoring `CLAUDE_CONFIG_DIR` and the installer's
+  `CLAUDE_SETTINGS_PATH` override). Existing allow, ask and deny rules remain.
+- Codex sets `default_tools_approval_mode = "approve"` in the existing
+  `[mcp_servers.mission-control]` table in `~/.codex/config.toml`, honoring `CODEX_HOME`.
+  It requires an installed server registration and preserves per-tool overrides.
+
+These are server-specific defaults, including for auto mode. They do not change sandboxing,
+global approval policies, other MCP servers or explicit restrictions. Managed and project
+settings can take precedence. Restart agent sessions after applying the change. Ready means
+the user-level default is present, not that every effective policy permits every tool.
+
+Repairs preserve comments and unrelated settings and keep the previous file in a private
+`<settings-file>.mission-migration-<id>/attempt-*/original` recovery copy. Repeating a
+satisfied repair writes nothing. Invalid files are reported as Unknown and left untouched.
+Repairs that would change a symlinked settings file are refused before creating recovery files;
+an already satisfied symlinked file remains Ready.
+Codex TOML with a custom dotted or inline server layout may require setting the value
+manually in the server table.
+
+The settings follow the upstream [Claude MCP permission syntax](https://code.claude.com/docs/en/permissions#mcp)
+and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).

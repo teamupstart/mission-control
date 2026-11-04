@@ -1,3 +1,5 @@
+import { ScheduleNextIterationSchema } from "@shared/residents.ts";
+import { scheduleResidentIteration } from "./resident-pacing.ts";
 import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
@@ -33,16 +35,21 @@ import {
   productIssueClientFromEnvironment,
   type ProductIssueRequest,
 } from "@shared/product-issues.ts";
-import { reportProductFeedback, reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
-import { GetWorkflowRunSchema, ListWorkflowRunsSchema, WorkflowMcpActionSchema } from "@shared/workflow-mcp.ts";
+import {
+  GetWorkflowRunSchema,
+  ListWorkflowRunsSchema,
+  ReadWorkflowCommandOutputMcpSchema,
+  WorkflowMcpActionSchema,
+} from "@shared/workflow-mcp.ts";
 
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
@@ -255,6 +262,18 @@ server.registerTool("get_workflow_run", {
   }
 });
 
+server.registerTool("read_workflow_command_output", {
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  inputSchema: ReadWorkflowCommandOutputMcpSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
 server.registerTool("trigger_workflow_action", {
   description: "Execute your own workflow's dashboard controls: grant repair rounds, cancel, retry, resubmit (resubmitUnchanged explicitly reviews unchanged work), restart, prepare PR, recheck Inspector, toggle nodes, set/remove Persona feedback, recover/retry/override evidence readiness, retry/resolve delivery, submit a binding (also Run again), reattach, or start a session review. Controlling another session's workflows requires the operator's Control other sessions opt-in on YOUR session. Inspect get_workflow_run first. Reuse the same requestId when retrying the same intent after a lost response; use a new id for a new intent. Confirmations, acknowledgedRisk, delivery target identity, limits and dashboard state checks remain enforced. Failures return without automatic retry or fallback.",
   inputSchema: WorkflowMcpActionSchema,
@@ -293,27 +312,6 @@ server.registerTool(
 );
 
 server.registerTool(
-  "share_plan",
-  {
-    title: "Share a plan with the human",
-    description:
-      "Display a readable markdown plan in the Mission Control dashboard for the human to skim. Returns immediately without waiting.",
-    inputSchema: {
-      title: z.string().describe("Short title for the plan"),
-      plan: z.string().describe("The plan as GitHub-flavored markdown"),
-    },
-  },
-  async ({ title, plan }) => {
-    try {
-      await createReview("plan", title, plan);
-      return textResult("Plan shared to the Mission Control dashboard.");
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
-  },
-);
-
-server.registerTool(
   "request_plan_decisions",
   {
     title: "Present a plan with selectable decisions",
@@ -321,7 +319,9 @@ server.registerTool(
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
       "human can resolve by selecting options and clicking Submit, or dismiss without an " +
       "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
-      "their selections or an explicit dismissal so you can proceed appropriately. Use this " +
+      "their selections or an explicit dismissal so you can proceed appropriately. The human " +
+      "may move any decision to chat instead of choosing; the result then names it and says " +
+      "how to discuss it, and you must not decide or re-ask it. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
       "expressed as options.",
     inputSchema: {
@@ -410,6 +410,7 @@ function taskConfiguration(task: Task) {
     agent: task.agent,
     model: task.model,
     effort: task.effort,
+    advisorModel: task.advisorModel,
     workflowId: task.workflowId,
     enabled: task.enabled,
     priority: task.priority,
@@ -426,9 +427,10 @@ server.registerTool(
       "Create one task in the Mission Control backlog without launching it. Ship is the default kind. It targets the current repository " +
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
-      "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
+      "Set agent (harness), model, effort, advisorModel (Claude only), kind, workflowId, enabled (backlog autopilot), priority, " +
       "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
-      "model/effort follows launch-time defaults. Null workflowId opts out of an after-work workflow. " +
+      "model/effort follows launch-time defaults, and omitted or null advisorModel inherits the operator's " +
+      "Claude settings. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
@@ -564,9 +566,9 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
-      "repository, and additionalRepositories. Null model/effort clears the override; changing " +
-      "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
+      "model, effort, advisorModel, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "repository, and additionalRepositories. Null model/effort/advisorModel clears the override; changing " +
+      "agent clears omitted model/effort/advisorModel overrides. Null workflowId opts out of the workflow; " +
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +
@@ -637,7 +639,9 @@ server.registerTool(
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
       "they resolve it. Without `options`, they answer in free text or dismiss without an " +
       "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. " +
+      "the tool returns their answer, selections, or an explicit dismissal. They may also " +
+      "choose to chat about it instead; the result then says so and how to proceed, and you " +
+      "must not decide or re-ask the question yourself. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks.",
     inputSchema: {
@@ -666,6 +670,17 @@ server.registerTool(
     },
   },
   async ({ question, options, multiSelect, allowOther }, extra) => {
+    // Refused before any review exists: a card the human cannot answer would leave this call,
+    // and the session, waiting on something nobody can resolve. The daemon's schema enforces
+    // the same rule; checking here first lets the agent read why instead of a transport error.
+    const problem = inputQuestionProblem(question, options);
+    if (problem) {
+      return textResult(
+        `Not asked: ${problem}. Nothing was shown to the human and nothing is waiting on them. ` +
+          "Fix the question and call request_input again.",
+        true,
+      );
+    }
     try {
       // Option ids are positional and generated here rather than asked of the agent. The
       // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
@@ -700,7 +715,7 @@ server.registerTool(
   },
 );
 
-// Both MCP entry points use the dashboard's report contract and daemon service.
+// The MCP entry point uses the dashboard's report contract and daemon service.
 const productIssueTransport = {
   requestId: randomUUID,
   preview: async (request: ProductIssueRequest) => responseResult(await http(
@@ -712,28 +727,6 @@ const productIssueTransport = {
     { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
   )),
 };
-
-server.registerTool(
-  "report_product_feedback",
-  {
-    title: "Report product feedback",
-    description:
-      "Report product feedback about Mission Control as a public GitHub issue only after the user " +
-      "explicitly asks you to report it. Publishes automatically without a second dashboard approval " +
-      "and returns the issue URL. Choose the report type from the user's request. " +
-      "Include only public-safe details, never secrets, private repository content, or personal data. " +
-      "Optional attachmentUploadIds must be daemon-issued screenshot ids, never filesystem paths.",
-    inputSchema: ProductIssueDraftSchema.shape,
-  },
-  async (draft) => {
-    try {
-      const result = await reportProductFeedback(draft, PRODUCT_ISSUE_CLIENT, productIssueTransport);
-      return textResult(result.text, result.isError);
-    } catch (err) {
-      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
-    }
-  },
-);
 
 server.registerTool(
   "report_product_issue",
@@ -784,7 +777,7 @@ server.registerTool(
 
 // Answer one line comment a human left on a file, in the thread it was written in.
 //
-// Non-blocking and `share_plan`-shaped: no `extra`, no long poll. The agent posts its answer
+// Non-blocking: no `extra`, no long poll. The agent posts its answer
 // and carries on with the work the comment asked for - waiting on a human here would stall the
 // very turn the comment exists to steer.
 server.registerTool(
@@ -1073,6 +1066,14 @@ server.registerTool("get_pull_request_policy", {
   } catch (error) {
     return textResult(`Could not read pull request policy: ${String(error)}`, true);
   }
+});
+server.registerTool("schedule_next_iteration", {
+  description: "Set the next resident wake delay within your pinned profile bounds. During a turn the delay starts at completion. Returns a callId; replay that id after any unknown outcome to read the original receipt safely. A new callId is a new intent.",
+  inputSchema: ScheduleNextIterationSchema.extend({ callId: z.string().min(1).max(200).optional() }).shape,
+}, async (input) => {
+  const result = await scheduleResidentIteration(input, (body, signal) =>
+    http("/mcp/residents/schedule-next-iteration", "POST", body, true, signal));
+  return textResult(JSON.stringify(result), "code" in result);
 });
 server.registerTool("get_plan_context", {
   description: "Resolve the registered session's repository plan policy and local preview store. Call before authoring a managed plan. A missing registration refuses; never fall back to unmanaged HTML writes.",

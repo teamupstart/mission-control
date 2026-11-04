@@ -2,6 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
   codexSdkSpec,
@@ -167,8 +170,9 @@ function defaultReplies(overrides: Record<string, unknown> = {}) {
 async function launch(
   server: FakeServer,
   opts: Partial<Parameters<ReturnType<typeof codexSdkSpec>["launch"]>[0]> = {},
+  connectArgs?: string[][],
 ): Promise<{ handle: SdkSessionHandle; events: SdkEvent[]; drained: Promise<void> }> {
-  const spec = codexSdkSpec({ connect: async () => server });
+  const spec = codexSdkSpec({ connect: async (args) => { connectArgs?.push([...args]); return server; } });
   const handle = await spec.launch({
     cwd: "/work/repo",
     stateHome: "/tmp/mission-sdk-state",
@@ -192,6 +196,43 @@ async function launch(
 
 /** Let queued microtasks and the event pump settle. */
 const settle = () => new Promise((r) => setTimeout(r, 5));
+
+test("a resumed resident retains its measured native backstop after the catalog disappears", async t => {
+  const home = mkdtempSync(join(tmpdir(), "codex-resident-backstop-"));
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  t.after(() => { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; rmSync(home, { recursive: true, force: true }); });
+  const options = { model: "test-model", residentCompaction: { threshold: 70 } };
+  await assert.rejects(launch(new FakeServer(defaultReplies()), options), /context window is unavailable/);
+  const path = join(home, "models_cache.json");
+  writeFileSync(path, JSON.stringify({ models: [{ slug: "test-model", context_window: 272_000, effective_context_window_percent: 95 }] }));
+  const args: string[][] = [];
+  const first = await launch(new FakeServer(defaultReplies()), options, args);
+  assert.equal(first.handle.residentCompactionTokenLimit, 180880);
+  await first.handle.stop(); await first.drained;
+  rmSync(path);
+  const server = new FakeServer(defaultReplies());
+  const resumed = await launch(server, { ...options, prompt: "", resume: THREAD.id,
+    residentCompaction: { threshold: 70, tokenLimit: first.handle.residentCompactionTokenLimit } }, args);
+  assert.equal(server.calls("thread/resume").length, 1);
+  assert.equal(server.calls("turn/start").length, 0, "restoration does not repeat the opening turn");
+  assert.equal(resumed.handle.residentCompactionTokenLimit, 180880);
+  for (const call of args) assert.ok(call.includes("model_auto_compact_token_limit=180880"));
+  await resumed.handle.stop(); await resumed.drained;
+});
+
+test("resident compaction uses thread/compact/start and measured contextCompaction completion", async () => {
+  const server = new FakeServer(defaultReplies({ "thread/compact/start": {} }));
+  const { handle, drained } = await launch(server, { prompt: "" });
+  const operation = handle.compact!("focus");
+  await settle();
+  assert.deepEqual(server.calls("thread/compact/start")[0]?.params, { threadId: THREAD.id });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "fixture-compact", status: "inProgress" } });
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/codex-manual.json", import.meta.url), "utf8")) as Array<{ method: string; params: Record<string, unknown> }>;
+  for (const frame of fixture) server.notify(frame.method, { ...frame.params, threadId: THREAD.id });
+  assert.deepEqual(await operation, { contextTokens: 14385, contextWindow: 258400 });
+  await handle.stop(); await drained;
+});
 
 test("a launch initializes, starts a thread, binds it, and delivers turn one", async () => {
   const server = new FakeServer(defaultReplies());
@@ -1758,7 +1799,7 @@ test("the shipped app-server wrapper adds no config after the launch argument ch
 test("an approval prompt leads with the reason and shows what is being run", () => {
   assert.equal(
     commandApprovalPrompt({
-      threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: "local",
+      kind: "command", threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: "local",
       reason: "Allow me to create the file?", command: "printf yes > f", cwd: "/work/repo",
     }),
     "Allow me to create the file?\n\nprintf yes > f\nin /work/repo",
@@ -1767,7 +1808,7 @@ test("an approval prompt leads with the reason and shows what is being run", () 
   // always a sentence even when the agent gave no reason.
   assert.equal(
     commandApprovalPrompt({
-      threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: null,
+      kind: "command", threadId: "t", turnId: "u", itemId: "i", startedAtMs: 0, environmentId: null,
     }),
     "Codex wants to run a command.",
   );
@@ -1775,7 +1816,7 @@ test("an approval prompt leads with the reason and shows what is being run", () 
 
 test("a question with no options remains available for a custom answer", () => {
   const questions = userInputQuestions({
-    threadId: "t", turnId: "u", itemId: "i", autoResolutionMs: null,
+    threadId: "t", turnId: "u", itemId: "i", autoResolutionMs: null, isBlocking: true,
     questions: [
       { id: "a", header: "H", question: "Pick one", isOther: false, isSecret: false, options: [{ label: "x", description: "why x" }] },
       { id: "b", header: "", question: "Free text", isOther: true, isSecret: false, options: null },
@@ -1923,7 +1964,7 @@ test("the activity line says what the session is doing, on one line", () => {
     "npm test --watch",
   );
   assert.equal(
-    itemActivity({ type: "agentMessage", id: "m", text: "\nI'll run that.\nThen report.", phase: null, memoryCitation: null }),
+    itemActivity({ type: "agentMessage", id: "m", text: "\nI'll run that.\nThen report.", phase: null, memoryCitation: null, delivery: null, questions: null }),
     "I'll run that.",
   );
   assert.equal(itemActivity({ type: "reasoning", id: "r", summary: [], content: [] }), "Thinking");
@@ -1936,4 +1977,92 @@ test("an image rides as a local path, and the text follows it", () => {
     { type: "localImage", path: "/state/up/1.png" },
     { type: "text", text: "what is wrong here?", text_elements: [] },
   ]);
+});
+
+test("a turn Codex failed at capacity reports the failure on turn_done; other endings do not", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  const capacity = "Selected model is at capacity. Please try a different model.";
+
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-1", status: "failed", error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // A failure Codex will retry itself, then an interrupted turn: neither owes a retry here.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-2",
+    willRetry: true,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2", status: "interrupted", error: null } });
+  // The backstop path: the `error` frame alone carries the failure when the turn closes idle.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-3" } });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "active", activeFlags: [] } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-3",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  // A turn that failed for another reason owes no retry: only capacity is retried.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-4" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-4", status: "failed", error: { message: "Your access token could not be refreshed.", codexErrorInfo: "unauthorized", additionalDetails: null } },
+  });
+  // An earlier capacity notice does not outlive a final error that says something else...
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-5" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-5",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-5", status: "failed", error: { message: "Bad request.", codexErrorInfo: "badRequest", additionalDetails: null } },
+  });
+  // A failure with no message is not capacity unless Codex's own code says so.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-7" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-7", status: "failed", error: { message: "", codexErrorInfo: "internalServerError", additionalDetails: null } },
+  });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-8" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-8", status: "failed", error: { message: "", codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // ...but fills in for a failed turn that completed without a final error.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-6" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-6",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-6", status: "failed", error: null } });
+  await settle();
+
+  const done = events.filter((e) => e.kind === "turn_done");
+  assert.deepEqual(
+    done.map((e) => e.kind === "turn_done" ? e.failure ?? null : null),
+    [
+      { kind: "capacity", message: capacity },
+      null,
+      { kind: "capacity", message: capacity },
+      null,
+      null,
+      null,
+      { kind: "capacity", message: "Selected model is at capacity." },
+      { kind: "capacity", message: capacity },
+    ],
+  );
+  await handle.stop();
+  await drained;
 });

@@ -309,6 +309,20 @@ recovery directories. A failure after receipt commitment needs forward recovery;
 launch an older app against potentially migrated state. Signed publication and real packaged
 qualification remain required before this route can be declared release-ready.
 
+### `update.log` says `invalid requirement specification`
+
+The banner reads **Binary verification failed**, and `update.log` shows `codesign ... -R anchor
+apple generic ...` failing with `No such file or directory` and `invalid requirement
+specification`. The installed app was built from `main` after #1216 and before #1225. Its
+updater passes the publisher requirement without the leading `=`, so `codesign` reads it as a
+file path and never checks the signature. The downloaded build is not at fault. **Retry** cannot
+succeed, because the updater that fails is part of the installed app.
+
+Quit Mission Control and run the installer command from the [README](../README.md#installation)
+once, with `--channel alpha` if you follow `main`. It replaces the app in the same folder and
+keeps the state home. Later in-app updates use the corrected check. Installs from before #1216
+update from source and are unaffected.
+
 ## Mission Control is not open anymore, or an update relaunch fails
 
 A Dock error saying **The application "Mission Control" is not open anymore**, especially with

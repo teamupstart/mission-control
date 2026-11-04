@@ -1,6 +1,7 @@
 import type { PlanDecision, PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
 import { selectedOptions } from "@shared/review-item.ts";
+import { ChatGlyph } from "./PlanDecisions.tsx";
 import { answeredDecisions, reviewAnswerVerb } from "../lib/reviews.ts";
 
 /**
@@ -102,10 +103,12 @@ function AnsweredDecision({
 }): React.JSX.Element {
   const chosen = new Set(selectedOptions(decision, answer).map((o) => o.id));
   const other = answer?.other?.trim() ?? "";
+  const note = answer?.note?.trim() ?? "";
   // A decision can be answered entirely in free text when `allowOther` is set, and a
   // dismissed review has no answer at all. Both are stated rather than left as an empty
   // block, so the reader is never shown a question with no visible outcome.
-  const nothingPicked = chosen.size === 0 && !other;
+  const movedToChat = answer?.chat === true;
+  const nothingPicked = chosen.size === 0 && !other && !movedToChat;
   return (
     <div className="review-answer-decision">
       {!labelledBy && (
@@ -142,7 +145,14 @@ function AnsweredDecision({
           {other}
         </p>
       )}
+      {movedToChat && <MovedToChat />}
       {nothingPicked && <p className="review-answer-none">No option chosen.</p>}
+      {note && (
+        <p className="review-answer-other review-answer-note">
+          <span className="review-answer-other-tag">Note</span>
+          {note}
+        </p>
+      )}
     </div>
   );
 }
@@ -156,7 +166,33 @@ function AnsweredDecision({
  * nothing more than the byline above already does, so the card simply ends there.
  */
 function ReviewAnswerProse({ review }: { review: ReviewItem }): React.JSX.Element | null {
+  // An open-ended question moved to chat: its response is the instruction the agent read,
+  // which is not something the human said. Show the fact, and any note they typed.
+  const chat = review.selections?.find((a) => a.chat);
+  if (chat) {
+    const note = chat.note?.trim();
+    return (
+      <>
+        <MovedToChat />
+        {note && (
+          <p className="review-answer-other review-answer-note">
+            <span className="review-answer-other-tag">Note</span>
+            {note}
+          </p>
+        )}
+      </>
+    );
+  }
   const text = review.response?.trim();
   if (!text) return null;
   return <p className="review-answer-text">{text}</p>;
+}
+
+function MovedToChat(): React.JSX.Element {
+  return (
+    <p className="review-answer-chat">
+      <ChatGlyph />
+      Moved to chat
+    </p>
+  );
 }

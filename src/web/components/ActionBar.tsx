@@ -4,7 +4,7 @@ import { PendingMessageDelivery } from "./MessageDelivery.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { canCycleMode, canInterruptSession } from "@shared/session.ts";
 import { canMessage, muxHandle } from "@shared/pane.ts";
-import { taskRequeueRefusal } from "@shared/task.ts";
+import { taskHasRepository, taskKindTerminalHandoffRefusal, taskRequeueRefusal } from "@shared/task.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { retroOffer, retroOutcome } from "../lib/retro-offer.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -178,6 +178,9 @@ export function ActionBar({
   // No pane to raise, so Focus is replaced rather than disabled: the affordance an embedded
   // session wants in that slot is the handoff that GIVES it one.
   const isEmbedded = session.runtime === "sdk";
+  // A resident stays in the Agent SDK. The daemon refuses the handoff on every path; the
+  // footer control says so rather than offering a click that cannot succeed.
+  const handoffRefusal = session.task ? taskKindTerminalHandoffRefusal(session.task.kind) : null;
   // Only a verified sole-pane home can be closed along with the agent.
   const killsMux = muxHandle(session);
   // Queued work is the reason to open a hidden panel, so the button carries the count
@@ -544,8 +547,8 @@ export function ActionBar({
         // toggleQueue and requestInterrupt, so `s`, `q` and ⌃C work.
         <>
           {isEmbedded ? (
-            <Tooltip label={HANDOFF_LABEL}>
-              <button className="act act-focus" onClick={handoff} disabled={busy === "handoff"}>
+            <Tooltip label={handoffRefusal ?? HANDOFF_LABEL}>
+              <button className="act act-focus" onClick={handoff} disabled={busy === "handoff" || handoffRefusal !== null}>
                 <Keycap action="handoff" /> {busy === "handoff" ? "opening…" : "terminal"}
               </button>
             </Tooltip>
@@ -556,7 +559,7 @@ export function ActionBar({
               </button>
             </Tooltip>
           )}
-          {session.cwd && onReset && (
+          {session.cwd && taskHasRepository(session.task ?? {}) && onReset && (
             <Tooltip
               label={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >

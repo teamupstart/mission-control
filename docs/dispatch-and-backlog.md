@@ -305,6 +305,13 @@ that the agent has answered, but it does not offer or send an automatic completi
 session stays live for later turns until you choose **Complete**. If you explicitly select a
 Workflow, that Workflow follows the same completion boundary and safeguards as other work.
 
+**resident** is not a choice in the Kind picker. A resident task is launched only from a
+[resident profile](residents.md), through **Dispatch > Resident**, and every other creation path -
+Single agent Dispatch, MCP `create_task`, a Recurring Mission, a task source, the backlog editors -
+refuses it. It always runs in the Agent SDK with its profile's harness, model and effort, receives
+its Persona and instructions as standing instructions, and, like chat, ends only when you choose
+**Complete & close**.
+
 **scout** also changes what "finished" means for that task: a scout is asked, in its own
 prompt, to write self-contained static reports at `docs/reports/<slug>/report.html`, one
 directory per report, and submit them. Normal completion requires at least one complete report
@@ -476,8 +483,10 @@ until you enable or manually launch it. **Dispatch now** still launches immediat
 Dependencies are chips
 with a grouped **+ Add dependency** picker rather than a multi-select listbox, and an
 unmet dependency raises an amber note beside them as well as renaming the primary button.
-The **Single agent / Ensemble** toggle sits in the modal header, since it reshapes the
-whole dialog. It is offered only on a new dispatch: editing a backlog task and the See the
+The **Single agent / Ensemble / Resident** toggle sits in the modal header, since it reshapes the
+whole dialog. **Resident** replaces the brief with profile cards, an optional repository, optional
+instructions for this run, a read-only summary of what the launch carries, and **Edit profile**;
+see [Residents](residents.md#launching-a-resident). It is offered only on a new dispatch: editing a backlog task and the See the
 work tour's dispatch preview show neither it nor the **Guided** switch, because neither form
 can become another kind of dispatch. Chat calls the fold **Task details** and omits dependencies because they would
 turn an immediate conversation into backlog work.
@@ -489,15 +498,43 @@ forced into the backlog. Every task or standalone active session completes only 
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
 repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. A dependency edge itself names the prerequisite's
-primary repository's pull request, but what releases it is the prerequisite's own
-completion, which is the stronger condition. The explicit completion override is the exception:
+ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
+edges are still checked for verified merges, including after a restart or session closure.
+An unresolved dependency also retains its earlier work episode's branch when the task moves
+on, so a PR first discovered on that historical branch can still release it. Branch discovery
+searches PR candidates within that episode's recorded ownership window, so a newer PR on a
+reused branch cannot hide the earlier one. A PR opened after completion can also qualify when
+its source head exactly matches a branch commit retained while the episode was active. These
+late-opened PRs stay in branch discovery until merged, so a force-push after discovery cannot
+bypass the final head check. If a linked PR closes without merging, a confirmed closure
+reopens discovery for a replacement under the same episode checks. The comparison uses the
+PR's source head, which also supports squash merges. Without that retained match, an unknown historical end or a PR created after
+completion stays unresolved; a later episode's merge does not release an edge pinned to
+earlier unmerged work.
+When the merge quorum is met, Mission Control saves the PR URL and satisfaction on each
+unresolved edge without rewriting the operator's outcome or repeating completion cleanup.
+For multi-repository work, each episode retains its repositories' change evidence before
+cleanup clears checkout paths and baselines. An edge pinned to a retained episode waits for
+that episode's full changed-repository quorum; another episode's partial delivery cannot
+complete it. New edges use the current episode's evidence. Legacy edges without surviving
+episode provenance retain task-wide recovery from verified merge evidence, never from a bare
+done status or outcome text.
+A dependency edge names the prerequisite's primary pull request, or a merged secondary
+from the same episode when the primary was unchanged. Its release still requires the
+prerequisite's full merge quorum. The explicit completion override is the exception:
 use it only when the prerequisite's work is already in place (see [Resolve a stopped
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
 their next work episode from an earlier merged PR. The board and Sitrep name what a task is
 waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
-Reopen the backlog task to add or remove dependencies; cycles are refused.
+Reopen the backlog task to add or remove dependencies; cycles are refused. Recorded merge
+completion remains visible even after the originating session disappears. A prerequisite
+required by a retained exact plan input names that plan and revision in the editor and cannot
+be removed while it is the pin's only matching prerequisite. Change the plan input and its
+prerequisite together through the task API to replace the pair. The editor keeps the pin intact.
+A rejected save leaves the draft open; if Dispatch now triggered the save, the error says that
+dispatch was not attempted. A launch refusal after a successful save is reported separately.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the
@@ -507,7 +544,9 @@ comes back seeded with that repo, not blank. A submit that fails leaves the form
 your fields intact so you can retry.
 
 A backdrop click closes the form only when both the press and release happen outside it.
-Selecting text inside the form and releasing the mouse outside keeps the form open.
+Selecting text inside the form and releasing the mouse outside keeps the form open. See
+[Overlays and shortcuts](agent-guides/change-contracts.md#overlays-and-shortcuts) for the
+shared backdrop rule.
 
 The form also reports what **your machine** would hand the agent. A dispatched session
 inherits your `~/.claude`, so a third-party plugin whose own setup is unfinished becomes the
@@ -712,6 +751,67 @@ nothing changes and the dialog says which task stopped it.
 **Delete…** asks once, in the bar, and then removes the selected tasks. Every task is checked
 before any is removed, so a selection that includes a task that has left the backlog deletes
 nothing. A task that still fails to go after that check is reported, and the rest are removed.
+
+### When a dispatch does not start
+
+Every dispatch shows a placeholder at the top of **Working** until its session exists: a launch
+from Dispatch, a Backlog task dispatched by you or by Foreman's autopilot, and a resident
+profile's Launch. A task filed by a recurring mission or by an MCP `create_task` waits in the
+Backlog first and gets its placeholder when it is dispatched from there. When the dispatch
+fails first, the failure is drawn where it happened instead of disappearing:
+
+- **Failed with no session** (any kind that cannot return to the Backlog, such as a chat or a
+  resident, and any failure after provisioning): the placeholder becomes a red **Did not
+  start** tile in the same place, on the Board and in the Console rail. It names the phase it
+  stopped in and prints the whole reason. Attempts of the same work that failed for the same
+  reason share one tile with an attempt count, so six launches of one resident read as one
+  problem.
+- **Back in Backlog** (a Backlog kind whose base or worktree step failed before anything was
+  provisioned): the task's Backlog card says **Did not start, back in Backlog** beside the
+  reason it already prints.
+- **Failed with its session kept** (a late failure, such as a first prompt that was not
+  delivered, where the dispatcher kept the agent and its worktree): the session's own card
+  says why. When the task was not yet bound to that session there is no card to carry it, so
+  it is drawn as a tile marked **Launch failed, session kept**. A kept failure never offers
+  Retry, because retrying re-files the task and reclaims the worktree its agent may be using.
+  It offers **Open** only when the task is bound to the kept session; an unbound one has no
+  session to open from here and offers just **Report bug** and **Dismiss**. Find the kept agent
+  through its terminal or Agent SDK session, or cancel the task, as its reason says.
+
+Every open failure always has exactly one place on screen. The Console layout has no Backlog
+column and its rows carry no notices, so there a failure that went back to the Backlog or kept
+its session is a row in the rail, beside the ones that never started. On the Board, a returned
+or kept failure whose card is hidden - a folded Backlog column, a fleet filter - is drawn as a
+tile instead.
+
+Each one offers the way back in for its kind - **Retry**, for a launch that kept nothing,
+dispatches a Backlog kind again as the same task and files a chat again as a new one; a resident offers **Launch again** and
+**Open profile**; a kept failure bound to its session offers **Open** - plus **Dismiss** on every
+failure, and **Report bug** on every failure except a report session's own (see below). The
+top bar counts open failures as **N did not start**, and a toast appears the moment one
+happens; it goes away as soon as its failure is dismissed or answered. Dismissing answers the
+failure without erasing it: the task keeps its reason. A failure also clears itself when the
+same work later starts - for a resident, a launch of the same profile, whatever it is named now
+and however many other profiles share its name; for anything else, the same kind, repository
+and title.
+
+**Report bug** asks first, then starts a Claude chat session named
+`Report: <title> did not start` in the repository you choose (the failed task's own by
+default). The daemon writes that session's brief from the failed task: its kind, agent, the
+phase it stopped in, the reason, and every attempt that failed the same way. The session
+reads the daemon log around those attempts and drafts a bug with
+[`report_product_issue`](sessions.md#review-channel-mcp), leaving out intents, profile
+instructions, paths, repository names, MCP URLs and secrets because the issue is public.
+Nothing is filed until you review the exact text and press **Submit public issue**. A report
+session is marked as one on its own task, so if it fails to start itself it never offers a
+Report bug of its own - even after the failure it was reporting has been retried. While a
+report session for that failure is running, the button reads **Open report session** instead
+of starting another.
+
+Only a launch failure carries this state. The dispatcher records it at the moment the
+dispatch fails, in `tasks.launch_failure`; a session that ran and was later lost to a restart
+or an exit is described in the next section and is never drawn as **Did not start**. Failures
+recorded before this existed are not shown.
 
 ### When a task's agent goes away
 
@@ -1085,6 +1185,99 @@ that harness offers it *for the model this launch resolved*. Codex drops `max` o
 but its newest two, so a `max` chosen for `plan` reaches a Codex launch on one of those and
 falls back to this card's default on the others rather than passing a flag the CLI rejects.
 
+### Advisor
+
+Claude Code's **advisor** lets the model a session runs on (the executor) consult a stronger
+model at key moments. The executor gets a server-side `advisor` tool; when it calls it, the
+Anthropic API forwards the conversation to the advisor model and hands its review back. Claude
+Code stores the choice as `advisorModel` in its settings, and `/advisor opus` (or `sonnet`, or
+`off`) sets it. Claude Code's own recommended pairing is Sonnet as the executor with Opus as the
+advisor.
+
+**Mission Control inherits it.** Both Claude runtimes load the operator's Claude Code settings:
+a Terminal pane starts the `claude` CLI with no settings-source restriction, and an Agent SDK
+session loads the user, project and local layers. So when `advisorModel` is set in
+`~/.claude/settings.json`, or in a project's `.claude/settings.json` or
+`.claude/settings.local.json`, every eligible Claude session Mission Control dispatches runs with
+that advisor. Codex and Pi have no advisor.
+
+**Eligibility is the CLI's decision, not Mission Control's.** The advisor works only:
+
+- on the first-party Anthropic API, not Bedrock or Vertex;
+- when the advisor feature is enabled for the account (a server-side flag, which
+  `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` overrides);
+- when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is not set, which turns it off completely;
+- when the advisor is at least as capable as the executor. An Opus session with a Sonnet advisor
+  does not consult it on the main conversation, though its subagents still may.
+
+**Typing `/advisor` writes your global settings.** In any Claude session, including the composer
+of an Agent SDK session, `/advisor` writes `advisorModel` to `~/.claude/settings.json`. That
+changes every Claude session you start afterwards, inside Mission Control and out of it.
+
+**Where you see it.** Each advisor call appears in the session's conversation as one line in
+both renderings. A review reads "Advisor (Opus 5.5) reviewed the conversation"; when the API
+returned the advisor's words, clicking the line shows them. The API can return the review
+encrypted, in which case there are no words to show. A refusal reads "Advisor declined to
+advise on this request", and a failed call reads "Advisor unavailable" with the API's error
+code. A session whose newest turn names an advisor model carries a read-only
+**Advisor: Opus 5.5** chip beside its model, on the board card and in the console header. The
+chip shows only what the transcript records, never what a settings file says, so a session that
+has not run a turn yet shows no chip even when an advisor is configured, and a turn that runs
+without the advisor (after `/advisor off`, for example) clears it.
+
+What the transcript records was observed on Claude Code 2.1.317 on 2026-11-03, from one
+captured headless turn that called the advisor: every assistant record of that turn, including
+the reply after the advisor call, carries a top-level `advisorModel`. So the chip appears from
+the first turn that calls the advisor. Whether Claude Code also stamps a turn that offered the
+advisor but did not call it is **inferred, not verified**: the CLI's code appears to stamp every
+record of a request that carries the advisor tool, but no such turn has been captured. If it does
+not, the chip shows only after turns that called the advisor, and clears after a turn that did
+not. A later Claude Code version may change either behaviour.
+
+**Spend.** Mission Control records the advisor's spend as Claude Code reports it. On Claude Code
+2.1.317, verified on 2026-11-03 from one captured headless result (Sonnet advised by Opus,
+committed as `test/fixtures/claude-advisor/result-frame.json`), the per-model usage
+(`modelUsage`) listed the advisor model, `claude-opus-5-5`, with its own token counts and reported
+cost. The per-model costs added up to the turn's `total_cost_usd`. So the session's cost and the
+usage ledger carry the advisor as its own model row next to the executor's. That is what one
+capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
+version may report it differently.
+
+#### Per-dispatch override
+
+The dispatch form's **Advisor** select pins one Claude task's advisor without changing any other
+session. It appears beside Effort only for a harness that declares an advisor, which today is
+Claude Code alone; Codex and Pi do not show it. The choices are:
+
+- **Inherit from Claude settings**, the default. Mission Control renders nothing, so the session
+  gets whatever your Claude Code settings name, exactly as it did before the select existed.
+- **Opus** or **Sonnet**. The launch carries `advisorModel` in Claude Code's session-scoped flag
+  layer: `--settings '{"advisorModel":"opus"}'` on a Terminal launch, and `Options.settings` on an
+  Agent SDK launch. That layer sits above your user, project and local settings for this session
+  only, and Mission Control never writes any settings file.
+- **Off**. The launch sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` in the session's environment,
+  the switch the eligibility list above says turns the advisor off completely, so it is expected
+  to apply even when your settings name one. The verified case is the variable beside an Opus pin
+  on the same launch, described below.
+
+The pin is stored on the task, so reopening a backlog task shows it and a save can change or
+clear it. Switching the task's agent clears it, along with the model and effort overrides. It
+also survives a resume: an Agent SDK session restarted by the daemon relaunches with the pin it
+started with, and continuing a conversation in a terminal renders the task's pin again.
+
+Mission Control does not check whether the pairing makes sense or whether your account has the
+advisor feature; it passes the pin and leaves both to the CLI, under the eligibility rules listed
+above. What was verified, on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched
+with an Opus pin marks Opus as the current choice in `/advisor`, where the same launch without the
+pin marks "No advisor", and that the Off variable removes the `/advisor` command even with an Opus
+pin on the same launch.
+
+How the CLI treats a pin that breaks the pairing rule (a Sonnet advisor on an Opus session, for
+example) or a pin on an account without the advisor feature is **inferred, not verified**: no
+such launch has been observed, so the session may ignore the pin, or the CLI may refuse to start.
+If the CLI refuses a launch outright, the refusal is reported as a launch failure. Fable is not
+offered as an advisor, and an advisor cannot be changed on a session that is already running.
+
 ### Session runtime
 
 **Each card's runtime select** chooses how a dispatched session of that harness is *driven*:
@@ -1145,7 +1338,7 @@ turning it on is consent. Per source:
 | **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries, plus whether backlog autopilot may schedule it. The agent may be left on **Inherit**, which takes the [task kind's agent](models.md#task-kinds) as each row is filed rather than pinning one here. **Allow backlog autopilot** starts **off**, so new tasks from this source arrive [parked](#hold-a-backlog-item-back) for review; they can still be enabled or launched manually. Turn it on once the source's upstream is curated enough to schedule unread |
 | **Sweep now** | run it once, right now, and see what it filed and refreshed |
 | **Keep imported backlog tasks updated** | off by default; refresh source details for unstarted backlog tasks on each sweep, preserving local edits and showing conflicts for review |
-| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
+| **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential, acli OAuth login, or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
 | **Delete source** | red button at the bottom of the source editor, beside the other source actions; removes the selected Jira or GitHub source |
 | **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
@@ -1321,7 +1514,7 @@ else, it never dispatches, and a task you delete stays deleted.
 | Field | Meaning |
 |---|---|
 | **Jira site** | your Jira Cloud host, e.g. `your-org.atlassian.net`. Paste a whole browser URL if it's easier - it is parsed and reduced to its host. Two refusals guard the credential: a value carrying one (`your-org.atlassian.net@elsewhere.example`) is **refused rather than reduced**, because that string names `elsewhere.example` as the server; and the REST rung will only authenticate to **Jira Cloud** unless you name the host in `JIRA_ALLOWED_HOSTS` (below). Defaults to `upstartnetwork.atlassian.net` |
-| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
+| **Query via** | **Jira CLI or API token** keeps the existing local credential ladder. **Atlassian CLI (acli)** uses acli's own OAuth login, with no Jira environment variables. **UpstartClaw Claude skill** invokes `upstartclaw-core:working-with-jira`, discovers the deferred Atlassian JQL tool, and calls it directly. The latter is deliberately limited to Upstart Jira and requires completed interactive UpstartClaw setup |
 | **JQL filter** | the query, exactly as Jira's own search bar takes it. **Blank sweeps nothing**, and the panel says so rather than letting it look healthy |
 | **Issues per page** | how many issues **one request** asks Jira for. Over REST a sweep keeps asking until the filter is exhausted, so this is a request size rather than a limit on what it finds; over the `jira` CLI it *is* the whole request, because that CLI cannot be asked for a second page (below). What actually gets *filed* is bounded by **Most tasks per sweep** above |
 | **Take each task's priority from the Jira issue's own** | maps Jira's priority onto the [task's](#priority-and-labels): Highest/Blocker/Critical/`P0` → Blocker, High/Major/`P1` → High, Medium/`P2` → Med, Low/Lowest/Minor/`P3`/`P4` → Low. A name from a custom scheme leaves the source's default in place rather than inventing one. Off, every swept task takes the source's default |
@@ -1356,7 +1549,7 @@ issue more than the page size, which is an exact test for whether anything follo
   saying the tail is out of reach and naming the two ways to change that (set the variables, or
   narrow the JQL). Work still arrives; it is just bounded, and it says so.
 
-**The query method is explicit, and neither method stores a secret.**
+**The query method is explicit, and no method stores a secret.**
 
 The local method uses this ladder:
 
@@ -1366,6 +1559,48 @@ The local method uses this ladder:
 2. Otherwise **`JIRA_API_TOKEN` + `JIRA_EMAIL`** from the daemon's own environment, against
    Jira's REST search API. Both are needed - basic auth is the pair - and neither is ever
    written to Mission Control's database.
+
+The **Atlassian CLI (acli)** method needs a one-time install and sign-in. **Settings → Setup →
+Jira** checks both and runs each in a visible terminal, or run them yourself:
+
+```sh
+brew install atlassian/acli/acli
+acli jira auth login --web
+```
+
+If Mission Control cannot find an installed acli, set `MISSION_ACLI_BIN` to its path. When a
+source's **Files tasks against** checkout has been moved or deleted, every check, sweep and
+write-back names that directory instead: the CLI starts in the checkout, and a missing working
+directory is refused with the same `ENOENT` a missing binary produces, so it is reported as
+its own fault rather than as "not installed".
+
+The contract behavior below was verified on **2026-11-02** with `acli version 1.3.40-stable`;
+see the [read-only capture record](../test/fixtures/acli/README.md). These are version-specific
+observations to recheck when updating acli.
+
+Select **Atlassian CLI (acli)** in **Query via**, set **Jira site** to the site acli is
+logged in to, and press **Check it works**. Every check, sweep and linked read first proves
+that `acli jira auth status` names that site. A missing, unknown or different active site
+files nothing and names the fix (`acli jira auth login --web` or `acli jira auth switch`).
+Search results carrying another public site's `self` URL also refuse the whole sweep. Captured
+[search responses](../test/fixtures/acli/search-one.json) instead carry internal
+`jira-prod-<region>-<number>-<number>.prod.atl-paas.net` HTTPS issue URLs. Those exact-format API links are normalized to the configured public site
+for browse links. They do not identify a tenant, so every search checks auth status again
+before returning any results; a changed, failed or unknown site discards the entire result.
+The CLI has no per-command site flag: switching to another site and back entirely during a
+search cannot be detected. Keep the active login stable while reads run. This method
+uses acli only, with no fallback to `jira` or `JIRA_API_TOKEN`, and Mission Control never
+reads acli's keychain entry or stores its OAuth credential.
+
+acli reads with `--paginate --limit 1001`: up to 1000 issues plus one probe row. The
+[paginated capture](../test/fixtures/acli/search-paginate.json) shows `--paginate` honoring the
+total `--limit` in the verified version; **Issues per page** does not change this acli bound.
+A larger filter files the bounded results and shows the
+existing too-broad advisory so you can narrow the JQL. Empty results are healthy. The
+same summary, ADF description, browse link and priority mapper serves every query method.
+
+For comments, pull request links, status moves and write-site safety, see
+[Writing the pull request back onto the issue](#writing-the-pull-request-back-onto-the-issue).
 
 The UpstartClaw method starts a fresh unattended Claude Code call with user settings enabled. It
 exposes only `Skill`, `ToolSearch`, and the five exact read-only `searchJiraIssuesUsingJql`
@@ -1455,10 +1690,10 @@ ticket is consent, not configuration. Two things can be written:
   what opened the pull request, the pull request's URL, the completion's own words when it
   left any, and the task's title. Nothing about Mission Control's internals goes in it.
 
-Both by default, because they answer different questions. A source can be set to one or the
-other.
+Both by default, because they answer different questions. A local source can be set to one
+or the other.
 
-**The remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
+**For the local method, the remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
 command at all, so on a CLI-only machine that half cannot run. The comment still goes, and
 the source reports what it did and what it could not - rather than failing the whole
 delivery, which would retry a comment that has no idempotency of its own and leave one per
@@ -1469,11 +1704,11 @@ refuses and says so, because then there is nothing it can do at all.
 project's own workflow decides both what finished is called and which transitions are
 reachable from where an issue is standing right now. So the status is per source and typed
 by a person - it cannot be inferred, and inferring it would move somebody's ticket somewhere
-they did not ask for. It is matched case-insensitively against both the transition's own
+they did not ask for. On the local method it is matched case-insensitively against both the transition's own
 name and the status it lands in, since the board shows one and the workflow button may say
 the other.
 
-When it does not fit, the refusal names the transitions that **are** available from where
+When it does not fit, the local method's refusal names the transitions that **are** available from where
 the issue is:
 
 ```
@@ -1486,7 +1721,7 @@ sends the reader to Jira's workflow administration screens to work out what this
 should have said. An issue already standing in the target status is reported as **already
 there** rather than transitioned again.
 
-**Resolving therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
+**Resolving through the local method therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
 them.** That list is the reason. The `jira` CLI can *move* an issue but cannot be asked what
 an issue is able to do - jira-cli ships no command that lists transitions, and its own move
 error prints them on recent versions and not on older ones. On a CLI-only machine the good
@@ -1496,6 +1731,38 @@ before it spawns anything, naming the credential as the fix. With the credential
 CLI still goes first, exactly as a sweep does, and only a move it *refuses* is handed to the
 credential rung - which then either performs it or refuses with the list above. Commenting
 and remote links are unaffected: `annotate` still works on the CLI alone.
+
+**acli write-back uses its OAuth login, with no Jira environment variables.** Every link style
+posts the Mission Control comment with a clickable pull request link. acli has no remote-link
+command: **Remote link and comment** and **Remote link only** report that link as unavailable
+while delivering the comment. A completion without a pull request still posts its comment.
+Only `https://github.com/<owner>/<repo>/pull/<number>` URLs receive a clickable link in an
+acli comment; query strings, fragments and a trailing slash are allowed. Other supplied
+completion URLs remain readable as plain text.
+Write diagnostics redact known credential shapes, Authorization fields, email addresses and SSN-like
+identifiers before reaching the ledger, logs or settings. Normal workflow reasons remain
+available; an unrecognized transition response is not copied into the diagnostic.
+No local CLI or REST credential fallback is attempted.
+
+Resolving reads the current status, moves to the configured **Target status**, and confirms it
+with another read. The Phase 1
+[read-only capture record](../test/fixtures/acli/README.md), verified on **2026-11-02** with
+`acli version 1.3.40-stable`, records `transitions: null` in both the
+[status view](../test/fixtures/acli/view-status.json) and
+[`*all` view](../test/fixtures/acli/view-all.json). These captures cover one issue in that
+version; transition data may differ for other issues, workflows or releases. Recheck when
+updating acli. On this evidence Mission Control skips an extra transition probe and moves by
+status name. If a status response supplies a transition list, it constrains the move. A configured
+status or a matched transition destination that is already current settles without writing. A refusal
+names the current status and quotes acli's reason, which may list reachable statuses. Select a
+reachable status in the source settings.
+
+Each write requires fresh positive proof of the configured site and checks it again afterwards.
+Status reads also check the site before and after. A missing, unknown or mismatched site before
+the write refuses without writing. A site change after a write, a killed write, or a failed
+confirming read reports an unknown outcome and is never retried automatically. Check the issue
+on both named sites before manually retrying a site mismatch. The verified CLI version cannot
+pin a command to a site, so switching away and back entirely within a command remains undetectable.
 
 Everything else about a resolve is arranged around one rule: **an outcome that cannot be
 read is never retried automatically**. A refusal Jira actually sent means nothing was

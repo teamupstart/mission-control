@@ -71,6 +71,15 @@ test("allowOther adds a free-text field only where asked", () => {
   assert.equal(render().match(/placeholder="Other/g)?.length, 1);
 });
 
+test("allowNote puts an optional note box under every decision, and only when asked", () => {
+  assert.equal(render().includes("decision-note"), false, "off by default");
+  const html = renderToStaticMarkup(
+    createElement(DecisionForm, { decisions, busy: false, onSubmit: () => {}, allowNote: true }),
+  );
+  assert.equal(html.match(/<textarea[^>]*class="decision-note"/g)?.length, decisions.length);
+  assert.match(html, /aria-label="Note to the agent: Where should sessions live\?"/);
+});
+
 test("Submit starts disabled so the agent can't unblock on an empty form", () => {
   const html = render();
   assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);

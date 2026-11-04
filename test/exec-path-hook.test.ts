@@ -44,10 +44,14 @@ test("run passes manager precedence through to child hooks with env shebangs", a
           const shim = script(join(root, ...location, interpreter), "#!/bin/sh\nprintf 'managed runtime\\n'\n");
           try {
             await refreshProcessPathFromLoginShell({ force: true });
-            const result = await run(runner, [hook], { cwd: root });
+            // This asserts PATH precedence, not speed. `run` defaults to a 4s timeout, and a
+            // loaded host (a full suite beside other workflow Commands) took longer than that
+            // to exec three freshly written scripts - the kill then read as `1 !== 0` with an
+            // empty message.
+            const result = await run(runner, [hook], { cwd: root, timeoutMs: 60_000 });
+            assert.equal(result.outcomeUnknown, false, "the hook chain was killed before it exited");
             assert.equal(result.code, 0, result.stderr);
             assert.equal(result.stdout, "managed runtime\n");
-            assert.equal(result.outcomeUnknown, false);
           } finally {
             unlinkSync(shim);
           }

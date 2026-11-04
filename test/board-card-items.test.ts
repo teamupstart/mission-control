@@ -279,15 +279,50 @@ test("the panel's preview populates every item, so no checkbox looks broken", as
   }
 });
 
+/**
+ * The card's preview stage alone. The conversation header's preview below it draws the same
+ * fixture session - its goal and its path included, which the console header carries whatever
+ * the card's items say - so a whole-panel search would find the card's facts there.
+ */
+async function cardPreviewWith(hidden: readonly string[]): Promise<string> {
+  const html = await panelWith(hidden);
+  const start = html.indexOf('<div class="board-card-preview-stage" inert="');
+  const end = html.indexOf('<div class="conversation-header-preview"');
+  assert.ok(start >= 0 && end > start, "the card's preview should come before the header's");
+  return html.slice(start, end);
+}
+
 test("hiding an item leaves no trace of it in the preview", async () => {
   // Not merely "different": the fact itself is gone, rather than dimmed or emptied.
   const goalText = "Make the parser accept trailing commas";
-  assert.ok((await panelWith([])).includes(escaped(goalText)));
-  assert.ok(!(await panelWith(["goal"])).includes(escaped(goalText)));
+  assert.ok((await cardPreviewWith([])).includes(escaped(goalText)));
+  assert.ok(!(await cardPreviewWith(["goal"])).includes(escaped(goalText)));
 
   const worktreeLeaf = "parser-fix";
-  assert.ok((await panelWith([])).includes(worktreeLeaf));
-  assert.ok(!(await panelWith(["worktree"])).includes(worktreeLeaf));
+  assert.ok((await cardPreviewWith([])).includes(worktreeLeaf));
+  assert.ok(!(await cardPreviewWith(["worktree"])).includes(worktreeLeaf));
+});
+
+test("the conversation preview draws the band's cells, and drops the band with both off", async () => {
+  // The header's preview is the only picture the conversation items have, so each of its
+  // checkboxes has to move it - and the band goes whole, as the console's does, when nothing
+  // is left in it.
+  async function header(hidden: readonly string[]): Promise<string> {
+    const html = await panelWith(hidden);
+    const at = html.indexOf('<div class="conversation-header-preview"');
+    assert.ok(at >= 0, "the Display panel should mount the conversation header preview");
+    return html.slice(at, html.indexOf('<div class="working-preview"', at));
+  }
+  const all = await header([]);
+  assert.match(all, /<dt>path<\/dt>/);
+  assert.match(all, /<dd class="mono branch">mission\/fix-the-parser<\/dd>/);
+  const noPath = await header(["detailPath"]);
+  assert.doesNotMatch(noPath, /<dt>path<\/dt>/);
+  assert.match(noPath, /<dt>branch<\/dt>/);
+  const noBranch = await header(["detailBranch"]);
+  assert.match(noBranch, /<dt>path<\/dt>/);
+  assert.doesNotMatch(noBranch, /<dt>branch<\/dt>/);
+  assert.doesNotMatch(await header(["detailPath", "detailBranch"]), /class="detail-sub"/);
 });
 
 const SHIPS_HIDDEN = ["worktree", "workflowDetails"] as const;

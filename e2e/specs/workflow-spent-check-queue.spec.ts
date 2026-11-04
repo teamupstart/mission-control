@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
+import { WorkflowContextSnapshotSchema } from "../../src/shared/protocol.ts";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -37,7 +38,7 @@ const BLOCKER = {
 interface RunDetail {
   run: { status: string };
   summary: { round: number };
-  submissions: Array<{ id: string; round: number }>;
+  submissions: Array<{ id: string; round: number; context: unknown }>;
   attempts: Array<{
     submissionId: string;
     nodeId: string;
@@ -274,6 +275,14 @@ test("a spent repair-round Command skips while both execution slots are occupied
 
     await expect(dashboard.locator(".wf-run-scrubber"))
       .toContainText("Round 2", { timeout: 10_000 });
+    // The round exists while its evidence is still capturing. Start the admission
+    // assertion only once the frozen input exists, independently of capture latency.
+    await expect.poll(async () => {
+      const detail = await api<RunDetail>(daemon, `/api/workflow-runs/${affectedRun}`);
+      return detail.submissions.some((submission) => submission.round === 2
+        && WorkflowContextSnapshotSchema.safeParse(submission.context).success);
+    }, { message: "round 2 should finish capture before Command admission is measured", timeout: 60_000 })
+      .toBe(true);
     const testTile = dashboard.locator(".wf-pipeline-strip li.wf-pipeline-reviewer")
       .filter({ hasText: "test" });
     await expect(testTile).toContainText("Skipped", { timeout: 5_000 });

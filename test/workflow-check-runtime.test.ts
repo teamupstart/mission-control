@@ -14,11 +14,11 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
+import { emptyWorkflowCommandView, WORKFLOW_COMMAND_OUTPUT_LIMITS } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
@@ -32,6 +32,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { CheckLeaseManager, CheckLeaseStore } =
   await import("../src/server/workflows/check-lease.ts");
 const { CheckRuntime } = await import("../src/server/workflows/check-runtime.ts");
+const { WorkflowCommandArtifactService } =
+  await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
 const { ModeledCheckTreeProvider, checkHolderToken, pinModeledWorktree } =
@@ -42,6 +44,7 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 type TreehouseCli = import("./helpers/modeled-check-provider.ts").TreehouseCli;
 type CheckSpawnOutcome = import("../src/server/workflows/check-supervisor.ts").CheckSpawnOutcome;
+type ArtifactService = InstanceType<typeof WorkflowCommandArtifactService>;
 
 const db = openDb();
 const leaseRows = new CheckLeaseStore(db);
@@ -558,7 +561,7 @@ function fixedSupervisor(outcome: CheckSpawnOutcome): typeof import("../src/serv
   };
 }
 
-test("test commands get sixty minutes while typecheck keeps ten", async () => {
+test("slot defaults and a configured request timeout reach the supervisor", async () => {
   const { repoRoot, headSha } = gitRepo();
   const pool = fakePool(repoRoot, 1);
   const leases = new CheckLeaseManager(db, {
@@ -590,8 +593,162 @@ test("test commands get sixty minutes while typecheck keeps ten", async () => {
     assert.equal(outcome.kind, "exited");
   }
 
-  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000]);
+  const configured = await runtime.executorFor(attemptRef())({
+    slot: "build",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+    timeoutMs: 90 * 60_000,
+  });
+  assert.equal(configured.kind, "exited");
+
+  assert.deepEqual(timeouts, [60 * 60_000, 10 * 60_000, 90 * 60_000]);
 });
+
+test("an unavailable output directory does not prevent the Command from running", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `unavailable-command-output-${seq++}`);
+  mkdirSync(outputRoot, { recursive: true });
+  writeFileSync(join(outputRoot, ".tmp"), "not a directory");
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  let launched = false;
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      launched = true;
+      request.capture?.push("stdout", Buffer.from("command still ran\n"));
+      return {
+        result: { kind: "exited", exitCode: 0, output: "command still ran\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-output-failure-${seq++}` };
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(launched, true);
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.length, 2);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+test("a capped capture losing its temporary path preserves the Command verdict", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const pool = fakePool(repoRoot, 1);
+  const leases = new CheckLeaseManager(db, {
+    verifyBase: verifyPinnedBase,
+    acquisitionProvider: modeledProvider(pool.cli),
+  });
+  const outputRoot = join(home, `missing-capped-command-output-${seq++}`);
+  const artifacts = new WorkflowCommandArtifactService(db, outputRoot);
+  const runtime = new CheckRuntime(leases, {
+    artifacts,
+    leaseStore: leaseRows,
+    platform: () => ({ supported: true, note: "" }),
+    supervise: async (request) => {
+      request.capture?.push("stdout", Buffer.concat([
+        Buffer.alloc(WORKFLOW_COMMAND_OUTPUT_LIMITS.retainedBytesPerAttempt - 1, 120),
+        Buffer.from("🙂", "utf8"),
+      ]));
+      const stdoutTemp = readdirSync(join(outputRoot, ".tmp"))
+        .find((name) => name.includes("-stdout-"));
+      assert.ok(stdoutTemp);
+      rmSync(join(outputRoot, ".tmp", stdoutTemp), { force: true });
+      return {
+        result: { kind: "exited", exitCode: 0, output: "ok\n", truncatedBytes: 0 },
+        emptiness: "empty",
+        supervisor: null,
+      };
+    },
+  });
+  const ref = { ...attemptRef(), runId: `run-capped-output-failure-${seq++}` };
+
+  const outcome = await runtime.executorFor(ref)({
+    slot: "test",
+    command: PASSES,
+    repoRoot,
+    workingSubpath: "",
+    headSha,
+  });
+
+  assert.equal(outcome.kind, "exited");
+  assert.equal(outcome.kind === "exited" ? outcome.exitCode : null, 0);
+  assert.equal(outcome.kind === "exited" && outcome.artifacts?.every(
+    (artifact) => artifact.availability === "unavailable",
+  ), true);
+});
+
+for (const failurePoint of ["reservation", "finalization", "supervisor-and-finalization"] as const) {
+  test(`artifact ${failurePoint} database failure settles the lease before propagating`, async () => {
+    const { repoRoot, headSha } = gitRepo();
+    const pool = fakePool(repoRoot, 1);
+    const leases = new CheckLeaseManager(db, {
+      verifyBase: verifyPinnedBase,
+      acquisitionProvider: modeledProvider(pool.cli),
+    });
+    const databaseError = new Error("injected artifact database failure");
+    const supervisorError = new Error("injected supervisor failure");
+    class FailingArtifacts extends WorkflowCommandArtifactService {
+      override beginCapture(input: Parameters<ArtifactService["beginCapture"]>[0]) {
+        if (failurePoint === "reservation") throw databaseError;
+        return super.beginCapture(input);
+      }
+      override finalizeCapture(...args: Parameters<ArtifactService["finalizeCapture"]>) {
+        if (failurePoint !== "reservation") throw databaseError;
+        return super.finalizeCapture(...args);
+      }
+    }
+    let launched = false;
+    const runtime = new CheckRuntime(leases, {
+      artifacts: new FailingArtifacts(db, join(home, `metadata-failure-${seq++}`)),
+      leaseStore: leaseRows,
+      platform: () => ({ supported: true, note: "" }),
+      supervise: async () => {
+        launched = true;
+        if (failurePoint === "supervisor-and-finalization") throw supervisorError;
+        return {
+          result: { kind: "exited", exitCode: 0, output: "ok", truncatedBytes: 0 },
+          emptiness: "empty",
+          supervisor: null,
+        };
+      },
+    });
+    const ref = { ...attemptRef(), runId: `run-metadata-failure-${seq++}` };
+    await assert.rejects(runtime.executorFor(ref)({
+      slot: "test", command: PASSES, repoRoot, workingSubpath: "", headSha,
+    }), (error: unknown) => failurePoint === "supervisor-and-finalization"
+      ? error instanceof AggregateError
+        && error.errors[0] === supervisorError && error.errors[1] === databaseError
+      : error === databaseError);
+    assert.equal(launched, failurePoint !== "reservation");
+    if (failurePoint === "supervisor-and-finalization") {
+      assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "held");
+      // Unknown supervision cannot authorize release, but must drop this daemon's active
+      // claim so ordinary reclamation can settle it once the group is proven empty.
+      await leases.reclaimLeaked(async () => "empty");
+    }
+    assert.equal(leaseRows.get(ref.attemptId)?.cleanupState, "returned");
+    assert.equal(leases.unresolvedLeaseForNode(ref.submissionId, ref.nodeId), false);
+  });
+}
 
 test("an infrastructure result is not returned until the lease is resolved", async () => {
   const { repoRoot, headSha } = gitRepo();
@@ -849,6 +1006,7 @@ function seedCheckRun(
   id: string,
   repoRoot: string,
   headSha: string,
+  slot: WorkflowCheckSlot = "test",
 ): InstanceType<typeof WorkflowStore> {
   const context = contextAt(headSha);
   const defaults = JSON.stringify({ triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5 });
@@ -863,7 +1021,10 @@ function seedCheckRun(
        id, workflow_id, version, source_draft_revision, graph_json,
        completion_policy_json, binding_defaults_json, published_at
      ) VALUES (?, ?, 1, 1, ?, '{"kind":"none"}', ?, 1)`,
-  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify(checkGraph), defaults);
+  ).run(`version-${id}`, `workflow-${id}`, JSON.stringify({
+    ...checkGraph,
+    nodes: checkGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot } : node),
+  }), defaults);
   const store = new WorkflowStore();
   const binding = store.insertBinding({
     id: `binding-${id}`,
@@ -892,6 +1053,78 @@ function seedCheckRun(
   return store;
 }
 
+test("restart during CodeRabbit findings publication preserves raw output without completing the review", async () => {
+  const { repoRoot, headSha } = gitRepo();
+  const id = "coderabbit-publication-interrupted";
+  const store = seedCheckRun(id, repoRoot, headSha, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}` };
+  store.setRunState(ref.runId, "running", "persona_review");
+  store.insertAttempt({
+    id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4,
+  });
+  assert.deepEqual(store.reserveCheckRun(ref.runId, ref.attemptId, "coderabbit", 10, null),
+    { granted: true, spent: 0 });
+
+  const root = join(home, id);
+  const artifacts = new WorkflowCommandArtifactService(db, root);
+  const capture = artifacts.beginCapture({ ...ref, semanticBytes: 4 * 1024 * 1024 });
+  const finding = { type: "finding", severity: "minor", fileName: "root.txt", title: "Verify advisory",
+    comment: "This finding must survive in raw output when semantic publication is interrupted" };
+  const stdout = [finding, { type: "complete", status: "review_completed", outcome: "completed",
+    unreviewedFileCount: 0, findings: 1, gate: { threshold: "major", status: "passed", blockingFindings: 0 } }]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  const stderr = "review process exited before findings were published\n";
+  capture.push("stdout", Buffer.from(stdout));
+  capture.push("stderr", Buffer.from(stderr));
+  const raw = capture.finalize(true);
+  const reservation = () => db.prepare(
+    "SELECT state, retained_bytes FROM workflow_command_artifact_reservations WHERE attempt_id = ?",
+  ).get(ref.attemptId);
+  assert.equal((reservation() as { state: string }).state, "reserved");
+  assert.deepEqual(raw.map((artifact) => [artifact.kind, artifact.availability, artifact.captureState]),
+    [["stdout", "retained", "complete"], ["stderr", "retained", "complete"]]);
+
+  // Crash after raw finalization, before publishFindings: startup must preserve those
+  // bodies and publish an explicit missing-findings descriptor rather than trust stdout.
+  const restarted = new WorkflowCommandArtifactService(db, root);
+  const recovered = restarted.listForAttempt(ref.attemptId);
+  assert.deepEqual(recovered.filter((artifact) => artifact.kind !== "findings"), raw);
+  for (const [kind, text] of [["stdout", stdout], ["stderr", stderr]]) {
+    const artifact = recovered.find((item) => item.kind === kind)!;
+    assert.equal(restarted.read({ ...ref, artifactId: artifact.id }).text, text);
+  }
+  const findings = recovered.find((artifact) => artifact.kind === "findings");
+  assert.ok(findings, "CodeRabbit recovery must describe unpublished findings explicitly");
+  assert.equal(findings.availability, "unavailable");
+  assert.equal(findings.captureState, "partial");
+  assert.match(findings.unavailableReason!, /interrupted/);
+  assert.throws(() => restarted.read({ ...ref, artifactId: findings.id }),
+    { code: "command_output_unavailable", status: 409 });
+  assert.deepEqual({ ...reservation() }, {
+    state: "interrupted", retained_bytes: Buffer.byteLength(stdout) + Buffer.byteLength(stderr),
+  });
+  restarted.recoverInterrupted();
+  assert.deepEqual(restarted.listForAttempt(ref.attemptId), recovered);
+  assert.deepEqual(restarted.publishFindings(ref, Buffer.from(JSON.stringify(finding) + "\n"), true), findings,
+    "late publication must not turn interrupted findings into a complete review");
+
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("startup recovery must not call a model"); },
+    checkDeps: () => { throw new Error("a fresh review is outside this recovery test"); },
+  });
+  engine.start();
+  // Startup recovery is synchronous. Stop before the queued pump executes a fresh attempt.
+  await engine.stop();
+  const interrupted = store.getAttempt(ref.attemptId)!;
+  assert.equal(interrupted.state, "error");
+  assert.match(interrupted.error!, /Interrupted by daemon restart/);
+  assert.equal(interrupted.verdict, null);
+  assert.equal(interrupted.output, null);
+  assert.notEqual(store.getRun(ref.runId)!.status, "completed");
+  assert.equal(store.latestAttemptForNode(ref.submissionId, "gate")!.state, "retry_wait");
+});
+
 async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000): Promise<void> {
   const started = Date.now();
   while (!check()) {
@@ -899,6 +1132,65 @@ async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("engine shutdown refuses a check released after lease acquisition", { skip: !SUPPORTED, timeout: 20_000 }, async (t) => {
+  const f = fixture({ slots: 1 });
+  const id = "shutdown-before-spawn";
+  const marker = join(home, "shutdown-command-ran");
+  const command = [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`];
+  const store = seedCheckRun(id, f.repoRoot, f.headSha);
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let heldAttemptId = "";
+  const acquire = f.leases.acquireForAttempt.bind(f.leases);
+  t.mock.method(f.leases, "acquireForAttempt", async (input: Parameters<typeof acquire>[0]) => {
+    const path = await acquire(input);
+    heldAttemptId = input.attemptId;
+    // The real lease is durable, but the runtime has not reached its real supervisor yet.
+    await hold;
+    return path;
+  });
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("this check-only workflow must not call a model"); },
+    workflowPolicy: () => ({
+      liveEnabled: false, repoAllowlist: [f.repoRoot], defaultWorkflowId: null,
+      retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+      checksEnabled: true, skipPassedJudges: true,
+    }),
+    workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot),
+      overrides: slot === "test" ? [{ repoRoot: f.repoRoot, command }] : [] }),
+    checkDeps: (attempt) => ({ execute: f.runtime.executorFor(attempt) }),
+    unresolvedCheckLease: (submissionId, nodeId) => f.leases.unresolvedLeaseForNode(submissionId, nodeId),
+  });
+  let shutdown: Promise<void> | undefined;
+  engine.start();
+  try {
+    engine.activateSubmission(`submission-${id}`);
+    await waitFor(() => heldAttemptId !== "", "the engine never reached the held lease acquisition");
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "held");
+    assert.equal(existsSync(marker), false);
+    let stopped = false;
+    shutdown = engine.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    assert.equal(stopped, false, "shutdown must wait for the held attempt to settle");
+
+    release();
+    await shutdown;
+
+    assert.equal(existsSync(marker), false, "a check released after shutdown must never execute its command");
+    const interrupted = store.getAttempt(heldAttemptId)!;
+    assert.equal(interrupted.state, "error");
+    assert.match(interrupted.error!, /Mission Control is shutting down/);
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "returned");
+    assert.equal(f.leases.unresolvedLeaseForNode(`submission-${id}`, "gate"), false);
+    assert.deepEqual(liveRows(), []);
+    assert.deepEqual(f.pool.trees.filter((tree) => tree.state === "leased"), []);
+  } finally {
+    release();
+    await (shutdown ?? engine.stop());
+    store.cancelRun(`run-${id}`, "test_cleanup");
+  }
+});
 
 /**
  * The defect this gate exists for is invisible without this test, because the happy path and
@@ -1014,4 +1306,95 @@ test("an unresolved lease blocks the retry instead of taking a second tree", asy
     1,
   );
   store.cancelRun("run-gate-block", "test_cleanup", 99);
+});
+
+// ---- CodeRabbit coverage is checked against the pinned diff ----------------
+
+/**
+ * CLI 0.9.2 stopped printing `unreviewedFileCount` and prints `reviewedFiles` instead, and every
+ * real review then blocked as "Invalid CodeRabbit completion/gate". A fake CLI prints that
+ * exact completion shape here, so the runtime has to list the pinned diff and accept it.
+ */
+function codeRabbitRun(id: string, reviewedFiles: string[]) {
+  const f = fixture();
+  const git = (...args: string[]) => execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString().trim();
+  const base = f.headSha;
+  // A modification, an addition and a deletion: the deletion is allowed but never required.
+  writeFileSync(join(f.repoRoot, "root.txt"), "changed\n");
+  writeFileSync(join(f.repoRoot, "added.ts"), "export const added = 1;\n");
+  git("rm", "-q", "packages/web/marker.txt");
+  git("add", "-A");
+  git("commit", "-qm", "feature");
+  const head = git("rev-parse", "HEAD");
+  const store = seedCheckRun(id, f.repoRoot, head, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}`, nodeId: "gate" };
+  store.insertAttempt({ id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4 });
+  const complete = { type: "complete", status: "review_completed", findings: 0,
+    gate: { threshold: "major", status: "passed", blockingFindings: 0 },
+    reviewedFiles, outcome: "completed", message: "Review completed" };
+  const stdout = [{ type: "status", phase: "setup", status: "setting_up" }, { type: "heartbeat", status: "reviewing" }, complete]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  return { f, ref, store, request: {
+    slot: "coderabbit" as const,
+    command: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(stdout)})`],
+    repoRoot: f.repoRoot, workingSubpath: "", headSha: head,
+    coderabbit: { interpreterVersion: 1 as const,
+      yaml: { source: ".coderabbit.yaml" as const, digest: null, enabled: true, state: "enabled" as const, diagnostic: "fixture" },
+      baseRef: "main", baseTip: base, mergeBase: base, head, empty: false, severity: "major" as const,
+      ruleRevision: 1, timeoutMs: 30_000, maxRuns: 10, error: null },
+  } };
+}
+
+test("a reviewedFiles completion covering the pinned diff is a complete review", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files", ["added.ts", "root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.review?.status, "complete", outcome.review?.diagnostic);
+  assert.match(outcome.review!.diagnostic, /Complete CodeRabbit review: 0 findings/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("a reviewedFiles completion that skipped a changed file is incomplete", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files-missed", ["root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.review?.status, "incomplete");
+  assert.match(outcome.review!.diagnostic, /1 of 2 changed files not reviewed/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("changed paths that cannot be listed are infrastructure, before any tree is leased", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-changed-paths-unavailable", []);
+  const runtime = new CheckRuntime(f.leases, { leaseStore: leaseRows, teardown: TEARDOWN, timeoutMs: 30_000,
+    changedPaths: async () => { throw new Error("git refused"); } });
+  const outcome = await runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "infrastructure");
+  if (outcome.kind !== "infrastructure") return;
+  assert.equal(outcome.started, false);
+  assert.match(outcome.reason, /changed files could not be listed: git refused/);
+  assert.deepEqual(f.pool.calls.filter((call) => call.cmd === "get"), []);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test('an already aborted check acquires no worktree and never reaches platform lookup or supervision', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  const runtime = new CheckRuntime(f.leases, {
+    leaseStore: leaseRows,
+    platform: () => { calls.push('platform'); return {supported: false, note: 'must not probe'}; },
+    supervise: async () => { throw new Error('must not spawn'); },
+  });
+  const shutdown = new AbortController();
+  shutdown.abort();
+  const outcome = await runtime.executorFor(attemptRef())({slot: 'test', command: PASSES,
+    repoRoot: f.repoRoot, workingSubpath: '', headSha: f.headSha, signal: shutdown.signal});
+  assert.deepEqual(outcome, {kind: 'infrastructure', started: false,
+    reason: 'check interrupted because Mission Control is shutting down'});
+  assert.deepEqual(calls, []);
+  assert.deepEqual(f.pool.calls, []);
+  assert.deepEqual(liveRows(), []);
 });

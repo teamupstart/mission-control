@@ -1,3 +1,6 @@
+import { ResidentLoopControls, ResidentLoopStatusLine } from "../../residents/ResidentLoopControls.tsx";
+import { SessionToolbarMenu } from "../SessionToolbarMenu.tsx";
+import { taskHasRepository } from "@shared/task.ts";
 import { useCallback, useEffect, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -24,6 +27,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
@@ -33,6 +37,8 @@ import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
 import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
+import { ResidentChip } from "../../residents/ResidentChip.tsx";
+import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -69,6 +75,7 @@ export function SessionTile({
   pipelineRun = null,
   pipelineCommission = null,
   shortcutChord = null,
+  resident = null,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
@@ -130,6 +137,11 @@ export function SessionTile({
    * Console rail, and every card while the operator has the item switched off.
    */
   shortcutChord?: string | null;
+  /**
+   * The resident this session is, from App's join of its task to the live run, or null. Its
+   * marker and pin come from the run's pinned revision, never the profile as it is now.
+   */
+  resident?: ResidentSessionMark | null;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
@@ -201,6 +213,11 @@ export function SessionTile({
   // is what makes the settings preview honest - the preview mounts one tile with a slot and
   // no board behind it, so unchecking the box has to be visible from the tile's own side.
   const jump = shown("cardShortcut") ? shortcutChord : null;
+  // The resident's border glow and label chip. Decoration over the tone spine, never instead of
+  // it: `--resident` drives the outline and glow, `--tone-color` still draws the state. Gated
+  // like every optional item, so Settings > Display can take it off; the PIN is ordering, not
+  // ink, and stays whatever this says.
+  const residentMark = shown("residentMarker") ? resident : null;
   const workflowDetails = shown("workflowDetails");
   // The expand chord drives the same transition as the disclosure button, so it is offered on
   // exactly the same condition THE PANEL is drawn under. Registering it while the button is
@@ -284,7 +301,10 @@ export function SessionTile({
         workflowVisiblyExpanded ? " workflow-expanded" : ""
       }${
         isTourTask ? " mc-tour-task" : ""
-      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}`}
+      }${kindMark === "tab" ? " has-kind-tab" : ""}${kindMark === "band" ? " has-kind-band" : ""}${
+        residentMark ? " is-resident" : ""
+      }`}
+      style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
       onDragOver={(e) => {
         if (!droppable) return;
         e.preventDefault();
@@ -356,6 +376,7 @@ export function SessionTile({
           agentDot
         )}
         {kindMark === "chip" && <TaskKindMark kind={taskKind!} variant="chip" />}
+        {residentMark && <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} />}
         <Tooltip label={`Open ${openName}`}>
           <span className="tile-name">{session.name || "(unnamed)"}</span>
         </Tooltip>
@@ -376,6 +397,17 @@ export function SessionTile({
             and cannot come to look like a different kind of thing. */}
         {jump && <Keycap chord={jump} />}
       </span>
+
+      {/* The menu's popover is portalled, and React still bubbles a portal's clicks through
+          this tree, so without the stop every menu action would also open the session. */}
+      {resident?.loop && <span className="resident-card-loop">
+        <ResidentLoopStatusLine loop={resident.loop} session={session} />
+        <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
+          <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
+            {() => <ResidentLoopControls mark={resident} menu />}
+          </SessionToolbarMenu>
+        </span>
+      </span>}
 
       {shown("goal") && session.goal?.text && (
         <span className="tile-goal">{session.goal.text}</span>
@@ -526,20 +558,24 @@ export function SessionTile({
         </span>
       )}
 
+      {/* A launch that failed after this session was created: the session stays, and this is
+          the one place its card can say why. Draws nothing for every other session. */}
+      <LaunchFailureNotice sessionId={session.id} />
+
       {foot && (
         <span className="tile-foot">
           {/* The branch, with its fallback intact: a session with no branch prints where its
               NAME came from instead, so hiding "branch" hides the branch and does not empty
               the cell for a session that never had one. */}
           {shown("branch") && (
-            <span className="tile-branch">{workspaceBranch ?? session.nameSource}</span>
+            <span className="tile-branch">{taskHasRepository(session.task ?? {}) ? workspaceBranch ?? session.nameSource : "no repository"}</span>
           )}
           {/* Which checkout this is - the one fact on this card that the console detail used
               to be the only place to read. The LEAF, not the path: a pool worktree path is
               sixty characters of bookkeeping, and this row is two cells sharing one line's
               width. The whole path is on hover, which is the same bargain every other
               shortened path in the app makes. */}
-          {shown("worktree") && workspaceRoot && (
+          {shown("worktree") && workspaceRoot && taskHasRepository(session.task ?? {}) && (
             <Tooltip label={workspaceRoot}>
               <span className="tile-worktree">{repoLeaf(workspaceRoot)}</span>
             </Tooltip>

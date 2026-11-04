@@ -9,6 +9,7 @@ import { writeGhPullRequests, type FakePullRequest } from "../fixtures/fake-agen
 import { recordsIn } from "../fixtures/records.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Session } from "../../src/shared/types.ts";
+import { preMergeComment } from "../../test/helpers/code-rabbit-pre-merge.ts";
 
 test.use({ daemonEnv: { MISSION_INSPECTOR_POLL_MS: "2000", MISSION_PR_POLL_MS: "500", FOREMAN_QUEUE_SETTLE_MS: "0" } });
 const evidence = artifactsDir("shipping-coderabbit-followup");
@@ -63,6 +64,8 @@ test("the independent default-off toggle persists and unreadable settings remain
   await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   const toggle = dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" });
+  await expect(toggle).toHaveAccessibleDescription("Prompt the eligible owning session to assess CodeRabbit review threads and pre-merge checks");
+  await expect(dashboard.getByText(/Prompts the owning session to assess CodeRabbit review threads and pre-merge check errors and warnings/)).toBeVisible();
   await expect(toggle).not.toBeChecked(); await toggle.locator("..").click();
   await expect.poll(() => api(daemon, "/api/shipping/config")).toMatchObject({ codeRabbitAutoResolve: true, autoMerge: false });
   await expect(dashboard.getByText("Foreman is disabled.")).toBeVisible();
@@ -108,7 +111,9 @@ test("fake GitHub drives unresolved, zero and unknown in Shipping without Inspec
   expect(await api(daemon, "/api/shipping/config")).toMatchObject({ autoMerge: false });
 });
 
-test("workflow ownership holds Foreman, then one same-PR prompt is delivered without replaying uncertain delivery", async ({ dashboard, daemon }) => {
+for (const source of ["review threads", "pre-merge checks"]) {
+test(`workflow ownership holds Foreman for ${source}, then one same-PR prompt is delivered without replaying uncertain delivery`, async ({ dashboard, daemon }) => {
+  const screenshotPrefix = source.replaceAll(" ", "-");
   await api(daemon, "/api/tasks", { repoRoot: daemon.repo, intent: "Implement the guard and follow this PR", title: "CodeRabbit follow-through",
     kind: "ship", agent: "claude", runtime: "sdk", workflowId: null });
   let session!: Session;
@@ -118,7 +123,10 @@ test("workflow ownership holds Foreman, then one same-PR prompt is delivered wit
   execFileSync("git", ["switch", "-c", "fix/coderabbit"], { cwd: session.cwd! });
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: session.cwd!, encoding: "utf8" }).trim();
   const pr: FakePullRequest = { cwd: session.cwd!, number: 27, url: "https://github.com/acme/mission-e2e/pull/27", state: "OPEN",
-    createdAt: new Date().toISOString(), mergedAt: null, headRefOid: head, headRefName: "fix/coderabbit", reviewThreads: threads() };
+    createdAt: new Date().toISOString(), mergedAt: null, headRefOid: head, headRefName: "fix/coderabbit",
+    ...(source === "review threads" ? { reviewThreads: threads() } : {
+      issueComments: { nodes: [preMergeComment()], pageInfo: { hasNextPage: false, endCursor: null } },
+    }) };
   writeGhPullRequests(daemon.home, [pr]);
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   for (const event of ["PostToolUse", "Stop"]) {
@@ -131,7 +139,7 @@ test("workflow ownership holds Foreman, then one same-PR prompt is delivered wit
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   await dashboard.getByRole("checkbox", { name: "Follow up on CodeRabbit comments" }).locator("..").click();
   const row = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#27" });
-  await expect(row).toContainText("CodeRabbit: 1 unresolved");
+  await expect(row).toContainText(`CodeRabbit: ${source === "review threads" ? 1 : 3} unresolved`);
   await api(daemon, "/api/foreman/config", { enabled: true, mode: "live", repoAllowlist: [daemon.repo],
     trackReviewFeedback: false, trackCiFailures: false, wrapupTriggers: [], keepShipTasksMoving: false }, "PUT");
   await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions"))[0]?.prState).toBe("open");
@@ -142,13 +150,16 @@ test("workflow ownership holds Foreman, then one same-PR prompt is delivered wit
     return transcript.messages.filter((m) => m.role === "user" && m.text.includes("CodeRabbit has"));
   };
   await expect(row).toContainText("an active workflow owns this session");
-  await shoot(dashboard, "workflow-held");
+  await shoot(dashboard, `${screenshotPrefix}-workflow-held`);
   await dashboard.waitForTimeout(5000); expect(await prompts()).toHaveLength(0);
   await api(daemon, `/api/workflow-runs/${runId}/cancel`, { requestId: "coderabbit-release" });
   await expect.poll(async () => (await prompts()).length, { timeout: 30_000, message: "Foreman should send the CodeRabbit prompt" }).toBe(1);
   const prompt = (await prompts())[0]!.text;
   for (const text of [pr.url, session.cwd!, "focused checks", "existing branch", "no merge authority"]) expect(prompt).toContain(text);
-  await expect(row).toContainText("Feedback delivered"); await shoot(dashboard, "feedback-delivered");
+  if (source === "pre-merge checks") {
+    for (const text of ["#issuecomment-70", "pre-merge", "warnings", "Full details", "--comments"]) expect(prompt).toContain(text);
+  }
+  await expect(row).toContainText("Feedback delivered"); await shoot(dashboard, `${screenshotPrefix}-feedback-delivered`);
   await dashboard.waitForTimeout(5000); expect(await prompts()).toHaveLength(1);
   // Reconcile a lost-response receipt as it would be loaded after a crash. The service
   // continues to observe it, but never automatically replays it.
@@ -158,6 +169,7 @@ test("workflow ownership holds Foreman, then one same-PR prompt is delivered wit
     for (const receipt of state.receipts) receipt.outcome = "uncertain";
     db.prepare("UPDATE inspector_prs SET code_rabbit_state = ? WHERE key = 'acme/mission-e2e#27'").run(JSON.stringify(state));
   });
-  await expect(row).toContainText("Delivery uncertain"); await shoot(dashboard, "delivery-uncertain");
+  await expect(row).toContainText("Delivery uncertain"); await shoot(dashboard, `${screenshotPrefix}-delivery-uncertain`);
   expect(await prompts()).toHaveLength(1);
 });
+}

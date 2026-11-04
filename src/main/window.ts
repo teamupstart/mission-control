@@ -14,6 +14,8 @@ import { isQuitting } from "./lifecycle.ts";
 import { daemonHealthy } from "./daemon.ts";
 import { WindowStartup, WINDOW_STARTUP_TIMEOUT_MS } from "./window-startup.ts";
 import { startupPage, STARTUP_RETRY_URL } from "./startup-page.ts";
+import { stateDir } from "@shared/harness-runtime.mjs";
+import { readWindowBackground, windowBackgroundPath } from "../server/window-background.ts";
 
 let win: BrowserWindow | null = null;
 let startup: WindowStartup | null = null;
@@ -57,6 +59,14 @@ function initialSize(): { width: number; height: number } {
 
 export const getMainWindow = (): BrowserWindow | null => win;
 
+/** Where the stored skin's launch colour is kept: read here at launch, and written only by the
+ *  daemon (`syncWindowBackground` in `server/ui-config.ts`) from the stored skin. The
+ *  `mission:set-window-background` handler only repaints the current window; it never writes
+ *  this file (`server/window-background.ts`). */
+export function windowBackgroundFile(): string {
+  return windowBackgroundPath(stateDir());
+}
+
 function targetUrl(): string {
   return process.env.MISSION_DEV_SERVER_URL || BASE_URL;
 }
@@ -90,13 +100,17 @@ async function dashboardReady(url: string, signal: AbortSignal): Promise<boolean
 
 export function createWindow(preloadPath: string, launchWarning: string | null = null): BrowserWindow {
   if (win) return win;
+  // Read once: the window and the startup page it shows first paint the same colour.
+  const launchBackground = readWindowBackground(windowBackgroundFile());
   win = new BrowserWindow({
     ...initialSize(),
     minWidth: 720,
     minHeight: 480,
     show: false,
     title: "Mission Control",
-    backgroundColor: "#0e1116",
+    // The last skin's background, so a light skin does not open on a dark frame. The renderer
+    // reports it through `mission:set-window-background` (see `window-background.ts`).
+    backgroundColor: launchBackground,
     // The app's own dark topbar IS the title bar: no native strip, traffic
     // lights inset over the topbar's left padding (see .topbar in styles.css).
     // "hiddenInset" would park them at the standard y for a 38px bar, ~15px
@@ -141,7 +155,7 @@ export function createWindow(preloadPath: string, launchWarning: string | null =
   };
   const loading = new WindowStartup({
     now: () => Date.now(),
-    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, launchWarning))}`, signal),
+    show: (state, signal) => navigate(`data:text/html;charset=utf-8,${encodeURIComponent(startupPage(state, launchWarning, launchBackground))}`, signal),
     ready: (signal) => dashboardReady(url, signal),
     load: (signal) => navigate(url, signal),
     pause: (signal) => delay(1000, undefined, { signal }),

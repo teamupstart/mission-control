@@ -1,12 +1,13 @@
 // Readiness is a nonce/process/build/state tuple, not the success of an `open` call.
 // These tests exercise the real timeout and OS identity ports with disposable files.
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
 import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { processIdentity } from '../scripts/update-lock.mjs';
-import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, type MigrationJournal } from '../scripts/install-migration.mjs';
+import { atomicMigrationJson, MIGRATION_ACK, MIGRATION_LAUNCH, MIGRATION_TIMEOUT_MS, type MigrationJournal } from '../scripts/install-migration.mjs';
 import { COMMAND_TIMEOUT_MS, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
 import { boundedMigrationWait, migrationRuntimePorts, migrationStartupGate, sameMigrationProcess, verifyMigrationAssets } from '../scripts/migration-runtime.mjs';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
@@ -75,6 +76,42 @@ test('migration open gets COMMAND_TIMEOUT_MS, so an open slower than the former 
       assert.deepEqual(budgets, [COMMAND_TIMEOUT_MS]);
     });
   }
+});
+
+test('the migration launchd sweep gets the migration budget, not the former 15s inspection cap', async (t) => {
+  // A step that runs out of time rejects rather than retrying, so the launchd sweep must be
+  // handed the budget the migration actually has, not `inspectAppLaunch`'s fixed default.
+  const f = launchFixture(t);
+  const budgets = new Map<string, number[]>();
+  const run = f.mac.run;
+  f.mac.run = async (command, args, timeout) => {
+    const name = command.split('/').at(-1) ?? command;
+    budgets.set(name, [...(budgets.get(name) ?? []), timeout ?? -1]);
+    if (command === '/usr/bin/open') atomicMigrationJson(join(f.stateDirectory, MIGRATION_LAUNCH), f.ack);
+    return run(command, args, timeout);
+  };
+  await f.ports.launchTarget(f.journal.plan);
+  // `inspectAppLaunch` turns its timeout into a deadline and hands each probe what REMAINS, and
+  // this fixture runs on the real clock, so a probe is offered 120000ms or a millisecond or two
+  // less depending on scheduling. An exact equality would make this test load-sensitive, so it
+  // asserts what the fix guarantees: the migration's budget rather than the fixed cap.
+  const sweep = (name: string): number => {
+    const seen = budgets.get(name) ?? [];
+    assert.ok(seen.length >= 1, `the sweep makes a ${name} read`);
+    return Math.max(...seen);
+  };
+  for (const name of ['ps', 'launchctl', 'lsappinfo']) {
+    const offered = sweep(name);
+    assert.ok(offered > COMMAND_TIMEOUT_MS,
+      `${name} clears the former fixed cap: ${offered}ms must exceed ${COMMAND_TIMEOUT_MS}ms`);
+    assert.ok(offered <= MIGRATION_TIMEOUT_MS,
+      `${name} never exceeds the migration budget: ${offered}ms`);
+    assert.ok(MIGRATION_TIMEOUT_MS - offered < 1_000,
+      `${name} is offered essentially the whole migration budget: ${offered}ms`);
+  }
+  // The ports' `timeout` bounds waiting for a state change and the fixture sets it to 5ms.
+  // It must never become the budget for one OS command.
+  assert.ok(!budgets.get('ps')?.includes(5), 'a short wait deadline must not shrink a command budget');
 });
 
 test('migration launch reports open failure even if a matching launch journal exists', async (t) => {
@@ -189,4 +226,47 @@ test('migration recovery opens the exact source through LaunchServices when it i
   assert.ok(registration >= 0 && registration < open);
   assert.deepEqual(f.calls[registration]?.args, ['-f', source]);
   assert.ok(!f.calls.some((call) => call.command.includes('/Contents/MacOS/')));
+});
+
+test('a migration target that exits between liveness and identity reads needs no signal', async (t) => {
+  const f = fixture(t);
+  const pid = 2147483647;
+  let probes = 0;
+  t.mock.method(process, 'kill', (target: number, signal?: NodeJS.Signals | number) => {
+    assert.equal(target, pid);
+    assert.equal(signal, 0, 'recovery must never signal a process without identity');
+    if (++probes === 1) return true;
+    throw Object.assign(new Error('fixture target exited'), {code: 'ESRCH'});
+  });
+  await migrationRuntimePorts({port: 1}).stopTarget({...f.journal, targetProcess: {pid, identity: 'recorded fixture identity'}});
+  assert.equal(probes, 2);
+});
+
+test('an unidentifiable target that is still alive continues to refuse recovery without a signal', async (t) => {
+  const f = fixture(t);
+  const pid = 2147483647;
+  t.mock.method(process, 'kill', (target: number, signal?: NodeJS.Signals | number) => {
+    assert.equal(target, pid);
+    assert.equal(signal, 0);
+    return true;
+  });
+  await assert.rejects(migrationRuntimePorts({port: 1}).stopTarget({...f.journal,
+    targetProcess: {pid, identity: 'recorded fixture identity'}}), /identity could not be verified/);
+});
+
+test('an exited unreaped migration target is gone before its parent processes the exit event', (t) => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore'});
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const pid = child.pid!;
+  const identity = processIdentity(pid)!;
+  assert.ok(identity);
+  assert.equal(child.kill('SIGTERM'), true);
+  const deadline = Date.now() + 5000;
+  while (execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], {encoding: 'utf8'}).trim()[0] !== 'Z') {
+    assert.ok(Date.now() < deadline, 'fixture target never became an unreaped zombie');
+  }
+  // The failing Electron target retained a matching identity after exit. Model that
+  // boundary even on systems where a zombie's command string changes to "defunct".
+  const retainedIdentity = processIdentity(pid) ?? identity;
+  assert.equal(sameMigrationProcess({pid, identity: retainedIdentity}), false, 'an unreaped target cannot confirm GUI readiness');
 });

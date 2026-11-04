@@ -634,3 +634,51 @@ test("passive Codex quota is source-scoped in the fleet snapshot", () => {
   assert.deepEqual(r.snapshot().fleetCost?.rateLimitSources?.map((s) => s.source), ["codex"]);
   assert.equal(r.snapshot().fleetCost?.rateLimitSources?.[0]?.windows[0]?.usedPercentage, 9);
 });
+
+test("a transcript's advisor model reaches meta and stays through statusLine readings", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", { ...transcriptRead, advisorModel: "claude-opus-5-5" }, "transcript");
+  assert.equal(metaOf(r)?.advisorModel, "claude-opus-5-5");
+
+  // The statusLine reports no advisor, so its reading keeps the transcript's.
+  r.applyStatusLine(statusIngest());
+  assert.equal(metaOf(r)?.source, "statusline");
+  assert.equal(metaOf(r)?.advisorModel, "claude-opus-5-5");
+
+  // While the statusLine has precedence, the transcript still updates the advisor alone.
+  const events: ServerEvent[] = [];
+  r.on("event", (e: ServerEvent) => events.push(e));
+  r.applyRuntimeMeta("s1", { ...transcriptRead, advisorModel: "claude-sonnet-5-5" }, "transcript");
+  assert.equal(metaOf(r)?.model, "Opus 4.8", "the statusLine's model still stands");
+  assert.equal(metaOf(r)?.advisorModel, "claude-sonnet-5-5");
+  assert.equal(events.filter((e) => e.type === "session_upsert").length, 1, "the change is published");
+
+  // A tail with no advisor-enabled turn drops the chip rather than keeping a stale one.
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.advisorModel, undefined);
+});
+
+test("a session that never ran with an advisor has no advisorModel key at all", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal("advisorModel" in (metaOf(r) ?? {}), false);
+  r.applyStatusLine(statusIngest());
+  assert.equal("advisorModel" in (metaOf(r) ?? {}), false);
+});
+
+test("a statusLine that rebinds the agent session drops the previous conversation's advisor", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ sessionId: "abc" }));
+  r.applyRuntimeMeta("s1", { ...transcriptRead, advisorModel: "claude-opus-5-5" }, "transcript");
+  assert.equal(metaOf(r)?.advisorModel, "claude-opus-5-5", "the first conversation ran with an advisor");
+
+  const published: Session[] = [];
+  r.on("event", (e: ServerEvent) => {
+    if (e.type === "session_upsert" && e.session.id === "s1") published.push(e.session);
+  });
+  r.applyStatusLine(statusIngest({ sessionId: "def" }));
+  assert.equal(r.getSession("s1")?.agentSessionId, "def", "the reading really rebound the session");
+  assert.equal("advisorModel" in (metaOf(r) ?? {}), false, "the new conversation claims no advisor");
+  assert.ok(published.length > 0, "the rebind is published");
+  assert.equal("advisorModel" in (published.at(-1)!.meta ?? {}), false, "no stale advisor reaches the browser");
+});

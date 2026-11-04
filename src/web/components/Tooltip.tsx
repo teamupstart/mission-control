@@ -31,6 +31,14 @@ import { createPortal } from "react-dom";
  * below). It flips below the trigger when there isn't room above, and slides horizontally
  * to stay on screen.
  *
+ * A dropdown's options are the exception: there the bubble opens BESIDE the menu, level
+ * with the row, to its right or, without room, its left. Above or below an option is
+ * exactly where its sibling options are, so a bubble there covers the very choices the
+ * person is reading it to pick between (issue #1315). When neither side has room - a
+ * narrow window - it goes above or below the whole menu, never the row, for the same
+ * reason. Keyed on the trigger's own `role` rather than a per-call prop, so every menu and
+ * listbox gets this without each call site having to remember it.
+ *
  * The label is ALSO rendered, always, into a visually-hidden body-level portal that the
  * trigger points `aria-describedby` at. Two reasons, and both are things `title` did for free:
  * a description that exists only while a pointer happens to be over the element is one
@@ -49,26 +57,113 @@ import { createPortal } from "react-dom";
  * the trigger that opened it - which is also why its content must stay non-interactive.
  */
 
-type Placement = "above" | "below";
+type Placement = "above" | "below" | "right" | "left";
 type TipState = {
   x: number;
   y: number;
   placement: Placement;
   /** Horizontal correction that keeps the bubble on screen; `undefined` until measured. */
   shift?: number;
+  /** Vertical correction for a side bubble, which can overrun the top or bottom instead. */
+  shiftY?: number;
   /**
-   * The trigger's own top and bottom, kept so the measure pass can still flip the bubble
-   * under it. Without them the correction below could detect an overflow off the top of
-   * the viewport but have no way to say where "below the trigger" is.
+   * The box the bubble is placed against, kept so the measure pass can still move the
+   * bubble to another side of it. Without it the correction below could detect an overflow
+   * off the edge of the viewport but have no way to say where "below" or "left of" is.
+   * The trigger's own box, except for an option: there it is the enclosing menu's.
    */
-  triggerTop: number;
-  triggerBottom: number;
+  trigger: { top: number; bottom: number; left: number; right: number };
 };
 
 /** Below this many px from the viewport top, flip the bubble under the trigger. */
 const TOP_FLIP_THRESHOLD = 56;
-/** Keep the bubble at least this far from the viewport's left/right edges. */
+/** Keep the bubble at least this far from the viewport's edges. */
 const EDGE_MARGIN = 8;
+/** The gap between the bubble and its trigger, which the caret spans. Matches the CSS. */
+const GAP = 8;
+
+/**
+ * Roles whose bubble opens beside the trigger rather than above it: the options of a
+ * menu or listbox, which are stacked against their siblings. See the header.
+ */
+const SIDE_ROLES = new Set(["menuitem", "menuitemradio", "menuitemcheckbox", "option"]);
+/** What an option's bubble is placed beside: the list it belongs to, not the row alone. */
+const SIDE_CONTAINER = '[role="menu"], [role="listbox"]';
+
+/**
+ * The one OPTION bubble on screen, by its owner's `hide`. Every option's bubble opens in
+ * the same place - beside its menu - so a second one only ever paints over the first: a
+ * menu focuses its checked option as it opens, and hovering any other option used to stack
+ * its explanation onto the focused one's. The newest option wins, since that is where the
+ * person just moved.
+ *
+ * Options only. Two ordinary bubbles open at their own triggers and do not collide, and a
+ * pointer left resting while the layout shifts under it fires `mouseenter` on whatever
+ * lands there - which, app-wide, silently took a keyboard user's focus bubble away.
+ */
+let shownOption: (() => void) | null = null;
+
+/** An ordinary trigger's first guess, before the bubble is measured. */
+function verticalPlacement(top: number): Placement {
+  return top < TOP_FLIP_THRESHOLD ? "below" : "above";
+}
+
+function verticalTip(trigger: TipState["trigger"], placement: Placement): TipState {
+  return {
+    x: (trigger.left + trigger.right) / 2,
+    y: placement === "above" ? trigger.top : trigger.bottom,
+    placement,
+    trigger,
+  };
+}
+
+/** How far to slide a span of `start..end` along an axis of `size` to keep it on screen. */
+function onScreen(start: number, end: number, size: number): number {
+  const overStart = EDGE_MARGIN - start;
+  const overEnd = end - (size - EDGE_MARGIN);
+  return overStart > 0 ? overStart : overEnd > 0 ? -overEnd : 0;
+}
+
+/**
+ * Where a side bubble of this size settles: right of the menu, which is where submenus
+ * open and so where a person looks first; left when the right runs off screen and the left
+ * does not; and above or below the whole menu when neither side has room - a narrow
+ * window, where a beside-bubble cannot fit at all.
+ *
+ * Above or below is chosen from the two measured gaps, not from where the menu starts: a
+ * long menu in a narrow window can leave room on neither. Then the bubble takes the
+ * roomier gap and slides onto the screen, over the menu's edge if it must. A tooltip
+ * cannot scroll (it is `pointer-events: none`), so clipping it would hide text nobody
+ * could reach; covering part of the menu while the person reads it is the lesser cost.
+ */
+function settleSide(tip: TipState, width: number, height: number): TipState {
+  const { trigger } = tip;
+  const fitsRight = trigger.right + GAP + width <= window.innerWidth - EDGE_MARGIN;
+  const fitsLeft = trigger.left - GAP - width >= EDGE_MARGIN;
+  const side: Placement | null = fitsRight ? "right" : fitsLeft ? "left" : null;
+  if (side === null) {
+    const roomAbove = trigger.top - GAP - EDGE_MARGIN;
+    const roomBelow = window.innerHeight - trigger.bottom - GAP - EDGE_MARGIN;
+    const placement: Placement = height <= roomAbove ? "above"
+      : height <= roomBelow ? "below"
+        : roomBelow >= roomAbove ? "below" : "above";
+    const next = verticalTip(trigger, placement);
+    const top = placement === "above" ? trigger.top - GAP - height : trigger.bottom + GAP;
+    return {
+      ...next,
+      shift: onScreen(next.x - width / 2, next.x + width / 2, window.innerWidth),
+      shiftY: onScreen(top, top + height, window.innerHeight),
+    };
+  }
+  const top = tip.y - height / 2;
+  return {
+    ...tip,
+    placement: side,
+    x: side === "right" ? trigger.right : trigger.left,
+    shift: 0,
+    shiftY: onScreen(top, top + height, window.innerHeight),
+  };
+}
 
 /**
  * A disabled `<button>`/`<input>`/`<select>` dispatches no mouse events at all - not to
@@ -136,18 +231,41 @@ export function Tooltip({
   const [tip, setTip] = useState<TipState | null>(null);
   const id = useId();
 
+  const triggerRole = (children.props as { role?: unknown }).role;
+  const beside = typeof triggerRole === "string" && SIDE_ROLES.has(triggerRole);
   const show = useCallback((el: HTMLElement) => {
     const r = el.getBoundingClientRect();
-    const placement: Placement = r.top < TOP_FLIP_THRESHOLD ? "below" : "above";
+    if (!beside) {
+      setTip(verticalTip(
+        { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
+        verticalPlacement(r.top),
+      ));
+      return;
+    }
+    // Placed against the menu, so the bubble clears the menu's own border and padding and
+    // a fallback above or below lands outside the list rather than on a sibling row. The
+    // measure pass picks the side once the bubble's real width is known.
+    const m = (el.closest(SIDE_CONTAINER) ?? el).getBoundingClientRect();
     setTip({
-      x: r.left + r.width / 2,
-      y: placement === "above" ? r.top : r.bottom,
-      placement,
-      triggerTop: r.top,
-      triggerBottom: r.bottom,
+      x: m.right,
+      y: r.top + r.height / 2,
+      placement: "right",
+      trigger: { top: m.top, bottom: m.bottom, left: m.left, right: m.right },
     });
+  }, [beside]);
+  const hide = useCallback(() => {
+    if (shownOption === hide) shownOption = null;
+    setTip(null);
   }, []);
-  const hide = useCallback(() => setTip(null), []);
+  const showOnly = useCallback((el: HTMLElement) => {
+    if (beside) {
+      if (shownOption !== hide) shownOption?.();
+      shownOption = hide;
+    }
+    show(el);
+  }, [beside, show, hide]);
+  // A trigger unmounted with its bubble open must not stay the one `shownOption` names.
+  useEffect(() => hide, [hide]);
 
   // Measured on the ref callback rather than in a layout effect: this runs before paint
   // on the client just the same, but is never invoked during the `renderToStaticMarkup`
@@ -158,9 +276,11 @@ export function Tooltip({
   const measure = useCallback((el: HTMLSpanElement | null): void => {
     if (!el || !tip || tip.shift !== undefined) return;
     const r = el.getBoundingClientRect();
-    const overLeft = EDGE_MARGIN - r.left;
-    const overRight = r.right - (window.innerWidth - EDGE_MARGIN);
-    const shift = overLeft > 0 ? overLeft : overRight > 0 ? -overRight : 0;
+    if (tip.placement === "left" || tip.placement === "right") {
+      setTip(settleSide(tip, r.width, r.height));
+      return;
+    }
+    const shift = onScreen(r.left, r.right, window.innerWidth);
     // Flip under the trigger when the bubble does not actually FIT above it. The
     // threshold in `show` cannot answer this: it runs before the bubble exists, so it
     // can only ask whether the trigger sits near the top of the viewport, not whether
@@ -169,9 +289,9 @@ export function Tooltip({
     // per role - is clipped off the top of the screen, which is how this was found.
     // Measured here because this is the one moment the real height is known, and it is
     // the same pass that already corrects horizontally.
-    const flip = tip.placement === "above" && r.height > tip.triggerTop - EDGE_MARGIN;
+    const flip = tip.placement === "above" && r.height > tip.trigger.top - EDGE_MARGIN;
     setTip(flip
-      ? { ...tip, shift, placement: "below", y: tip.triggerBottom }
+      ? { ...tip, shift, placement: "below", y: tip.trigger.bottom }
       : { ...tip, shift });
   }, [tip]);
 
@@ -213,9 +333,9 @@ export function Tooltip({
   // it, so the trigger's own layout - e.g. flex sizing in the card header - is untouched.
   // A disabled child cannot receive them, so it gets the anchor span instead.
   const handlers = {
-    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => show(e.currentTarget),
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => showOnly(e.currentTarget),
     onMouseLeave: () => hide(),
-    onFocus: (e: React.FocusEvent<HTMLElement>) => show(e.currentTarget),
+    onFocus: (e: React.FocusEvent<HTMLElement>) => showOnly(e.currentTarget),
     onBlur: () => hide(),
   };
   const trigger = disabled ? (
@@ -264,10 +384,11 @@ export function Tooltip({
             className={`tooltip tt-${tip.placement}${rich ? " tt-rich" : ""}`}
             style={{
               left: tip.x + (tip.shift ?? 0),
-              top: tip.y,
+              top: tip.y + (tip.shiftY ?? 0),
               // The bubble slid to stay on screen; walk the caret back the same distance
               // so it still points at the trigger it belongs to.
               ["--tt-caret" as string]: `calc(50% - ${tip.shift ?? 0}px)`,
+              ["--tt-caret-y" as string]: `calc(50% - ${tip.shiftY ?? 0}px)`,
               // Until measured, the bubble is positioned but not yet corrected. Painting
               // it in the wrong place for a frame is what the fade-in would otherwise be
               // covering up, and at a viewport edge that frame is a visible jump.

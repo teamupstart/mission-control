@@ -1,6 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   mkdirSync,
@@ -23,7 +24,17 @@ const {
   taskActivityFingerprint,
   defaultWorktreeActivityDeps,
   FILE_TOO_LARGE,
+  awakeTimeout,
+  gitStream,
 } = await import("../src/server/git/worktree-activity.ts");
+
+/**
+ * Stop THIS process from running for `ms`, the way a sleeping Mac or a SIGSTOP does: nothing in
+ * the event loop runs, while the monotonic clock every timer reads keeps advancing.
+ */
+function suspendFor(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 // The fingerprint is the only thing standing between "this tree is quiet" and, one phase from
 // now, "delete it". So these tests are almost all the same shape: take a digest, make ONE
@@ -167,6 +178,65 @@ test("an untracked file counts, and its later edits keep counting", async () => 
   const edited = await digest(dir);
   assert.notEqual(created, clean);
   assert.notEqual(edited, created);
+});
+
+test("a read's budget is not spent while the process cannot run, and still bounds one that does", async () => {
+  // A suspension longer than the budget is what a sleeping Mac does to an in-flight read (see
+  // `awakeTimeout`). The control below is the old wall-clock timer, firing on exactly that.
+  let expired = false;
+  let wallClockFired = false;
+  awakeTimeout(300, () => { expired = true; }, 50);
+  const control = setTimeout(() => { wallClockFired = true; }, 300);
+  suspendFor(1_000);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  clearTimeout(control);
+  assert.equal(wallClockFired, true, "a plain wall-clock timer DOES fire straight after a suspension");
+  assert.equal(expired, false, "but a second of not running is not a second of a hung read");
+
+  // Still a bound, and the same one: once the process is running again it expires on schedule.
+  const resumed = performance.now();
+  while (!expired && performance.now() - resumed < 2_000) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(expired, true, "a read that keeps running still runs out of budget");
+  assert.ok(performance.now() - resumed < 1_000, "and promptly, not after some multiple of the budget");
+});
+
+test("a real git read suspended past its budget still answers, instead of reporting a dead child", async () => {
+  // End to end through the real streaming reader and a real git: suspend the whole process while
+  // the read is in flight for longer than its budget. Before the fix this returned
+  // `{ died: true }` - the `did not complete` the reported failure printed - for a read that had
+  // finished during the suspension.
+  const dir = mkRepo("suspended-read");
+  const head = git(dir, "rev-parse", "HEAD").trim();
+  // Warm the executable locator first: a process's first lookup spawns a login-shell PATH probe,
+  // and the suspension below must land on git's spawn, not that one.
+  assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 300)).code, 0);
+
+  // Suspend INSIDE git's spawn: the child exists, the read's budget is already armed, and no
+  // output can have been processed, because nothing returns to the event loop until spawn does.
+  // That holds however fast git is. Suspending at a later event-loop phase instead raced git:
+  // on a fast Linux runner the read had already been answered by then.
+  const realSpawn = childProcess.spawn;
+  let suspendedSpawns = 0;
+  childProcess.spawn = ((command: string, ...rest: unknown[]) => {
+    const child = (realSpawn as (...args: unknown[]) => ReturnType<typeof realSpawn>)(command, ...rest);
+    if (/(^|\/)git$/.test(command)) {
+      suspendedSpawns += 1;
+      suspendFor(900);
+    }
+    return child;
+  }) as typeof childProcess.spawn;
+  syncBuiltinESMExports();
+  const chunks: Buffer[] = [];
+  let result;
+  try {
+    result = await gitStream(dir, ["rev-parse", "HEAD"], (chunk) => chunks.push(chunk), 300);
+  } finally {
+    childProcess.spawn = realSpawn;
+    syncBuiltinESMExports();
+  }
+  assert.equal(suspendedSpawns, 1, "the process was suspended while this read was in flight");
+  assert.deepEqual(result, { code: 0, overflowed: false, died: false });
+  assert.equal(Buffer.concat(chunks).toString("utf8").trim(), head, "and its answer is the real one");
 });
 
 test("ignored churn never moves the fingerprint", async () => {

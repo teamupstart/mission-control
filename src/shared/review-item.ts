@@ -168,13 +168,55 @@ export function formatResponse(
   const byId = new Map(answers.map((a) => [a.decisionId, a]));
   const blocks = decisions.map((d) => {
     const answer = byId.get(d.id);
-    const labels = selectedOptions(d, answer).map((o) => o.label);
-    const other = answer?.other?.trim() ?? "";
+    const note = answer?.note?.trim() ?? "";
     const lines = [`• ${d.question}`];
-    if (labels.length) lines.push(`  → ${labels.join(", ")}`);
-    if (d.allowOther && other) lines.push(`  Other: ${other}`);
-    if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    if (answer?.chat) {
+      // Moved to the conversation: whatever was picked before the move is not an answer.
+      lines.push(`  → ${CHAT_ABOUT_IT}`);
+    } else {
+      const labels = selectedOptions(d, answer).map((o) => o.label);
+      const other = answer?.other?.trim() ?? "";
+      if (labels.length) lines.push(`  → ${labels.join(", ")}`);
+      if (d.allowOther && other) lines.push(`  Other: ${other}`);
+      if (!labels.length && !(d.allowOther && other)) lines.push("  → (no selection)");
+    }
+    // Not gated on `allowOther`: the note box is drawn on every decision of the forms that
+    // offer it, so dropping a typed note here would discard what the human sent. Beside a
+    // question moved to chat it says what is unclear, which the agent's explanation should
+    // start from.
+    if (note) lines.push(`  Note: ${note}`);
     return lines.join("\n");
   });
-  return `${lead}\n\n${blocks.join("\n\n")}`;
+  const moved = decisions.filter((d) => byId.get(d.id)?.chat);
+  const body = `${lead}\n\n${blocks.join("\n\n")}`;
+  return moved.length ? `${body}\n\n${chatInstruction(moved, decisions.length)}` : body;
+}
+
+export const CHAT_ABOUT_IT = "Chat about it";
+
+/**
+ * What the agent is told to do with the questions the human moved to chat.
+ *
+ * The gap it closes: before "Chat about it", a human who needed more context could only close
+ * the dialog (the agent stays blocked and the card goes stale) or dismiss it (the agent may
+ * decide on its own). This is the third outcome, and it has to be explicit in the tool result,
+ * because an agent that reads "(no selection)" will reasonably pick something itself or ask
+ * the same form again. So the instruction forbids both, lets the answered questions proceed
+ * where they stand alone, asks for the explanation the human was missing, and ends the turn
+ * so the conversation is where the decision gets made.
+ */
+function chatInstruction(moved: PlanDecision[], asked: number): string {
+  const one = moved.length === 1;
+  const it = one ? "it" : "them";
+  const lines = [
+    `The human wants to discuss ${one ? "this decision" : `these ${moved.length} decisions`} with you in conversation before choosing:`,
+    ...moved.map((d) => `- ${d.question}`),
+    "",
+    `Do not choose ${it} yourself, and do not ask ${it} again with request_input or request_plan_decisions.` +
+      (moved.length < asked ? ` Act on the other answers only where they do not depend on ${it}.` : ""),
+    `Then, in your next message, explain ${one ? "it" : "each one"} in plain terms: the context behind ${it}, ` +
+      "the trade-off you cannot settle on your own, and what you would need to know to decide. " +
+      "End your turn after that message so the human can reply in this session.",
+  ];
+  return lines.join("\n");
 }

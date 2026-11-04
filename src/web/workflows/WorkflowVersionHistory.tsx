@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   PersonaView,
   SessionAction,
@@ -133,6 +133,15 @@ export function WorkflowVersionDetail({
   );
 }
 
+/**
+ * How many version rows the history shows before its list scrolls. `styles.css` sizes
+ * `.workflow-version-list` to this many rows through `--workflow-version-rows`, which the list
+ * sets from here, so the number lives in one place. Every publish adds a row, and a long-lived
+ * workflow left uncapped pushed the selected version's canvas a screen or more below the list
+ * that opened it.
+ */
+export const VISIBLE_WORKFLOW_VERSION_ROWS = 5;
+
 export function WorkflowVersionHistory({
   workflowId,
   versions,
@@ -157,6 +166,20 @@ export function WorkflowVersionHistory({
   const [selected, setSelected] = useState<WorkflowVersion | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // A version opened from elsewhere (a run's "open version" link) can be any row, including
+  // one below the fold of the capped list. Scroll the LIST, and only the list, so the active
+  // row is visible; `scrollIntoView` would also move the rail and the page around it.
+  useEffect(() => {
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLElement>("button.active");
+    if (!list || !row) return;
+    const bounds = list.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    if (box.top < bounds.top) list.scrollTop += box.top - bounds.top;
+    else if (box.bottom > bounds.bottom) list.scrollTop += box.bottom - bounds.bottom;
+  }, [selectedId]);
 
   useEffect(() => {
     if (!workflowId || selectedId) return;
@@ -196,7 +219,16 @@ export function WorkflowVersionHistory({
     <section className="workflow-version-history">
       <h4>Published versions</h4>
       {versions.length === 0 && <p>No published versions yet.</p>}
-      <div className="workflow-version-list">
+      {/* Overlay scrollbars stay hidden until scrolled, so without this line nothing would
+          say the list holds more than the rows it shows. */}
+      {versions.length > VISIBLE_WORKFLOW_VERSION_ROWS && (
+        <p>{versions.length} versions, newest first. Scroll the list for older ones.</p>
+      )}
+      <div
+        ref={listRef}
+        className="workflow-version-list"
+        style={{ "--workflow-version-rows": VISIBLE_WORKFLOW_VERSION_ROWS } as React.CSSProperties}
+      >
         {versions.map((version) => (
           <Tooltip key={version.id} label={selectedId === version.id ? `Hide version ${version.version}` : `Show what version ${version.version} contains`}>
             <button className={selectedId === version.id ? "active" : ""} onClick={() => setSelectedId(selectedId === version.id ? null : version.id)}>

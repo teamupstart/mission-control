@@ -1,6 +1,8 @@
+import { dependencyInputKey } from "@shared/task-bulk.ts";
+import { taskHasRepository } from "@shared/task.ts";
 import path from "node:path";
 import type { Task } from "@shared/types.ts";
-import { PlanPublicationReceiptSchema, TaskPlanInputsSchema, type PlanIdentity, type PlanPublicationReceipt, type TaskPlanInput } from "@shared/managed-plans.ts";
+import { PlanPublicationReceiptSchema, TaskPlanInputsSchema, type PlanIdentity, type PlanPublicationReceipt, type TaskPlanInput, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { openDb } from "../db.ts";
 import { planRecord, planRevisionRecord, planRepositoryLocation, readPlanRevision, PlanStoreError } from "./store.ts";
 
@@ -25,6 +27,19 @@ export function validatePlanInputs(inputs: TaskPlanInput[], roots: string[]): vo
   }
 }
 
+/** Keep editor guidance and save/delivery validation on the same exact-origin matcher. */
+function planInputEdges(input: TaskPlanInput, dependencies: Task["dependencies"]): Task["dependencies"] {
+  const saved = planRevisionRecord(input.planId, input.revision);
+  return dependencies.filter((edge) => edge.type === "plan"
+    ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision
+    : edge.type === "task" ? edge.taskId === saved.task_id && edge.episodeId === saved.episode_id
+      : saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
+}
+
+function missingPlanEdge(input: TaskPlanInput): string {
+  return `Pinned plan ${planRecord(input.planId).slug} (${input.planId}) revision ${input.revision} needs its exact local artifact prerequisite or originating task/session work episode merge dependency. Retain that prerequisite or update the plan input and dependency together.`;
+}
+
 /** The source's existing durable merge edge remains authoritative for repository/mixed work. */
 export function validatePlanInputDependencies(task: Pick<Task, "dependencies" | "planInputs">, requirePublished = false): void {
   for (const edge of task.dependencies) {
@@ -33,14 +48,29 @@ export function validatePlanInputDependencies(task: Pick<Task, "dependencies" | 
     }
   }
   for (const input of task.planInputs ?? []) {
-    const saved = planRevisionRecord(input.planId, input.revision);
+    const edges = planInputEdges(input, task.dependencies);
     if (publicationReceipt(input)) continue;
-    const edge = task.dependencies.find((edge) => edge.type === "plan"
-      ? edge.planId === input.planId && edge.repoKey === input.repoKey && edge.revision === input.revision
-      : edge.type === "task" ? edge.taskId === saved.task_id && edge.episodeId === saved.episode_id
-        : saved.task_id === null && edge.sessionId === saved.session_id && edge.episodeId === saved.episode_id);
-    if (!edge) throw new PlanStoreError("Pinned plan input needs its exact local artifact prerequisite or originating task/session work episode merge dependency");
+    const edge = edges[0];
+    if (!edge) throw new PlanStoreError(missingPlanEdge(input));
     if (requirePublished && (edge.type === "plan" || edge.satisfiedAt === null)) throw new PlanStoreError(`Plan ${input.planId} revision ${input.revision} is waiting for its publication prerequisite`);
+  }
+}
+
+/** Read-only modal projection. Missing/corrupt metadata must not invite unsafe removal. */
+export function taskPlanDependencyRequirements(task: Task): TaskPlanDependencyRequirements {
+  try {
+    if (task.planInputError) throw new PlanStoreError(task.planInputError);
+    validatePlanInputDependencies(task);
+    return {
+      requirements: (task.planInputs ?? []).filter(input => !publicationReceipt(input)).map(input => ({
+        input,
+        title: planRecord(input.planId).slug,
+        dependencyKeys: planInputEdges(input, task.dependencies).map(dependencyInputKey),
+      })),
+      error: null,
+    };
+  } catch (error) {
+    return { requirements: [], error: error instanceof Error ? error.message : "Could not verify pinned plan prerequisites" };
   }
 }
 
@@ -61,6 +91,7 @@ export function taskPlanInputProblem(task: Task): string | null {
 
 /** Read-only discovery at both delivery seams, independent of the current default or task kind. */
 export async function taskPlanDiscovery(task: Task, fallbackRoot?: string | null): Promise<string> {
+  if (!taskHasRepository(task)) return "";
   const repositories = [{ repoRoot: task.repoRoot, checkout: task.worktreePath ?? fallbackRoot ?? task.repoRoot },
     ...task.extraRepos.map((r) => ({ repoRoot: r.repoRoot, checkout: r.worktreePath ?? r.repoRoot }))];
   const lines = ["## Plan inputs and discovery", "Check both plan locations for each repository. If historical names are ambiguous, report the ambiguity instead of choosing a plan."];

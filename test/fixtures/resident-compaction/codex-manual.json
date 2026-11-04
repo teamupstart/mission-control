@@ -1,0 +1,69 @@
+[
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "contextCompaction",
+        "id": "fixture-item"
+      },
+      "threadId": "fixture-thread",
+      "turnId": "fixture-compact",
+      "startedAtMs": 1793371435180
+    }
+  },
+  {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "fixture-thread",
+      "turnId": "fixture-compact",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 49083,
+          "inputTokens": 49073,
+          "cachedInputTokens": 20480,
+          "cacheWriteInputTokens": 0,
+          "outputTokens": 10,
+          "reasoningOutputTokens": 0
+        },
+        "last": {
+          "totalTokens": 14385,
+          "inputTokens": 0,
+          "cachedInputTokens": 0,
+          "cacheWriteInputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 258400
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "contextCompaction",
+        "id": "fixture-item"
+      },
+      "threadId": "fixture-thread",
+      "turnId": "fixture-compact",
+      "completedAtMs": 1793371436403
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "fixture-thread",
+      "turn": {
+        "id": "fixture-compact",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1793371435,
+        "completedAt": 1793371436,
+        "durationMs": 1231
+      },
+      "turnId": "fixture-compact"
+    }
+  }
+]

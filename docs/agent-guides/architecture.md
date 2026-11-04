@@ -14,6 +14,8 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | Foreman | `src/server/foreman/worker.ts` | Separate auto-responder process, HTTP only, never SQLite |
 | Session intent | `src/server/goal/` | Daemon-owned objective and focus reconciliation; only the daemon persists it |
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
+| Resident loop | `src/server/residents/loop.ts` | Sole coordinator of resident loop turns, timers and driver calls |
+| Resident loop store | `src/server/residents/loop-store.ts` | Durable loop transitions, wake claims and pacing transactions |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
 | Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
@@ -28,6 +30,51 @@ while daemons using independent homes may run concurrently. The kernel releases 
 process exit, including crashes; orderly shutdown closes SQLite before releasing it. The lock
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
+
+Electron requests shutdown over each owned utility's private message port and holds the shell
+open while Foreman and the daemon drain, bounded by the shared quit deadline. A utility timeout
+or failed message requests termination and awaits its exit; the overall deadline lets Electron
+reap any remaining utilities before the update helper handles verified survivors.
+The daemon stops workflow checks before slower
+session drains. The workflow engine's abort signal also follows a check through lease
+acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
+check shims tear down their own group on loss of the private owner pipe; the daemon remains
+the only writer of interruption outcomes and lease recovery.
+
+The detached update helper outlives the desktop and drains verified owned processes before
+replacing the app. It never writes workflow state or releases leases; the daemon's existing
+recovery owns those transitions after relaunch. The [desktop update ownership contract](../desktop-and-packaging.md#updates-from-the-installed-app)
+defines capture, identity verification, cleanup and diagnostics for both helper modes.
+
+## Resident loop ownership
+
+`ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`
+reads pinned run revisions and observes Registry work-cycle completions and delivered human
+turns. Its durable state and claim transactions live in `residents/loop-store.ts`; timers are
+only a projection of `next_wake_at`. No browser, MCP process or Foreman worker sends loop turns.
+
+The loop uses the supervisor's serialized idle-send boundary, rechecking human priority before
+crossing it. Maintenance compaction uses that same boundary and completes only from native
+harness signals with measured context. A claim precedes each wake; a lost acknowledgement pauses
+conservatively. Recovery confirms a claim only from the complete pinned wake text after its
+recorded transcript offset. Startup restores native sessions before reconciling claims and prunes only after
+reconciliation. Shutdown disarms the loop before stopping SDK drivers. Unknown context pauses
+before a wake claim. Restart retries recognize the durable restart pause and task outcome, so
+completion of the old task cannot strand a replacement that has not yet reserved its request.
+
+Resident transcript attribution requires a sent iteration in the same native conversation.
+The store binds its first matching turn after the recorded transcript offset to a native message
+id and timestamp; later human copies of the wake marker keep human authorship. Legacy claims
+without conversation evidence are not attributed from their marker syntax.
+
+The SDK driver reports the resident native token limit it actually configured. The supervisor
+persists it with the SDK session and passes it back on resume. Codex therefore keeps its measured
+backstop across catalog refreshes, rather than recomputing from missing metadata or silently
+dropping the layer. Fresh launches and legacy rows without a saved limit still require the catalog.
+
+`schedule_next_iteration` uses the existing signed session/episode credential, without granting
+session control. The MCP child calls HTTP with a bounded timeout. The daemon atomically stores
+its lifetime receipt and pending or waiting schedule; replay of a `callId` cannot move a wake.
 
 ## Executable environment and subprocesses
 
@@ -74,7 +121,8 @@ Startup order matters:
 5. Restore the prepared SDK rows serially in the background.
 6. Register or evict every restored session through the existing Registry lifecycle, replacing
    each projection by the same stable id.
-7. Start terminal discovery only after the owned SDK restore promise settles.
+7. Start `ResidentLoop` claim reconciliation, then terminal discovery, only after the owned SDK
+   restore promise settles. `ResidentManager.start()` has already settled pending launches.
 8. Reconcile task, workflow, and review bindings after the first completed observation.
 
 Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,
@@ -177,6 +225,11 @@ row at all - a first observation is what starts a window, never a pre-existing t
 Manual development sessions acquire and return native leases through the daemon's loopback API.
 The client does not create an independent inventory, and shell exit does not imply return.
 
+A repo-less resident is the exception to task repository ownership. Its task carries a nullable
+workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
+grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
+and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+
 ## Dispatch runtime
 
 Runtime selection has one owner: `resolveDispatchRuntime`, composed with `resolveSessionRuntime`.
@@ -220,9 +273,29 @@ consumes it over the private utility-process channel; HTTP supplies only the req
 session id and setting, never the authorization. The daemon rechecks the same Registry
 identity used by the grant after the asynchronous check before enabling control. Standalone
 daemons fail closed.
-Main registers every dashboard click arm, this one and the Feedback report's, through
-`serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the reply rule. The
-desktop e2e fixtures use the same registrar.
+Main registers every dashboard click arm, this one, the resident Launch and the Feedback
+report's, through `serveDashboardClick` in `src/main/dashboard-click-ipc.ts`, which owns the
+reply rule. The desktop e2e fixtures use the same registrar.
+A resident's desktop Launch click is the only other way a grant is created, and it reuses every
+part of the above. `launchResident()` arms `mission:resident-launch-click` for the launch's
+request id, profile id and revision through the same preload capability. Main keeps both arms in
+`src/main/session-control-authorization.ts` and answers both asks over the same utility-process
+port. `ResidentManager.launch` consumes the click after reserving the run and before creating its
+task, and only for a caller `sessionControlCallerRefusal` accepts and a pinned revision with
+`authority.controlOtherSessions` on. It records `control_authorized_at`, then calls
+`Registry.setSessionControlEnabled` once the run's session has a `sessionControlIdentity` bound
+to the run's task, and records the conversation, cwd and work episode it applied to before it
+logs the grant. A grant it cannot apply or record is taken back and the record cleared. After SDK
+restore, on the first completed sweep, it re-applies the grant only when those three and the task
+match exactly, and otherwise clears the record. A revoke through the toggle route clears it
+through `ResidentManager.sessionControlRevoked` before the live grant is turned off. Resident
+launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
+session-control route's trusted menu click above is the other grant source, as
+[security](../security.md#delegated-session-control) states.
+**Restart on new profile** arms the same resident-launch capability synchronously from its
+desktop click, using `residentRestartRequestId` and the displayed new revision. Its route passes
+the same caller check to `ResidentManager.launch`. The replacement receives its own grant only
+when its pinned revision requests control and the click matches; it never copies the old grant.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control
@@ -312,6 +385,25 @@ The Registry is the sole owner of normalized work-cycle state. Terminal hook ada
 their raw event vocabulary into `work_started` and `turn_completed`; SDK driver state reaches the
 same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
 raw hook event names to identify a completed turn.
+
+An SDK `turn_done` that carries a capacity `failure` is not a completion while the supervisor
+holds a retry for it: the Registry keeps the card working with the retry countdown as its
+activity and emits no `turn_completed`. When an accepted turn is already queued behind the
+failure, no retry is scheduled because that turn is the retry, and the cycle likewise stays
+open until it ends. Cancelling the retry timer does not by itself complete
+the cycle. The cycle completes when:
+
+- a later turn ends without a capacity failure. That turn can be the retry's own continuation,
+  a delivered message that replaced the retry, or a turn the driver was already running when
+  the retry came due;
+- the attempts are spent, on the last failed turn;
+- an operator interrupt cancels the waiting retry, or the driver refuses the retry's send;
+- a context clear the driver confirms. The completion is recorded against the replaced
+  conversation's logical key, never the replacement's.
+
+Stopping the session cancels the timer and leaves the cycle active, because the work was not
+finished. A clear, stop, or interrupt the driver refuses re-arms the retry at the same attempt
+and emits no completion.
 
 `session_work_cycles` stores one current projection per logical conversation key: generation,
 active state, completion time, and update time. It is separate from `session_events`, whose any-row

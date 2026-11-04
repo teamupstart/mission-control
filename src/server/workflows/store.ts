@@ -1,3 +1,5 @@
+import { CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
+import { defaultWorkflowCommandMaxRuns, type CodeRabbitComparison } from "@shared/workflow.ts";
 import { runtimeTransferConnects, runtimeTransferPredecessors, transferBinding, transferForNote, type TransferBinding } from "../session-transfers/store.ts";
 import { publishWorkflowMutation, type WorkflowMutation } from "./mutations.ts";
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
@@ -82,6 +84,9 @@ import {
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+  WORKFLOW_COMMAND_FAILURE_POLICIES,
+  WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  WORKFLOW_COMMAND_TIMEOUT_MIN_MS,
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
@@ -171,6 +176,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
+  WorkflowCommandArtifactDescriptor,
   WorkflowAssetReferenceSet,
   WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
@@ -426,6 +432,8 @@ export const WORKFLOW_TABLES = [
   "workflow_runs",
   "workflow_submissions",
   "workflow_node_attempts",
+  "workflow_command_artifact_reservations",
+  "workflow_command_artifacts",
   "workflow_edge_receipts",
   "workflow_deliveries",
   "workflow_llm_calls",
@@ -963,6 +971,9 @@ const WorkflowCommandRowSchema = z.object({
    * WHOLE slot to "Not configured", hiding a command that is perfectly good.
    */
   max_runs: z.unknown().optional(),
+  timeout_ms: z.unknown().optional(),
+  on_unavailable: z.unknown().optional(),
+  on_budget_exhausted: z.unknown().optional(),
   revision: positive,
   created_at: integer,
   updated_at: integer,
@@ -1020,10 +1031,31 @@ function readCommandMaxRuns(raw: unknown): number {
   );
 }
 
+function readCommandTimeoutMs(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return null;
+  return Math.min(
+    Math.max(raw, WORKFLOW_COMMAND_TIMEOUT_MIN_MS),
+    WORKFLOW_COMMAND_TIMEOUT_MAX_MS,
+  );
+}
+
+function readCommandFailurePolicy(raw: unknown): "skip" | "block" {
+  return (WORKFLOW_COMMAND_FAILURE_POLICIES as readonly unknown[]).includes(raw)
+    ? raw as "skip" | "block"
+    : "skip";
+}
+
 /** An override, or null when its argv is unreadable - in which case it is not projected. */
 function parseWorkflowCommandOverrideRow(
   row: WorkflowCommandOverrideRow,
 ): WorkflowCommandOverride | null {
+  if (row.slot === "coderabbit") {
+    try {
+      const review = CodeRabbitTuningSchema.parse(JSON.parse(row.command_json));
+      return { repoRoot: row.repo_root, command: [], review };
+    } catch (error) { diagnose(error); return null; }
+  }
   const command = readCommandArgv(
     "workflow_command_overrides",
     `${row.slot}:${row.repo_root}`,
@@ -1046,7 +1078,7 @@ function sameOverrides(
   a: readonly WorkflowCommandOverride[],
   b: readonly WorkflowCommandOverride[],
 ): boolean {
-  const byPath = new Map(a.map((entry) => [entry.repoRoot, entry.command]));
+  const byPath = new Map(a.map((entry) => [entry.repoRoot, JSON.stringify(entry.review ?? entry.command)]));
   // A list carrying the same path twice describes no set at all, so it can never be "the
   // configuration already stored" - the stored side is unique by its composite primary key.
   // Answering "unchanged" for one would silently keep a row it does not contain.
@@ -1056,8 +1088,7 @@ function sameOverrides(
   return b.every((entry) => {
     const command = byPath.get(entry.repoRoot);
     return command !== undefined
-      && command.length === entry.command.length
-      && command.every((arg, index) => arg === entry.command[index]);
+      && command === JSON.stringify(entry.review ?? entry.command);
   });
 }
 
@@ -1074,7 +1105,10 @@ function parseWorkflowCommandRow(
       "default_command_json",
       row.default_command_json,
     ),
-    maxRuns: readCommandMaxRuns(row.max_runs),
+    maxRuns: row.max_runs === undefined ? defaultWorkflowCommandMaxRuns(row.slot) : readCommandMaxRuns(row.max_runs),
+    timeoutMs: readCommandTimeoutMs(row.timeout_ms),
+    onUnavailable: readCommandFailurePolicy(row.on_unavailable),
+    onBudgetExhausted: readCommandFailurePolicy(row.on_budget_exhausted),
     overrides,
     revision: row.revision,
     createdAt: row.created_at,
@@ -2471,7 +2505,7 @@ export type WorkflowCommandStoreWrite =
   | { ok: true; view: WorkflowCommandView }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "duplicate_override";
+      reason: "not_found" | "revision_conflict" | "duplicate_override" | "invalid_recipe";
       current: WorkflowCommandView | null;
     };
 
@@ -3542,6 +3576,24 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
+    const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
+    const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
+    // Earlier builds stored failed resolutions. Retry must resolve those again, while
+    // corrupt metadata still throws above rather than silently changing reviewed identity.
+    return comparison?.error === null ? comparison : null;
+  }
+
+  freezeCodeRabbitComparison(submissionId: string, comparison: CodeRabbitComparison): CodeRabbitComparison {
+    const frozen = this.getCodeRabbitComparison(submissionId);
+    if (frozen) return frozen;
+    if (comparison.error !== null) return comparison;
+    this.db.prepare(`UPDATE workflow_submissions SET coderabbit_json = ? WHERE id = ?
+      AND (coderabbit_json IS NULL OR json_extract(coderabbit_json, '$.error') IS NOT NULL)`)
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getCodeRabbitComparison(submissionId) ?? comparison;
+  }
+
   /**
    * Every built-in slot, in registry order, whether or not it has ever been written.
    *
@@ -3595,10 +3647,10 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, revision, created_at, updated_at)
-       VALUES (?, NULL, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
     return wasEmpty;
   }
 
@@ -3618,6 +3670,9 @@ export class WorkflowStore {
       defaultCommand: string[] | null;
       overrides: readonly WorkflowCommandOverride[];
       maxRuns: number;
+      timeoutMs?: number | null;
+      onUnavailable?: "skip" | "block";
+      onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
   ): WorkflowCommandStoreWrite {
@@ -3625,6 +3680,9 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
+    if (key === "coderabbit" ? next.defaultCommand !== null || next.overrides.some((r) => !CodeRabbitTuningSchema.safeParse(r.review).success || r.command.length) : next.overrides.some((r) => r.review || !r.command.length)) {
+      return { ok: false, reason: "invalid_recipe", current: this.getWorkflowCommand(key) };
+    }
     // Refused here as well as at the route, because the store is the boundary a future
     // caller reaches without passing the schema. The composite PRIMARY KEY would refuse the
     // second row anyway, but as a constraint violation rather than a readable answer.
@@ -3643,7 +3701,8 @@ export class WorkflowStore {
       const updated = this.db
         .prepare(
           `UPDATE workflow_commands
-              SET default_command_json = ?, max_runs = ?, revision = revision + 1, updated_at = ?
+              SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3657,6 +3716,9 @@ export class WorkflowStore {
             Math.max(next.maxRuns, WORKFLOW_LIMITS.commandMaxRunsMin),
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
+          next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
+          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
           now,
           key,
           expectedRevision,
@@ -3678,7 +3740,7 @@ export class WorkflowStore {
         insert.run(
           key,
           entry.repoRoot,
-          JSON.stringify(entry.command),
+          JSON.stringify(entry.review ?? entry.command),
           previous.get(entry.repoRoot) ?? now,
           now,
         );
@@ -3908,11 +3970,15 @@ export class WorkflowStore {
       );
       this.db.prepare(
         `UPDATE workflow_commands
-            SET default_command_json = ?, max_runs = ?, revision = ?, updated_at = ?
+            SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
+                on_budget_exhausted = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
         row.maxRuns,
+        row.timeoutMs,
+        row.onUnavailable,
+        row.onBudgetExhausted,
         revision,
         now,
         row.slot,
@@ -3927,7 +3993,7 @@ export class WorkflowStore {
         insertOverride.run(
           row.slot,
           override.repoRoot,
-          JSON.stringify(override.command),
+          JSON.stringify(override.review ?? override.command),
           previousOverrides.get(override.repoRoot) ?? now,
           now,
         );
@@ -4106,6 +4172,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
+      if (slot === "coderabbit") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -5490,7 +5557,7 @@ export class WorkflowStore {
         // Global withdrawal retires every live version, including earlier shared proof
         // retained for siblings and legacy versions that survive only in frozen packets.
         const frozen = this.db.prepare(`SELECT c.staging_id AS id, c.repository_scope,
-            CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+            b.session_cwd AS source_root
           FROM workflow_submission_evidence_coverage c JOIN workflow_submissions s ON s.id = c.submission_id
           JOIN workflow_runs r ON r.id = s.run_id JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE b.note_key = ? AND c.client_criterion_id = ?`).all(noteKey, id) as Array<{
@@ -6055,7 +6122,7 @@ export class WorkflowStore {
   /** Retirement is bounded by both the target reservation and its receiving repository. */
   private retiredCoverageVersions(stagingIds: string[], targetId: string): Set<string> {
     if (stagingIds.length === 0) return new Set();
-    const target = this.db.prepare(`SELECT CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS source_root
+    const target = this.db.prepare(`SELECT b.session_cwd AS source_root
       FROM workflow_submissions s JOIN workflow_runs r ON r.id = s.run_id
       JOIN workflow_bindings b ON b.id = r.binding_id WHERE s.id = ?`).get(targetId) as { source_root: string | null } | undefined;
     if (!target) return new Set();
@@ -8393,7 +8460,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND a.state NOT IN ('error', 'cancelled')
+            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -8405,6 +8472,15 @@ export class WorkflowStore {
         .run(slot, attemptId);
       return { granted: true, spent };
     });
+  }
+
+  /** Return this attempt's claim after the executor reports that no Command could start. */
+  releaseCheckRun(attemptId: string, slot: string): boolean {
+    return this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET check_run_slot = NULL
+        WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
+    ).run(attemptId, slot).changes === 1;
   }
 
   /**
@@ -8421,7 +8497,7 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND a.state NOT IN ('error', 'cancelled')`,
+          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }
@@ -8450,13 +8526,37 @@ export class WorkflowStore {
 
   /** Every attempt for a run in the same evidence and attempt order as per-submission reads. */
   listAttemptsForRun(runId: string): WorkflowNodeAttempt[] {
-    return (this.db.prepare(
+    const attempts = (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
          JOIN workflow_submissions s ON s.id = a.submission_id
         WHERE s.run_id = ?
         ORDER BY s.round ASC, s.segment ASC,
                  a.created_at ASC, a.node_id ASC, a.attempt ASC`,
     ).all(runId) as unknown[]).map(parseWorkflowNodeAttemptRow);
+    const rows = this.db.prepare(
+      `SELECT * FROM workflow_command_artifacts WHERE run_id = ? ORDER BY attempt_id, kind`,
+    ).all(runId) as Array<{
+      id: string; attempt_id: string; kind: "stdout" | "stderr" | "findings";
+      retained_bytes: number; observed_bytes: number; dropped_bytes: number;
+      sha256: string | null; capture_state: "complete" | "partial";
+      availability: "retained" | "pruned" | "unavailable";
+      unavailable_reason: string | null;
+    }>;
+    const byAttempt = new Map<string, WorkflowCommandArtifactDescriptor[]>();
+    for (const row of rows) {
+      const items = byAttempt.get(row.attempt_id) ?? [];
+      items.push({
+        id: row.id, kind: row.kind, retainedBytes: row.retained_bytes,
+        observedBytes: row.observed_bytes, droppedBytes: row.dropped_bytes,
+        sha256: row.sha256, captureState: row.capture_state,
+        availability: row.availability, unavailableReason: row.unavailable_reason,
+      });
+      byAttempt.set(row.attempt_id, items);
+    }
+    return attempts.map((attempt) => {
+      const commandArtifacts = byAttempt.get(attempt.id);
+      return commandArtifacts ? { ...attempt, commandArtifacts } : attempt;
+    });
   }
 
   listRunnableAttempts(now = Date.now()): WorkflowNodeAttempt[] {
@@ -8597,7 +8697,7 @@ export class WorkflowStore {
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.listEvents(runId).find((event) =>
-        event.kind === "manual_infrastructure_retry"
+        (event.kind === "manual_infrastructure_retry" || event.kind === "manual_command_retry")
         && event.payload
         && !Array.isArray(event.payload)
         && typeof event.payload === "object"
@@ -8608,6 +8708,10 @@ export class WorkflowStore {
           submission: this.mustSubmission(submissionId),
           idempotent: true,
         };
+      }
+      const recoveryPhase = this.mustRun(runId).currentPhase;
+      if (recoveryPhase !== "infrastructure_error" && recoveryPhase !== "command_action_required") {
+        throw new Error(`Workflow run ${runId} is not in a retryable Command phase`);
       }
       const latest = this.latestAttemptForNode(submissionId, failed.nodeId);
       if (!latest || latest.state !== "error") {
@@ -8638,13 +8742,15 @@ export class WorkflowStore {
       if (!this.reviveFailedSubmission(
         submissionId,
         runId,
-        "infrastructure_error",
+        recoveryPhase,
         now,
       )) {
         throw new Error(`Workflow submission ${submissionId} cannot be revived`);
       }
       this.setRunState(runId, "running", "persona_review", null, now);
-      this.appendEvent(runId, "manual_infrastructure_retry", {
+      this.appendEvent(runId, recoveryPhase === "command_action_required"
+        ? "manual_command_retry"
+        : "manual_infrastructure_retry", {
         requestId,
         nodeAttemptId: latest.id,
         reactivatedNodeAttemptIds: errored.map((attempt) => attempt.id),
@@ -9467,7 +9573,7 @@ export class WorkflowStore {
             )
           )
         ) LIMIT 1`)
-      .get(binding.noteKey, binding.repoRoot || binding.sessionCwd || "", parent.id,
+      .get(binding.noteKey, canonicalWorktreePath(binding.sessionCwd || ""), parent.id,
         typeof failure?.itemClientId === "string" ? failure.itemClientId : null,
         parent.stagedImageGeneration ?? 0));
   }
@@ -9515,7 +9621,7 @@ export class WorkflowStore {
       if (!deliveries.some((delivery) => delivery.submissionId === parent.id
           && delivery.kind === "evidence_capture_repair" && delivery.state === "delivered")
           || deliveries.some((delivery) => ["sending", "uncertain", "prepared"].includes(delivery.state))) return null;
-      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || "");
+      const generation = this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || "");
       if (!this.captureRepairInputsChanged(parent, binding)) return null;
       const attempts = this.listSubmissions(run.id).filter((candidate) => candidate.round === parent.round
         && candidate.refinementReason === "evidence_capture_repair").length;
@@ -9579,7 +9685,7 @@ export class WorkflowStore {
       });
       // Keep the parent's frozen proof, but honor withdrawals committed before this recovery.
       const generation = Math.max(parent.stagedImageGeneration ?? 0,
-        this.workflowEvidenceGeneration(binding.noteKey, binding.repoRoot || binding.sessionCwd || ""));
+        this.workflowEvidenceGeneration(binding.noteKey, binding.sessionCwd || ""));
       this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
         .run(generation, input.id);
       this.inheritSubmissionEvidenceInTransaction({
@@ -9640,7 +9746,7 @@ export class WorkflowStore {
       if (!binding) return { ok: false, reason: "not_waiting" };
       const generation = this.workflowEvidenceGeneration(
         binding.noteKey,
-        binding.repoRoot || binding.sessionCwd || "",
+        binding.sessionCwd || "",
       );
       if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
@@ -10285,6 +10391,11 @@ export class WorkflowStore {
               ) AND availability = 'retained'`,
           ).run(input.now, runId);
           this.db.prepare(
+            `UPDATE workflow_command_artifacts
+                SET availability = 'pruned', pruned_at = ?
+              WHERE run_id = ? AND availability = 'retained'`,
+          ).run(input.now, runId);
+          this.db.prepare(
             `UPDATE workflow_deliveries
                 SET payload = '', payload_pruned_at = ?,
                     error = CASE
@@ -10371,6 +10482,8 @@ export class WorkflowStore {
                 SELECT id FROM workflow_submissions WHERE run_id = ?
               )`,
           ).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+          this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
           this.db.prepare(
             `DELETE FROM workflow_node_attempts
               WHERE submission_id IN (
@@ -10736,6 +10849,79 @@ export class WorkflowStore {
     };
   }
 
+  /**
+   * The delivery another of this conversation's reviews is still owed a turn for, or null
+   * when the pane is free.
+   *
+   * A multi-repo task's session runs one review per repository it changed, and they share one
+   * pane, one transcript and one turn. At most one may have a packet outstanding: two
+   * instructions typed into one conversation interleave into a turn neither expects, and the
+   * transcript anchor that proves a packet was picked up cannot say which of them the session
+   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
+   * contract is per run and is unchanged; this one is between runs, where serializing is the
+   * only available answer because the runs are genuinely independent reviews.
+   *
+   * A conversation with one active binding - every single-repo session - returns null from
+   * the first line and pays one indexed read, so nothing about its delivery path moves.
+   *
+   * What counts as outstanding is "the session still owes this packet a turn":
+   *
+   *  - `sending`: being typed right now, and the only truly concurrent case.
+   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
+   *    read and the action has not completed.
+   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
+   *    the agent is repairing that repository, and handing it a second repository's findings
+   *    mid-repair is the interleaving this exists to prevent.
+   *
+   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
+   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
+   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
+   */
+  conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
+    const bindings = this.activeBindingsForNote(delivery.noteKey);
+    if (bindings.length < 2) return null;
+    for (const binding of bindings) {
+      const run = this.activeRunForBinding(binding.id);
+      if (!run || run.id === delivery.runId || ["completed", "cancelled", "failed"].includes(run.status)) continue;
+      const latest = this.latestSubmission(run.id);
+      for (const other of this.listDeliveries(run.id)) {
+        if (other.state === "sending") return other;
+        if (other.state !== "delivered") continue;
+        if (other.kind === "session_action") {
+          const attempt = other.nodeAttemptId ? this.getAttempt(other.nodeAttemptId) : null;
+          if (attempt?.state === "waiting") return other;
+          continue;
+        }
+        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
+        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
+            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
+            && other.submissionId === latest?.id) return other;
+      }
+    }
+    return null;
+  }
+
+  /** Current queue ownership, derived from the same predicate that guards delivery. */
+  private runDeliveryHold(run: WorkflowRun, binding: WorkflowBinding): WorkflowRunDetail["deliveryHold"] {
+    if (binding.state !== "active" || binding.deliveryMode !== "live"
+        || ["completed", "cancelled", "failed"].includes(run.status)) return null;
+    const latest = this.latestSubmission(run.id);
+    for (const delivery of this.listDeliveries(run.id)) {
+      if (delivery.state !== "prepared" || delivery.submissionId !== latest?.id) continue;
+      const hold = this.conversationDeliveryHold(delivery);
+      const holdingRun = hold ? this.getRun(hold.runId) : null;
+      const holdingBinding = holdingRun ? this.getBinding(holdingRun.bindingId) : null;
+      if (hold && holdingRun && holdingBinding) return {
+        runId: holdingRun.id,
+        deliveryId: hold.id,
+        repoRoot: holdingBinding.repoRoot || holdingBinding.sessionRepoRoot || holdingBinding.sessionCwd,
+        kind: hold.kind,
+        state: hold.state,
+      };
+    }
+    return null;
+  }
+
   runDetail(id: string): WorkflowRunDetail | null {
     const summary = this.runSummary(id);
     const run = this.getRun(id);
@@ -10779,6 +10965,7 @@ export class WorkflowStore {
       repairGrant: this.runRepairGrant(id),
       refusedCompletion: this.runRefusedCompletion(id),
       resumption: this.runResumptionState(run, binding, version),
+      deliveryHold: this.runDeliveryHold(run, binding),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
       // what must not exist twice is the RULE deciding whether a claim is this run's.
@@ -11009,6 +11196,8 @@ export class WorkflowStore {
         `SELECT id FROM workflow_bindings WHERE note_key = ?`,
       ).all(noteKey) as unknown as Array<{ id: string }>).map((row) => row.id);
       for (const runId of runIds) {
+        this.db.prepare(`DELETE FROM workflow_command_artifacts WHERE run_id = ?`).run(runId);
+        this.db.prepare(`DELETE FROM workflow_command_artifact_reservations WHERE run_id = ?`).run(runId);
         this.db.prepare(
           `DELETE FROM workflow_llm_calls WHERE run_id = ?`,
         ).run(runId);
@@ -11234,7 +11423,7 @@ export class WorkflowStore {
   ): void {
     const owner = this.db.prepare(
       `SELECT b.note_key,
-              CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+              b.session_cwd AS checkout_root
          FROM workflow_submissions s
          JOIN workflow_runs r ON r.id = s.run_id
          JOIN workflow_bindings b ON b.id = r.binding_id
@@ -11407,7 +11596,7 @@ export class WorkflowStore {
       if (!submission) return { frozen: [], unresolved: [] };
       const owner = this.db.prepare(
         `SELECT b.note_key,
-                CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+                b.session_cwd AS checkout_root
            FROM workflow_runs r
            JOIN workflow_bindings b ON b.id = r.binding_id
           WHERE r.id = ?`,

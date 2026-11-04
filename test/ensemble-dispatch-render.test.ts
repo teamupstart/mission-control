@@ -442,7 +442,8 @@ test("uploading attachments blocks the launch controls", () => {
 
 test("the dispatch modal wires Single/Ensemble mode with no second composer and no new DraftKind", () => {
   const modal = readFileSync(new URL("../src/web/components/DispatchModal.tsx", import.meta.url), "utf8");
-  assert.match(modal, /dispatch-mode-toggle/);
+  // The toggle itself is shared with Resident mode, in its own component.
+  assert.match(modal, /<DispatchModeToggle mode=\{launchMode\}/);
   assert.match(modal, /<EnsembleDispatch/);
   assert.match(modal, /const ensembleMode =/);
   // Which modes offer the Single/Ensemble toggle is behavior, so it is asserted where the form

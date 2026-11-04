@@ -11,14 +11,12 @@ export function OrganizationTelemetryNotice({
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
   if (notice === null) return null;
-  return <VisibleNotice key={notice.label} notice={notice} onDismiss={onDismiss} />;
+  return <VisibleNotice key={notice.label} onDismiss={onDismiss} />;
 }
 
 function VisibleNotice({
-  notice,
   onDismiss,
 }: {
-  notice: NonNullable<TelemetrySettingsSummary["organizationNotice"]>;
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
   const [dismissing, setDismissing] = useState(false);
@@ -44,7 +42,12 @@ function VisibleNotice({
   return (
     <section className="app-banner app-banner-organization" role="status" aria-label="Organization telemetry notice">
       <div className="app-banner-copy">
-        <strong>Telemetry is enabled by your organization for Claude and Codex.</strong>
+        <strong>Mission Control usage telemetry is enabled by your organization.</strong>
+        <p>
+          Mission Control sends a minimized set of its own activity metrics and traces to
+          your organization's configured telemetry collector. Prompts, code, file paths,
+          terminal output and names are excluded.
+        </p>
         {error && <p className="settings-error" role="alert">{error}</p>}
       </div>
       <div className="app-banner-actions">

@@ -149,6 +149,12 @@ const COMPACTABLE_ITEMS = [
     label: "Foreman",
     description: "The Foreman control. Minimized, it drops its name and mode and keeps its status dot, issue count and queue count.",
   },
+  {
+    id: "residents",
+    kind: "compactable",
+    label: "Residents",
+    description: "The Residents dock button. Minimized, it is drawn as its ⌂, plus the live count while any resident is running.",
+  },
 ] as const satisfies readonly TopbarItem[];
 
 /** Every customizable topbar item, optional ones first, in the order the bar draws each kind. */

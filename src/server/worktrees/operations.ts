@@ -87,6 +87,8 @@ export interface WorktreeOperationsDeps {
   occupancy: (paths: readonly string[]) => Promise<Map<string, WorktreeOccupancy>>;
   /** Wall-clock budget for measuring every path one preview shows, together. */
   diskMeasureBudgetMs: number;
+  /** Schedule that budget's deadline. Injectable so tests do not measure host contention. */
+  scheduleDiskMeasureDeadline: (delayMs: number, expire: () => void) => () => void;
   /**
    * Operations listed at once - queued, running, and failed reports nobody has dismissed.
    * Further submissions are refused; nothing listed is ever dropped to make room.
@@ -233,6 +235,10 @@ export class WorktreeOperationsService {
       git: new NativeWorktreeGit(),
       occupancy: inspectWorktreeOccupancy,
       diskMeasureBudgetMs: DISK_MEASURE_BUDGET_MS,
+      scheduleDiskMeasureDeadline: (delayMs, expire) => {
+        const timer = setTimeout(expire, delayMs);
+        return () => clearTimeout(timer);
+      },
       maxOperations: WORKTREE_INVENTORY_LIMITS.operations,
       ...deps,
     };
@@ -459,12 +465,12 @@ export class WorktreeOperationsService {
     const sizes: Array<number | null> = paths.map(() => null);
     if (paths.length === 0) return sizes;
     let expired = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelDeadline = (): void => {};
     const deadline = new Promise<"expired">((resolve) => {
-      timer = setTimeout(() => {
+      cancelDeadline = this.deps.scheduleDiskMeasureDeadline(this.deps.diskMeasureBudgetMs, () => {
         expired = true;
         resolve("expired");
-      }, this.deps.diskMeasureBudgetMs);
+      });
     });
     let next = 0;
     const worker = async (): Promise<void> => {
@@ -482,7 +488,7 @@ export class WorktreeOperationsService {
     try {
       await Promise.all(Array.from({ length: Math.min(DISK_MEASURE_CONCURRENCY, paths.length) }, worker));
     } finally {
-      clearTimeout(timer);
+      cancelDeadline();
     }
     return sizes;
   }

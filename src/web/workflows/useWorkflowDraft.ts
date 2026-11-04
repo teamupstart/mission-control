@@ -271,13 +271,13 @@ export function useWorkflowDraft(
   useEffect(() => {
     const local = workflowRef.current;
     if (!streamedSummary || !local) return;
-    const action = workflowSummaryAction({ local, summary: streamedSummary, dirty, saving });
+    const action = workflowSummaryAction({ local, summary: streamedSummary, dirty, saving: saving || savingRoundLimit });
     if (action === "conflict") {
       conflictRef.current = streamedSummary;
       setConflict(streamedSummary);
     }
     if (action === "reload") void reload();
-  }, [dirty, reload, saving, streamedSummary]);
+  }, [dirty, reload, saving, savingRoundLimit, streamedSummary]);
 
   const update = useCallback((patch: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults">>): void => {
     const current = workflowRef.current;

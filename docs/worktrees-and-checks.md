@@ -73,6 +73,11 @@ than by the checkout path used to reach it. Released slot directories remain in 
 dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
+The allocator serializes new Git worktree creation within each repository. Distinct slot
+paths still share Git registration metadata, and a concurrent creation can see a registration
+before its `commondir` file exists. Slot reservations remain short; resets and setup commands
+do not hold this creation lock.
+
 A slot never crosses a task boundary holding a branch. Reset detaches the checkout at the exact
 requested commit before it hard-resets and cleans, and both state transitions that hand a slot on
 - finalizing a lease and marking a returned slot available - independently prove path, repository,
@@ -402,8 +407,13 @@ What a Command gets:
 
 - **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
   arguments, so there is no string for a repository's configured command to break out of.
-- **The captured commit, in a pooled worktree**, not your own working copy - so a check never
-  sees, and can never disturb, whatever you have open. The tree is `reset --hard` to that exact
+- **The submitted content, in a pooled worktree**, not your own working copy - so a check never
+  sees, and can never disturb, whatever you have open. A clean submission is checked at its
+  captured commit. An uncommitted one - a ship task hands its work over before it commits - is
+  checked at its *review snapshot*: the capture writes the complete tracked and nonignored
+  worktree as a commit parented on HEAD, through a temporary index, and names it
+  `refs/mission-control/workflow-reviews/<commit>`. No branch, index or file in your checkout
+  moves, and the ref is pruned 30 days after capture. The tree is `reset --hard` to that exact
   commit and cleaned with `clean -fd`, never `-fdx`, which is what preserves the pool's warm
   ignored dependencies: your `node_modules` survives, so a check is a build rather than an
   install. A subdirectory command runs in that subdirectory *of the leased tree*.
@@ -416,8 +426,14 @@ What a Command gets:
   environment says.
 - **A closed stdin**, so a command that stops to ask a question fails immediately instead of
   hanging until its timeout.
-- **Bounded output.** The last 4,000 bytes are kept, because a failing build's useful lines are
-  its last ones, and the run detail reports exactly how many bytes were dropped.
+- **Bounded output.** The combined last 4,000 bytes remain inline because a failing build's
+  useful lines are usually last. Separately, each attempt retains up to 2 MiB across stdout
+  and stderr, and a workflow run retains at most 64 MiB of Command bodies. The daemon keeps
+  draining after either cap, so log volume never terminates an otherwise healthy command.
+  Run detail reports retained, observed, and dropped byte counts and reads each stream through
+  a 64 KiB paged route. That reader remains available when timeout, signal, or cleanup failure
+  leaves the attempt with infrastructure state and no check verdict. Storage failure is explicit
+  and does not change the process verdict.
 
 **This is not a sandbox, and the trimmed environment should not be read as one.** A check
 command runs as you, with your filesystem access. Removing the token narrows what a build can
@@ -431,6 +447,8 @@ returning the worktree, because a build that leaves a server running behind it i
 the leader exiting proves nothing about its children. A group it cannot prove is empty keeps
 its lease rather than handing back a tree something may still be writing into. Test commands
 get sixty minutes before this teardown begins; other Command slots keep the ten-minute default.
+Library can configure a slot from one minute through two hours. The chosen value is frozen for
+the attempt, and a timeout remains retryable infrastructure rather than a failed-code verdict.
 
 **A daemon shutdown skips the grace and goes straight to `SIGKILL`**, deliberately. Stopping
 Mission Control mid-build would otherwise wait out the rest of the command's timeout - up to
@@ -445,3 +463,25 @@ not been shown to have run against the commit it claims - so it is recorded as a
 failure instead, the run blocks and says so, and it clears once the lease is reclaimed. The
 command's own exit code is kept in the reason, so you can still tell "the build failed and then
 cleanup broke" from "the build passed and then cleanup broke".
+
+## Residents without a repository
+
+A resident launched with **No repository** uses a Mission-owned run directory instead of a
+checkout. The [resident profiles change contract](agent-guides/change-contracts.md#resident-profiles)
+defines the persisted workspace marker and shared repository predicate.
+
+Worktree allocation, diffs, pull-request observation, repository grouping, and worktree retention
+skip these runs. The run directory is removed after durable run completion and confirmed session
+shutdown. The same cleanup scans ended runs at startup and retries failures. Daemon shutdown
+alone does not end a run or remove its workspace.
+
+### CodeRabbit comparisons
+
+CodeRabbit uses the same supervised Check lease and retained-output reader. It reviews the
+same commit the other Commands are pinned to - the captured head, or the review snapshot of an
+uncommitted submission - against a frozen merge-base, resolving refs in the run's repository.
+It never fetches refs. A dirty submission captured before review snapshots existed blocks with
+a submit-again remedy. Missing/invalid YAML and exhausted allowance skip with
+warnings before any availability probe. Complete normalized findings have their own 4 MiB /
+1,000-finding bound within the shared 64 MiB run quota; raw stdout/stderr keep their independent
+2 MiB cap. A semantic overflow or unavailable findings artifact blocks even on exit zero.

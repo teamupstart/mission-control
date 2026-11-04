@@ -116,6 +116,12 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
   ],
+  "src/server/residents/mcp-catalog.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "Codex path resolved by the locator, listing MCP auth status read-only in a neutral directory" },
+  ],
+  "src/server/residents/mcp-launcher.ts": [
+    { operation: "spawn", command: "runtime.command", contract: "operator-command", reason: "the operator's MCP server command, from the run's daemon-private snapshot, started by the scoped launcher with its own secrets" },
+  ],
   "src/server/terminal/resume-guard.ts": [
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
   ],
@@ -370,4 +376,12 @@ test("every direct child-process call matches one structured executable boundary
       return boundarySignature(file, boundary);
     }));
   assert.deepEqual(observed.sort(), declared.sort());
+});
+
+test("Atlassian CLI has its own append-only identity and OAuth binary override", () => {
+  assert.equal(EXECUTABLE_IDS[26], "acli");
+  assert.deepEqual(
+    [EXECUTABLE_SPECS.acli.id, EXECUTABLE_SPECS.acli.label, EXECUTABLE_SPECS.acli.command, EXECUTABLE_SPECS.acli.overrideEnv],
+    ["acli", "Atlassian CLI", "acli", "ACLI_BIN"],
+  );
 });

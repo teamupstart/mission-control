@@ -395,13 +395,18 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
 
   // 7-8. One Command slot, its overrides, and the Save that runs nothing.
   dialog = step(dashboard, "A Command slot");
-  await expect(dialog).toContainText("test, lint, typecheck, build, and documentation");
+  await expect(dialog).toContainText("test, lint, typecheck, build, documentation, and CodeRabbit");
   await expect.poll(() => hash(dashboard)).toBe("#/library/commands/test");
   await expect(dashboard.locator("tr.wf-command-rule.is-default")).toHaveCSS("outline-width", "2px");
+  await shoot(dashboard, "review-r4-command-slot");
   await dialog.getByRole("button", { name: "Next" }).click();
   dialog = step(dashboard, "Overrides, and saving one");
+  await expect(dialog).toContainText("base ref and severity");
+  await expect(dialog).toContainText("reviews.auto_review.enabled");
+  await expect(dialog).toContainText("even without a Library override");
   await expect(dialog).toContainText("Step 8 of 15");
   await expect(dashboard.locator("tr.wf-command-rule.is-add")).toHaveCSS("outline-width", "2px");
+  await shoot(dashboard, "review-r4-command-overrides");
   await dialog.getByRole("button", { name: "Next" }).click();
   dialog = step(dashboard, "Overrides, and saving one");
   const save = dashboard.getByRole("button", { name: "Save Command" });
@@ -434,7 +439,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await expect(dialog).toContainText("Step 11 of 15");
   const authoredStrip = dashboard.getByRole("group", { name: "Workflow pipeline editor" });
   await expect(authoredStrip).toHaveCSS("outline-width", "2px");
-  await expect(authoredStrip.locator("section.wf-pipeline-stage")).toHaveCount(5);
+  await expect(authoredStrip.locator("section.wf-pipeline-stage")).toHaveCount(6);
   await shoot(dashboard, "04-no-mistakes");
   await dialog.getByRole("button", { name: "Next" }).click();
 

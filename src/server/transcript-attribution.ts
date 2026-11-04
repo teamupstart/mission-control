@@ -1,3 +1,4 @@
+import { residentWakePresentation } from "./residents/loop-store.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
 import { originOf } from "./injections.ts";
@@ -47,8 +48,13 @@ export function attributeTranscript(
   let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
+    const residentText = residentWakePresentation(message, conversation);
+    if (residentText !== null) return { ...message, origin: "resident", presentation: { kind: "resident", displayText: residentText } };
     const originSession = delegated.sources.get(message.id);
-    const live = originOf(sessionId, message.text);
+    const remembered = originOf(sessionId, message.text);
+    // Resident labels require a bound native turn; a text-keyed reservation also
+    // matches a human copying that turn and is not sufficient attribution.
+    const live = remembered === "resident" ? undefined : remembered;
     // A turn whose words this conversation delegated, but which no delivery claims, is the
     // operator repeating them; the text-keyed live label would credit the controller. And while
     // a delivery of those words is unresolved, the turn could be it, so no live label - Foreman's

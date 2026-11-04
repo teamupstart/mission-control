@@ -221,7 +221,7 @@ async function seed(over: SeedOptions = {}) {
       transcriptPath: null,
       env: { tmuxPane: `%${serial}` },
       prUrl: url,
-      prCreated: false,
+      prCreated: true,
     });
   }
   const now = Date.now() - 1_000;
@@ -300,10 +300,19 @@ async function seed(over: SeedOptions = {}) {
   return { ids, head, key, url, manager, registry, store, claimed, now, injected };
 }
 
+/**
+ * Polls until `check` holds, so a healthy run returns as soon as the gate moves. The bound is
+ * generous on purpose: the abbreviated-commit cases resolve heads through real `git rev-parse`
+ * subprocesses, several per gate evaluation, and under the full suite's file concurrency one
+ * evaluation took over two seconds while the same case settles in a few hundred milliseconds on
+ * its own. The bound only decides how long a genuinely stuck gate takes to report.
+ */
+const WAIT_FOR_MS = 15_000;
+
 async function waitFor(check: () => boolean, message: string): Promise<void> {
   const started = Date.now();
   while (!check()) {
-    if (Date.now() - started > 2_000) assert.fail(message);
+    if (Date.now() - started > WAIT_FOR_MS) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -804,7 +813,7 @@ test("durable handoff provenance requires an exact known repository identity", a
         transcriptPath: null,
         env: { tmuxPane: `%${serial}` },
         prUrl: seeded.url,
-        prCreated: false,
+        prCreated: true,
       });
       seeded.registry.inspectionUpdated(seeded.key, null, null, adoptedAt);
       await new Promise((resolve) => setImmediate(resolve));

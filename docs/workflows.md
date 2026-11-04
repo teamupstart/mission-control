@@ -16,6 +16,11 @@ An orphaned or historical binding that cannot establish current ownership requir
 (1 through 200), and `cursor` filters. Follow its `nextCursor` until it is null.
 `get_workflow_run({runId})` returns the dashboard's run detail, including the binding,
 submissions, deliveries, and current recovery options. Inspect that state before taking an action.
+Command attempts in that detail carry bounded artifact descriptors, never full output bodies.
+Read one stream with
+`read_workflow_command_output({runId, attemptId, artifactId, cursor?, limit?})`, using the
+opaque ids from run detail and following `nextCursor` until it is null. A page is at most 64
+KiB. The same owning-session and **Control other sessions** authorization applies.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:
@@ -54,7 +59,8 @@ the exact confirmation `RESTART FULL WORKFLOW`; discarding an uncertain delivery
 `DISCARD AND SEND A NEW REPAIR ROUND` when the server requires confirmation. To deliberately
 review unchanged work, use `resubmit` with `resubmitUnchanged: true`.
 
-These tools pass through daemon-owned `/mcp/workflows/list`, `/read`, and `/act` authorization
+These tools pass through daemon-owned `/mcp/workflows/list`, `/read`,
+`/read-command-output`, and `/act` authorization
 routes. Run-list ownership is filtered in SQL before pagination. Allowed reads and actions
 use the existing dashboard handlers with MCP/agent telemetry attribution for actions.
 They do not impersonate a human. Use them for operator-authorized workflow actions. The daemon
@@ -96,7 +102,7 @@ Each attempt is a fresh, tool-less provider call. The actual provider and model 
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other seven on `gpt-5.6-terra`. Current version 21 uses `gpt-6-sol` for all eight.
+the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -302,7 +308,7 @@ Their earlier versions remain available with their original review graphs and co
 The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
-The **Author what runs** guided tour walks No-Mistakes Review - its five stages, its disabled
+The **Author what runs** guided tour walks No-Mistakes Review - its six stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
 follows one already-ended run of it - completed, cancelled or failed - into the Runs page and
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
@@ -321,10 +327,12 @@ pass while preserving the deterministic stage in the graph. The
 slots.
 
 Behind it are the eight built-in Personas wired the way they were written to compose. From version
-15 onward, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+15 through 21, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
+Version 22 inserts optional YAML-enabled CodeRabbit at stage 2, moving these Persona groups to
+stages 3, 4 and 5. Earlier versions retain their original numbering.
 Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
 repair, and the Pull Request action does not run until all three Persona stages pass.
 
@@ -799,9 +807,14 @@ repository override, then the slot's global default, then *skipped*. Everything 
 consent, Trust, the run budget, the platform floor, the runtime - is unchanged, and a
 configured default still runs only in a repository that holds the Workflows grant.
 
-Saving a slot replaces its default, its complete override list and its run budget in one
-compare-and-swap, so the parts are never stored apart and a second window's save is refused
-rather than silently overwriting unsaved typing.
+Saving a slot replaces its default, complete override list, run budget, timeout, and
+skip-or-block policies in one compare-and-swap, so the parts are never stored apart and a
+second window's save is refused rather than silently overwriting unsaved typing.
+
+Each slot also carries a timeout from one minute through two hours. A null setting keeps the
+existing slot default: sixty minutes for `test`, and ten minutes for every other shipped slot.
+The effective value is frozen when an attempt starts. A later catalog edit cannot change a
+running process or rewrite a completed result.
 
 **A Command runs once per workflow run by default.** Beside the command itself, each slot
 carries **how often this Command may run** - how many times it may actually execute inside a
@@ -812,7 +825,7 @@ means "every round, without ever being skipped".
 This exists because a slow gate is slow in every round. A twenty-minute test suite that
 re-runs on each repair round is the largest fixed cost in a long workflow, and the rounds after
 the first are usually re-proving the same passing paths. Once a run has spent the budget, the
-gate is *skipped* with a note naming the limit, the graph advances, and the remaining coverage
+gate is *skipped* by default with a note naming the limit, the graph advances, and the remaining coverage
 comes from CI, which runs the full suite against the merge commit anyway. Raising the number
 buys re-validation of a repair at the cost of running the command again.
 
@@ -840,13 +853,20 @@ checkout's `packages/web` resolves the command configured for the repository's
 `examples/packages/web` gets the repository-wide command, not the one configured for
 `packages/web`.
 
-**An unrun gate passes, with a note saying why.** A slot with no override for this repository
+**An unrun gate passes by default, with a note saying why.** A slot with no override for this repository
 and no global default is *skipped*; a repository that has not been authorized is *not run*; a
 platform that cannot run Commands, or an executable that is not there, is *not run* too; and a
 Command that has already run as often as this run allows is *skipped* with its own distinct
 reason. All of them pass, because a workflow that failed on every unconfigured machine would be
 broken by default, and each says which of them happened so it is never mistaken for a gate that
 ran. Only a command that ran and exited non-zero fails.
+
+For a configured Command, the slot can instead set **If the command is unavailable** or
+**When the run budget is exhausted** to **Block for operator action**. A block parks the run
+without an automatic infrastructure retry, a repair round, or a code-fix packet. Correct the
+authorization, executable, platform, or allowance and use the run's Retry action. Both
+policies default to **Skip with a note**, preserving existing Command behavior. An
+unconfigured slot and an operator-disabled node remain skips regardless of these policies.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block
@@ -870,15 +890,25 @@ run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 **Commands use the built-in native pool.** Two Commands run at once, and each holds one exact,
 detached lease for as long as it runs. A repository whose native policy is disabled or whose
 allocator positively refuses capacity uses a throwaway detached Git worktree pinned to the
-captured commit. An ambiguous native outcome does not try another provider. The configured argv
+same commit. That commit is the captured HEAD for a clean submission and the [review
+snapshot](worktrees-and-checks.md#running-a-check-command) for an uncommitted one, so a ship
+task's Commands check its work rather than the base it started from. An ambiguous native outcome does not try another provider. The configured argv
 still runs on positive degradation and its real result still gates the workflow; the fallback
 does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
 a Persona's slot.
 
-Run detail draws a Command as its own card: the slot, the configured argv, the exit code, and the
-last few kilobytes of output with a count of anything dropped - or, for a gate that did not run,
-the sentence saying which of the reasons above applied.
+Run detail draws a Command as its own card: the slot, configured argv, exit code, effective
+timeout, and the last few kilobytes of combined output with a count of anything dropped. Each
+attempt also retains separate stdout and stderr bodies up to 2 MiB combined, within a 64 MiB
+per-run quota. The dashboard and attributed MCP reader fetch those bodies in bounded pages;
+they are never placed in SSE or ordinary run-detail payloads. Retained byte counts and SHA-256
+describe raw bytes, while display strips terminal control sequences and rejects invalid UTF-8.
+Pruned, partial, unavailable, and historical-not-captured states remain explicit. Raw-output
+truncation never changes the exit-code verdict. For a gate that did not run, the card shows
+the sentence saying which reason above applied. When a launched Command ends as infrastructure
+rather than producing a check outcome, its attempt card keeps the same retained-output reader,
+including for timeout, signal, cancellation, and cleanup failures.
 
 Draft changes autosave after 500 ms of quiet. Every write carries the revision it loaded,
 so a newer tab cannot be overwritten: autosave pauses and offers **Reload latest** or
@@ -2094,6 +2124,12 @@ touches the other. Each run's own head-mismatch and fresh-observation machinery 
 and asks for a resubmission, and the per-pull-request merge verdict is the backstop that
 keeps anything stale from merging.
 
+When a sibling repository owns the conversation's turn, Runs names the holding repository,
+run and condition, such as waiting for evidence readiness. The packet stays prepared until
+that run releases the conversation. See the
+[per-repository binding contract](agent-guides/change-contracts.md#one-workflow-run-is-one-repository)
+for evidence-routing and automatic capture-repair admission rules.
+
 ### Runs Mission Control started for itself
 
 Almost every run is one an operator submitted. A run can also be started by Mission Control
@@ -2682,3 +2718,82 @@ on hover and focus, failure paths are dashed and text-labelled, state changes us
 focus returns after dialogs, and reduced-motion preferences disable canvas and panel animation.
 At narrow widths the canvas stays primary and Library and Properties become mutually exclusive
 drawers.
+
+## Local CodeRabbit Command
+
+The `coderabbit` Library Command works in any custom workflow evaluation stage, including
+stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and before Personas.
+Bindings keep their published version until explicitly upgraded. Earlier versions and other
+built-ins are unchanged.
+
+Enable it in the reviewed repository's root `.coderabbit.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  auto_review:
+    enabled: true
+```
+
+Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
+Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
+Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
+skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
+Submission capture freezes the decision; retries reuse it and new submissions refresh it.
+
+No Library override is needed. Optional repository-root tuning selects a base ref and severity
+(default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
+the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
+these defaults. The command previews its owned argv, never an editable shell recipe.
+
+The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
+Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
+ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
+Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
+mean a clean review. YAML-enabled reviews with
+remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
+and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
+or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
+returned a result Mission Control cannot accept blocks with an error that points at the attempt's
+retained output instead, since Setup would show a healthy CLI. Neither spends a repair round or
+sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
+update, remote-ref fetch or paid-credit continuation happens automatically.
+
+CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
+through its review snapshot, a commit of exactly the captured content parented on HEAD, so a ship
+task that has not committed yet is reviewed rather than refused. The `.coderabbit.yaml` that
+gates the review is the one in that commit; an ignored, uncommitted YAML blocks with a
+submit-again remedy rather than reviewing under a configuration the review cannot see. A dirty
+submission captured before review snapshots existed also blocks with a submit-again remedy, not a
+Setup link. The first successful comparison pins the full reviewed head, configured base,
+resolved base tip and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
+same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
+in the existing commit-pinned supervised lease with `review --agent --gate <severity>
+--committed --base-commit <merge-base>`.
+
+A complete gate, explicit full coverage and matching exit code pass or return findings for
+repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,
+which must be zero, and later CLIs print the list of reviewed files instead. Mission Control never
+trusts that list on its own word. Before the review starts it lists the pinned comparison's changed
+files with `git diff --name-status --no-renames <merge-base> <head>`, and the list must name every
+path that exists at the head and nothing outside the comparison. A deleted path, or the old side of
+a rename, may appear but is never required. Missing completion or coverage, reused review,
+incomplete coverage, contradictory output, semantic limits or lost findings storage block. Raw-log truncation alone does not invalidate independently retained findings.
+Run detail shows comparison provenance, severity counts, remaining allowance and diagnostics.
+**Load findings** pages the complete retained normalized findings, including advisory severities;
+the attributed `read_workflow_command_output` tool uses the same bounded authorized reader.
+Personas receive compact upstream evidence, not an assertion that they read the whole artifact.
+
+Repair instructions require the owning session to read all retained findings and verify each
+claim before changing code. Valid repairs are committed for a new submission. A false positive
+requires an explicit operator decision through the existing node-disable/recovery controls;
+clearing vendor findings or silently lowering severity does not earn approval. This local CLI
+review is independent of [GitHub CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+It does not fetch PR summary comments or cloud pre-merge checks. Enable **Follow up on CodeRabbit
+comments** in Settings > Shipping to have eligible Foreman sessions assess those errors and
+warnings as well as inline review findings; YAML enablement alone does not enable that setting.
+
+On the Workflow runs page, press **Esc** to return to the selected run’s bound session.
+An open overlay closes first. When a text field has focus, the first press leaves the field.
+Runs whose bound session is no longer available stay on the Runs page.

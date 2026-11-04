@@ -3,14 +3,18 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { renderDashboardDocument } from "./dashboard-document.ts";
+import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { existsSync } from "node:fs";
+import type { Context } from "hono";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import { HOST, PORT } from "./config.ts";
+import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
 import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
@@ -34,7 +38,7 @@ import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
-import { TaskManager } from "./tasks.ts";
+import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
@@ -50,9 +54,10 @@ import { runtimePromptInjector } from "./sdk/deliver.ts";
 import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { CheckLeaseManager } from "./workflows/check-lease.ts";
 import { CheckRuntime } from "./workflows/check-runtime.ts";
+import { WorkflowCommandArtifactService } from "./workflows/command-artifacts.ts";
 import { startPrPoller } from "./pr.ts";
 import { startInspector } from "./inspector/worker.ts";
-import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { refreshRuntimeMeta, startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startRetroWorthinessPoller } from "./retro-worthiness.ts";
 import { startUsagePoller } from "./usage.ts";
 import { setLlmSpendSink } from "./llm/spend.ts";
@@ -80,6 +85,10 @@ import {
 import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
+import { ResidentManager } from "./residents/manager.ts";
+import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
+import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
+import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
 import { PersonaManager } from "./workflows/personas.ts";
@@ -133,6 +142,8 @@ await initializeExecutableEnvironment();
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
 const database = openDb();
+// The desktop window's launch colour follows the stored skin, whoever stored it.
+syncWindowBackground();
 for (const problem of pendingPlanWriteWarnings()) console.warn("Plan write recovery:", problem);
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
@@ -191,6 +202,14 @@ const reconcileManagedResumeResources = () => {
 };
 reconcileManagedResumeResources();
 setInterval(reconcileManagedResumeResources, 30_000).unref();
+// Install this build's built-in residents before the Registry reads the profile catalog, so the
+// first snapshot already carries them and an upgrade's new revision. A failure costs the
+// built-ins, never startup: operator profiles are untouched by it.
+try {
+  reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+} catch (error) {
+  console.error("[residents] could not install the built-in resident profiles:", error);
+}
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
@@ -300,7 +319,8 @@ const checkLeases = new CheckLeaseManager(undefined, {
   manager: worktrees,
   legacy: legacyWorktrees,
 });
-const checkRuntime = new CheckRuntime(checkLeases);
+const commandArtifacts = new WorkflowCommandArtifactService();
+const checkRuntime = new CheckRuntime(checkLeases, { artifacts: commandArtifacts });
 try {
   await checkLeases.reconcileOnStartup(checkRuntime.groupRecovery);
 } catch (err) {
@@ -352,6 +372,7 @@ const workflows = new WorkflowManager(registry, personas.store, {
   queueManager: queues,
   reviewScheduler,
   checkScheduler,
+  commandArtifacts,
   // The gate stops being a formality here. A configured, allowlisted check now leases a
   // pooled worktree pinned to the captured commit, runs the operator's argv in it, and a
   // non-zero exit FAILS the submission - where before it recorded "not run" and passed.
@@ -383,6 +404,26 @@ const workflows = new WorkflowManager(registry, personas.store, {
 tasks.registerWorkflowEvidenceEligibility((task) =>
   Boolean(task.workflowId && workflows.supportsImageEvidence(task.workflowId))
 );
+// Resident profiles and the one resident launch path. It creates its tasks through
+// `TaskManager.create` with the resident capability, and the dispatcher asks it for each
+// resident's standing instructions, so both directions are installed here, after both exist.
+// Its startup reconciliation writes durable rows and starts after the port is won, below.
+const residents = new ResidentManager({
+  registry,
+  createTask: (input, internal) => tasks.create(input, internal, RESIDENT_LAUNCH_TASK_CREATE),
+  persona: (id) => personas.store.getPersona(id),
+  launchResponseWaitMs: residentLaunchWaitMs(),
+  hasLiveDriver: (id) => sdkSessions.handleFor(id) !== null,
+  // The real harness configuration, read only - never written.
+  mcpCatalog: new ResidentMcpCatalogCache(readGlobalMcp),
+});
+const residentLoop = new ResidentLoop({ registry, sdk: sdkSessions, refreshSession: (session) => refreshRuntimeMeta(registry, session) });
+tasks.registerResidentLaunch(
+  (task, repository, runtime) => residents.composeLaunch(task, repository, runtime),
+  (task) => residents.mcpLaunchForTask(task),
+);
+// A resumed resident renders its MCP servers from its run's snapshot, through the same reader.
+sdkSessions.registerResidentMcp((task) => residents.mcpLaunchForTask(task));
 workflows.start();
 // One logical snapshot owner, sharing the same WorkflowStore as every Library manager.
 // It starts only after the port is won, so the daemon remains the sole durable writer.
@@ -686,6 +727,8 @@ const app = buildApp({
   personas,
   workflows,
   schedules,
+  residents,
+  residentLoop,
   ensembles,
   sdkSessions,
   sessionActions,
@@ -714,8 +757,17 @@ const webDir =
   process.env.MISSION_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
 const hasDist = existsSync(webDir);
 if (hasDist) {
+  // The document itself carries the stored skin, so a profile with no local cache - a first
+  // desktop launch after a skin was chosen in a browser - paints it from the first frame. Read
+  // per request: a rebuild replaces the file, and the skin can change between loads.
+  // `storedSkin()`: serving a page never writes the config, and a malformed field elsewhere in
+  // the record cannot fail the page.
+  const dashboardDocument = (c: Context) =>
+    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), storedSkin()));
+  app.get("/", dashboardDocument);
+  app.get("/index.html", dashboardDocument);
   app.use("/*", serveStatic({ root: webDir }));
-  app.get("*", serveStatic({ path: join(webDir, "index.html") }));
+  app.get("*", dashboardDocument);
 }
 
 let shutdownStarted = false;
@@ -727,7 +779,11 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // so it cannot launch a driver.
   void startDiscoveryAfterSdkRestore(
     sdkSessions.restore(),
-    () => startPoller(registry),
+    () => {
+      // Every native session must be restored before claim reconciliation reads its transcript.
+      residentLoop.start();
+      return startPoller(registry);
+    },
     () => shutdownStarted,
     (err) => console.error("[sdk] could not restore embedded sessions:", err),
   ).then((stop) => {
@@ -754,6 +810,9 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Startup recovery treats every open claim as abandoned, so it may begin only after
   // this daemon has won the port that makes it the single writer.
   stopSchedules = startScheduleManager(schedules);
+  // Settle resident runs a previous process left pending, from session-start evidence, then
+  // follow run ends. After the port for the reason the schedules above are: it writes rows.
+  residents.start();
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
@@ -872,6 +931,7 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
@@ -901,13 +961,14 @@ async function shutdown(): Promise<void> {
   // Ask every embedded session's driver to close before we go. An SDK subprocess is OUR
   // child, unlike an agent in a tmux pane that outlives us, so this is the difference
   // between a harness closing its session file cleanly and it being killed mid-turn.
+  const stoppingResidentLoop = residentLoop.stop();
   await sessionTransfers.stop();
   pendingTurns.stop();
   fileCommentWalkthrough.stop();
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.
-  await workflows.stop();
+  await stoppingWorkflows;
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
@@ -926,6 +987,8 @@ async function shutdown(): Promise<void> {
   await stopWriteback();
   stopPipelines();
   stopSchedules();
+  await stoppingResidentLoop;
+  await residents.stop();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
@@ -951,3 +1014,8 @@ async function shutdown(): Promise<void> {
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+
+// Request the existing shutdown lifecycle before the Electron shell exits.
+process.parentPort?.on("message", ({data}) => {
+  if (data?.type === "mission:shutdown") process.emit("SIGTERM");
+});

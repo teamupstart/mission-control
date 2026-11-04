@@ -1,7 +1,9 @@
+import { stopUtilityProcess } from "./utility-shutdown.ts";
 import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";
 import {
   attachUtilityProcessOutput,
+  endUtilityProcessLog,
   openPrivateUtilityLog,
   utilityProcessStdio,
 } from "./utility-log.ts";
@@ -11,7 +13,7 @@ import {
 } from "./utility-process-start.ts";
 
 export interface UtilityProcessController {
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export interface UtilityProcessOptions {
@@ -36,6 +38,7 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
   let child: UtilityProcess | null = null;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  let stopping: Promise<void> | null = null;
   let restarts = 0;
 
   const scheduleRestart = (): void => {
@@ -70,7 +73,9 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
           attachUtilityProcessOutput(spawned, log, opts.captureChildOutput);
           spawned.once("exit", (code) => {
             child = null;
-            log.end(
+            endUtilityProcessLog(
+              spawned,
+              log,
               stopped
                 ? `[mission-control] ${opts.serviceName} stopped\n`
                 : `[mission-control] ${opts.serviceName} exited with code ${code}; restarting\n`,
@@ -102,11 +107,12 @@ export function superviseUtilityProcess(opts: UtilityProcessOptions): UtilityPro
   spawn();
   return {
     stop() {
-      if (stopped) return;
+      if (stopping) return stopping;
       stopped = true;
       if (restartTimer) clearTimeout(restartTimer);
       restartTimer = null;
-      child?.kill();
+      stopping = child ? stopUtilityProcess(child) : Promise.resolve();
+      return stopping;
     },
   };
 }

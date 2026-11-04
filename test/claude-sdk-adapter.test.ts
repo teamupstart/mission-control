@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   claudeSdkRateLimits,
   claudeSdkSpec,
@@ -184,6 +185,31 @@ function launchOpts(over: Record<string, unknown> = {}) {
     ...over,
   } as Parameters<ReturnType<typeof claudeSdkSpec>["launch"]>[0];
 }
+
+test("resident compaction waits for the observed native boundary and result", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query, turns } = await started;
+  query.emit(INIT("fixture"));
+  await collect(handle.events, e => e.kind === "bound");
+  const operation = handle.compact!("Keep the current objective");
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(turns[0]?.message.content, "/compact Keep the current objective");
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/resident-compaction/claude-manual.json", import.meta.url), "utf8")) as ClaudeSdkMessage[];
+  for (const frame of fixture) query.emit(frame);
+  assert.deepEqual(await operation, { contextTokens: 494, contextWindow: 1_000_000 });
+  await handle.stop();
+});
+
+test("resident compaction without a measured boundary refuses rather than accepting a completed command", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  const { query } = await started;
+  const operation = handle.compact!("");
+  const refused = assert.rejects(operation, /without a measured context boundary/);
+  query.emit({ type: "result", subtype: "success" });
+  await refused; await handle.stop();
+});
 
 test("standing instructions APPEND to the Claude Code preset, and are omitted when empty", async () => {
   // The preset object is the only non-destructive form. A bare `systemPrompt: string`
@@ -604,6 +630,44 @@ test("an authentication failure before binding exits as unresumable", async () =
     await handle.stop();
   }
 });
+
+for (const initialModel of [null, "claude-opus-5"]) {
+  test(`authentication recovery preserves an accepted model upgrade from ${initialModel ?? "default"}`, async (t) => {
+    const starts: Harnessed[] = [];
+    const deps: ClaudeSdkDeps = {
+      executable: async () => "/fake/bin/claude",
+      env: () => ({}),
+      query: async ({ prompt, options }) => {
+        const query = new FakeQuery();
+        const turns: ClaudeSdkUserMessage[] = [];
+        starts.push({ query, options, turns });
+        void (async () => {
+          for await (const turn of prompt) turns.push(turn);
+          query.end();
+        })();
+        return query;
+      },
+    };
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ model: initialModel }));
+    t.after(() => handle.stop());
+    const first = starts[0]!;
+    first.query.emit(INIT("model-recovery"));
+    await collect(handle.events, event => event.kind === "bound");
+    await handle.setModel!("claude-opus-5-5");
+    first.query.setModel = async () => { throw new Error("model unavailable"); };
+    await assert.rejects(handle.setModel!("refused-model"), /model unavailable/);
+
+    first.query.emit({ type: "assistant", session_id: "model-recovery", error: "authentication_failed" });
+    first.query.emit({ type: "result", session_id: "model-recovery", subtype: "error_during_execution" });
+    await collect(handle.events, event => event.kind === "turn_done");
+    await handle.send({ text: "continue after login" });
+
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1]!.options.resume, "model-recovery");
+    assert.equal(starts[1]!.options.model, "claude-opus-5-5", "recovery must not restore the original model");
+    assert.equal(starts[0]!.options.model, initialModel ?? undefined, "the first launch remains an unchanged snapshot");
+  });
+}
 
 test("an authentication failure reloads credentials by resuming on the next turn", async () => {
   const starts: Harnessed[] = [];
@@ -1426,4 +1490,79 @@ test("an SDK launch adds no OpenTelemetry routing, so a managed policy keeps dec
 test("the SDK subprocess env adds no OpenTelemetry routing of its own", () => {
   const env = sdkSubprocessEnv({ PATH: "/bin", HOME: "/home/op" }, "/wt/one", "/tmp/mission-sdk-state");
   assert.deepEqual(Object.keys(env).filter((name) => CLAUDE_OTEL_ROUTING.test(name)), []);
+});
+
+test("a turn Claude ended at capacity reports the failure on turn_done; other API errors do not", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  const repeated529 = "API Error: Repeated 529 Overloaded errors. The API is at capacity - this is usually temporary. Try again in a moment.";
+
+  // Claude Code tags its exhausted-529 message `server_error`, so the wording decides.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: repeated529 }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const first = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(first?.kind === "turn_done" && first.failure, { kind: "capacity", message: repeated529 });
+
+  // A server error that is not about capacity, and a subagent's overload, end nothing early.
+  assert.equal(await handle.sendIfIdle({ text: "again" }), "started");
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: "toolu_1",
+    error: "overloaded",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 529 Overloaded" }] },
+  });
+  query.emit({
+    type: "assistant",
+    session_id: "agent-1",
+    parent_tool_use_id: null,
+    error: "server_error",
+    message: { role: "assistant", content: [{ type: "text", text: "API Error: 500 Internal server error" }] },
+  });
+  query.emit({ type: "result", subtype: "success", is_error: true, result: "API Error: 500 Internal server error", session_id: "agent-1" });
+  const second = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.equal(second?.kind === "turn_done" && second.failure, undefined);
+
+  // A stream with no assistant error frame: the error result alone still names the capacity.
+  assert.equal(await handle.sendIfIdle({ text: "once more" }), "started");
+  query.emit({ type: "result", subtype: "success", is_error: true, result: repeated529, session_id: "agent-1" });
+  const third = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+  assert.deepEqual(third?.kind === "turn_done" && third.failure, { kind: "capacity", message: repeated529 });
+
+  // The other two tags Claude Code ends a capacity turn with: `overloaded` is trusted whatever
+  // the text says, and `rate_limit` only when the text names capacity, never a usage limit.
+  const turnEndingWith = async (error: string, text: string) => {
+    assert.equal(await handle.sendIfIdle({ text: `try ${error}` }), "started");
+    query.emit({
+      type: "assistant",
+      session_id: "agent-1",
+      parent_tool_use_id: null,
+      error,
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    });
+    // A result with no text, so the verdict can only come from the tagged frame above and
+    // the result-only fallback cannot mask a tag the classifier stopped accepting.
+    query.emit({ type: "result", subtype: "success", is_error: true, session_id: "agent-1" });
+    const done = (await collect(handle.events, (e) => e.kind === "turn_done")).at(-1);
+    return done?.kind === "turn_done" ? done.failure : null;
+  };
+  assert.deepEqual(
+    await turnEndingWith("overloaded", "API Error: 529"),
+    { kind: "capacity", message: "API Error: 529" },
+  );
+  const highLoad = "Opus is experiencing high load, please use /model to switch to Sonnet";
+  assert.deepEqual(await turnEndingWith("rate_limit", highLoad), { kind: "capacity", message: highLoad });
+  assert.equal(
+    await turnEndingWith("rate_limit", "You've hit your usage limit. Try again later."),
+    undefined,
+    "a usage limit is not capacity: waiting minutes does not refill a plan",
+  );
+  query.end();
 });

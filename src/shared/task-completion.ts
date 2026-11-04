@@ -151,6 +151,7 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
   plan: null,
   pipeline: null,
   chat: null,
+  resident: null,
 };
 
 /**

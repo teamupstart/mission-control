@@ -33,6 +33,39 @@ pane coordinates does not let an auxiliary CLI replace the owner, rotate its tas
 or detach its workflow and evidence. Terminal sessions retain their hook-based binding and
 clear behavior.
 
+For SDK sessions, a matching end-of-query or context hook cannot mark the card Gone.
+Only the owned driver's final exit closes the durable SDK row and begins eviction; late
+hooks cannot reopen a closing card. Explicit stop stays closed across restart, while daemon
+shutdown suspends the row for restoration.
+
+### Model capacity retries
+
+When the provider ends an SDK turn because the selected model is at capacity, the turn is
+not reported as finished. Codex reports this as `serverOverloaded` ("Selected model is at
+capacity"). Claude Code reports it once its own 529 retries are spent ("Repeated 529
+Overloaded errors") or through its "experiencing high load" off-switch. The
+[SDK supervisor](../src/server/sdk/supervisor.ts) keeps the card working, shows
+`Model at capacity - retrying in 15s (attempt 1 of 8)`, and keeps the durable
+`turn_in_progress` bit set. When the wait elapses it sends a continuation prompt, recorded as
+Mission Control's words rather than the operator's. Workflows and Foreman therefore never
+receive half-finished work as a completed turn.
+
+The waits double from 15 seconds up to a 10 minute ceiling: 15s, 30s, 1m, 2m, 4m, 8m, 10m,
+then 10m. After eight attempts the turn is reported finished, so a model that stays down
+cannot hold a session busy indefinitely. Any turn that ends normally resets the count. A
+message delivered during the wait replaces the retry. An interrupt cancels it and settles
+the card idle, and a daemon restart during the wait continues the work through the ordinary
+restart continuation. The schedule lives in
+[`capacity-retry.ts`](../src/server/sdk/capacity-retry.ts). Terminal sessions are unchanged:
+their harness's own interface shows the error.
+
+Startup retires a live SDK row whose original task is cancelled and detached only when no
+other task currently owns that session and no replacement work episode began at or after
+the cancellation. Reset & clear can cancel the old task while retaining the replacement
+conversation. Startup uses the ordinary eviction lifecycle for stale rows without
+launching a driver or sending a continuation. Completed tasks may retain or reuse their
+agents; task completion alone does not exclude an SDK session from restoration.
+
 For the exact startup ordering, eviction requirements, and task-binding rules, read the
 authoritative [session ownership](agent-guides/architecture.md#session-ownership) and
 [session removal](agent-guides/architecture.md#a-session-going-away) contracts. The related

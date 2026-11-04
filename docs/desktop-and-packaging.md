@@ -57,8 +57,18 @@ engine run [`install-binary.mjs`](../scripts/install-binary.mjs). No host Node, 
 Python, jq or compiler participates. Native `gh` owns authentication and redirects. Missing
 or incomplete assets fail with a retry/recovery message; there is no source fallback.
 
-Use `--ref vX.Y.Z` for stable, `--ref FULL_SHA` for alpha, or `--channel alpha` to pin the
-current main commit. An unavailable/retired alpha requires a new explicit selection. Fresh
+Without `--ref`, the installer selects a release by readiness, never by GitHub's newest record.
+A release exists before its Signed distribution run uploads the ready manifest, and that run can
+fail, so stable selection inventories every release and installs the highest `vX.Y.Z` that
+carries an uploaded manifest, as the desktop updater does. When no stable release is ready, the
+plain command installs the newest alpha and says so; `--channel stable` refuses instead. The app
+keeps alpha updates off unless they are enabled, so it offers the first ready stable release.
+`--channel alpha` installs `main`'s head when its alpha is ready. A merged commit has no alpha
+until its run publishes, so otherwise the installer walks the head's own history and installs
+the newest ancestor with a ready alpha, naming the unpublished head and how far behind it is.
+An alpha outside that history is never substituted. `--ref vX.Y.Z` and `--ref FULL_SHA` pin
+exact bytes and never substitute another release; an unpublished pin is named with its
+recovery. Only transport failures point at `gh` authentication. Fresh
 installs default to the personal Applications directory. `--scope system` selects a fresh
 system install; `--apps-dir DIR` requires an existing writable custom directory. A rerun
 without destination flags keeps the exact receipt destination and scope. State follows
@@ -351,6 +361,21 @@ managed updates.
 
 ## Updates from the installed app
 
+Accepting an update requests orderly shutdown of the owned Foreman and daemon before the
+shell exits. Running workflow checks are interrupted with a shutdown reason; their process
+groups are reaped and their leases settle through the usual workflow cleanup. Checks still
+waiting to start cannot release their command after shutdown begins. A check's private owner
+pipe also tears down its group if the daemon dies before orderly cleanup can run; durable
+startup recovery reconciles the remaining lease record.
+
+The detached helper displays a macOS progress dialog while waiting for the old app and its
+background processes. If a bundle process remains, the dialog names its PID, executable,
+parent and owning work. **Hide** keeps progress hidden across message changes without cancelling the update. Once a blocker exits, transaction progress replaces its stale wait message. Reopening an in-place
+update while its helper is alive leaves the update alone and exits promptly; the helper opens
+the completed app. A dead helper still follows interrupted-update recovery. Rollback outcomes
+retain the original blocking reason, alongside confirmation that the previous app and receipt
+were preserved.
+
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
@@ -365,15 +390,18 @@ update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
 inventory. If a newer release is pending and every complete release is at or below the installed
-version, the pending release remains visible with **Check again**. An older complete release is
-offered only when it is still newer than the installed version.
+version, automatic checks stay quiet and retry on the existing schedule (about six hours for
+stable updates, five minutes for alpha). Explicit **Check for Updates** commands show the pending
+release with **Check again**. An older complete release is offered only when it is still newer
+than the installed version.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-Missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. No desktop path probes host Node/npm, creates a
+On a manual check, missing assets or an unsupported app layout leave **Update Now** disabled
+with **Check again**; retry refreshes discovery. Automatic stable and alpha checks do not show
+an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
 
@@ -472,6 +500,14 @@ includes modes, file bytes and internal framework symlinks; escaping links and o
 inventories are refused. This also closes the old cross-filesystem isolation fallback's copy
 race without consuming a developer's build output.
 
+Because that digest includes each entry's permission bits, every bundle copy in the install,
+update and migration paths preserves modes (`cp -pR`, from the shared `BUNDLE_COPY_ARGUMENTS` in
+[`scripts/app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs)) regardless of the caller's umask.
+The signed installer's embedded runtime runs under `umask 077` so its private attempt material
+stays private, and a copy that let that umask reach the copied entries could never match the
+bundle it came from. The same rule makes a recovery backup restorable: it is put back at the
+modes the installed app actually had, not at the installer's private ones.
+
 A direct reinstall restores its retained app if post-swap verification or receipt publication
 fails, preserving the prior receipt bytes. Once the receipt commits, it reclaims that retained
 app; a cleanup failure reports the remaining path without undoing the committed installation.
@@ -489,10 +525,53 @@ The app marks itself as quitting before the quit request, so the hide-on-close g
 normally. The helper checks competing launchers and waits for all bundle executables to exit
 before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
+Every quit, including the one an update requests, holds the app open while the daemon and
+Foreman drain, bounded by the shared 30-second quit deadline. The app sends a private shutdown
+message first. A failed send or utility timeout requests forced termination and waits for exit;
+if the overall deadline is reached, Electron reaps the remaining utilities. Workflow checks
+start draining before slower session shutdown. The detached helper then handles any verified
+survivors before replacing the bundle.
+
+If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
+summary of the executable and check-supervisor marker. The helper never prints command lines
+or uses that fallback description as authority to signal a process. Rollback outcomes use the
+shared diagnostic redaction policy.
+
+Other migration kinds retain the startup notification and bounded fallback window when their
+helper is alive. In-place updates use the existing helper's progress dialog, as described below,
+so the transient app launch does not hold the old bundle open while displaying a notice.
+
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
-home. No helper opens SQLite or starts a second daemon.
+home. Every helper snapshot captures verified process ownership before quit, including legacy
+updates without a migration handoff. The legacy helper loads the runtime ownership record only
+after checking its parent and attempt directory, before acknowledging startup or waiting.
+The helper reads existing check leases through a read-only SQLite connection to identify
+blockers by check, attempt, run and session. It never runs database migrations, writes workflow
+state, releases leases, or starts a second daemon. The accepted desktop also supplies its
+descendant identities and Electron service names, revalidating the desktop identity after the
+process-table read. SDK recovery lifetimes retain a start-time and command digest captured by
+the owning supervisor, identifying session processes even after reparenting and including the
+session and task in diagnostics. Older records lacking that digest do not authorize signals.
+Orphaned native Electron services
+are recognized only for the same user's exact bundle helper executable, native service type,
+and app profile; merely running an arbitrary command from the bundle is insufficient.
+After a short drain, the helper terminates
+verified remaining owners, escalating stubborn processes without asking the user to kill them.
+Unverified processes are never signalled. If a process still prevents replacement, its ownership
+diagnostic is preserved in both the outcome and log. A failure before replacement reopens the
+untouched previous app without repeating the failed process wait during rollback.
+An incomplete process-table snapshot fails inspection; parsed rows alone cannot prove that the
+old bundle is clear when another process row is malformed.
+
+The shared bundle wait also opens blocker-specific progress for legacy updates without a
+migration handoff, and closes that wait's dialog on completion or failure. Transaction updates
+keep their existing progress dialog through the installation.
+
+Opening the app during an in-place update requests progress from the same helper, including
+after Hide, then promptly exits the transient launch. This request does not change the journal,
+start another helper, or reset a deadline. The helper opens the completed app automatically.
 
 Targets advertising `missionInstallTransaction` protocol 1 use the existing migration journal
 and startup gate for in-place installation. Journal protocol 2 adds this mode; protocol-1
@@ -535,8 +614,14 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
+attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,
@@ -572,8 +657,18 @@ The app checks launch ownership before handing off an update. The detached helpe
 under the existing helper lock before waiting for shutdown and immediately before installing.
 `scripts/mac-app-lifecycle.mjs` owns the same read-only macOS inspection for both processes:
 
-- Enumerate `launchctl list`, then inspect each job in `gui/<uid>` with `launchctl print`.
-  Inspect its program and argument block, including shell wrappers that execute this bundle's
+- Read every job in `gui/<uid>` from one `launchctl dumpstate`, which prints each job exactly as
+  `launchctl print` does and answers in well under a second where printing hundreds of jobs one
+  at a time took tens of seconds on a loaded Mac. The dump is used only when all of it is
+  accounted for: every unindented line is a launchd section header or a closing brace, no
+  header repeats, every service appears in the unbroken run directly after its own domain, every
+  domain that states a service count holds exactly that many, and the GUI domain's jobs are
+  exactly the labels it lists. A header-shaped line printed by a job argument's embedded newline
+  therefore interrupts the run and is refused, except after the run's last job, where a forged
+  domain header reads like the next domain. That one job is always read with its own
+  `launchctl print` instead of from the dump. Otherwise inspection falls back to enumerating
+  `launchctl list` and running `launchctl print` for each job.
+  Inspect each job's program and argument block, including shell wrappers that execute this bundle's
   `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
   inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
   Executable positions are inspected, so an app path passed as ordinary data to a fixed executable

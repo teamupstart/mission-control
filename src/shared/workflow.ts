@@ -196,6 +196,15 @@ export const WORKFLOW_EXECUTION_LIMITS = {
   checkVerdictOutput: 2_000,
 } as const;
 
+/** Browser-safe bounds shared by capture, persistence, HTTP and MCP readers. */
+export const WORKFLOW_COMMAND_OUTPUT_LIMITS = {
+  retainedBytesPerAttempt: 2 * 1_024 * 1_024,
+  retainedBytesPerRun: 64 * 1_024 * 1_024,
+  readBytesMin: 4,
+  readBytesMax: 64 * 1_024,
+  cursorChars: 1_024,
+} as const;
+
 /**
  * Workflow evidence inherits Phase 1's provider limits and adds bounds for durable metadata.
  * These are browser-safe because every intake surface and every retained row must agree.
@@ -1915,7 +1924,7 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation"] as const;
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
 /**
@@ -2787,6 +2796,47 @@ export interface WorkflowCheckCommand {
 export interface WorkflowCommandOverride {
   repoRoot: string;
   command: string[];
+  review?: CodeRabbitTuning;
+}
+
+export const CODERABBIT_SEVERITIES = ["critical", "major", "minor", "trivial", "info"] as const;
+export type CodeRabbitSeverity = (typeof CODERABBIT_SEVERITIES)[number];
+export interface CodeRabbitTuning {
+  kind: "coderabbit";
+  baseRef: string | null;
+  severity: CodeRabbitSeverity;
+}
+export interface CodeRabbitConfigSnapshot {
+  source: ".coderabbit.yaml";
+  committed?: boolean;
+  digest: string | null;
+  enabled: boolean;
+  state: "enabled" | "disabled" | "missing" | "invalid" | "unreadable";
+  diagnostic: string;
+}
+export interface CodeRabbitComparison {
+  interpreterVersion: 1;
+  yaml: CodeRabbitConfigSnapshot;
+  baseRef: string | null;
+  baseTip: string | null;
+  mergeBase: string | null;
+  head: string | null;
+  empty: boolean;
+  severity: CodeRabbitSeverity;
+  ruleRevision: number;
+  timeoutMs: number;
+  maxRuns: number;
+  error: string | null;
+}
+export interface CodeRabbitReviewSummary {
+  comparison: CodeRabbitComparison;
+  status: "complete" | "incomplete" | "skipped";
+  counts: Record<CodeRabbitSeverity | "none", number>;
+  diagnostic: string;
+  titles: string[];
+  remainingRuns?: number;
+  retryAt?: number;
+  expectedDuration?: string;
 }
 
 /**
@@ -2844,6 +2894,12 @@ export interface WorkflowCommandView {
    * again and is bounded separately by `MAX_INFRA_ATTEMPTS`.
    */
   maxRuns: number;
+  /** Null uses the slot's shipped default. */
+  timeoutMs: number | null;
+  /** What to do when an otherwise configured Command cannot execute. */
+  onUnavailable: WorkflowCommandFailurePolicy;
+  /** What to do after the Command has spent its per-run allowance. */
+  onBudgetExhausted: WorkflowCommandFailurePolicy;
   /** Compare-and-swap token. Starts at 1 for a seeded, never-edited slot. */
   revision: number;
   createdAt: number;
@@ -2861,6 +2917,38 @@ export interface WorkflowCommandView {
  * `1` repeated in three files is three chances to disagree.
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
+export function defaultWorkflowCommandMaxRuns(slot: WorkflowCheckSlot): number {
+  return slot === "coderabbit" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+}
+
+/** Browser-safe result selection; server interpreters consume this descriptor. */
+export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit"> = {
+  test: "exit_code", lint: "exit_code", typecheck: "exit_code", build: "exit_code",
+  documentation: "exit_code", coderabbit: "coderabbit",
+};
+
+export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
+export type WorkflowCommandFailurePolicy =
+  (typeof WORKFLOW_COMMAND_FAILURE_POLICIES)[number];
+
+export const WORKFLOW_COMMAND_TIMEOUT_MIN_MS = 60_000;
+export const WORKFLOW_COMMAND_TIMEOUT_MAX_MS = 2 * 60 * 60_000;
+
+/** Existing slots retain their pre-policy runtime defaults. */
+export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, number> = {
+  test: 60 * 60_000,
+  lint: 10 * 60_000,
+  typecheck: 10 * 60_000,
+  build: 10 * 60_000,
+  documentation: 10 * 60_000,
+  coderabbit: 45 * 60_000,
+};
+
+export function effectiveWorkflowCommandTimeoutMs(
+  view: Pick<WorkflowCommandView, "slot" | "timeoutMs">,
+): number {
+  return view.timeoutMs ?? WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS[view.slot];
+}
 
 /** The projected state of a slot nobody has configured yet. */
 export function emptyWorkflowCommandView(
@@ -2871,7 +2959,10 @@ export function emptyWorkflowCommandView(
     slot,
     defaultCommand: null,
     overrides: [],
-    maxRuns: WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
+    maxRuns: defaultWorkflowCommandMaxRuns(slot),
+    timeoutMs: null,
+    onUnavailable: slot === "coderabbit" ? "block" : "skip",
+    onBudgetExhausted: "skip",
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -2915,6 +3006,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  coderabbit: "Committed CodeRabbit review, enabled only by root .coderabbit.yaml reviews.auto_review.enabled: true.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
@@ -2948,6 +3040,9 @@ export const WORKFLOW_COMMAND_UNKNOWN = "Waiting for the daemon";
  */
 export const COMMAND_AUTHORIZATION_NOTE =
   "Running one also needs Commands allowed and the repository granted in Trust.";
+export const CODERABBIT_COMMAND_STATUS_NOTE =
+  "Root .coderabbit.yaml boolean true enables built-in defaults without a Library override. "
+  + "Enabled unavailability or incomplete review blocks; exhausted allowance skips with a warning.";
 
 /**
  * The DURABLE configuration state of one Command slot, as the line a card or a list row
@@ -2967,9 +3062,10 @@ export const COMMAND_AUTHORIZATION_NOTE =
  * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `YAML-enabled defaults${view.overrides.length ? ` · ${view.overrides.length} tuning ${view.overrides.length === 1 ? "rule" : "rules"}` : ""}`;
   if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
   const plural = overrides === 1 ? "override" : "overrides";
@@ -3002,9 +3098,10 @@ export function workflowCommandFact(
  * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
-  view: Pick<WorkflowCommandView, "defaultCommand" | "overrides"> | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
   if (!view && !hasSnapshot) {
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
   }
@@ -3045,6 +3142,7 @@ export function legacyCheckCommands(
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   const rows: WorkflowCheckCommand[] = [];
   for (const slot of WORKFLOW_CHECK_SLOTS) {
+    if (slot === "coderabbit") continue;
     for (const override of bySlot.get(slot)?.overrides ?? []) {
       rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
     }
@@ -3448,6 +3546,9 @@ export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
   status: WorkflowCheckStatus;
+  review?: CodeRabbitReviewSummary;
+  warning?: string;
+  diagnosticError?: string;
   slot: WorkflowCheckSlot;
   /**
    * Null whenever no command was resolved, which is every `skipped` outcome.
@@ -3462,8 +3563,37 @@ export interface WorkflowCheckOutcome {
   output: string;
   /** Bytes of streamed output dropped to honour that bound, or 0 when nothing was. */
   truncatedBytes: number;
+  /** Bounded bodies captured outside output_json. Empty on historical/non-executed attempts. */
+  artifacts: WorkflowCommandArtifactDescriptor[];
+  /** The frozen timeout used by this attempt, null when no process was launched. */
+  timeoutMs: number | null;
   /** Always a complete sentence, including on a pass. */
   note: string;
+}
+
+export const WORKFLOW_COMMAND_ARTIFACT_KINDS = ["stdout", "stderr", "findings"] as const;
+export type WorkflowCommandArtifactKind =
+  (typeof WORKFLOW_COMMAND_ARTIFACT_KINDS)[number];
+export const WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY = [
+  "retained", "pruned", "unavailable",
+] as const;
+
+export interface WorkflowCommandArtifactDescriptor {
+  id: string;
+  kind: WorkflowCommandArtifactKind;
+  retainedBytes: number;
+  observedBytes: number;
+  droppedBytes: number;
+  sha256: string | null;
+  captureState: "complete" | "partial";
+  availability: (typeof WORKFLOW_COMMAND_ARTIFACT_AVAILABILITY)[number];
+  unavailableReason: string | null;
+}
+
+export interface WorkflowCommandOutputPage {
+  artifact: WorkflowCommandArtifactDescriptor;
+  text: string;
+  nextCursor: string | null;
 }
 
 /**
@@ -4298,6 +4428,8 @@ export interface WorkflowNodeAttempt {
   model: string | null;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
+  /** Attempt-owned retained Command bodies, including on infrastructure failures. */
+  commandArtifacts?: WorkflowCommandArtifactDescriptor[];
   retryAt: number | null;
   inputFingerprint: string;
   error: string | null;
@@ -4435,6 +4567,7 @@ export interface WorkflowCheckEvidence {
   omittedBytes: number;
   headSha: string | null;
   note: string;
+  artifacts?: WorkflowCommandArtifactDescriptor[];
 }
 
 export type WorkflowContextSnapshot = WorkflowSteeringContext & {
@@ -4470,9 +4603,16 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     headSha: string | null;
     /** Complete tracked and nonignored worktree content, independent of commit identity. */
     contentTreeOid?: string | null;
+    /**
+     * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
+     * uncommitted one, a Mission Control review snapshot of `contentTreeOid` parented on HEAD.
+     * Null for snapshots captured before review snapshots existed, or with no Command to run.
+     */
+    reviewCommit?: string | null;
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;
+    coderabbit?: CodeRabbitConfigSnapshot;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
     workingTreeStatusTruncated: boolean;
@@ -4750,6 +4890,14 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  /** Live sibling ownership of the conversation, independent of paginated event history. */
+  deliveryHold?: {
+    runId: string;
+    deliveryId: string;
+    repoRoot: string | null;
+    kind: WorkflowDeliveryKind;
+    state: WorkflowDeliveryState;
+  } | null;
   evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;

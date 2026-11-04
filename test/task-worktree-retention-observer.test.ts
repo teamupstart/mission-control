@@ -393,3 +393,12 @@ test("an observer built without cleanup deps still reclaims nothing", async () =
   assert.equal(row?.cleanupState, "observing");
   assert.equal(row?.claimToken, null);
 });
+
+test("repo-less residents never enter retention observation or cleanup, even with stale resource fields", async () => {
+  const task = baseTask({ id: "resident-no-repo", kind: "resident", workspaceKind: "resident-workspace", status: "done", worktreePath: "/run/workspace", homeName: "stale-home" });
+  const { observer, state } = harness({ tasks: [task], probe: async () => assert.fail("resident workspace must never be probed as Git") });
+  const result = await observer.runPass();
+  assert.equal(result.observed, 0);
+  assert.deepEqual(state.probes, []);
+  assert.equal(getTaskWorktreeRetention(task.id), null);
+});

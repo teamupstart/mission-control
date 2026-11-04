@@ -1,5 +1,6 @@
 import type { HookIngest } from "@shared/protocol.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   MetaSource,
   PaneDialog,
@@ -22,6 +23,7 @@ import type {
 // (verbatimModuleSyntax). The descriptor is named here rather than restated because
 // launch-scoped MCP is declared ONCE, in `mission-mcp.ts`.
 import type { MissionMcpDescriptor } from "../mission-mcp.ts";
+import type { AgentTraceContext } from "../agent-trace-context.ts";
 
 // The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
 //
@@ -54,6 +56,11 @@ export interface RuntimeMetaRead {
   thinkingLevel: ThinkingLevel | null;
   /** Source revision; only orderable revisions can release a verified effort change. */
   effortRevision: string | null;
+  /**
+   * Claude only: the advisor model named by the newest eligible main-chain assistant record,
+   * or absent when that record is unstamped (`SessionMeta.advisorModel`).
+   */
+  advisorModel?: string | null;
 }
 
 /** What a passive read yields about a session's liveness. */
@@ -734,7 +741,69 @@ export interface ResumeSpec {
   argv(agentSessionId: string, permissionMode: PermissionMode | null): readonly string[];
 }
 
+/**
+ * The native per-server fields a resident MCP entry may carry, each mapped one-to-one onto the
+ * harness's own field. Anything outside this allowlist makes a global server unavailable to
+ * residents rather than being dropped or passed through.
+ */
+export interface ResidentMcpOptions {
+  claude?: {
+    /** `timeout`, per tool call, in milliseconds. */
+    timeoutMs?: number;
+    /** `alwaysLoad`. */
+    alwaysLoad?: boolean;
+  };
+  codex?: {
+    startupTimeoutSec?: number;
+    toolTimeoutSec?: number;
+    enabledTools?: string[];
+    disabledTools?: string[];
+  };
+}
+
+/**
+ * One server of a resident run's MCP set, ready for a driver to render. No shape carries a
+ * secret value: a server with one, and every global server, is a `launcher` entry whose
+ * arguments name only the run, the server and a single-use credential file.
+ */
+export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
+  | { shape: "stdio"; command: string; args: string[]; env: Record<string, string> }
+  /**
+   * A remote server the harness connects to itself. `transport` is the configured one: Claude
+   * Code keys a stored OAuth login by it, so an SSE server rendered as HTTP would find none.
+   */
+  | { shape: "http"; transport: "http" | "sse"; url: string; headers: Record<string, string> }
+  | { shape: "launcher"; command: string; args: string[]; env: Record<string, string> }
+);
+
+/**
+ * A resident run's pinned MCP set (`src/server/residents/mcp-launch.ts`), beside Mission's own
+ * descriptor in `SdkLaunchOptions.mcp`, which keeps its meaning and is never overwritten.
+ *
+ * A driver renders exactly Mission's server plus these entries and nothing from the harness's
+ * native MCP configuration, by the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection` records.
+ */
+export interface ResidentMcpLaunch {
+  /** The run's names, for verifying what actually started. Never includes Mission's. */
+  names: readonly string[];
+  /**
+   * This process start's entries. Each call mints fresh single-use credential files for the
+   * launcher entries, so call it once per process start - a launch, a resume, or a driver's own
+   * relaunch - immediately before the harness reads its configuration.
+   */
+  forStart(): ResidentMcpEntry[];
+  /**
+   * The same entries without credentials, for configuration that is checked before any server
+   * starts. Mints nothing, so a slow check cannot outlive a ticket: a driver that verifies first
+   * calls `forStart()` only once the check has passed, immediately before servers load.
+   */
+  preview(): ResidentMcpEntry[];
+  /** The run's private directory for per-run harness configuration (the Codex overlay). */
+  privateDir: string;
+}
+
 export interface SdkLaunchOptions {
+  residentCompaction?: { threshold: number; /** Previously measured native limit, replayed on resume. */ tokenLimit?: number };
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */
   stateHome: string;
@@ -742,10 +811,20 @@ export interface SdkLaunchOptions {
   prompt: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * The task's advisor pin; omitted or null inherits the operator's Claude settings. Rendered
+   * only by a driver whose harness declares `advisor`; every other driver ignores it.
+   */
+  advisorModel?: AdvisorChoice | null;
   /** From `dispatchPermissionMode` - the same source the terminal path renders as argv. */
   permissionMode: PermissionMode | null;
   /** Rendered from `mission-mcp.ts`'s single descriptor, or null to register nothing. */
   mcp: MissionMcpDescriptor | null;
+  /**
+   * A resident run's pinned MCP set, or absent for every other launch, which keeps the
+   * harness's native MCP behaviour. When present the driver starts exactly `mcp` plus these.
+   */
+  residentMcp?: ResidentMcpLaunch | null;
   /**
    * Absolute paths, beyond `cwd`, this session must be able to WRITE to - the secondary
    * worktrees of a multi-repo task. Empty on every ordinary dispatch.
@@ -788,6 +867,18 @@ export interface SdkLaunchOptions {
   standingInstructionsPrompt: string;
   /** Harness-native session/thread id to continue, for a restart. Null starts fresh. */
   resume: string | null;
+  /**
+   * The W3C trace context this session's agent process runs under, from
+   * `sessionTraceContext`, or null to launch it with none.
+   *
+   * An adapter that starts an agent process applies it through `withAgentTraceContext`, which
+   * also removes any `TRACEPARENT` the daemon inherited, and adds nothing else. Where the 
+   * agent's telemetry goes is dictated outside of mission control; it's the machine's 
+   * configuration for the specific harness (Claude or Codex) application that decides this.
+   * Pi runs in this process and has no launch environment to carry it. Optional so a direct
+   * caller that does not name it launches with none.
+   */
+  traceContext?: AgentTraceContext | null;
 }
 
 /** An image accompanying a turn. A PATH, because that is what an upload durably is. */
@@ -812,6 +903,8 @@ export interface SdkTurn {
  * a stream-json subprocess, a JSON-RPC server or a JSONL pipe.
  */
 export interface SdkSessionHandle {
+  /** Native resident backstop actually configured at launch; persisted for the next resume. */
+  readonly residentCompactionTokenLimit?: number;
   /**
    * The process whose lifetime owns this driver, for read-only crash recovery. An
    * in-process driver names the daemon; a subprocess driver names its current child.
@@ -855,6 +948,7 @@ export interface SdkSessionHandle {
   setEffort: ((effort: ThinkingLevel) => Promise<void>) | null;
   setModel: ((model: string) => Promise<void>) | null;
   clearContext: (() => Promise<void>) | null;
+  compact?: (focus: string) => Promise<import("./compaction.ts").CompactionResult>;
   /** Stop the session's driver. Graceful; the handle must then emit `exited`. */
   stop(): Promise<void>;
   /**
@@ -960,6 +1054,15 @@ export interface SdkUsage {
 }
 
 /**
+ * Why a provider ended a turn early, when the supervisor can do something about it.
+ *
+ * `capacity`: the selected model was overloaded and the harness's own retries are spent.
+ * The work is unfinished, so the supervisor retries with backoff instead of reporting the
+ * turn as complete. `message` is the provider's own sentence, for the card.
+ */
+export type SdkTurnFailure = { kind: "capacity"; message: string };
+
+/**
  * What a driver tells the daemon about its session.
  *
  * The counterpart of a hook ingest, with one difference that removes a whole class of
@@ -1013,7 +1116,12 @@ export type SdkEvent =
   | { kind: "rate_limits"; rateLimits: import("@shared/types.ts").RateLimits }
   | { kind: "request"; request: SessionRequest }
   | { kind: "request_resolved"; requestId: string }
-  | { kind: "turn_done"; usage: SdkUsage | null }
+  /**
+   * The turn ended. `failure` is present only when the provider ended it for a reason the
+   * supervisor can act on - today, the model being at capacity - and absent for every
+   * ordinary completion, interrupt, or failure nobody can retry.
+   */
+  | { kind: "turn_done"; usage: SdkUsage | null; failure?: SdkTurnFailure }
   /**
    * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
    *

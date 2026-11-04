@@ -1036,7 +1036,7 @@ test("reset after delayed merge rollover stops pending task provenance", async (
   assert.notEqual(reset.episodeId, rolledOver.episodeId);
   const resetEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
   assert.equal(resetEdge?.type === "task" ? resetEdge.episodeId : null, rolledOver.episodeId);
-  assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, null);
+  assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, setup.url);
 
   const branch = `${setup.branch}-after-reset`;
   setup.registry.applyDiscovery([discovered(setup.id, setup.cwd, { gitBranch: branch })]);
@@ -2473,6 +2473,20 @@ test("an unrelated hook PR hint cannot block the validated episode PR", () => {
     transcriptPath: null,
     env: {},
     prUrl: "https://github.com/example/repo/pull/70",
+  });
+  // A URL the agent merely printed (`gh pr view`, no `prCreated`) never reaches the card.
+  assert.equal(registry.getSession(id)?.prUrl, null);
+  // One it opened (`gh pr create`) does, as an immediate hint - and that hint is the case
+  // this test is about: it must not block the PR the poller validates for the episode.
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "hook-hint-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prUrl: "https://github.com/example/repo/pull/70",
+    prCreated: true,
   });
   assert.equal(registry.getSession(id)?.prUrl, "https://github.com/example/repo/pull/70");
   assert.equal(registry.workEpisodeForSession(id)?.prUrl, null);

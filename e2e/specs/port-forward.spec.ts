@@ -1,6 +1,7 @@
 import { connect, createServer, type Socket } from "node:net";
 import { test, expect } from "../fixtures/test.ts";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
+import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 
 // A byte-for-byte tunnel, like SSM or ssh -L: no HTTP header rewriting and only one port.
 async function forward(baseURL: string) {
@@ -36,6 +37,9 @@ test("the development dashboard boots through its diagnostic entry", async ({ pa
   const dev = await startDevDashboard(daemon);
   try {
     await page.goto(`${dev.origin}/#/fleet`);
+    // The diagnostic bootstrap finishes navigation before Vite's cold module graph loads.
+    // Use the same bounded development-startup budget as the StrictMode tour check.
+    await expectDashboardReady(page, { timeout: 90_000 });
     await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
   } finally {
     await page.goto("about:blank");

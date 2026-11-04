@@ -135,6 +135,9 @@ function seedBaseline(): void {
     defaultCommand: ["SECRET_ARGV", "test"],
     overrides: [{ repoRoot: "/secret/repository", command: ["SECRET_OVERRIDE"] }],
     maxRuns: 2,
+    timeoutMs: 90 * 60_000,
+    onUnavailable: "block",
+    onBudgetExhausted: "block",
   }, 15).ok, true);
 
   setAppConfig(APP_CONFIG_ENTRIES.skills, SkillsConfigSchema.parse({
@@ -269,6 +272,9 @@ function mutateCurrentState(): void {
     defaultCommand: ["changed"],
     overrides: [],
     maxRuns: 4,
+    timeoutMs: null,
+    onUnavailable: "skip",
+    onBudgetExhausted: "skip",
   }, 109).ok, true);
   setAppConfig(APP_CONFIG_ENTRIES.skills, SkillsConfigSchema.parse({
     enabled: true,
@@ -555,6 +561,9 @@ test("restore advances catalogs, preserves immutable history and every excluded 
   assert.equal(workflowStore.getBinding("binding-current")!.workflowVersionId, "version-two");
   assert.equal(workflowStore.getRun("run-current")!.workflowVersionId, "version-two");
   assert.deepEqual(workflowStore.getWorkflowCommand("test")!.defaultCommand, ["SECRET_ARGV", "test"]);
+  assert.equal(workflowStore.getWorkflowCommand("test")!.timeoutMs, 90 * 60_000);
+  assert.equal(workflowStore.getWorkflowCommand("test")!.onUnavailable, "block");
+  assert.equal(workflowStore.getWorkflowCommand("test")!.onBudgetExhausted, "block");
   assert.deepEqual(dumpExcludedTables(), excludedBefore);
   assert.equal(registry.snapshot().personas.some((row) => row.id === "persona-one"), true);
   assert.equal(registry.snapshot().workflowSummaries.find((row) => row.id === "workflow-one")
@@ -653,6 +662,26 @@ test("restore preview and mutation preserve installed built-in catalog rows", as
     action: db.prepare(`SELECT * FROM session_actions WHERE id = ?`).get(before.ids[1]),
     workflow: db.prepare(`SELECT * FROM workflow_definitions WHERE id = ?`).get(before.ids[2]),
   }), before.rows);
+});
+
+test("a restored skin decides the desktop window's next launch colour", async () => {
+  // Restore writes app_config inside its own transaction, never through `setUiConfig`, so the
+  // launch colour has to be reconciled after the commit or the next desktop launch would open
+  // on the pre-restore skin's background - a dark frame under a restored Daylight.
+  seedBaseline();
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "daylight" });
+  const root = join(home, "skin");
+  const store = new SettingsBackupStore(root);
+  const original = snapshot();
+  store.write(original);
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "default" });
+  const launch = join(home, "state", "window-background.json");
+  writeFileSync(launch, `${JSON.stringify({ color: "#0a0c0f" })}\n`);
+
+  const result = await service(root).restore(original.id, original.digest);
+  assert.equal(result.status, "restored");
+  assert.equal((getAppConfig(APP_CONFIG_ENTRIES.ui) as { skin: string }).skin, "daylight");
+  assert.deepEqual(JSON.parse(readFileSync(launch, "utf8")), { color: "#f5f7fa" });
 });
 
 test("a stale digest is refused before safety capture", async () => {

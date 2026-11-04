@@ -29,6 +29,7 @@ import type {
   TranscriptScrollDistance,
 } from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
+import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
@@ -4480,6 +4481,14 @@ export function App(): React.JSX.Element {
                   onClose={() => {
                     delete document.documentElement.dataset.mcTourReview;
                     setReviewSessionId(null);
+                  }}
+                  // "Chat about it": the conversation is the next stop, so close the modal even
+                  // with other reviews still pending, and land in the session's message box.
+                  onMovedToChat={(sessionId) => {
+                    delete document.documentElement.dataset.mcTourReview;
+                    setReviewSessionId(null);
+                    focusSession(sessionId);
+                    requestComposerFocus(sessionId);
                   }}
                 />
               )}

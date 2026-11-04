@@ -319,7 +319,9 @@ server.registerTool(
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
       "human can resolve by selecting options and clicking Submit, or dismiss without an " +
       "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
-      "their selections or an explicit dismissal so you can proceed appropriately. Use this " +
+      "their selections or an explicit dismissal so you can proceed appropriately. The human " +
+      "may move any decision to chat instead of choosing; the result then names it and says " +
+      "how to discuss it, and you must not decide or re-ask it. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
       "expressed as options.",
     inputSchema: {
@@ -637,7 +639,9 @@ server.registerTool(
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
       "they resolve it. Without `options`, they answer in free text or dismiss without an " +
       "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. " +
+      "the tool returns their answer, selections, or an explicit dismissal. They may also " +
+      "choose to chat about it instead; the result then says so and how to proceed, and you " +
+      "must not decide or re-ask the question yourself. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks.",
     inputSchema: {

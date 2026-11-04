@@ -2607,6 +2607,13 @@ export interface PlanDecisionAnswer {
    * before it, and every answer a form without the note box produces, simply lack it.
    */
   note?: string | null;
+  /**
+   * The human moved this question to the conversation instead of answering it ("Chat about
+   * it"). It counts as answered for the form, with `selected` empty and `other` null, and
+   * the agent is told to discuss it rather than decide it. Absent on every other answer,
+   * so rows written before it read exactly as they did.
+   */
+  chat?: boolean;
 }
 
 export interface ReviewItem {

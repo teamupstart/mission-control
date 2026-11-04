@@ -47,7 +47,8 @@ every egress guard the read path applies applies here unchanged.
 Product reports are public GitHub issues, not private support messages. The agent tool is defined
 for use only after the user explicitly requests a report, shows the daemon-derived public content in an
 `input` review, and calls the mutation route only after a human selects **Submit public issue**.
-Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
+Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
+nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
 publicly** press. The context-isolated Electron preload captures the trusted click on that exact

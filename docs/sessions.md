@@ -2090,7 +2090,8 @@ The MCP tools are:
   dismisses that decision set without an answer. Every decision also has an optional note
   box, so the human can pick an option and send instructions with it; a note returns to the
   agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
-  an empty `decisions` list to show a plan for approval with no open choices
+  an empty `decisions` list to show a plan for approval with no open choices. Any decision
+  can be [moved to chat](#chat-about-it) instead of answered
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2128,7 +2129,8 @@ The MCP tools are:
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer. An ask its card could not carry is refused
+  can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
+  card could not carry is refused
   before anything is shown: an empty question, an option with an empty label, or two options
   with the same label (compared ignoring case and surrounding spaces), since the answer
   comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
@@ -2262,6 +2264,27 @@ the first is evidence of your intent.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+#### Chat about it
+
+Every question with options, on a `request_plan_decisions` card or an option-carrying
+`request_input` card, has a **Chat about it** row below the agent's options. An open-ended
+`request_input`, which has no options, has a **Chat about it** button beside **Send answer**
+instead. Use it when you need more context before choosing. A moved question
+counts as answered, so you can still pick options for the others; Submit then reads
+**Submit & chat (N)**, and a form with several questions also offers **Chat about all**. Picking
+the row clears that question's options, and picking an option takes it back out of chat. A note
+typed beside a moved question, or text already in an open-ended answer box, goes along as what
+is unclear.
+
+Submitting resolves the review as answered, so the agent unblocks with one tool result: the
+real answers, `→ Chat about it` under each moved question, and an instruction not to decide the
+moved questions or ask them again, to act on the other answers only where they stand alone, and
+to explain each moved question in its next message before ending its turn. The dialog closes
+and the cursor lands in the session's message box. The conversation's record of the answer
+marks each moved question **Moved to chat** rather than **No option chosen**. The structured
+answer carries `chat: true` on each moved decision. A product-issue confirmation moved to chat
+publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 

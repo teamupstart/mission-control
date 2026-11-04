@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
@@ -242,4 +244,79 @@ test("keyboard moves from runs into stages and loads completed stage detail", as
   await expect(worklist.locator(".wf-run-worklist-detail"))
     .not.toContainText("Keyboard first reviewer");
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${first!.id}$`));
+
+  // A field owns the first Escape; leaving it must preserve the selected run.
+  const stateFilter = dashboard.getByRole("combobox", { name: "State", exact: true });
+  await stateFilter.focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(stateFilter).not.toBeFocused();
+  await expect(dashboard).toHaveURL(new RegExp(`#/runs/${first!.id}$`));
+
+  // Escape returns to the run's bound session, opening the board detail.
+  await dashboard.keyboard.press("Escape");
+  await expect(dashboard).toHaveURL(/#\/fleet$/);
+  await expect(dashboard.locator(".cdetail")).toBeVisible();
+  await expect(dashboard.locator(".cdetail")).toContainText("hold a session for workflow run keyboard navigation");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("workflow-runs-keyboard");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.screenshot({ path: `${dir}escape-session.png` });
+  }
+
 });
+
+for (const state of ["missing binding", "stale detail"] as const) {
+  test(`Escape stays on Runs with ${state}`, async ({ dashboard, daemon }) => {
+    const sessionId = await dispatch(dashboard, daemon);
+    const personas = await Promise.all(["first", "second"].map(async (name) => (
+      await api<{ id: string }>(daemon, "/api/personas", {
+        name: `Escape ${name} reviewer`,
+        guidanceMarkdown: "E2E_PASS_VERDICT",
+      })
+    ).id));
+    const reviewerIds = [personas[0]!, personas[1]!] as const;
+    const previous = await completedRun(
+      daemon, sessionId, reviewerIds, "Escape previous run", "escape-previous",
+    );
+    await archiveBinding(daemon, previous.bindingId);
+    const selected = await completedRun(
+      daemon, sessionId, reviewerIds, "Escape selected run", "escape-selected",
+    );
+    const path = `/api/workflow-runs/${selected.runId}`;
+    const selectedDetail = await api<{
+      run: { id: string };
+      binding: { sessionId: string | null };
+    }>(daemon, path);
+    // Prove that the fixture starts with a usable session. Only the adverse response
+    // below withholds it or supplies detail for the previously selected run.
+    expect(selectedDetail.binding.sessionId).toBe(sessionId);
+    const response = state === "missing binding"
+      ? { ...selectedDetail, binding: { ...selectedDetail.binding, sessionId: null } }
+      : await api(daemon, `/api/workflow-runs/${previous.runId}`);
+    await dashboard.route(`**${path}`, (route) => route.fulfill({ json: response }));
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${selected.runId}`);
+    const reader = dashboard.locator(".wf-run-reader");
+    await expect(reader.getByRole("heading", {
+      name: state === "missing binding" ? "Escape selected run" : "Escape previous run",
+    })).toBeVisible();
+    const sessionLink = reader.locator(".wf-run-session");
+    if (state === "missing binding") {
+      await expect(sessionLink).toBeDisabled();
+    } else {
+      // Stale detail still has a usable session link. Escape must reject its run id.
+      await expect(sessionLink).toBeEnabled();
+    }
+    await dashboard.getByRole("list", { name: "Workflow runs" })
+      .getByRole("button", { name: /Escape selected run/ }).focus();
+    await dashboard.keyboard.press("Escape");
+    // Read once after the keyboard event has been handled: a retry could hide a wrong
+    // navigation that a later event repairs.
+    expect(new URL(dashboard.url()).hash).toBe(`#/runs/${selected.runId}`);
+    await expect(reader).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("workflow-runs-keyboard");
+      mkdirSync(dir, { recursive: true });
+      await dashboard.screenshot({ path: `${dir}escape-${state.replaceAll(" ", "-")}.png` });
+    }
+  });
+}

@@ -1,4 +1,5 @@
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
+import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
@@ -4736,6 +4737,7 @@ export function WorkflowRuns({
   onFilters = () => {},
   onOpenSession = () => {},
   onOpenSessionPath,
+  isOverlayOpen = () => false,
   onOpenInspectorSettings = () => {},
   onBindWorkflow,
 }: {
@@ -4765,6 +4767,7 @@ export function WorkflowRuns({
   onPane?: (pane: RunRecordPane, runId: string) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
+  isOverlayOpen?: () => boolean;
   /**
    * Reveal a path in the bound session's Files surface, for the worklist's "Open file".
    *
@@ -4806,6 +4809,15 @@ export function WorkflowRuns({
   const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
+  useLibraryEscape({
+    isOverlayOpen,
+    onLeave: () => {
+      // Match the session link and refuse stale detail while another run loads.
+      if (detail?.run.id === selected && detail.binding.sessionId) {
+        onOpenSession(detail.binding.sessionId);
+      }
+    },
+  });
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
   const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
   const evidenceScopeSet = useMemo(

@@ -226,6 +226,18 @@ test('the helper automatically terminates an owned stubborn check group and cont
   assert.match(waiting[0]!, /attempt-123.*run-456.*sdk:789/);
 });
 
+test('processes with identical start and command fingerprints each receive their own cleanup signals', async () => {
+  const f = operations();
+  const alive = new Set([42, 43]);
+  f.ops.run = async () => ({code: 0, stdout: `1 0 S /sbin/launchd\n${[...alive].map(pid => `${pid} 1 S ${executable}\n`).join('')}`});
+  f.ops.kill = (pid, signal) => { f.signals.push([pid, signal]); if (signal === 'SIGKILL') alive.delete(pid); };
+  await waitForBundleExit(bundle, f.ops, 12_000, undefined, [...alive].map(pid => ({
+    pid, fingerprint: processFingerprint(identity)!, group: false, work: 'Mission Control orphaned Node utility',
+  })));
+  assert.deepEqual(f.signals, [[42, 'SIGTERM'], [43, 'SIGTERM'], [42, 'SIGKILL'], [43, 'SIGKILL']]);
+  assert.equal(alive.size, 0);
+});
+
 test('the helper cleans up an ordinary owned descendant by signalling only its PID and finishes waiting', async (t) => {
   const home = database(t);
   const f = operations();

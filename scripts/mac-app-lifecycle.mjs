@@ -566,14 +566,15 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaitin
         // A captured exact identity, never an executable path or recycled PID, authorizes cleanup.
         // Checks retain their group leader identity, so the signal also reaches branch children.
         if (!owner || row.pid <= 1 || row.pid === process.pid || ops.now() - started < 5000) continue;
-        const previous = signalled.get(owner.fingerprint);
+        const signalKey = `${row.pid}:${owner.fingerprint}`;
+        const previous = signalled.get(signalKey);
         if (previous?.signal === 'SIGKILL') continue;
         const signal = previous ? 'SIGKILL' : 'SIGTERM';
         if (previous && ops.now() - previous.at < 5000) continue;
         if (ownerOf(row) !== owner) continue;
         try {
           ops.kill(owner.group ? -row.pid : row.pid, signal);
-          signalled.set(owner.fingerprint, {signal, at: ops.now()});
+          signalled.set(signalKey, {signal, at: ops.now()});
         } catch { /* Reinspect exit/identity on the next poll; report a persistent blocker. */ }
       }
       if (remaining.length) onWaiting?.(`Waiting for background work to stop: ${remaining.map(describe).join(", ")}. Mission Control is cleaning up owned work and will reopen automatically.`);

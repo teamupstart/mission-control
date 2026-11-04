@@ -496,7 +496,8 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
         return { committed: true, journal, error: String(error.message ?? error) };
       }
       journal.failure = sanitizeDiagnostic(String(error.message ?? error));
-      atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
+      try { atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal); }
+      catch { /* Diagnostics must not prevent rollback; restoration still writes durable state. */ }
       try { await restoreMigration(journal, ports, policy, error); }
       catch (recoveryError) {
         const message = recordMigrationRecoveryFailure(journal, `${String(error.message ?? error)} Recovery failed: ${String(recoveryError.message ?? recoveryError)}`);

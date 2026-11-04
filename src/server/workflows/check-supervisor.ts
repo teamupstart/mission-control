@@ -50,6 +50,8 @@ import type { CheckGroupRecovery, CheckProcessRegistry } from "./check-lease.ts"
 export const DEFAULT_CHECK_TIMEOUT_MS = 600_000;
 
 export interface SupervisedCheckRequest {
+  /** The owning workflow engine is draining for shutdown. */
+  signal?: AbortSignal;
   /**
    * The attempt this check belongs to. It reaches the supervisor's argv, which is what makes
    * its start identity unique to one attempt rather than to one second.
@@ -112,6 +114,7 @@ export async function runSupervisedCheck(
   let outcome: CheckSpawnOutcome;
   try {
     outcome = await spawnCheckProcess({
+      signal: request.signal,
       attemptId: request.attemptId,
       command: request.command,
       // The RESOLVED path, so what was checked for containment is what the command is given.

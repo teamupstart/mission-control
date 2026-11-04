@@ -166,6 +166,64 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Accepting a desktop update during a workflow check
+
+`update-during-workflow.spec.ts` runs on macOS with complete disposable Electron bundles.
+It dispatches a fake agent, submits a workflow with a real four-minute shell check, opens
+the production Check for Updates menu action, and clicks Update Now and Restart and Install
+in the real renderer. The production helper downloads and extracts the local release asset,
+replaces the bundle, commits the receipt, and relaunches the app through LaunchServices.
+The spec checks the new running version, the interrupted attempt's reason, and the returned
+check lease. Release discovery, asset transport, and Apple trust responses are fixture ports;
+this does not verify Developer ID signing or notarization.
+
+The acceptance case also leaves a real stopped utility reparented to PID 1 before the update.
+It has no check lease or ancestry under the active desktop. The spec verifies its ownership
+and work association in the helper's update log, and automatic cleanup
+before the new build opens.
+
+The daemon is paused briefly across `before-quit`, then resumed, to select the shutdown race
+where its signal handler has not run before Electron exits. The same scheduling barrier runs
+against both versions. No shutdown, migration outcome, attempt result, or lease is seeded.
+
+The companion reopen case holds the helper at that boundary, closes its progress dialog,
+opens the installed app through LaunchServices, and verifies that the transient launch exits
+without an installation error or journal change. It then resumes the same helper, observes
+its newly visible native progress window through CoreGraphics, and verifies completion within
+the original transaction. The dialog's displayed text is checked against its production
+osascript invocation; no Accessibility or Screen Recording permission is required.
+
+After building, run:
+
+```sh
+MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/update-during-workflow.spec.ts
+```
+
+For the pre-fix comparison, prepend
+`MC_E2E_UPDATE_BASELINE_REF=588d8c17c08a2ac7258fe64a0be0c2302278aa2e` to the same command.
+The fixture builds that revision's affected lifecycle files in its private app copy, without
+changing the checkout. Screenshots, process/receipt measurements, and logs are retained under
+gitignored `e2e/.artifacts/update-during-workflow/`, with separate `baseline` and `fixed` names.
+To isolate the reopen regression, also set `MC_E2E_UPDATE_BASELINE_REOPEN=1` and select
+`-g 'opening the app during'`. This restores only that revision's startup gate in the fixture;
+the corrected shutdown still lets the active-check update reach the reopen boundary.
+
+`update-blocker-progress.spec.ts` separately drives `realApplyOperations.waitForBundle` with
+an identity-verified process in a disposable bundle. It observes the native dialog change from
+generic waiting text to the blocker's PID, executable and owning work while the wait is active,
+then verifies automatic cleanup. Its legacy case invokes `runApplyUpdate` without a migration
+handoff or an existing dialog, keeping the real wait, lock and outcome with fixture install
+and relaunch ports. It verifies that the same blocker-specific progress appears and closes
+after the wait. Setting `MC_E2E_UPDATE_PROGRESS_MUTATION=1` removes only the transaction's
+progress update call in a private helper copy; that visible-dialog assertion must fail.
+
+With `MC_E2E_EVIDENCE=1`, that spec also captures the native dialog's pixels and requires
+macOS Screen Recording permission for the application hosting the test process.
+`update-recovery-guidance.spec.ts` seeds a completed fixture transaction and serves an
+incompatible daemon health response to the production main entry. It observes the native
+recovery dialog and can capture it with the same evidence flag and permission. This covers
+rendered recovery guidance; the detached-install tests separately exercise actual recovery.
+
 ### Dispatched Ghostty names
 
 `terminal-session-name.spec.ts` selects Ghostty and submits a dispatch through the dashboard.

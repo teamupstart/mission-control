@@ -1,10 +1,11 @@
 // Shared by Electron and its detached updater. OS reads are bounded, read-only and
 // fail closed. Never print launchd environments or process command lines.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
+import { createHash } from "node:crypto";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -27,6 +28,10 @@ export const LAUNCH_INSPECTION_TIMEOUT_MS = 60_000;
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 const POLL_MS = 250;
 export const launchAckPath = (directory, nonce) => join(directory, `update-launch-${nonce}.json`);
+export function updateProgressRequestPath(directory, nonce) {
+  if (!/^[a-f0-9]{64}$/.test(nonce)) throw new Error('Invalid update progress identity');
+  return join(directory, `update-progress-${nonce}.json`);
+}
 
 export function realMacAppOps(directory) {
   return {
@@ -523,12 +528,40 @@ async function poll(ops, timeout, check, message) {
   throw new Error(typeof message === "function" ? message() : message);
 }
 
-export async function waitForBundleExit(bundle, ops, timeout = 120_000) {
+export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaiting, owners = []) {
   let remaining = [];
+  const started = ops.now();
+  const signalled = new Map();
+  const ownerOf = (row) => {
+    const candidates = owners.filter((owner) => owner.pid === row.pid);
+    if (!candidates.length) return null;
+    const identity = ops.identity(row.pid);
+    if (!identity) return null;
+    const fingerprint = createHash('sha256').update(identity).digest('hex');
+    return candidates.find((owner) => owner.fingerprint === fingerprint);
+  };
+  const describe = (row) => `${row.pid} (${row.executable}; ${row.work}; parent ${row.ppid}; state ${row.state})`;
   await poll(ops, timeout, async (budget) => {
     remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
+    for (const row of remaining) {
+      const owner = ownerOf(row);
+      row.work = owner?.work ?? 'Mission Control bundle process; work ownership could not be verified';
+      // A captured exact identity, never an executable path or recycled PID, authorizes cleanup.
+      // Checks retain their group leader identity, so the signal also reaches branch children.
+      if (!owner || row.pid <= 1 || row.pid === process.pid || ops.now() - started < 5000) continue;
+      const previous = signalled.get(owner.fingerprint);
+      if (previous?.signal === 'SIGKILL') continue;
+      const signal = previous ? 'SIGKILL' : 'SIGTERM';
+      if (previous && ops.now() - previous.at < 5000) continue;
+      if (ownerOf(row) !== owner) continue;
+      try {
+        ops.kill(owner.group ? -row.pid : row.pid, signal);
+        signalled.set(owner.fingerprint, {signal, at: ops.now()});
+      } catch { /* Reinspect exit/identity on the next poll; report a persistent blocker. */ }
+    }
+    if (remaining.length) onWaiting?.(`Waiting for background work to stop: ${remaining.map(describe).join(", ")}. Mission Control is cleaning up owned work and will reopen automatically.`);
     return remaining.length === 0;
-  }, () => `Mission Control bundle processes did not exit: ${remaining.map((row) => row.pid).join(", ")}. Close them before retrying; no further bundle replacement is safe while they remain.`);
+  }, () => `Mission Control bundle processes did not exit: ${remaining.map(describe).join(", ")}. The update was cancelled safely. Mission Control will reopen the previous build automatically.`);
 }
 
 export async function prepareAppLaunch(bundle, ops, timeout = LAUNCH_TIMEOUT_MS) {
@@ -566,4 +599,14 @@ export async function stopAttemptLaunch(bundle, nonce, ops) {
     for (const row of owned) if (ops.identity(row.pid) === row.identity) ops.kill(row.pid, "SIGKILL");
     await waitForBundleExit(bundle, ops, 5000);
   }
+}
+
+/** A separate OS process keeps progress visible without holding either app bundle open. */
+export function showUpdateProgress(message, launch = spawn) {
+  const child = launch("/usr/bin/osascript", ["-e", `on run argv
+    display dialog (item 1 of argv) with title "Updating Mission Control" buttons {"Hide"} default button "Hide" giving up after 600
+  end run`, message], {stdio: "ignore"});
+  // A missing GUI session must not turn presentation into a failed install.
+  child.on("error", () => {});
+  return () => { child.kill(); };
 }

@@ -15,6 +15,7 @@ export const LAUNCH_TIMEOUT_MS: number;
 export const COMMAND_TIMEOUT_MS: number;
 export const LAUNCH_INSPECTION_TIMEOUT_MS: number;
 export function launchAckPath(directory: string, nonce: string): string;
+export function updateProgressRequestPath(directory: string, nonce: string): string;
 export function realMacAppOps(directory?: string): MacAppOps;
 export function parseAppProcesses(output: string): AppProcess[];
 export function parseLaunchServices(output: string): AppRegistration[];
@@ -25,7 +26,9 @@ export function inspectAppLaunches(bundles: string[], ops?: MacAppOps, timeout?:
 export function launchConflictMessage(conflicts: {jobs: string[]; unregistered: number[]}, uid: number): string | null;
 export function assertSafeAppLaunch(bundle: string, ops?: MacAppOps, timeout?: number): Promise<void>;
 export function assertSafeAppLaunches(bundles: string[], ops?: MacAppOps, timeout?: number): Promise<void>;
-export function waitForBundleExit(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
+export function waitForBundleExit(bundle: string, ops: MacAppOps, timeout?: number, onWaiting?: (message: string) => void, owners?: import('./update-process-owners.mjs').UpdateProcessOwner[]): Promise<void>;
 export function prepareAppLaunch(bundle: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function verifyAppLaunch(bundle: string, nonce: string, ops: MacAppOps, timeout?: number): Promise<void>;
 export function stopAttemptLaunch(bundle: string, nonce: string, ops: MacAppOps): Promise<void>;
+
+export function showUpdateProgress(message: string, launch?: typeof import("node:child_process").spawn): () => void;

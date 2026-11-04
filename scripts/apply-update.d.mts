@@ -52,7 +52,11 @@ export interface HelperLockOps {
 }
 
 export interface ApplyOperations {
+  migrationPorts?(handoff: unknown): import('./install-migration.mjs').MigrationPorts;
+  setProcessOwners?(owners: import('./update-process-owners.mjs').UpdateProcessOwner[]): void;
   preflight(bundle: string): Promise<void>;
+  preflightAll?(bundles: string[]): Promise<void>;
+  showProgress?(message: string, nonce?: string): () => void;
   waitForBundle(bundle: string): Promise<void>;
   prepareLaunch(bundle: string): Promise<void>;
   verifyLaunch(bundle: string, nonce: string): Promise<void>;

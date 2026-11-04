@@ -298,14 +298,23 @@ app.on("window-all-closed", () => {
   /* keep running for the tray */
 });
 
-function stopShell(): void {
+let shellStopped = false;
+let shellStopping = false;
+function stopShell(event?: {preventDefault(): void}): void {
+  if (shellStopped) return;
+  event?.preventDefault();
+  if (shellStopping) return;
+  shellStopping = true;
   setQuitting(true);
   stopWindowStartup();
   stopUpdateSubscription?.();
   stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
-  backgroundStart?.stop();
+  void Promise.resolve(backgroundStart?.stop()).finally(() => {
+    shellStopped = true;
+    if (event) app.quit();
+  }).catch((error: unknown) => console.error("Background shutdown failed:", error));
 }
 app.on("before-quit", stopShell);
 
@@ -396,6 +405,10 @@ app.whenReady().then(async () => {
   if (runningBundle) observeUpdateLaunch(mainWindow.webContents, runningBundle, stateDir());
   updater = new UpdateController(
     createDefaultUpdaterPort({
+      userDataDirectory: app.getPath('userData'),
+      processNames: () => Object.fromEntries(app.getAppMetrics().map((metric) => [
+        metric.pid, metric.name || metric.serviceName || metric.type,
+      ])),
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,

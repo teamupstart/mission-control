@@ -6,6 +6,13 @@ import test from "node:test";
 import { checkUpdateRuntime, inspectUpdateRuntime, updateNodeProblem } from "../src/main/update-runtime.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 
+// Canned probe replies need no Node startup. Under suite contention that startup
+// can exhaust the real five-second probe deadline before the fixture prints JSON.
+// Keep actual Node execution for the PATH/child-runtime and npm-shebang checks.
+async function probeOutput(path: string, output: string) {
+  await writeFile(path, `#!/bin/sh\nprintf '%s\\n' '${output.replace(/'/g, "'\\''")}'\n`, { mode: 0o755 });
+}
+
 test("Node runtime policy shares the installer's minimum and gives actionable copy", () => {
   for (const version of ["18.20.0", "22.0.0", "23.11.0", "unknown"]) {
     assert.match(updateNodeProblem(version)!, /requires Node.js 24 or newer/);
@@ -22,7 +29,7 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
     const selected = join(cwd, "selected-node");
     const npm = join(cwd, "npm");
     const node = { path: selected, env: { ...process.env, PATH: "/usr/bin:/bin" } };
-    const identity = async (version: string) => writeFile(selected, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version, execPath: process.execPath }))});\n`, { mode: 0o755 });
+    const identity = (version: string) => probeOutput(selected, JSON.stringify({ version, execPath: process.execPath }));
     // npm fails unless the real runtime's directory was placed ahead of the inherited PATH.
     await writeFile(npm, `#!/usr/bin/env node\nif(process.execPath!==${JSON.stringify(process.execPath)}) process.exit(9); console.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
     await identity("22.0.0");
@@ -41,7 +48,7 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
     });
     assert.equal((await inspectUpdateRuntime(node, null, cwd)).ok, false);
     assert.equal((await inspectUpdateRuntime(node, null, cwd, false)).ok, true, "installing an already staged bundle does not require npm");
-    await writeFile(selected, `#!${process.execPath}\nconsole.log("not-json");\n`, { mode: 0o755 });
+    await probeOutput(selected, "not-json");
     const malformed = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(malformed.ok, false);
     if (!malformed.ok) assert.match(malformed.message, /could not verify/);
@@ -54,22 +61,22 @@ test("an npm failure or mismatched child Node refuses preparation", async () => 
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-mismatch-"));
   try {
     const npm = join(cwd, "npm");
-    await writeFile(npm, `#!${process.execPath}\nprocess.exit(1);\n`, { mode: 0o755 });
+    await writeFile(npm, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const node = { path: process.execPath, env: process.env };
     assert.equal((await inspectUpdateRuntime(node, { path: npm }, cwd)).ok, false);
-    await writeFile(npm, `#!${process.execPath}\nconsole.log(JSON.stringify({npm:"11.0.0",node:"22.0.0"}));\n`, { mode: 0o755 });
+    await probeOutput(npm, JSON.stringify({ npm: "11.0.0", node: "22.0.0" }));
     const oldNpmNode = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(oldNpmNode.ok, false);
     if (!oldNpmNode.ok) assert.match(oldNpmNode.message, /npm is using an incompatible.*found 22.0.0/);
     const differentSupportedVersion = `${Number(process.versions.node.split(".")[0]) + 1}.0.0`;
-    await writeFile(npm, `#!${process.execPath}\nconsole.log(JSON.stringify({npm:"11.0.0",node:${JSON.stringify(differentSupportedVersion)}}));\n`, { mode: 0o755 });
+    await probeOutput(npm, JSON.stringify({ npm: "11.0.0", node: differentSupportedVersion }));
     const differentNpmNode = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(differentNpmNode.ok, false);
     if (!differentNpmNode.ok) assert.match(differentNpmNode.message, /npm is using a different Node.js version/);
     const bin = join(cwd, "bin");
     await mkdir(bin);
     const shim = join(cwd, "shim");
-    await writeFile(shim, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version: process.versions.node, execPath: join(bin, "other-node") }))});\n`, { mode: 0o755 });
+    await probeOutput(shim, JSON.stringify({ version: process.versions.node, execPath: join(bin, "other-node") }));
     const mismatch = await inspectUpdateRuntime({ ...node, path: shim }, { path: npm }, cwd);
     assert.equal(mismatch.ok, false);
     if (!mismatch.ok) assert.match(mismatch.message, /does not match/);
@@ -93,12 +100,12 @@ test("checking again forces discovery refresh and uses its replacement runtime",
     return { path: spec.id === "node" ? node : npm, env: process.env };
   });
   try {
-    await writeFile(node, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ version: "22.0.0", execPath: process.execPath }))});\n`, { mode: 0o755 });
+    await probeOutput(node, JSON.stringify({ version: "22.0.0", execPath: process.execPath }));
     await writeFile(npm, `#!/usr/bin/env node\nconsole.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
     const first = await checkUpdateRuntime(cwd);
     assert.equal(first.ok, false);
     if (!first.ok) assert.match(first.message, /found 22.0.0/);
-    await writeFile(node, `#!${process.execPath}\nconsole.log(JSON.stringify({version:process.versions.node,execPath:process.execPath}));\n`, { mode: 0o755 });
+    await probeOutput(node, JSON.stringify({ version: process.versions.node, execPath: process.execPath }));
     const second = await checkUpdateRuntime(cwd);
     assert.equal(second.ok, true);
     if (second.ok) assert.equal(second.env.MISSION_NPM_BIN, npm);

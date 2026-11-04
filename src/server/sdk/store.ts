@@ -7,7 +7,11 @@ import { readPersistedEnum } from "@shared/schedules.ts";
 import { openDb } from "../db.ts";
 import { z } from "zod";
 
-const ProcessLifetime = z.object({ pid: z.number().int().positive(), startMs: z.number().positive().finite() });
+const ProcessLifetime = z.object({
+  pid: z.number().int().positive(), startMs: z.number().positive().finite(),
+  // Legacy rows remain usable for recovery, but cannot authorize updater signals.
+  darwinIdentity: z.string().min(1).optional(),
+});
 export type SdkProcessLifetime = z.infer<typeof ProcessLifetime>;
 
 /** Captured while the owned driver is observable, never inferred from its final status. */

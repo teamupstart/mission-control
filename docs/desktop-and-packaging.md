@@ -361,6 +361,21 @@ managed updates.
 
 ## Updates from the installed app
 
+Accepting an update requests orderly shutdown of the owned Foreman and daemon before the
+shell exits. Running workflow checks are interrupted with a shutdown reason; their process
+groups are reaped and their leases settle through the usual workflow cleanup. Checks still
+waiting to start cannot release their command after shutdown begins. A check's private owner
+pipe also tears down its group if the daemon dies before orderly cleanup can run; durable
+startup recovery reconciles the remaining lease record.
+
+The detached helper displays a macOS progress dialog while waiting for the old app and its
+background processes. If a bundle process remains, the dialog names its PID, executable,
+parent and owning work. **Hide** dismisses the message without cancelling the update. Reopening an in-place
+update while its helper is alive leaves the update alone and exits promptly; the helper opens
+the completed app. A dead helper still follows interrupted-update recovery. Rollback outcomes
+retain the original blocking reason, alongside confirmation that the previous app and receipt
+were preserved.
+
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
@@ -513,7 +528,32 @@ before replacement, using the [launch safeguards below](#update-relaunch-safegua
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
-home. No helper opens SQLite or starts a second daemon.
+home. Every helper snapshot captures verified process ownership before quit, including legacy
+updates without a migration handoff. The legacy helper loads the runtime ownership record only
+after checking its parent and attempt directory, before acknowledging startup or waiting.
+The helper reads existing check leases through a read-only SQLite connection to identify
+blockers by check, attempt, run and session. It never runs database migrations, writes workflow
+state, releases leases, or starts a second daemon. The accepted desktop also supplies its
+descendant identities and Electron service names, revalidating the desktop identity after the
+process-table read. SDK recovery lifetimes retain a start-time and command digest captured by
+the owning supervisor, identifying session processes even after reparenting and including the
+session and task in diagnostics. Older records lacking that digest do not authorize signals.
+Orphaned native Electron services
+are recognized only for the same user's exact bundle helper executable, native service type,
+and app profile; merely running an arbitrary command from the bundle is insufficient.
+After a short drain, the helper terminates
+verified remaining owners, escalating stubborn processes without asking the user to kill them.
+Unverified processes are never signalled. If a process still prevents replacement, its ownership
+diagnostic is preserved in both the outcome and log. A failure before replacement reopens the
+untouched previous app without repeating the failed process wait during rollback.
+
+The shared bundle wait also opens blocker-specific progress for legacy updates without a
+migration handoff, and closes that wait's dialog on completion or failure. Transaction updates
+keep their existing progress dialog through the installation.
+
+Opening the app during an in-place update requests progress from the same helper, including
+after Hide, then promptly exits the transient launch. This request does not change the journal,
+start another helper, or reset a deadline. The helper opens the completed app automatically.
 
 Targets advertising `missionInstallTransaction` protocol 1 use the existing migration journal
 and startup gate for in-place installation. Journal protocol 2 adds this mode; protocol-1

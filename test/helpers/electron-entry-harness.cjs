@@ -64,6 +64,10 @@ const app = {
   setName() {},
   isPackaged: true,
   getAppPath: () => process.env.HARNESS_APP_PATH,
+  getPath(name) {
+    if (name !== "userData") throw new Error(`Unexpected Electron path: ${name}`);
+    return resolve(process.env.HOME, "electron-profile");
+  },
   getVersion: () => "1.2.3",
   requestSingleInstanceLock() {
     observed.app.push("requestSingleInstanceLock");

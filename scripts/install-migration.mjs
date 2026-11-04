@@ -477,6 +477,8 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
         publish("repair-required");
         return { committed: true, journal, error: String(error.message ?? error) };
       }
+      journal.failure = String(error.message ?? error).slice(0, 1500);
+      atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
       try { await restoreMigration(journal, ports, policy); }
       catch (recoveryError) {
         const message = recordMigrationRecoveryFailure(journal, `${String(error.message ?? error)} Recovery failed: ${String(recoveryError.message ?? recoveryError)}`);
@@ -543,7 +545,7 @@ async function restoreInPlace(journal, ports) {
   atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal);
   atomicMigrationJson(join(plan.stateDirectory, "update-outcome.json"), {schema: 1, result: "failure",
     targetVersion: plan.targetIdentity.version, recordedAt: new Date().toISOString(),
-    message: "The update did not commit. The previous app and exact installation receipt were preserved."});
+    message: `The update could not finish: ${journal.failure ?? "the update helper was interrupted"}. The previous app and exact installation receipt were preserved.`});
   // Older apps cannot parse protocol 2. Archive only after verified restoration and
   // durable outcome, before launching the old reader. Keep backup and diagnostics.
   ensureBackupDirectory(plan);

@@ -43,6 +43,8 @@ export interface CheckSupervisorIdentity {
 }
 
 export interface CheckSpawnRequest {
+  /** The owning workflow engine is draining for shutdown. */
+  signal?: AbortSignal;
   /**
    * The attempt this check belongs to. Passed to the shim as an argument so the supervisor's
    * COMMAND LINE is unique to one attempt - the half of the start identity that a whole-second
@@ -145,6 +147,11 @@ const report = new net.Socket({ fd: 4 });
 gate.on("error", function () {});
 report.on("error", function () {});
 let released = false;
+// The private report pipe is the owner's lifetime. A crashed/killed utility process cannot
+// run its exit hook. Tear down our own group on EOF, including an in-flight command.
+// The shim is still the group leader here, so no persisted PID or identity guess is involved.
+report.on("end", function () { process.kill(-process.pid, "SIGKILL"); });
+report.on("close", function () { process.kill(-process.pid, "SIGKILL"); });
 function say(o) {
   try { report.write(JSON.stringify(o) + NL); } catch (e) {}
 }
@@ -496,6 +503,10 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       );
       return;
     }
+    if (request.signal?.aborted) {
+      abortBeforeRelease("check interrupted because Mission Control is shutting down");
+      return;
+    }
     const ready: CheckSupervisorIdentity = { pid, identity };
     try {
       request.onSupervisorReady?.(ready);
@@ -508,7 +519,9 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
     }
     // Only now is there a durable owner, and only now may branch code run.
     supervisor = ready;
-    watchCheckGroup(pid, identity);
+    watchCheckGroup(pid, identity, () => {
+      failure = infrastructure("check interrupted because Mission Control is shutting down");
+    });
     gate.write("G");
   }
 

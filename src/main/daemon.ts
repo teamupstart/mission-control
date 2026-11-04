@@ -26,7 +26,7 @@ import { superviseUtilityProcess } from "./utility-supervisor.ts";
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
   adopted: boolean;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 const HEALTH_URL = `${BASE_URL}/api/health`;
@@ -74,7 +74,7 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
   const compatibility = await daemonCompatibility();
   if (opts.requireFresh && (compatibility !== "unreachable" || await migrationPortOccupied(PORT))) throw new Error("A previous daemon is still running. Stop it, then reopen the personal app.");
   if (compatibility === "compatible") {
-    return { adopted: true, stop: () => {} };
+    return { adopted: true, stop: async () => {} };
   }
   if (compatibility === "incompatible") {
     throw new Error(

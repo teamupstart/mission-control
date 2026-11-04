@@ -60,13 +60,14 @@ test("quitting during daemon startup stops it without starting Foreman", async (
   const pending = new Promise<typeof daemon>((resolve) => (resolveStart = resolve));
   const startup = ownElectronBackgroundStart(undefined, () => pending, async () => {
     order.push("start foreman");
-    return { stop: () => order.push("stop foreman") };
+    return { stop: () => { order.push("stop foreman"); } };
   });
 
-  startup.stop();
+  const stopping = startup.stop();
   resolveStart(daemon);
 
   assert.deepEqual(await startup.ready, { daemon, foreman: null });
+  await stopping;
   assert.deepEqual(order, ["stop daemon"]);
   startup.stop();
   assert.deepEqual(order, ["stop daemon"], "the ownership stop is idempotent");
@@ -76,11 +77,27 @@ test("packaged shutdown stops Foreman before the daemon", async () => {
   const order: string[] = [];
   const startup = ownElectronBackgroundStart(
     undefined,
-    async () => ({ stop: () => order.push("daemon") }),
-    async () => ({ stop: () => order.push("foreman") }),
+    async () => ({ stop: () => { order.push("daemon"); } }),
+    async () => ({ stop: () => { order.push("foreman"); } }),
   );
 
   await startup.ready;
-  startup.stop();
+  await startup.stop();
   assert.deepEqual(order, ["foreman", "daemon"]);
+});
+
+test('shutdown holds the shell until Foreman and daemon have each drained', async () => {
+  const order: string[] = [];
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const startup = ownElectronBackgroundStart(undefined,
+    async () => ({async stop() { order.push('daemon'); }}),
+    async () => ({async stop() { order.push('foreman'); await barrier; }}));
+  await startup.ready;
+  const stopping = startup.stop();
+  await Promise.resolve();
+  assert.deepEqual(order, ['foreman']);
+  release();
+  await stopping;
+  assert.deepEqual(order, ['foreman', 'daemon']);
 });

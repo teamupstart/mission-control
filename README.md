@@ -436,7 +436,8 @@ repository:
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
-  You can still check for updates manually at any time.
+  You can still check for updates manually at any time. Updating drains owned background
+  work; interrupted workflow checks retain a shutdown reason, and the app reopens automatically.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:

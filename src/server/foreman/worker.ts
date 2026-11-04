@@ -3413,3 +3413,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(1);
   });
 }
+
+// Request the existing shutdown lifecycle before the Electron shell exits.
+process.parentPort?.on("message", ({data}) => {
+  if (data?.type === "mission:shutdown") process.emit("SIGTERM");
+});

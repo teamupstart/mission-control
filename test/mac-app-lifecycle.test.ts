@@ -1120,3 +1120,23 @@ test("retry cleanup escalates after its bounded TERM wait only for the same proc
     });
   }
 });
+
+test('bundle-exit diagnostics identify the executable and parent without exposing argv', async () => {
+  const bundle = '/fixture/Mission Control.app';
+  const executable = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  const ops = {
+    now: () => 0, sleep: async () => {},
+    run: async () => ({code: 0, stdout: `39896 1 S ${executable}\n`}),
+  } as unknown as MacAppOps;
+  const waiting: string[] = [];
+  await assert.rejects(waitForBundleExit(bundle, ops, 0, (message) => waiting.push(message)), (error: Error) => {
+    assert.match(error.message, /39896/);
+    assert.ok(error.message.includes(executable));
+    assert.match(error.message, /parent 1/);
+    const message = waiting[0];
+    assert.ok(message);
+    assert.ok(message.includes(executable));
+    assert.match(message, /39896.*parent 1/);
+    return true;
+  });
+});

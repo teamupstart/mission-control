@@ -339,3 +339,59 @@ test("an unusable working directory is infrastructure, not a missing executable"
   assert.equal(result.kind, "infrastructure");
   assert.equal(supervisor, null, "nothing ran, so there is no owner to record");
 });
+
+test('a killed owner cannot orphan the shim or its running command', async (t) => {
+  const {spawn} = await import('node:child_process');
+  const {mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const {join} = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'check-owner-loss-'));
+  const pidPath = join(dir, 'shim.pid');
+  const childPath = join(dir, 'command.pid');
+  const module = new URL('../src/server/workflows/check-spawn.ts', import.meta.url).href;
+  const script = join(dir, 'owner.mjs');
+  writeFileSync(script, `import {spawnCheckProcess} from ${JSON.stringify(module)};
+    import {writeFileSync} from 'node:fs';
+    await spawnCheckProcess({attemptId:'owner-loss',command:[process.execPath,'-e',
+      ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(childPath)}, String(process.pid)); setInterval(()=>{},1000)`)}],
+      cwd:${JSON.stringify(dir)},env:process.env,timeoutMs:60000,
+      onSupervisorReady:({pid})=>writeFileSync(${JSON.stringify(pidPath)},String(pid))});`);
+  const owner = spawn(process.execPath, ['--import', 'tsx', script], {stdio: 'ignore'});
+  let pid = 0;
+  t.after(() => {
+    owner.kill('SIGKILL');
+    if (pid) { try { process.kill(-pid, 'SIGKILL'); } catch {} }
+    rmSync(dir, {recursive:true, force:true});
+  });
+  const wait = async (condition: () => boolean) => {
+    const end = Date.now() + 10000;
+    while (!condition()) { assert.ok(Date.now() < end, 'owned process did not settle'); await new Promise(r=>setTimeout(r,25)); }
+  };
+  await wait(() => existsSync(pidPath) && existsSync(childPath));
+  pid = Number(readFileSync(pidPath, 'utf8'));
+  const commandPid = Number(readFileSync(childPath, 'utf8'));
+  owner.kill('SIGKILL');
+  const {execFileSync} = await import('node:child_process');
+  const alive = (p: number) => {
+    try { return !/^Z/.test(execFileSync('/bin/ps', ['-o','stat=','-p',String(p)], {encoding:'utf8'}).trim()); }
+    catch { return false; }
+  };
+  await wait(() => !alive(pid) && !alive(commandPid));
+});
+
+test('shutdown interrupts live checks with a reason and refuses checks arriving during the drain', async () => {
+  const {killLiveCheckGroups} = await import('../src/server/workflows/check-group.ts');
+  const shutdown = new AbortController();
+  {
+    const active = spawnCheckProcess({attemptId:'shutdown',command:[NODE,'-e','setInterval(()=>{},1000)'],
+      cwd:process.cwd(),env:process.env,timeoutMs:60000,
+      onSupervisorReady:()=> { setImmediate(() => {shutdown.abort(); killLiveCheckGroups();}); }});
+    const result = await active;
+    assert.equal(result.emptiness, 'empty');
+    assert.deepEqual(result.result, {kind:'infrastructure',reason:'check interrupted because Mission Control is shutting down'});
+    const late = await spawnCheckProcess({attemptId:'late', command:[NODE, '-e', 'throw new Error("must never run")'],
+      cwd:process.cwd(), env:process.env, timeoutMs:10000, signal:shutdown.signal});
+    assert.equal(late.supervisor, null);
+    assert.deepEqual(late.result, result.result);
+  }
+});

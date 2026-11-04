@@ -282,6 +282,29 @@ test("the supervisor persists the observed child lifetime after the stream ends 
   assert.equal(getSdkSessionProcess(session.id), null, "a restored handle must establish its own lifetime");
 });
 
+test("the SDK supervisor persists macOS start and command identity without retaining secret argv", {skip: process.platform !== 'darwin'}, async (t) => {
+  const {darwinCheckIdentity} = await import('../scripts/darwin-process-identity.mjs');
+  const handle = fakeHandle();
+  const pid = 41003;
+  Object.defineProperty(handle, 'recoveryProcessId', {get: () => pid});
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const startRaw = 'Tue Nov 3 10:00:00 2026';
+  const command = '/fixture/sdk-driver --private SECRET';
+  const supervisor = new SdkSupervisor(new Registry(), {processSnapshot: async () => ({
+    processes: [{pid, ppid: 1, tty: null, startRaw, startMs: Date.parse(startRaw), command, agent: null, agentNative: false}],
+    unknownReason: null, cwdScopePids: [], completedCollectorPids: [],
+  })});
+  t.after(() => supervisor.stopAll());
+  const session = await supervisor.start(START);
+  await drain();
+  handle.end();
+  await drain();
+  const saved = getSdkSessionProcess(session.id);
+  assert.deepEqual(saved, {pid, startMs: Date.parse(startRaw), darwinIdentity: darwinCheckIdentity(`${startRaw} ${command}`)});
+  assert.doesNotMatch(JSON.stringify(saved), /SECRET|sdk-driver/);
+});
+
 test("Codex SDK sessions carry their synthetic identity into Mission MCP", async () => {
   const firstHandle = fakeHandle();
   const secondHandle = fakeHandle();

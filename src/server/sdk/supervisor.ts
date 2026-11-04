@@ -2,6 +2,7 @@ import { residentNativeCompactionForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
+import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
@@ -1457,9 +1458,13 @@ export class SdkSupervisor {
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
       try {
         const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
-          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+        const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+        if (!snapshot.unknownReason && child && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          // Capture while this driver is owned. Fingerprinting a later lookup would
+          // bless a replacement PID; retaining raw argv could disclose credentials.
+          const darwinIdentity = process.platform === 'darwin'
+            ? darwinCheckIdentity(`${child.startRaw} ${child.command}`) : null;
+          recordSdkSessionProcess(id, { pid, startMs: child.startMs, ...(darwinIdentity ? {darwinIdentity} : {}) });
         }
       } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
     };

@@ -1,5 +1,5 @@
 export interface BackgroundProcess {
-  stop(): void;
+  stop(): void | Promise<void>;
 }
 
 export interface ElectronBackgroundStack<D, F> {
@@ -9,7 +9,7 @@ export interface ElectronBackgroundStack<D, F> {
 
 export interface BackgroundStartOwnership<D, F> {
   ready: Promise<ElectronBackgroundStack<D, F> | null>;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 /**
@@ -31,28 +31,28 @@ export function ownElectronBackgroundStart<
   let daemon: D | null = null;
   let foreman: F | null = null;
   let stopRequested = false;
+  let stopping: Promise<void> | null = null;
   const ready = (async (): Promise<ElectronBackgroundStack<D, F> | null> => {
     if (devServerUrl) return null;
     daemon = await startDaemon();
     if (stopRequested) {
-      daemon.stop();
       return { daemon, foreman: null };
     }
     foreman = await startForeman();
-    if (stopRequested) {
-      foreman.stop();
-      daemon.stop();
-    }
     return { daemon, foreman };
   })();
   return {
     ready,
     stop() {
-      if (stopRequested) return;
+      if (stopping) return stopping;
       stopRequested = true;
-      // Release Foreman's lease while the daemon can still receive the shutdown request.
-      foreman?.stop();
-      daemon?.stop();
+      stopping = (async () => {
+        // Even a failed Foreman startup leaves an owned daemon to drain.
+        try { await ready; } finally {
+          try { await foreman?.stop(); } finally { await daemon?.stop(); }
+        }
+      })();
+      return stopping;
     },
   };
 }

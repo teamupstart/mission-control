@@ -38,7 +38,9 @@ test("the app menu and tray expose the same native update command seam", () => {
     "native update commands must remain available even when daemon startup fails",
   );
   assert.match(index, /app\.on\("before-quit", stopShell\)/);
-  const stopShell = index.match(/function stopShell\(\): void \{([\s\S]*?)\n\}/)?.[1];
+  // Native quit supplies a cancellable event; failed migration calls the same cleanup
+  // without one. Its parameter list is not part of this command-wiring contract.
+  const stopShell = index.match(/function stopShell\([^\n]*\): void \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(stopShell, "ordinary quit and failed migration share shell cleanup");
   assert.match(stopShell, /backgroundStart\?\.stop\(\)/);
 });

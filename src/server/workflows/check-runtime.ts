@@ -252,6 +252,7 @@ export class CheckRuntime {
     try {
       outcome = await this.supervise(
         {
+          signal: request.signal,
           attemptId: attempt.attemptId,
           command: request.command,
           // THE LEASED TREE, joined with the subpath the winning command entry named. Never

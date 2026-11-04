@@ -10,6 +10,7 @@ export interface MigrationPlan {
 export interface MigrationRepair { id: string; status: 'complete' | 'pending'; message: string }
 export interface MigrationJournal {
   plan: MigrationPlan; owner: ProcessRecord; ownerRole: 'helper' | 'recovery'; stage: string; repairs: MigrationRepair[];
+  failure?: string;
   inventory: unknown; targetProcess: ProcessRecord | null;
   retainedSwap?: {path: string; pid: number; revision: string} | null;
 }

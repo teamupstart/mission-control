@@ -1,9 +1,12 @@
-import { mkdir, readFile } from "node:fs/promises";
+import {prepareStagedInstall} from "../../scripts/install-staged-app.mjs";
+import {prepareInPlaceInstall, runMigration} from "../../scripts/install-migration.mjs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runApplyUpdate, realHelperLockOperations, type ApplyOperations } from "../../scripts/apply-update.mjs";
 import { acquireHelperLock, releaseHelperLock, HELPER_LOCK_DIR_NAME } from "../../scripts/update-lock.mjs";
-import { assertSafeAppLaunch, type MacAppOps } from "../../scripts/mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, waitForBundleExit, type MacAppOps } from "../../scripts/mac-app-lifecycle.mjs";
+import { processFingerprint } from "../../scripts/update-process-owners.mjs";
 import { readUpdateOutcome, updateOutcomePath, writeUpdateOutcome } from "../../src/main/update-outcome.ts";
 import { updateOutcomeHost } from "../fixtures/update-relaunch.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -124,5 +127,54 @@ test("the reported respawn job cannot race bundle replacement and open into a fa
     await expectContentClearsBorder(dialog);
     expect(outcome.result).toBe("failure");
     await dialog.getByRole("button", {name: "OK", exact: true}).click();
+  } finally { await host.stop(); }
+});
+
+test('rollback shows the blocking bundle process and its owning workflow work', async ({dashboard, daemon}) => {
+  const app = join(daemon.home, 'apps', 'Mission Control.app');
+  const candidate = join(daemon.home, 'candidate.app');
+  for (const [path, commit] of [[app, 'a'.repeat(40)], [candidate, 'b'.repeat(40)]]) {
+    await mkdir(join(path, 'Contents/Resources/app'), {recursive:true});
+    await mkdir(join(path, 'Contents/MacOS'), {recursive:true});
+    await writeFile(join(path, 'Contents/MacOS/Mission Control'), '#!/bin/sh\nexit 0\n', {mode:0o755});
+    await writeFile(join(path, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.27.2</string>');
+    await writeFile(join(path, 'Contents/Resources/app/package.json'), JSON.stringify({missionCommit:commit,
+      missionInstallMigration:{protocol:1,automatic:true},missionInstallTransaction:{protocol:1,receiptSchemas:[1,2]}}));
+  }
+  const receipt = {schema:1,repo:'teamupstart/mission-control',releaseTag:'v1.27.2',installedVersion:'1.27.2',
+    installedCommit:'a'.repeat(40),sourceClone:'/unused-source',appPath:app,installedAt:new Date().toISOString()};
+  await writeFile(join(daemon.home,'install-receipt.json'),JSON.stringify(receipt));
+  const descriptor = prepareStagedInstall({bundle:candidate,receipt:{...receipt,installedCommit:'b'.repeat(40)}});
+  const plan = prepareInPlaceInstall({descriptor,stateDirectory:daemon.home});
+  const work = 'workflow check test, attempt check-123, run run-456, session sdk:789';
+  const identity = 'fixture check process identity';
+  // Feed the real diagnostic formatter into migration and the outcome renderer.
+  // Process inspection and app launch are fixture ports; no live process is killed.
+  const mac = {now: () => 0, sleep: async () => {}, identity: () => identity,
+    run: async () => ({code: 0, stdout: `39896 1 S ${app}/Contents/MacOS/Mission Control\n`}),
+  } as unknown as MacAppOps;
+  const rollback = await runMigration(plan, {
+    waitForParent: () => waitForBundleExit(app, mac, 0, undefined,
+      [{pid: 39896, fingerprint: processFingerprint(identity)!, group: true, work}]),
+    waitForDaemonExit:async()=>{},
+    launchTarget:async()=>{throw new Error('must not launch target');},waitForReady:async()=>{},
+    stopTarget:async()=>{},launchSource:async()=>{},
+  });
+  expect(rollback.committed).toBe(false);
+  const host = await updateOutcomeHost(dashboard, daemon.home);
+  try {
+    await host.launch();
+    const dialog = dashboard.getByRole('dialog', {name: 'Mission Control update'});
+    await expect(dialog).toContainText('39896');
+    await expect(dialog).toContainText(work);
+    await expect(dialog).toContainText('previous app and exact installation receipt were preserved');
+    await dashboard.mouse.move(0, 0);
+    await expectContentClearsBorder(dialog);
+    if (process.env.MC_E2E_EVIDENCE) {
+      await mkdir('e2e/.artifacts/update-relaunch', {recursive:true});
+      await dialog.screenshot({path:'e2e/.artifacts/update-relaunch/owned-process-blocker.png'});
+    }
+    await dialog.getByRole('button', {name:'OK', exact:true}).click();
+    await expect(dialog).toHaveCount(0);
   } finally { await host.stop(); }
 });

@@ -931,6 +931,7 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
@@ -967,7 +968,7 @@ async function shutdown(): Promise<void> {
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.
-  await workflows.stop();
+  await stoppingWorkflows;
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
@@ -1013,3 +1014,8 @@ async function shutdown(): Promise<void> {
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+
+// Request the existing shutdown lifecycle before the Electron shell exits.
+process.parentPort?.on("message", ({data}) => {
+  if (data?.type === "mission:shutdown") process.emit("SIGTERM");
+});

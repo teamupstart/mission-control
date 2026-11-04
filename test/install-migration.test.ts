@@ -96,6 +96,45 @@ test('a restored personal installation names what stopped it in the outcome', as
   assert.ok(f.events.includes('launch-source'), 'the retained system app was relaunched');
 });
 
+for (const boundary of ['target-staged', 'target-launching', 'target-ready']) test(`a transient diagnostic write failure at ${boundary} does not prevent durable rollback and relaunch`, async (t) => {
+  const f = fixture(t);
+  const receipt = readFileSync(join(f.stateDirectory, 'install-receipt.json'));
+  const journalPath = join(f.stateDirectory, MIGRATION_JOURNAL);
+  f.ports.checkpoint = stage => {
+    if (stage !== boundary) return;
+    // Make the diagnostic rename fail through the actual filesystem boundary.
+    rmSync(journalPath);
+    mkdirSync(journalPath);
+    throw new Error('target failed to start');
+  };
+  f.ports.stopTarget = async () => {
+    f.events.push('stop-target');
+    rmSync(journalPath, {recursive: true}); // The transient write fault ends as rollback starts.
+  };
+  f.ports.launchSource = async () => {
+    assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.stage, 'restored');
+    const outcome = readUpdateOutcome(join(f.stateDirectory, 'update-outcome.json'));
+    assert.equal(outcome?.result, 'failure');
+    assert.match(outcome?.result === 'failure' ? outcome.message : '', /target failed to start/);
+    f.events.push('launch-source');
+  };
+  const result = await runMigration(f.plan, f.ports, {policy: f.policy});
+  assert.equal(result.committed, false);
+  assert.deepEqual(f.events.slice(-2), ['stop-target', 'launch-source']);
+  assert.deepEqual(readFileSync(join(f.stateDirectory, 'install-receipt.json')), receipt);
+  assert.equal(existsSync(f.plan.target), false);
+});
+
+test('a failed rollback journal write still prevents source launch', async (t) => {
+  const f = fixture(t);
+  const journalPath = join(f.stateDirectory, MIGRATION_JOURNAL);
+  f.ports.waitForReady = async () => { throw new Error('target failed to start'); };
+  f.ports.stopTarget = async () => { rmSync(journalPath); mkdirSync(journalPath); };
+  const result = await runMigration(f.plan, f.ports, {policy: f.policy});
+  assert.match(result.error!, /Recovery failed/);
+  assert.equal(f.events.includes('launch-source'), false);
+});
+
 test('ownership refuses a replaced source even when its commit and version still match', async (t) => {
   const f = fixture(t);
   renameSync(f.source, `${f.source}.recorded`);

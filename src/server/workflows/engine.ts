@@ -425,6 +425,7 @@ export class WorkflowEngine {
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
   private stopped = true;
+  private checkShutdown = new AbortController();
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
@@ -456,12 +457,14 @@ export class WorkflowEngine {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.checkShutdown = new AbortController();
     this.recover();
     this.wake();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.checkShutdown.abort();
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
     // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
@@ -1382,13 +1385,14 @@ export class WorkflowEngine {
       nodeId: node.id,
     };
     const baseDeps = this.checkDeps(attemptRef);
-    const deps = !checkLimitHeld && baseDeps.execute
-      ? {
-          ...baseDeps,
-          execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
-            this.checkLimit(() => baseDeps.execute!(request)),
-        }
-      : baseDeps;
+    const signal = this.checkShutdown.signal;
+    const deps = baseDeps.execute ? {
+      ...baseDeps,
+      execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) => {
+        const execute = () => baseDeps.execute!({...request, signal});
+        return checkLimitHeld ? execute() : this.checkLimit(execute);
+      },
+    } : baseDeps;
 
     let result: Awaited<ReturnType<typeof runCheck>>;
     try {

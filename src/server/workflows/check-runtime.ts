@@ -176,6 +176,10 @@ export class CheckRuntime {
     attempt: CheckAttemptRef,
     request: CheckExecutionRequest,
   ): Promise<CheckExecutionResult> {
+    if (request.signal?.aborted) {
+      return {kind: "infrastructure", started: false,
+        reason: "check interrupted because Mission Control is shutting down"};
+    }
     // Asked before a tree is taken. `runSupervisedCheck` asks it again - it has to, since it
     // is reachable on its own - but an unsupported platform must never reach a pool at all:
     // leasing a worktree to decline a check would spend the resource the decline exists to
@@ -252,6 +256,7 @@ export class CheckRuntime {
     try {
       outcome = await this.supervise(
         {
+          signal: request.signal,
           attemptId: attempt.attemptId,
           command: request.command,
           // THE LEASED TREE, joined with the subpath the winning command entry named. Never

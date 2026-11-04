@@ -31,6 +31,21 @@ process exit, including crashes; orderly shutdown closes SQLite before releasing
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
 
+Electron requests shutdown over each owned utility's private message port and holds the shell
+open while Foreman and the daemon drain, bounded by the shared quit deadline. A utility timeout
+or failed message requests termination and awaits its exit; the overall deadline lets Electron
+reap any remaining utilities before the update helper handles verified survivors.
+The daemon stops workflow checks before slower
+session drains. The workflow engine's abort signal also follows a check through lease
+acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
+check shims tear down their own group on loss of the private owner pipe; the daemon remains
+the only writer of interruption outcomes and lease recovery.
+
+The detached update helper outlives the desktop and drains verified owned processes before
+replacing the app. It never writes workflow state or releases leases; the daemon's existing
+recovery owns those transitions after relaunch. The [desktop update ownership contract](../desktop-and-packaging.md#updates-from-the-installed-app)
+defines capture, identity verification, cleanup and diagnostics for both helper modes.
+
 ## Resident loop ownership
 
 `ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`

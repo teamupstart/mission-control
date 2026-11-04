@@ -99,6 +99,8 @@ export interface InstallSnapshot {
 }
 
 export interface HelperHandoff {
+  processNames?: Record<number, string>;
+  userDataDirectory?: string;
   node?: string;
   descriptor?: StagedInstallDescriptor;
   receipt?: InstallReceipt;
@@ -418,7 +420,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
   const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
   if (plan) retainBinaryHandoff(descriptor, args.stateDirectory, plan.nonce);
   await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
-    parentPid: args.parentPid, logPath: args.logPath, env: args.env,
+    parentPid: args.parentPid, logPath: args.logPath, env: args.env, processNames: args.processNames, userDataDirectory: args.userDataDirectory,
     handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
       ...(receipt.sourceClone ? ["--source-clone", receipt.sourceClone] : []),
       "--target-tag", args.targetTag, "--app-path", args.appPath,
@@ -1279,6 +1281,8 @@ export class UpdateController {
 }
 
 export function createDefaultUpdaterPort(options: {
+  processNames?: () => Record<number, string>;
+  userDataDirectory?: string;
   packaged: boolean;
   currentVersion: () => string;
   currentCommit: () => string | null;
@@ -1324,7 +1328,7 @@ export function createDefaultUpdaterPort(options: {
     stateDirectory: () => options.stateDirectory,
     launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
-      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
+      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath, processNames: options.processNames?.(), userDataDirectory: options.userDataDirectory }),
     stage: async (request) => {
       const gh = await locateExecutable("gh");
       if (!gh) throw new UpdateError("GitHub CLI (gh) is not installed. Install gh, then check again.", true, "gh-missing");

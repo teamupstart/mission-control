@@ -1,7 +1,7 @@
 import { spawnBundledUpdateHelper } from "./update-helper-runtime.mjs";
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
-import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses, updateProgressRequestPath } from "./mac-app-lifecycle.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -188,11 +188,15 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     // launch can now use the ordinary redirect/single-instance path immediately.
     return {proceed: true, committed: true, fresh: false};
   }
+  // A Finder/Dock launch must leave the bundle before the helper can replace it.
+  // Waiting inside this process would itself hold the old executable open.
+  if (!nonce && plan.kind === "in-place" && journal.ownerRole === "helper" && sameMigrationProcess(journal.owner)) {
+    // Ask the existing helper to reveal its progress, including after Hide. Do not wait
+    // here or touch the transaction's journal/deadline: this launch must leave the bundle.
+    atomicMigrationJson(updateProgressRequestPath(stateDirectory, plan.nonce), {pid: process.pid, at: Date.now()});
+    return {proceed: false, committed: false, fresh: false};
+  }
   if (!nonce && sameMigrationProcess(journal.owner)) {
-    // An ordinary launch (Dock, Finder, a login item) while the helper is mid-transaction. It
-    // is not part of the attempt, so it may neither throw a recovery instruction nor wait:
-    // before the swap the helper is waiting for this very bundle to exit, so waiting here
-    // would hold the update until it timed out and rolled back. Leave, and say why.
     return {proceed: false, committed: false, fresh: false, notice: MIGRATION_IN_PROGRESS_NOTICE};
   }
   if (target && plan.kind && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {

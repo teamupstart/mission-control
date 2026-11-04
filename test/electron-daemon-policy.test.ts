@@ -170,3 +170,13 @@ test("a quit with no owned background stack, or a drain that fails, still exits"
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(failing.order, ["quit requested", "quit held", "quit requested", "app exits"]);
 });
+
+test('a failed Foreman startup still drains its owned daemon', async () => {
+  let stopped = false;
+  const startup = ownElectronBackgroundStart(undefined,
+    async () => ({async stop() { stopped = true; }}),
+    async () => { throw new Error('Foreman unavailable'); });
+  await assert.rejects(startup.ready, /Foreman unavailable/);
+  await startup.stop();
+  assert.equal(stopped, true);
+});

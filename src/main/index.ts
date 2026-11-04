@@ -429,6 +429,10 @@ app.whenReady().then(async () => {
   if (runningBundle) observeUpdateLaunch(mainWindow.webContents, runningBundle, stateDir());
   updater = new UpdateController(
     createDefaultUpdaterPort({
+      userDataDirectory: app.getPath('userData'),
+      processNames: () => Object.fromEntries(app.getAppMetrics().map((metric) => [
+        metric.pid, metric.name || metric.serviceName || metric.type,
+      ])),
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,

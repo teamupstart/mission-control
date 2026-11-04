@@ -212,12 +212,12 @@ export async function terminateCheckGroup(
  * because that shape is right. The POLICY is this module's, and it differs in the one way that
  * matters: the hook verifies identity before it signals.
  */
-const live = new Map<number, string>();
+const live = new Map<number, {identity: string; onShutdown?: () => void}>();
 
 /** Remember a live group. Called by the spawn adapter the moment identity is known. */
-export function watchCheckGroup(pid: number, identity: string): void {
+export function watchCheckGroup(pid: number, identity: string, onShutdown?: () => void): void {
   if (!signallableGroup(pid) || identity === "") return;
-  live.set(pid, identity);
+  live.set(pid, {identity, onShutdown});
   hookExitOnce();
 }
 
@@ -272,7 +272,8 @@ export function liveCheckGroupCount(): number {
  * and identity-verified startup recovery exist.
  */
 export function killLiveCheckGroups(): void {
-  for (const [pid, identity] of live) {
+  for (const [pid, {identity, onShutdown}] of live) {
+    onShutdown?.();
     if (processStartIdentity(pid) === identity) signalGroup(pid, "SIGKILL");
   }
   live.clear();

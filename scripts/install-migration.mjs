@@ -495,6 +495,9 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
         publish("repair-required");
         return { committed: true, journal, error: String(error.message ?? error) };
       }
+      journal.failure = sanitizeDiagnostic(String(error.message ?? error));
+      try { atomicMigrationJson(join(plan.stateDirectory, MIGRATION_JOURNAL), journal); }
+      catch { /* Diagnostics must not prevent rollback; restoration still writes durable state. */ }
       try { await restoreMigration(journal, ports, policy, error); }
       catch (recoveryError) {
         const message = recordMigrationRecoveryFailure(journal, `${String(error.message ?? error)} Recovery failed: ${String(recoveryError.message ?? recoveryError)}`);
@@ -532,7 +535,7 @@ export function migrationRollbackMessage(lead, cause, tail) {
   return [lead, reason && (/[.!?]$/.test(reason) ? reason : `${reason}.`), tail].filter(Boolean).join(" ");
 }
 
-export async function restoreMigration(journal, ports, policy, cause) {
+export async function restoreMigration(journal, ports, policy, cause = journal.failure) {
   if (journal.plan.kind === "in-place") return restoreInPlace(journal, ports, cause);
   if (journal.plan.kind === "rename") return restoreRename(journal, ports, cause);
   const { plan } = journal;

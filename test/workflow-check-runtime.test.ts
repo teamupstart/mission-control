@@ -14,7 +14,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
@@ -1133,6 +1133,65 @@ async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000
   }
 }
 
+test("engine shutdown refuses a check released after lease acquisition", { skip: !SUPPORTED, timeout: 20_000 }, async (t) => {
+  const f = fixture({ slots: 1 });
+  const id = "shutdown-before-spawn";
+  const marker = join(home, "shutdown-command-ran");
+  const command = [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`];
+  const store = seedCheckRun(id, f.repoRoot, f.headSha);
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let heldAttemptId = "";
+  const acquire = f.leases.acquireForAttempt.bind(f.leases);
+  t.mock.method(f.leases, "acquireForAttempt", async (input: Parameters<typeof acquire>[0]) => {
+    const path = await acquire(input);
+    heldAttemptId = input.attemptId;
+    // The real lease is durable, but the runtime has not reached its real supervisor yet.
+    await hold;
+    return path;
+  });
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("this check-only workflow must not call a model"); },
+    workflowPolicy: () => ({
+      liveEnabled: false, repoAllowlist: [f.repoRoot], defaultWorkflowId: null,
+      retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+      checksEnabled: true, skipPassedJudges: true,
+    }),
+    workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot),
+      overrides: slot === "test" ? [{ repoRoot: f.repoRoot, command }] : [] }),
+    checkDeps: (attempt) => ({ execute: f.runtime.executorFor(attempt) }),
+    unresolvedCheckLease: (submissionId, nodeId) => f.leases.unresolvedLeaseForNode(submissionId, nodeId),
+  });
+  let shutdown: Promise<void> | undefined;
+  engine.start();
+  try {
+    engine.activateSubmission(`submission-${id}`);
+    await waitFor(() => heldAttemptId !== "", "the engine never reached the held lease acquisition");
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "held");
+    assert.equal(existsSync(marker), false);
+    let stopped = false;
+    shutdown = engine.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    assert.equal(stopped, false, "shutdown must wait for the held attempt to settle");
+
+    release();
+    await shutdown;
+
+    assert.equal(existsSync(marker), false, "a check released after shutdown must never execute its command");
+    const interrupted = store.getAttempt(heldAttemptId)!;
+    assert.equal(interrupted.state, "error");
+    assert.match(interrupted.error!, /Mission Control is shutting down/);
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "returned");
+    assert.equal(f.leases.unresolvedLeaseForNode(`submission-${id}`, "gate"), false);
+    assert.deepEqual(liveRows(), []);
+    assert.deepEqual(f.pool.trees.filter((tree) => tree.state === "leased"), []);
+  } finally {
+    release();
+    await (shutdown ?? engine.stop());
+    store.cancelRun(`run-${id}`, "test_cleanup");
+  }
+});
+
 /**
  * The defect this gate exists for is invisible without this test, because the happy path and
  * the broken path both end with "the check eventually finished".
@@ -1319,4 +1378,23 @@ test("changed paths that cannot be listed are infrastructure, before any tree is
   assert.match(outcome.reason, /changed files could not be listed: git refused/);
   assert.deepEqual(f.pool.calls.filter((call) => call.cmd === "get"), []);
   store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test('an already aborted check acquires no worktree and never reaches platform lookup or supervision', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  const runtime = new CheckRuntime(f.leases, {
+    leaseStore: leaseRows,
+    platform: () => { calls.push('platform'); return {supported: false, note: 'must not probe'}; },
+    supervise: async () => { throw new Error('must not spawn'); },
+  });
+  const shutdown = new AbortController();
+  shutdown.abort();
+  const outcome = await runtime.executorFor(attemptRef())({slot: 'test', command: PASSES,
+    repoRoot: f.repoRoot, workingSubpath: '', headSha: f.headSha, signal: shutdown.signal});
+  assert.deepEqual(outcome, {kind: 'infrastructure', started: false,
+    reason: 'check interrupted because Mission Control is shutting down'});
+  assert.deepEqual(calls, []);
+  assert.deepEqual(f.pool.calls, []);
+  assert.deepEqual(liveRows(), []);
 });

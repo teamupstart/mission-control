@@ -5,14 +5,14 @@
 // that held the bundle on 2026-11-03.
 //
 // The daemon's shutdown keeps the shape that matters and nothing else: it awaits other
-// subsystems first (as `sdkSessions.stopAll()` precedes `workflows.stop()`), then runs the
+// subsystems first to model a slow drain, then runs the
 // teardown `WorkflowEngine.stop()` runs - `killLiveCheckGroups()` - and waits for the attempt to
 // prove its group empty through the ordinary `terminateCheckGroup` path.
 //
 // What is asserted is what the update helper's bundle-exit wait needs: once the app process has
 // exited, no process carrying this attempt's supervisor marker is left and the check's process
-// group is empty. The `send-only` mode is the pre-fix quit ordering and is kept as the control,
-// which is what proves this fixture can see the leak at all.
+// group is empty. The `send-only` mode verifies that loss of the private owner pipe also
+// reaps the check group when Electron exits before durable shutdown completes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
@@ -71,12 +71,16 @@ function fixtureApp(root: string): string {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
       },
     });
-    process.on("SIGTERM", async () => {
+    const shutdown = async () => {
       await new Promise((r) => setTimeout(r, 5000));
       killLiveCheckGroups();
       const outcome = await running;
       writeFileSync(out + "/check-outcome.json", JSON.stringify({emptiness: outcome.emptiness, kind: outcome.result.kind}));
       process.exit(0);
+    };
+    process.on("SIGTERM", shutdown);
+    process.parentPort?.on("message", (event) => {
+      if (event.data?.type === "mission:shutdown") void shutdown();
     });
     setInterval(() => {}, 1000);
   `, join(app, "daemon.cjs"));
@@ -115,7 +119,7 @@ function fixtureApp(root: string): string {
 }
 
 for (const mode of ["send-only", "drain"] as const) {
-  test(`quitting the app ${mode === "drain" ? "tears a real check group down before the app exits" : "without waiting leaves a real check running from the bundle (control)"}`, {
+  test(`quitting the app ${mode === "drain" ? "tears a real check group down before the app exits" : "without waiting still reaps its check through owner-pipe loss"}`, {
     skip: process.platform !== "darwin", timeout: 90_000,
   }, async (t) => {
     assertElectronGuiLaunchAllowed();
@@ -147,8 +151,12 @@ for (const mode of ["send-only", "drain"] as const) {
       assert.deepEqual(supervisorsFor(attemptId), [], "a check supervisor still holds the bundle");
     } else {
       assert.equal(existsSync(join(out, "check-outcome.json")), false, "Electron let the daemon finish its teardown unwaited");
-      assert.equal(groupAlive(supervisor.pid), true, "the control no longer reproduces the leak, so it no longer proves the drain matters");
-      assert.deepEqual(supervisorsFor(attemptId), [supervisor.pid], "the leaked check is the marked supervisor the helper names");
+      const deadline = Date.now() + 5000;
+      while (groupAlive(supervisor.pid) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      assert.equal(groupAlive(supervisor.pid), false, "owner-pipe loss left the check group alive");
+      assert.deepEqual(supervisorsFor(attemptId), [], "the orphan supervisor still holds the bundle");
     }
   });
 }

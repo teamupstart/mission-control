@@ -151,7 +151,8 @@ test('a no-nonce launch of the in-place target while the helper is alive is told
   assert.equal(journal?.owner.pid, process.pid);
   const started = Date.now();
   const gate = await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.plan.target, port: 1, timeout: 60_000});
-  assert.deepEqual(gate, {proceed: false, committed: false, fresh: false, notice: MIGRATION_IN_PROGRESS_NOTICE});
+  assert.deepEqual(gate, {proceed: false, committed: false, fresh: false});
+  assert.ok(existsSync(join(f.stateDirectory, `update-progress-${f.plan.nonce}.json`)), 'the existing helper receives the progress request');
   // Waiting for the helper here would deadlock it: it is waiting for this very bundle to exit.
   assert.ok(Date.now() - started < 5_000, 'the gate waited on the helper instead of answering');
   assert.match(MIGRATION_IN_PROGRESS_NOTICE, /update/i);

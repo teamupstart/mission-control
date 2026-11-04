@@ -180,6 +180,12 @@ test("quit barrier waits for all bundle executables, including orphan utilities"
   await waitForBundleExit(bundle, f.ops, 1000);
 });
 
+test("quit barrier refuses a partial process snapshot even when parsed rows are outside the bundle", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `1 0 S /sbin/launchd\ninvalid-pid 1 S ${binary}\n`);
+  await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), /incomplete process snapshot/);
+});
+
 test("a bundle-exit timeout names each blocking pid and its cause without printing a command line", async () => {
   const f = fixture();
   const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
@@ -223,7 +229,7 @@ test("many blocking processes are summarized so every named pid and the advice s
   assert.equal(BUNDLE_HOLDERS_NAMED, 3);
   for (const pid of pids.slice(0, 3)) assert.match(error.message, new RegExp(`pid ${pid} \\(Mission Control Helper whose parent already exited is still running\\)`));
   for (const pid of pids.slice(3)) assert.doesNotMatch(error.message, new RegExp(String(pid)));
-  assert.match(error.message, /; and 3 more\. Close them before retrying; no further bundle replacement is safe while they remain\.$/);
+  assert.match(error.message, /; and 3 more; work ownership could not be verified\. Mission Control will reopen the previous build automatically\.$/);
   // The rollback outcome redacts and bounds its cause at 500 characters; nothing may be cut.
   assert.equal(sanitizeDiagnostic(error.message), error.message);
   assert.equal(peak, 3, "holders were described one after another, so each added a command timeout");
@@ -1182,4 +1188,23 @@ test("retry cleanup escalates after its bounded TERM wait only for the same proc
       assert.equal(identityChecks.at(-1), 5000);
     });
   }
+});
+
+test('bundle-exit diagnostics identify the executable and parent without exposing argv', async () => {
+  const bundle = '/fixture/Mission Control.app';
+  const executable = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  const ops = {
+    now: () => 0, sleep: async () => {},
+    run: async () => ({code: 0, stdout: `39896 1 S ${executable}\n`}),
+  } as unknown as MacAppOps;
+  const waiting: string[] = [];
+  await assert.rejects(waitForBundleExit(bundle, ops, 0, (message) => waiting.push(message)), (error: Error) => {
+    assert.match(error.message, /39896/);
+    assert.match(error.message, /Mission Control Helper whose parent already exited/);
+    const message = waiting[0];
+    assert.ok(message);
+    assert.ok(message.includes(executable));
+    assert.match(message, /39896.*parent 1/);
+    return true;
+  });
 });

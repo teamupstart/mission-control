@@ -110,6 +110,7 @@ int main(void) {
     await expect.poll(() => progressWindow(process.pid)?.command, {timeout: 8000})
       .toContain(`Waiting for background work to stop: ${pid} (`);
     const shown = progressWindow(process.pid)!;
+    expect(shown.command).not.toContain('giving up after');
     expect(shown.command).toContain(work);
     expect(shown.command).toContain(executable);
     if (initialPid) expect(shown.pid).not.toBe(initialPid);

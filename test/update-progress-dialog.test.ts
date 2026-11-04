@@ -9,6 +9,19 @@ import { realApplyOperations } from '../scripts/apply-update.mjs';
 import { updateProgressRequestPath } from '../scripts/mac-app-lifecycle.mjs';
 import { showUpdateProgress } from '../scripts/mac-app-lifecycle.mjs';
 
+test('progress has no automatic timeout that could be mistaken for Hide', () => {
+  const child = Object.assign(new EventEmitter(), {kill: () => true});
+  let script = '';
+  const launch = ((_command: string, args: string[]) => {
+    script = args[1]!;
+    return child;
+  }) as unknown as typeof spawn;
+  const close = showUpdateProgress('Installing the update', launch);
+  assert.match(script, /buttons \{"Hide"\}/);
+  assert.doesNotMatch(script, /giving up after/);
+  close();
+});
+
 for (const closeByOwner of [false, true]) test(`progress ${closeByOwner ? 'replacement does not count as Hide' : 'dismissal tells its owner to keep later updates hidden'}`, () => {
   const child = Object.assign(new EventEmitter(), {kill: () => true});
   let hidden = 0;

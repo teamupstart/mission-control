@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { darwinCheckIdentity } from '../scripts/darwin-process-identity.mjs';
 import { captureUpdateProcessOwners, processFingerprint, readCheckProcessOwners } from '../scripts/update-process-owners.mjs';
 import { waitForBundleExit, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
+import { processIdentity } from '../scripts/update-lock.mjs';
 
 const bundle = '/fixture/Mission Control.app';
 const executable = `${bundle}/Contents/Frameworks/Helper.app/Contents/MacOS/Helper`;
@@ -95,12 +96,16 @@ test('desktop PID reuse during the process-table read cannot authorize the repla
   assert.deepEqual(owners, [{pid: 42, fingerprint: processFingerprint(identity), group: true, work}]);
 });
 
-test('an orphaned native utility is attributed to this app profile and cleaned up without a check lease', async (t) => {
+for (const start of ['Tue Nov 3 10:00:00 2026', 'Tue Nov  3 10:00:00 2026']) test(`an orphaned native utility is attributed and cleaned up with macOS start date ${JSON.stringify(start)}`, async (t) => {
   const home = database(t);
   const f = operations();
   const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
   const userDataDirectory = '/fixture/Application Support/Mission Control';
-  const orphanIdentity = `Tue Nov 3 10:00:00 2026 ${helper} --type=utility --utility-sub-type=node.mojom.NodeService --user-data-dir=${userDataDirectory} --shared-files`;
+  const rawIdentity = `${start} ${helper} --type=utility --utility-sub-type=node.mojom.NodeService --user-data-dir=${userDataDirectory} --shared-files`;
+  // realMacAppOps uses this identity reader, which normalizes ps column padding
+  // before ownership capture separates the date from the command.
+  const orphanIdentity = processIdentity(43, () => rawIdentity)!;
+  assert.ok(orphanIdentity.startsWith('Tue Nov 3 10:00:00 2026 '));
   const parent = {pid: 10, identity: `${identity} desktop`};
   let alive = true;
   f.ops.identity = (pid) => pid === 10 ? parent.identity : pid === 43 ? orphanIdentity : null;

@@ -4044,6 +4044,7 @@ export function App(): React.JSX.Element {
                     filters,
                   })}
                   onOpenSession={openSessionOnFleet}
+                  isOverlayOpen={isOverlayOpen}
                   // The worklist's "Open file" on a change that cites one, through the same
                   // reveal the diff's "Open in Files" uses, so one path opens one way.
                   onOpenSessionPath={openSessionPath}

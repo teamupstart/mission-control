@@ -2793,3 +2793,7 @@ review is independent of [GitHub CodeRabbit follow-up](inspector-and-shipping.md
 It does not fetch PR summary comments or cloud pre-merge checks. Enable **Follow up on CodeRabbit
 comments** in Settings > Shipping to have eligible Foreman sessions assess those errors and
 warnings as well as inline review findings; YAML enablement alone does not enable that setting.
+
+On the Workflow runs page, press **Esc** to return to the selected run’s bound session.
+An open overlay closes first. When a text field has focus, the first press leaves the field.
+Runs whose bound session is no longer available stay on the Runs page.

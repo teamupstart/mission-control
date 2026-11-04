@@ -1,6 +1,9 @@
+import { mkdirSync } from "node:fs";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -242,4 +245,106 @@ test("keyboard moves from runs into stages and loads completed stage detail", as
   await expect(worklist.locator(".wf-run-worklist-detail"))
     .not.toContainText("Keyboard first reviewer");
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${first!.id}$`));
+
+  // A field owns the first Escape; leaving it must preserve the selected run.
+  const stateFilter = dashboard.getByRole("combobox", { name: "State", exact: true });
+  await stateFilter.focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(stateFilter).not.toBeFocused();
+  await expect(dashboard).toHaveURL(new RegExp(`#/runs/${first!.id}$`));
+
+  // A Runs confirmation owns the first Escape; it must not navigate behind the dialog.
+  await dashboard.getByRole("button", { name: "Preview this review again" }).click();
+  const overlay = dashboard.getByRole("dialog", { name: "Preview this review again" });
+  await expect(overlay).toBeVisible();
+  await expectContentClearsBorder(overlay);
+  await overlay.getByRole("button", { name: /^Close$/ }).focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(overlay).toBeHidden();
+  expect(new URL(dashboard.url()).hash).toBe(`#/runs/${first!.id}`);
+  await expect(firstRow).toHaveAttribute("aria-current", "true");
+  await expect(dashboard.locator(".wf-run-reader").getByRole("heading", {
+    name: first!.workflowName,
+  })).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("workflow-runs-keyboard");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.screenshot({ path: `${dir}escape-overlay-closed.png` });
+  }
+
+  // Escape returns to the run's bound session, opening the board detail.
+  await dashboard.keyboard.press("Escape");
+  await expect(dashboard).toHaveURL(/#\/fleet$/);
+  await expect(dashboard.locator(".cdetail")).toBeVisible();
+  await expect(dashboard.locator(".cdetail")).toContainText("hold a session for workflow run keyboard navigation");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("workflow-runs-keyboard");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.screenshot({ path: `${dir}escape-session.png` });
+  }
+
 });
+
+for (const state of ["missing binding", "stale detail", "unavailable session"] as const) {
+  test(`Escape stays on Runs with ${state}`, async ({ dashboard, daemon }) => {
+    const sessionId = await dispatch(dashboard, daemon);
+    const personas = await Promise.all(["first", "second"].map(async (name) => (
+      await api<{ id: string }>(daemon, "/api/personas", {
+        name: `Escape ${name} reviewer`,
+        guidanceMarkdown: "E2E_PASS_VERDICT",
+      })
+    ).id));
+    const reviewerIds = [personas[0]!, personas[1]!] as const;
+    const previous = await completedRun(
+      daemon, sessionId, reviewerIds, "Escape previous run", "escape-previous",
+    );
+    await archiveBinding(daemon, previous.bindingId);
+    const selected = await completedRun(
+      daemon, sessionId, reviewerIds, "Escape selected run", "escape-selected",
+    );
+    const path = `/api/workflow-runs/${selected.runId}`;
+    const selectedDetail = await api<{
+      run: { id: string };
+      binding: { sessionId: string | null };
+    }>(daemon, path);
+    // Prove that the fixture starts with a usable session. Only the adverse response
+    // below withholds it or supplies detail for the previously selected run.
+    expect(selectedDetail.binding.sessionId).toBe(sessionId);
+    const response = state === "missing binding"
+      ? { ...selectedDetail, binding: { ...selectedDetail.binding, sessionId: null } }
+      : state === "unavailable session"
+        ? { ...selectedDetail, binding: { ...selectedDetail.binding, sessionId: "removed-session" } }
+        : await api(daemon, `/api/workflow-runs/${previous.runId}`);
+    if (state === "unavailable session") {
+      const live = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+      expect(live.some((session) => session.id === "removed-session")).toBe(false);
+      expect(live.some((session) => session.id === sessionId)).toBe(true);
+    }
+    await dashboard.route(`**${path}`, (route) => route.fulfill({ json: response }));
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${selected.runId}`);
+    const reader = dashboard.locator(".wf-run-reader");
+    await expect(reader.getByRole("heading", {
+      name: state === "stale detail" ? "Escape previous run" : "Escape selected run",
+    })).toBeVisible();
+    const sessionLink = reader.locator(".wf-run-session");
+    if (state === "missing binding") {
+      await expect(sessionLink).toBeDisabled();
+    } else {
+      // A non-null binding still offers the link, even when its session is no longer live.
+      // Escape must also reject stale detail that names an existing session.
+      await expect(sessionLink).toBeEnabled();
+    }
+    await dashboard.getByRole("list", { name: "Workflow runs" })
+      .getByRole("button", { name: /Escape selected run/ }).focus();
+    await dashboard.keyboard.press("Escape");
+    // Read once after the keyboard event has been handled: a retry could hide a wrong
+    // navigation that a later event repairs.
+    expect(new URL(dashboard.url()).hash).toBe(`#/runs/${selected.runId}`);
+    await expect(reader).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("workflow-runs-keyboard");
+      mkdirSync(dir, { recursive: true });
+      await dashboard.screenshot({ path: `${dir}escape-${state.replaceAll(" ", "-")}.png` });
+    }
+  });
+}

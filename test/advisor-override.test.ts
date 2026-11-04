@@ -164,6 +164,10 @@ test("the status line says whether a session will consult an advisor, and why no
   const blocked = advisorStatus("claude", "opus", null, env({ blocked: "CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set in X." }));
   assert.equal(blocked.on, false);
   assert.match(blocked.text, /CLAUDE_CODE_DISABLE_ADVISOR_TOOL/);
+  // Harness default with nothing named still names the switch, not the missing setting.
+  const blockedUnnamed = advisorStatus("claude", null, null, env({ blocked: "CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set in X." }));
+  assert.equal(blockedUnnamed.on, false);
+  assert.equal(blockedUnnamed.text, "Off: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set in X.");
   // The pairing rule: a Sonnet advisor on an Opus session is configured but not consulted.
   assert.match(String(advisorStatus("claude", "sonnet", "claude-opus-5-5", env()).warning), /less capable/);
   assert.equal(advisorStatus("claude", "opus", "claude-opus-4-8", env()).warning, null);
@@ -184,6 +188,9 @@ test("the Claude settings reader reports the inherited advisor and anything that
     assert.match(String(claudeAdvisorEnvironment({ CLAUDE_CODE_USE_BEDROCK: "1" }).blocked), /Amazon Bedrock/);
     assert.equal(claudeAdvisorEnvironment({ CLAUDE_CODE_USE_BEDROCK: "0" }).blocked, null);
     writeFileSync(path, "{ not json");
+    assert.deepEqual(claudeAdvisorEnvironment({}), { inherited: null, source: path, blocked: null });
+    // Truncated after a valid key: the parser recovers a partial object, which must not count.
+    writeFileSync(path, '{ "advisorModel": "opus", "env": {');
     assert.deepEqual(claudeAdvisorEnvironment({}), { inherited: null, source: path, blocked: null });
   } finally {
     if (before === undefined) delete process.env.CLAUDE_SETTINGS_PATH;

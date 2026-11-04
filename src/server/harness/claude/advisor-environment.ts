@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parse } from "jsonc-parser";
+import { parse, type ParseError } from "jsonc-parser";
 import type { AdvisorEnvironment } from "@shared/protocol.ts";
 import { claudeSettingsPath } from "@shared/claude-settings.ts";
 
@@ -45,7 +45,11 @@ function truthy(value: unknown): boolean {
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   try {
-    const parsed: unknown = parse(readFileSync(path, "utf8"), [], { allowTrailingComma: true });
+    // A truncated file can still parse to a partial object that keeps a valid
+    // `advisorModel`, so any recorded error means the file is unreadable, not half-read.
+    const errors: ParseError[] = [];
+    const parsed: unknown = parse(readFileSync(path, "utf8"), errors, { allowTrailingComma: true });
+    if (errors.length > 0) return {};
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};

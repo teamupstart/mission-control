@@ -132,6 +132,11 @@ export function advisorStatus(
   if (choice === null && !environment) {
     return { on: false, advisor: null, text: "Inherits your own settings; still reading them.", warning: null };
   }
+  // Ahead of "names no advisor": the switch would also block an advisor chosen later, so it
+  // is the reason the operator needs to see.
+  if (environment?.blocked) {
+    return { on: false, advisor: null, text: `Off: ${environment.blocked}`, warning: null };
+  }
   if (!named) {
     return {
       on: false,
@@ -141,9 +146,6 @@ export function advisorStatus(
     };
   }
   const label = advisorLabel(named);
-  if (environment?.blocked) {
-    return { on: false, advisor: null, text: `Off: ${environment.blocked}`, warning: null };
-  }
   const text = choice
     ? `On: sessions may consult ${label}.`
     : `On: inherits ${label} from ${environment!.source}.`;

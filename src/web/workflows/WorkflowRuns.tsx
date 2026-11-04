@@ -4809,17 +4809,17 @@ export function WorkflowRuns({
   const tourFilterAllRef = useTourTargetRef<HTMLButtonElement>("workflows:run-filter-all");
   const pendingKeyboardFocus = useRef<string | null>(null);
   const selected = selectedRunId ?? ordered[0]?.id ?? null;
+  const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
   useLibraryEscape({
     isOverlayOpen,
     onLeave: () => {
-      // Match the session link and refuse stale detail while another run loads.
-      if (detail?.run.id === selected && detail.binding.sessionId) {
-        onOpenSession(detail.binding.sessionId);
+      // Refuse stale detail and bindings whose session has left the live list.
+      if (detail?.run.id === selected && evidenceSession) {
+        onOpenSession(evidenceSession.id);
       }
     },
   });
   const selectedSummary = ordered.find((run) => run.id === selected) ?? null;
-  const evidenceSession = sessions.find((session) => session.id === detail?.binding.sessionId) ?? null;
   const evidenceScopeSet = useMemo(
     () => workflowEvidenceScopes(evidenceSession, detail?.summary.repoRoot),
     [evidenceSession, detail?.summary.repoRoot],

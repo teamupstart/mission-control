@@ -265,7 +265,7 @@ test("keyboard moves from runs into stages and loads completed stage detail", as
 
 });
 
-for (const state of ["missing binding", "stale detail"] as const) {
+for (const state of ["missing binding", "stale detail", "unavailable session"] as const) {
   test(`Escape stays on Runs with ${state}`, async ({ dashboard, daemon }) => {
     const sessionId = await dispatch(dashboard, daemon);
     const personas = await Promise.all(["first", "second"].map(async (name) => (
@@ -292,18 +292,26 @@ for (const state of ["missing binding", "stale detail"] as const) {
     expect(selectedDetail.binding.sessionId).toBe(sessionId);
     const response = state === "missing binding"
       ? { ...selectedDetail, binding: { ...selectedDetail.binding, sessionId: null } }
-      : await api(daemon, `/api/workflow-runs/${previous.runId}`);
+      : state === "unavailable session"
+        ? { ...selectedDetail, binding: { ...selectedDetail.binding, sessionId: "removed-session" } }
+        : await api(daemon, `/api/workflow-runs/${previous.runId}`);
+    if (state === "unavailable session") {
+      const live = await api<Array<{ id: string }>>(daemon, "/api/sessions");
+      expect(live.some((session) => session.id === "removed-session")).toBe(false);
+      expect(live.some((session) => session.id === sessionId)).toBe(true);
+    }
     await dashboard.route(`**${path}`, (route) => route.fulfill({ json: response }));
     await dashboard.goto(`${daemon.baseURL}/#/runs/${selected.runId}`);
     const reader = dashboard.locator(".wf-run-reader");
     await expect(reader.getByRole("heading", {
-      name: state === "missing binding" ? "Escape selected run" : "Escape previous run",
+      name: state === "stale detail" ? "Escape previous run" : "Escape selected run",
     })).toBeVisible();
     const sessionLink = reader.locator(".wf-run-session");
     if (state === "missing binding") {
       await expect(sessionLink).toBeDisabled();
     } else {
-      // Stale detail still has a usable session link. Escape must reject its run id.
+      // A non-null binding still offers the link, even when its session is no longer live.
+      // Escape must also reject stale detail that names an existing session.
       await expect(sessionLink).toBeEnabled();
     }
     await dashboard.getByRole("list", { name: "Workflow runs" })

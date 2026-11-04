@@ -70,8 +70,10 @@ async function read(ops, command, args, timeout) {
 
 export function parseAppProcesses(output) {
   return output.split("\n").flatMap((line) => {
+    if (!line.trim()) return [];
     const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
-    return match ? [{pid: Number(match[1]), ppid: Number(match[2]), state: match[3], executable: match[4]}] : [];
+    if (!match) throw new Error("Could not inspect macOS bundle processes: incomplete process snapshot.");
+    return [{pid: Number(match[1]), ppid: Number(match[2]), state: match[3], executable: match[4]}];
   });
 }
 

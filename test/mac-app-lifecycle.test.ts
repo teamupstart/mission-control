@@ -180,6 +180,12 @@ test("quit barrier waits for all bundle executables, including orphan utilities"
   await waitForBundleExit(bundle, f.ops, 1000);
 });
 
+test("quit barrier refuses a partial process snapshot even when parsed rows are outside the bundle", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `1 0 S /sbin/launchd\ninvalid-pid 1 S ${binary}\n`);
+  await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), /incomplete process snapshot/);
+});
+
 test("a bundle-exit timeout names each blocking pid and its cause without printing a command line", async () => {
   const f = fixture();
   const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;

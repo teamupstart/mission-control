@@ -562,6 +562,8 @@ verified remaining owners, escalating stubborn processes without asking the user
 Unverified processes are never signalled. If a process still prevents replacement, its ownership
 diagnostic is preserved in both the outcome and log. A failure before replacement reopens the
 untouched previous app without repeating the failed process wait during rollback.
+An incomplete process-table snapshot fails inspection; parsed rows alone cannot prove that the
+old bundle is clear when another process row is malformed.
 
 The shared bundle wait also opens blocker-specific progress for legacy updates without a
 migration handoff, and closes that wait's dialog on completion or failure. Transaction updates

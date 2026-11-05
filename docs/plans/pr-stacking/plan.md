@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Nothing here is implemented.
 
 ## The short answer
 
@@ -241,7 +241,7 @@ Phase 1 owns this.
 | Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. A child replacement inherits the previous child row's lineage (current parent, stack base and history), keeps its default base, and is released only when the closed-parent branch of the release check passes. *Wait for a replacement* is offered only while the child pull request is still open. With it, a replacement **parent** pull request found by the existing branch discovery on the parent task's same episode takes over the lineage: it becomes the current parent (the old one is kept in the lineage history), the child is retargeted to its branch and caught up, and the child is released by the merged-parent branch once the replacement merges and the child restacks |
 | Parent task rescheduled or cancelled | Same hold. The existing stopped-dependency warning button names the stack |
 | GitHub closed the child because its base branch was deleted before a retarget | A closed pull request cannot be retargeted, so recovery is always a new child pull request, which inherits the closed one's lineage. GitHub's reason is shown. If the current parent **merged**, the action is *Reopen against main*: prompt the session to open a new pull request from the same child branch against the default branch. The restack then proceeds as in §6, and the merged-parent branch of the release check releases it. If the current parent **closed** without merging, the only action is *Move onto main* (above). *Wait for a replacement* is not offered, because there is no open child to retarget |
-| Child's session is gone when a restack is needed | No restart. The merge queue says *Restack needed: no session*, and the task's **Resume** offers it |
+| Child's session is gone when a restack is needed | No restart. The merge queue says *Restack needed: no session*. When the operator resumes the task with the existing **Resume** control, the pending catch-up or restack prompt is delivered to the resumed session on its first idle tick, through the same claimed path |
 | Edge flipped from stack to merge, or the Shipping default switched off, after the child started | The edge mode and the default only decide whether a dependent *starts* early. A child already cut on the parent keeps its lineage, its hold and the full lifecycle (catch-up, retarget, restack, broken-stack handling) until it is released |
 
 ## Settings surface
@@ -263,8 +263,7 @@ cover the exceptions.
 
 In the dispatch form and backlog editor, each same-repository dependency chip gains a
 small toggle: **Stack** / **After merge**. It shows the inherited default until changed.
-The board card and Line row of a stacked task show *Stacked on #A*. The pull request link
-in the session header shows its base.
+The board card and Line row of a stacked task show *Stacked on #A*.
 
 ## Changes by area
 
@@ -291,7 +290,8 @@ in the session header shows its base.
   closing, a replacement parent taking over the lineage, a replacement child inheriting
   the current parent and keeping its default base, the PR instruction naming the expected
   base, a child closed by base deletion, primary-repository-only lineage for a
-  multi-repository task, the Persona diff against the
+  multi-repository task, readiness stamped only from the primary-repository pull request,
+  a pending restack delivered after *Resume*, the Persona diff against the
   stacked base, retarget idempotence, Shipping config defaults over an
   old blob, edge `mode` defaulting on stored rows.
 - Git-level fixture test: cut from parent branch, parent squash-merged, merge-based restack

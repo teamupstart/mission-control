@@ -70,8 +70,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    edges unchanged. Add a `stacked` flag to the readiness result if the board needs it, not
    a new `BlockerState`, so every exhaustive switch keeps compiling.
 4. **Readiness stamping** (`src/server/tasks.ts`, next to `satisfyDeclaredEdgesTo`). When
-   a prerequisite's session goes idle with an empty queue on its current episode, and that
-   episode's observed PR is open and not a draft, write `stackReadyAt`, `stackBaseBranch`
+   a prerequisite's session goes idle with an empty queue on its current episode, select
+   that episode's PR in the prerequisite's **primary** repository: match the PR's
+   owner/repo against the primary repository, and ignore PRs in secondary repositories. If
+   that PR is open and not a draft, write `stackReadyAt`, `stackBaseBranch`
    (the PR head ref), `stackBaseSha` and `stackPrUrl` on every dependent edge whose
    effective mode is stack. Reuse the idle, queue and episode checks from
    `settleIfEpisodeFinished`. Clear the stamp on edges whose dependent has not started yet
@@ -209,6 +211,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
     prerequisites, depth cap, a multi-repository task, plan edges excluded.
   - `declaredBlockersIn` with stamped and unstamped stack edges.
   - Stamping and clearing transitions.
+  - A prerequisite with PRs in its primary and a secondary repository stamps the
+    primary-repository PR's branch, SHA and URL. A prerequisite whose only open PR is in a
+    secondary repository stamps nothing and does not release the dependent.
   - Pinned dispatch, plus refusal when the fetch fails.
   - Base correction on adoption:
     - a PR opened against the wrong base while its parent is open is retargeted to the
@@ -339,3 +344,6 @@ change `stack_base_sha`.
   - Steps 2, 5 and 7 limit stacking and lineage to the primary repository, and key
     inheritance by task plus repository.
   - Tests cover the instruction for a replacement child and the multi-repository scope.
+- Repair round 5: step 4 now stamps readiness only from the prerequisite's
+  primary-repository PR, with a test that a secondary-repository PR cannot supply the
+  stack base or release the dependent.

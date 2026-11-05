@@ -96,12 +96,17 @@ must not become a second unleased autonomous writer.
    Each gets its own claim key per PR, head and state, following `claimCodeRabbit`, and the
    same guards: a single live owning session, idle, no queued work, no active workflow, no
    restart of an absent session. Claim before send, release only on confirmed
-   non-delivery. When Foreman is off or not invited, nothing is sent. The merge queue shows
+   non-delivery. When no live session owns the child, nothing is sent and the merge queue
+   shows *Restack needed: no session*. The claim key does not include the session, so
+   when the operator resumes the task with the existing **Resume** control, the pending
+   prompt is delivered once to the resumed session on its first idle tick. When Foreman is
+   off or not invited, nothing is sent. The merge queue shows
    *Restack needed: Foreman is off* with a **Send restack prompt** button that uses the
    same inject route and guard.
 5. **Broken stacks** (server plus `BacklogColumn.tsx`, the Line row,
    `ShippingSettingsPanel.tsx`). The child is already held by `stacked-base` or
-   `stack-hold`. `mergeBlock` carries *Stack broken: #A closed*. Offer two actions:
+   `stack-hold`. `mergeBlock` carries *Stack broken: #A closed*. Offer these actions, by
+   state:
    - **Move onto main**: prompt the session to cherry-pick only its own commits onto a new
      branch cut from the default branch, open a replacement PR and close the old one.
      Phase 1's adoption makes the replacement inherit the previous child row's current
@@ -170,6 +175,9 @@ must not become a second unleased autonomous writer.
   - The claim lifecycle: no duplicate prompt across ticks, a restart or a push; release
     on confirmed non-delivery.
   - Guards: busy session, queued work, absent session, active workflow, Foreman off.
+  - *Resume* recovery: with no session the row reads *Restack needed: no session* and
+    nothing is sent. After the task is resumed, the pending prompt is delivered exactly
+    once on the resumed session's first idle tick.
   - Prompts still go out for an already-stacked child after the Shipping default is
     switched off.
   - Broken-stack holds.
@@ -240,6 +248,9 @@ children into non-default bases or add a daemon-side writer that types into pane
     merged.
   - The replacement-parent transition now requires an open child PR.
   - Everything here inherits Phase 1's primary-repository scope.
+- Repair round 5:
+  - Step 4 defines the *Resume* recovery for a child with no session, with a test.
+  - Step 5's wording now says actions are offered by state.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base
     automatically.
 - Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.

@@ -100,8 +100,10 @@ Phase 1 owns these names and Phase 2 must not rename them:
   - `inspector_prs.stack_lineage_history`: nullable JSON of `{from, to, at}` entries.
     Phase 1 creates the column and copies it on inheritance. Only Phase 2's
     replacement-parent transition appends to it.
-- Primary-repository scope (Phase 1): stacking, the dispatch pin, the `Task.stack*` fields
-  and PR-row lineage cover the task's primary repository only. Secondary repositories
+- Primary-repository scope (Phase 1): stacking, readiness stamping, the dispatch pin, the
+  `Task.stack*` fields and PR-row lineage cover the task's primary repository only.
+  Readiness is stamped only from the prerequisite episode's open, non-draft PR in that
+  primary repository. Secondary repositories
   start from their default branch, and their PRs get no lineage.
 - Lineage seeding and inheritance (Phase 1): the task's dispatch-time fields seed only
   the task's first child PR row in its primary repository. Every later child PR of the
@@ -201,3 +203,12 @@ behavior.
     could not support. Stacking is now scoped to the primary repository, matching
     `resolveTaskBases`, which pins only the primary repository. Lineage lookup is keyed
     by task plus repository.
+- Repair round 5 (same run):
+  - Readiness stamping now selects the prerequisite's PR in the shared primary
+    repository. A secondary-repository PR can neither supply the stack base nor release
+    the dependent (Phase 1 step 4, with a test).
+  - The root plan's session-header base display had no owner. It was removed; the
+    backlog card and Line row already show *Stacked on #N*.
+  - The *Resume* recovery for a child with no session is now defined in Phase 2 step 4,
+    with a test: the pending prompt is delivered to the resumed session on its first
+    idle tick.

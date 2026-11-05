@@ -249,9 +249,11 @@ for (const reopenDuringUpdate of [false, true]) test(
     writeFileSync(join(evidence, `${label}-journey.json`), JSON.stringify(summary, null, 2));
     console.log(JSON.stringify(summary));
     expect(outcome.result).toBe('success');
-    if (progressWindow) {
+    if (reopenDuringUpdate) {
+      expect(reopenedProgressPid, 'reopen captured a native progress process').toBeGreaterThan(1);
+      expect(progressHelperPid, 'reopen captured the detached update helper').toBeGreaterThan(1);
       await expect.poll(() => processIsAlive(reopenedProgressPid)).toBe(false);
-      await expect.poll(() => progressWindow(progressHelperPid)).toBeNull();
+      await expect.poll(() => progressWindow!(progressHelperPid)).toBeNull();
       await expect.poll(() => processIsAlive(progressHelperPid)).toBe(false);
       console.log('Verified: successful installation closed the reopened native progress process and its helper.');
     }

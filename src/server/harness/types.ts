@@ -1310,4 +1310,11 @@ interface HarnessDaemonSlots {
    * cannot reopen one. See `ResumeSpec` - notably why this is NOT part of `sdk`.
    */
   resume: ResumeSpec | null;
+  /**
+   * What this harness's own configuration says about its advisor - what Inherit resolves to,
+   * and anything that turns the advisor off for every session - read fresh on each call so
+   * the Harnesses panel describes the settings as they are now. Non-null exactly when the
+   * shared capability declares `advisor`.
+   */
+  advisorEnvironment: (() => import("@shared/protocol.ts").AdvisorEnvironment) | null;
 }

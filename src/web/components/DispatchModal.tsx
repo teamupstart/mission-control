@@ -10,7 +10,6 @@ import {
   type AgentType,
   type TaskPriority,
   type ThinkingLevel,
-  type AdvisorChoice,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import {
@@ -21,6 +20,8 @@ import {
   taskKindModel,
 } from "@shared/kind-defaults.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { modelLabel } from "@shared/model.ts";
+import { ADVISOR_CHOICE_LABELS, resolveLaunchAdvisor, type AdvisorResolution } from "@shared/advisor.ts";
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
   type HarnessesConfig,
@@ -423,14 +424,55 @@ export function defaultEffortOptionLabel(
  * place where the app describes the same choice in different words.
  */
 const AGENT_FIELD_TIP =
-  "Which harness this task is dispatched to - switching resets the model, effort and advisor overrides";
+  "Which harness this task is dispatched to - switching resets the model and effort overrides";
+/**
+ * Which advisor this launch will get, and where that came from - read-only, because the
+ * advisor is chosen per model on Settings -> Harnesses. The one action is for a pin a task
+ * was saved with before that move: "Use Settings" clears it on the next save.
+ */
+function DispatchAdvisorLine({
+  agent,
+  resolution,
+  model,
+  className,
+  onUseSettings,
+}: {
+  agent: AgentType;
+  resolution: AdvisorResolution;
+  model: string | null;
+  className: string;
+  onUseSettings: () => void;
+}): React.JSX.Element {
+  const value = resolution.choice ? ADVISOR_CHOICE_LABELS[resolution.choice] : "Inherit";
+  const settingsLink = (
+    <Tooltip label="Open Settings → Harnesses, where the advisor is chosen per model">
+      <a href="#/settings/harnesses">Settings → Harnesses</a>
+    </Tooltip>
+  );
+  return (
+    <p className={`dispatch-advisor-line${className}`} role="note" aria-label="Advisor for this launch">
+      <span className="dispatch-advisor-label">Advisor</span>
+      <span className="dispatch-advisor-value">{value}</span>
+      {resolution.source === "task" ? (
+        <>
+          <span>saved on this task before the advisor moved to {settingsLink}.</span>
+          <Tooltip label="Clear this task's advisor so Settings → Harnesses chooses it when it launches">
+            <button type="button" className="btn btn-ghost dispatch-advisor-clear" onClick={onUseSettings}>
+              Use Settings
+            </button>
+          </Tooltip>
+        </>
+      ) : resolution.source === "override" ? (
+        <span>for {modelLabel(model) ?? model}, from {settingsLink}</span>
+      ) : resolution.choice ? (
+        <span>from {settingsLink}</span>
+      ) : (
+        <span>inherits {AGENT_IDENTITY[agent].label}&apos;s own settings. Change it on {settingsLink}.</span>
+      )}
+    </p>
+  );
+}
 
-/** What each advisor pin reads as on the form. Inherit is the empty option, not a value. */
-const ADVISOR_OPTION_LABELS: Record<AdvisorChoice, string> = {
-  opus: "Opus",
-  sonnet: "Sonnet",
-  off: "Off",
-};
 const KIND_FIELD_TIP =
   "What this task is asked to produce - a kind with no diff also clears the after-work Workflow";
 const AFTER_WORK_FIELD_TIP =
@@ -2384,8 +2426,6 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
-          // Inherit is omitted, never sent as null: a create has no stored pin to clear.
-          advisorModel: submitted.advisorModel || undefined,
           workflowId: submitted.workflowId,
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
@@ -2844,7 +2884,7 @@ function DispatchModal({
             named model instead of "Default"), so no per-field "overriding" hint is needed. */}
         <div className="field dispatch-crew-field">
           <span className={`field-label${guidedDim}`}>Crew</span>
-          <div className={`dispatch-crew${advisorSpec ? " dispatch-crew--advisor" : ""}`}>
+          <div className="dispatch-crew">
             {/* The cell exists so the guided pass's list can hang off the field WITHOUT
                 being inside its `<label>`. A `<label>` names the control it wraps from its
                 own text content, so a list rendered in there would rewrite the Agent
@@ -2989,37 +3029,27 @@ function DispatchModal({
                 </select>
               </Tooltip>
             </label>
-            {/* Only for a harness that declares an advisor, read off the capability rather
-                than the agent's name. Inherit renders nothing at launch, so the operator's
-                own Claude settings decide; a pin rides the session-scoped flag layer and
-                never writes their settings files. */}
-            {advisorSpec && (
-              <label className={`field${guidedDim}`}>
-                <span className="field-label">Advisor</span>
-                <Tooltip label={managedPipeline
-                  ? "The Engineer host uses the operator's Claude settings; Conductor owns downstream advisor selection"
-                  : "Pin the stronger model this task's agent may consult, for this launch only, without changing your Claude settings"}>
-                  <select
-                    className="field-input"
-                    value={draft.advisorModel}
-                    disabled={!usesHarness}
-                    onChange={(e) => update({ advisorModel: e.target.value as AdvisorChoice | "" })}
-                    aria-label={`Advisor for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
-                  >
-                    <option value="">Inherit from Claude settings</option>
-                    {advisorSpec.values.map((choice) => (
-                      <option key={choice} value={choice}>
-                        {ADVISOR_OPTION_LABELS[choice]}
-                      </option>
-                    ))}
-                  </select>
-                </Tooltip>
-              </label>
-            )}
           </div>
+          {/* The advisor is a harness setting chosen per model, not a task field, so the form
+              only says which one this launch will get - resolved against the model the
+              launch will actually run on, the same rule the daemon applies. */}
+          {usesHarness && advisorSpec && defaults && (
+            <DispatchAdvisorLine
+              agent={draft.agent}
+              resolution={resolveLaunchAdvisor(
+                defaults,
+                draft.agent,
+                launchModelFor(defaults, draft.agent, draft.kind, draft.model || null, null),
+                draft.advisorModel || null,
+              )}
+              model={launchModelFor(defaults, draft.agent, draft.kind, draft.model || null, null)}
+              className={guidedDim}
+              onUseSettings={() => update({ advisorModel: "" })}
+            />
+          )}
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
-              ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model, effort and advisor overrides."
+              ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model and effort overrides."
               : draft.kind === "pipeline"
                 ? <PipelineDispatchConstraint runtime={pipelineLaunchRuntime} />
                 : kindBehavior.constraint}

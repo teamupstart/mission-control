@@ -344,30 +344,30 @@ test("the daemon independently rejects malformed configuration and inherited uns
   }
 });
 
-test("an advisor pin with the agent omitted is refused once the kind resolves to a harness without one", async (t) => {
-  // The schema cannot judge this pair - the harness is only known after the kind default
-  // resolves - so the refusal has to come from `TaskManager.create` and reach the caller as
-  // a 400 naming the pin and the harness, with nothing written.
+test("a task can no longer be created with an advisor pin: MCP refuses the key, the dashboard drops it", async (t) => {
+  // The advisor moved to Settings -> Harnesses. The MCP create schema is strict, so an agent
+  // still sending a pin is told; the dashboard's dispatch schema strips it like any unknown
+  // key, and the task is stored with no pin either way.
   const f = await fixture(t);
-  setHarnessesConfig({ kindDefaults: { ship: { agent: "codex" } } });
   const count = f.registry.snapshot().tasks.length;
   const mcp = await f.app.request("/mcp/v3/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
-    body: JSON.stringify({ env: {}, cwd: repoA, repoRoot: repoA, title: "Advisor on Codex", intent: "No advisor here",
+    body: JSON.stringify({ env: {}, cwd: repoA, repoRoot: repoA, title: "Advisor pin", intent: "No pin here",
       workflowId: null, advisorModel: "opus" }),
   });
   assert.equal(mcp.status, 400);
-  assert.equal(((await mcp.json()) as { error: string }).error, "an advisor override (opus) is not supported by codex");
+  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key\(s\) in object: 'advisorModel'/);
+  assert.equal(f.registry.snapshot().tasks.length, count);
   const dashboard = await f.app.request("/api/tasks", {
     method: "POST",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
-    body: JSON.stringify({ repoRoot: repoA, title: "Advisor on Codex", intent: "No advisor here",
+    body: JSON.stringify({ repoRoot: repoA, title: "Advisor pin", intent: "No pin here",
       workflowId: null, backlog: true, advisorModel: "off" }),
   });
-  assert.equal(dashboard.status, 400);
-  assert.equal(((await dashboard.json()) as { error: string }).error, "an advisor override (off) is not supported by codex");
-  assert.equal(f.registry.snapshot().tasks.length, count);
+  assert.equal(dashboard.status, 200);
+  const created = (await dashboard.json()) as { id: string; advisorModel: string | null };
+  assert.equal(created.advisorModel, null);
 });
 
 test("configured MCP tasks combine direct prerequisites and the calling session", async (t) => {

@@ -1199,7 +1199,8 @@ a Terminal pane starts the `claude` CLI with no settings-source restriction, and
 session loads the user, project and local layers. So when `advisorModel` is set in
 `~/.claude/settings.json`, or in a project's `.claude/settings.json` or
 `.claude/settings.local.json`, every eligible Claude session Mission Control dispatches runs with
-that advisor. Codex and Pi have no advisor.
+that advisor, unless [Settings → Harnesses](#choosing-the-advisor-on-settings--harnesses) chooses
+another for the session's model. Codex and Pi have no advisor.
 
 **Eligibility is the CLI's decision, not Mission Control's.** The advisor works only:
 
@@ -1243,14 +1244,28 @@ usage ledger carry the advisor as its own model row next to the executor's. That
 capture reported, not a guarantee of how every advisor call is billed; a later Claude Code
 version may report it differently.
 
-#### Per-dispatch override
+#### Choosing the advisor on Settings → Harnesses
 
-The dispatch form's **Advisor** select pins one Claude task's advisor without changing any other
-session. It appears beside Effort only for a harness that declares an advisor, which today is
-Claude Code alone; Codex and Pi do not show it. The choices are:
+The advisor is a harness setting, not a task field. The **Claude Code** card on
+**Settings → Harnesses** carries it, below Model and Effort. Codex and Pi have no advisor, so
+their cards do not show it. It has two parts:
 
-- **Inherit from Claude settings**, the default. Mission Control renders nothing, so the session
-  gets whatever your Claude Code settings name, exactly as it did before the select existed.
+- **Advisor**, the default for every model. **Harness default** ships selected: Mission Control
+  renders nothing, so the session gets whatever your Claude Code settings name, exactly as it
+  did before the setting existed. **Opus** and **Sonnet** pin that advisor, and **Off** turns
+  the advisor off.
+- **Advisor Overrides**, one row per model that should get something else. **+ Add model
+  override** adds a row for the first model without one, starting on Opus, or on Off when Opus
+  is less capable than that model. Each row picks the model and its advisor, and **×** removes
+  it, so that model goes back to the default.
+
+At launch Mission Control resolves the model the session will run on, through the same ladder
+as the Model field (the task's pin, then the kind's row on **Settings → Models**, then the
+harness default), and uses that model's override when it has one and the default otherwise. A
+launch that passes no `--model` uses the default. The setting is read when the task launches,
+so a change reaches tasks already in the backlog. A choice reaches the launch the same way on
+both runtimes:
+
 - **Opus** or **Sonnet**. The launch carries `advisorModel` in Claude Code's session-scoped flag
   layer: `--settings '{"advisorModel":"opus"}'` on a Terminal launch, and `Options.settings` on an
   Agent SDK launch. That layer sits above your user, project and local settings for this session
@@ -1260,23 +1275,49 @@ Claude Code alone; Codex and Pi do not show it. The choices are:
   to apply even when your settings name one. The verified case is the variable beside an Opus pin
   on the same launch, described below.
 
-The pin is stored on the task, so reopening a backlog task shows it and a save can change or
-clear it. Switching the task's agent clears it, along with the model and effort overrides. It
-also survives a resume: an Agent SDK session restarted by the daemon relaunches with the pin it
-started with, and continuing a conversation in a terminal renders the task's pin again.
+**Whether the advisor will be used.** Under the Advisor select a status line says whether a
+dispatched session will be offered an advisor. On Harness default it reads your user settings
+file (`~/.claude/settings.json`, or the file `CLAUDE_CONFIG_DIR` or `CLAUDE_SETTINGS_PATH`
+names) and reports the advisor it names, for example "On: inherits Opus from
+~/.claude/settings.json", or "Off" when it names none. It reports Off whatever is chosen when
+`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in that file's `env` block or in Mission Control's own
+environment, or when Claude Code is set to use Amazon Bedrock or Google Vertex AI. It is re-read
+when the window regains focus. It cannot see two things: a project's own `.claude/settings.json`,
+which differs per checkout, and whether your account has the advisor feature, which is a
+server-side flag. "On" therefore means configured and not ruled out.
 
-Mission Control does not check whether the pairing makes sense or whether your account has the
-advisor feature; it passes the pin and leaves both to the CLI, under the eligibility rules listed
-above. What was verified, on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched
-with an Opus pin marks Opus as the current choice in `/advisor`, where the same launch without the
-pin marks "No advisor", and that the Off variable removes the `/advisor` command even with an Opus
-pin on the same launch.
+When an advisor is less capable than the model it would advise (a Sonnet advisor for an Opus
+session, or Opus for Fable), the card warns that Claude Code will not consult it on the main
+conversation. Mission Control still passes the choice and leaves the pairing to the CLI.
 
-How the CLI treats a pin that breaks the pairing rule (a Sonnet advisor on an Opus session, for
-example) or a pin on an account without the advisor feature is **inferred, not verified**: no
-such launch has been observed, so the session may ignore the pin, or the CLI may refuse to start.
-If the CLI refuses a launch outright, the refusal is reported as a launch failure. Fable is not
-offered as an advisor, and an advisor cannot be changed on a session that is already running.
+**On the dispatch form.** The Crew row has no Advisor field. Under it, a read-only line names the
+advisor this launch will get and where it came from, for example "Advisor Off for Opus 5.5, from
+Settings → Harnesses". It follows the Model field as you change it.
+
+**Tasks saved with an advisor.** Before the advisor moved to Settings, a task could pin its own.
+Such a pin still applies to that task at launch, ahead of the setting, so nothing already in the
+backlog changes on upgrade. Its dispatch form shows "saved on this task before the advisor moved
+to Settings → Harnesses" with a **Use Settings** button; saving after that clears the pin.
+Switching the task's agent also clears it. A new task cannot pin one: `POST /api/tasks` ignores
+an `advisorModel` field, the MCP `create_task` tool refuses it, and `update_task` and
+`POST /api/tasks/:id/update` accept only `advisorModel: null`, which clears an old pin.
+
+**Resume.** An Agent SDK session restarted by the daemon relaunches with the advisor it started
+with. Continuing a conversation in a terminal resolves the advisor again, from the setting in
+force for the model the session is running on.
+
+Mission Control does not check whether your account has the advisor feature; it passes the
+choice and leaves that to the CLI, under the eligibility rules listed above. What was verified,
+on Claude Code 2.1.317 on 2026-11-03, is that a Sonnet session launched with an Opus pin marks
+Opus as the current choice in `/advisor`, where the same launch without the pin marks "No
+advisor", and that the Off variable removes the `/advisor` command even with an Opus pin on the
+same launch.
+
+How the CLI treats a pin that breaks the pairing rule or a pin on an account without the advisor
+feature is **inferred, not verified**: no such launch has been observed, so the session may
+ignore the pin, or the CLI may refuse to start. If the CLI refuses a launch outright, the refusal
+is reported as a launch failure. Fable is not offered as an advisor, and an advisor cannot be
+changed on a session that is already running.
 
 ### Session runtime
 

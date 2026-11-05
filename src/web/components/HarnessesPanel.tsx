@@ -1,9 +1,26 @@
+import { useEffect, useState } from "react";
 import {
   AGENT_TYPES,
+  type AdvisorChoice,
   type AgentType,
   type SessionRuntime,
   type ThinkingLevel,
 } from "@shared/types.ts";
+import {
+  ADVISOR_CHOICE_LABELS,
+  advisorOverrideKey,
+  advisorStatus,
+  resolveLaunchAdvisor,
+} from "@shared/advisor.ts";
+import type {
+  AdvisorEnvironment,
+  HarnessAdvisorDefaults,
+  HarnessAdvisorEnvironments,
+  HarnessesConfigPatch,
+} from "@shared/protocol.ts";
+import { emptyHarnessAdvisorDefaults } from "@shared/protocol.ts";
+import { modelLabel } from "@shared/model.ts";
+import { fetchHarnessAdvisorEnvironments } from "../lib/api.ts";
 import { AGENT_IDENTITY, agentList } from "@shared/agent.ts";
 import {
   autoModeAgents,
@@ -130,6 +147,198 @@ function CardBadge({
   );
 }
 
+/** What the advisor rows show before the config has loaded: Inherit, no overrides. */
+const EMPTY_ADVISOR = emptyHarnessAdvisorDefaults();
+
+/** One harness's advisor patch, as the card sends it. */
+type AdvisorPatch = NonNullable<NonNullable<HarnessesConfigPatch["advisor"]>[AgentType]>;
+
+/**
+ * The advisor rows of a harness card that declares one: a default for every launch model,
+ * the per-model overrides beneath it, and a status line saying whether a dispatched session
+ * will actually consult an advisor - which, on Harness default, depends on the harness's
+ * own settings, so that is what the line reads.
+ *
+ * Rendered as two pieces because the default sits in the card's label/control grid beside
+ * Model and Effort, while the overrides are a list of their own under it.
+ */
+function AdvisorDefaultField({
+  agent,
+  label,
+  model,
+  advisor,
+  environment,
+  disabled,
+  onPatch,
+}: {
+  agent: AgentType;
+  label: string;
+  model: string | null;
+  advisor: HarnessAdvisorDefaults;
+  environment: AdvisorEnvironment | null;
+  disabled: boolean;
+  onPatch: (patch: AdvisorPatch) => void;
+}): React.JSX.Element {
+  const spec = capabilitiesFor(agent).advisor!;
+  const id = `harness-advisor-${agent}`;
+  // Narrowed like every stored advisor value: one this build cannot pin reads as the default.
+  const choice = spec.values.find((value) => value === advisor.default) ?? null;
+  // The status describes what a launch on the card's default model actually gets, through
+  // the same resolver the dispatcher uses - so when that model has an override, the override
+  // is what the line reports, not the default beside it.
+  const launch = resolveLaunchAdvisor({ advisor: { ...EMPTY_ADVISOR, [agent]: advisor } }, agent, model);
+  const resolved = advisorStatus(agent, launch.choice, model, environment);
+  const status = launch.source === "override" && model
+    ? { ...resolved, text: `${modelLabel(model) ?? model} uses its override. ${resolved.text}` }
+    : resolved;
+  return (
+    <>
+      <label className="harness-card-field-label harness-card-field-label--top" htmlFor={id}>
+        Advisor
+      </label>
+      <div className="harness-advisor-default">
+        <Tooltip label={`Which stronger model every dispatched ${label} session may consult, unless its model has an override below`}>
+          <select
+            id={id}
+            className="harnesses-select"
+            value={choice ?? ""}
+            disabled={disabled}
+            onChange={(e) => onPatch({ default: (e.target.value || null) as AdvisorChoice | null })}
+            aria-label={`Default advisor for dispatched ${label} sessions`}
+          >
+            <option value="">Harness default</option>
+            {spec.values.map((value) => (
+              <option key={value} value={value}>
+                {ADVISOR_CHOICE_LABELS[value]}
+              </option>
+            ))}
+          </select>
+        </Tooltip>
+        <span
+          className={`harness-advisor-status${status.on ? " harness-advisor-status--on" : ""}`}
+          role="status"
+          aria-label={`${label} advisor status`}
+        >
+          {status.text}
+        </span>
+        {status.warning && <span className="harness-advisor-warning">{status.warning}</span>}
+      </div>
+    </>
+  );
+}
+
+function AdvisorOverrides({
+  agent,
+  label,
+  advisor,
+  disabled,
+  onPatch,
+}: {
+  agent: AgentType;
+  label: string;
+  advisor: HarnessAdvisorDefaults;
+  disabled: boolean;
+  onPatch: (patch: AdvisorPatch) => void;
+}): React.JSX.Element {
+  const { resolve: resolveModels } = useHarnessModelCatalogs();
+  const spec = capabilitiesFor(agent).advisor!;
+  const rows = Object.entries(advisor.overrides).filter(
+    (entry): entry is [string, AdvisorChoice] => spec.values.includes(entry[1] as AdvisorChoice),
+  );
+  const used = new Set(rows.map(([model]) => model));
+  const catalog = resolveModels(agent, null).choices;
+  const unused = catalog.filter((choice) => !used.has(advisorOverrideKey(choice.id)));
+  /** A new row's choice: Opus, unless Opus would be weaker than that model. */
+  const firstChoice = (model: string): AdvisorChoice =>
+    spec.values.find((value) => value !== "off" && !spec.weakerThan(value, model)) ?? "off";
+  return (
+    <div className="harness-advisor-overrides" role="group" aria-label={`${label} advisor overrides`}>
+      <div className="harness-advisor-subhead">Advisor Overrides</div>
+      {rows.length === 0 && (
+        <p className="harness-advisor-empty">Every model uses the advisor above.</p>
+      )}
+      {rows.map(([model, choice]) => {
+        const name = modelLabel(model) ?? model;
+        const options = resolveModels(agent, model).choices;
+        const weaker = choice !== "off" && spec.weakerThan(choice, model);
+        return (
+          <div key={model} className="harness-advisor-row">
+            <Tooltip label={`Which ${label} model this override applies to`}>
+              <select
+                className="harnesses-select"
+                value={model}
+                disabled={disabled}
+                aria-label={`Model for the ${name} advisor override`}
+                onChange={(e) => onPatch({ overrides: { [model]: null, [e.target.value]: choice } })}
+              >
+                {options.map((option) => (
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={option.id !== model && used.has(advisorOverrideKey(option.id))}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
+            <span className="harness-advisor-arrow" aria-hidden>
+              →
+            </span>
+            <Tooltip label={`Which advisor dispatched ${name} sessions may consult`}>
+              <select
+                className="harnesses-select"
+                value={choice}
+                disabled={disabled}
+                aria-label={`Advisor for ${name} sessions`}
+                onChange={(e) => onPatch({ overrides: { [model]: e.target.value as AdvisorChoice } })}
+              >
+                {spec.values.map((value) => (
+                  <option key={value} value={value}>
+                    {ADVISOR_CHOICE_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </Tooltip>
+            <Tooltip label={`Remove the ${name} override, so ${name} sessions use the advisor above`}>
+              <button
+                type="button"
+                className="harness-advisor-remove"
+                disabled={disabled}
+                aria-label={`Remove the ${name} advisor override`}
+                onClick={() => onPatch({ overrides: { [model]: null } })}
+              >
+                ×
+              </button>
+            </Tooltip>
+            {weaker && (
+              <span className="harness-advisor-warning harness-advisor-row-warning">
+                {ADVISOR_CHOICE_LABELS[choice]} is less capable than {name}, so {label} will not
+                consult it on the main conversation.
+              </span>
+            )}
+          </div>
+        );
+      })}
+      {unused.length > 0 && (
+        <Tooltip label={`Give one ${label} model a different advisor from the one above`}>
+          <button
+            type="button"
+            className="harness-advisor-add"
+            disabled={disabled}
+            onClick={() => {
+              const model = unused[0]!.id;
+              onPatch({ overrides: { [model]: firstChoice(model) } });
+            }}
+          >
+            + Add model override
+          </button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
 /**
  * One harness's card: its default model and effort together, and a sentence composed
  * from the current values restating what a dispatch will do.
@@ -153,11 +362,17 @@ function HarnessCard({
   onRuntime,
   onTerminalBackend,
   piSdkReady,
+  advisor,
+  advisorEnvironment,
+  onAdvisor,
 }: {
   agent: AgentType;
   label: string;
   model: string | null;
   effort: ThinkingLevel | null;
+  advisor: HarnessAdvisorDefaults;
+  advisorEnvironment: AdvisorEnvironment | null;
+  onAdvisor: (patch: AdvisorPatch) => void;
   runtime: string | null;
   terminalBackend: string | null;
   autoMode: boolean;
@@ -182,6 +397,7 @@ function HarnessCard({
   const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
   const piSdkBlocked = agent === "pi" && !piSdkReady;
+  const hasAdvisor = capabilitiesFor(agent).advisor !== null;
   const runtimeNote =
     runtime === null
       ? `Loading saved runtime default for ${label}.`
@@ -242,6 +458,18 @@ function HarnessCard({
             ))}
           </select>
         </Tooltip>
+        {/* Read off the capability, so a harness gains this row by declaring an advisor. */}
+        {hasAdvisor && (
+          <AdvisorDefaultField
+            agent={agent}
+            label={label}
+            model={model}
+            advisor={advisor}
+            environment={advisorEnvironment}
+            disabled={disabled}
+            onPatch={onAdvisor}
+          />
+        )}
         {/* Rendered only for a harness that DECLARES the runtime, never for one we hope
             will get a driver later: the row would be a toggle that changes nothing. The
             absence is stated in the card's note below, composed from the capability. */}
@@ -283,6 +511,15 @@ function HarnessCard({
           </>
         )}
       </div>
+      {hasAdvisor && (
+        <AdvisorOverrides
+          agent={agent}
+          label={label}
+          advisor={advisor}
+          disabled={disabled}
+          onPatch={onAdvisor}
+        />
+      )}
       <ModelCatalogNotice agent={agent} />
       <p className="harness-card-note">
         {model
@@ -335,6 +572,30 @@ function HarnessCard({
   );
 }
 
+/**
+ * What each harness's own settings say about its advisor. Re-read when the window regains
+ * focus, because the operator changes those files outside Mission Control - typing
+ * `/advisor` in any Claude session rewrites the user settings file.
+ */
+function useAdvisorEnvironments(): HarnessAdvisorEnvironments | null {
+  const [environments, setEnvironments] = useState<HarnessAdvisorEnvironments | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const read = (): void => {
+      void fetchHarnessAdvisorEnvironments().then((next) => {
+        if (alive && next) setEnvironments(next);
+      });
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", read);
+    };
+  }, []);
+  return environments;
+}
+
 export function HarnessesPanel({
   state,
   setup = null,
@@ -350,6 +611,7 @@ export function HarnessesPanel({
   // `config` is null only in the pre-poll instant; the switch reads on (its shipped
   // default) and disables until the first read lands, so a toggle can't race the fetch.
   const autoMode = config?.autoModeOnDispatch ?? true;
+  const advisorEnvironments = useAdvisorEnvironments();
 
   return (
     <section className="settings-section">
@@ -421,6 +683,9 @@ export function HarnessesPanel({
             autoMode={autoMode}
             disabled={!config}
             piSdkReady={piSdkReady}
+            advisor={config?.advisor[card.agent] ?? EMPTY_ADVISOR[card.agent]}
+            advisorEnvironment={advisorEnvironments?.[card.agent] ?? null}
+            onAdvisor={(patch) => void update({ advisor: { [card.agent]: patch } })}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
             onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
             onRuntime={(runtime) => void update({ sessionRuntime: { [card.agent]: runtime } })}
@@ -433,7 +698,8 @@ export function HarnessesPanel({
       <p className="settings-hint harnesses-cards-hint">
         The dispatch form starts on these values and lets you pick a different model and
         effort per task, so a one-off that needs more (or less) horsepower doesn't mean
-        changing the default.
+        changing the default. The advisor is not a per-task choice: a dispatched session
+        gets the one set here for the model it launches on.
       </p>
     </section>
   );

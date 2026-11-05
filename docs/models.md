@@ -246,8 +246,9 @@ nothing already scheduled moves on upgrade. The same two rules as a kind row app
 template cannot pin a model (a model id belongs to one harness), and it may set an effort, drawn
 from the levels every harness offers, because the harness it will get is not known until the run.
 
-Claude's **advisor** is not a task-kind setting: sessions inherit it from Claude Code's own
-`advisorModel` setting. See [Advisor](dispatch-and-backlog.md#advisor).
+Claude's **advisor** is not a task-kind setting. It is chosen on **Settings → Harnesses** per
+launch model, and by default sessions inherit Claude Code's own `advisorModel` setting. See
+[Advisor](dispatch-and-backlog.md#advisor).
 
 ## What is not here
 

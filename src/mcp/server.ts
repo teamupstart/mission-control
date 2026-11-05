@@ -427,10 +427,10 @@ server.registerTool(
       "Create one task in the Mission Control backlog without launching it. Ship is the default kind. It targets the current repository " +
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
-      "Set agent (harness), model, effort, advisorModel (Claude only), kind, workflowId, enabled (backlog autopilot), priority, " +
+      "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
       "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
-      "model/effort follows launch-time defaults, and omitted or null advisorModel inherits the operator's " +
-      "Claude settings. Null workflowId opts out of an after-work workflow. " +
+      "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
+      "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
@@ -566,9 +566,10 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, advisorModel, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
-      "repository, and additionalRepositories. Null model/effort/advisorModel clears the override; changing " +
-      "agent clears omitted model/effort/advisorModel overrides. Null workflowId opts out of the workflow; " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
+      "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
+      "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
+      "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
       "absolute local checkout path or unique repository directory name. An empty title derives " +

@@ -82,7 +82,7 @@ import {
   THINKING_LEVELS,
   ADVISOR_CHOICES,
 } from "./types.ts";
-import type { AgentType, SessionRuntime, Task } from "./types.ts";
+import type { AdvisorChoice, AgentType, SessionRuntime, Task } from "./types.ts";
 import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
@@ -1106,11 +1106,9 @@ export const DispatchSchema = z
     model: ModelIdSchema.optional(),
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
-    /**
-     * Advisor override for a harness that declares `advisor`; omitted inherits the operator's
-     * own Claude settings. Never `null` here: there is no stored pin to clear on a create.
-     */
-    advisorModel: AdvisorChoiceSchema.optional(),
+    // No advisor field: the advisor is a harness setting chosen per launch model
+    // (`HarnessesConfig.advisor`), not something a task pins. An `advisorModel` sent by an
+    // older client is stripped like any other unknown key.
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
@@ -1135,12 +1133,6 @@ export const DispatchSchema = z
   .refine((o) => o.effort === undefined || o.agent === undefined || supportsEffort(o.agent, o.effort), {
     path: ["effort"],
     message: "reasoning effort is not supported by this harness",
-  })
-  // The same split for the advisor, and `TaskManager.create` refuses the same pair when the
-  // harness is only known from the kind.
-  .refine((o) => o.advisorModel === undefined || o.agent === undefined || supportsAdvisor(o.agent, o.advisorModel), {
-    path: ["advisorModel"],
-    message: "an advisor override is not supported by this harness",
   })
   .superRefine((o, ctx) => {
     // A resident is created only by its profile's launch, which reserves the run first.
@@ -1381,9 +1373,13 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model`, `effort` and `advisorModel` are nullable for the same reason: an absent field leaves the stored override
+ * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
+ *
+ * `advisorModel` accepts ONLY `null`. A task can no longer pin an advisor - that moved to
+ * `HarnessesConfig.advisor` - but a task filed before the move may still carry one, and the
+ * dispatch form's "Use Settings" action is how an operator takes it back off.
  *
  * `enabled` is the backlog's enable/disable toggle, and it is deliberately NOT
  * annotation: it only means anything while the task is in the backlog, so it falls
@@ -1415,7 +1411,7 @@ const UpdateTaskFieldsSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
-    advisorModel: AdvisorChoiceSchema.nullable().optional(),
+    advisorModel: z.null().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
@@ -1426,20 +1422,20 @@ export const UpdateTaskSchema = UpdateTaskFieldsSchema
   .refine(
     (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
     { path: ["effort"], message: "reasoning effort is not supported by this harness" },
-  )
-  .refine(
-    (o) => o.agent === undefined || o.advisorModel == null || supportsAdvisor(o.agent, o.advisorModel),
-    { path: ["advisorModel"], message: "an advisor override is not supported by this harness" },
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
-/** MCP and dashboard task configuration use the same field validators. */
+/**
+ * MCP and dashboard task configuration use the same field validators. No `advisorModel`: a
+ * new task cannot pin one, and this schema is strict, so a caller still sending it is told.
+ */
 export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
   title: true,
   intent: true,
   planInputs: true,
+  advisorModel: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -2685,6 +2681,33 @@ const taskKindDefaultsPatchShape = Object.fromEntries(
   HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
 ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
 
+/** One harness's advisor defaults AS STORED. See `HarnessesConfigSchema.advisor`. */
+const HarnessAdvisorDefaultsSchema = z
+  .object({
+    default: z.string().nullable().default(null),
+    overrides: z.record(z.string(), z.string()).default({}),
+  })
+  .default({});
+
+/**
+ * One harness's advisor defaults as a PATCH. `default` replaces the stored one; `overrides`
+ * merges per model, and a `null` there removes that model's override.
+ */
+const HarnessAdvisorPatchSchema = z
+  .object({
+    default: AdvisorChoiceSchema.nullable().optional(),
+    overrides: z.record(ModelIdSchema, AdvisorChoiceSchema.nullable()).optional(),
+  })
+  .strict();
+
+/** The choices one advisor patch writes, for the capability check below. */
+function advisorPatchChoices(patch: z.infer<typeof HarnessAdvisorPatchSchema> | undefined): AdvisorChoice[] {
+  if (!patch) return [];
+  return [patch.default, ...Object.values(patch.overrides ?? {})].filter(
+    (choice): choice is AdvisorChoice => choice != null,
+  );
+}
+
 /**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
@@ -2776,8 +2799,37 @@ export const HarnessesConfigSchema = z.object({
    * added but can never come to mean a different kind later.
    */
   kindDefaults: z.object(taskKindDefaultsShape).default({}),
+  /**
+   * The advisor each harness's dispatched sessions launch with, chosen by the model the
+   * launch resolved. `overrides` is keyed by bare model id (`claude-opus-5-5`); a launch
+   * whose model has no override, or that names no model at all, gets `default`.
+   *
+   * `null` is Inherit: nothing is rendered and the operator's own Claude settings decide,
+   * which is the shipped value, so this key changes no launch until it is set. Only a harness
+   * that declares `advisor` can hold anything else - the patch refuses the rest.
+   *
+   * Stored loosely for the reason `sessionRuntime` is: this blob is parsed on every dispatch,
+   * so a choice a newer build wrote must not throw. `resolveLaunchAdvisor` narrows every read
+   * through `supportsAdvisor`, and nothing may read these values raw.
+   */
+  advisor: z
+    .object({
+      claude: HarnessAdvisorDefaultsSchema,
+      codex: HarnessAdvisorDefaultsSchema,
+      pi: HarnessAdvisorDefaultsSchema,
+    })
+    .default({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+/** One harness's stored advisor defaults, as read. */
+export type HarnessAdvisorDefaults = HarnessesConfig["advisor"][AgentType];
+
+/** Every harness on Inherit with no overrides - what an untouched installation holds. */
+export function emptyHarnessAdvisorDefaults(): HarnessesConfig["advisor"] {
+  return Object.fromEntries(
+    AGENT_TYPES.map((agent) => [agent, { default: null, overrides: {} }]),
+  ) as HarnessesConfig["advisor"];
+}
 /** One task kind's stored launch defaults, as read. */
 export type TaskKindDefault = HarnessesConfig["kindDefaults"][HarnessLaunchedTaskKind];
 
@@ -3033,9 +3085,50 @@ export const HarnessesConfigPatchSchema = z
      * blank the agent beside it.
      */
     kindDefaults: z.object(taskKindDefaultsPatchShape).strict().optional(),
+    /** Merged per harness and then per model by `setHarnessesConfig`. */
+    advisor: z
+      .object({
+        claude: HarnessAdvisorPatchSchema.optional(),
+        codex: HarnessAdvisorPatchSchema.optional(),
+        pi: HarnessAdvisorPatchSchema.optional(),
+      })
+      .strict()
+      .optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" })
+  // Read off the capability, so a harness that gains an advisor is settable with no edit here.
+  .refine(
+    (o) =>
+      AGENT_TYPES.every((agent) =>
+        advisorPatchChoices(o.advisor?.[agent]).every((choice) => supportsAdvisor(agent, choice)),
+      ),
+    { path: ["advisor"], message: "this harness has no advisor to set" },
+  );
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+/**
+ * What a harness's OWN configuration says about its advisor, which is what Inherit resolves
+ * to. Read by the daemon from the operator's settings so the Harnesses panel can say whether
+ * a dispatched session will actually consult one. Null for a harness with no advisor.
+ */
+export const AdvisorEnvironmentSchema = z.object({
+  /** The advisor the operator's user settings name, as written there (`opus`), or null. */
+  inherited: z.string().nullable(),
+  /** Where `inherited` was read from, shown beside it. */
+  source: z.string(),
+  /**
+   * Why no advisor can run in a dispatched session whatever is chosen, as one sentence, or
+   * null. An Off choice needs no reason; this is for a pin that will not take effect.
+   */
+  blocked: z.string().nullable(),
+});
+export type AdvisorEnvironment = z.infer<typeof AdvisorEnvironmentSchema>;
+export const HarnessAdvisorEnvironmentsSchema = z.object({
+  claude: AdvisorEnvironmentSchema.nullable(),
+  codex: AdvisorEnvironmentSchema.nullable(),
+  pi: AdvisorEnvironmentSchema.nullable(),
+});
+export type HarnessAdvisorEnvironments = z.infer<typeof HarnessAdvisorEnvironmentsSchema>;
 
 /**
  * One stored per-multiplexer terminal preference. Loose for the reason

@@ -5532,7 +5532,7 @@ export class TaskManager {
     return { ok: true, task: moved };
   }
 
-  async reschedule(id: string): Promise<Ok> {
+  async reschedule(id: string, options: { enabled?: boolean } = {}): Promise<Ok> {
     if (this.reschedulingTasks.has(id)) {
       return { ok: false, error: "task is being rescheduled" };
     }
@@ -5565,7 +5565,7 @@ export class TaskManager {
       return await this.withCleanupReservation<Ok>(
         id,
         { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
-        () => this.rescheduleReserved(id, t),
+        () => this.rescheduleReserved(id, t, options.enabled ?? true),
       );
     } finally {
       this.reschedulingTasks.delete(id);
@@ -5573,7 +5573,7 @@ export class TaskManager {
   }
 
   /** `reschedule`'s body, once cleanup and submission admission are reserved. */
-  private async rescheduleReserved(id: string, t: Task): Promise<Ok> {
+  private async rescheduleReserved(id: string, t: Task, enabled: boolean): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
     } catch (error) {
@@ -5621,7 +5621,9 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "backlog",
-      enabled: true,
+      // Publish the scheduling permission with the backlog transition, never afterward:
+      // Foreman must not see a runnable row while Return to backlog is parking it.
+      enabled,
       // A re-entering task KEEPS the rank it already has, so a recovered dispatch
       // reappears where it was rather than at the bottom of a queue it never left. A task
       // that never had one - dispatched straight out, never a backlog row - is appended,
@@ -5653,8 +5655,8 @@ export class TaskManager {
    * The operator's "run this later" answer, reachable from the task's own session. The
    * parts already exist and are composed here rather than copied: a live task is cancelled
    * first (agent stopped, archives settled, checkout reclaimed), and then `reschedule`
-   * re-files the stopped row at the rank it had. A task that already stopped skips straight
-   * to the second step.
+   * re-files the stopped row at the rank it had, with autopilot disabled so it stays put.
+   * A task that already stopped skips straight to the second step.
    *
    * `taskRequeueRefusal` is checked BEFORE the cancel, because a cancel that would be
    * followed by a refused re-file leaves the operator with a stopped task they never asked
@@ -5670,7 +5672,7 @@ export class TaskManager {
       const cancelled = await this.cancel(id);
       if (!cancelled.ok) return cancelled;
     }
-    return this.reschedule(id);
+    return this.reschedule(id, { enabled: false });
   }
 
   /**

@@ -866,8 +866,10 @@ cannot postpone cleanup forever.
 When a dispatched task should run *later* rather than now, press **backlog** (<kbd>b</kbd>)
 in its session detail's footer. A confirm names the one cost, then the task goes back into
 the Backlog column at the [position it had](#the-backlog-order-is-the-one-you-set) before it
-was dispatched: re-enabled, with no outcome, error or pull-request link, ready to dispatch
-again (`POST /api/tasks/:id/requeue`).
+was dispatched: with **Allow backlog autopilot** turned off and no outcome, error or
+pull-request link (`POST /api/tasks/:id/requeue`). It stays parked until you dispatch it
+manually or turn its autopilot permission back on, even when Foreman's backlog autopilot
+is enabled.
 
 On the way back the task is cancelled: the agent Mission Control launched for it is stopped,
 any scout report is archived, and its checkout is removed so the next attempt starts from a

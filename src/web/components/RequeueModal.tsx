@@ -109,7 +109,8 @@ export function RequeueModal({
             <>
               <p className="requeue-what">
                 <strong>{task.title}</strong> goes back to the Backlog at the position it had,
-                re-enabled and with no outcome, so it can be dispatched again later. The agent
+                with no outcome and Allow backlog autopilot turned off. Dispatch it manually
+                or turn autopilot back on when you are ready. The agent
                 Mission Control launched for it is stopped; an agent you assigned it to keeps
                 running.
               </p>

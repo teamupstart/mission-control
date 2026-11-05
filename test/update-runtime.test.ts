@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import childProcess, { type ExecFileException, type ExecFileOptionsWithStringEncoding } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,18 +25,38 @@ test("Node runtime policy shares the installer's minimum and gives actionable co
   for (const version of ["24.0.0", "26.7.0"]) assert.equal(updateNodeProblem(version), null);
 });
 
-test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async () => {
+test("runtime probes reject old, missing and malformed Node before npm runs, then recover", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-preflight-"));
   try {
     const selected = join(cwd, "selected-node");
     const npm = join(cwd, "npm");
     const node = { path: selected, env: { ...process.env, PATH: "/usr/bin:/bin" } };
-    const identity = (version: string) => probeOutput(selected, JSON.stringify({ version, execPath: process.execPath }));
+    // Even a shell printing canned JSON can miss the production deadline on a busy host.
+    // Double only this selected-runtime reply; child PATH and npm shebang probes stay real.
+    let selectedOutput = "";
+    let selectedError: ExecFileException | null = null;
+    const realExecFile = childProcess.execFile;
+    const selectedProbe = t.mock.method(childProcess, "execFile", ((
+      executable: string,
+      args: string[],
+      options: ExecFileOptionsWithStringEncoding,
+      callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
+    ) => {
+      if (executable !== selected) return realExecFile(executable, args, options, callback);
+      assert.equal(options.timeout, 5_000, "production probes remain bounded");
+      queueMicrotask(() => callback(selectedError, selectedOutput, ""));
+      return new childProcess.ChildProcess();
+    }) as typeof childProcess.execFile);
+    syncBuiltinESMExports();
+    t.after(() => { selectedProbe.mock.restore(); syncBuiltinESMExports(); });
+    const identity = (version: string) => {
+      selectedOutput = JSON.stringify({ version, execPath: process.execPath });
+    };
     // npm fails unless the real runtime's directory was placed ahead of the inherited PATH.
     await writeFile(npm, `#!/usr/bin/env node\nif(process.execPath!==${JSON.stringify(process.execPath)}) process.exit(9); console.log(JSON.stringify({npm:"11.0.0",node:process.versions.node}));\n`, { mode: 0o755 });
-    await identity("22.0.0");
+    identity("22.0.0");
     assert.deepEqual(await inspectUpdateRuntime(node, { path: "/missing/npm" }, cwd), { ok: false, message: updateNodeProblem("22.0.0") });
-    await identity(process.versions.node);
+    identity(process.versions.node);
     const runtime = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(runtime.ok, true);
     if (runtime.ok) {
@@ -48,10 +70,14 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
     });
     assert.equal((await inspectUpdateRuntime(node, null, cwd)).ok, false);
     assert.equal((await inspectUpdateRuntime(node, null, cwd, false)).ok, true, "installing an already staged bundle does not require npm");
-    await probeOutput(selected, "not-json");
+    selectedOutput = "not-json";
     const malformed = await inspectUpdateRuntime(node, { path: npm }, cwd);
     assert.equal(malformed.ok, false);
     if (!malformed.ok) assert.match(malformed.message, /could not verify/);
+    identity(process.versions.node);
+    selectedError = Object.assign(new Error("probe deadline exceeded"), { killed: true, signal: "SIGTERM" as const });
+    assert.deepEqual(await inspectUpdateRuntime(node, { path: npm }, cwd), malformed,
+      "a failed probe still refuses preparation with verification guidance");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

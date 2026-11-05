@@ -266,7 +266,11 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
   }
-  if (draft.kind === "plan" && draft.planStorage !== undefined && draft.planStorage !== (task.planPolicy?.storage ?? "repository")) {
+  if (
+    draft.kind === "plan"
+    && draft.planStorage !== undefined
+    && (task.kind !== "plan" || draft.planStorage !== (task.planPolicy?.storage ?? "repository"))
+  ) {
     patch.planStorage = draft.planStorage;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;

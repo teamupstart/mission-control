@@ -80,3 +80,49 @@ test("plan tasks override storage, display their pins, and edit with compatible 
     await editor.screenshot({ path: `${artifactsDir("task-plan-storage")}pinned-local.png`, animations: "disabled" });
   }
 });
+
+test("converting a ship task to a repository plan overrides a local global default", async ({ dashboard: page, daemon }) => {
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  const configured = await fetch(`${daemon.baseURL}/api/skills/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ planStorage: "local" }),
+  });
+  expect(configured.ok).toBe(true);
+  const created = await fetch(`${daemon.baseURL}/api/tasks`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoRoot: daemon.repo, title: "Convert ship to plan", intent: "Plan the next change", kind: "ship", backlog: true, workflowId: null }),
+  });
+  expect(created.ok).toBe(true);
+  const task = await created.json() as Task;
+  const board = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }),
+  });
+  expect(board.ok).toBe(true);
+  await page.reload();
+  const card = page.locator(".bl-card", { hasText: task.title });
+  await card.getByRole("button", { name: task.title, exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit a backlog task" });
+  await editor.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  const picker = editor.getByRole("combobox", { name: "Plan storage", exact: true });
+  await expect(picker.locator('option[value="__default"]')).toHaveText("Use global default - Local plan store");
+  await picker.selectOption("repository");
+  await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue(PLAN_VALIDATION_WORKFLOW_ID);
+  await expectContentClearsBorder(editor);
+  const updated = page.waitForResponse(r => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  const response = await updated;
+  expect(response.request().postDataJSON()).toMatchObject({ kind: "plan", planStorage: "repository" });
+  expect(response.ok(), await response.text()).toBe(true);
+  expect((await response.json()).task).toMatchObject({
+    kind: "plan", planPolicy: { storage: "repository" }, workflowId: PLAN_VALIDATION_WORKFLOW_ID,
+  });
+  await expect(editor).toBeHidden();
+  await card.getByRole("button", { name: task.title, exact: true }).click();
+  await expect(picker).toHaveValue("repository");
+  await expect(editor.getByText(/Pinned storage: Repository/)).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("task-plan-storage");
+    mkdirSync(dir, { recursive: true });
+    await page.mouse.move(0, 0);
+    await editor.screenshot({ path: `${dir}converted-repository.png`, animations: "disabled" });
+  }
+});

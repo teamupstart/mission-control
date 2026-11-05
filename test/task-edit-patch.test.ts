@@ -241,3 +241,13 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
 });
+
+test("converting a non-plan task carries every explicit storage choice", () => {
+  const task = mkTask({ kind: "ship", planPolicy: null });
+  for (const planStorage of ["repository", "local", null] as const) {
+    const draft = edited(task, { kind: "plan", planStorage });
+    assert.deepEqual(taskUpdatePatch(task, draft, task.intent), { kind: "plan", planStorage });
+  }
+  const existingPlan = mkTask({ kind: "plan", planPolicy: { storage: "repository", commitPlanHtml: false } });
+  assert.equal(taskUpdatePatch(existingPlan, draftFromTask(existingPlan), existingPlan.intent), null);
+});

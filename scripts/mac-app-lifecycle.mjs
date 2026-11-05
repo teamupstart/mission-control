@@ -758,7 +758,11 @@ export async function stopAttemptLaunch(bundle, nonce, ops) {
   // refuses the cleanup nor is signalled by it. The bundle-exit wait below decides about it.
   const modes = readProcessModes(ops, main.map((row) => row.pid));
   for (const row of main) {
-    if (modes.get(row.pid)?.nodeMode) continue;
+    // No mode at all means the kernel reported the pid gone since the snapshot: nothing to stop,
+    // and its `ps` read below would fail the retry. An unreadable record still has a mode, so it
+    // stays conservative. The bundle-exit wait below rechecks everything that remains.
+    const mode = modes.get(row.pid);
+    if (!mode || mode.nodeMode) continue;
     const identity = ops.identity(row.pid);
     const command = await read(ops, "/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="]);
     if (!command.includes(`--mission-update-launch ${nonce}`) || !identity) throw new Error("An app outside this update attempt is running. Close it manually before recovery; no process was signalled.");

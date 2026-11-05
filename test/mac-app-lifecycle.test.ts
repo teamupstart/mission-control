@@ -1404,6 +1404,40 @@ test("a retried launch is not blocked by a terminal session's MCP server on the 
   assert.deepEqual(signals, [42], "only this attempt's launch was signalled; the MCP server was left alone");
 });
 
+test("retry cleanup skips a main process that exited after the snapshot, but not one it cannot read", async (t) => {
+  const nonce = "a".repeat(32);
+  const setup = (gone: ArgumentRecord | undefined) => {
+    const f = fixture();
+    let running = `42 1 S ${binary}\n77 1 S ${binary}\n`;
+    f.outputs.set("ps", running);
+    const records = new Map<number, ArgumentRecord>([[42, {argv: [binary, "--mission-update-launch", nonce], env: []}]]);
+    if (gone !== undefined) records.set(77, gone);
+    argumentRecords(f, records);
+    const run = f.ops.run;
+    // `ps -p 77` finds nothing once 77 has exited, which `read` reports as an inspection failure.
+    f.ops.run = async (command, args, timeout) => command === "/bin/ps" && args.includes("args=")
+      ? (args.includes("77") ? {code: 1, stdout: ""} : {code: 0, stdout: `${binary} --mission-update-launch ${nonce}\n`})
+      : run(command, args, timeout);
+    const signals: number[] = [];
+    f.ops.kill = (pid) => {
+      signals.push(pid);
+      running = "";
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+    };
+    return {f, signals};
+  };
+  await t.test("exited: the kernel no longer has its record", async () => {
+    const {f, signals} = setup(undefined);
+    await stopAttemptLaunch(bundle, nonce, f.ops);
+    assert.deepEqual(signals, [42], "the retry proceeds and signals only this attempt's launch");
+  });
+  await t.test("alive but unreadable: still refused, nothing signalled", async () => {
+    const {f, signals} = setup(null);
+    await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /Could not inspect macOS launch state/);
+    assert.deepEqual(signals, []);
+  });
+});
+
 test("on this Mac, the real kernel record tells a Node-mode satellite from unregistered instances of the same binary", {skip: process.platform !== "darwin"}, async (t) => {
   // A disposable bundle whose main binary is this Node: it runs a script whether or not the flag
   // is set, which is exactly what makes the environment, not the arguments, the only evidence.

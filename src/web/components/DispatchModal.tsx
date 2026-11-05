@@ -1534,8 +1534,8 @@ function DispatchModal({
     if (kind === draft.kind) return {};
     if (taskHasOwnDefaultWorkflow(kind)) {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      // New plan defaults resolve with storage at save time, even if Settings changed.
-      return { workflowId: kind === "plan" && !editing
+      // Plan defaults resolve with storage at save time, even if Settings changed.
+      return { workflowId: kind === "plan"
         ? undefined
         : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
     }
@@ -3091,8 +3091,12 @@ function DispatchModal({
                       onChange={(event) => {
                         const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
                         const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        const savedDefault = editing?.kind === "plan"
+                          && editing.workflowId === taskDefaultWorkflowId("plan", null, editing.planPolicy?.storage ?? "repository");
                         update({ planStorage: storage,
-                          ...(draft.workflowId === previousDefault ? { workflowId: taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                            ? undefined
+                            : taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
                       }}>
                       <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
                       <option value="local">Local plan store</option>
@@ -3144,7 +3148,7 @@ function DispatchModal({
                   update({
                     workflowId:
                       value === "__default"
-                        ? editing
+                        ? editing && draft.kind !== "plan"
                           ? defaultWorkflowId
                           : undefined
                         : value === "__none"
@@ -3153,7 +3157,7 @@ function DispatchModal({
                   });
                 }}
               >
-                {!editing && (
+                {(!editing || draft.workflowId === undefined) && (
                   <option value="__default">
                     {workflowConfig === null
                       ? "Dispatch default — loading…"

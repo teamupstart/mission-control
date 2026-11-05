@@ -261,8 +261,9 @@ test("a plan dispatched with its default review receives the frozen plan evidenc
 
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
-  await expect(dialog.getByRole("combobox", { name: "After work", exact: true }))
-    .toHaveValue("builtin-workflow:plan-validation");
+  const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+  await expect(afterWork).toHaveValue("__default");
+  await expect(afterWork.locator("option:checked")).toContainText("Plan Validation");
   await submit(dialog);
   await expect(dialog).toBeHidden();
 

@@ -10,11 +10,13 @@ async function expandAdvanced(dialog: Locator): Promise<void> {
   const advanced = dialog.getByRole("button", { name: /^Advanced/ });
   await expect(advanced).toHaveAttribute("aria-expanded", "false");
   await expect(dialog.getByRole("combobox", { name: "Plan storage", exact: true })).toBeHidden();
-  const crew = await dialog.locator(".dispatch-crew-field").boundingBox();
-  const toggle = await advanced.boundingBox();
-  const afterWork = await dialog.locator(".dispatch-workflow").boundingBox();
-  expect(crew!.y + crew!.height).toBeLessThanOrEqual(toggle!.y);
-  expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(afterWork!.y);
+  await expect.poll(() => dialog.evaluate((element) => {
+    // Read all rectangles in one frame while model discovery can still reflow the crew.
+    const crew = element.querySelector(".dispatch-crew-field")!.getBoundingClientRect();
+    const toggle = element.querySelector(".dispatch-more")!.getBoundingClientRect();
+    const afterWork = element.querySelector(".dispatch-workflow")!.getBoundingClientRect();
+    return crew.bottom <= toggle.top && toggle.bottom <= afterWork.top;
+  })).toBe(true);
   await advanced.click();
   await expect(advanced).toHaveAttribute("aria-expanded", "true");
   await advanced.blur();
@@ -98,7 +100,8 @@ test("plan tasks override storage, display their pins, and edit with compatible 
     await editor.screenshot({ path: `${dir}pinned-repository.png`, animations: "disabled" });
   }
   await picker.selectOption("__default");
-  await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue(LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue("__default");
+  await expect(editor.getByRole("combobox", { name: "After work", exact: true }).locator("option:checked")).toContainText("Local Plan Validation");
   const updated = page.waitForResponse(r => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
   await editor.getByRole("button", { name: "Save", exact: true }).click();
   const response = await updated;
@@ -140,7 +143,8 @@ for (const afterWork of ["default", "none"] as const) test(`converting a ship ta
   const picker = editor.getByRole("combobox", { name: "Plan storage", exact: true });
   await expect(picker.locator('option[value="__default"]')).toHaveText("Use global default - Local plan store");
   await picker.selectOption("repository");
-  await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue(PLAN_VALIDATION_WORKFLOW_ID);
+  await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue("__default");
+  await expect(editor.getByRole("combobox", { name: "After work", exact: true }).locator("option:checked")).toContainText("Plan Validation");
   if (afterWork === "none") await editor.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await expectContentClearsBorder(editor);
   const updated = page.waitForResponse(r => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
@@ -189,4 +193,38 @@ for (const storage of ["local", "repository"] as const) test(`new plan workflow 
   expect((await saved.json()) as Task).toMatchObject({ planPolicy: { storage },
     workflowId: storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID });
   expect(saved.request().postDataJSON()).not.toHaveProperty("workflowId");
+});
+
+for (const storage of ["local", "repository"] as const) test(`edited plan workflow follows the global ${storage} storage resolved at save time`, async ({ dashboard: page, daemon }) => {
+  const configure = async (planStorage: "local" | "repository") => {
+    const response = await fetch(`${daemon.baseURL}/api/skills/config`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ planStorage }),
+    });
+    expect(response.ok).toBe(true);
+  };
+  await configure(storage === "local" ? "repository" : "local");
+  const created = await fetch(`${daemon.baseURL}/api/tasks`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoRoot: daemon.repo, title: "Edit storage default", intent: "Plan before settings change", kind: "plan", backlog: true, planStorage: storage }),
+  });
+  expect(created.ok).toBe(true);
+  const task = await created.json() as Task;
+  const board = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ layout: "board" }),
+  });
+  expect(board.ok).toBe(true);
+  await page.reload();
+  await page.locator(".bl-card", { hasText: task.title }).getByRole("button", { name: task.title, exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit a backlog task" });
+  await expandAdvanced(editor);
+  await editor.getByRole("combobox", { name: "Plan storage", exact: true }).selectOption("__default");
+  await expectContentClearsBorder(editor);
+  await configure(storage);
+  const updated = page.waitForResponse(r => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  const response = await updated;
+  expect(response.ok(), await response.text()).toBe(true);
+  expect((await response.json()).task).toMatchObject({ planPolicy: { storage },
+    workflowId: storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID });
+  expect(response.request().postDataJSON()).not.toHaveProperty("workflowId");
 });

@@ -150,7 +150,8 @@ must not become a second unleased autonomous writer.
      the merged-parent branch of the release check then apply as usual. If the current
      parent **closed** without merging, a closed child gets only *Move onto main*.
    - **Wait for a replacement**: the *replacement-parent transition*, the only writer
-     that changes `stack_parent_pr_url`. It runs only when the child PR is still open,
+     that changes `stack_parent_pr_url`. It updates the open child's own row, never a
+     row chosen by recency. It runs only when the child PR is still open,
      the child is `broken` because its current parent closed unmerged, and the existing
      branch discovery finds a
      replacement PR on the closed parent's same task episode. In one transaction it
@@ -312,6 +313,8 @@ children into non-default bases or add a daemon-side writer that types into pane
   - Re-review (CodeRabbit): the no-session, Foreman-off and uncertain-delivery labels,
     and the manual send that re-arms an uncertain claim, now cover the catch-up prompt as
     well as the restack prompt. A test covers both kinds.
+  - Re-review (CodeRabbit): the replacement-parent transition writes only the open
+    child's own row. Phase 1's `stack_adopted_at` order applies only to inheritance.
 - Repair round 6: the non-goal wording now matches Phase 1. After a retarget, the review
   diff's base refresh is Phase 1's (step 9), so this phase adds nothing for it.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base

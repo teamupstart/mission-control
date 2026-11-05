@@ -83,8 +83,8 @@ Phase 1 owns these names and Phase 2 must not rename them:
   named reason for waiting for merge.
 - Task columns `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha`, `stack_pr_url`
   (exposed as `Task.stackParentTaskId`, `stackBaseBranch`, `stackBaseSha`, `stackPrUrl`),
-  written at each dispatch, so a rescheduled task's new work episode records its own
-  parent.
+  written at every dispatch, with `null` for an unstacked dispatch, so a rescheduled
+  task's new work episode records its own parent or none.
 - `PrSnapshot.baseRefName`, `PrSnapshot.defaultBranch` and `PrSnapshot.mergeCommitSha`,
   plus `inspector_prs.base_ref_name` and the base recorded with the clean-review head.
 - Stack lineage on the PR row:
@@ -100,6 +100,8 @@ Phase 1 owns these names and Phase 2 must not rename them:
     same repository find the previous row.
   - `inspector_prs.stack_episode`: the task's work episode when the PR was adopted.
     Inheritance never crosses it.
+  - `inspector_prs.stack_adopted_at`: when the row was adopted. "Most recently adopted"
+    always means the highest `stack_adopted_at`, with the higher row id breaking a tie.
   - `inspector_prs.stack_lineage_history`: nullable JSON of `{from, to, at}` entries.
     Phase 1 creates the column and copies it on inheritance. Only Phase 2's
     replacement-parent transition appends to it.
@@ -111,10 +113,12 @@ Phase 1 owns these names and Phase 2 must not rename them:
 - Lineage seeding and inheritance (Phase 1): the task's dispatch-time fields seed only
   the first child PR row of each work episode in the task's primary repository. Every
   later child PR of the same task, repository and episode (for example a *Move onto main* or *Reopen against
-  main* replacement) copies the latest previous row's `stack_parent_pr_url`,
+  main* replacement) copies the most recently adopted previous row's `stack_parent_pr_url`,
   `stack_base_sha` and `stack_lineage_history` unchanged. The lookup key is
   `stack_task_id`, the repository and `stack_episode`, so a rescheduled task's new
-  episode seeds from its new dispatch instead of inheriting the old parent.
+  episode seeds from its new dispatch instead of inheriting the old parent. Lineage
+  fields are written once at adoption, and afterwards only Phase 2's replacement-parent
+  transition changes them.
 - Expected base (Phase 1): one function serves both the PR-opening instruction and base
   correction. It returns the current parent's head branch while that parent is open, and
   the default branch once it has merged or closed.
@@ -247,3 +251,5 @@ behavior.
   - Re-review: Phase 1 scopes lineage inheritance and the expected base to one work
     episode (`stack_episode`), so a rescheduled task with a new parent is never held or
     retargeted against the old one.
+  - Re-review: an unstacked dispatch clears the task's `stack_*` fields, and
+    `stack_adopted_at` defines which earlier row inheritance copies.

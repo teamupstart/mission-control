@@ -37,6 +37,8 @@ for (const reopenDuringUpdate of [false, true]) test(
   let orphanPid = 0;
   let paused: Owner | null = null;
   let pausedHelper: Owner | null = null;
+  let progressHelperPid = 0;
+  let reopenedProgressPid = 0;
   const remember = (pid: number): Owner => {
     const record = { pid, identity: processIdentity(pid) };
     owned.push(record);
@@ -183,6 +185,7 @@ for (const reopenDuringUpdate of [false, true]) test(
       expect(journal.ownerRole).toBe('helper');
       await expect.poll(() => progressWindow!(journal.owner.pid), {timeout: 15_000}).not.toBeNull();
       pausedHelper = remember(journal.owner.pid);
+      progressHelperPid = journal.owner.pid;
       process.kill(pausedHelper.pid, 'SIGSTOP');
     }
     await delay(15_000);
@@ -192,10 +195,12 @@ for (const reopenDuringUpdate of [false, true]) test(
     if (reopenDuringUpdate) {
       const before = readFileSync(join(daemon.home, 'install-migration.json'), 'utf8');
       const helper = pausedHelper!;
-      const hidden = progressWindow!(helper.pid)!;
+      const hidden = progressWindow!(helper.pid);
       // Hide ends the osascript dialog. Closing this fixture-owned process gives the same
       // closed-dialog state without requiring machine-wide Accessibility permission.
-      process.kill(hidden.pid, 'SIGTERM');
+      // The helper can be paused between closing a message and displaying its replacement;
+      // that is already the hidden state this reopen boundary needs.
+      if (hidden) process.kill(hidden.pid, 'SIGTERM');
       await expect.poll(() => progressWindow!(helper.pid)).toBeNull();
       const openedAt = Date.now();
       execFileSync('/usr/bin/open', ['-n', fixture.installed]);
@@ -218,7 +223,8 @@ for (const reopenDuringUpdate of [false, true]) test(
       pausedHelper = null;
       await expect.poll(() => progressWindow!(helper.pid), {timeout: 10_000}).not.toBeNull();
       const shown = progressWindow!(helper.pid)!;
-      expect(shown.pid).not.toBe(hidden.pid);
+      reopenedProgressPid = shown.pid;
+      if (hidden) expect(shown.pid).not.toBe(hidden.pid);
       expect(shown.command).toContain('Mission Control will reopen automatically');
       console.log('Reopen proof:', JSON.stringify({reopenPid, exitMs: Date.now() - openedAt,
         helperPid: helper.pid, journalUnchanged: true, progress: shown}));
@@ -243,6 +249,14 @@ for (const reopenDuringUpdate of [false, true]) test(
     writeFileSync(join(evidence, `${label}-journey.json`), JSON.stringify(summary, null, 2));
     console.log(JSON.stringify(summary));
     expect(outcome.result).toBe('success');
+    if (reopenDuringUpdate) {
+      expect(reopenedProgressPid, 'reopen captured a native progress process').toBeGreaterThan(1);
+      expect(progressHelperPid, 'reopen captured the detached update helper').toBeGreaterThan(1);
+      await expect.poll(() => processIsAlive(reopenedProgressPid)).toBe(false);
+      await expect.poll(() => progressWindow!(progressHelperPid)).toBeNull();
+      await expect.poll(() => processIsAlive(progressHelperPid)).toBe(false);
+      console.log('Verified: successful installation closed the reopened native progress process and its helper.');
+    }
     expect(receipt.installedCommit).toBe('b'.repeat(40));
     if (orphanPid) {
       expect(processIsAlive(orphanPid)).toBe(false);
@@ -270,6 +284,16 @@ for (const reopenDuringUpdate of [false, true]) test(
       previousDaemonPid: health.pid, checkAlive: processIsAlive(checkPid), interrupted, heldLeases: 0}));
     await expect(relaunched.getByRole('dialog', { name: 'Mission Control update' })).toContainText('updated to');
     await relaunched.screenshot({ path: join(evidence, `${label}-relaunched-new-build.png`) });
+    if (process.env.MC_E2E_DESKTOP_EVIDENCE === '1') {
+      // Capture the actual desktop, including external native windows. A renderer-only
+      // screenshot cannot demonstrate the absence of the macOS progress dialog.
+      execFileSync('/usr/bin/open', [fixture.installed]);
+      await relaunched.bringToFront();
+      await delay(500); // Let macOS finish activating/compositing the relaunched window.
+      execFileSync('/usr/sbin/screencapture', ['-x', '-m',
+        join(evidence, `${label}-completed-desktop.png`)]);
+      console.log('Captured actual desktop after successful relaunch and native progress/helper exit.');
+    }
     console.log('Verified: ready-dialog acceptance while a bundle-owned workflow check was live; actual helper replacement; new build/daemon running; old group gone; interrupted attempt reason persisted; old lease released.');
   } finally {
     resume();

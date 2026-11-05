@@ -1,5 +1,6 @@
 import { COST_EXPORT_INTERVAL_MAX_MS, COST_EXPORT_INTERVAL_MIN_MS } from "@shared/protocol.ts";
 import type { CostManagedRedirect } from "@shared/protocol.ts";
+import { sentenceCase } from "@shared/organizations.ts";
 import type { CostState } from "../useCost.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -31,7 +32,7 @@ function ManagedPolicyWarning({
   const owner =
     redirect.organizationLabel === null
       ? "Your organization's"
-      : `${redirect.organizationLabel}'s`;
+      : `${sentenceCase(redirect.organizationLabel)}'s`;
   switch (redirect.kind) {
     case "redirect":
       return (

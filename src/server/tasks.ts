@@ -236,8 +236,6 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
-  /** Pin this launch's advisor; omitted inherits the operator's Claude settings. */
-  advisorModel?: import("@shared/types.ts").AdvisorChoice;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -355,9 +353,6 @@ export class TaskKindBacklogError extends Error {}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
-
-/** An advisor pin named for a harness that has no advisor to pin. */
-export class TaskAdvisorUnsupportedError extends Error {}
 
 /**
  * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
@@ -2834,12 +2829,6 @@ export class TaskManager {
         `reasoning effort ${input.effort} is not supported by ${agent}`,
       );
     }
-    // The same half of `DispatchSchema`'s advisor refinement, for the same reason.
-    if (input.advisorModel && !supportsAdvisor(agent, input.advisorModel)) {
-      throw new TaskAdvisorUnsupportedError(
-        `an advisor override (${input.advisorModel}) is not supported by ${agent}`,
-      );
-    }
     const id = internal?.id ?? randomUUID();
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
@@ -2862,7 +2851,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
-            existing.advisorModel !== (input.advisorModel ?? null) ||
+            existing.advisorModel !== null ||
             existing.workflowId !== null
           ) {
             throw new TaskIdCollisionError(
@@ -2892,7 +2881,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
-            existing.advisorModel !== (input.advisorModel ?? null) ||
+            existing.advisorModel !== null ||
             existing.workflowId !== workflowId ||
             existing.scheduleId !== null
           ) {
@@ -2958,9 +2947,9 @@ export class TaskManager {
       // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
-      // No harness default to defer to: null renders nothing at launch and the operator's
-      // own Claude settings decide, which is what Inherit means.
-      advisorModel: input.advisorModel ?? null,
+      // A task no longer pins an advisor: Settings -> Harnesses chooses it per launch model.
+      // The column stays for tasks filed before that move, whose pin still applies.
+      advisorModel: null,
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3768,8 +3757,9 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
-    // Reset with the model and effort on an agent change: a pin chosen for Claude means
-    // nothing to a harness with no advisor, and carrying it would only be refused below.
+    // A pin from before the advisor moved to Settings -> Harnesses can only be cleared here,
+    // never set (the patch schema accepts only null). Reset with the model and effort on an
+    // agent change: a pin chosen for Claude means nothing to a harness with no advisor.
     const advisorModel = patch.advisorModel === undefined
       ? (agentChanged ? null : t.advisorModel)
       : patch.advisorModel;

@@ -712,9 +712,11 @@ export class Dispatcher {
         task.kind,
       );
       const effort = resolveDispatchEffort(task.agent, task.effort, task.kind, model);
-      // The advisor pin, rendered by the harness that declares it on BOTH arms below. Null
-      // renders nothing at all, so an Inherit launch is byte-identical to one from before.
-      const advisor = resolveDispatchAdvisor(task);
+      // The advisor, rendered by the harness that declares it on BOTH arms below. Resolved
+      // against the model THIS launch resolved, because Settings -> Harnesses chooses it per
+      // model. Null renders nothing at all, so an Inherit launch is byte-identical to one
+      // from before.
+      const advisor = resolveDispatchAdvisor(task, model);
       resolution = {
         agent: task.agent,
         runtime,

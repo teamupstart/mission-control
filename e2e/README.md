@@ -192,6 +192,11 @@ without an installation error or journal change. It then resumes the same helper
 its newly visible native progress window through CoreGraphics, and verifies completion within
 the original transaction. The dialog's displayed text is checked against its production
 osascript invocation; no Accessibility or Screen Recording permission is required.
+After successful installation it also verifies that the reopened progress process and its
+helper have exited. Nonvisual updater tests in `test/` inject an inert or recorded display
+through `realApplyOperations`; they must not open native update dialogs on the operator's
+desktop. The copied Electron fixture injects that port at the helper entry point so it also
+applies after LaunchServices relaunch and detached recovery.
 
 After building, run:
 

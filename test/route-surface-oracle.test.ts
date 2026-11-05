@@ -39,6 +39,9 @@ process.env.HARNESS_HOME = home;
 // which differ per machine and must not be recorded in a committed fixture.
 const repos = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
 process.env.MISSION_WORKSPACE_DIRS = repos;
+// The same for Claude's user settings, which `GET /api/harnesses/advisor` reads: a path that
+// does not exist, so the fixture records "no advisor configured" on every machine.
+process.env.CLAUDE_SETTINGS_PATH = join(repos, "no-claude-settings.json");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");

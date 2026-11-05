@@ -42,7 +42,7 @@ const REDIRECT: CostManagedRedirect = {
   kind: "redirect",
   host: "corp-otel-staging-1.upstart.com",
   source: "mdm-user",
-  organizationLabel: "Upstart",
+  organizationLabel: "your organization",
 };
 
 const SILENT_WARNING = /has not exported telemetry to this daemon in the past week/;
@@ -51,7 +51,7 @@ test("a redirect on a recognized Mac names the organization and the host", () =>
   const html = render({ managedRedirect: REDIRECT, exporterSilent: true });
   assert.match(
     text(html),
-    /Upstart's managed Claude Code policy sends metrics to corp-otel-staging-1\.upstart\.com, so the estimate covers only sessions Mission Control runs\. Sessions you started yourself in a terminal are not counted\./,
+    /Your organization's managed Claude Code policy sends metrics to corp-otel-staging-1\.upstart\.com, so the estimate covers only sessions Mission Control runs\. Sessions you started yourself in a terminal are not counted\./,
   );
   assert.match(html, /<p class="settings-error">[^]*<code>corp-otel-staging-1\.upstart\.com<\/code>/);
   // It replaces the generic warning, which could only guess at the cause - and guessed wrong.

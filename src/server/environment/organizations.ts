@@ -46,11 +46,11 @@ export interface OrganizationEntry {
 export const ORGANIZATIONS: Readonly<Record<OrganizationId, OrganizationEntry>> = {
   upstart: {
     id: "upstart",
-    label: "Upstart",
+    label: "your organization",
     mdmHosts: ["upstart.jamfcloud.com"],
-    evidence: (host) => `This Mac is enrolled in Upstart's device management (${host}).`,
-    destinationLabel: "Upstart's Datadog",
-    networkLabel: "the Upstart network",
+    evidence: (host) => `This Mac is enrolled in your organization's device management (${host}).`,
+    destinationLabel: "the configured telemetry collector",
+    networkLabel: "the network",
     preset: {
       endpoint: "https://corp-otel-staging-1.upstart.com",
       temporality: "delta",

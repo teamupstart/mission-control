@@ -57,6 +57,7 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  HarnessAdvisorEnvironments,
   HarnessModelCatalogs,
   TerminalsConfig,
   TerminalsConfigPatch,
@@ -288,6 +289,9 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** What each harness's own settings say about its advisor; null while unreachable. */
+export const fetchHarnessAdvisorEnvironments = () =>
+  fetchJson<HarnessAdvisorEnvironments>("/api/harnesses/advisor");
 /** Which terminal app each multiplexer's detached sessions are focused into. */
 export const fetchTerminalsConfig = () => fetchJson<TerminalsConfig>("/api/terminals/config");
 /**
@@ -1556,8 +1560,6 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
-  /** Advisor override; omitted inherits the operator's Claude settings. Never null here. */
-  advisorModel?: import("@shared/types.ts").AdvisorChoice;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   /** Backlog-task or live-session prerequisites. */

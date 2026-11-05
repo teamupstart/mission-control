@@ -10964,11 +10964,6 @@ span.task-outcome:hover {
   grid-template-columns: 1.05fr 0.55fr 1.2fr 1.1fr;
   gap: 10px;
 }
-/* A fifth column for a harness that declares an advisor. One class, so the narrow-viewport
-   rule further down still collapses it to two columns like the four-field row. */
-.dispatch-crew--advisor {
-  grid-template-columns: 1fr 0.55fr 1.1fr 0.9fr 1fr;
-}
 /* Agent and Kind sit in a cell rather than being grid items themselves, so the guided
    pass's list can hang off the field from OUTSIDE its `<label>` - see the note at that
    markup. Always present, so a pass starting does not restructure the row. */
@@ -10984,6 +10979,35 @@ span.task-outcome:hover {
 }
 .dispatch-crew-hint {
   font-size: 11.5px;
+}
+/* Which advisor this launch gets. Read-only - the advisor is chosen on Settings ->
+   Harnesses - so it is a sentence under the crew row rather than a fifth select in it. */
+.dispatch-advisor-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.dispatch-advisor-label {
+  color: var(--dim);
+}
+.dispatch-advisor-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+.dispatch-advisor-line a {
+  color: var(--working);
+}
+.dispatch-advisor-clear {
+  font-size: 11px;
+  padding: 1px 8px;
 }
 
 /* The post-work handoff rail. Its one visual flourish is structural: task, arrow and
@@ -21494,6 +21518,116 @@ button.wf-carried.is-link:focus-visible {
 .harness-card-field-label {
   font-size: 11px;
   color: var(--dim);
+}
+/* The advisor default's control column: the select, then whether a dispatched session will
+   actually consult one. The status is the answer to "is the advisor on", so it gets a dot
+   in the idle green when it is and the dim tone when it is not - always beside its words. */
+.harness-advisor-default {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+/* The Advisor label sits beside the select, not centred on the select plus its status. */
+.harness-card-field-label--top {
+  align-self: start;
+  padding-top: 4px;
+}
+.harness-advisor-status {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+.harness-advisor-status::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 1px solid var(--dim);
+}
+.harness-advisor-status--on {
+  color: color-mix(in oklab, var(--idle) 65%, var(--fg));
+}
+.harness-advisor-status--on::before {
+  border-color: var(--idle);
+  background: var(--idle);
+}
+.harness-advisor-warning {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--attention);
+}
+.harness-advisor-overrides {
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.harness-advisor-subhead {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.harness-advisor-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
+}
+.harness-advisor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 0.8fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.harness-advisor-row .harnesses-select {
+  min-width: 0;
+  width: 100%;
+}
+.harness-advisor-arrow {
+  color: var(--dim);
+  font-size: 11px;
+}
+.harness-advisor-row-warning {
+  grid-column: 1 / -1;
+}
+.harness-advisor-remove {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.harness-advisor-remove:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--border);
+}
+.harness-advisor-add {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--working);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 3px 9px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.harness-advisor-add:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.harness-advisor-remove:disabled,
+.harness-advisor-add:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 /* The composed sentence: what a dispatch of this harness will actually do, restated from
    the two selects above it so the effect is legible without reading option values. */

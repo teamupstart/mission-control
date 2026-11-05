@@ -109,6 +109,20 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
     mkdirSync(dirname(join(resources, path)), {recursive: true});
     copyFileSync(path, join(resources, path));
   }
+  // This suite exercises installation and recovery, not native presentation. The detached
+  // helper outlives the test's Electron parent, so inject at its copied entry point rather
+  // than relying on test-runner environment surviving LaunchServices. Keep real progress
+  // ownership/cleanup and record its display port without opening dialogs on the operator.
+  const helperPath = join(resources, 'scripts/apply-update.mjs');
+  const helperSource = readFileSync(helperPath, 'utf8');
+  const invocation = 'await runApplyUpdate(parsed.args)';
+  assert.equal(helperSource.split(invocation).length, 2);
+  writeFileSync(helperPath, helperSource.replace(invocation, `await runApplyUpdate(parsed.args,
+    realApplyOperations(parsed.args.logPath, undefined, (message) => {
+      const path = join(parsed.args.stateDirectory, 'fixture-progress.jsonl');
+      appendFileSync(path, JSON.stringify({event: 'show', message}) + '\\n');
+      return () => appendFileSync(path, JSON.stringify({event: 'close'}) + '\\n');
+    }))`));
   buildSync({entryPoints: ['src/main/updater.ts'], bundle: true, platform: 'node', format: 'esm',
     alias: {'@shared': './src/shared'}, outfile: join(resources, 'updater-fixture.mjs')});
   if (binary) prepareBinaryFixtureRuntime(root, resources);
@@ -338,6 +352,13 @@ for (const mode of ['success', 'binary-success', 'binary-rename', 'binary-alpha'
   }
   if (interruptedTarget) assert.equal(processIsAlive(interruptedTarget.pid), false, 'recovery stopped the replaced target');
   assert.equal(JSON.parse(readFileSync(join(state, 'update-outcome.json'), 'utf8')).result, failure ? 'failure' : 'success');
+  if (mode === 'success') {
+    assert.ok(existsSync(join(state, 'fixture-progress.jsonl')),
+      'nonvisual updater tests must record progress instead of displaying native dialogs on the operator desktop');
+    const progress = readFileSync(join(state, 'fixture-progress.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(progress.some(event => event.event === 'show' && event.message.includes('Waiting for Mission Control')));
+    assert.equal(progress.at(-1).event, 'close', 'successful installation closes the progress display');
+  }
   assert.equal(readFileSync(join(state, 'fixture-state-sentinel'), 'utf8'), 'existing user state');
   if (binaryFixture) {
     const prepared = JSON.parse(readFileSync(join(state, 'binary-prepared.json'), 'utf8'));

@@ -8,6 +8,7 @@ import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
   DEFAULT_HARNESSES_TERMINAL_BACKENDS,
   emptyTaskKindDefaults,
+  emptyHarnessAdvisorDefaults,
   type HarnessesConfig,
 } from "../src/shared/protocol.ts";
 import {
@@ -70,6 +71,7 @@ function mkConfig(
     defaultEffort?: Partial<Record<AgentType, ThinkingLevel | null>>;
     sessionRuntime?: Partial<Record<AgentType, SessionRuntime>>;
     terminalBackend?: Partial<Record<AgentType, TerminalBackendId | null>>;
+    advisor?: Partial<HarnessesConfig["advisor"]>;
   } = {},
 ): HarnessesConfig {
   return {
@@ -79,6 +81,7 @@ function mkConfig(
     sessionRuntime: { ...DEFAULT_HARNESSES_SESSION_RUNTIMES, ...over.sessionRuntime },
     terminalBackend: { ...DEFAULT_HARNESSES_TERMINAL_BACKENDS, ...over.terminalBackend },
     kindDefaults: emptyTaskKindDefaults(),
+    advisor: { ...emptyHarnessAdvisorDefaults(), ...over.advisor },
   };
 }
 
@@ -428,4 +431,62 @@ test("a stored runtime this build cannot read is reported, not silently healed",
   const html = render({ sessionRuntime: { claude: "quantum" as SessionRuntime } });
   assert.match(html, /<option value="terminal" selected/);
   assert.match(html, /doesn&#x27;t know \(quantum\) was ignored/);
+});
+
+// ---- the advisor ----
+
+/** The markup of one harness's card, so an assertion about Claude cannot pass on Codex's. */
+function cardOf(html: string, agent: AgentType): string {
+  const start = html.indexOf(`data-anchor="harnesses/${agent}"`);
+  assert.notEqual(start, -1, `no card for ${agent}`);
+  const next = html.indexOf(`data-anchor="harnesses/`, start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+test("only a harness that declares an advisor gets the Advisor rows", () => {
+  const html = render({});
+  for (const agent of AGENT_TYPES) {
+    const card = cardOf(html, agent);
+    const label = AGENT_IDENTITY[agent].label;
+    const declared = HARNESS_CAPABILITIES[agent].advisor !== null;
+    assert.equal(card.includes(`aria-label="Default advisor for dispatched ${label} sessions"`), declared, agent);
+    assert.equal(card.includes("Advisor Overrides"), declared, agent);
+  }
+});
+
+test("the advisor default ships on Harness default with no overrides", () => {
+  const card = cardOf(render({}), "claude");
+  assert.match(card, /<option value="" selected="">Harness default<\/option><option value="opus">Opus<\/option><option value="sonnet">Sonnet<\/option><option value="off">Off<\/option>/);
+  assert.match(card, /Every model uses the advisor above\./);
+  assert.match(card, />\+ Add model override</);
+});
+
+test("each override renders as model, advisor and a remove control, with a pairing warning", () => {
+  const card = cardOf(render({
+    defaultModel: { claude: "claude-sonnet-5" },
+    advisor: {
+      claude: { default: "opus", overrides: { "claude-opus-5-5": "sonnet", "claude-haiku-4-5": "off" } },
+    },
+  }), "claude");
+  assert.match(card, /aria-label="Advisor for Opus 5\.5 sessions"/);
+  assert.match(card, /aria-label="Remove the Haiku 4\.5 advisor override"/);
+  assert.match(card, /Sonnet is less capable than Opus 5\.5, so Claude Code will not\s+consult it/);
+  assert.doesNotMatch(card, /Every model uses the advisor above/);
+  // Before the settings read lands, the status says what it can without guessing.
+  assert.match(card, /On: sessions may consult Opus\./);
+});
+
+test("the advisor status follows the default model's override, not the default beside it", () => {
+  const card = cardOf(render({
+    defaultModel: { claude: "claude-opus-5-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-5-5": "off" } } },
+  }), "claude");
+  assert.match(card, /Opus 5\.5 uses its override\. Off: dispatched sessions launch with the advisor tool disabled\./);
+  assert.doesNotMatch(card, /On: sessions may consult Opus/);
+  // A default model with no override still reports the default.
+  const plain = cardOf(render({
+    defaultModel: { claude: "claude-sonnet-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-5-5": "off" } } },
+  }), "claude");
+  assert.match(plain, /On: sessions may consult Opus\./);
 });

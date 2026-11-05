@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
 import type { PlanDecision } from "../src/shared/types.ts";
-import { hasTooltip } from "./helpers/markup.ts";
+import { tooltipLabels } from "./helpers/markup.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation. Static markup is enough to prove the
@@ -62,8 +62,34 @@ test("a recommended option shows the hint and details render", () => {
   const html = render();
   assert.match(html, /recommended/);
   assert.match(html, /one more service to run/);
-  assert.ok(hasTooltip(html, "one more service to run"));
-  assert.ok(hasTooltip(html, "Postgres table"));
+});
+
+test("an option's detail is printed once, not repeated in a tooltip", () => {
+  const html = render();
+  assert.equal(html.split("one more service to run").length - 1, 1);
+  assert.deepEqual(tooltipLabels(html), ["Answer every decision above first"]);
+  assert.match(
+    html,
+    /<label[^>]*class="decision-option"[^>]*><input[^>]*type="radio"[^>]*\/><span class="decision-option-body">.*?one more service to run/,
+  );
+});
+
+test("a request_input form keeps the chat tooltip and puts none on its options", () => {
+  // The props ReviewModal passes for an option-carrying request_input.
+  const html = renderToStaticMarkup(
+    createElement(DecisionForm, {
+      decisions: [decisions[0]!],
+      busy: false,
+      onSubmit: () => {},
+      hideQuestions: true,
+      allowChat: true,
+    }),
+  );
+  const labels = tooltipLabels(html);
+  assert.equal(labels.filter((l) => l.startsWith("Skip choosing for now")).length, 1);
+  for (const text of ["one more service to run", "Use Redis", "Postgres table"]) {
+    assert.equal(labels.includes(text), false, `a tooltip repeats "${text}"`);
+  }
 });
 
 test("allowOther adds a free-text field only where asked", () => {

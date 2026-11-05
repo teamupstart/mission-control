@@ -1284,6 +1284,7 @@ function DispatchModal({
       draft.title.trim() ||
       draft.dependencies.length > 0,
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
   // when there is something inside to see - an edit, or a draft that already carries one of
   // them - and closed on a fresh dispatch, where the summary line names what is unset.
@@ -3064,6 +3065,45 @@ function DispatchModal({
           )}
         </div>
 
+        {draft.kind === "plan" && (
+          <div className="dispatch-more-wrap">
+            <Tooltip label={advancedOpen ? "Collapse advanced task settings" : "Choose where this task saves its plan"}>
+              <button
+                type="button"
+                className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <span className="dispatch-more-title">Advanced</span>
+                {!advancedOpen && <span className="dispatch-more-summary">Plan storage: {(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}</span>}
+                <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
+              </button>
+            </Tooltip>
+            {advancedOpen && (
+              <div className={`dispatch-more-body${guidedDim}`}>
+                <label className="field">
+                  <span className="field-label">Plan storage</span>
+                  <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
+                    <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
+                      onChange={(event) => {
+                        const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
+                        const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        update({ planStorage: storage,
+                          ...(draft.workflowId === previousDefault ? { workflowId: taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                      }}>
+                      <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
+                      <option value="local">Local plan store</option>
+                      <option value="repository">Repository</option>
+                    </select>
+                  </Tooltip>
+                  <span className="field-hint">{editing ? `Pinned storage: ${editing.planPolicy?.storage === "local" ? "Local plan store" : "Repository"}. ` : ""}
+                    {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
         {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
             it changes what happens after the agent finishes rather than how the task is
             ranked. The rail shape makes that sequence legible without turning one select
@@ -3074,27 +3114,6 @@ function DispatchModal({
             is also the pass's anchor, and already `position: relative`; the question hangs
             off it rather than off the `<label>` inside it, for the reason the crew cells
             above exist. An absolutely-positioned child takes no grid track. */}
-        {draft.kind === "plan" && (
-          <label className="field">
-            <span className="field-label">Plan storage</span>
-            <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
-              <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
-                onChange={(event) => {
-                  const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
-                  const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
-                  update({ planStorage: storage,
-                    ...(draft.workflowId === previousDefault ? { workflowId: taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
-                }}>
-                <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
-                <option value="local">Local plan store</option>
-                <option value="repository">Repository</option>
-              </select>
-            </Tooltip>
-            <span className="field-hint">{editing ? `Pinned storage: ${editing.planPolicy?.storage === "local" ? "Local plan store" : "Repository"}. ` : ""}
-              {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
-            </span>
-          </label>
-        )}
         <div
           ref={tourAfterWorkRef}
           className={`dispatch-workflow${selectedWorkflowId ? " armed" : ""}${guidedDimUnless(

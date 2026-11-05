@@ -104,21 +104,24 @@ must not become a second unleased autonomous writer.
    `stack-hold`. `mergeBlock` carries *Stack broken: #A closed*. Offer two actions:
    - **Move onto main**: prompt the session to cherry-pick only its own commits onto a new
      branch cut from the default branch, open a replacement PR and close the old one.
-     The replacement is adopted with the task's lineage, and is released only when the
-     closed-parent branch of the release check passes, which means it no longer contains
-     the parent's head.
+     Phase 1's adoption makes the replacement inherit the previous child row's current
+     parent, stack base and lineage history (not the task's dispatch-time fields). Phase
+     1's base correction leaves it on the default branch because its current parent is
+     closed. It is released only when the closed-parent branch of the release check
+     passes, which means it contains neither the stack base nor the parent's last head.
    - **Wait for a replacement**: the *replacement-parent transition*, the only writer
      that changes `stack_parent_pr_url`. It runs when the child is `broken` because its
      current parent closed unmerged, and the existing branch discovery finds a
      replacement PR on the closed parent's same task episode. In one transaction it
-     appends `{from, to, at}` to a new nullable JSON column
-     `inspector_prs.stack_lineage_history` (added through `addColumn`), sets
-     `stack_parent_pr_url` to the replacement, and clears `stack_released_head_sha`.
+     appends `{from, to, at}` to `inspector_prs.stack_lineage_history` (a column created by
+     Phase 1), sets `stack_parent_pr_url` to the replacement, and clears
+     `stack_released_head_sha`.
      `stack_base_sha` stays unchanged. The transition is idempotent: the same
      replacement URL is a no-op.
 
-     It then retargets the child to the replacement's branch with the Phase 1 helper and
-     sends a catch-up prompt. Because the release check reads the current parent, the
+     It then retargets the child to the replacement's branch with the Phase 1 helper (the
+     replacement is open, so this matches Phase 1's expected-base rule) and sends a
+     catch-up prompt. Because the release check reads the current parent, the
      child is released through the merged-parent branch: once the replacement merges, the
      child is retargeted to the default branch, restacks, and the replacement's merge
      commit is in its ancestry. If the replacement also closes unmerged, the child is
@@ -140,8 +143,8 @@ must not become a second unleased autonomous writer.
 
 ## 6. Data and compatibility
 
-- Any new column, including `stack_lineage_history`, is nullable and added through
-  `addColumn`. Rows from Phase 1 read as
+- Any new column is nullable and added through `addColumn`. `stack_lineage_history` is
+  Phase 1's column; this phase only appends to it. Rows from Phase 1 read as
   `current`, `parent-merged-needs-retarget`, `restack-needed` or `released` on the first
   tick, from their lineage and release record.
 - Claim rows reuse the CodeRabbit claim table shape, or a sibling table created in the
@@ -170,6 +173,11 @@ must not become a second unleased autonomous writer.
     - it runs only for a `broken` child with a same-episode replacement;
     - the replacement's merge plus a restack releases the child;
     - a replacement that closes unmerged returns the child to `broken`.
+  - Sequence test: the parent closes, the replacement-parent transition swaps in parent
+    P2, P2 also closes, and the session runs *Move onto main*. The new child PR inherits
+    P2 as its current parent, with the unchanged stack base and both history entries. It
+    stays on the default branch, and it is released only by the closed-parent check
+    against P2 and the stack base.
   - A git-level fixture: cut from the parent, squash-merge the parent, merge
     `origin/main` into the child, and assert the child's diff against `main` is only its
     own change.
@@ -208,6 +216,11 @@ children into non-default bases or add a daemon-side writer that types into pane
     `stack_parent_pr_url`, with `stack_lineage_history`, so waiting for a replacement
     ends in a release through the merged-parent branch.
   - `stack_base_sha` is never touched here.
+- Repair round 3:
+  - *Move onto main* replacements rely on Phase 1's inheritance and base-correction rules
+    instead of the task's lineage.
+  - `stack_lineage_history` moved to Phase 1, and this phase only appends to it.
+  - A sequence test covers a replacement parent that also closes.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base
     automatically.
 - Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.

@@ -36,7 +36,7 @@ reflects them.
 
 ## Sizing
 
-Estimated non-test production code: **1,250 to 1,700 lines**. Assumptions: about 250 shared
+Estimated non-test production code: **1,300 to 1,750 lines**. Assumptions: about 250 shared
 (schemas, eligibility, gates, release check), 350 to 450 server (readiness stamping, pinned dispatch, PR
 base check, snapshot fields, retarget, restack prompts), 300 to 400 web (Shipping card,
 chip toggle, labels, merge-queue states), and 150 to 250 docs and the runtime prompt text.
@@ -94,6 +94,18 @@ Phase 1 owns these names and Phase 2 must not rename them:
     `Task.stackBaseSha` at adoption and never changed.
   - `inspector_prs.stack_released_head_sha`: the child head for which the release check
     passed. Null or a different head means held.
+  - `inspector_prs.stack_task_id`: the stacked task the PR belongs to, so later child PRs
+    of the same task can find the previous row.
+  - `inspector_prs.stack_lineage_history`: nullable JSON of `{from, to, at}` entries.
+    Phase 1 creates the column and copies it on inheritance. Only Phase 2's
+    replacement-parent transition appends to it.
+- Lineage seeding and inheritance (Phase 1): the task's dispatch-time fields seed only
+  the task's first child PR row. Every later child PR of the same task (for example a
+  *Move onto main* replacement) copies the latest previous row's `stack_parent_pr_url`,
+  `stack_base_sha` and `stack_lineage_history` unchanged.
+- Base correction (Phase 1): the expected base of a child PR is the current parent's
+  head branch while that parent is open, and the default branch once it has merged or
+  closed. Nothing is ever retargeted to a merged or closed parent's branch.
 - The pure release check `stackReleased(facts)` in `src/shared/stacking.ts`, evaluated
   against the current parent, with the two branches stated in the source plan §7. A
   merged parent needs its merge commit in the child's ancestry. A closed parent needs
@@ -103,7 +115,7 @@ Phase 1 owns these names and Phase 2 must not rename them:
   CodeRabbit merge base use the PR's current base, or the parent branch before a PR
   exists. Every other task keeps the default-branch diff.
 - Replacement-parent transition (Phase 2): the only writer of a changed
-  `stack_parent_pr_url`. It records each change in `inspector_prs.stack_lineage_history`
+  `stack_parent_pr_url`. It appends each change to `inspector_prs.stack_lineage_history`
   and never touches `stack_base_sha`.
 - `MergeBlock` `"stacked-base"` (base is not the default branch) and `"stack-hold"`
   (lineage present and not released for the current head). These are the only two
@@ -157,3 +169,13 @@ behavior.
     parent, so waiting for a replacement ends in a defined release.
   - The manual release actions are stated per parent state and match the release check.
   - The base-relative Persona diff now has an owner, Phase 1 step 9, with tests.
+- Repair round 3 (same run):
+  - Before, a *Move onto main* replacement child was seeded from the task's dispatch-time
+    fields. That could restore a parent that a replacement-parent transition had already
+    swapped out. Now only the first child PR is seeded from the task, and later child PRs
+    inherit the previous row's lineage. Phase 1 adds `stack_task_id` and owns the
+    `stack_lineage_history` column.
+  - Base correction compared against the task's original `stackBaseBranch`, so it would
+    have retargeted that replacement onto the closed parent's (possibly deleted) branch.
+    It now uses the current parent's state: the parent's branch while it is open, and the
+    default branch otherwise.

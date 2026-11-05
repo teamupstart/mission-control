@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Nothing here is implemented.
 
 ## The short answer
 
@@ -113,7 +113,12 @@ The task contract and the pull-request packet name the base: *open this pull req
 do not reliably follow instructions, so the daemon enforces the result: when the
 `pr_opened` hook fires, it reads the new pull request's `baseRefName`. If the base is
 wrong, the daemon corrects it with `gh pr edit --base`, which changes metadata only and
-writes no code.
+writes no code. The expected base comes from the pull request's lineage (§7), not from
+the task's dispatch-time fields. It is the current parent's branch while that parent is
+open, and the default branch once it has merged or closed. A replacement child pull
+request opened from the default branch after its parent closed is therefore left on the
+default branch, and the daemon never retargets anything to a closed or merged parent's
+branch.
 
 ### 5. When the parent moves before it merges
 
@@ -168,7 +173,10 @@ the review and CI gates:
 The lineage is recorded on the pull request's row when it is adopted for a stacked task:
 the **current parent** pull request and the **stack base**, the parent commit the child
 was cut at (`stackBaseSha`). It survives the session going away, a restart and the
-setting being switched off. The current parent changes in exactly one case, a
+setting being switched off. The task's dispatch-time fields seed only the task's
+*first* child pull request. A later child pull request for the same task, such as the
+replacement opened by *Move onto main*, inherits the previous child row's current parent,
+stack base and lineage history unchanged, so a parent swap is never undone. The current parent changes in exactly one case, a
 replacement parent (§9), and every change is appended to the row's lineage history. The
 stack base never changes. The release check is one rule with two branches, evaluated on
 the Inspector tick against the *current* parent, from GitHub data only, with no git run in
@@ -193,7 +201,7 @@ and the next tick releases the child:
 | Current parent | Manual action that satisfies the check |
 |---|---|
 | Merged | Merge the default branch, which now contains the parent's merge commit, into the child and push |
-| Closed without merging | Cherry-pick only the child's own commits onto a fresh branch cut from the default branch and open a replacement pull request (it inherits the lineage). Merging the default branch into the old child does **not** help, because the parent's commits stay in its ancestry |
+| Closed without merging | Cherry-pick only the child's own commits onto a fresh branch cut from the default branch and open a replacement pull request against the default branch. It inherits the previous child row's lineage, and base correction leaves it on the default branch. Merging the default branch into the old child does **not** help, because the parent's commits stay in its ancestry |
 | Open | Nothing releases it yet. The parent has to merge or close first |
 
 Releasing after a merged parent is safe even when the child still carries the parent's
@@ -223,7 +231,7 @@ Phase 1 owns this.
 
 | Event | What happens |
 |---|---|
-| Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. A child replacement inherits the lineage and is released only when the closed-parent branch of the release check passes. With *Wait for a replacement*, a replacement **parent** pull request found by the existing branch discovery on the parent task's same episode takes over the lineage: it becomes the current parent (the old one is kept in the lineage history), the child is retargeted to its branch and caught up, and the child is released by the merged-parent branch once the replacement merges and the child restacks |
+| Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. A child replacement inherits the previous child row's lineage (current parent, stack base and history), keeps its default base, and is released only when the closed-parent branch of the release check passes. With *Wait for a replacement*, a replacement **parent** pull request found by the existing branch discovery on the parent task's same episode takes over the lineage: it becomes the current parent (the old one is kept in the lineage history), the child is retargeted to its branch and caught up, and the child is released by the merged-parent branch once the replacement merges and the child restacks |
 | Parent task rescheduled or cancelled | Same hold. The existing stopped-dependency warning button names the stack |
 | GitHub closed the child because its base branch was deleted before a retarget | Same hold and actions as a closed parent, with GitHub's reason shown |
 | Child's session is gone when a restack is needed | No restart. The merge queue says *Restack needed: no session*, and the task's **Resume** offers it |
@@ -273,7 +281,8 @@ in the session header shows its base.
   prerequisites, depth cap, multi-repository task), release-state transitions, the merge
   gate refusing a non-default base, the stack hold surviving an automatic retarget and an
   unrelated push, release only on verified ancestry, a parent that pushes again before
-  closing, a replacement parent taking over the lineage, the Persona diff against the
+  closing, a replacement parent taking over the lineage, a replacement child inheriting
+  the current parent and keeping its default base, the Persona diff against the
   stacked base, retarget idempotence, Shipping config defaults over an
   old blob, edge `mode` defaulting on stored rows.
 - Git-level fixture test: cut from parent branch, parent squash-merged, merge-based restack

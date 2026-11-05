@@ -90,10 +90,16 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    description with "Stacked on <stackPrUrl>".* Change the source text through
    `actions/pull-request.md` and `npm run session-actions` only if a static line is
    needed. Never edit the generated file. Then enforce it. When the Inspector adopts a PR
-   for a stacked task's session, compare the snapshot's `baseRefName` with
-   `stackBaseBranch`. If they differ, retarget it through the GitHub REST API (`PATCH
+   for a stacked task's session (after step 7 has set its lineage), compute the expected
+   base from the row's current parent, not from the task:
+   - the current parent PR's head branch while that parent is open;
+   - the default branch once the current parent has merged or closed.
+
+   If `baseRefName` differs, retarget the PR through the GitHub REST API (`PATCH
    repos/{owner}/{repo}/pulls/{n}` with `base`, the same `gh api` style as `mergePr`) and
-   record a one-line note on the PR row.
+   record a one-line note on the PR row. Never retarget to a merged or closed parent's
+   branch. A replacement child opened against the default branch after its parent closed
+   therefore keeps that base.
 7. **Snapshot base fields and lineage** (`src/server/inspector/github.ts`,
    `src/server/db.ts`, `InspectorPr`).
    - Add `baseRefName`, `mergeCommit { oid }` and `repository { defaultBranchRef { name } }`
@@ -101,12 +107,19 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      `defaultBranch`. Persist `inspector_prs.base_ref_name`.
    - Record the base next to the clean-review head (`cleanReviewHeadSha`), so a base that
      changes under the same head counts as not reviewed.
-   - When a PR is adopted for a session whose task has `stackPrUrl`, copy it into the new
-     `inspector_prs.stack_parent_pr_url` (the current parent), and copy
-     `Task.stackBaseSha` into the new `inspector_prs.stack_base_sha`. The Shipping
-     setting and the edge mode never change or clear either value. `stack_base_sha` never
-     changes. The current parent may change only through Phase 2's replacement-parent
-     transition, so Phase 1 adds no other writer.
+   - Add `inspector_prs.stack_task_id`, `stack_parent_pr_url` (the current parent),
+     `stack_base_sha` and `stack_lineage_history` (nullable JSON).
+   - When a PR is adopted for a session whose task has `stackParentTaskId`:
+     - if an earlier row with the same `stack_task_id` exists (the task's previous child
+       PR, for example one replaced through *Move onto main*), copy the latest such row's
+       `stack_parent_pr_url`, `stack_base_sha` and `stack_lineage_history` unchanged;
+     - otherwise seed from the task: `stack_parent_pr_url = Task.stackPrUrl`,
+       `stack_base_sha = Task.stackBaseSha`, with an empty history.
+
+     Set `stack_task_id` either way. The Shipping setting and the edge mode never change
+     or clear these values, and `stack_base_sha` never changes. The current parent may
+     change only through Phase 2's replacement-parent transition, so Phase 1 adds no other
+     writer.
    - Add `inspector_prs.stack_released_head_sha`, null on adoption.
 8. **Release check** (`src/shared/stacking.ts`, `src/server/inspector/`). Add the pure
    `stackReleased(facts)` with exactly the two branches in source plan §7, evaluated
@@ -190,7 +203,18 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
   - `declaredBlockersIn` with stamped and unstamped stack edges.
   - Stamping and clearing transitions.
   - Pinned dispatch, plus refusal when the fetch fails.
-  - Base correction on adoption.
+  - Base correction on adoption:
+    - a PR opened against the wrong base while its parent is open is retargeted to the
+      parent's branch;
+    - a replacement child opened against the default branch after its current parent
+      closed is left on the default branch and never retargeted to the closed parent's
+      branch;
+    - nothing is retargeted to a merged parent's branch.
+  - Lineage inheritance:
+    - the first child PR of a task is seeded from the task;
+    - a second child PR of the same task copies the latest previous row's current
+      parent, stack base and history, even when the task's `stackPrUrl` names a
+      different (earlier) parent.
   - `mergeVerdict` refusing a non-default base and an unknown base.
   - `stack-hold`:
     - still holds after the base changes to the default branch with an unchanged head
@@ -255,6 +279,8 @@ Phase 2 relies on the contract names in the index, unchanged:
   `stack_released_head_sha`), `stackReleased` evaluated against the current parent, and
   the compare helper;
 - the base-aware clean-review record and the stacked review diff base;
+- lineage seeding and inheritance (`stack_task_id`, `stack_lineage_history`) and
+  base correction keyed on the current parent's state;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper written in step 6, reused by Phase 2.
 
@@ -283,3 +309,10 @@ change `stack_base_sha`.
     replacement transition.
   - Added step 9 (the review diff base) as the owner of the base-relative Persona diff.
   - Steps renumbered again: gates 10, UI 11, docs 12.
+- Repair round 3:
+  - Step 7 now seeds lineage from the task only for the task's first child PR. Later
+    child PRs inherit the previous row's current parent, stack base and history.
+    `stack_task_id` and `stack_lineage_history` are created here.
+  - Step 6's base correction now follows the current parent's state, so the
+    *Move onto main* replacement keeps its default base.
+  - Tests cover both.

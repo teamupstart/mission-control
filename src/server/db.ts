@@ -1,3 +1,5 @@
+import type { SdkUsage } from "./harness/types.ts";
+import { cumulativeUsageBaseline, cumulativeUsageDelta } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
 import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
@@ -194,7 +196,8 @@ let db: DatabaseSync | undefined;
 // 17: retain per-repository episode change evidence across checkout teardown.
 // 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
 //     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 18;
+// 19: durable driver usage checkpoints, result receipts, and legacy replay flags.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 19;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1837,6 +1840,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- The index on spend_kind is NOT here: this block runs before migrate() adds that
     -- column, so an existing database would fail to open on a CREATE naming it. See the
     -- addColumn beside it.
+
+    -- Conversation checkpoints survive driver replacement and ledger retention. The ledger
+    -- rows and checkpoint advance in one transaction, never in the adapter's event pump.
+    CREATE TABLE IF NOT EXISTS driver_usage_snapshots (
+      note_key TEXT PRIMARY KEY,
+      snapshot_json TEXT NOT NULL,
+      baseline_gap_turn_id TEXT,
+      unpriced_baseline_models_json TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL
+    );
 
     -- Durable byte cursors for harness-owned append-only usage sources. The event rows
     -- and cursor move in one transaction, so a crash can replay but cannot skip usage.
@@ -3889,6 +3902,40 @@ function migrate(d: DatabaseSync): void {
       WHERE writer = '' AND cost_basis IN ('api-equivalent', 'unpriced');
     UPDATE usage_ledger SET writer = 'otel' WHERE writer = '';
   `);
+  // One-time uncertainty flag, not a guessed repair: pre-checkpoint Claude driver rows
+  // may include resumed conversation history. Prices remain the provider's reported prices.
+  if (addColumn(d, "usage_ledger", "accounting_issue", "TEXT NOT NULL DEFAULT ''")) {
+    d.exec(`UPDATE usage_ledger SET accounting_issue = 'possible_resume_replay'
+      WHERE agent = 'claude' AND writer = 'driver' AND spend_kind = 'session'`);
+  }
+  // Receipts have no retention deadline: a conversation may resume after its economic
+  // rows have aged out. Create and seed atomically so an interrupted upgrade cannot leave
+  // an empty receipt table that appears migrated on the next startup.
+  if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'driver_usage_receipts'").get()) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE IF NOT EXISTS driver_usage_receipts (
+          note_key TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          PRIMARY KEY(note_key, turn_id)
+        ) WITHOUT ROWID;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, window_end_ns FROM usage_ledger
+          WHERE writer = 'driver' AND spend_kind = 'session';
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, json_extract(snapshot_json, '$.turnId') FROM driver_usage_snapshots
+          WHERE json_extract(snapshot_json, '$.turnId') IS NOT NULL;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, baseline_gap_turn_id FROM driver_usage_snapshots
+          WHERE baseline_gap_turn_id IS NOT NULL;
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
+  }
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
@@ -11708,6 +11755,7 @@ export function recordDriverSessionUsage(input: {
   agent: string;
   turnId: string;
   ts: number;
+  snapshot?: { usage: SdkUsage; resumed: boolean };
   models: readonly {
     modelId: string;
     input: number;
@@ -11717,8 +11765,8 @@ export function recordDriverSessionUsage(input: {
     cacheWrite: number;
     reportedCostUsd: number | null;
   }[];
-}): void {
-  if (input.models.length === 0) return;
+}): readonly import("@shared/llm-spend.ts").LlmSpendModelUsage[] {
+  if (input.models.length === 0) return [];
   const d = openDb();
   const insert = d.prepare(
     `INSERT INTO usage_ledger
@@ -11730,7 +11778,35 @@ export function recordDriverSessionUsage(input: {
   );
   try {
     d.exec("BEGIN IMMEDIATE;");
-    for (const m of input.models) {
+    // Claim the result before interpreting lower counters as a reset. Unlike economic
+    // rows, receipts survive retention, including baseline-only results with no ledger row.
+    // This claim rolls back with the snapshot/ledger write if any part fails.
+    const receipt = d.prepare(`INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+      VALUES (?, ?)`).run(input.noteKey, input.turnId);
+    if (receipt.changes === 0) {
+      d.exec("COMMIT;");
+      return [];
+    }
+    const previousRow = d.prepare("SELECT snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json FROM driver_usage_snapshots WHERE note_key = ?")
+      .get(input.noteKey) as { snapshot_json: string; baseline_gap_turn_id: string | null; unpriced_baseline_models_json: string } | undefined;
+    const previous = previousRow ? JSON.parse(previousRow.snapshot_json) as SdkUsage : null;
+    // A legacy/imported resume has no trustworthy starting point. Its ledger may
+    // already be inflated, so summing those rows would merely hide the next few turns.
+    // Establish a baseline once, retaining an explicit gap rather than booking history.
+    const baselineOnly = !!input.snapshot?.resumed && previous === null;
+    let models = baselineOnly ? [] : input.snapshot
+      ? cumulativeUsageDelta(input.snapshot.usage, previous).models ?? []
+      : input.models;
+    const unpricedBaselineModels: string[] = baselineOnly
+      ? (input.snapshot?.usage.models ?? []).filter(m => m.reportedCostUsd === null).map(m => m.modelId)
+      : previousRow ? JSON.parse(previousRow.unpriced_baseline_models_json) : [];
+    if (unpricedBaselineModels.length) {
+      // If the initial legacy snapshot had no price, the first later price is also
+      // a baseline, not new spend. Preserve token deltas while marking price unknown.
+      models = models.map(m => unpricedBaselineModels.includes(m.modelId)
+        ? { ...m, reportedCostUsd: null } : m);
+    }
+    for (const m of models) {
       insert.run(
         input.noteKey,
         input.sessionId,
@@ -11748,7 +11824,23 @@ export function recordDriverSessionUsage(input: {
         m.cacheWrite,
       );
     }
+    if (input.snapshot) {
+      const baseline = cumulativeUsageBaseline(input.snapshot.usage, previous);
+      d.prepare(`INSERT INTO driver_usage_snapshots
+        (note_key, snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json, updated_at)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(note_key) DO UPDATE SET
+        snapshot_json = excluded.snapshot_json,
+        unpriced_baseline_models_json = excluded.unpriced_baseline_models_json,
+        updated_at = excluded.updated_at`)
+        .run(input.noteKey, JSON.stringify(baseline), baselineOnly ? input.turnId : null,
+          JSON.stringify(unpricedBaselineModels.filter(id =>
+            !baseline.models?.some(m => m.modelId === id && m.reportedCostUsd !== null))), input.ts);
+    }
     d.exec("COMMIT;");
+    if (baselineOnly) {
+      console.warn(`[usage] ${input.noteKey}: resumed without a usage checkpoint; result ${input.turnId} establishes the baseline only (transition usage unknown)`);
+    }
+    return models;
   } catch (err) {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;

@@ -1,3 +1,5 @@
+import { cumulativeUsageBaseline, cumulativeUsageDelta as claudeUsageDelta } from "../../sdk/cumulative-usage.ts";
+export { cumulativeUsageDelta as claudeUsageDelta } from "../../sdk/cumulative-usage.ts";
 import { resolveTranscriptPath } from "./transcript.ts";
 import { CompactionCompletion } from "../compaction.ts";
 import { defaultWindowForModel } from "@shared/model.ts";
@@ -359,13 +361,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /** An accepted live selection must outlive the query, independently of init metadata. */
   private modelOverride: string | null = null;
   /**
-   * The preceding query-to-date usage snapshot, used to recover one turn's delta.
+   * The preceding conversation-to-date usage snapshot, used to recover one turn's delta.
    *
    * Claude's streaming-input SDK keeps one `query()` alive across turns. Every `result`
-   * repeats the totals for that whole query, so sending those snapshots straight to the
+   * repeats the totals for that conversation, so sending those snapshots straight to the
    * append-only ledger makes turn two include turn one again, turn three include both, and
    * so on. Retaining the last snapshot here keeps that vendor-specific counter behavior at
-   * the adapter boundary. The registry continues to receive an ordinary per-turn delta.
+   * the adapter boundary for live deltas. The Registry also receives the raw snapshot
+   * so its atomic ledger checkpoint can account across driver and daemon replacements.
    */
   private cumulativeUsage: SdkUsage | null = null;
   /**
@@ -408,7 +411,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly cwd: string) {}
+  constructor(private readonly cwd: string, private readonly resumedConversation: string | null) {}
 
   get recoveryProcessId(): number | null {
     return this.authenticationRecovery ? null : this.query?.recoveryProcessId ?? null;
@@ -498,9 +501,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     this.turns = new TurnStream();
     this.authenticationFailed = false;
     this.turnActive = false;
-    // Each `query()` reports counters for that query process, even when it resumes the same
-    // native conversation. The replacement therefore starts a new accounting window.
-    this.cumulativeUsage = null;
+    // Resuming the same conversation retains its cumulative counters and baseline.
     try {
       const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
       if (this.stopped) {
@@ -1040,9 +1041,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // only token counters: the next priced cumulative result must still subtract the last
       // priced total instead of treating the temporary unknown as zero.
       if (cumulative?.turnId && cumulative.models?.length) {
-        this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
+        this.cumulativeUsage = cumulativeUsageBaseline(cumulative, this.cumulativeUsage);
       }
-      this.out.emit({ kind: "turn_done", usage, ...(failure ? { failure } : {}) });
+      this.out.emit({
+        kind: "turn_done", usage,
+        ...(cumulative?.turnId && cumulative.models?.length
+          ? { usageSnapshot: { usage: cumulative, resumed: this.agentSessionId === this.resumedConversation } } : {}),
+        ...(failure ? { failure } : {}),
+      });
       this.compaction.finish();
       this.refreshRateLimits();
       return;
@@ -1119,122 +1125,6 @@ export function claudeTurnUsage(
     modelId: boundModelId ?? models[0]?.modelId ?? null,
     costUsd,
     ...(turnId ? { turnId, models } : {}),
-  };
-}
-
-/** A cumulative counter's new contribution, tolerating a provider-side reset. */
-function cumulativeDelta(current: number, previous: number): number {
-  return current >= previous ? current - previous : current;
-}
-
-/** Whether any query-wide counter proves the provider started a new accounting window. */
-function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
-  return (
-    current.input < previous.input ||
-    current.output < previous.output ||
-    current.cacheRead < previous.cacheRead ||
-    current.cacheWrite < previous.cacheWrite ||
-    (current.reasoningOutput ?? 0) < (previous.reasoningOutput ?? 0) ||
-    (current.costUsd !== null && previous.costUsd !== null && current.costUsd < previous.costUsd)
-  );
-}
-
-/** Whether one model's counters prove its cumulative accounting window restarted. */
-function cumulativeModelUsageReset(
-  current: LlmSpendModelUsage,
-  previous: LlmSpendModelUsage,
-): boolean {
-  return (
-    current.input < previous.input ||
-    current.output < previous.output ||
-    current.reasoningOutput < previous.reasoningOutput ||
-    current.cacheRead < previous.cacheRead ||
-    current.cacheWrite < previous.cacheWrite ||
-    (
-      current.reportedCostUsd !== null &&
-      previous.reportedCostUsd !== null &&
-      current.reportedCostUsd < previous.reportedCostUsd
-    )
-  );
-}
-
-/**
- * Advance cumulative counters without forgetting the last price the provider knew.
- *
- * Claude may omit cost from one otherwise valid result and resume reporting it later. That
- * unknown turn must keep its null delta, but storing null as the next baseline would make the
- * later query-to-date price subtract from zero. Token counters still advance normally while
- * scalar and per-model costs carry forward. An observable reset clears those remembered costs
- * so a new accounting window still contributes its whole first priced result.
- */
-function claudeUsageBaseline(current: SdkUsage, previous: SdkUsage | null): SdkUsage {
-  if (!previous || cumulativeUsageReset(current, previous)) return current;
-  const previousModels = new Map(previous.models?.map((model) => [model.modelId, model]) ?? []);
-  const models = current.models?.map((model) => {
-    const prior = previousModels.get(model.modelId);
-    const reset = prior ? cumulativeModelUsageReset(model, prior) : false;
-    return {
-      ...model,
-      reportedCostUsd:
-        model.reportedCostUsd ?? (reset ? null : prior?.reportedCostUsd ?? null),
-    };
-  });
-  return {
-    ...current,
-    costUsd: current.costUsd ?? previous.costUsd,
-    ...(models ? { models } : {}),
-  };
-}
-
-/**
- * Convert two Claude query-to-date snapshots into the newest turn's usage.
- *
- * The first snapshot contributes its whole value. Later snapshots contribute only their
- * increase. A lower current value means Claude reset that counter, so the current value is
- * the new contribution rather than a negative delta. The result keeps the newest frame UUID:
- * it remains the durable replay key for this delta even though it was never the boundary of
- * the cumulative figures on the wire.
- */
-export function claudeUsageDelta(
-  current: SdkUsage,
-  previous: SdkUsage | null,
-): SdkUsage {
-  if (!previous || cumulativeUsageReset(current, previous)) return current;
-  const previousModels = new Map(previous?.models?.map((model) => [model.modelId, model]) ?? []);
-  const models = current.models?.map((model) => {
-    const prior = previousModels.get(model.modelId);
-    return {
-      ...model,
-      input: cumulativeDelta(model.input, prior?.input ?? 0),
-      output: cumulativeDelta(model.output, prior?.output ?? 0),
-      reasoningOutput: cumulativeDelta(model.reasoningOutput, prior?.reasoningOutput ?? 0),
-      cacheRead: cumulativeDelta(model.cacheRead, prior?.cacheRead ?? 0),
-      cacheWrite: cumulativeDelta(model.cacheWrite, prior?.cacheWrite ?? 0),
-      reportedCostUsd:
-        model.reportedCostUsd === null
-          ? null
-          : cumulativeDelta(model.reportedCostUsd, prior?.reportedCostUsd ?? 0),
-    };
-  });
-  return {
-    input: cumulativeDelta(current.input, previous?.input ?? 0),
-    output: cumulativeDelta(current.output, previous?.output ?? 0),
-    cacheRead: cumulativeDelta(current.cacheRead, previous?.cacheRead ?? 0),
-    cacheWrite: cumulativeDelta(current.cacheWrite, previous?.cacheWrite ?? 0),
-    ...(current.reasoningOutput !== undefined
-      ? {
-          reasoningOutput: cumulativeDelta(
-            current.reasoningOutput,
-            previous?.reasoningOutput ?? 0,
-          ),
-        }
-      : {}),
-    modelId: current.modelId,
-    costUsd:
-      current.costUsd === null
-        ? null
-        : cumulativeDelta(current.costUsd, previous?.costUsd ?? 0),
-    ...(current.turnId && models ? { turnId: current.turnId, models } : {}),
   };
 }
 
@@ -1491,7 +1381,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
-      const session = new ClaudeSdkSession(opts.cwd);
+      const session = new ClaudeSdkSession(opts.cwd, opts.resume);
       // Turn one is queued before the query is constructed, so the first thing the CLI
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);

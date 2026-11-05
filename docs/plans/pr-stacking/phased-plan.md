@@ -36,8 +36,8 @@ reflects them.
 
 ## Sizing
 
-Estimated non-test production code: **1,100 to 1,500 lines**. Assumptions: about 200 shared
-(schemas, eligibility, gate), 350 to 450 server (readiness stamping, pinned dispatch, PR
+Estimated non-test production code: **1,200 to 1,600 lines**. Assumptions: about 250 shared
+(schemas, eligibility, gates, release check), 350 to 450 server (readiness stamping, pinned dispatch, PR
 base check, snapshot fields, retarget, restack prompts), 300 to 400 web (Shipping card,
 chip toggle, labels, merge-queue states), and 150 to 250 docs and the runtime prompt text.
 The work is complex: a new edge state, a moving parent branch, GitHub base retargeting,
@@ -47,16 +47,18 @@ squash-merge restacking, and failure holds.
 mid-tier model implements and explains reliably. There is a natural merge boundary that
 lowers risk: Phase 1 lets a stacked child start and keeps it from being merged wrongly.
 Phase 2 automates what happens when the parent moves, merges or breaks. After Phase 1 the
-repository is operable. The setting ships off, and a stacked pull request that outlives
-its parent is held by the merge gate with a visible reason, which a person can clear by
-retargeting it on GitHub. Folding Phase 2 into Phase 1 would double the review surface
+repository is operable. The setting ships off. A stacked pull request that outlives its
+parent is held by the lineage-based `stack-hold` gate with a visible reason, even after
+GitHub retargets it automatically. The release check also defines how a person clears it
+by hand: merge the default branch into the child, or move its commits onto a fresh
+branch. Folding Phase 2 into Phase 1 would double the review surface
 without adding anything that Phase 1 needs in order to be safe.
 
 ## Phases
 
 | Phase | File | Delivers | Direct prerequisites |
 |---|---|---|---|
-| 1 | `phase-1-stacked-start.md` | Setting, per-edge mode, stack readiness, dispatch from the parent head, stacked PR base (instructed and corrected), stacked-base merge gate, base-aware review record, UI and docs | Planning session (this plan's merge) |
+| 1 | `phase-1-stacked-start.md` | Setting, per-edge mode, stack readiness, dispatch from the parent head, stacked PR base (instructed and corrected), `stacked-base` and lineage-based `stack-hold` gates with the ancestry release check, base-aware review record, UI and docs | Planning session (this plan's merge) |
 | 2 | `phase-2-stack-lifecycle.md` | Parent-moved catch-up prompts, retarget on parent merge, merge-based restack prompts, broken-stack holds and actions, lifecycle merge-queue states, docs | Phase 1 |
 
 Dependency graph: planning session → Phase 1 → Phase 2. The phases are serial. Phase 2
@@ -82,9 +84,21 @@ Phase 1 owns these names and Phase 2 must not rename them:
 - Task columns `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha`, `stack_pr_url`
   (exposed as `Task.stackParentTaskId`, `stackBaseBranch`, `stackBaseSha`, `stackPrUrl`),
   written once at dispatch.
-- `PrSnapshot.baseRefName` and `PrSnapshot.defaultBranch`, plus `inspector_prs.base_ref_name`
-  and the base recorded with the clean-review head.
-- `MergeBlock` `"stacked-base"` with the label *Stacked on an unmerged pull request*.
+- `PrSnapshot.baseRefName`, `PrSnapshot.defaultBranch` and `PrSnapshot.mergeCommitSha`,
+  plus `inspector_prs.base_ref_name` and the base recorded with the clean-review head.
+- Stack lineage on the PR row: `inspector_prs.stack_parent_pr_url` (copied from the task
+  when the PR is adopted, never cleared by the setting) and
+  `inspector_prs.stack_released_head_sha` (the child head for which the release check
+  passed; null or a different head means held).
+- The pure release check `stackReleased(facts)` in `src/shared/stacking.ts`, with the two
+  branches stated in the source plan §7, and the server-side compare helper that supplies
+  its ancestry facts. Unknown facts mean held.
+- `MergeBlock` `"stacked-base"` (base is not the default branch) and `"stack-hold"`
+  (lineage present and not released for the current head). These are the only two
+  stacking gates, and they are owned by Phase 1.
+- Scope rule: the Shipping default and edge `mode` decide only whether a dependent
+  *starts* early. Recorded lineage, the hold and every lifecycle behavior apply to
+  already-stacked pull requests whatever the setting says.
 
 ## Final verification
 
@@ -110,3 +124,14 @@ behavior.
 - The source plan put the stacked-base gate "first". It goes after the consent and
   `not-open`/`draft` gates, so an off switch or a closed PR still reads as the reason, and
   before every review and CI gate.
+- Repair round 1 (Plan Validation run `423925d9-c8a3-4ef4-be1a-0a73aaeadd5b`):
+  - A gate keyed only on "base is not the default branch" released a child as soon as
+    GitHub or the daemon retargeted it, before any restack. Phase 1 now also owns a
+    lineage-based `stack-hold` gate, the PR-row lineage, and the ancestry release check.
+    Phase 2 consumes them and adds no gate of its own.
+  - Phase 2's `unstacked` ("any new head since the retarget") was replaced by `released`,
+    which means the release check passed for the current head. A changed head that does
+    not contain the parent's merge commit stays held.
+  - "With stacking off, nothing in this phase runs" contradicted the source plan's
+    "already-started children stay stacked". The scope rule above now governs both
+    phases.

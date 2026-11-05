@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrects repository facts found while phasing (see `phased-plan.md`). Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Nothing here is implemented.
 
 ## The short answer
 
@@ -137,7 +137,7 @@ sequenceDiagram
   D->>GH: gh pr edit #B --base main (idempotent; GitHub may already have done it)
   D->>S: prompt: merge origin/main into B, resolve, push
   S->>GH: push merge commit
-  D->>D: new head → Inspector re-reviews B against main
+  D->>D: new head → verify A's merge commit is in B's ancestry (release), re-review B against main
   D->>GH: YOLO gates evaluate B as an ordinary PR
 ```
 
@@ -149,19 +149,42 @@ sequenceDiagram
    restacks by merging the new base into its branch and pushing. It needs no force-push, and the child is squash-merged later anyway,
    so the merge commit never reaches `main`. Identical hunks from the parent resolve
    cleanly. Real conflicts go to the session like any other repair.
-3. The new head resets the Inspector's review gate exactly as any push does. The child
-   then becomes an ordinary pull request against the default branch.
+3. The new head resets the Inspector's review gate exactly as any push does. Being on
+   the default branch is not enough to release the child. It stays held by the stack hold
+   (§7) until the daemon verifies that the restack actually happened: the parent's merge
+   commit is an ancestor of the child's current head. Only then is the child an ordinary
+   pull request against the default branch.
 
 ### 7. Merge order and YOLO mode
 
-Shipping gets one new gate, listed first in the merge queue:
+Shipping gets two new gates. They sit after the consent and open/draft gates and before
+the review and CI gates:
 
 | Gate | Why |
 |---|---|
-| **Not stacked on an unmerged pull request**: its base is the default branch | Merging a child into its parent's branch would fold it silently into the parent's pull request and skip its own review |
+| **Base is the default branch** (`stacked-base`) | Merging a child into its parent's branch would fold it silently into the parent's pull request and skip its own review |
+| **Stack released** (`stack-hold`): a pull request with recorded stack lineage stays held until the release check passes for its current head | A base change alone proves nothing. GitHub can retarget a child by itself when the parent's branch is auto-deleted, and an unrelated push changes the head without bringing in the new base |
+
+The lineage is recorded on the pull request's row when it is adopted for a stacked task,
+so it survives the session going away, a restart and the setting being switched off. The
+release check is one rule with two branches, evaluated on the Inspector tick from GitHub
+data only, with no git run in a worktree:
+
+- **Parent merged:** the base is the default branch **and** the parent's merge commit is an
+  ancestor of the child's current head (GitHub's compare API reports `ahead` or
+  `identical`).
+- **Parent closed without merging:** the base is the default branch **and** the parent's
+  last observed head is **not** an ancestor of the child's current head. In other words,
+  the child no longer carries the parent's unmerged code.
+
+The release is recorded against the head it was verified for, and a new head is checked
+again. Anything the daemon cannot read (a failed compare, an unknown parent state or
+merge commit) keeps the hold. A person can satisfy the check by hand, by merging the
+default branch into the child or by moving the child's commits onto a fresh branch, and
+the next tick releases it.
 
 With YOLO on, a stack therefore lands bottom-up with no extra machinery: parent merges,
-child retargets, restacks, is reviewed clean and merges. The soak is still measured from
+child retargets, restacks, passes the release check, is reviewed clean and merges. The soak is still measured from
 when the child opened. The child was visible the whole time, so the soak does not restart.
 The merge queue row reads *Stacked on #A (waiting for it to merge)* or *Restacking onto
 main*, so "why did this not merge" has an answer.
@@ -178,11 +201,11 @@ diff.
 
 | Event | What happens |
 |---|---|
-| Parent pull request closed without merging | Child is held, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. A replacement parent pull request on the same episode, found by the existing branch discovery, becomes the new base |
+| Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. The replacement pull request inherits the task's lineage and is released only when the closed-parent branch of the release check passes. A replacement parent pull request on the same episode, found by the existing branch discovery, becomes the new base |
 | Parent task rescheduled or cancelled | Same hold. The existing stopped-dependency warning button names the stack |
 | GitHub closed the child because its base branch was deleted before a retarget | Same hold and actions as a closed parent, with GitHub's reason shown |
 | Child's session is gone when a restack is needed | No restart. The merge queue says *Restack needed: no session*, and the task's **Resume** offers it |
-| Edge flipped from stack to merge after the child started | Applies to future dispatches only. A child already cut on the parent stays stacked |
+| Edge flipped from stack to merge, or the Shipping default switched off, after the child started | The edge mode and the default only decide whether a dependent *starts* early. A child already cut on the parent keeps its lineage, its hold and the full lifecycle (catch-up, retarget, restack, broken-stack handling) until it is released |
 
 ## Settings surface
 
@@ -194,6 +217,8 @@ A **Stacked pull requests** card on **Settings → Shipping**, after the YOLO mo
 - Copy that says what it does not do: it never merges into a non-default branch, never
   force-pushes, and never stacks across repositories.
 - Included in settings snapshots, like the other Shipping keys.
+- Says that switching it off stops new stacks only. Pull requests that are already
+  stacked keep their hold and lifecycle until they are released.
 
 The setting is one switch for all repositories. Stacking only changes branch bases and
 never writes to a default branch, so it needs no Trust column. Per-dependency overrides
@@ -212,8 +237,8 @@ in the session header shows its base.
 | `src/shared/backlog.ts`, `src/server/tasks.ts` | `declaredBlockersIn` treats a stack-ready edge as non-blocking for start. The daemon stamps stack readiness on the edge. Eligibility is a pure function in `src/shared/` so the board, Sitrep, autopilot and server agree |
 | `src/server/db.ts` | `tasks` gains `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha` via `addColumn` in the upgrade path |
 | `src/server/dispatcher.ts` | A stacked dispatch passes the parent head as the existing `baseSha` pin |
-| `src/server/inspector/github.ts` | Snapshot reads `baseRefName`, `mergeStateStatus`, behind-by. Reviewed-head record includes the base |
-| `src/shared/shipping.ts`, `src/server/shipping/` | New stacked-base gate in `mergeVerdict`. Retarget-on-parent-merge step on the Inspector tick |
+| `src/server/inspector/github.ts` | Snapshot reads `baseRefName`, the default branch, the merge commit, `mergeStateStatus` and behind-by. A compare helper answers ancestry questions. The reviewed-head record includes the base. PR rows record stack lineage and the head the release was verified for |
+| `src/shared/shipping.ts`, `src/server/shipping/` | New `stacked-base` and `stack-hold` gates in `mergeVerdict`, with the release check fed from the Inspector tick. Retarget-on-parent-merge step on the Inspector tick |
 | New `src/server/stacking/`, `src/server/foreman/` | Child-behind-parent and restack prompts, delivered through the existing Foreman review-follow-up claim-before-send path |
 | Task contract, pull-request workflow prompt | Name the base branch and the "Stacked on" line when the task is stacked (regenerate generated prompt files from source) |
 | `src/web/components/ShippingSettingsPanel.tsx`, dependency chips, board card | UI above |
@@ -223,7 +248,8 @@ in the session header shows its base.
 
 - `test/`: eligibility table (same repository, cross repository, two unmerged
   prerequisites, depth cap, multi-repository task), release-state transitions, the merge
-  gate refusing a non-default base, retarget idempotence, Shipping config defaults over an
+  gate refusing a non-default base, the stack hold surviving an automatic retarget and an
+  unrelated push, release only on verified ancestry, retarget idempotence, Shipping config defaults over an
   old blob, edge `mode` defaulting on stored rows.
 - Git-level fixture test: cut from parent branch, parent squash-merged, merge-based restack
   produces a child whose diff against `main` is only its own change.

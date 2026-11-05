@@ -10,8 +10,9 @@ record the deviation in the pull request.
 A stack keeps itself landable. When the parent picks up new commits, the child's session
 is asked to merge the parent branch in. When the parent merges, the daemon retargets the
 child to the default branch and asks its session to merge the new base in and push, with
-no force-push. The child is then re-reviewed and merges through the ordinary gates, so
-under YOLO mode a stack lands bottom-up on its own. When a stack breaks, the child is held
+no force-push. Once Phase 1's release check verifies the restack, the child is re-reviewed
+and merges through the ordinary gates, so under YOLO mode a stack lands bottom-up on its
+own. When a stack breaks, the child is held
 with a named reason and an action that fixes it.
 
 ## 2. Entry criteria
@@ -24,8 +25,13 @@ In scope: source plan §5 (parent moved), §6 (retarget and merge-based restack)
 (broken stacks), the merge-queue lifecycle states, the manual send when Foreman is off,
 and their docs.
 
-Not in scope: any change to Phase 1's names, gate position, edge semantics or dispatch
-pin. Never in scope: force-pushing, rebasing, or any git operation by the daemon inside a
+Not in scope: any change to Phase 1's names, its two gates (`stacked-base`,
+`stack-hold`), the release check, edge semantics or the dispatch pin. This phase adds no
+gate. It brings children to the state that Phase 1's release check accepts.
+
+Scope rule (from the index): the Shipping default and edge `mode` decide only whether a
+dependent starts early. Everything in this phase applies to every PR row with recorded
+lineage, whatever the setting says. Never in scope: force-pushing, rebasing, or any git operation by the daemon inside a
 worktree. The daemon only reads pull requests, edits their base and prompts sessions.
 
 ## 4. Inherited contracts and findings
@@ -35,7 +41,9 @@ From Phase 1:
 - `Task.stackParentTaskId`, `stackBaseBranch`, `stackBaseSha`, `stackPrUrl`;
 - `PrSnapshot.baseRefName` / `defaultBranch` and `inspector_prs.base_ref_name`;
 - the base-aware clean-review record;
-- `MergeBlock` `"stacked-base"`;
+- PR-row lineage (`stack_parent_pr_url`, `stack_released_head_sha`), `stackReleased` and
+  the compare helper;
+- `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper.
 
 Repository findings: CodeRabbit follow-up delivery is
@@ -54,23 +62,28 @@ must not become a second unleased autonomous writer.
    needed). Name it generically, without "stack" in the field names, so
    `docs/plans/pr-behind-base/plan.md` can reuse it for default-branch staleness later.
 2. **Stack state** (new `src/server/stacking/state.ts`, pure parts in
-   `src/shared/stacking.ts`). For each adopted PR whose session belongs to a task with
-   `stackParentTaskId`, derive one of:
+   `src/shared/stacking.ts`). For each PR row with `stack_parent_pr_url`, derive one of
+   the following. Derive from the row's lineage, not from the task or the setting, so it
+   works after the session is gone and with stacking switched off.
    - `current`;
    - `parent-moved`: the parent head is not an ancestor of the child head;
    - `parent-merged-needs-retarget`;
-   - `restack-needed`: retargeted but still carrying the parent's original commits, so
-     the head has not changed since the retarget;
+   - `restack-needed`: on the default branch, but the release check has not passed for
+     the current head. Any head that does not contain the parent's merge commit counts
+     here, including one changed by an unrelated push;
    - `broken`: the parent closed unmerged, the parent task was rescheduled or cancelled,
      or the child was closed by a base deletion;
-   - `unstacked`: on the default branch with a new head since the retarget.
+   - `released`: `stack_released_head_sha` equals the current head, meaning Phase 1's
+     release check verified it.
 
    Keep it on the PR row (a new nullable `inspector_prs.stack_state` column, or a derived
-   read). It is not a second task status.
+   read). It is not a second task status, and it never releases anything itself. Only
+   `stackReleased` writes the release.
 3. **Retarget on parent merge** (Inspector tick). When the parent PR is observed merged,
    retarget each open child to the parent's base with the Phase 1 helper. The retarget is
    idempotent: it is skipped when `baseRefName` already matches, which covers GitHub's own
-   auto-retarget. The base-aware review record then forces re-review on its own.
+   auto-retarget. The base-aware review record forces a re-review, and `stack-hold` keeps
+   the child held until the restack is verified.
 4. **Prompts** (new `src/server/stacking/delivery.ts`, Foreman `review-followup.ts`). Add
    two follow-up kinds to the existing review-follow-up path:
    - *catch up*: merge the parent branch in and push;
@@ -84,10 +97,13 @@ must not become a second unleased autonomous writer.
    *Restack needed: Foreman is off* with a **Send restack prompt** button that uses the
    same inject route and guard.
 5. **Broken stacks** (server plus `BacklogColumn.tsx`, the Line row,
-   `ShippingSettingsPanel.tsx`). Hold the child: `stacked-base` already blocks it, and
-   `mergeBlock` carries *Stack broken: #A closed*. Offer two actions:
+   `ShippingSettingsPanel.tsx`). The child is already held by `stacked-base` or
+   `stack-hold`. `mergeBlock` carries *Stack broken: #A closed*. Offer two actions:
    - **Move onto main**: prompt the session to cherry-pick only its own commits onto a new
      branch cut from the default branch, open a replacement PR and close the old one.
+     The replacement is adopted with the task's lineage, and is released only when the
+     closed-parent branch of the release check passes, which means it no longer contains
+     the parent's head.
    - **Wait for a replacement**: when the existing branch discovery finds a replacement
      parent PR on the same episode, it becomes the new base, through a retarget plus a
      catch-up prompt.
@@ -98,8 +114,8 @@ must not become a second unleased autonomous writer.
 6. **Merge-queue copy** (`src/shared/shipping.ts` labels, `src/web/lib/pr-standing.ts`).
    Rows read *Stacked on #A (waiting for it to merge)*, *Catching up with #A*,
    *Restacking onto main*, *Restack needed: no session*, *Restack needed: Foreman is off*
-   and *Stack broken: #A closed*. Keep `stacked-base` as the single gate. These are
-   reasons that refine it, not new gates. Bucket them as `blocked`, except
+   and *Stack broken: #A closed*. Keep Phase 1's `stacked-base` and `stack-hold` as the
+   only stacking gates. These are reasons that refine their text, not new gates. Bucket them as `blocked`, except
    *Restacking onto main*, which is in progress and belongs with `waiting`.
 7. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks and the
    Foreman dependency. `docs/dispatch-and-backlog.md`: what a stacked task does after its
@@ -108,21 +124,26 @@ must not become a second unleased autonomous writer.
 ## 6. Data and compatibility
 
 - Any new column is nullable and added through `addColumn`. Rows from Phase 1 read as
-  `current` or `parent-merged-needs-retarget` on the first tick.
+  `current`, `parent-merged-needs-retarget`, `restack-needed` or `released` on the first
+  tick, from their lineage and release record.
 - Claim rows reuse the CodeRabbit claim table shape, or a sibling table created in the
   upgrade path. They are never re-armed by restarts, pushes or toggles, matching CodeRabbit
   semantics.
-- Children retargeted by hand before this phase are observed as `restack-needed` or
-  `unstacked` from their heads. Nothing is replayed.
+- Children retargeted by hand or by GitHub before this phase are observed as
+  `restack-needed` or `released` from Phase 1's release record. Nothing is replayed.
 
 ## 7. Tests and verification
 
 - `test/`:
-  - The stack-state derivation table.
+  - The stack-state derivation table, including a changed head without the parent merge
+    commit staying `restack-needed`, and lineage rows deriving correctly with the
+    setting off and no session.
   - Retarget idempotence, including GitHub having already retargeted.
   - The claim lifecycle: no duplicate prompt across ticks, a restart or a push; release
     on confirmed non-delivery.
   - Guards: busy session, queued work, absent session, active workflow, Foreman off.
+  - Prompts still go out for an already-stacked child after the Shipping default is
+    switched off.
   - Broken-stack holds.
   - A git-level fixture: cut from the parent, squash-merge the parent, merge
     `origin/main` into the child, and assert the child's diff against `main` is only its
@@ -141,7 +162,10 @@ must not become a second unleased autonomous writer.
 - All of the above pass.
 - With YOLO mode, Inspector and Foreman on, and a fake or real two-PR stack, the child
   lands after the parent with no human step except conflicts.
-- With stacking off, nothing in this phase runs.
+- With stacking off and no PR rows carrying lineage, nothing in this phase acts.
+- Children that already carry lineage keep the full lifecycle (catch-up, retarget,
+  restack prompts and broken-stack handling) whatever the setting says. They stay held
+  until Phase 1's release check passes.
 
 ## 9. Downstream handoff
 
@@ -151,7 +175,11 @@ children into non-default bases or add a daemon-side writer that types into pane
 
 ## 10. Cross-phase audit record
 
-- Consumes Phase 1 names unchanged. No Phase 1 edits were required.
+- Consumes Phase 1 names unchanged.
+- Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.
+  `unstacked` became `released` (verified ancestry, not any new head). The state is
+  derived from row lineage so it outlives the setting and the session. The exit criteria
+  now state that already-stacked children keep their lifecycle with stacking off.
 - Restack and catch-up prompts use Foreman's review-follow-up path instead of a new
   daemon-side writer. This honors the source plan's "same delivery rules as the CodeRabbit
   follow-up" and the boundary in `src/server/skills/reload.ts`. When Foreman is off, the

@@ -108,6 +108,7 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await expect(dialog).toBeVisible();
   await expectContentClearsBorder(dialog);
   await expect(dialog).toContainText(first.title);
+  await expect(dialog).toContainText("Allow backlog autopilot turned off");
   // The harmless answer holds focus, because confirming deletes the checkout.
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   await expect(dialog).toContainText("Uncommitted and unpushed work in it is deleted");
@@ -128,6 +129,7 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect((await taskById(daemon, first.id)).status).toBe("running");
+  expect((await taskById(daemon, first.id)).enabled).toBe(true);
 
   // `b` reaches the same confirm as the button, and a bare Enter on it cancels.
   await dashboard.keyboard.press("b");
@@ -135,6 +137,7 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   await dashboard.keyboard.press("Enter");
   await expect(dialog).toBeHidden();
   expect((await taskById(daemon, first.id)).status).toBe("running");
+  expect((await taskById(daemon, first.id)).enabled).toBe(true);
   await dashboard.keyboard.press("b");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Return to backlog", exact: true }).click();
@@ -145,7 +148,7 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   // ...and the task is a clean backlog row again, at the rank it had before dispatch.
   const back = await taskById(daemon, first.id);
   expect(back.status).toBe("backlog");
-  expect(back.enabled).toBe(true);
+  expect(back.enabled).toBe(false);
   expect(back.sessionId).toBeNull();
   expect(back.backlogRank).toBe(rankBefore);
 
@@ -155,7 +158,17 @@ test("an idle dispatched task returns to the backlog from its session footer", a
   const text = (await queued.textContent()) ?? "";
   expect(text.indexOf(first.title)).toBeLessThan(text.indexOf(second.title));
   await expect(sitrepSection(sitrep, /^Recent outcomes\b/)).not.toContainText(first.title);
+  const returned = queued.locator(".report-row", { hasText: first.title });
+  await expect(returned.getByRole("switch", { name: `Foreman may schedule ${first.title}` }))
+    .toHaveAttribute("aria-checked", "false");
   await shoot(dashboard, "requeued-in-sitrep-backlog");
+  await returned.getByRole("button", { name: first.title, exact: true }).click();
+  const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expectContentClearsBorder(editor);
+  const autopilot = editor.getByRole("switch", { name: "Allow backlog autopilot to schedule this task" });
+  await autopilot.scrollIntoViewIfNeeded();
+  await expect(autopilot).toHaveAttribute("aria-checked", "false");
+  await shoot(dashboard, "returned-task-autopilot-off");
 });
 
 test("a requeue that fails after its session left still reports in the dialog", async ({

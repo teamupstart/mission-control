@@ -727,12 +727,19 @@ evidence, since ordinary LaunchServices launches also have launchd as their pare
 After the parent exits, the helper waits up to two minutes for **all** processes whose executable
 is beneath the bundle, including orphan helpers and utility processes. There is one exception: a
 Node-mode process that Mission Control does not own and whose first argument is one of this
-bundle's satellite scripts (`dist/mcp/server.mjs`, `dist/satellites/hook.mjs`,
-`dist/satellites/codex-hook.mjs` or `dist/satellites/harness-statusline.mjs`). Such an MCP server
+bundle's operator satellites. These are the scripts Mission Control registers in an operator's own
+agent configuration, listed once as `OPERATOR_SATELLITES` in `src/shared/owned-runtime.mjs`:
+`dist/mcp/server.mjs`, `dist/satellites/hook.mjs` and `dist/satellites/harness-statusline.mjs`.
+The integration installer resolves its paths from that list, and the daemon's MCP server path is
+tested against it. Such an MCP server
 can live as long as the operator's terminal session, and the updater has no authority to signal
 it. It also does not need to stop. Every swap renames bundles and never writes into one, so the
-process keeps the files it has open. Each satellite is a single bundled script read whole at
-startup that never opens the state database. Its next launch runs the new build. Any other
+process keeps the files it has open. Each satellite is a single bundle that imports only Node
+builtins, loads nothing beside itself and never opens the state database.
+`test/operator-satellites.test.ts` rebuilds each one from its `package.json` command and checks
+that. It also fails when the build emits a satellite the list neither includes nor names as
+daemon-launched, such as `dist/satellites/codex-hook.mjs`, which only dispatched sessions run. An
+operator satellite's next launch runs the new build. Any other
 Node-mode script, including an orphaned workflow check, is still waited on. A timeout names it as
 a script on Mission Control's bundled Node and names the program that started it, never as the
 app itself. Retry cleanup likewise neither refuses over nor signals a Node-mode main process.

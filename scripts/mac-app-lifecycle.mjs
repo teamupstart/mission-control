@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
+import { CHECK_SUPERVISOR_MARKER, OPERATOR_SATELLITES } from "../src/shared/owned-runtime.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -172,11 +172,11 @@ function readProcessModes(ops, pids) {
 }
 
 /**
- * The bundled scripts Mission Control registers for agents it does not launch itself. Each is a
- * single esbuild bundle read whole at startup, talks to the daemon over loopback and never opens
- * the state database (the daemon is its only writer).
+ * The bundled scripts Mission Control registers for agents it does not launch itself, from the
+ * one shared list. `OPERATOR_SATELLITES` documents why letting them run through a swap is safe,
+ * and `test/operator-satellites.test.ts` checks that claim against the real build.
  */
-const SATELLITE_SCRIPTS = ["dist/mcp/server.mjs", "dist/satellites/hook.mjs", "dist/satellites/codex-hook.mjs", "dist/satellites/harness-statusline.mjs"];
+const SATELLITE_SCRIPTS = Object.values(OPERATOR_SATELLITES);
 
 /**
  * True when a Node-mode process's FIRST argument is one of this bundle's own satellite scripts.

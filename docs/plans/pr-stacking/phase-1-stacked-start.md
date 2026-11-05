@@ -95,13 +95,14 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    repositories keep `resolveDispatchBase` and the default branch. On
    success, persist `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha` and
    `stack_pr_url` (`addColumn` in the `tasks` upgrade path in `src/server/db.ts`, beside
-   `base_sha`). If the fetch or the pin fails, refuse the dispatch with the reason. Never
+   `base_sha`). Each dispatch writes them afresh, so a rescheduled task's new work
+   episode records its own parent. If the fetch or the pin fails, refuse the dispatch with the reason. Never
    fall back to `main` silently. Manual dispatch, assign, drag-to-assign and the autopilot
    all reach this through `dependencyBlockers`. Check each one.
 6. **Stacked PR base**. Add one shared function, `expectedStackBase`, that returns the
    current parent's head branch while that parent is open, and the default branch once
-   it has merged or closed. The current parent is the latest lineage row for this task
-   and repository when one exists, otherwise `Task.stackPrUrl`. In `withTaskKindContract`
+   it has merged or closed. The current parent is the latest lineage row for this task,
+   repository and work episode when one exists, otherwise `Task.stackPrUrl`. In `withTaskKindContract`
    (`src/server/task-contract.ts`), and in the runtime PR packet where the workflow's
    pull-request action is sent, append for a stacked task's primary repository: *open
    the pull request with `--base <expectedStackBase>` and start the description with
@@ -123,17 +124,21 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      `defaultBranch`. Persist `inspector_prs.base_ref_name`.
    - Record the base next to the clean-review head (`cleanReviewHeadSha`), so a base that
      changes under the same head counts as not reviewed.
-   - Add `inspector_prs.stack_task_id`, `stack_parent_pr_url` (the current parent),
-     `stack_base_sha` and `stack_lineage_history` (nullable JSON).
+   - Add `inspector_prs.stack_task_id`, `stack_episode` (the task's work episode at
+     adoption), `stack_parent_pr_url` (the current parent), `stack_base_sha` and
+     `stack_lineage_history` (nullable JSON).
    - When a PR is adopted for a session whose task has `stackParentTaskId`, and the PR is
      in the task's primary repository (PRs in secondary repositories get no lineage):
-     - if an earlier row with the same `stack_task_id` and the same repository exists (the task's previous child
-       PR, for example one replaced through *Move onto main*), copy the latest such row's
+     - if an earlier row with the same `stack_task_id`, the same repository and the same
+       `stack_episode` exists (the episode's previous child PR, for example one replaced
+       through *Move onto main*), copy the latest such row's
        `stack_parent_pr_url`, `stack_base_sha` and `stack_lineage_history` unchanged;
-     - otherwise seed from the task: `stack_parent_pr_url = Task.stackPrUrl`,
-       `stack_base_sha = Task.stackBaseSha`, with an empty history.
+     - otherwise seed from the task's current dispatch: `stack_parent_pr_url =
+       Task.stackPrUrl`, `stack_base_sha = Task.stackBaseSha`, with an empty history.
+       This covers the first PR of a new episode after a reschedule, which never
+       inherits the previous episode's parent.
 
-     Set `stack_task_id` either way. The Shipping setting and the edge mode never change
+     Set `stack_task_id` and `stack_episode` either way. The Shipping setting and the edge mode never change
      or clear these values, and `stack_base_sha` never changes. The current parent may
      change only through Phase 2's replacement-parent transition, so Phase 1 adds no other
      writer.
@@ -258,6 +263,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
   - Lineage inheritance:
     - the first child PR of a task is seeded from the task;
     - the lookup ignores rows of the same task in a different repository;
+    - after a reschedule, the first PR of the new work episode is seeded from the new
+      dispatch's parent and stack base, not copied from the previous episode's row, and
+      `expectedStackBase` names the new parent;
     - a second child PR of the same task copies the latest previous row's current
       parent, stack base and history, even when the task's `stackPrUrl` names a
       different (earlier) parent.
@@ -332,8 +340,8 @@ Phase 2 relies on the contract names in the index, unchanged:
   `stack_released_head_sha`), `stackReleased` evaluated against the current parent, and
   the compare helper;
 - the base-aware clean-review record and the stacked review diff base;
-- lineage seeding and inheritance (`stack_task_id` plus repository,
-  `stack_lineage_history`), the primary-repository scope, and `expectedStackBase`, shared
+- lineage seeding and inheritance (`stack_task_id` plus repository and
+  `stack_episode`, `stack_lineage_history`), the primary-repository scope, and `expectedStackBase`, shared
   by the PR-opening instruction and base correction;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper written in step 6, reused by Phase 2.
@@ -391,3 +399,6 @@ change `stack_base_sha`.
 - PR #1359 re-review (GitHub Inspector): step 5 now revalidates the parent PR (open,
   non-draft, stamped URL, branch and current episode) at dispatch before accepting the
   pin. A stale stamp refuses the dispatch and is cleared. A test was added.
+- PR #1359 re-review (GitHub Inspector): lineage inheritance and `expectedStackBase` are
+  scoped to one work episode through a new `stack_episode` column. A rescheduled task's
+  new episode seeds its first PR from its new dispatch. A test was added.

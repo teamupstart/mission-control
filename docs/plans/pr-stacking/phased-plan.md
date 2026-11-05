@@ -83,7 +83,8 @@ Phase 1 owns these names and Phase 2 must not rename them:
   named reason for waiting for merge.
 - Task columns `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha`, `stack_pr_url`
   (exposed as `Task.stackParentTaskId`, `stackBaseBranch`, `stackBaseSha`, `stackPrUrl`),
-  written once at dispatch.
+  written at each dispatch, so a rescheduled task's new work episode records its own
+  parent.
 - `PrSnapshot.baseRefName`, `PrSnapshot.defaultBranch` and `PrSnapshot.mergeCommitSha`,
   plus `inspector_prs.base_ref_name` and the base recorded with the clean-review head.
 - Stack lineage on the PR row:
@@ -97,6 +98,8 @@ Phase 1 owns these names and Phase 2 must not rename them:
   - `inspector_prs.stack_task_id`: the stacked task the PR belongs to. Together with the
     row's repository (`owner`/`repo`), it lets later child PRs of the same task in the
     same repository find the previous row.
+  - `inspector_prs.stack_episode`: the task's work episode when the PR was adopted.
+    Inheritance never crosses it.
   - `inspector_prs.stack_lineage_history`: nullable JSON of `{from, to, at}` entries.
     Phase 1 creates the column and copies it on inheritance. Only Phase 2's
     replacement-parent transition appends to it.
@@ -106,11 +109,12 @@ Phase 1 owns these names and Phase 2 must not rename them:
   primary repository. Secondary repositories
   start from their default branch, and their PRs get no lineage.
 - Lineage seeding and inheritance (Phase 1): the task's dispatch-time fields seed only
-  the task's first child PR row in its primary repository. Every later child PR of the
-  same task in the same repository (for example a *Move onto main* or *Reopen against
+  the first child PR row of each work episode in the task's primary repository. Every
+  later child PR of the same task, repository and episode (for example a *Move onto main* or *Reopen against
   main* replacement) copies the latest previous row's `stack_parent_pr_url`,
   `stack_base_sha` and `stack_lineage_history` unchanged. The lookup key is
-  `stack_task_id` plus the repository.
+  `stack_task_id`, the repository and `stack_episode`, so a rescheduled task's new
+  episode seeds from its new dispatch instead of inheriting the old parent.
 - Expected base (Phase 1): one function serves both the PR-opening instruction and base
   correction. It returns the current parent's head branch while that parent is open, and
   the default branch once it has merged or closed.
@@ -237,3 +241,9 @@ behavior.
   - Phase 2 re-applies the expected base on every tick, so a failed retarget is retried.
   - Re-review: Phase 1 step 5 revalidates the readiness stamp at dispatch, so a parent
     that became a draft or closed after stamping cannot release a dependent.
+  - Re-review: Phase 2's uncertain-delivery recovery, its no-session and Foreman-off
+    labels, and the manual send now cover the catch-up prompt as well as the restack
+    prompt.
+  - Re-review: Phase 1 scopes lineage inheritance and the expected base to one work
+    episode (`stack_episode`), so a rescheduled task with a new parent is never held or
+    retargeted against the old one.

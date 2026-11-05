@@ -112,19 +112,23 @@ must not become a second unleased autonomous writer.
    It re-arms only when that tip changes (the parent pushes again, or a different parent
    merges after a replacement-parent transition). It uses the same guards: a single live owning session, idle, no queued work, no active workflow, no
    restart of an absent session. Claim before send, release only on confirmed
-   non-delivery. When no live session owns the child, nothing is sent and the merge queue
-   shows *Restack needed: no session*. The claim key does not include the session, so
+   non-delivery. Both kinds share the recovery below, and every label and button names
+   the kind that is pending (*Catch-up* or *Restack*). When no live session owns the
+   child, nothing is sent and the merge queue shows *Catch-up needed: no session* or
+   *Restack needed: no session*. The claim key does not include the session, so
    when the operator resumes the task with the existing **Resume** control, the pending
    prompt is delivered once to the resumed session on its first idle tick. When Foreman is
    off or not invited, nothing is sent. The merge queue shows
-   *Restack needed: Foreman is off* with a **Send restack prompt** button that uses the
+   *Catch-up needed: Foreman is off* with a **Send catch-up prompt** button, or
+   *Restack needed: Foreman is off* with a **Send restack prompt** button. Both use the
    same inject route and guard.
 
-   A delivery whose claim was stored but whose inject never confirmed, for example
+   A delivery of either kind whose claim was stored but whose inject never confirmed, for example
    because the daemon crashed in between, stays *uncertain*. It is not retried
    automatically, matching the CodeRabbit follow-up's conservative delivery rule: an
    automatic retry could deliver the same prompt twice. The merge queue shows
-   *Restack prompt delivery uncertain* for that row, and **Send restack prompt** then
+   *Catch-up prompt delivery uncertain* or *Restack prompt delivery uncertain* for that
+   row, and the matching **Send catch-up prompt** or **Send restack prompt** button then
    acts as the operator's explicit re-arm. It finishes the uncertain claim, takes a new
    claim and sends once through the same guard. A held child therefore never sits
    silently with no prompt and no visible reason.
@@ -169,8 +173,10 @@ must not become a second unleased autonomous writer.
    for that child.
 6. **Merge-queue copy** (`src/shared/shipping.ts` labels, `src/web/lib/pr-standing.ts`).
    Rows read *Stacked on #A (waiting for it to merge)*, *Catching up with #A*,
-   *Restacking onto main*, *Restack needed: no session*, *Restack needed: Foreman is off*,
-   *Restack prompt delivery uncertain*, *Retarget failed: <reason>* and
+   *Restacking onto main*, *Catch-up needed: no session*, *Restack needed: no session*,
+   *Catch-up needed: Foreman is off*, *Restack needed: Foreman is off*,
+   *Catch-up prompt delivery uncertain*, *Restack prompt delivery uncertain*,
+   *Retarget failed: <reason>* and
    *Stack broken: #A closed*. These lifecycle labels come from the row's stack state
    (step 2), passed to the renderer as a separate field. They are never written into
    `mergeBlock`, which keeps holding only gate values. The row shows the gate label, with
@@ -208,8 +214,10 @@ must not become a second unleased autonomous writer.
     - a new parent tip re-arms the catch-up prompt;
     - a different parent merge commit re-arms the restack prompt;
     - a confirmed non-delivery releases the claim.
-  - Crash between claim and inject: the row reads *Restack prompt delivery uncertain*,
-    nothing is re-sent automatically, and **Send restack prompt** delivers exactly once.
+  - Crash between claim and inject, for each prompt kind: the row reads
+    *Catch-up prompt delivery uncertain* or *Restack prompt delivery uncertain*, nothing
+    is re-sent automatically, and the matching **Send catch-up prompt** or
+    **Send restack prompt** delivers exactly once.
   - State precedence: a parent that advanced and then merged or closed derives
     `parent-merged-needs-retarget` or `broken`, never `parent-moved`, and gets no catch-up
     prompt.
@@ -301,6 +309,9 @@ children into non-default bases or add a daemon-side writer that types into pane
     operator re-arm.
   - Step 6 keeps lifecycle labels in their own field, never in `mergeBlock`.
   - Tests cover each.
+  - Re-review (CodeRabbit): the no-session, Foreman-off and uncertain-delivery labels,
+    and the manual send that re-arms an uncertain claim, now cover the catch-up prompt as
+    well as the restack prompt. A test covers both kinds.
 - Repair round 6: the non-goal wording now matches Phase 1. After a retarget, the review
   diff's base refresh is Phase 1's (step 9), so this phase adds nothing for it.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base

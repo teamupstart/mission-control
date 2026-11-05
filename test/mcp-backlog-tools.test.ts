@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Task } from "../src/shared/types.ts";
 import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
-import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { McpTaskConfigurationSchema } from "../src/shared/protocol.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
 
@@ -575,5 +575,19 @@ test("MCP rejects storage overrides on backlog ship updates without changing sav
     }, /Plan storage is only available for plan tasks/);
     assert.deepEqual(getTask(task.id), before, "a refused edit must not change persisted task state");
     assert.deepEqual(f.registry.getTask(task.id), registeredBefore, "a refused edit must not change live task state");
+  }
+});
+
+test("MCP plan conversion chooses storage-compatible workflows unless explicitly supplied", async (t) => {
+  const f = await fixture(t);
+  for (const planStorage of ["local", "repository"] as const) {
+    const workflowId = planStorage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID;
+    const task = await f.create({ kind: "ship" });
+    const converted = await f.call("update_task", { taskId: task.id, kind: "plan", planStorage });
+    assert.equal(converted?.workflowId, workflowId);
+    assert.equal(getTask(task.id)?.planPolicy?.storage, planStorage);
+    const explicitNone = await f.create({ kind: "ship", workflowId: null });
+    const withoutWorkflow = await f.call("update_task", { taskId: explicitNone.id, kind: "plan", planStorage, workflowId: null });
+    assert.equal(withoutWorkflow?.workflowId, null);
   }
 });

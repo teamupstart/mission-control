@@ -3833,22 +3833,25 @@ export class TaskManager {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
+    const becomesPlan = patch.kind === "plan" && t.kind !== "plan";
     let planPolicy = t.planPolicy;
     let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
     try {
       if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
         throw new PlanStoreError("Plan storage is only available for plan tasks");
       }
-      if (patch.planStorage !== undefined || (patch.kind === "plan" && t.kind !== "plan")) {
+      if (patch.planStorage !== undefined || becomesPlan) {
         if (t.planPolicyError) throw new PlanStoreError(t.planPolicyError);
         const requested = newPlanPolicy(patch.planStorage);
         // Storage edits preserve the task's HTML preference; only new policies read it anew.
         planPolicy = { ...requested, commitPlanHtml: t.planPolicy?.commitPlanHtml ?? requested.commitPlanHtml };
         if (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")) {
           if (taskPlanStorageLocked(t.id)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
-          if (patch.workflowId === undefined && t.workflowId === taskDefaultWorkflowId("plan", null, t.planPolicy?.storage ?? "repository")) {
-            workflowId = taskDefaultWorkflowId("plan", null, planPolicy.storage);
-          }
+        }
+        if (patch.workflowId === undefined && (becomesPlan
+          || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")
+            && t.workflowId === taskDefaultWorkflowId("plan", null, t.planPolicy?.storage ?? "repository")))) {
+          workflowId = taskDefaultWorkflowId("plan", null, planPolicy.storage);
         }
       }
       const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];

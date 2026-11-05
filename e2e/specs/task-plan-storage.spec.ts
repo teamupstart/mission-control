@@ -113,7 +113,7 @@ test("plan tasks override storage, display their pins, and edit with compatible 
   }
 });
 
-test("converting a ship task to a repository plan overrides a local global default", async ({ dashboard: page, daemon }) => {
+for (const afterWork of ["default", "none"] as const) test(`converting a ship task to a repository plan overrides a local global default with ${afterWork} workflow`, async ({ dashboard: page, daemon }) => {
   await page.setViewportSize({ width: 1280, height: 1200 });
   const configured = await fetch(`${daemon.baseURL}/api/skills/config`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ planStorage: "local" }),
@@ -139,6 +139,7 @@ test("converting a ship task to a repository plan overrides a local global defau
   await expect(picker.locator('option[value="__default"]')).toHaveText("Use global default - Local plan store");
   await picker.selectOption("repository");
   await expect(editor.getByRole("combobox", { name: "After work", exact: true })).toHaveValue(PLAN_VALIDATION_WORKFLOW_ID);
+  if (afterWork === "none") await editor.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await expectContentClearsBorder(editor);
   const updated = page.waitForResponse(r => new URL(r.url()).pathname === `/api/tasks/${task.id}/update`);
   await editor.getByRole("button", { name: "Save", exact: true }).click();
@@ -146,7 +147,7 @@ test("converting a ship task to a repository plan overrides a local global defau
   expect(response.request().postDataJSON()).toMatchObject({ kind: "plan", planStorage: "repository" });
   expect(response.ok(), await response.text()).toBe(true);
   expect((await response.json()).task).toMatchObject({
-    kind: "plan", planPolicy: { storage: "repository" }, workflowId: PLAN_VALIDATION_WORKFLOW_ID,
+    kind: "plan", planPolicy: { storage: "repository" }, workflowId: afterWork === "none" ? null : PLAN_VALIDATION_WORKFLOW_ID,
   });
   await expect(editor).toBeHidden();
   await card.getByRole("button", { name: task.title, exact: true }).click();
@@ -157,6 +158,6 @@ test("converting a ship task to a repository plan overrides a local global defau
     const dir = artifactsDir("task-plan-storage-advanced");
     mkdirSync(dir, { recursive: true });
     await page.mouse.move(0, 0);
-    await editor.screenshot({ path: `${dir}converted-repository.png`, animations: "disabled" });
+    await editor.screenshot({ path: `${dir}converted-repository-${afterWork}.png`, animations: "disabled" });
   }
 });

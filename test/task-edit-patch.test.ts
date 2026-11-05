@@ -245,9 +245,16 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
 test("converting a non-plan task carries every explicit storage choice", () => {
   const task = mkTask({ kind: "ship", planPolicy: null });
   for (const planStorage of ["repository", "local", null] as const) {
-    const draft = edited(task, { kind: "plan", planStorage });
+    const draft = edited(task, { kind: "plan", planStorage, workflowId: undefined });
     assert.deepEqual(taskUpdatePatch(task, draft, task.intent), { kind: "plan", planStorage });
   }
   const existingPlan = mkTask({ kind: "plan", planPolicy: { storage: "repository", commitPlanHtml: false } });
   assert.equal(taskUpdatePatch(existingPlan, draftFromTask(existingPlan), existingPlan.intent), null);
+});
+
+test("plan conversion carries an explicit None even when the ship task also had no workflow", () => {
+  const task = mkTask({ kind: "ship", workflowId: null });
+  assert.deepEqual(taskUpdatePatch(task, edited(task, { kind: "plan", workflowId: null }), task.intent), {
+    kind: "plan", workflowId: null,
+  });
 });

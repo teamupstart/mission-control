@@ -17,7 +17,8 @@ not a live reference to Settings. Before planning starts, storage can be changed
 the global default again resolves it at save time. A reserved plan identity or saved artifacts
 lock storage, including after the task returns to the backlog. Moving existing plans is not supported.
 Changing storage switches the built-in plan validation workflow to its matching local or
-repository variant. Explicit None remains None; incompatible custom workflows are refused for local plans.
+repository variant. Converting a non-plan task selects the new storage's plan workflow unless
+the update explicitly supplies a workflow. Explicit None remains None; incompatible custom workflows are refused for local plans.
 
 The task API and `create_task` / `update_task` accept `planStorage: "local" | "repository" | null`.
 Null resolves the global default; omission on update preserves the pin. The field is only

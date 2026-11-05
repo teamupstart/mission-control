@@ -263,7 +263,8 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   // A pin can only be taken OFF now - the advisor is chosen on Settings -> Harnesses - so the
   // one change a draft can carry is a cleared legacy pin.
   if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
-  if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
+  const becomesPlan = draft.kind === "plan" && task.kind !== "plan";
+  if (draft.workflowId !== undefined && (becomesPlan || draft.workflowId !== task.workflowId)) {
     patch.workflowId = draft.workflowId;
   }
   if (

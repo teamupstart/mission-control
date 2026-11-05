@@ -13,7 +13,8 @@ child to the default branch and asks its session to merge the new base in and pu
 no force-push. Once Phase 1's release check verifies the restack, the child is re-reviewed
 and merges through the ordinary gates, so under YOLO mode a stack lands bottom-up on its
 own. When a stack breaks, the child is held
-with a named reason and an action that fixes it.
+with a named reason and an action that fixes it. Once this phase ships, stacking is on by
+default.
 
 ## 2. Entry criteria
 
@@ -23,9 +24,10 @@ with a named reason and an action that fixes it.
 
 In scope: source plan §5 (parent moved), §6 (retarget and merge-based restack), §9
 (broken stacks), the merge-queue lifecycle states, the manual send when Foreman is off,
-and their docs.
+turning stacking on by default, and their docs.
 
-Not in scope: any change to Phase 1's names, its two gates (`stacked-base`,
+Not in scope: any change to Phase 1's names (this phase changes only the value of
+`STACKING_SHIPPED_DEFAULT`), its two gates (`stacked-base`,
 `stack-hold`), the release check, edge semantics or the dispatch pin. This phase adds no
 gate. It brings children to the state that Phase 1's release check accepts.
 
@@ -49,7 +51,8 @@ From Phase 1:
 - the stacked review diff base, which follows the PR's current base, so a retarget or a
   lineage transition needs no extra diff work here;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
-- the REST retarget helper.
+- the REST retarget helper;
+- `effectiveStacking` and `STACKING_SHIPPED_DEFAULT`.
 
 Repository findings: CodeRabbit follow-up delivery is
 `codeRabbitCandidate` / `codeRabbitStanding` (`src/server/inspector/code-rabbit-delivery.ts`),
@@ -185,10 +188,16 @@ must not become a second unleased autonomous writer.
    only stacking gates, and the release check alone decides `stack-hold`, whatever
    lifecycle label is shown. Bucket them as `blocked`, except
    *Restacking onto main*, which is in progress and belongs with `waiting`.
-7. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks
+7. **Default on** (`src/shared/stacking.ts`). As the last change in this phase, set
+   `STACKING_SHIPPED_DEFAULT = "stack"`. An install with no explicit choice then stacks
+   eligible same-repository dependencies, and the Shipping card shows *Stack on its
+   branch* as the default. An explicit *Wait for merge* choice and every edge with its
+   own `mode` are kept. It lands with this phase and not earlier, because only this
+   phase restacks children without manual work.
+8. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks
    (including the replacement-parent transition and its lineage history) and the Foreman
    dependency. `docs/dispatch-and-backlog.md`: what a stacked task does after its
-   parent merges.
+   parent merges. `docs/configuration.md`: `stacking` now defaults to on.
 
 ## 6. Data and compatibility
 
@@ -199,6 +208,8 @@ must not become a second unleased autonomous writer.
 - Claim rows reuse the CodeRabbit claim table shape, or a sibling table created in the
   upgrade path. They are never re-armed by restarts, pushes or toggles, matching CodeRabbit
   semantics.
+- Turning the default on rewrites nothing. An install with an explicit `stacking` value
+  keeps it, and only an absent key changes meaning.
 - Children retargeted by hand or by GitHub before this phase are observed as
   `restack-needed` or `released` from Phase 1's release record. Nothing is replayed.
 
@@ -251,6 +262,9 @@ must not become a second unleased autonomous writer.
     history entry (`P1 to P2`). It
     stays on the default branch, and it is released only by the closed-parent check
     against P2 and the stack base.
+  - Default on: with no stored `stacking`, an eligible same-repository edge without its
+    own `mode` stacks. An explicit *Wait for merge* value and an edge set to
+    *After merge* still wait.
   - A git-level fixture: cut from the parent, squash-merge the parent, merge
     `origin/main` into the child, and assert the child's diff against `main` is only its
     own change.
@@ -261,6 +275,8 @@ must not become a second unleased autonomous writer.
     with both actions reachable.
   - After a fake replacement parent is discovered, the row reads *Stacked on* the
     replacement.
+  - On a fresh state, the Stacked pull requests card shows *Stack on its branch* selected
+    as the default.
   - Extend the fake `gh` for parent-merged and closed states and the PR PATCH.
 - Then `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.
@@ -270,7 +286,9 @@ must not become a second unleased autonomous writer.
 - All of the above pass.
 - With YOLO mode, Inspector and Foreman on, and a fake or real two-PR stack, the child
   lands after the parent with no human step except conflicts.
-- With stacking off and no PR rows carrying lineage, nothing in this phase acts.
+- With stacking explicitly set to *Wait for merge* and no PR rows carrying lineage,
+  nothing in this phase acts.
+- With no explicit choice, stacking is on by default.
 - Children that already carry lineage keep the full lifecycle (catch-up, retarget,
   restack prompts and broken-stack handling) whatever the setting says. They stay held
   until Phase 1's release check passes.
@@ -315,6 +333,8 @@ children into non-default bases or add a daemon-side writer that types into pane
     well as the restack prompt. A test covers both kinds.
   - Re-review (CodeRabbit): the replacement-parent transition writes only the open
     child's own row. Phase 1's `stack_adopted_at` order applies only to inheritance.
+  - Operator request: stacking is on by default once shipped. Step 7 flips the shipped
+    default as this phase's last change.
 - Repair round 6: the non-goal wording now matches Phase 1. After a retarget, the review
   diff's base refresh is Phase 1's (step 9), so this phase adds nothing for it.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base

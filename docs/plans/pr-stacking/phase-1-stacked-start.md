@@ -14,7 +14,8 @@ the prerequisite's branch. YOLO mode never merges a pull request whose base is n
 default branch, and a review against one base never authorizes a merge against another.
 A PR with stack lineage stays held until a verified ancestry check shows it was
 restacked, or moved off a closed parent. That hold holds even when GitHub retargets the
-PR by itself. The setting ships off, so nothing changes for anyone who leaves it alone.
+PR by itself. While only this phase exists the shipped default is *Wait for merge*, so
+nothing changes for anyone who leaves the setting alone. Phase 2 turns the default on.
 
 ## 2. Entry criteria
 
@@ -47,12 +48,14 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 ## 5. Implementation steps
 
 1. **Contracts** (`src/shared/protocol.ts`, `src/shared/types.ts`,
-   `src/shared/app-config-entries.ts`). Add `stacking` and `maxStackDepth` to
-   `ShippingConfigSchema` and `shippingFields`. Add optional `mode` to the task and session
+   `src/shared/app-config-entries.ts`). Add `stacking` (optional, no Zod default) and
+   `maxStackDepth` to `ShippingConfigSchema` and `shippingFields`. Add
+   `STACKING_SHIPPED_DEFAULT = "merge"` and `effectiveStacking(config)` to
+   `src/shared/stacking.ts`. Add optional `mode` to the task and session
    variants of `TaskDependencyInputSchema` and `TaskDependency`. Add the four optional
    stack-readiness fields to `TaskDependency`. Plan edges never stack.
 2. **Eligibility** (new `src/shared/stacking.ts`). `effectiveEdgeMode` returns the edge's
-   `mode`, or the config default when it is absent. `stackEligibility` applies source plan
+   `mode`, or `effectiveStacking(config)` when it is absent. `stackEligibility` applies source plan
    §1:
    - the edge is in stack mode;
    - the prerequisite's and the dependent's primary repositories are the same, because
@@ -212,7 +215,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      force-pushes and never stacks across repositories. It also says that switching it
      off stops new stacks only: pull requests that are already stacked keep their hold.
      It saves through
-     `PUT /api/shipping/config`. Register it in settings search and the settings dots like
+     `PUT /api/shipping/config`, and sends `stacking` only when the operator picks a
+     value, so an install that never chose keeps following the shipped default. The
+     control shows the effective value and marks which one is the default. Register it in settings search and the settings dots like
      its siblings.
    - On each same-repository task or session dependency chip, a **Stack** / **After merge**
      toggle that shows the inherited default until it is changed. Draft mapping goes
@@ -229,7 +234,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 
 ## 6. Data and compatibility
 
-- New config keys come with Zod defaults, so stored blobs gain them on read.
+- `maxStackDepth` comes with a Zod default. `stacking` has none: an absent key means the
+  shipped default, so saving the Shipping settings never pins an install to *Wait for
+  merge*.
 - New edge fields are optional, so stored `tasks.dependencies` JSON parses unchanged, and an
   absent `mode` means "inherit".
 - New `tasks` and `inspector_prs` columns are added through `addColumn` in the upgrade path,
@@ -323,6 +330,8 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
     and never fall back to the stale ref.
   - Review invalidation on a base change.
   - Config defaults over an old blob, and edge `mode` absent on stored rows.
+  - `effectiveStacking` returns the shipped default for an absent key. Saving another
+    Shipping card does not write `stacking`, and a backup round trip keeps it absent.
   - Migration over a pre-phase database.
 - `e2e/specs/shipping-stacking.spec.ts`:
   - The card sets the default and survives a reload.
@@ -340,8 +349,8 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 ## 8. Merge and exit criteria
 
 - All of the above pass.
-- With the setting off and no chip set to Stack, behavior and existing tests are
-  unchanged.
+- With the shipped default (*Wait for merge*), no explicit choice and no chip set to
+  Stack, behavior and existing tests are unchanged.
 - With it on, a stacked child starts, is pinned to the parent head, and opens on (or is
   corrected to) the parent base. It is held by `stacked-base` while its base is the
   parent branch. After any retarget, including GitHub's automatic one, it is held by
@@ -354,6 +363,7 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 Phase 2 relies on the contract names in the index, unchanged:
 
 - the edge readiness stamp and `effectiveEdgeMode` / `stackEligibility`;
+- `effectiveStacking` and `STACKING_SHIPPED_DEFAULT`, whose value Phase 2 flips;
 - the `Task.stack*` fields;
 - `PrSnapshot.baseRefName` / `defaultBranch` / `mergeCommitSha` and
   `inspector_prs.base_ref_name`;
@@ -431,3 +441,7 @@ change `stack_base_sha`.
   idle with an empty queue, and refuses the pin unless the parent head contains every
   merged same-repository prerequisite. Step 2 notes the second rule. Tests were added for
   both.
+- Operator request: stacking is on by default once the feature ships. Step 1 makes
+  `stacking` optional with no stored default and adds `effectiveStacking` and
+  `STACKING_SHIPPED_DEFAULT` (`"merge"` here). Phase 2 flips the constant. Step 11's card
+  writes `stacking` only on an explicit choice.

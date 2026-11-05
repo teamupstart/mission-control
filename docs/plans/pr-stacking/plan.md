@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Revision 9 refreshes and verifies the stacked base before every review diff, so a parent that moved after dispatch cannot leave Personas and CodeRabbit reviewing against a stale base. Revision 10 answers the PR #1359 review: both stacking gates apply only to pull requests with stack lineage, and Phase 2 defines state precedence, keeps lifecycle labels out of the gate value, keys prompt claims to the condition that needs action, surfaces uncertain deliveries, and re-applies a failed retarget. The dispatch of a stacked dependent revalidates the parent pull request before it starts. Lineage inheritance is scoped to one work episode, and both Phase 2 prompt kinds share the same delivery recovery. A stacked child never starts from a parent head that lacks a merged same-repository prerequisite. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Revision 9 refreshes and verifies the stacked base before every review diff, so a parent that moved after dispatch cannot leave Personas and CodeRabbit reviewing against a stale base. Revision 10 answers the PR #1359 review: both stacking gates apply only to pull requests with stack lineage, and Phase 2 defines state precedence, keeps lifecycle labels out of the gate value, keys prompt claims to the condition that needs action, surfaces uncertain deliveries, and re-applies a failed retarget. The dispatch of a stacked dependent revalidates the parent pull request before it starts. Lineage inheritance is scoped to one work episode, and both Phase 2 prompt kinds share the same delivery recovery. A stacked child never starts from a parent head that lacks a merged same-repository prerequisite. Stacking is on by default once the feature ships: Phase 2 turns the Shipping default to *Stack on its branch* for every install that has not chosen a value. Nothing here is implemented.
 
 ## The short answer
 
@@ -258,8 +258,11 @@ fails, the diff fails visibly instead of using a stale base. Phase 1 owns this.
 
 A **Stacked pull requests** card on **Settings → Shipping**, after the YOLO mode cards:
 
-- **Same-repository dependencies**: segmented control *Wait for merge* (default) / *Stack
-  on its branch*.
+- **Same-repository dependencies**: segmented control *Wait for merge* / *Stack on its
+  branch*. Once the feature ships, the default is *Stack on its branch*. It stays *Wait
+  for merge* while only Phase 1 exists, because Phase 1 alone has no automatic restack.
+  An install that never picked a value follows the shipped default, and an explicit
+  choice is kept.
 - **Maximum stack depth**: number, 1 to 5, default 3.
 - Copy that says what it does not do: it never merges into a non-default branch, never
   force-pushes, and never stacks across repositories.
@@ -279,7 +282,7 @@ The board card and Line row of a stacked task show *Stacked on #A*.
 
 | Area | Change |
 |---|---|
-| `src/shared/protocol.ts` | `ShippingConfigSchema` gains `stacking: "merge" \| "stack"` (default `"merge"`) and `maxStackDepth` (default 3). `TaskDependencyInput` and `TaskDependency` gain optional `mode`. Zod defaults keep stored blobs and edges readable |
+| `src/shared/protocol.ts` | `ShippingConfigSchema` gains an optional `stacking: "merge" \| "stack"` (absent means the shipped default, which is stack once Phase 2 ships) and `maxStackDepth` (default 3). `TaskDependencyInput` and `TaskDependency` gain optional `mode`. Zod defaults keep stored blobs and edges readable |
 | `src/shared/backlog.ts`, `src/server/tasks.ts` | `declaredBlockersIn` treats a stack-ready edge as non-blocking for start. The daemon stamps stack readiness on the edge. Eligibility is a pure function in `src/shared/` so the board, Sitrep, autopilot and server agree |
 | `src/server/db.ts` | `tasks` gains `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha` via `addColumn` in the upgrade path |
 | `src/server/dispatcher.ts` | A stacked dispatch passes the parent head as the existing `baseSha` pin |
@@ -347,6 +350,8 @@ Submitted in the first review of revision 1:
 | Restack after a parent squash-merges | Merge the new base into the child and push (no force-push) |
 | Where the default applies | One switch for all repositories |
 | Follow-up | Create a phased implementation plan |
+
+Added later by the operator: stacking is on by default once the feature ships.
 
 Repository-wide stacking, rebase-and-force-push restacking, and a per-repository opt-in
 list were considered and rejected.

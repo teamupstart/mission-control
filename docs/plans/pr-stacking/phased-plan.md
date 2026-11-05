@@ -13,6 +13,7 @@ implementation route. The source plan owns the goal.
 | Restack after a parent squash-merges | Merge the new base into the child and push (no force-push) |
 | Where the default applies | One switch for all repositories |
 | Follow-up | Phased implementation plan (this document) |
+| Default once shipped | On (*Stack on its branch*), added later by the operator. Phase 2 turns it on |
 
 ## What the repository says
 
@@ -47,7 +48,8 @@ squash-merge restacking, and failure holds.
 mid-tier model implements and explains reliably. There is a natural merge boundary that
 lowers risk: Phase 1 lets a stacked child start and keeps it from being merged wrongly.
 Phase 2 automates what happens when the parent moves, merges or breaks. After Phase 1 the
-repository is operable. The setting ships off. A stacked pull request that outlives its
+repository is operable. The setting stays off while only Phase 1 exists, and Phase 2
+turns it on by default. A stacked pull request that outlives its
 parent is held by the lineage-based `stack-hold` gate with a visible reason, even after
 GitHub retargets it automatically. The release check also defines how a person clears it
 by hand: merge the default branch into the child, or move its commits onto a fresh
@@ -59,7 +61,7 @@ without adding anything that Phase 1 needs in order to be safe.
 | Phase | File | Delivers | Direct prerequisites |
 |---|---|---|---|
 | 1 | `phase-1-stacked-start.md` | Setting, per-edge mode, stack readiness, dispatch from the parent head, stacked PR base (instructed and corrected), `stacked-base` and lineage-based `stack-hold` gates with the ancestry release check, base-aware review record, UI and docs | Planning session (this plan's merge) |
-| 2 | `phase-2-stack-lifecycle.md` | Parent-moved catch-up prompts, retarget on parent merge, merge-based restack prompts, broken-stack holds and actions, lifecycle merge-queue states, docs | Phase 1 |
+| 2 | `phase-2-stack-lifecycle.md` | Parent-moved catch-up prompts, retarget on parent merge, merge-based restack prompts, broken-stack holds and actions, lifecycle merge-queue states, stacking on by default, docs | Phase 1 |
 
 Dependency graph: planning session → Phase 1 → Phase 2. The phases are serial. Phase 2
 consumes Phase 1's edge fields, task stack columns, snapshot base fields and merge gate,
@@ -71,8 +73,12 @@ Merge order: Phase 1, then Phase 2.
 
 Phase 1 owns these names and Phase 2 must not rename them:
 
-- `ShippingConfig.stacking: "merge" | "stack"` (default `"merge"`) and
-  `ShippingConfig.maxStackDepth` (int 1 to 5, default 3).
+- `ShippingConfig.stacking: "merge" | "stack"`, optional with no stored default, read
+  through `effectiveStacking(config)`, which returns `config.stacking ??
+  STACKING_SHIPPED_DEFAULT`. Phase 1 owns both names and sets the constant to `"merge"`.
+  Phase 2 changes only the constant, to `"stack"`. Nothing writes `stacking` except an
+  explicit operator choice.
+- `ShippingConfig.maxStackDepth` (int 1 to 5, default 3).
 - Task and session dependency edges gain an optional `mode: "merge" | "stack"`, absent
   meaning "inherit the Shipping default at evaluation time". They also gain a stack-readiness
   stamp: `stackReadyAt: number | null`, `stackBaseBranch: string | null`,
@@ -154,7 +160,8 @@ Phase 1 owns these names and Phase 2 must not rename them:
 
 ## Final verification
 
-After Phase 2 merges, an operator can turn stacking on, dispatch a two-phase plan, and
+After Phase 2 merges, an operator on a fresh install, without touching the setting, can
+dispatch a two-phase plan and
 watch the second phase start from the first phase's open PR, open a PR based on it, and
 land bottom-up under YOLO mode after a squash merge. Each phase's own tests, `npm run
 typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and `npm run test:e2e` pass.
@@ -257,3 +264,6 @@ behavior.
     `stack_adopted_at` defines which earlier row inheritance copies.
   - Re-review: dispatch rechecks the prerequisite's idle state and requires the parent
     head to contain every merged same-repository prerequisite.
+- Operator request (after the PR #1359 reviews): stacking is on by default once the
+  feature ships. `stacking` has no stored default, and Phase 2 flips
+  `STACKING_SHIPPED_DEFAULT` to `"stack"` as its last change.

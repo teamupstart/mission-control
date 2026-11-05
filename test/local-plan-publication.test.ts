@@ -735,3 +735,43 @@ test("per-task plan storage overrides pin policy, follow compatible defaults, an
   assert.equal(invalid.status, 409);
   applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
 });
+
+for (const committed of [false, true]) test(`legacy plan artifacts lock storage without managed records (committed: ${committed})`, async () => {
+  const f = await fixture();
+  mkdirSync(join(f.repo, "docs/plans/unrelated"), { recursive: true });
+  writeFileSync(join(f.repo, "docs/plans/unrelated/plan.md"), "# Existing unrelated plan\n");
+  git(f.repo, "add", "docs/plans");
+  git(f.repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "existing plan");
+  git(f.repo, "checkout", "-qb", "legacy-plan");
+  const task = f.tasks.create({ kind: "plan", repoRoot: f.repo, title: "Legacy planning task", intent: "Legacy planning task", backlog: true, planStorage: "repository" });
+  f.registry.upsertTask({ ...task, planPolicy: null, worktreePath: f.repo });
+  const unrelated = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(unrelated.ok, true, "an unrelated baseline plan must not lock this task");
+  f.registry.upsertTask({ ...f.tasks.get(task.id)!, planPolicy: null, workflowId: PLAN_VALIDATION_WORKFLOW_ID });
+  mkdirSync(join(f.repo, "docs/plans/legacy"), { recursive: true });
+  writeFileSync(join(f.repo, "docs/plans/legacy/plan.md"), "# Legacy task artifact\n");
+  if (committed) {
+    git(f.repo, "add", "docs/plans/legacy");
+    git(f.repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "legacy plan");
+  }
+  const before = f.tasks.get(task.id);
+  const savedBefore = loadActiveTasks().find((saved) => saved.id === task.id);
+  const refused = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /storage is locked/);
+  assert.deepEqual(f.tasks.get(task.id), before);
+  assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
+});
+
+test("storage edits fail closed when a prior task checkout cannot be inspected", async () => {
+  const f = await fixture();
+  const task = f.tasks.create({ kind: "plan", repoRoot: f.repo, title: "Unavailable legacy checkout", intent: "Unavailable legacy checkout", backlog: true, planStorage: "repository" });
+  f.registry.upsertTask({ ...task, worktreePath: join(f.repo, "missing-checkout") });
+  const before = f.tasks.get(task.id);
+  const savedBefore = loadActiveTasks().find((saved) => saved.id === task.id);
+  const refused = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /Cannot verify existing plan artifacts/);
+  assert.deepEqual(f.tasks.get(task.id), before);
+  assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
+});

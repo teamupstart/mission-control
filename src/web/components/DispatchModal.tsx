@@ -1534,7 +1534,10 @@ function DispatchModal({
     if (kind === draft.kind) return {};
     if (taskHasOwnDefaultWorkflow(kind)) {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
+      // New plan defaults resolve with storage at save time, even if Settings changed.
+      return { workflowId: kind === "plan" && !editing
+        ? undefined
+        : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
     }
     if (!hasReviewableDiff(kind)) {
       if (!hasReviewableDiff(draft.kind)) return {};

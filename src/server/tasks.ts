@@ -3846,7 +3846,7 @@ export class TaskManager {
         // Storage edits preserve the task's HTML preference; only new policies read it anew.
         planPolicy = { ...requested, commitPlanHtml: t.planPolicy?.commitPlanHtml ?? requested.commitPlanHtml };
         if (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")) {
-          if (taskPlanStorageLocked(t.id)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
+          if (await taskPlanStorageLocked(t)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
         }
         if (patch.workflowId === undefined && (becomesPlan
           || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")

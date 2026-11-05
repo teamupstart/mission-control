@@ -54,8 +54,9 @@ test("plan tasks override storage, display their pins, and edit with compatible 
       await page.screenshot({ path: `${dir}storage-tooltip.png`, animations: "disabled" });
     }
     await picker.selectOption(storage);
-    await expect(dialog.getByRole("combobox", { name: "After work", exact: true })).toHaveValue(
-      storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID);
+    const afterWork = dialog.getByRole("combobox", { name: "After work", exact: true });
+    await expect(afterWork).toHaveValue("__default");
+    await expect(afterWork.locator("option:checked")).toContainText(storage === "local" ? "Local Plan Validation" : "Plan Validation");
     await expect(dialog.getByText(storage === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow.", { exact: true })).toBeVisible();
     await expectContentClearsBorder(dialog);
     const advanced = dialog.getByRole("button", { name: /^Advanced/ });
@@ -72,6 +73,7 @@ test("plan tasks override storage, display their pins, and edit with compatible 
     expect(saved.ok(), await saved.text()).toBe(true);
     const task = await saved.json() as Task;
     expect(task.planPolicy?.storage).toBe(storage);
+    expect(task.workflowId).toBe(storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID);
     created.push(task);
     await expect(dialog).toBeHidden();
   }
@@ -160,4 +162,31 @@ for (const afterWork of ["default", "none"] as const) test(`converting a ship ta
     await page.mouse.move(0, 0);
     await editor.screenshot({ path: `${dir}converted-repository-${afterWork}.png`, animations: "disabled" });
   }
+});
+
+for (const storage of ["local", "repository"] as const) test(`new plan workflow follows the global ${storage} storage resolved at save time`, async ({ dashboard: page, daemon }) => {
+  const configure = async (planStorage: "local" | "repository") => {
+    const response = await fetch(`${daemon.baseURL}/api/skills/config`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ planStorage }),
+    });
+    expect(response.ok).toBe(true);
+  };
+  await configure(storage === "local" ? "repository" : "local");
+  await page.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Plan after settings change");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  await expandAdvanced(dialog);
+  await expect(dialog.getByRole("combobox", { name: "Plan storage", exact: true })).toHaveValue("__default");
+  await expectContentClearsBorder(dialog);
+  await configure(storage);
+  const response = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/tasks");
+  await dialog.getByRole("button", { name: "Add to backlog", exact: true }).click();
+  const saved = await response;
+  expect(saved.ok(), await saved.text()).toBe(true);
+  expect((await saved.json()) as Task).toMatchObject({ planPolicy: { storage },
+    workflowId: storage === "local" ? LOCAL_PLAN_VALIDATION_WORKFLOW_ID : PLAN_VALIDATION_WORKFLOW_ID });
+  expect(saved.request().postDataJSON()).not.toHaveProperty("workflowId");
 });

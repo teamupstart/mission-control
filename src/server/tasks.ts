@@ -1,4 +1,5 @@
-import { newPlanPolicy, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
+import { taskDefaultWorkflowId } from "@shared/task.ts";
+import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
@@ -244,6 +245,7 @@ export interface CreateTaskInput {
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   planInputs?: TaskPlanInput[];
+  planStorage?: "repository" | "local" | null;
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -2753,8 +2755,9 @@ export class TaskManager {
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
-  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId">): TaskCreationPolicy {
-    const planPolicy = input.kind === "plan" ? newPlanPolicy() : null;
+  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId" | "planStorage">): TaskCreationPolicy {
+    if (input.planStorage !== undefined && input.kind !== "plan") throw new PlanStoreError("Plan storage is only available for plan tasks");
+    const planPolicy = input.kind === "plan" ? newPlanPolicy(input.planStorage) : null;
     return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
   }
 
@@ -3830,15 +3833,31 @@ export class TaskManager {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
-    const planPolicy = patch.kind === "plan" && t.kind !== "plan" ? newPlanPolicy() : t.planPolicy;
+    let planPolicy = t.planPolicy;
+    let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
     try {
+      if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
+        throw new PlanStoreError("Plan storage is only available for plan tasks");
+      }
+      if (patch.planStorage !== undefined || (patch.kind === "plan" && t.kind !== "plan")) {
+        if (t.planPolicyError) throw new PlanStoreError(t.planPolicyError);
+        const requested = newPlanPolicy(patch.planStorage);
+        // Storage edits preserve the task's HTML preference; only new policies read it anew.
+        planPolicy = { ...requested, commitPlanHtml: t.planPolicy?.commitPlanHtml ?? requested.commitPlanHtml };
+        if (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")) {
+          if (taskPlanStorageLocked(t.id)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
+          if (patch.workflowId === undefined && t.workflowId === taskDefaultWorkflowId("plan", null, t.planPolicy?.storage ?? "repository")) {
+            workflowId = taskDefaultWorkflowId("plan", null, planPolicy.storage);
+          }
+        }
+      }
       const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];
       validatePlanInputs(patch.planInputs ?? t.planInputs ?? [], roots);
       for (const edge of patch.dependencies ?? t.dependencies) {
         if (edge.type === "plan") validatePlanInputs([{ repoKey: edge.repoKey, planId: edge.planId, revision: edge.revision, files: ["plan.md"] }], roots);
       }
       if (planPolicy?.storage === "local" && (patch.kind ?? t.kind) === "plan") {
-        const problem = localWorkflowProblem(patch.workflowId === undefined ? t.workflowId : patch.workflowId);
+        const problem = localWorkflowProblem(workflowId);
         if (problem) return { ok: false, error: problem };
       }
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
@@ -3886,7 +3905,7 @@ export class TaskManager {
       advisorModel,
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
-      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+      workflowId,
       updatedAt: Date.now(),
     };
     return { ok: true, task: next, base: t };

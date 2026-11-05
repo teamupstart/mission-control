@@ -8,6 +8,19 @@ locally for review and is omitted from Git by default. Settings > Skills > **Com
 generated HTML plan files** opts new plans into publishing HTML alongside Markdown.
 The checkbox remains configurable when skill installation is off, but is disabled in local mode without losing its saved value.
 
+The Dispatch and backlog editor offer **Plan storage** for plan tasks: **Use global
+default** (showing its current value), **Local plan store**, or **Repository**. Creation
+resolves the choice once and pins it on the task. Reopening the editor shows that pin,
+not a live reference to Settings. Before planning starts, storage can be changed; selecting
+the global default again resolves it at save time. A reserved plan identity or saved artifacts
+lock storage, including after the task returns to the backlog. Moving existing plans is not supported.
+Changing storage switches the built-in plan validation workflow to its matching local or
+repository variant. Explicit None remains None; incompatible custom workflows are refused for local plans.
+
+The task API and `create_task` / `update_task` accept `planStorage: "local" | "repository" | null`.
+Null resolves the global default; omission on update preserves the pin. The field is only
+valid for plan tasks. Tool responses include the resolved `planPolicy`.
+
 Each plan pins that policy when created. Changing settings does not relocate active
 plans, reinterpret old revisions, delete tracked HTML, or migrate unmanaged plans.
 Legacy plans keep their tracked layout and existing archive discovery. Adoption,

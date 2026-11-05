@@ -119,13 +119,20 @@ export async function planContext(authority: PlanAuthority) {
     policy: reservation ? ManagedPlanPolicySchema.parse(JSON.parse(reservation.policy)) : authority.policy ?? newPlanPolicy() };
 }
 
-export function newPlanPolicy(): ManagedPlanPolicy {
+export function newPlanPolicy(storage?: "repository" | "local" | null): ManagedPlanPolicy {
   const problem = skillsConfigProblem();
   if (problem) throw new PlanStoreError(problem);
   const config = getSkillsConfig();
-  return config.planStorage === "local"
+  return (storage ?? config.planStorage) === "local"
     ? { version: 2, storage: "local", commitPlanHtml: config.commitPlanHtml }
     : { storage: "repository", commitPlanHtml: config.commitPlanHtml };
+}
+
+/** A reserved identity or any saved artifact makes the task's storage immutable. */
+export function taskPlanStorageLocked(taskId: string): boolean {
+  return Boolean(openDb().prepare(
+    "SELECT 1 FROM managed_plan_reservations WHERE task_id = ? UNION ALL SELECT 1 FROM managed_plans WHERE task_id = ? LIMIT 1",
+  ).get(taskId, taskId));
 }
 
 /** Pre-policy plan tasks keep Git publication, with the saved HTML choice at first pin. */

@@ -73,6 +73,7 @@ export type DispatchDraft = {
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;
+  planStorage?: "repository" | "local" | null;
   /** Whether Foreman's backlog autopilot may schedule the shelved task. */
   enabled: boolean;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
@@ -150,6 +151,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     effort: t.effort ?? "",
     advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
+    planStorage: t.kind === "plan" ? t.planPolicy?.storage ?? "repository" : undefined,
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
@@ -186,6 +188,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.effort === b.effort &&
     a.advisorModel === b.advisorModel &&
     a.workflowId === b.workflowId &&
+    a.planStorage === b.planStorage &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
@@ -262,6 +265,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
   if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
     patch.workflowId = draft.workflowId;
+  }
+  if (draft.kind === "plan" && draft.planStorage !== undefined && draft.planStorage !== (task.planPolicy?.storage ?? "repository")) {
+    patch.planStorage = draft.planStorage;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);

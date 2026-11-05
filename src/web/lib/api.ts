@@ -1562,6 +1562,7 @@ export interface DispatchInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
+  planStorage?: "repository" | "local" | null;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;

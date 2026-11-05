@@ -540,3 +540,40 @@ test("concurrent backlog-only edits refuse a stale update and preserve the newer
   }
   assert.equal(registry.getTask(task.id), saved.task);
 });
+
+test("MCP creates and edits storage overrides without changing global settings", async (t) => {
+  const f = await fixture(t);
+  applySkillsConfig({ planStorage: "repository" });
+  const local = await f.create({ kind: "plan", planStorage: "local" });
+  assert.equal(local.planPolicy?.storage, "local");
+  assert.equal(local.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  const repository = await f.create({ kind: "plan" });
+  assert.equal(repository.planPolicy?.storage, "repository");
+  const changed = await f.call("update_task", { taskId: local.id, planStorage: "repository" });
+  assert.equal(changed?.planPolicy?.storage, "repository");
+  applySkillsConfig({ planStorage: "local" });
+  const explicitRepo = await f.create({ kind: "plan", planStorage: "repository" });
+  assert.equal(explicitRepo.planPolicy?.storage, "repository");
+  const inherited = await f.call("update_task", { taskId: local.id, planStorage: null });
+  assert.equal(inherited?.planPolicy?.storage, "local");
+  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid enum/);
+  await f.call("create_task", { title: "Invalid storage kind", intent: "Ship", repository: repoA, kind: "ship", planStorage: "local" }, /only available for plan tasks/);
+});
+
+test("MCP rejects storage overrides on backlog ship updates without changing saved state", async (t) => {
+  const f = await fixture(t);
+  const task = await f.create({ kind: "ship", workflowId: null });
+  const before = getTask(task.id)!;
+  assert.equal(before.status, "backlog");
+  assert.equal(before.kind, "ship");
+  const registeredBefore = structuredClone(f.registry.getTask(task.id));
+  for (const planStorage of ["local", "repository", null]) {
+    await f.call("update_task", {
+      taskId: task.id,
+      planStorage,
+      title: "This change must not be saved",
+    }, /Plan storage is only available for plan tasks/);
+    assert.deepEqual(getTask(task.id), before, "a refused edit must not change persisted task state");
+    assert.deepEqual(f.registry.getTask(task.id), registeredBefore, "a refused edit must not change live task state");
+  }
+});

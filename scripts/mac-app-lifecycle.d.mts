@@ -7,6 +7,8 @@ export interface MacAppOps {
   sleep(ms: number): Promise<void>;
   run(command: string, args: string[], timeout?: number): Promise<{code: number; stdout: string}>;
   identity(pid: number): string | null;
+  /** The kernel's argv and environment entries; undefined once the pid has exited, null when unreadable. */
+  processArguments?(pid: number): {argv: string[]; env: string[]} | null | undefined;
   kill(pid: number, signal: "SIGTERM" | "SIGKILL"): void;
   readAck(nonce: string): LaunchAck | null;
 }

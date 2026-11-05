@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { copyFile, link, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,6 +16,10 @@ import {
 } from "../scripts/mac-app-lifecycle.mjs";
 import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
 import { sanitizeDiagnostic } from "../scripts/update-diagnostic.mjs";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+// `realMacAppOps().processArguments` reads through the shipped state-lock addon.
+const stateLockAddon = ensureNativeStateLockAddon();
 
 const bundle = "/Users/test/Applications/Mission Control.app";
 const binary = `${bundle}/Contents/MacOS/Mission Control`;
@@ -1207,4 +1213,255 @@ test('bundle-exit diagnostics identify the executable and parent without exposin
     assert.match(message, /39896.*parent 1/);
     return true;
   });
+});
+
+
+type ArgumentRecord = {argv: string[]; env: string[]} | null;
+/**
+ * Answers `ops.processArguments` from per-pid kernel records, entry by entry as the addon
+ * returns them: a pid absent from the table has exited, and a null record is unreadable.
+ * Returns the pids read, in order.
+ */
+function argumentRecords(f: ReturnType<typeof fixture>, processes: Map<number, ArgumentRecord>) {
+  const reads: number[] = [];
+  f.ops.processArguments = (pid) => {
+    reads.push(pid);
+    return processes.has(pid) ? processes.get(pid)! : undefined;
+  };
+  return reads;
+}
+/** Answers the bundle-exit and retry paths' own one-pid `ps -o args=` reads from the same table. */
+function argsReads(f: ReturnType<typeof fixture>, processes: Map<number, ArgumentRecord>) {
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => command === "/bin/ps" && args.includes("args=")
+    ? {code: 0, stdout: `${processes.get(Number(args[args.indexOf("-p") + 1]))?.argv.join(" ") ?? ""}\n`}
+    : run(command, args, timeout);
+}
+
+const mcpServer = `${bundle}/Contents/Resources/app/dist/mcp/server.mjs`;
+const hookScript = `${bundle}/Contents/Resources/app/dist/satellites/hook.mjs`;
+const helperBinary = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+/** The `ps` snapshot when a terminal `claude` (pid 24941) runs our MCP server and a hook on the main binary. */
+const terminalSatellites = `42 1 S ${binary}\n24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25190 24941 S ${binary}\n`;
+const satelliteRecords = () => new Map<number, ArgumentRecord>([
+  [42, {argv: [binary], env: ["HOME=/Users/test"]}],
+  [25186, {argv: [binary, mcpServer], env: ["HOME=/Users/test", "MISSION_TOKEN=secret-bearer", "ELECTRON_RUN_AS_NODE=1"]}],
+  [25190, {argv: [binary, hookScript, "PreToolUse"], env: ["ELECTRON_RUN_AS_NODE=1", "HOME=/Users/test"]}],
+]);
+
+test("an MCP server or hook a terminal session runs on the main binary as Node is not a launch conflict", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  argumentRecords(f, satelliteRecords());
+  // The reported refusal named pid 25186, the MCP server, as an unregistered Foreground instance.
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []});
+  await assertSafeAppLaunch(bundle, f.ops);
+});
+
+test("a second GUI instance LaunchServices has not registered is still refused beside Node-mode satellites", async (t) => {
+  for (const [name, argv, env] of [
+    ["a plain second instance", [binary], ["HOME=/Users/test"]],
+    ["an instance whose arguments merely name the flag", [binary, "ELECTRON_RUN_AS_NODE=1"], ["HOME=/Users/test"]],
+    ["an instance whose arguments name a satellite script", [binary, mcpServer], ["HOME=/Users/test"]],
+    ["an instance whose flag is empty", [binary], ["ELECTRON_RUN_AS_NODE=", "HOME=/Users/test"]],
+    // `ps -E` prints this exactly like a real flag: "... NOTE=x ELECTRON_RUN_AS_NODE=1 HOME=...".
+    ["an instance with another variable whose value contains the flag", [binary], ["NOTE=x ELECTRON_RUN_AS_NODE=1", "HOME=/Users/test"]],
+    ["an instance whose variable name merely starts with the flag", [binary], ["ELECTRON_RUN_AS_NODE_EXTRA=1"]],
+    // Electron reads the flag with getenv, which answers with the first entry of that name.
+    ["an instance whose first flag entry is empty", [binary], ["ELECTRON_RUN_AS_NODE=", "ELECTRON_RUN_AS_NODE=1"]],
+  ] as const) {
+    await t.test(name, async () => {
+      const f = fixture();
+      f.outputs.set("ps", `${terminalSatellites}77 1 S ${binary}\n`);
+      argumentRecords(f, new Map([...satelliteRecords(), [77, {argv: [...argv], env: [...env]}]]));
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [], unregistered: [77]});
+      assert.equal(launchConflictMessage(conflicts, 501), "Mission Control process 77 is not registered as a Foreground app in LaunchServices. Quit that instance after removing any respawn job, then open Mission Control from Finder or the Dock.\nNo launchd job was removed. Retry the update after resolving this launch conflict.");
+      await assert.rejects(assertSafeAppLaunch(bundle, f.ops), /process 77 is not registered as a Foreground app/);
+    });
+  }
+});
+
+test("a Node-mode process that LaunchServices registered in any role is still treated as an app", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  f.outputs.set("apps", registration() + registration(25186, "BackgroundOnly").replace("1)", "2)"));
+  const reads = argumentRecords(f, satelliteRecords());
+  assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186]);
+  assert.ok(!reads.includes(25186), "a registered process's arguments are never read");
+});
+
+test("an unreadable argument record fails closed", async (t) => {
+  await t.test("the kernel will not describe the process", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    argumentRecords(f, new Map([...satelliteRecords(), [25186, null]]));
+    assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186]);
+  });
+  await t.test("the read fails outright", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    f.ops.processArguments = () => { throw new Error("the kernel returned a truncated argument record"); };
+    await assert.rejects(inspectAppLaunch(bundle, f.ops), /truncated argument record/);
+  });
+  await t.test("ops that cannot read arguments at all", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    delete f.ops.processArguments;
+    assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186, 25190]);
+  });
+});
+
+test("a hook that exits between the snapshot and its argument read is not a conflict", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  const records = satelliteRecords();
+  records.delete(25190);
+  argumentRecords(f, records);
+  assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, []);
+});
+
+test("arguments are read once per pid per inspection, only for unregistered main processes, and spawn nothing", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  const reads = argumentRecords(f, satelliteRecords());
+  await inspectAppLaunches([bundle, bundle], f.ops);
+  assert.deepEqual(reads, [25186, 25190], "one read per candidate, shared by every bundle");
+  assert.ok(!f.calls.some((call) => call.includes(" -p ")), "no per-process ps probe");
+  const clean = fixture();
+  const none = argumentRecords(clean, satelliteRecords());
+  await inspectAppLaunch(bundle, clean.ops);
+  assert.deepEqual(none, [], "a Mac running only the registered app pays no extra read");
+});
+
+test("the bundle swap does not wait on a terminal session's Node-mode satellites, on either binary", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25187 24941 S ${helperBinary}\n25190 24941 S ${binary}\n`);
+  const records = satelliteRecords();
+  records.set(25187, {argv: [helperBinary, mcpServer], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  argumentRecords(f, records);
+  const waiting: string[] = [];
+  await waitForBundleExit(bundle, f.ops, 1000, (message) => waiting.push(message));
+  assert.deepEqual(waiting, [], "nothing was waited on");
+});
+
+test("an owned Node-mode satellite is still waited on and signalled through its ownership record", async () => {
+  // A dispatched session's own MCP server: Mission Control owns it, so the operator exemption
+  // does not apply and it is cleaned up exactly like any other owned work.
+  const f = fixture();
+  let running = `25186 24941 S ${binary}\n`;
+  f.outputs.set("ps", running);
+  argumentRecords(f, satelliteRecords());
+  const owners = [{pid: 25186, fingerprint: createHash("sha256").update("start-42").digest("hex"), group: false, work: "Mission Control session s-1"}];
+  const signals: string[] = [];
+  f.ops.kill = (pid, signal) => {
+    signals.push(`${pid}:${signal}`);
+    running = "";
+    f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  };
+  const waiting: string[] = [];
+  await waitForBundleExit(bundle, f.ops, 30_000, (message) => waiting.push(message), owners);
+  assert.match(waiting[0] ?? "", /25186 .*Mission Control session s-1/, "the owned satellite was waited on");
+  assert.deepEqual(signals, ["25186:SIGTERM"], "and stopped through its ownership record");
+  assert.equal(running, "");
+});
+
+test("the bundle swap still waits on Node-mode work it cannot vouch for, and names it as Node, not as the app", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25188 24941 S ${binary}\n25189 1 S ${helperBinary}\n25191 24941 S ${binary}\n`);
+  const records = satelliteRecords();
+  records.set(25188, {argv: [binary, "/Users/test/tools/other-script.mjs"], env: ["ELECTRON_RUN_AS_NODE=1", "TOKEN=secret"]});
+  records.set(25189, {argv: [helperBinary, "-e", `// ${CHECK_SUPERVISOR_MARKER}`], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  // A satellite path that is only a later argument is data to another script, not the satellite.
+  records.set(25191, {argv: [binary, "/Users/test/tools/wrap.mjs", mcpServer], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  argumentRecords(f, records);
+  argsReads(f, records);
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.doesNotMatch(error.message, /25186/, "the MCP server is not waited on");
+  assert.match(error.message, /pid 25188 \(a script claude runs on Mission Control's bundled Node is still running\)/);
+  assert.match(error.message, /pid 25189 \(a workflow check whose parent already exited is still running\)/);
+  assert.match(error.message, /pid 25191 \(a script claude runs on Mission Control's bundled Node is still running\)/);
+  assert.doesNotMatch(error.message, /the Mission Control app is still running|other-script|wrap\.mjs|server\.mjs|secret|\/Users\//);
+});
+
+test("a retried launch is not blocked by a terminal session's MCP server on the main binary", async () => {
+  const f = fixture();
+  const nonce = "a".repeat(32);
+  let running = `42 1 S ${binary}\n24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n`;
+  f.outputs.set("ps", running);
+  const records = satelliteRecords();
+  records.set(42, {argv: [binary, "--mission-update-launch", nonce], env: ["HOME=/Users/test"]});
+  argumentRecords(f, records);
+  argsReads(f, records);
+  const signals: number[] = [];
+  f.ops.kill = (pid) => {
+    signals.push(pid);
+    running = running.replace(`42 1 S ${binary}\n`, "");
+    f.outputs.set("ps", running);
+  };
+  await stopAttemptLaunch(bundle, nonce, f.ops);
+  assert.deepEqual(signals, [42], "only this attempt's launch was signalled; the MCP server was left alone");
+});
+
+test("on this Mac, the real kernel record tells a Node-mode satellite from unregistered instances of the same binary", {skip: process.platform !== "darwin"}, async (t) => {
+  // A disposable bundle whose main binary is this Node: it runs a script whether or not the flag
+  // is set, which is exactly what makes the environment, not the arguments, the only evidence.
+  const root = await mkdtemp(join(tmpdir(), "mission-node-mode-"));
+  const app = join(root, "Mission Control.app");
+  const executable = join(app, "Contents", "MacOS", "Mission Control");
+  const server = join(app, "Contents", "Resources", "app", "dist", "mcp", "server.mjs");
+  await mkdir(join(app, "Contents", "MacOS"), {recursive: true});
+  await mkdir(join(app, "Contents", "Resources", "app", "dist", "mcp"), {recursive: true});
+  await link(process.execPath, executable).catch(() => copyFile(process.execPath, executable));
+  await writeFile(server, "setInterval(() => {}, 1000);\n");
+  const start = (env: NodeJS.ProcessEnv) => spawn(executable, [server], {env, stdio: "ignore"});
+  const base = {...process.env};
+  delete base.ELECTRON_RUN_AS_NODE;
+  const satellite = start({...base, ELECTRON_RUN_AS_NODE: "1"});
+  const instance = start(base);
+  // What `ps -E` prints exactly like a real flag. The kernel record keeps it inside NOTE.
+  const disguised = start({...base, NOTE: "x ELECTRON_RUN_AS_NODE=1"});
+  t.after(async () => {
+    satellite.kill("SIGKILL");
+    instance.kill("SIGKILL");
+    disguised.kill("SIGKILL");
+    await rm(root, {recursive: true, force: true});
+  });
+  const ops = realMacAppOps();
+  const running = async () => parseAppProcesses((await ops.run("/bin/ps", ["-axww", "-o", "pid=,ppid=,stat=,comm="])).stdout).map((row) => row.pid);
+  for (let tries = 0; ; tries++) {
+    const pids = await running();
+    if ([instance, satellite, disguised].every((child) => pids.includes(child.pid!))) break;
+    assert.ok(tries < 100, "every fixture process started");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual((await inspectAppLaunch(app, ops)).unregistered.sort(), [instance.pid, disguised.pid].sort(),
+    "both instances without a real flag are refused, the disguised one included");
+  for (const child of [instance, disguised]) {
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill("SIGKILL");
+    await exited;
+  }
+  assert.deepEqual(await inspectAppLaunch(app, ops), {jobs: [], unregistered: []});
+  await waitForBundleExit(app, ops, 2000);
+  assert.equal(satellite.exitCode, null, "the satellite was neither waited on nor signalled");
+});
+
+test("the state-lock addon reads a process's argv and environment as separate entries", async (t) => {
+  const binding = createRequire(import.meta.url)(stateLockAddon) as {processArguments(pid: number): {argv: string[]; env: string[]} | null | undefined};
+  assert.throws(() => binding.processArguments(0), TypeError);
+  if (process.platform !== "darwin") {
+    assert.throws(() => binding.processArguments(process.pid), {code: "ENOTSUP"});
+    return;
+  }
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)", "two words"], {env: {NOTE: "x ELECTRON_RUN_AS_NODE=1", EMPTY: ""}, stdio: "ignore"});
+  t.after(() => child.kill("SIGKILL"));
+  await new Promise((resolve) => child.once("spawn", resolve));
+  assert.deepEqual(binding.processArguments(child.pid!), {argv: [process.execPath, "-e", "setTimeout(() => {}, 10000)", "two words"], env: ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]});
+  assert.equal(binding.processArguments(1), null, "launchd exists but is not described to this user");
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGKILL");
+  await exited;
+  assert.equal(binding.processArguments(child.pid!), undefined, "a reaped pid reads as gone");
 });

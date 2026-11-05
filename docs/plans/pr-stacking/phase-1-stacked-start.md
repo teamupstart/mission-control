@@ -84,7 +84,12 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    through the existing `tasks.dependencies` JSON write. Emit the normal task upsert so the
    UI updates.
 5. **Pinned dispatch** (`TaskManager.dispatch`, `src/server/dispatcher.ts`). When the
-   dependent is stack-released, fetch the parent branch from origin, read its current head
+   dependent is stack-released, first revalidate the stamp, because it can go stale
+   between being written and being cleared. Read the parent PR fresh. It must still be
+   open and not a draft, and it must still be the stamped `stackPrUrl` on the
+   prerequisite's current episode, with the stamped `stackBaseBranch` as its head branch.
+   If any of these no longer holds, refuse the dispatch with the reason, clear the stamp
+   in the same step, and leave the edge waiting. Only then fetch the parent branch from origin, read its current head
    SHA (newer than the stamp if the parent pushed since), and pass it as `baseSha`. The
    pin and the `stack_*` columns cover the primary repository only. Secondary
    repositories keep `resolveDispatchBase` and the default branch. On
@@ -230,6 +235,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
     primary-repository PR's branch, SHA and URL. A prerequisite whose only open PR is in a
     secondary repository stamps nothing and does not release the dependent.
   - Pinned dispatch, plus refusal when the fetch fails.
+  - Dispatch revalidation: a stamp written while the parent was open, followed by the
+    parent becoming a draft, closing, or moving to a new episode or branch before the
+    stamp is cleared, refuses the dispatch, clears the stamp, and leaves the edge
+    waiting.
   - Base correction on adoption:
     - a PR opened against the wrong base while its parent is open is retargeted to the
       parent's branch;
@@ -379,3 +388,6 @@ change `stack_base_sha`.
   - Step 10 scopes `stacked-base` to PRs with lineage, so PRs without lineage keep their
     current merge behavior.
   - Tests cover both.
+- PR #1359 re-review (GitHub Inspector): step 5 now revalidates the parent PR (open,
+  non-draft, stamped URL, branch and current episode) at dispatch before accepting the
+  pin. A stale stamp refuses the dispatch and is cleared. A test was added.

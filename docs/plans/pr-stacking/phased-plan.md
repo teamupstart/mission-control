@@ -135,7 +135,9 @@ Phase 1 owns these names and Phase 2 must not rename them:
   lineage, and they are owned by Phase 1. Phase 2's lifecycle labels are a separate
   display field and never a `MergeBlock` value.
 - Readiness stamp (Phase 1): an absent or null `stackReadyAt` means unstamped. Only a
-  recorded timestamp releases a stack edge to start.
+  recorded timestamp releases a stack edge to start, and dispatch revalidates the parent
+  PR (open, non-draft, stamped URL, branch and current episode) before it accepts the
+  pin.
 - Scope rule: the Shipping default and edge `mode` decide only whether a dependent
   *starts* early. Recorded lineage, the hold and every lifecycle behavior apply to
   already-stacked pull requests whatever the setting says.
@@ -233,3 +235,5 @@ behavior.
   - Phase 2 shows an uncertain delivery and lets the operator re-arm it instead of
     retrying automatically, matching the CodeRabbit follow-up's conservative delivery.
   - Phase 2 re-applies the expected base on every tick, so a failed retarget is retried.
+  - Re-review: Phase 1 step 5 revalidates the readiness stamp at dispatch, so a parent
+    that became a draft or closed after stamping cannot release a dependent.

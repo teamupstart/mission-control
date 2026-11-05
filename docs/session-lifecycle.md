@@ -154,7 +154,9 @@ gap and stores its result ID in `driver_usage_snapshots.baseline_gap_turn_id`, r
 across subsequent turns. All later results contribute deltas. If the initial baseline
 has no reported cumulative cost for a model, the first later reported cumulative cost
 establishes that model's cost baseline too. The corresponding ledger delta remains
-unpriced rather than booking historical cost. New conversations account
+unpriced rather than booking historical cost. A proven counter reset clears that pending
+cost baseline, so the reset window's reported cost counts as fresh spend, even when it
+arrives after an unpriced reset result. New conversations account
 from their first result, including new conversation IDs created by `/clear`.
 
 For a read-only audit of retained uncertainty:

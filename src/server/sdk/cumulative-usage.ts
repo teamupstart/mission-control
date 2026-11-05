@@ -7,7 +7,7 @@ function cumulativeDelta(current: number, previous: number): number {
 }
 
 /** Whether any query-wide counter proves the provider started a new accounting window. */
-function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
+export function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
   return (
     current.input < previous.input ||
     current.output < previous.output ||
@@ -19,7 +19,7 @@ function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
 }
 
 /** Whether one model's counters prove its cumulative accounting window restarted. */
-function cumulativeModelUsageReset(
+export function cumulativeModelUsageReset(
   current: LlmSpendModelUsage,
   previous: LlmSpendModelUsage,
 ): boolean {

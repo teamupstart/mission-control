@@ -1,5 +1,5 @@
 import type { SdkUsage } from "./harness/types.ts";
-import { cumulativeUsageBaseline, cumulativeUsageDelta } from "./sdk/cumulative-usage.ts";
+import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
 import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
@@ -11797,9 +11797,21 @@ export function recordDriverSessionUsage(input: {
     let models = baselineOnly ? [] : input.snapshot
       ? cumulativeUsageDelta(input.snapshot.usage, previous).models ?? []
       : input.models;
-    const unpricedBaselineModels: string[] = baselineOnly
+    let unpricedBaselineModels: string[] = baselineOnly
       ? (input.snapshot?.usage.models ?? []).filter(m => m.reportedCostUsd === null).map(m => m.modelId)
       : previousRow ? JSON.parse(previousRow.unpriced_baseline_models_json) : [];
+    if (input.snapshot && previous && unpricedBaselineModels.length) {
+      const current = input.snapshot.usage;
+      const priorModels = new Map(previous.models?.map(m => [m.modelId, m]));
+      // A proven reset retires the legacy cost uncertainty even if this result is still
+      // unpriced. Use the same reset predicates as the cumulative delta/baseline logic.
+      unpricedBaselineModels = cumulativeUsageReset(current, previous) ? []
+        : unpricedBaselineModels.filter(id => {
+          const prior = priorModels.get(id);
+          const model = current.models?.find(m => m.modelId === id);
+          return !prior || !model || !cumulativeModelUsageReset(model, prior);
+        });
+    }
     if (unpricedBaselineModels.length) {
       // If the initial legacy snapshot had no price, the first later price is also
       // a baseline, not new spend. Preserve token deltas while marking price unknown.

@@ -28,7 +28,7 @@ process.env.HERDR_BIN = join(home, "missing-herdr");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
-const { backlogIndex, blockersFor, deadBlockersFor } = await import("../src/shared/backlog.ts");
+const { backlogIndex, blockersFor, deadBlockersFor, readyBacklog } = await import("../src/shared/backlog.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -246,16 +246,26 @@ test("the reschedule route validates an empty body before mutating", async () =>
 test("requeue cancels a live task and re-files it at the rank it had", async () => {
   const { registry, tasks } = setup();
   registry.upsertTask(
-    mkTask({ id: "live", status: "running", backlogRank: 7, enabled: false, dispatchedAt: 500 }),
+    mkTask({ id: "live", status: "running", backlogRank: 7, enabled: true, dispatchedAt: 500 }),
   );
 
+  const published: boolean[] = [];
+  const unsubscribe = registry.subscribe((event) => {
+    if (event.type === "task_upsert" && event.task.id === "live" && event.task.status === "backlog") {
+      published.push(event.task.enabled);
+    }
+  });
   const r = await tasks.requeue("live");
+  unsubscribe();
   assert.equal(r.ok, true, r.error);
 
   const back = registry.getTask("live")!;
   assert.equal(back.status, "backlog");
   assert.equal(back.backlogRank, 7, "back where the operator put it, not at the bottom");
-  assert.equal(back.enabled, true);
+  assert.equal(back.enabled, false, "run later must park the task from autopilot");
+  assert.deepEqual(published, [false], "never publish an eligible backlog row before parking it");
+  assert.equal(new Registry().getTask("live")!.enabled, false, "the hold survives a restart");
+  assert.equal(readyBacklog(registry.listTasks(), null).some((task) => task.id === "live"), false);
   assert.equal(back.sessionId, null);
   assert.equal(back.dispatchedAt, null);
   assert.equal(back.completedAt, null);
@@ -268,6 +278,7 @@ test("requeue re-files an already-stopped task without cancelling it again", asy
   assert.equal(r.ok, true, r.error);
   assert.equal(registry.getTask("gone")!.status, "backlog");
   assert.equal(registry.getTask("gone")!.error, null);
+  assert.equal(registry.getTask("gone")!.enabled, false);
 });
 
 test("requeue refuses BEFORE cancelling, so a refused task is left running", async () => {
@@ -319,4 +330,5 @@ test("the requeue route validates its body and maps refusals to 404 and 409", as
   const ok = await post("wire", {});
   assert.equal(ok.status, 200);
   assert.equal(registry.getTask("wire")!.status, "backlog");
+  assert.equal(registry.getTask("wire")!.enabled, false);
 });

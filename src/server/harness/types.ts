@@ -1121,7 +1121,13 @@ export type SdkEvent =
    * supervisor can act on - today, the model being at capacity - and absent for every
    * ordinary completion, interrupt, or failure nobody can retry.
    */
-  | { kind: "turn_done"; usage: SdkUsage | null; failure?: SdkTurnFailure }
+  | {
+      kind: "turn_done";
+      usage: SdkUsage | null;
+      /** Raw conversation counters, committed atomically with their ledger delta. */
+      usageSnapshot?: { usage: SdkUsage; resumed: boolean };
+      failure?: SdkTurnFailure;
+    }
   /**
    * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
    *

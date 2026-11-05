@@ -144,8 +144,10 @@ Phase 1 owns these names and Phase 2 must not rename them:
   display field and never a `MergeBlock` value.
 - Readiness stamp (Phase 1): an absent or null `stackReadyAt` means unstamped. Only a
   recorded timestamp releases a stack edge to start, and dispatch revalidates the parent
-  PR (open, non-draft, stamped URL, branch and current episode) before it accepts the
-  pin.
+  PR (open, non-draft, stamped URL, branch and current episode) and the prerequisite's
+  idle, empty-queue session before it accepts the pin. The pinned parent head must also
+  contain the merge commit of every other same-repository prerequisite that has merged;
+  otherwise the edge keeps waiting.
 - Scope rule: the Shipping default and edge `mode` decide only whether a dependent
   *starts* early. Recorded lineage, the hold and every lifecycle behavior apply to
   already-stacked pull requests whatever the setting says.
@@ -253,3 +255,5 @@ behavior.
     retargeted against the old one.
   - Re-review: an unstacked dispatch clears the task's `stack_*` fields, and
     `stack_adopted_at` defines which earlier row inheritance copies.
+  - Re-review: dispatch rechecks the prerequisite's idle state and requires the parent
+    head to contain every merged same-repository prerequisite.

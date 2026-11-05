@@ -59,7 +59,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      `resolveTaskBases` applies the `baseSha` pin to the primary repository only;
    - every repository the prerequisite changed other than that shared primary has
      already merged;
-   - exactly one unmerged same-repository prerequisite remains;
+   - exactly one unmerged same-repository prerequisite remains. Any other
+     same-repository prerequisite has merged, and step 5 refuses the pin unless the
+     parent head already contains its merge commit;
    - every cross-repository prerequisite is satisfied;
    - the parent's own stack depth is below `maxStackDepth`.
 
@@ -88,9 +90,16 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    between being written and being cleared. Read the parent PR fresh. It must still be
    open and not a draft, and it must still be the stamped `stackPrUrl` on the
    prerequisite's current episode, with the stamped `stackBaseBranch` as its head branch.
-   If any of these no longer holds, refuse the dispatch with the reason, clear the stamp
+   The prerequisite's session must still be idle with an empty queue on that episode,
+   the same checks step 4 stamps on, because a new turn can start before the stamp is
+   cleared. If any of these no longer holds, refuse the dispatch with the reason, clear the stamp
    in the same step, and leave the edge waiting. Only then fetch the parent branch from origin, read its current head
-   SHA (newer than the stamp if the parent pushed since), and pass it as `baseSha`. The
+   SHA (newer than the stamp if the parent pushed since). Before pinning it, check that
+   the merge commit of every other same-repository prerequisite that has merged is an
+   ancestor of that SHA (the step 8 compare helper). If one is missing, refuse with
+   *waiting for #B to include #A* and leave the edge waiting, so the child never starts
+   without code that a merged prerequisite already landed. Then pass the SHA as
+   `baseSha`. The
    pin and the `stack_*` columns cover the primary repository only. Secondary
    repositories keep `resolveDispatchBase` and the default branch. On
    success, persist `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha` and
@@ -247,9 +256,13 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
   - An unstacked dispatch after a stacked one writes `null` to all four `stack_*` task
     fields, and the PR of that new episode gets no lineage.
   - Dispatch revalidation: a stamp written while the parent was open, followed by the
-    parent becoming a draft, closing, or moving to a new episode or branch before the
-    stamp is cleared, refuses the dispatch, clears the stamp, and leaves the edge
-    waiting.
+    parent becoming a draft, closing, moving to a new episode or branch, starting a new
+    turn or queuing work before the stamp is cleared, refuses the dispatch, clears the
+    stamp, and leaves the edge waiting.
+  - Merged prerequisites: C depends on A and B in one repository, A merges after B
+    opened its PR, and B's head does not contain A's merge commit. C's dispatch is
+    refused with the waiting reason. Once B merges the default branch in, C starts
+    from B's new head.
   - Base correction on adoption:
     - a PR opened against the wrong base while its parent is open is retargeted to the
       parent's branch;
@@ -414,3 +427,7 @@ change `stack_base_sha`.
   four `stack_*` task fields, and step 7 adds `stack_adopted_at` so "most recently
   adopted" has a defined order. Lineage fields are written once at adoption. Tests were
   added for both.
+- PR #1359 re-review (GitHub Inspector): step 5 also rechecks that the prerequisite is
+  idle with an empty queue, and refuses the pin unless the parent head contains every
+  merged same-repository prerequisite. Step 2 notes the second rule. Tests were added for
+  both.

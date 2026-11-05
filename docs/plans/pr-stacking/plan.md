@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Revision 9 refreshes and verifies the stacked base before every review diff, so a parent that moved after dispatch cannot leave Personas and CodeRabbit reviewing against a stale base. Revision 10 answers the PR #1359 review: both stacking gates apply only to pull requests with stack lineage, and Phase 2 defines state precedence, keeps lifecycle labels out of the gate value, keys prompt claims to the condition that needs action, surfaces uncertain deliveries, and re-applies a failed retarget. The dispatch of a stacked dependent revalidates the parent pull request before it starts. Lineage inheritance is scoped to one work episode, and both Phase 2 prompt kinds share the same delivery recovery. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Revision 9 refreshes and verifies the stacked base before every review diff, so a parent that moved after dispatch cannot leave Personas and CodeRabbit reviewing against a stale base. Revision 10 answers the PR #1359 review: both stacking gates apply only to pull requests with stack lineage, and Phase 2 defines state precedence, keeps lifecycle labels out of the gate value, keys prompt claims to the condition that needs action, surfaces uncertain deliveries, and re-applies a failed retarget. The dispatch of a stacked dependent revalidates the parent pull request before it starts. Lineage inheritance is scoped to one work episode, and both Phase 2 prompt kinds share the same delivery recovery. A stacked child never starts from a parent head that lacks a merged same-repository prerequisite. Nothing here is implemented.
 
 ## The short answer
 
@@ -80,7 +80,9 @@ and the board says why.
   than the shared primary must already have merged; otherwise the edge waits for merge.
 - At most one prerequisite in that repository is unmerged. A pull request has one base,
   so with two unmerged same-repository prerequisites the dependent waits until only one
-  remains, then stacks on it.
+  remains, then stacks on it. The parent's head must also contain every same-repository
+  prerequisite that has already merged. If it does not, the dependent waits until the
+  parent catches up with the default branch.
 - Every prerequisite in another repository has merged. Cross-repository edges keep the
   merge rule.
 - The stack under the dependent is shorter than the depth cap (Shipping setting, default
@@ -91,7 +93,8 @@ and the board says why.
 The stack edge gets a new intermediate state, `stackable`, between *waiting* and
 *satisfied*. The dependent is released when the prerequisite has an open, non-draft pull request **and** its agent has finished
 the episode (idle, nothing queued). The dispatch checks this again before it starts, so a
-parent that became a draft or closed in the meantime does not release the dependent. That is the same "appears finished" test task
+parent that became a draft, closed or started a new turn in the meantime does not release
+the dependent. That is the same "appears finished" test task
 completion already uses. Releasing earlier starts the child on a branch that is still
 being written.
 

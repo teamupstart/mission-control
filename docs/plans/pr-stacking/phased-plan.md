@@ -123,7 +123,9 @@ Phase 1 owns these names and Phase 2 must not rename them:
   server-side compare helper supplies the ancestry facts, and unknown facts mean held.
 - Review diff base (Phase 1): for a stacked task, the workflow Persona diff and the
   CodeRabbit merge base use the PR's current base, or the parent branch before a PR
-  exists. Every other task keeps the default-branch diff.
+  exists. That base is refreshed and verified against the remote tip before every diff,
+  and the diff fails visibly when the check cannot be made. Every other task keeps the
+  default-branch diff.
 - Replacement-parent transition (Phase 2): the only writer of a changed
   `stack_parent_pr_url`. It appends each change to `inspector_prs.stack_lineage_history`
   and never touches `stack_base_sha`.
@@ -212,3 +214,9 @@ behavior.
   - The *Resume* recovery for a child with no session is now defined in Phase 2 step 4,
     with a test: the pending prompt is delivered to the resumed session on its first
     idle tick.
+- Repair round 6 (same run):
+  - The stacked review diff could use a stale `origin/<base>` after the parent moved.
+    Phase 1 step 9 now refreshes the base at the repository root, verifies it against
+    `ls-remote`, and diffs against the verified SHA, failing visibly otherwise.
+  - The non-goal was reworded so that read-only diffs and remote-tracking fetches at the
+    repository root are not mistaken for worktree mutations.

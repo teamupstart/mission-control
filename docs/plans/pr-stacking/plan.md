@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Revision 6 makes a replacement child pull request inherit the lineage of the pull request it replaces and scopes base correction to the current parent's state, so the *Move onto main* recovery keeps its default base. Revision 7 makes the PR-opening instruction name that same expected base, defines recovery for a child pull request GitHub closed, and limits stacking to the task's primary repository, which is the only repository the existing dispatch pin covers. Revision 8 stamps stack readiness only from the prerequisite's primary-repository pull request, defines how *Resume* delivers a pending restack, and drops the session-header base display, which no phase owned. Revision 9 refreshes and verifies the stacked base before every review diff, so a parent that moved after dispatch cannot leave Personas and CodeRabbit reviewing against a stale base. Nothing here is implemented.
 
 ## The short answer
 
@@ -232,7 +232,11 @@ diff. Today the workflow context diffs every session against the default branch
 (`computeSessionDiff(cwd)` in `src/server/workflows/context.ts`). For a stacked task it
 will diff against the pull request's current base, or against the parent branch before a
 pull request exists. The CodeRabbit command's pinned merge base follows the same rule.
-Phase 1 owns this.
+Because the parent keeps moving after dispatch, every review diff first refreshes that
+base. It fetches it from origin at the repository root, the same remote-tracking refresh
+dispatch already does, and checks that the fetched commit equals the remote tip
+(`ls-remote`). It then diffs against that verified commit. If the refresh or the check
+fails, the diff fails visibly instead of using a stale base. Phase 1 owns this.
 
 ### 9. When a stack breaks
 
@@ -287,7 +291,8 @@ The board card and Line row of a stacked task show *Stacked on #A*.
   prerequisites, depth cap, multi-repository task), release-state transitions, the merge
   gate refusing a non-default base, the stack hold surviving an automatic retarget and an
   unrelated push, release only on verified ancestry, a parent that pushes again before
-  closing, a replacement parent taking over the lineage, a replacement child inheriting
+  closing, a parent push after the child's dispatch reflected in the review diff, a
+  replacement parent taking over the lineage, a replacement child inheriting
   the current parent and keeping its default base, the PR instruction naming the expected
   base, a child closed by base deletion, primary-repository-only lineage for a
   multi-repository task, readiness stamped only from the primary-repository pull request,
@@ -307,7 +312,10 @@ The board card and Line row of a stacked task show *Stacked on #A*.
   (a merge queue).
 - Stacking across repositories, and stacking a multi-repository task's secondary
   repositories (they always start from their default branch).
-- Force-pushing, or any git operation the daemon performs inside a worktree. The daemon only reads pull requests, edits their base, and prompts sessions.
+- Force-pushing, or any git operation by the daemon that changes a worktree's checkout,
+  branches or commits (merges, rebases, checkouts, commits). The daemon only reads pull
+  requests, edits their base, prompts sessions, and does the read-only diffs and
+  remote-tracking fetches at the repository root that it already performs.
 - Third-party stack tools (Graphite, `git-town`, `spr`). The design uses only branches
   and `gh`, so a person can still use one by hand.
 

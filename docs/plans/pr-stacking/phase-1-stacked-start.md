@@ -31,8 +31,9 @@ release check, the base-aware clean-review record, the Shipping card, the chip t
 
 Not in scope (Phase 2): catch-up prompts when the parent moves, retarget after the parent
 merges, restack prompts, broken-stack holds and actions, and `mergeStateStatus`. Never in
-scope: force-pushing, git operations by the daemon inside a worktree, cross-repository
-stacking.
+scope: force-pushing, any daemon git operation that changes a worktree's checkout,
+branches or commits, and cross-repository stacking. Read-only diffs and remote-tracking
+fetches at the repository root, which the daemon already performs, are allowed.
 
 ## 4. Repository findings this phase relies on
 
@@ -149,8 +150,17 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    workflow context builds the Persona diff with `computeSessionDiff(cwd)`, which diffs
    against the default branch. For a session whose task has `stackParentTaskId`, pass an
    explicit source instead:
-   - the adopted PR's current `base_ref_name` (as `origin/<base>`) when a PR row exists;
-   - otherwise `origin/<stackBaseBranch>`.
+   - the adopted PR's current `base_ref_name` when a PR row exists;
+   - otherwise `stackBaseBranch`.
+
+   Before every diff, refresh that branch. Fetch
+   `+refs/heads/<base>:refs/remotes/origin/<base>` at the repository root, the same kind
+   of remote-tracking fetch `fetchOrigin` in `src/server/git/remote-default.ts` already
+   does, without touching the worktree's checkout. Then read the remote tip with
+   `git ls-remote origin refs/heads/<base>`, check that the fetched ref equals it, and pass
+   that verified SHA as the explicit source. If the fetch fails, the remote branch is
+   gone, or the two disagree, the diff fails with a named reason (*stacked base could not
+   be refreshed*) instead of using a stale ref.
 
    Apply the same base to the CodeRabbit command's pinned `mergeBase` (the merge base of
    the head and that ref). An explicit source gets no silent fallback in
@@ -261,6 +271,11 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
   - Workflow context diff for a stacked task is computed against the PR's current base,
     or the parent branch before a PR exists, and the CodeRabbit merge base matches it.
     A non-stacked task's diff is unchanged.
+  - Stale base: in a fixture, the parent branch gains a commit on the remote after the
+    child's dispatch while the local `origin/<base>` is still old. The next review diff
+    refreshes it and diffs against the new parent tip. A failed fetch, a deleted remote
+    branch, and a fetched ref that disagrees with `ls-remote` each fail the diff visibly,
+    and never fall back to the stale ref.
   - Review invalidation on a base change.
   - Config defaults over an old blob, and edge `mode` absent on stored rows.
   - Migration over a pre-phase database.
@@ -347,3 +362,8 @@ change `stack_base_sha`.
 - Repair round 5: step 4 now stamps readiness only from the prerequisite's
   primary-repository PR, with a test that a secondary-repository PR cannot supply the
   stack base or release the dependent.
+- Repair round 6:
+  - Step 9 now refreshes the review base at the repository root, verifies it against
+    `ls-remote`, and diffs against the verified SHA, failing visibly otherwise. A
+    stale-base test was added.
+  - Section 3's non-goal now names worktree mutations rather than all git use.

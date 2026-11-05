@@ -31,8 +31,10 @@ gate. It brings children to the state that Phase 1's release check accepts.
 
 Scope rule (from the index): the Shipping default and edge `mode` decide only whether a
 dependent starts early. Everything in this phase applies to every PR row with recorded
-lineage, whatever the setting says. Never in scope: force-pushing, rebasing, or any git operation by the daemon inside a
-worktree. The daemon only reads pull requests, edits their base and prompts sessions.
+lineage, whatever the setting says. Never in scope: force-pushing, rebasing, or any git
+operation by the daemon that changes a worktree's checkout, branches or commits. The
+daemon only reads pull requests, edits their base, prompts sessions, and uses the
+read-only diffs and repository-root fetches it already performs.
 
 ## 4. Inherited contracts and findings
 
@@ -251,6 +253,8 @@ children into non-default bases or add a daemon-side writer that types into pane
 - Repair round 5:
   - Step 4 defines the *Resume* recovery for a child with no session, with a test.
   - Step 5's wording now says actions are offered by state.
+- Repair round 6: the non-goal wording now matches Phase 1. After a retarget, the review
+  diff's base refresh is Phase 1's (step 9), so this phase adds nothing for it.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base
     automatically.
 - Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.

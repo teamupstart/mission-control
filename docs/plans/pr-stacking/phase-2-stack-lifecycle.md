@@ -69,9 +69,14 @@ must not become a second unleased autonomous writer.
 2. **Stack state** (new `src/server/stacking/state.ts`, pure parts in
    `src/shared/stacking.ts`). For each PR row with `stack_parent_pr_url`, derive one of
    the following. Derive from the row's lineage, not from the task or the setting, so it
-   works after the session is gone and with stacking switched off.
+   works after the session is gone and with stacking switched off. When more than one
+   applies, the first match in this order wins: `released`, `broken`,
+   `parent-merged-needs-retarget`, `restack-needed`, `parent-moved`, `current`. Terminal
+   parent outcomes therefore always beat a catch-up, so a merged or closed parent never
+   gets a catch-up prompt.
    - `current`;
-   - `parent-moved`: the parent head is not an ancestor of the child head;
+   - `parent-moved`: the current parent PR is **open** and its head is not an ancestor of
+     the child head;
    - `parent-merged-needs-retarget`;
    - `restack-needed`: on the default branch, but the release check has not passed for
      the current head. Any head that does not contain the parent's merge commit counts
@@ -84,10 +89,15 @@ must not become a second unleased autonomous writer.
    Keep it on the PR row (a new nullable `inspector_prs.stack_state` column, or a derived
    read). It is not a second task status, and it never releases anything itself. Only
    `stackReleased` writes the release.
-3. **Retarget on parent merge** (Inspector tick). When the parent PR is observed merged,
-   retarget each open child to the parent's base with the Phase 1 helper. The retarget is
-   idempotent: it is skipped when `baseRefName` already matches, which covers GitHub's own
-   auto-retarget. The base-aware review record forces a re-review, and `stack-hold` keeps
+3. **Retarget on parent merge, and base reconciliation** (Inspector tick). On every tick,
+   for each open child PR with lineage, compare `baseRefName` with Phase 1's
+   `expectedStackBase`. If they differ, apply the Phase 1 retarget helper. This covers
+   the parent merging (the expected base becomes the default branch) and the
+   replacement-parent transition (it becomes the replacement's branch). A failed
+   retarget is therefore retried on the next tick rather than lost, with the existing
+   Inspector backoff, and the merge queue shows *Retarget failed: <GitHub's reason>*
+   until it succeeds. The retarget is idempotent: it is skipped when `baseRefName`
+   already matches, which covers GitHub's own auto-retarget. The base-aware review record forces a re-review, and `stack-hold` keeps
    the child held until the restack is verified.
 4. **Prompts** (new `src/server/stacking/delivery.ts`, Foreman `review-followup.ts`). Add
    two follow-up kinds to the existing review-follow-up path:
@@ -95,8 +105,12 @@ must not become a second unleased autonomous writer.
    - *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks,
      push, no force-push.
 
-   Each gets its own claim key per PR, head and state, following `claimCodeRabbit`, and the
-   same guards: a single live owning session, idle, no queued work, no active workflow, no
+   Each gets its own claim key, following `claimCodeRabbit`. The key is the PR, the
+   prompt kind, and the tip that makes the prompt necessary: the parent's head SHA for
+   *catch up*, and the current parent's merge commit for *restack*. It is not keyed to
+   the child's head, so an unrelated push to the child does not re-send the same prompt.
+   It re-arms only when that tip changes (the parent pushes again, or a different parent
+   merges after a replacement-parent transition). It uses the same guards: a single live owning session, idle, no queued work, no active workflow, no
    restart of an absent session. Claim before send, release only on confirmed
    non-delivery. When no live session owns the child, nothing is sent and the merge queue
    shows *Restack needed: no session*. The claim key does not include the session, so
@@ -105,10 +119,19 @@ must not become a second unleased autonomous writer.
    off or not invited, nothing is sent. The merge queue shows
    *Restack needed: Foreman is off* with a **Send restack prompt** button that uses the
    same inject route and guard.
+
+   A delivery whose claim was stored but whose inject never confirmed, for example
+   because the daemon crashed in between, stays *uncertain*. It is not retried
+   automatically, matching the CodeRabbit follow-up's conservative delivery rule: an
+   automatic retry could deliver the same prompt twice. The merge queue shows
+   *Restack prompt delivery uncertain* for that row, and **Send restack prompt** then
+   acts as the operator's explicit re-arm. It finishes the uncertain claim, takes a new
+   claim and sends once through the same guard. A held child therefore never sits
+   silently with no prompt and no visible reason.
 5. **Broken stacks** (server plus `BacklogColumn.tsx`, the Line row,
    `ShippingSettingsPanel.tsx`). The child is already held by `stacked-base` or
-   `stack-hold`. `mergeBlock` carries *Stack broken: #A closed*. Offer these actions, by
-   state:
+   `stack-hold`. The lifecycle label (step 6) reads *Stack broken: #A closed*. Offer these
+   actions, by state:
    - **Move onto main**: prompt the session to cherry-pick only its own commits onto a new
      branch cut from the default branch, open a replacement PR and close the old one.
      Phase 1's adoption makes the replacement inherit the previous child row's current
@@ -146,9 +169,14 @@ must not become a second unleased autonomous writer.
    for that child.
 6. **Merge-queue copy** (`src/shared/shipping.ts` labels, `src/web/lib/pr-standing.ts`).
    Rows read *Stacked on #A (waiting for it to merge)*, *Catching up with #A*,
-   *Restacking onto main*, *Restack needed: no session*, *Restack needed: Foreman is off*
-   and *Stack broken: #A closed*. Keep Phase 1's `stacked-base` and `stack-hold` as the
-   only stacking gates. These are reasons that refine their text, not new gates. Bucket them as `blocked`, except
+   *Restacking onto main*, *Restack needed: no session*, *Restack needed: Foreman is off*,
+   *Restack prompt delivery uncertain*, *Retarget failed: <reason>* and
+   *Stack broken: #A closed*. These lifecycle labels come from the row's stack state
+   (step 2), passed to the renderer as a separate field. They are never written into
+   `mergeBlock`, which keeps holding only gate values. The row shows the gate label, with
+   the lifecycle label as its detail. Phase 1's `stacked-base` and `stack-hold` stay the
+   only stacking gates, and the release check alone decides `stack-hold`, whatever
+   lifecycle label is shown. Bucket them as `blocked`, except
    *Restacking onto main*, which is in progress and belongs with `waiting`.
 7. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks
    (including the replacement-parent transition and its lineage history) and the Foreman
@@ -174,8 +202,21 @@ must not become a second unleased autonomous writer.
     commit staying `restack-needed`, and lineage rows deriving correctly with the
     setting off and no session.
   - Retarget idempotence, including GitHub having already retargeted.
-  - The claim lifecycle: no duplicate prompt across ticks, a restart or a push; release
-    on confirmed non-delivery.
+  - The claim lifecycle:
+    - no duplicate prompt across ticks or a restart;
+    - an unrelated child push in the same state sends nothing new;
+    - a new parent tip re-arms the catch-up prompt;
+    - a different parent merge commit re-arms the restack prompt;
+    - a confirmed non-delivery releases the claim.
+  - Crash between claim and inject: the row reads *Restack prompt delivery uncertain*,
+    nothing is re-sent automatically, and **Send restack prompt** delivers exactly once.
+  - State precedence: a parent that advanced and then merged or closed derives
+    `parent-merged-needs-retarget` or `broken`, never `parent-moved`, and gets no catch-up
+    prompt.
+  - Base reconciliation: a retarget that fails after the replacement-parent transition
+    shows *Retarget failed* and succeeds on a later tick, with no catch-up prompt needed.
+  - Lifecycle labels never change `mergeBlock`: a broken, held child keeps the
+    `stack-hold` gate value while showing *Stack broken*.
   - Guards: busy session, queued work, absent session, active workflow, Foreman off.
   - *Resume* recovery: with no session the row reads *Restack needed: no session* and
     nothing is sent. After the task is resumed, the pending prompt is delivered exactly
@@ -253,6 +294,13 @@ children into non-default bases or add a daemon-side writer that types into pane
 - Repair round 5:
   - Step 4 defines the *Resume* recovery for a child with no session, with a test.
   - Step 5's wording now says actions are offered by state.
+- PR #1359 review:
+  - Step 2 orders the states and limits `parent-moved` to an open parent.
+  - Step 3 reconciles the expected base on every tick, so a failed retarget is retried.
+  - Step 4 keys claims to the condition tip and surfaces uncertain deliveries, with an
+    operator re-arm.
+  - Step 6 keeps lifecycle labels in their own field, never in `mergeBlock`.
+  - Tests cover each.
 - Repair round 6: the non-goal wording now matches Phase 1. After a retarget, the review
   diff's base refresh is Phase 1's (step 9), so this phase adds nothing for it.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base

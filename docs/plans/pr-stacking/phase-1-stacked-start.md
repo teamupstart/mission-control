@@ -66,8 +66,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    It returns `{ ok: true, edge }` or `{ ok: false, reason }` with a short reason the board
    can show.
 3. **Shared blocker read** (`src/shared/backlog.ts`). In `declaredBlockersIn`, an edge that
-   `stackEligibility` selects, and that has `stackReadyAt !== null`, does not block
-   *starting*. Its `satisfiedAt` stays null. Leave `dependencyState` and inferred plan
+   `stackEligibility` selects, and that has a recorded `stackReadyAt` timestamp, does not
+   block *starting*. Treat both `null` and an absent field as unstamped (default the field
+   to `null` when parsing stored edges), so an edge written before this phase can never
+   unblock a dependent. Its `satisfiedAt` stays null. Leave `dependencyState` and inferred plan
    edges unchanged. Add a `stacked` flag to the readiness result if the board needs it, not
    a new `BlockerState`, so every exhaustive switch keeps compiling.
 4. **Readiness stamping** (`src/server/tasks.ts`, next to `satisfyDeclaredEdgesTo`). When
@@ -170,8 +172,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    `baseRefName`, `defaultBranch` and `stack: { lineage: boolean; releasedForHead: boolean }`
    to `MergeInput.pr`. Add two `MergeBlock`s, each with a `MERGE_BLOCK_LABEL`, evaluated
    in this order after `draft` and before the workflow and review gates:
-   - `"stacked-base"`: the base is not the default branch, or either value is unknown
-     (fail closed);
+   - `"stacked-base"`: only for a PR with stack lineage (`stack_parent_pr_url` set). The
+     base is not the default branch, or either value is unknown (fail closed). A PR
+     without lineage is never evaluated by this gate, so its merge behavior is exactly
+     what it was before this phase;
    - `"stack-hold"`: lineage is present and `stack_released_head_sha` does not equal the
      current head.
 
@@ -219,7 +223,8 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 - `test/`:
   - `stackEligibility` table: same repository, cross repository, two unmerged
     prerequisites, depth cap, a multi-repository task, plan edges excluded.
-  - `declaredBlockersIn` with stamped and unstamped stack edges.
+  - `declaredBlockersIn` with stamped and unstamped stack edges, where unstamped covers
+    both `stackReadyAt: null` and an edge with no `stackReadyAt` field at all.
   - Stamping and clearing transitions.
   - A prerequisite with PRs in its primary and a secondary repository stamps the
     primary-repository PR's branch, SHA and URL. A prerequisite whose only open PR is in a
@@ -247,7 +252,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
     - a second child PR of the same task copies the latest previous row's current
       parent, stack base and history, even when the task's `stackPrUrl` names a
       different (earlier) parent.
-  - `mergeVerdict` refusing a non-default base and an unknown base.
+  - `mergeVerdict` refusing a non-default base and an unknown base for a PR with lineage,
+    and leaving a PR without lineage unaffected by both stacking gates, even when its
+    base or default branch is unknown or is not the default branch.
   - `stack-hold`:
     - still holds after the base changes to the default branch with an unchanged head
       (an automatic retarget);
@@ -367,3 +374,8 @@ change `stack_base_sha`.
     `ls-remote`, and diffs against the verified SHA, failing visibly otherwise. A
     stale-base test was added.
   - Section 3's non-goal now names worktree mutations rather than all git use.
+- PR #1359 review:
+  - Step 3 treats an absent `stackReadyAt` as unstamped.
+  - Step 10 scopes `stacked-base` to PRs with lineage, so PRs without lineage keep their
+    current merge behavior.
+  - Tests cover both.

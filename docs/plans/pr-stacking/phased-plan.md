@@ -129,9 +129,13 @@ Phase 1 owns these names and Phase 2 must not rename them:
 - Replacement-parent transition (Phase 2): the only writer of a changed
   `stack_parent_pr_url`. It appends each change to `inspector_prs.stack_lineage_history`
   and never touches `stack_base_sha`.
-- `MergeBlock` `"stacked-base"` (base is not the default branch) and `"stack-hold"`
-  (lineage present and not released for the current head). These are the only two
-  stacking gates, and they are owned by Phase 1.
+- `MergeBlock` `"stacked-base"` (lineage present and the base is not, or is not known to
+  be, the default branch) and `"stack-hold"` (lineage present and not released for the
+  current head). These are the only two stacking gates, they never evaluate a PR without
+  lineage, and they are owned by Phase 1. Phase 2's lifecycle labels are a separate
+  display field and never a `MergeBlock` value.
+- Readiness stamp (Phase 1): an absent or null `stackReadyAt` means unstamped. Only a
+  recorded timestamp releases a stack edge to start.
 - Scope rule: the Shipping default and edge `mode` decide only whether a dependent
   *starts* early. Recorded lineage, the hold and every lifecycle behavior apply to
   already-stacked pull requests whatever the setting says.
@@ -220,3 +224,12 @@ behavior.
     `ls-remote`, and diffs against the verified SHA, failing visibly otherwise.
   - The non-goal was reworded so that read-only diffs and remote-tracking fetches at the
     repository root are not mistaken for worktree mutations.
+- PR #1359 review (GitHub Inspector and CodeRabbit):
+  - Phase 1 treats an absent `stackReadyAt` as unstamped, and scopes `stacked-base` to
+    lineage-bearing PRs.
+  - Phase 2 orders the stack states, keeps lifecycle labels in their own field, and keys
+    prompt claims to the condition that needs action (parent tip or parent merge commit)
+    instead of the child head.
+  - Phase 2 shows an uncertain delivery and lets the operator re-arm it instead of
+    retrying automatically, matching the CodeRabbit follow-up's conservative delivery.
+  - Phase 2 re-applies the expected base on every tick, so a failed retarget is retried.

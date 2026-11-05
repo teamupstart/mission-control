@@ -94,18 +94,26 @@ Phase 1 owns these names and Phase 2 must not rename them:
     `Task.stackBaseSha` at adoption and never changed.
   - `inspector_prs.stack_released_head_sha`: the child head for which the release check
     passed. Null or a different head means held.
-  - `inspector_prs.stack_task_id`: the stacked task the PR belongs to, so later child PRs
-    of the same task can find the previous row.
+  - `inspector_prs.stack_task_id`: the stacked task the PR belongs to. Together with the
+    row's repository (`owner`/`repo`), it lets later child PRs of the same task in the
+    same repository find the previous row.
   - `inspector_prs.stack_lineage_history`: nullable JSON of `{from, to, at}` entries.
     Phase 1 creates the column and copies it on inheritance. Only Phase 2's
     replacement-parent transition appends to it.
+- Primary-repository scope (Phase 1): stacking, the dispatch pin, the `Task.stack*` fields
+  and PR-row lineage cover the task's primary repository only. Secondary repositories
+  start from their default branch, and their PRs get no lineage.
 - Lineage seeding and inheritance (Phase 1): the task's dispatch-time fields seed only
-  the task's first child PR row. Every later child PR of the same task (for example a
-  *Move onto main* replacement) copies the latest previous row's `stack_parent_pr_url`,
-  `stack_base_sha` and `stack_lineage_history` unchanged.
-- Base correction (Phase 1): the expected base of a child PR is the current parent's
-  head branch while that parent is open, and the default branch once it has merged or
-  closed. Nothing is ever retargeted to a merged or closed parent's branch.
+  the task's first child PR row in its primary repository. Every later child PR of the
+  same task in the same repository (for example a *Move onto main* or *Reopen against
+  main* replacement) copies the latest previous row's `stack_parent_pr_url`,
+  `stack_base_sha` and `stack_lineage_history` unchanged. The lookup key is
+  `stack_task_id` plus the repository.
+- Expected base (Phase 1): one function serves both the PR-opening instruction and base
+  correction. It returns the current parent's head branch while that parent is open, and
+  the default branch once it has merged or closed.
+- Base correction (Phase 1): uses the expected base, and nothing is ever retargeted to a
+  merged or closed parent's branch.
 - The pure release check `stackReleased(facts)` in `src/shared/stacking.ts`, evaluated
   against the current parent, with the two branches stated in the source plan §7. A
   merged parent needs its merge commit in the child's ancestry. A closed parent needs
@@ -179,3 +187,17 @@ behavior.
     have retargeted that replacement onto the closed parent's (possibly deleted) branch.
     It now uses the current parent's state: the parent's branch while it is open, and the
     default branch otherwise.
+- Repair round 4 (same run):
+  - The PR-opening instruction named the dispatch-time parent branch. It now uses the
+    same expected-base function as base correction, so a replacement child is told to
+    target the default branch.
+  - Phase 2's sequence test now expects the single history entry that its sequence
+    actually defines.
+  - A child PR that GitHub closed after a base deletion now has a defined recovery: a new
+    child PR that inherits the lineage. It is *Reopen against main* when the parent
+    merged, and *Move onto main* when the parent closed. *Wait for a replacement* now
+    requires an open child PR.
+  - The plan promised per-repository stacking that one task-level pin and lineage key
+    could not support. Stacking is now scoped to the primary repository, matching
+    `resolveTaskBases`, which pins only the primary repository. Lineage lookup is keyed
+    by task plus repository.

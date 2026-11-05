@@ -109,9 +109,16 @@ must not become a second unleased autonomous writer.
      1's base correction leaves it on the default branch because its current parent is
      closed. It is released only when the closed-parent branch of the release check
      passes, which means it contains neither the stack base nor the parent's last head.
+   - **Reopen against main** (child PR closed by GitHub after its base branch was deleted,
+     current parent **merged**): prompt the session to open a new PR from the same child
+     branch. Phase 1's instruction names the default branch, because the parent merged.
+     Phase 1's adoption makes it inherit the closed row's lineage. The restack prompt and
+     the merged-parent branch of the release check then apply as usual. If the current
+     parent **closed** without merging, a closed child gets only *Move onto main*.
    - **Wait for a replacement**: the *replacement-parent transition*, the only writer
-     that changes `stack_parent_pr_url`. It runs when the child is `broken` because its
-     current parent closed unmerged, and the existing branch discovery finds a
+     that changes `stack_parent_pr_url`. It runs only when the child PR is still open,
+     the child is `broken` because its current parent closed unmerged, and the existing
+     branch discovery finds a
      replacement PR on the closed parent's same task episode. In one transaction it
      appends `{from, to, at}` to `inspector_prs.stack_lineage_history` (a column created by
      Phase 1), sets `stack_parent_pr_url` to the replacement, and clears
@@ -166,6 +173,11 @@ must not become a second unleased autonomous writer.
   - Prompts still go out for an already-stacked child after the Shipping default is
     switched off.
   - Broken-stack holds.
+  - A child closed by base deletion:
+    - with a merged parent, *Reopen against main* produces a new PR against the default
+      branch that inherits the lineage and is released after restacking;
+    - with a closed parent, only *Move onto main* is offered;
+    - *Wait for a replacement* is never offered for a closed child.
   - Replacement-parent transition:
     - it appends to the history, swaps the current parent, keeps `stack_base_sha`, and
       clears the release;
@@ -173,9 +185,10 @@ must not become a second unleased autonomous writer.
     - it runs only for a `broken` child with a same-episode replacement;
     - the replacement's merge plus a restack releases the child;
     - a replacement that closes unmerged returns the child to `broken`.
-  - Sequence test: the parent closes, the replacement-parent transition swaps in parent
-    P2, P2 also closes, and the session runs *Move onto main*. The new child PR inherits
-    P2 as its current parent, with the unchanged stack base and both history entries. It
+  - Sequence test: the original parent P1 closes, the replacement-parent transition swaps
+    in P2, P2 also closes, and the session runs *Move onto main*. The new child PR
+    inherits P2 as its current parent, with the unchanged stack base and exactly one
+    history entry (`P1 to P2`). It
     stays on the default branch, and it is released only by the closed-parent check
     against P2 and the stack base.
   - A git-level fixture: cut from the parent, squash-merge the parent, merge
@@ -221,6 +234,12 @@ children into non-default bases or add a daemon-side writer that types into pane
     instead of the task's lineage.
   - `stack_lineage_history` moved to Phase 1, and this phase only appends to it.
   - A sequence test covers a replacement parent that also closes.
+- Repair round 4:
+  - The sequence test now expects exactly one history entry.
+  - Added *Reopen against main* for a child closed by base deletion when its parent
+    merged.
+  - The replacement-parent transition now requires an open child PR.
+  - Everything here inherits Phase 1's primary-repository scope.
   - The base-relative Persona diff is Phase 1's (step 9) and follows the current base
     automatically.
 - Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.

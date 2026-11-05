@@ -54,8 +54,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    `mode`, or the config default when it is absent. `stackEligibility` applies source plan
    §1:
    - the edge is in stack mode;
-   - prerequisite and dependent share a repository (compare the primary repository and
-     the attached repositories the prerequisite changed);
+   - the prerequisite's and the dependent's primary repositories are the same, because
+     `resolveTaskBases` applies the `baseSha` pin to the primary repository only;
+   - every repository the prerequisite changed other than that shared primary has
+     already merged;
    - exactly one unmerged same-repository prerequisite remains;
    - every cross-repository prerequisite is satisfied;
    - the parent's own stack depth is below `maxStackDepth`.
@@ -78,24 +80,28 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    UI updates.
 5. **Pinned dispatch** (`TaskManager.dispatch`, `src/server/dispatcher.ts`). When the
    dependent is stack-released, fetch the parent branch from origin, read its current head
-   SHA (newer than the stamp if the parent pushed since), and pass it as `baseSha`. On
+   SHA (newer than the stamp if the parent pushed since), and pass it as `baseSha`. The
+   pin and the `stack_*` columns cover the primary repository only. Secondary
+   repositories keep `resolveDispatchBase` and the default branch. On
    success, persist `stack_parent_task_id`, `stack_base_branch`, `stack_base_sha` and
    `stack_pr_url` (`addColumn` in the `tasks` upgrade path in `src/server/db.ts`, beside
    `base_sha`). If the fetch or the pin fails, refuse the dispatch with the reason. Never
    fall back to `main` silently. Manual dispatch, assign, drag-to-assign and the autopilot
    all reach this through `dependencyBlockers`. Check each one.
-6. **Stacked PR base**. In `withTaskKindContract` (`src/server/task-contract.ts`), and in
-   the runtime PR packet where the workflow's pull-request action is sent, append for a
-   stacked task: *open the pull request with `--base <stackBaseBranch>` and start the
-   description with "Stacked on <stackPrUrl>".* Change the source text through
+6. **Stacked PR base**. Add one shared function, `expectedStackBase`, that returns the
+   current parent's head branch while that parent is open, and the default branch once
+   it has merged or closed. The current parent is the latest lineage row for this task
+   and repository when one exists, otherwise `Task.stackPrUrl`. In `withTaskKindContract`
+   (`src/server/task-contract.ts`), and in the runtime PR packet where the workflow's
+   pull-request action is sent, append for a stacked task's primary repository: *open
+   the pull request with `--base <expectedStackBase>` and start the description with
+   "Stacked on <current parent>".* Compute it when the text is sent, never once at
+   dispatch. Change the source text through
    `actions/pull-request.md` and `npm run session-actions` only if a static line is
    needed. Never edit the generated file. Then enforce it. When the Inspector adopts a PR
    for a stacked task's session (after step 7 has set its lineage), compute the expected
-   base from the row's current parent, not from the task:
-   - the current parent PR's head branch while that parent is open;
-   - the default branch once the current parent has merged or closed.
-
-   If `baseRefName` differs, retarget the PR through the GitHub REST API (`PATCH
+   base with the same `expectedStackBase`, from the row's current parent, not from the
+   task. If `baseRefName` differs, retarget the PR through the GitHub REST API (`PATCH
    repos/{owner}/{repo}/pulls/{n}` with `base`, the same `gh api` style as `mergePr`) and
    record a one-line note on the PR row. Never retarget to a merged or closed parent's
    branch. A replacement child opened against the default branch after its parent closed
@@ -109,8 +115,9 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      changes under the same head counts as not reviewed.
    - Add `inspector_prs.stack_task_id`, `stack_parent_pr_url` (the current parent),
      `stack_base_sha` and `stack_lineage_history` (nullable JSON).
-   - When a PR is adopted for a session whose task has `stackParentTaskId`:
-     - if an earlier row with the same `stack_task_id` exists (the task's previous child
+   - When a PR is adopted for a session whose task has `stackParentTaskId`, and the PR is
+     in the task's primary repository (PRs in secondary repositories get no lineage):
+     - if an earlier row with the same `stack_task_id` and the same repository exists (the task's previous child
        PR, for example one replaced through *Move onto main*), copy the latest such row's
        `stack_parent_pr_url`, `stack_base_sha` and `stack_lineage_history` unchanged;
      - otherwise seed from the task: `stack_parent_pr_url = Task.stackPrUrl`,
@@ -210,8 +217,18 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
       closed is left on the default branch and never retargeted to the closed parent's
       branch;
     - nothing is retargeted to a merged parent's branch.
+  - PR-opening instruction:
+    - the first child is told the open parent's branch;
+    - a replacement child after its current parent closed or merged is told the default
+      branch, not the dispatch-time `stackBaseBranch`.
+  - Primary-repository scope:
+    - a multi-repository dependent whose prerequisite has an unmerged change only in a
+      secondary repository waits for merge;
+    - the pin applies to the primary repository only;
+    - a stacked task's secondary-repository PR gets no lineage.
   - Lineage inheritance:
     - the first child PR of a task is seeded from the task;
+    - the lookup ignores rows of the same task in a different repository;
     - a second child PR of the same task copies the latest previous row's current
       parent, stack base and history, even when the task's `stackPrUrl` names a
       different (earlier) parent.
@@ -279,8 +296,9 @@ Phase 2 relies on the contract names in the index, unchanged:
   `stack_released_head_sha`), `stackReleased` evaluated against the current parent, and
   the compare helper;
 - the base-aware clean-review record and the stacked review diff base;
-- lineage seeding and inheritance (`stack_task_id`, `stack_lineage_history`) and
-  base correction keyed on the current parent's state;
+- lineage seeding and inheritance (`stack_task_id` plus repository,
+  `stack_lineage_history`), the primary-repository scope, and `expectedStackBase`, shared
+  by the PR-opening instruction and base correction;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper written in step 6, reused by Phase 2.
 
@@ -316,3 +334,8 @@ change `stack_base_sha`.
   - Step 6's base correction now follows the current parent's state, so the
     *Move onto main* replacement keeps its default base.
   - Tests cover both.
+- Repair round 4:
+  - Step 6 now has one `expectedStackBase` for both the instruction and the correction.
+  - Steps 2, 5 and 7 limit stacking and lineage to the primary repository, and key
+    inheritance by task plus repository.
+  - Tests cover the instruction for a replacement child and the multi-repository scope.

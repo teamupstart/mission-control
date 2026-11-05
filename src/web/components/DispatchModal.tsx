@@ -292,6 +292,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
   );
@@ -1283,6 +1284,7 @@ function DispatchModal({
       draft.title.trim() ||
       draft.dependencies.length > 0,
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
   // when there is something inside to see - an edit, or a draft that already carries one of
   // them - and closed on a fresh dispatch, where the summary line names what is unset.
@@ -1459,7 +1461,7 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, editing?.planPolicy?.storage ?? planStorage ?? "repository");
+  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, draft.planStorage ?? planStorage ?? "repository");
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
@@ -1532,7 +1534,10 @@ function DispatchModal({
     if (kind === draft.kind) return {};
     if (taskHasOwnDefaultWorkflow(kind)) {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: taskDefaultWorkflowId(kind, null, planStorage ?? "repository") };
+      // Plan defaults resolve with storage at save time, even if Settings changed.
+      return { workflowId: kind === "plan"
+        ? undefined
+        : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
     }
     if (!hasReviewableDiff(kind)) {
       if (!hasReviewableDiff(draft.kind)) return {};
@@ -2427,6 +2432,7 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           workflowId: submitted.workflowId,
+          ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
           // The switch governs a task left in the backlog. An immediate dispatch is
@@ -3062,6 +3068,49 @@ function DispatchModal({
           )}
         </div>
 
+        {draft.kind === "plan" && (
+          <div className="dispatch-more-wrap">
+            <Tooltip label={advancedOpen ? "Collapse advanced task settings" : "Choose where this task saves its plan"}>
+              <button
+                type="button"
+                className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <span className="dispatch-more-title">Advanced</span>
+                {!advancedOpen && <span className="dispatch-more-summary">Plan storage: {(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}</span>}
+                <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
+              </button>
+            </Tooltip>
+            {advancedOpen && (
+              <div className={`dispatch-more-body${guidedDim}`}>
+                <label className="field">
+                  <span className="field-label">Plan storage</span>
+                  <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
+                    <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
+                      onChange={(event) => {
+                        const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
+                        const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        const savedDefault = editing?.kind === "plan"
+                          && editing.workflowId === taskDefaultWorkflowId("plan", null, editing.planPolicy?.storage ?? "repository");
+                        update({ planStorage: storage,
+                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                            ? undefined
+                            : taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                      }}>
+                      <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
+                      <option value="local">Local plan store</option>
+                      <option value="repository">Repository</option>
+                    </select>
+                  </Tooltip>
+                  <span className="field-hint">{editing ? `Pinned storage: ${editing.planPolicy?.storage === "local" ? "Local plan store" : "Repository"}. ` : ""}
+                    {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
         {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
             it changes what happens after the agent finishes rather than how the task is
             ranked. The rail shape makes that sequence legible without turning one select
@@ -3099,7 +3148,7 @@ function DispatchModal({
                   update({
                     workflowId:
                       value === "__default"
-                        ? editing
+                        ? editing && draft.kind !== "plan"
                           ? defaultWorkflowId
                           : undefined
                         : value === "__none"
@@ -3108,7 +3157,7 @@ function DispatchModal({
                   });
                 }}
               >
-                {!editing && (
+                {(!editing || draft.workflowId === undefined) && (
                   <option value="__default">
                     {workflowConfig === null
                       ? "Dispatch default — loading…"

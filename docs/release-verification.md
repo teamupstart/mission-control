@@ -308,6 +308,29 @@ cancelled. Check for such a job after any later environment change.
 then started without approval and published `alpha-5d9ede07d199fc47949c2b9659dd03d502181890`,
 retiring the three older alphas. Later `main` commits have signed and published on their own.
 
+## Choosing the release version
+
+Release Please computes the next version from the Conventional Commit subjects merged since the
+last tag, and keeps one open release pull request (`chore(main): release X.Y.Z`) up to date as
+`main` moves. To release a major version, land a commit on `main` that Release Please reads as
+breaking. The release pull request is then rewritten for the new version; merging it creates the
+tag and GitHub Release.
+
+- **Mark the subject with `!`.** A squash-merged pull request titled
+  `docs(release)!: <description>` is a breaking commit of any type, and bumps the major version.
+  The description appears under "BREAKING CHANGES" in the generated changelog, so write it for
+  readers of the release notes. The `release-compatible title` check accepts the `!`.
+- **A `BREAKING CHANGE:` or `Release-As:` footer is not reliable here.** The repository squashes
+  with the commit message set to blank, so a footer in the pull request body is dropped and the
+  squash commit carries only the title. Do not rely on a footer unless that setting is changed
+  deliberately.
+
+After the breaking commit merges, wait for `release.yml` to finish and check that the release pull
+request title and `package.json` show the intended version before merging it. Never edit
+`CHANGELOG.md` or the manifest by hand. Merging the release pull request tags `vX.Y.Z`, which
+starts CI and then the signed distribution run described below; the installer and updater offer
+the stable release only once that run has published its manifest.
+
 ## Ownership and prerequisites
 
 Release Please still owns stable versions, tags, changelogs and GitHub Releases.

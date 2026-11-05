@@ -94,7 +94,7 @@ test('detached migration waits for its identified parent before checking launch 
   // The parent-exit checkpoint asks about the source and the target from ONE launchd sweep, so
   // it arrives here as a single call carrying both bundles - in source-then-target order, which
   // is the order its refusal is reported in.
-  const ops = {...realApplyOperations(logPath), preflightAll: async (bundles: string[]) => {
+  const ops = {...realApplyOperations(logPath, undefined, () => () => {}), preflightAll: async (bundles: string[]) => {
     if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});
     events.push(...bundles);
     // Stop at the real conflict boundary without staging or launching an app.
@@ -125,7 +125,7 @@ test('detached migration treats an exited but unreaped parent as gone', async t 
   const deadline = Date.now() + 10_000;
   while (processState(pid) !== 'Z') assert.ok(Date.now() < deadline, 'the parent never exited');
   const events: string[] = [];
-  const ops = {...realApplyOperations(logPath), preflightAll: async (bundles: string[]) => {
+  const ops = {...realApplyOperations(logPath, undefined, () => () => {}), preflightAll: async (bundles: string[]) => {
     // The first check must still see the zombie: the helper proceeded on it, not after a later poll reaped it.
     if (events.length === 0) assert.equal(processState(pid), 'Z');
     if (parentIsRunning(pid)) throw Object.assign(new Error('preflight raced parent shutdown'), {migrationCrash: true});

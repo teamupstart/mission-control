@@ -36,7 +36,8 @@ test('legacy snapshot handoff captures and cleans up an orphaned SDK driver and 
     import {runApplyUpdate, realApplyOperations, parseArgs} from '../Runtime.app/Contents/Resources/app/scripts/fixture-apply.mjs';
     const {args, problem} = parseArgs(process.argv.slice(2));
     if (problem) throw new Error(problem);
-    const ops = realApplyOperations(args.logPath);
+    // Ownership is real; native presentation belongs to the dedicated Playwright specs.
+    const ops = realApplyOperations(args.logPath, undefined, () => () => {});
     const result = await runApplyUpdate(args, {...ops,
       preflight: async () => {}, copy: () => {}, remove: () => {}, install: () => {},
       prepareLaunch: async () => {}, launch: () => {}, verifyLaunch: async () => {},

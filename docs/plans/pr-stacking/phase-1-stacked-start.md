@@ -102,22 +102,39 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
    - Record the base next to the clean-review head (`cleanReviewHeadSha`), so a base that
      changes under the same head counts as not reviewed.
    - When a PR is adopted for a session whose task has `stackPrUrl`, copy it into the new
-     `inspector_prs.stack_parent_pr_url`. It is set once and never cleared by the
-     Shipping setting or the edge mode.
+     `inspector_prs.stack_parent_pr_url` (the current parent), and copy
+     `Task.stackBaseSha` into the new `inspector_prs.stack_base_sha`. The Shipping
+     setting and the edge mode never change or clear either value. `stack_base_sha` never
+     changes. The current parent may change only through Phase 2's replacement-parent
+     transition, so Phase 1 adds no other writer.
    - Add `inspector_prs.stack_released_head_sha`, null on adoption.
 8. **Release check** (`src/shared/stacking.ts`, `src/server/inspector/`). Add the pure
-   `stackReleased(facts)` with exactly the two branches in source plan §7:
+   `stackReleased(facts)` with exactly the two branches in source plan §7, evaluated
+   against the row's current parent:
    - parent merged: the base is the default branch and the parent merge commit is an
      ancestor of the child head;
-   - parent closed unmerged: the base is the default branch and the parent's last
-     observed head is not an ancestor of the child head.
+   - parent closed unmerged: the base is the default branch, and neither
+     `stack_base_sha` nor the parent's last observed head is an ancestor of the child
+     head.
 
    Any unknown fact returns held. On each Inspector tick, for a row with lineage and no
-   release for its current head, read the parent row's state, merge commit and last head.
+   release for its current head, read the current parent row's state, merge commit and
+   last head.
    Ask GitHub's compare API (`gh api repos/{o}/{r}/compare/{ancestor}...{head}`; `ahead`
    or `identical` means it is an ancestor). On a pass, write
    `stack_released_head_sha = <current head>`. Never run git in a worktree for this.
-9. **Merge gates** (`src/shared/shipping.ts`, `src/server/shipping/merge.ts`). Add
+9. **Review diff base** (`src/server/workflows/context.ts`, `src/server/diff.ts`). The
+   workflow context builds the Persona diff with `computeSessionDiff(cwd)`, which diffs
+   against the default branch. For a session whose task has `stackParentTaskId`, pass an
+   explicit source instead:
+   - the adopted PR's current `base_ref_name` (as `origin/<base>`) when a PR row exists;
+   - otherwise `origin/<stackBaseBranch>`.
+
+   Apply the same base to the CodeRabbit command's pinned `mergeBase` (the merge base of
+   the head and that ref). An explicit source gets no silent fallback in
+   `computeSessionDiff`, so a missing parent ref fails visibly. Non-stacked tasks are
+   unchanged.
+10. **Merge gates** (`src/shared/shipping.ts`, `src/server/shipping/merge.ts`). Add
    `baseRefName`, `defaultBranch` and `stack: { lineage: boolean; releasedForHead: boolean }`
    to `MergeInput.pr`. Add two `MergeBlock`s, each with a `MERGE_BLOCK_LABEL`, evaluated
    in this order after `draft` and before the workflow and review gates:
@@ -128,7 +145,7 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
 
    Pass both from `maybeMerge`. Make `not-reviewed` cover a reviewed base that differs
    from the current base.
-10. **UI** (`ShippingSettingsPanel.tsx`, `DispatchModal.tsx`, `backlog-copy.ts`,
+11. **UI** (`ShippingSettingsPanel.tsx`, `DispatchModal.tsx`, `backlog-copy.ts`,
    `BacklogColumn.tsx`, `line/BacklogDrawer.tsx`).
    - A **Stacked pull requests** `ConsoleCard` after the YOLO mode cards. It holds the
      *Wait for merge* / *Stack on its branch* segmented control, the maximum-depth
@@ -145,9 +162,10 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
      eligibility reason in place of the plain "after X" when an edge in stack mode still
      waits.
    - The merge queue shows both new block labels.
-11. **Docs**. `docs/inspector-and-shipping.md`: a new *Stacked pull requests* section,
-    both gate rows, the release check including how a person satisfies it by hand, and
-    the base-aware review rule. `docs/dispatch-and-backlog.md`: edge
+12. **Docs**. `docs/inspector-and-shipping.md`: a new *Stacked pull requests* section,
+    both gate rows, the release check with the manual action for each parent state
+    (source plan §7 table), the base-aware review rule and the base-relative Persona
+    diff. `docs/dispatch-and-backlog.md`: edge
     modes and stack release. `docs/configuration.md`: the two keys.
 
 ## 6. Data and compatibility
@@ -182,10 +200,21 @@ See the index's findings table. In particular: `TaskDispatchOptions.baseSha` and
     - releases only when the compare call shows ancestry;
     - re-checks after a later head;
     - holds on a compare failure;
-    - releases on the closed-parent branch once the child no longer contains the
-      parent's head;
+    - releases on the closed-parent branch once the child contains neither
+      `stack_base_sha` nor the parent's last head;
+    - still holds when the parent pushed again before closing: the last head is absent
+      but `stack_base_sha` is present;
+    - still holds after the default branch is merged into a child whose parent closed
+      unmerged;
+    - releases after the default branch is merged into a child whose parent merged;
+    - reads the current parent, so a changed `stack_parent_pr_url` is evaluated against
+      the new parent;
     - still holds with the setting switched off.
-  - Lineage copied at adoption and never cleared.
+  - Lineage (`stack_parent_pr_url`, `stack_base_sha`) copied at adoption and never
+    changed by the setting or the edge mode.
+  - Workflow context diff for a stacked task is computed against the PR's current base,
+    or the parent branch before a PR exists, and the CodeRabbit merge base matches it.
+    A non-stacked task's diff is unchanged.
   - Review invalidation on a base change.
   - Config defaults over an old blob, and edge `mode` absent on stored rows.
   - Migration over a pre-phase database.
@@ -222,14 +251,17 @@ Phase 2 relies on the contract names in the index, unchanged:
 - the `Task.stack*` fields;
 - `PrSnapshot.baseRefName` / `defaultBranch` / `mergeCommitSha` and
   `inspector_prs.base_ref_name`;
-- PR-row lineage (`stack_parent_pr_url`, `stack_released_head_sha`), `stackReleased` and
+- PR-row lineage (`stack_parent_pr_url` as the current parent, `stack_base_sha`,
+  `stack_released_head_sha`), `stackReleased` evaluated against the current parent, and
   the compare helper;
-- the base-aware clean-review record;
+- the base-aware clean-review record and the stacked review diff base;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper written in step 6, reused by Phase 2.
 
 Phase 2 must not move or weaken either gate, add a new gate, change the release check,
-change edge or `satisfiedAt` semantics, or add a second dispatch-base path.
+change edge or `satisfiedAt` semantics, or add a second dispatch-base path. Phase 2 may
+change `stack_parent_pr_url` only through its replacement-parent transition, and must never
+change `stack_base_sha`.
 
 ## 10. Cross-phase audit record
 
@@ -243,3 +275,11 @@ change edge or `satisfiedAt` semantics, or add a second dispatch-base path.
   automatically (or that receives an unrelated push) stays held until ancestry proves the
   restack, and the hold outlives the setting being switched off. The steps were
   renumbered: the release check is step 8, the gates step 9, UI step 10, docs step 11.
+- Repair round 2:
+  - Added `stack_base_sha` to the PR-row lineage and to the closed-parent branch, so a
+    parent that pushed before closing cannot release a child that still carries the
+    commit it was cut from.
+  - Made `stack_parent_pr_url` the current parent, changeable only by Phase 2's
+    replacement transition.
+  - Added step 9 (the review diff base) as the owner of the base-relative Persona diff.
+  - Steps renumbered again: gates 10, UI 11, docs 12.

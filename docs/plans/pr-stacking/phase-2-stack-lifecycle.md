@@ -41,8 +41,11 @@ From Phase 1:
 - `Task.stackParentTaskId`, `stackBaseBranch`, `stackBaseSha`, `stackPrUrl`;
 - `PrSnapshot.baseRefName` / `defaultBranch` and `inspector_prs.base_ref_name`;
 - the base-aware clean-review record;
-- PR-row lineage (`stack_parent_pr_url`, `stack_released_head_sha`), `stackReleased` and
+- PR-row lineage (`stack_parent_pr_url` as the current parent, `stack_base_sha`,
+  `stack_released_head_sha`), `stackReleased` evaluated against the current parent, and
   the compare helper;
+- the stacked review diff base, which follows the PR's current base, so a retarget or a
+  lineage transition needs no extra diff work here;
 - `MergeBlock` `"stacked-base"` and `"stack-hold"`;
 - the REST retarget helper.
 
@@ -104,9 +107,22 @@ must not become a second unleased autonomous writer.
      The replacement is adopted with the task's lineage, and is released only when the
      closed-parent branch of the release check passes, which means it no longer contains
      the parent's head.
-   - **Wait for a replacement**: when the existing branch discovery finds a replacement
-     parent PR on the same episode, it becomes the new base, through a retarget plus a
-     catch-up prompt.
+   - **Wait for a replacement**: the *replacement-parent transition*, the only writer
+     that changes `stack_parent_pr_url`. It runs when the child is `broken` because its
+     current parent closed unmerged, and the existing branch discovery finds a
+     replacement PR on the closed parent's same task episode. In one transaction it
+     appends `{from, to, at}` to a new nullable JSON column
+     `inspector_prs.stack_lineage_history` (added through `addColumn`), sets
+     `stack_parent_pr_url` to the replacement, and clears `stack_released_head_sha`.
+     `stack_base_sha` stays unchanged. The transition is idempotent: the same
+     replacement URL is a no-op.
+
+     It then retargets the child to the replacement's branch with the Phase 1 helper and
+     sends a catch-up prompt. Because the release check reads the current parent, the
+     child is released through the merged-parent branch: once the replacement merges, the
+     child is retargeted to the default branch, restacks, and the replacement's merge
+     commit is in its ancestry. If the replacement also closes unmerged, the child is
+     `broken` again and the same two actions apply.
 
    A rescheduled or cancelled parent also shows in the existing stopped-dependency warning
    button's text. An edge flipped to *After merge* after the child started changes nothing
@@ -117,13 +133,15 @@ must not become a second unleased autonomous writer.
    and *Stack broken: #A closed*. Keep Phase 1's `stacked-base` and `stack-hold` as the
    only stacking gates. These are reasons that refine their text, not new gates. Bucket them as `blocked`, except
    *Restacking onto main*, which is in progress and belongs with `waiting`.
-7. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks and the
-   Foreman dependency. `docs/dispatch-and-backlog.md`: what a stacked task does after its
+7. **Docs**. `docs/inspector-and-shipping.md`: lifecycle, prompts, broken stacks
+   (including the replacement-parent transition and its lineage history) and the Foreman
+   dependency. `docs/dispatch-and-backlog.md`: what a stacked task does after its
    parent merges.
 
 ## 6. Data and compatibility
 
-- Any new column is nullable and added through `addColumn`. Rows from Phase 1 read as
+- Any new column, including `stack_lineage_history`, is nullable and added through
+  `addColumn`. Rows from Phase 1 read as
   `current`, `parent-merged-needs-retarget`, `restack-needed` or `released` on the first
   tick, from their lineage and release record.
 - Claim rows reuse the CodeRabbit claim table shape, or a sibling table created in the
@@ -145,6 +163,13 @@ must not become a second unleased autonomous writer.
   - Prompts still go out for an already-stacked child after the Shipping default is
     switched off.
   - Broken-stack holds.
+  - Replacement-parent transition:
+    - it appends to the history, swaps the current parent, keeps `stack_base_sha`, and
+      clears the release;
+    - it is idempotent;
+    - it runs only for a `broken` child with a same-episode replacement;
+    - the replacement's merge plus a restack releases the child;
+    - a replacement that closes unmerged returns the child to `broken`.
   - A git-level fixture: cut from the parent, squash-merge the parent, merge
     `origin/main` into the child, and assert the child's diff against `main` is only its
     own change.
@@ -153,6 +178,8 @@ must not become a second unleased autonomous writer.
     fake session.
   - A closed fake parent shows *Stack broken* on the backlog card and in the merge queue,
     with both actions reachable.
+  - After a fake replacement parent is discovered, the row reads *Stacked on* the
+    replacement.
   - Extend the fake `gh` for parent-merged and closed states and the PR PATCH.
 - Then `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke` and
   `npm run test:e2e`.
@@ -176,6 +203,13 @@ children into non-default bases or add a daemon-side writer that types into pane
 ## 10. Cross-phase audit record
 
 - Consumes Phase 1 names unchanged.
+- Repair round 2:
+  - Defined the replacement-parent transition as the only writer of a changed
+    `stack_parent_pr_url`, with `stack_lineage_history`, so waiting for a replacement
+    ends in a release through the merged-parent branch.
+  - `stack_base_sha` is never touched here.
+  - The base-relative Persona diff is Phase 1's (step 9) and follows the current base
+    automatically.
 - Repair round 1: Phase 1 now owns `stack-hold`, the lineage and the release check.
   `unstacked` became `released` (verified ancestry, not any new head). The state is
   derived from row lineage so it outlives the setting and the session. The exit criteria

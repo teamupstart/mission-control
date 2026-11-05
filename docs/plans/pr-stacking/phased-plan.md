@@ -36,7 +36,7 @@ reflects them.
 
 ## Sizing
 
-Estimated non-test production code: **1,200 to 1,600 lines**. Assumptions: about 250 shared
+Estimated non-test production code: **1,250 to 1,700 lines**. Assumptions: about 250 shared
 (schemas, eligibility, gates, release check), 350 to 450 server (readiness stamping, pinned dispatch, PR
 base check, snapshot fields, retarget, restack prompts), 300 to 400 web (Shipping card,
 chip toggle, labels, merge-queue states), and 150 to 250 docs and the runtime prompt text.
@@ -86,13 +86,25 @@ Phase 1 owns these names and Phase 2 must not rename them:
   written once at dispatch.
 - `PrSnapshot.baseRefName`, `PrSnapshot.defaultBranch` and `PrSnapshot.mergeCommitSha`,
   plus `inspector_prs.base_ref_name` and the base recorded with the clean-review head.
-- Stack lineage on the PR row: `inspector_prs.stack_parent_pr_url` (copied from the task
-  when the PR is adopted, never cleared by the setting) and
-  `inspector_prs.stack_released_head_sha` (the child head for which the release check
-  passed; null or a different head means held).
-- The pure release check `stackReleased(facts)` in `src/shared/stacking.ts`, with the two
-  branches stated in the source plan §7, and the server-side compare helper that supplies
-  its ancestry facts. Unknown facts mean held.
+- Stack lineage on the PR row:
+  - `inspector_prs.stack_parent_pr_url`: the **current** parent. Phase 1 sets it from the
+    task at adoption. The Shipping setting and the edge mode never change or clear it.
+    Only Phase 2's replacement-parent transition may change it.
+  - `inspector_prs.stack_base_sha`: the parent commit the child was cut at, copied from
+    `Task.stackBaseSha` at adoption and never changed.
+  - `inspector_prs.stack_released_head_sha`: the child head for which the release check
+    passed. Null or a different head means held.
+- The pure release check `stackReleased(facts)` in `src/shared/stacking.ts`, evaluated
+  against the current parent, with the two branches stated in the source plan §7. A
+  merged parent needs its merge commit in the child's ancestry. A closed parent needs
+  neither `stack_base_sha` nor the parent's last head in the child's ancestry. The
+  server-side compare helper supplies the ancestry facts, and unknown facts mean held.
+- Review diff base (Phase 1): for a stacked task, the workflow Persona diff and the
+  CodeRabbit merge base use the PR's current base, or the parent branch before a PR
+  exists. Every other task keeps the default-branch diff.
+- Replacement-parent transition (Phase 2): the only writer of a changed
+  `stack_parent_pr_url`. It records each change in `inspector_prs.stack_lineage_history`
+  and never touches `stack_base_sha`.
 - `MergeBlock` `"stacked-base"` (base is not the default branch) and `"stack-hold"`
   (lineage present and not released for the current head). These are the only two
   stacking gates, and they are owned by Phase 1.
@@ -135,3 +147,13 @@ behavior.
   - "With stacking off, nothing in this phase runs" contradicted the source plan's
     "already-started children stay stacked". The scope rule above now governs both
     phases.
+- Repair round 2 (same run):
+  - The closed-parent branch now also requires the recorded `stack_base_sha` to be absent
+    from the child's ancestry. Before, a parent that pushed before closing could release
+    a child that still carried its earlier commits. Phase 1 retains `stack_base_sha` on
+    the PR row.
+  - The lineage is now a current parent plus a history. Phase 2's replacement-parent
+    transition is the only way it changes, and the release check reads the current
+    parent, so waiting for a replacement ends in a defined release.
+  - The manual release actions are stated per parent state and match the release check.
+  - The base-relative Persona diff now has an owner, Phase 1 step 9, with tests.

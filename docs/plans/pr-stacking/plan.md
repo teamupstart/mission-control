@@ -1,6 +1,6 @@
 # Stacked pull requests (Settings → Shipping)
 
-Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Nothing here is implemented.
+Status: approved design. Decisions from the first review are adopted below. Revision 3 corrected repository facts found while phasing (see `phased-plan.md`). Revision 4 makes the stack hold durable: it follows the child's recorded lineage and is released only by a verified ancestry check (§7), and it applies to already-stacked children regardless of the setting. Revision 5 checks a closed parent against the commit the child was cut from, defines how a replacement parent takes over the lineage, gives each parent state its own manual release action, and gives the base-relative review diff an owner. Nothing here is implemented.
 
 ## The short answer
 
@@ -165,23 +165,41 @@ the review and CI gates:
 | **Base is the default branch** (`stacked-base`) | Merging a child into its parent's branch would fold it silently into the parent's pull request and skip its own review |
 | **Stack released** (`stack-hold`): a pull request with recorded stack lineage stays held until the release check passes for its current head | A base change alone proves nothing. GitHub can retarget a child by itself when the parent's branch is auto-deleted, and an unrelated push changes the head without bringing in the new base |
 
-The lineage is recorded on the pull request's row when it is adopted for a stacked task,
-so it survives the session going away, a restart and the setting being switched off. The
-release check is one rule with two branches, evaluated on the Inspector tick from GitHub
-data only, with no git run in a worktree:
+The lineage is recorded on the pull request's row when it is adopted for a stacked task:
+the **current parent** pull request and the **stack base**, the parent commit the child
+was cut at (`stackBaseSha`). It survives the session going away, a restart and the
+setting being switched off. The current parent changes in exactly one case, a
+replacement parent (§9), and every change is appended to the row's lineage history. The
+stack base never changes. The release check is one rule with two branches, evaluated on
+the Inspector tick against the *current* parent, from GitHub data only, with no git run in
+a worktree:
 
 - **Parent merged:** the base is the default branch **and** the parent's merge commit is an
   ancestor of the child's current head (GitHub's compare API reports `ahead` or
   `identical`).
-- **Parent closed without merging:** the base is the default branch **and** the parent's
-  last observed head is **not** an ancestor of the child's current head. In other words,
-  the child no longer carries the parent's unmerged code.
+- **Parent closed without merging:** the base is the default branch, **and neither** the
+  stack base **nor** the parent's last observed head is an ancestor of the child's current
+  head. In other words, the child no longer carries the parent's unmerged code. The stack
+  base is what makes this safe: a parent that pushed again before closing has a last head
+  the child never contained, but the child still contains the commit it was cut from.
 
 The release is recorded against the head it was verified for, and a new head is checked
 again. Anything the daemon cannot read (a failed compare, an unknown parent state or
-merge commit) keeps the hold. A person can satisfy the check by hand, by merging the
-default branch into the child or by moving the child's commits onto a fresh branch, and
-the next tick releases it.
+merge commit) keeps the hold.
+
+A person can satisfy the check by hand. The action depends on the current parent's state,
+and the next tick releases the child:
+
+| Current parent | Manual action that satisfies the check |
+|---|---|
+| Merged | Merge the default branch, which now contains the parent's merge commit, into the child and push |
+| Closed without merging | Cherry-pick only the child's own commits onto a fresh branch cut from the default branch and open a replacement pull request (it inherits the lineage). Merging the default branch into the old child does **not** help, because the parent's commits stay in its ancestry |
+| Open | Nothing releases it yet. The parent has to merge or close first |
+
+Releasing after a merged parent is safe even when the child still carries the parent's
+original (pre-squash) commits. After the release the child is reviewed against the
+default branch, so any parent code that did not land in the squash shows up in the
+child's own diff and is reviewed as the child's change.
 
 With YOLO on, a stack therefore lands bottom-up with no extra machinery: parent merges,
 child retargets, restacks, passes the release check, is reviewed clean and merges. The soak is still measured from
@@ -195,13 +213,17 @@ The Inspector reviews a stacked pull request against its parent branch, which is
 the author actually wrote and the smallest one. The reviewed-head record gains the base
 it was reviewed against. A changed base with an unchanged head (retarget without restack)
 is then re-reviewed rather than trusted. Workflow Personas receive the same base-relative
-diff.
+diff. Today the workflow context diffs every session against the default branch
+(`computeSessionDiff(cwd)` in `src/server/workflows/context.ts`). For a stacked task it
+will diff against the pull request's current base, or against the parent branch before a
+pull request exists. The CodeRabbit command's pinned merge base follows the same rule.
+Phase 1 owns this.
 
 ### 9. When a stack breaks
 
 | Event | What happens |
 |---|---|
-| Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. The replacement pull request inherits the task's lineage and is released only when the closed-parent branch of the release check passes. A replacement parent pull request on the same episode, found by the existing branch discovery, becomes the new base |
+| Parent pull request closed without merging | Child is held by the stack hold, because its branch still carries the parent's unmerged code. The dependent card and merge queue show **Stack broken: #A closed**. Actions: *Move onto main* (prompt the session to cherry-pick only its own commits onto a new branch cut from the default branch, open a replacement pull request and close the old one; no force-push) or *Wait for a replacement*. A child replacement inherits the lineage and is released only when the closed-parent branch of the release check passes. With *Wait for a replacement*, a replacement **parent** pull request found by the existing branch discovery on the parent task's same episode takes over the lineage: it becomes the current parent (the old one is kept in the lineage history), the child is retargeted to its branch and caught up, and the child is released by the merged-parent branch once the replacement merges and the child restacks |
 | Parent task rescheduled or cancelled | Same hold. The existing stopped-dependency warning button names the stack |
 | GitHub closed the child because its base branch was deleted before a retarget | Same hold and actions as a closed parent, with GitHub's reason shown |
 | Child's session is gone when a restack is needed | No restart. The merge queue says *Restack needed: no session*, and the task's **Resume** offers it |
@@ -241,6 +263,7 @@ in the session header shows its base.
 | `src/shared/shipping.ts`, `src/server/shipping/` | New `stacked-base` and `stack-hold` gates in `mergeVerdict`, with the release check fed from the Inspector tick. Retarget-on-parent-merge step on the Inspector tick |
 | New `src/server/stacking/`, `src/server/foreman/` | Child-behind-parent and restack prompts, delivered through the existing Foreman review-follow-up claim-before-send path |
 | Task contract, pull-request workflow prompt | Name the base branch and the "Stacked on" line when the task is stacked (regenerate generated prompt files from source) |
+| `src/server/workflows/context.ts` | The Persona diff and the CodeRabbit merge base use the stacked pull request's current base |
 | `src/web/components/ShippingSettingsPanel.tsx`, dependency chips, board card | UI above |
 | Docs | `docs/inspector-and-shipping.md` (new Stacked pull requests section and gate row), `docs/dispatch-and-backlog.md` (edge modes), `docs/configuration.md` |
 
@@ -249,7 +272,9 @@ in the session header shows its base.
 - `test/`: eligibility table (same repository, cross repository, two unmerged
   prerequisites, depth cap, multi-repository task), release-state transitions, the merge
   gate refusing a non-default base, the stack hold surviving an automatic retarget and an
-  unrelated push, release only on verified ancestry, retarget idempotence, Shipping config defaults over an
+  unrelated push, release only on verified ancestry, a parent that pushes again before
+  closing, a replacement parent taking over the lineage, the Persona diff against the
+  stacked base, retarget idempotence, Shipping config defaults over an
   old blob, edge `mode` defaulting on stored rows.
 - Git-level fixture test: cut from parent branch, parent squash-merged, merge-based restack
   produces a child whose diff against `main` is only its own change.

@@ -211,15 +211,18 @@ export function DecisionForm({
               key={o.id}
               className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
             >
-              <Tooltip label={o.detail ?? o.label}>
-                <input
-                  type={d.multiSelect ? "checkbox" : "radio"}
-                  name={`${namePrefix}-${d.id}`}
-                  checked={get(d.id).selected.includes(o.id)}
-                  onChange={(e) => choose(d, o.id, e.target.checked)}
-                  disabled={busy}
-                />
-              </Tooltip>
+              {/*
+                No `Tooltip`: it repeated the detail printed below, and picking an option
+                focuses the radio, so the bubble stayed up over the question until blur. The
+                enclosing label already names the radio. "Chat about it" keeps its bubble.
+              */}
+              <input
+                type={d.multiSelect ? "checkbox" : "radio"}
+                name={`${namePrefix}-${d.id}`}
+                checked={get(d.id).selected.includes(o.id)}
+                onChange={(e) => choose(d, o.id, e.target.checked)}
+                disabled={busy}
+              />
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}

@@ -24,6 +24,9 @@
  * enforced set: those carry a visible `<label>` or placeholder that is on screen the whole
  * time, and a tooltip repeating it is noise rather than help. Anything you ACT on - a
  * button, a link, a select, a checkbox, a radio, a `<summary>` - is in.
+ *
+ * One narrow exception, by the same argument: a radio or checkbox whose own `<label>` prints
+ * a `decision-option-detail` and holds no other control (a review's option rows).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -143,6 +146,24 @@ function hasValidTooltipOwner(node: ts.Node): boolean {
   );
 }
 
+const PRINTED_DETAIL = "decision-option-detail";
+
+/**
+ * Narrow on purpose: any labelled radio has visible text, so only the nearest `<label>`
+ * counts, and only when it prints a detail and contains exactly this one control.
+ */
+function labelPrintsItsOwnDetail(node: ts.JsxOpeningLikeElement): boolean {
+  if (tagName(node) !== "input") return false;
+  for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+    if (!ts.isJsxElement(parent) || tagName(parent.openingElement) !== "label") continue;
+    const printsDetail = descendants(parent, (candidate) =>
+      (stringAttribute(candidate, "className") ?? "").split(/\s+/).includes(PRINTED_DETAIL),
+    );
+    return printsDetail.length > 0 && descendants(parent, isInteractive).length === 1;
+  }
+  return false;
+}
+
 function isInteractive(node: ts.JsxOpeningLikeElement): boolean {
   const name = tagName(node);
   if (INTERACTIVE_COMPONENTS.has(name)) return Boolean(attribute(node, "onClick"));
@@ -172,7 +193,7 @@ function unwrappedInSource(raw: string, file: string): string[] {
         misses.push(`${file}:${line} <${tagName(node.openingElement)}>`);
       }
     } else if (ts.isJsxSelfClosingElement(node) && isInteractive(node)) {
-      if (!hasValidTooltipOwner(node)) {
+      if (!hasValidTooltipOwner(node) && !labelPrintsItsOwnDetail(node)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
         misses.push(`${file}:${line} <${tagName(node)}>`);
       }
@@ -280,4 +301,30 @@ test("the scan can actually see a missing tooltip", () => {
   assert.deepEqual(unwrappedInSource(componentControl, "component.tsx"), [
     "component.tsx:1 <ControlButton>",
   ]);
+});
+
+test("a row that prints its own detail needs no bubble, and only that row", () => {
+  const printed =
+    `const A = () => <label><input type="radio" /><span><span className="decision-option-detail">why</span></span></label>;`;
+  assert.deepEqual(unwrappedInSource(printed, "printed.tsx"), []);
+
+  const printedAmongClasses =
+    `const B = () => <label><input type={t} /><span className="muted decision-option-detail">why</span></label>;`;
+  assert.deepEqual(unwrappedInSource(printedAmongClasses, "classes.tsx"), []);
+
+  const unprinted =
+    `const C = () => <label><input type="radio" /><span className="decision-option-label">Chat about it</span></label>;`;
+  assert.deepEqual(unwrappedInSource(unprinted, "unprinted.tsx"), ["unprinted.tsx:1 <input>"]);
+
+  const sharedRow =
+    `const D = () => <label><input type="radio" /><span className="decision-option-detail">why</span><button>Edit</button></label>;`;
+  assert.deepEqual(unwrappedInSource(sharedRow, "shared.tsx"), [
+    "shared.tsx:1 <input>",
+    "shared.tsx:1 <button>",
+  ]);
+
+  const outside =
+    `const E = () => <label><span className="decision-option-detail">why</span></label>;` +
+    `const F = () => <div><input type="radio" /></div>;`;
+  assert.deepEqual(unwrappedInSource(outside, "outside.tsx"), ["outside.tsx:1 <input>"]);
 });

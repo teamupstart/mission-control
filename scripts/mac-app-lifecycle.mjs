@@ -66,13 +66,26 @@ export function realMacAppOps(directory) {
 
 let addon;
 /**
+ * Where the shipped addon sits relative to this code, in both shapes the code runs in. As ESM
+ * (`scripts/`, including the detached updater's copy) this file is `scripts/mac-app-lifecycle.mjs`.
+ * esbuild also bundles it into the CommonJS Electron main, `dist/main/index.cjs`, and empties
+ * `import.meta` there, so `new URL(..., import.meta.url)` would throw and turn the startup launch
+ * check into "could not verify" for exactly the unregistered start it exists to diagnose.
+ */
+function stateLockAddonPath() {
+  if (import.meta.url) return fileURLToPath(new URL("../dist/native/state-lock.node", import.meta.url));
+  if (typeof __dirname === "string") return join(__dirname, "..", "native", "state-lock.node");
+  throw new Error("The packaged runtime cannot locate its native addon. Reinstall Mission Control before updating.");
+}
+
+/**
  * The state-lock addon every app ships, which the detached updater copies with its own modules
  * (`UPDATE_HELPER_FILES`). Loaded only when an argument read is needed, so a sweep with no
  * unregistered main process never touches it.
  */
 function stateLockAddon() {
   if (!addon) {
-    const path = fileURLToPath(new URL("../dist/native/state-lock.node", import.meta.url));
+    const path = stateLockAddonPath();
     const loaded = createRequire(path)(path);
     if (typeof loaded.processArguments !== "function") throw new Error("The packaged runtime cannot read process arguments. Reinstall Mission Control before updating.");
     addon = loaded;

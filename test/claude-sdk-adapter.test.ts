@@ -344,7 +344,7 @@ test("SDK usage repopulates both Claude plan windows on init and refreshes after
 
 test("the driver emits turn deltas from Claude's cumulative result snapshots", async () => {
   const { deps, started } = fakeDeps();
-  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: "agent-cumulative-spend" }));
   const { query } = await started;
   query.emit(INIT("agent-cumulative-spend"));
   await collect(handle.events, (event) => event.kind === "bound");
@@ -375,6 +375,7 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
   const first = (await collect(handle.events, (event) => event.kind === "turn_done"))
     .find((event) => event.kind === "turn_done");
   assert.equal(first?.kind === "turn_done" && first.usage?.costUsd, 10);
+  assert.equal(first?.kind === "turn_done" && first.usageSnapshot?.resumed, true);
   assert.equal(first?.kind === "turn_done" && first.usage?.input, 1_000);
 
   query.emit(result("result-2", 13, 1_250, 140));
@@ -435,6 +436,8 @@ test("the driver emits turn deltas from Claude's cumulative result snapshots", a
     .find((event) => event.kind === "turn_done");
   assert.equal(rebound?.kind === "turn_done" && rebound.usage?.costUsd, 30);
   assert.equal(rebound?.kind === "turn_done" && rebound.usage?.input, 3_000);
+  assert.equal(rebound?.kind === "turn_done" && rebound.usageSnapshot?.resumed, false,
+    "a changed conversation must not inherit the legacy resume gap policy");
 
   query.end();
 });
@@ -755,8 +758,8 @@ test("an authentication failure reloads credentials by resuming on the next turn
   } as ClaudeSdkMessage);
   const recovered = (await collect(handle.events, (event) => event.kind === "turn_done"))
     .find((event) => event.kind === "turn_done");
-  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.costUsd, 20);
-  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.input, 2_000);
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.costUsd, 10);
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.input, 1_000);
   await handle.stop();
 });
 
@@ -1565,4 +1568,222 @@ test("a turn Claude ended at capacity reports the failure on turn_done; other AP
     "a usage limit is not capacity: waiting minutes does not refill a plan",
   );
   query.end();
+});
+
+// A new adapter instance has no in-memory baseline. The Registry must still subtract
+// the committed conversation snapshot, including an auxiliary model that ran only once.
+test("resumed Claude adapters record only new spend across driver and database restarts", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { closeDb, sessionCostFor, fleetEstimatedCostSince, openDb } = await import("../src/server/db.ts");
+  const conversation = "resume-ledger-regression";
+  const fleetBefore = fleetEstimatedCostSince(0) ?? 0;
+  async function run(resume: boolean, totals: number[], model = "claude-opus-5") {
+    const registry = new Registry();
+    const id = `sdk:resume-ledger-${resume}`;
+    registry.registerSdkSession({ id, agent: "claude", name: "resume", cwd: "/wt/one" });
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: resume ? conversation : null, model }));
+    const { query } = await started;
+    query.emit({ ...INIT(conversation), model });
+    for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+    for (const total of totals) {
+      if (total === 13) assert.equal(await handle.sendIfIdle({ text: "capacity retry" }), "started");
+      query.emit({ type: "result", subtype: "success", session_id: conversation,
+        uuid: `resume-result-${total}`, total_cost_usd: total + 1,
+        ...(total === 10 ? { is_error: true, result: "API Error: Repeated 529 Overloaded errors. The API is at capacity" } : {}),
+        modelUsage: {
+          "claude-opus-5": { inputTokens: Math.min(total, 25) * 10, outputTokens: Math.min(total, 25) * 20,
+            cacheReadInputTokens: Math.min(total, 25) * 100, cacheCreationInputTokens: Math.min(total, 25) * 5, costUSD: Math.min(total, 25) },
+          ...(model === "claude-sonnet-5" ? { "claude-sonnet-5": {
+            inputTokens: (total - 25) * 10, outputTokens: (total - 25) * 20,
+            cacheReadInputTokens: (total - 25) * 100, costUSD: total - 25,
+          } } : {}),
+          "claude-haiku-5": { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 635, costUSD: 1 },
+        },
+      } as ClaudeSdkMessage);
+      for (const event of await collect(handle.events, e => e.kind === "turn_done")) {
+        if (total === 10 && event.kind === "turn_done") assert.equal(event.failure?.kind, "capacity");
+        registry.applyDriverEvent(id, event);
+      }
+    }
+    assert.equal(registry.getSession(id)?.cost?.costUsd, totals.at(-1)! + 1);
+    await handle.stop();
+  }
+  await run(false, [10, 13]);
+  closeDb();
+  await run(true, [20, 25]);
+  assert.equal(sessionCostFor(conversation)?.costUsd, 26);
+  assert.equal(sessionCostFor(conversation)?.cacheRead, 3135);
+  assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 26);
+  const row = openDb().prepare("SELECT cost_usd, cache_read FROM usage_ledger WHERE note_key = ? AND window_end_ns = ? AND model_id = ?")
+    .get(conversation, "resume-result-20", "claude-opus-5");
+  assert.deepEqual({ ...row }, { cost_usd: 7, cache_read: 700 });
+  await run(true, [30], "claude-sonnet-5");
+  assert.equal(sessionCostFor(conversation)?.costUsd, 31, "model relaunch keeps the conversation baseline");
+  assert.equal(sessionCostFor(conversation)?.cacheRead, 3635);
+});
+
+// Unlike a replacement driver on the same conversation, /clear must book the entire
+// first result under the new note key, even if its counters exceed the old baseline.
+test("a changed Claude conversation ID books its first result into session and fleet totals", async () => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { sessionCostFor, fleetEstimatedCostSince, openDb } = await import("../src/server/db.ts");
+  const oldConversation = "clear-ledger-old";
+  const newConversation = "clear-ledger-new";
+  const id = "sdk:clear-ledger";
+  const registry = new Registry();
+  registry.registerSdkSession({ id, agent: "claude", name: "clear", cwd: "/wt/one" });
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ resume: oldConversation }));
+  const { query } = await started;
+  const fleetBefore = fleetEstimatedCostSince(0) ?? 0;
+  try {
+    query.emit(INIT(oldConversation));
+    for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+    async function result(conversation: string, total: number) {
+      query.emit({ type: "result", subtype: "success", session_id: conversation,
+        uuid: `${conversation}-${total}`, total_cost_usd: total,
+        modelUsage: { "claude-opus-5": {
+          inputTokens: total * 10, outputTokens: total * 2,
+          cacheReadInputTokens: total * 100, cacheCreationInputTokens: total, costUSD: total,
+        } },
+      } as ClaudeSdkMessage);
+      for (const event of await collect(handle.events, e => e.kind === "turn_done")) registry.applyDriverEvent(id, event);
+    }
+    await result(oldConversation, 20); // Approved legacy baseline-only transition.
+    await result(oldConversation, 23);
+    assert.equal(sessionCostFor(oldConversation)?.costUsd, 3);
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 3);
+
+    // Claude can announce /clear's changed identity on an ordinary result, without init.
+    await result(newConversation, 40);
+    assert.equal(registry.getSession(id)?.agentSessionId, newConversation);
+    assert.equal(registry.getSession(id)?.cost?.costUsd, 40, "the card follows the new conversation");
+    assert.equal(sessionCostFor(newConversation)?.costUsd, 40);
+    assert.equal(sessionCostFor(newConversation)?.cacheRead, 4000);
+    assert.equal(sessionCostFor(oldConversation)?.costUsd, 3, "the old conversation is unchanged");
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 43);
+    const row = openDb().prepare(`SELECT cost_usd, input, output, cache_read, cache_write
+      FROM usage_ledger WHERE note_key = ? AND window_end_ns = ?`)
+      .get(newConversation, `${newConversation}-40`);
+    assert.deepEqual({ ...row }, { cost_usd: 40, input: 400, output: 80, cache_read: 4000, cache_write: 40 });
+
+    await result(newConversation, 40);
+    assert.equal((fleetEstimatedCostSince(0) ?? 0) - fleetBefore, 43, "replaying that first result adds nothing");
+  } finally {
+    await handle.stop();
+  }
+});
+
+// This reference comes from per-request transcript usage and pinned list rates, not
+// from the cumulative SDK cost fields that the adapter consumes. See the fixture README.
+test("resumed Claude ledger, session and fleet reconcile with transcript requests at list rates", async (t) => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { closeDb, openDb, sessionCostFor, fleetEstimatedCostSince, fleetTokensSince } = await import("../src/server/db.ts");
+  type TranscriptRequest = {
+    requestId: string;
+    message: {
+      id: string;
+      model: string;
+      usage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_input_tokens: number;
+        cache_creation_input_tokens: number;
+        cache_creation: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number };
+      };
+    };
+  };
+  const transcript: TranscriptRequest[] = readFileSync(
+    new URL("./fixtures/claude-resume-usage/transcript.jsonl", import.meta.url), "utf8",
+  ).trim().split("\n").map(line => JSON.parse(line));
+  // A response can have several content blocks, each repeating the same usage object.
+  const requests = [...new Map(transcript.map(row => [
+    `${row.message.id}:${row.requestId}`, row,
+  ])).values()];
+  assert.equal(transcript.length, 5);
+  assert.equal(requests.length, 4);
+  // USD/MTok, Sonnet 4.6 standard global API rates, verified 2026-11-05:
+  // https://platform.claude.com/docs/en/about-claude/pricing
+  const rates = { input: 3, output: 15, cacheRead: 0.30, write5m: 3.75, write1h: 6 };
+  const pricedRequests = requests.map(({ message }) => {
+    assert.equal(message.model, "claude-sonnet-4-6");
+    const u = message.usage;
+    const write5m = u.cache_creation.ephemeral_5m_input_tokens;
+    const write1h = u.cache_creation.ephemeral_1h_input_tokens;
+    assert.equal(u.cache_creation_input_tokens, write5m + write1h);
+    return {
+      input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens,
+      cacheWrite: write5m + write1h,
+      cost: (u.input_tokens * rates.input + u.output_tokens * rates.output
+        + u.cache_read_input_tokens * rates.cacheRead + write5m * rates.write5m
+        + write1h * rates.write1h) / 1_000_000,
+    };
+  });
+  const expected = pricedRequests.reduce((a, r) => ({
+    input: a.input + r.input, output: a.output + r.output,
+    cacheRead: a.cacheRead + r.cacheRead, cacheWrite: a.cacheWrite + r.cacheWrite,
+    cost: a.cost + r.cost,
+  }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  const near = (actual: number | null | undefined, expectedCost: number, label: string) => {
+    assert.equal(typeof actual, "number", `${label} must be priced`);
+    assert.ok(Math.abs(actual! - expectedCost) < 1e-9, `${label}: ${actual} vs ${expectedCost}`);
+  };
+  const tokens = (value: { input: number; output: number; cacheRead: number; cacheWrite: number }) => ({
+    input: value.input, output: value.output, cacheRead: value.cacheRead, cacheWrite: value.cacheWrite,
+  });
+  const frames: ClaudeSdkMessage[] = JSON.parse(readFileSync(
+    new URL("./fixtures/claude-resume-usage/results.json", import.meta.url), "utf8",
+  ));
+  const conversation = "00000000-0000-4000-8000-000000001356";
+  const costBefore = fleetEstimatedCostSince(0) ?? 0;
+  const tokensBefore = fleetTokensSince(0);
+  async function replay(resume: boolean, results: ClaudeSdkMessage[]) {
+    const id = `sdk:transcript-reconciliation-${resume}`;
+    const registry = new Registry();
+    registry.registerSdkSession({ id, agent: "claude", name: "reconciliation", cwd: "/wt/one" });
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({
+      resume: resume ? conversation : null, model: "claude-sonnet-4-6",
+    }));
+    const { query } = await started;
+    try {
+      query.emit({ ...INIT(conversation), model: "claude-sonnet-4-6" });
+      for (const event of await collect(handle.events, e => e.kind === "bound")) registry.applyDriverEvent(id, event);
+      for (const frame of results) {
+        query.emit(frame);
+        for (const event of await collect(handle.events, e => e.kind === "turn_done")) registry.applyDriverEvent(id, event);
+      }
+      return registry.getSession(id)?.cost;
+    } finally {
+      await handle.stop();
+    }
+  }
+  await replay(false, frames.slice(0, 2));
+  closeDb();
+  const card = await replay(true, frames.slice(2));
+  const session = sessionCostFor(conversation);
+  assert.ok(card && session);
+  near(card.costUsd, expected.cost, "card cost");
+  near(session.costUsd, expected.cost, "session cost");
+  assert.deepEqual(tokens(card), tokens(expected));
+  assert.deepEqual(tokens(session), tokens(expected));
+  const ledger = openDb().prepare(`SELECT SUM(cost_usd) AS cost,
+    SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cacheRead,
+    SUM(cache_write) AS cacheWrite, COUNT(*) AS rows FROM usage_ledger WHERE note_key = ?`)
+    .get(conversation) as typeof expected & { rows: number };
+  near(ledger.cost, expected.cost, "ledger cost");
+  assert.deepEqual(tokens(ledger), tokens(expected));
+  assert.equal(ledger.rows, 3, "one row per completed turn, across both query instances");
+  const resumedTurn = openDb().prepare(`SELECT cost_usd AS cost, input, output,
+    cache_read AS cacheRead, cache_write AS cacheWrite FROM usage_ledger
+    WHERE note_key = ? AND window_end_ns = 'fixture-result-3'`).get(conversation) as typeof expected;
+  near(resumedTurn.cost, pricedRequests[3]!.cost, "resumed turn cost");
+  assert.deepEqual(tokens(resumedTurn), tokens(pricedRequests[3]!));
+  near((fleetEstimatedCostSince(0) ?? 0) - costBefore, expected.cost, "fleet cost contribution");
+  assert.equal(fleetTokensSince(0) - tokensBefore,
+    expected.input + expected.output + expected.cacheRead + expected.cacheWrite);
+  t.diagnostic(`4 deduplicated transcript requests; list-rate cost $${expected.cost.toFixed(5)}; `
+    + `${expected.input} input, ${expected.output} output, ${expected.cacheRead} cache-read, `
+    + `${expected.cacheWrite} cache-write tokens reconcile with ledger, card/session and fleet after resume`);
 });

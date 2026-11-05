@@ -2981,7 +2981,7 @@ export class Registry extends EventEmitter {
           // still advances. Emit only that durable projection instead of a transient idle.
           this.applyWorkCycleOnly(s, "turn_completed", now, now);
         }
-        this.recordDriverTurnUsage(s, evt.usage, now);
+        this.recordDriverTurnUsage(s, evt.usage, now, evt.usageSnapshot);
         return;
       case "rate_limits":
         this.recordRateLimits(evt.rateLimits);
@@ -6173,24 +6173,27 @@ export class Registry extends EventEmitter {
    * supplies neither, which is how the rollout reader keeps sole ownership of Codex spend
    * without this method having to name a harness.
    */
-  private recordDriverTurnUsage(s: Session, usage: SdkUsage | null, now: number): void {
+  private recordDriverTurnUsage(s: Session, usage: SdkUsage | null, now: number,
+    snapshot?: Extract<SdkEvent, { kind: "turn_done" }>["usageSnapshot"]): void {
     if (!usage?.turnId || !usage.models?.length) return;
     const noteKey = noteKeyFor(s);
-    recordDriverSessionUsage({
+    const models = recordDriverSessionUsage({
       noteKey,
       sessionId: s.id,
       agent: s.agent,
       turnId: usage.turnId,
       ts: now,
       models: usage.models,
+      snapshot,
     });
     // The third canonical writer, observed on the same terms as the other two: AFTER the
     // ledger commit, keyed on the ledger's own conflict target. That key is the turn id, so a
     // driver re-emitting a `result` it already reported - a resumed stream replaying its tail,
-    // a supervisor reconnecting - produces a duplicate here rather than a second set of
-    // tokens. The basis is `reported` because Claude Code priced this itself, from rates the
+    // a supervisor reconnecting - returns no committed models and emits no second set of
+    // tokens. Snapshot-backed events return the durable delta rather than the adapter
+    // instance's local estimate. The basis is `reported` because Claude Code priced this itself, from rates the
     // account has and this repository does not.
-    for (const model of usage.models) {
+    for (const model of models) {
       observeUsageRecorded({
         identity: `${noteKey}|${usage.turnId}|${model.modelId}`,
         usageOrigin: "authoring",

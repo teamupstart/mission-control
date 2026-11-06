@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -45,14 +45,14 @@ async function goalOf(daemon: DaemonHandle, sessionId: string): Promise<Goal> {
 }
 
 /** Dispatch one agent from the modal and wait for its opening objective to resolve. */
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+async function dispatch(page: Page, daemon: DaemonHandle, request = REQUEST): Promise<string> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
   await expectContentClearsBorder(dialog);
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill(REQUEST);
+  await dialog.getByPlaceholder("What should this agent do?").fill(request);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
@@ -131,25 +131,22 @@ interface LiveSession {
   workCycle: { logicalKey: string; generation: number; active: boolean; completedAt: number | null } | null;
 }
 
-/** A published Workflow whose binding Foreman completes: the review a stuck session never reached. */
+/**
+ * A published Workflow whose binding Foreman completes: the one a stuck session never reached.
+ * No Persona, so no evidence-registration obligation stands between Foreman's verified boundary
+ * and its claim: the case is about the claim, not about evidence.
+ */
 async function bindForemanCompleteWorkflow(daemon: DaemonHandle, sessionId: string): Promise<void> {
-  const persona = await api<{ id: string }>(daemon, "/api/personas", {
-    name: "Downgrade reviewer",
-    guidanceMarkdown: "# Downgrade reviewer\n\nE2E_PASS_VERDICT",
-  });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E amendment downgrade",
     bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "preview", maxRepairRounds: 5 },
     draft: {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
-        { id: "reviewer", kind: "persona", personaId: persona.id, position: { x: 220, y: 0 } },
-        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+        { id: "end", kind: "end", outcome: "Complete", position: { x: 220, y: 0 } },
       ],
       edges: [
-        { id: "submit", source: "session", sourcePort: "submitted", target: "reviewer", targetPort: "activate" },
-        { id: "pass", source: "reviewer", sourcePort: "pass", target: "end", targetPort: "terminal" },
-        { id: "fail", source: "reviewer", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+        { id: "complete", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" },
       ],
     },
   });
@@ -164,8 +161,11 @@ async function bindForemanCompleteWorkflow(daemon: DaemonHandle, sessionId: stri
   });
 }
 
-test("after the misread amendment resolves, Foreman's completion claim starts the bound Workflow", async ({ dashboard, daemon }) => {
-  const sessionId = await dispatch(dashboard, daemon);
+test("the Foreman worker itself claims the bound Workflow once the misread amendment resolves", async ({ dashboard, daemon }) => {
+  test.setTimeout(150_000);
+  // The verifier marker rides in the objective, which is what Foreman's verifier is asked to judge.
+  const request = "E2E_VERIFY_COMPLETE ship the stuck goal recovery feature";
+  const sessionId = await dispatch(dashboard, daemon, request);
   await bindForemanCompleteWorkflow(daemon, sessionId);
 
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
@@ -179,14 +179,19 @@ test("after the misread amendment resolves, Foreman's completion claim starts th
       ? goal.relationship
       : "pending";
   }, { message: "the misread amendment should resolve rather than latch" }).toBe("steer");
+  expect((await goalOf(daemon, sessionId)).objective).toBe(request);
 
-  // The turn's completion is the boundary a prompted wrap-up consumes. The same hook the
-  // Foreman specs post establishes it without spending a model call.
-  let live: LiveSession | undefined;
+  // A real change for the verifier to judge: an empty diff is retired without a claim.
+  let live: (LiveSession & { repoRoot: string | null }) | undefined;
   await expect.poll(async () => {
-    live = (await api<LiveSession[]>(daemon, "/api/sessions")).find((item) => item.id === sessionId);
+    live = (await api<Array<LiveSession & { repoRoot: string | null }>>(daemon, "/api/sessions"))
+      .find((item) => item.id === sessionId);
     return live?.state === "idle" && live.pendingTurns.length === 0;
   }, { message: "the reply turn should settle" }).toBe(true);
+  const tracked = execFileSync("git", ["-C", live!.cwd, "ls-files"], { encoding: "utf8" }).split("\n")[0]!;
+  appendFileSync(join(live!.cwd, tracked), "\nstuck goal recovery\n");
+
+  // The completion boundary a prompted wrap-up consumes, as the other Foreman specs post it.
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const hook = await fetch(`${daemon.baseURL}/hooks/Stop`, {
     method: "POST",
@@ -195,60 +200,68 @@ test("after the misread amendment resolves, Foreman's completion claim starts th
   });
   expect(hook.status, await hook.clone().text()).toBe(204);
   await expect.poll(async () => {
-    live = (await api<LiveSession[]>(daemon, "/api/sessions")).find((item) => item.id === sessionId);
+    live = (await api<Array<LiveSession & { repoRoot: string | null }>>(daemon, "/api/sessions"))
+      .find((item) => item.id === sessionId);
     return Boolean(live?.workCycle && !live.workCycle.active && live.workCycle.completedAt !== null);
   }, { message: "the session should have a completed work cycle" }).toBe(true);
 
-  // Exactly the claim Foreman's worker sends (`ForemanClient.claimWorkflowCompletion`) once its
-  // step-8 intent gate passes. The daemon re-checks that intent: on a latched goal it refuses
-  // with "Foreman completion intent is no longer current" and no run is ever created.
-  const goal = await goalOf(daemon, sessionId);
-  const claim = await fetch(`${daemon.baseURL}/api/sessions/${sessionId}/workflow-completion`, {
-    method: "POST",
+  const config = await fetch(`${daemon.baseURL}/api/foreman/config`, {
+    method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      completionKind: "prompted",
-      marker: randomBytes(32).toString("hex"),
-      expectedWorkCycle: { logicalKey: live!.workCycle!.logicalKey, generation: live!.workCycle!.generation },
-      summary: "The session finished the work behind its unchanged objective.",
-      evidenceFingerprint: "e2e-goal-amendment-downgrade",
-      expectedIntent: {
-        objective: goal.objective,
-        objectiveVersion: goal.objectiveVersion,
-        promptRevision: goal.promptRevision,
-        episodeKey: `intent:${goal.objectiveVersion}:${goal.promptRevision}`,
-      },
+      enabled: true,
+      mode: "live",
+      repoAllowlist: [live!.repoRoot ?? live!.cwd],
+      wrapup: "ask",
+      wrapupTriggers: ["prompted"],
     }),
   });
-  const claimed = (await claim.json()) as { claimed: boolean; runId?: string; error?: string };
-  expect(claim.status, JSON.stringify(claimed)).toBe(200);
-  expect(claimed.claimed, JSON.stringify(claimed)).toBe(true);
-  const runId = claimed.runId!;
+  expect(config.ok, await config.clone().text()).toBe(true);
+  const logStart = daemon.readLog().length;
+  await daemon.startForeman();
+
+  // Nothing in this test claims anything: the worker reads the resolved intent, verifies the
+  // diff, and makes the claim. Its own log line names the run it started.
+  let runId = "";
   try {
+    await expect.poll(() => {
+      runId = daemon.readLog().slice(logStart)
+        .match(/workflow claimed prompted completion for run (\S+)/)?.[1] ?? "";
+      return runId;
+    }, { message: "the Foreman worker should claim the bound Workflow", timeout: 90_000 }).not.toBe("");
     await expect.poll(async () =>
       (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
-    { message: "the bound Workflow run should finish its review", timeout: 40_000 }).toBe("completed");
+    { message: "the run Foreman started should finish", timeout: 40_000 }).toBe("completed");
   } catch (caught) {
     // eslint-disable-next-line no-console
-    console.log(`DAEMON LOG TAIL:\n${daemon.readLog().split("\n").slice(-60).join("\n")}`);
+    console.log(`DAEMON LOG TAIL:\n${daemon.readLog().slice(logStart).split("\n").slice(-80).join("\n")}`);
     throw caught;
   }
 
-  // The run reviews the unchanged contract, and carries the pick as steering context.
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=intent`);
   const intent = dashboard.getByRole("tabpanel", { name: /^Intent/ });
   const contract = intent.locator("details.wf-run-disclosure").filter({ hasText: "Review contract" });
   await contract.locator("> summary").click();
-  await expect(contract.locator("pre")).toHaveText(REQUEST);
+  await expect(contract.locator("pre")).toHaveText(request);
   const steering = intent.locator("details.wf-run-disclosure").filter({ hasText: "Human steering context" });
   await steering.locator("> summary").click();
   await expect(steering.locator("pre").first()).toHaveText(PICK);
   await expect(steering).toContainText("Treated as steering: the proposed amendment did not retain the current objective.");
 
+  // Who started it: the run's completion record holds the worker's claim, and its summary is
+  // the verifier verdict only the worker's model call produced.
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=completion`);
+  const claims = dashboard.getByRole("list", { name: "Foreman completion claims" });
+  await expect(claims.getByRole("listitem")).toHaveCount(1);
+  await expect(claims.getByRole("listitem")).toContainText("The requested change is present in the diff");
+  await expect(claims.getByRole("listitem")).toContainText("prompted");
+  // eslint-disable-next-line no-console
+  console.log(`FOREMAN LOG: ${daemon.readLog().slice(logStart).match(/.*workflow claimed prompted completion for run \S+/)?.[0]}`);
+
   if (process.env.MC_E2E_EVIDENCE) {
     const dir = artifactsDir("goal-amendment-downgrade");
     mkdirSync(dir, { recursive: true });
     await dashboard.mouse.move(0, 0);
-    await intent.screenshot({ path: `${dir}bound-workflow-run-intent.png` });
+    await dashboard.getByRole("tabpanel", { name: /^Completion/ }).screenshot({ path: `${dir}foreman-claimed-run.png` });
   }
 });

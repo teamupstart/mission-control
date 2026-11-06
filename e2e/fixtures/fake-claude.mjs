@@ -566,6 +566,21 @@ function foremanUsageFailure(prompt) {
 }
 
 function headlessAnswer(prompt) {
+  // Foreman's completion verifier, for a session whose objective carries the marker. Without
+  // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
+  // to start a bound Workflow puts this marker in the dispatched request.
+  if (
+    prompt.startsWith("You are Foreman, verifying one unit of work")
+    && prompt.includes("E2E_VERIFY_COMPLETE")
+  ) {
+    return JSON.stringify({
+      complete: true,
+      summary: "The requested change is present in the diff",
+      gaps: [],
+      resolved: [],
+      confidence: 0.95,
+    });
+  }
   if (
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
     && prompt.includes("Compact workflow intent without rewriting it.")

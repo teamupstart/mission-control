@@ -2,7 +2,7 @@
 
 Source plan: `docs/plans/resident-display-surfaces/plan.md`, managed plan
 `3b3f339a-a7dd-4a62-9a3a-2890c71d2c4d`, the `plan.md` saved in the same revision as this index
-(revision 9). The source plan is the requirement. This index and its phase files are the
+(revision 10). The source plan is the requirement. This index and its phase files are the
 proposed route.
 
 ## Incorporated human decisions
@@ -110,16 +110,16 @@ Phase 1 owns these, and Phase 2 must not change them. The one exception is
   Escape, which is set only when a resident is opened from the floating drawer.
 - The `alt+1`…`alt+9` reservation and the `code`-based matcher, active in both placements.
 
-## Planned task map
+## Task map
 
-Repository mode requires these artifacts to be committed and pushed before any task is created.
-This planning turn is a ship-task completion handoff that may not commit or push, so no task
-exists yet. The follow-through creates them in this order, after the artifact commit is pushed:
+Both phase tasks exist in the backlog. They were created after the artifact commit was pushed, so
+do not create them again. Each depends on the planning session (task
+`8f619c95-b452-4adc-8fbd-fdb1a6311aea`), so neither starts until this plan's pull request merges.
 
-| Phase | Title | Agent / model | Direct dependencies |
-|---|---|---|---|
-| 1 | Resident drawer - Phase 1: Drawer placement and fleet exclusion | `claude` / `claude-opus-5-5` (UI) | planning session (`dependsOnCurrentSession: true`) |
-| 2 | Resident drawer - Phase 2: Quick answers in the drawer | `claude` / `claude-opus-5-5` (UI) | Phase 1 task id, and the planning session |
+| Phase | Task id | Title | Agent / model | Direct dependencies |
+|---|---|---|---|---|
+| 1 | `660215f5-361a-47b0-b8d9-846b5497996c` | Resident drawer - Phase 1: Drawer placement and fleet exclusion | `claude` / `claude-opus-5-5` (UI) | planning session |
+| 2 | `857d247c-2945-4c28-91f2-ca4a2af5ee5b` | Resident drawer - Phase 2: Quick answers in the drawer | `claude` / `claude-opus-5-5` (UI) | Phase 1 (`660215f5-361a-47b0-b8d9-846b5497996c`) and the planning session |
 
 ## Final verification strategy
 
@@ -161,3 +161,5 @@ exists yet. The follow-through creates them in this order, after the artifact co
   source plan: the Board drill-in in Board, the detail pane in Console. `openSessionOnFleet`
   already branches on layout (`App.tsx` around 1780). Phase 1 section 4, steps 8 and 9, and its
   e2e coverage say so.
+- **Inspector review on PR #1382:** the task map now records the created task ids and their
+  direct dependencies instead of instructions to create them.

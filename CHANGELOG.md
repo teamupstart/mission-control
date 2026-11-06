@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.1.0](https://github.com/teamupstart/mission-control/compare/v2.0.1...v2.1.0) (2026-11-06)
+
+
+### Features
+
+* **mcp:** add read-only task discovery and retrieval ([#1370](https://github.com/teamupstart/mission-control/issues/1370)) ([c90f628](https://github.com/teamupstart/mission-control/commit/c90f6287d0105405f86d32a4533eba5d6fc5d8ca))
+
+
+### Bug Fixes
+
+* **ci:** stop a tag-only macOS job from blocking stable distribution ([#1377](https://github.com/teamupstart/mission-control/issues/1377)) ([5556694](https://github.com/teamupstart/mission-control/commit/55566948231d8cd295a36ff2dac17d10a21c37df))
+* **claude-sdk:** recover sessions whose expired login never closes the turn ([#1376](https://github.com/teamupstart/mission-control/issues/1376)) ([ce3e903](https://github.com/teamupstart/mission-control/commit/ce3e903f2ce6ab173230a8b3cb02f9c5e59c56bb))
+* **ui:** activate dialog defaults with Cmd+Enter ([#1371](https://github.com/teamupstart/mission-control/issues/1371)) ([ff19001](https://github.com/teamupstart/mission-control/commit/ff19001b41cd3c2ec8a70aa62d2075702e9e0aaa))
+
 ## [2.0.1](https://github.com/teamupstart/mission-control/compare/v2.0.0...v2.0.1) (2026-11-06)
 
 

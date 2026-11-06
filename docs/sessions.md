@@ -1657,19 +1657,19 @@ keeps every such line of the objective it extends, so the attachment stays in th
 run reviews against. An amendment too long to keep those lines within the stored objective's
 length limit is not shortened to fit; it fails the check.
 
-An amendment that fails the check never stops the queue: the objective and its version stay
-as they were, the instruction is resolved, and the daemon log records which rule failed
-without quoting the objective. How it resolves depends on what the proposal says:
+An amendment that fails the check never changes the objective or its version, and the daemon
+log records which rule failed without quoting the objective. What happens next depends on
+whether it might be taking something away:
 
-- If the proposal would take something out of the objective (it drops, removes, replaces or
-  otherwise retracts part of it), the instruction is left **unclear**. The drawer shows a
-  rationale that starts "Needs review:", nothing reaches the next Workflow run as steering,
-  and prompted wrap-up stays paused until a later instruction or a person resolves it. To
-  narrow what a session must deliver, say so plainly so the change is classified as a
-  replacement.
-- Otherwise it is treated as **steering**. The drawer shows a rationale that starts "Treated
-  as steering:", the instruction reaches the next Workflow run as steering context, and
-  prompted wrap-up can proceed.
+- If your instruction asks to drop, remove, skip or otherwise retract a requirement, or the
+  proposal would, the instruction waits at the head of the queue, as it did before. The drawer
+  shows a rationale that starts "Needs review:", nothing behind it is reconciled, and prompted
+  wrap-up stays paused, so no Workflow starts against a contract you may have meant to change.
+  Each later instruction gives it one more look with that new context; saying plainly that the
+  requirement is gone settles it as a replacement.
+- Otherwise it is treated as **steering** and the queue moves on. The drawer shows a rationale
+  that starts "Treated as steering:", the instruction reaches the next Workflow run as steering
+  context, and prompted wrap-up can proceed.
 
 The classifier is also told that a reply picking one of the options a session offered is
 steering. That is guidance to the model, not a guarantee: if it still calls the pick an

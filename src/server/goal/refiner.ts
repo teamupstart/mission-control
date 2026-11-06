@@ -24,12 +24,13 @@ import { clampPrompt } from "../util/prompt-text.ts";
 // provider and which model - the `goal` job in `@shared/llm-jobs.ts`, edited in Settings,
 // resolved per call.
 //
-// A rejected amendment never latches the queue. When its proposed objective fails the
-// mechanical preservation check below, the objective and its version stand, the reason is
-// logged, and the revision resolves: as steering, with a stable "Treated as steering:" marker,
-// unless the proposal retracts part of the contract, which resolves as `unclear` and keeps
-// wrap-up paused for a person. It used to stamp `unclear` and leave the head pending for good,
-// which paused prompted wrap-up with no exit - a session bound to a Workflow never reached it.
+// A rejected amendment no longer stops the queue by default. When its proposed objective fails
+// the mechanical preservation check below, the objective and its version stand, the reason is
+// logged, and the revision resolves as steering with a stable "Treated as steering:" marker.
+// It used to stamp `unclear` and leave the head pending for good, which paused prompted wrap-up
+// with no exit - a session bound to a Workflow never reached it. The one exception is an
+// amendment that may retract part of the contract: that still waits at the head, now logged
+// and marked "Needs review:", for a later instruction that settles it or a person.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
@@ -296,13 +297,22 @@ const RETRACTING =
   /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
 
 /**
- * Whether a rejected amendment reads as an intentional retraction: the part of the proposal
- * past any retained prefix (or the whole proposal, when it kept none) uses retracting
- * language. Such an instruction cannot safely be steering - the steering row would ask the
- * next run to drop a requirement the durable contract still holds - so it is left for a
- * person instead.
+ * What a person says when they mean to take a requirement away. Narrower than `RETRACTING` on
+ * purpose: it reads the human's own words, where "but" and "change" are ordinary refinements
+ * ("B, but change the label") rather than retractions.
  */
-function proposalRetracts(current: string | null, proposed: string): boolean {
+const INSTRUCTION_RETRACTING =
+  /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget)\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
+
+/**
+ * Whether a rejected amendment may be an intentional retraction: the instruction asks to take
+ * something away, or the part of the proposal past any retained prefix (the whole proposal,
+ * when it kept none) uses retracting language. Such an instruction cannot safely be steering -
+ * a steering row would ask the next run to drop a requirement the durable contract still
+ * holds - so it stays pending for a person or a later instruction that settles it.
+ */
+function amendmentRetracts(current: string | null, proposed: string, instruction: string): boolean {
+  if (INSTRUCTION_RETRACTING.test(instruction.toLowerCase())) return true;
   const prior = current ? comparableObjective(current) : "";
   const next = comparableObjective(proposed);
   return RETRACTING.test(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
@@ -488,20 +498,24 @@ async function refine(
         // revision always resolves, so the queue moves on. The log names the session id,
         // revision and rule, never objective text: a prompt can hold anything a person typed,
         // and a session's title may be derived from it.
-        if (proposalRetracts(currentObjective, r.value.objective)) {
-          // An intentional retraction is not steering: a steering row would tell the next run
-          // to drop a requirement the durable contract still holds. It resolves as `unclear`,
-          // like a model's own unclear verdict - the contract stands, no steering row is
-          // written, and automatic wrap-up stays paused until later context or a person
-          // resolves it.
+        if (amendmentRetracts(currentObjective, r.value.objective, prompt.prompt)) {
+          // A possible retraction is not steering, and resolving it any other way would let a
+          // later instruction overwrite the relationship and unpause wrap-up while the disputed
+          // requirement is still in the contract. It stays at the queue head, so nothing behind
+          // it resolves: a later instruction buys one retry with that new context (an explicit
+          // replacement settles it), and a person can accept a change.
           console.error(
-            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); it retracts part of the objective, left unclear`,
+            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); it may retract part of the objective, left pending`,
           );
-          relationship = "unclear";
-          rationale = goalLine(
-            `Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering. ${r.value.reason}`,
-            480,
-          );
+          failedFor.set(s.id, failureKey(pending));
+          registry.upsertGoal(s.id, {
+            relationship: "unclear",
+            rationale: goalLine(
+              `Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering. ${r.value.reason}`,
+              480,
+            ),
+          });
+          return;
         } else {
           // Otherwise the contract and its version stand and the instruction resolves as
           // steering, whose note reaches the next run.

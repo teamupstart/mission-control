@@ -3334,6 +3334,23 @@ export class TaskManager {
         if (!current || current.status !== t.status || this.dependencyBlockers(current).length > 0) {
           return { ok: false, error: "task changed while it was being dispatched", task: current ?? t };
         }
+        // The plan was made on the task as it stood before GitHub answered. An edit meanwhile
+        // can remove or replace the stacked dependency - or stamp one - and still leave the
+        // task with no blockers, so the plan's parent is checked against the task NOW: the
+        // stamped edge it starts on must be the very edge the plan pinned, and an unstacked
+        // plan must still have none. Otherwise the task would be pinned to, and record as its
+        // lineage, a parent it no longer depends on (or start on the default branch while a
+        // stack is pending).
+        const nowEdge = stackStartEdge(current, new Map(this.registry.listTasks().map((task) => [task.id, task])));
+        const samePlan = stacked?.ok
+          ? nowEdge !== null &&
+            nowEdge.taskId === stacked.fields.stackParentTaskId &&
+            nowEdge.stackPrUrl === stacked.fields.stackPrUrl &&
+            nowEdge.stackBaseBranch === stacked.fields.stackBaseBranch
+          : nowEdge === null;
+        if (!samePlan) {
+          return { ok: false, error: "task changed while it was being dispatched", task: current };
+        }
         const fields = stacked?.ok ? stacked.fields : UNSTACKED;
         if (
           (current.stackParentTaskId ?? null) !== fields.stackParentTaskId ||

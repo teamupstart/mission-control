@@ -49,16 +49,43 @@ function backlogTask(tasks: InstanceType<typeof TaskManager>): Task {
   });
 }
 
+type TaskEdge = Extract<Task["dependencies"][number], { type: "task" }>;
+
+/** A stamped edge to `parentId`, as readiness writes it once the parent's PR is open. */
+function stampedEdge(parentId: string, over: Partial<TaskEdge> = {}): TaskEdge {
+  return {
+    type: "task", taskId: parentId, title: "Phase 1", sessionId: null, episodeId: null, agentSessionId: null,
+    branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null, mode: "stack",
+    stackReadyAt: 1, stackBaseBranch: STACKED.stackBaseBranch, stackBaseSha: PIN, stackPrUrl: STACKED.stackPrUrl, ...over,
+  };
+}
+
+/**
+ * A running parent and a backlog child whose edge to it is stamped - the only task a stacked
+ * plan is ever made for - and the fields a plan for it pins.
+ */
+function stackedChild(registry: InstanceType<typeof Registry>, tasks: InstanceType<typeof TaskManager>) {
+  const parent = tasks.create({
+    repoRoot: "/repo", intent: "phase one", title: "Phase 1", kind: "ship", agent: "claude", backlog: true,
+  });
+  registry.upsertTask({ ...registry.getTask(parent.id)!, status: "running" });
+  const child = backlogTask(tasks);
+  registry.upsertTask({ ...registry.getTask(child.id)!, dependencies: [stampedEdge(parent.id)] });
+  return { parent, child: registry.getTask(child.id)!, fields: { ...STACKED, stackParentTaskId: parent.id } };
+}
+
 test("a stacked dispatch pins the parent head and records what it was cut on", async () => {
-  const { registry, tasks, launches } = harness(async () => ({ ok: true, baseSha: PIN, fields: STACKED }));
-  const task = backlogTask(tasks);
+  let fields = STACKED;
+  const { registry, tasks, launches } = harness(async () => ({ ok: true, baseSha: PIN, fields }));
+  const { parent, child: task, fields: pinned } = stackedChild(registry, tasks);
+  fields = pinned;
   const outcome = await tasks.dispatch(task.id);
   assert.equal(outcome.ok, true);
   assert.deepEqual(launches, [{ id: task.id, baseSha: PIN }]);
   const stored = registry.getTask(task.id)!;
   assert.deepEqual(
     { p: stored.stackParentTaskId, b: stored.stackBaseBranch, s: stored.stackBaseSha, u: stored.stackPrUrl },
-    { p: "parent", b: "feat/parent", s: PIN, u: STACKED.stackPrUrl },
+    { p: parent.id, b: "feat/parent", s: PIN, u: STACKED.stackPrUrl },
   );
 });
 
@@ -120,12 +147,15 @@ test("a second dispatch of a stacked task while its parent-head check awaits Git
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   let checks = 0;
-  const { tasks, launches } = harness(async () => {
+  let fields = STACKED;
+  const { registry, tasks, launches } = harness(async () => {
     checks += 1;
     await held;
-    return { ok: true, baseSha: PIN, fields: STACKED };
+    return { ok: true, baseSha: PIN, fields };
   });
-  const task = backlogTask(tasks);
+  const stacked = stackedChild(registry, tasks);
+  fields = stacked.fields;
+  const task = stacked.child;
 
   const first = tasks.dispatch(task.id);
   // Let the first call reach the awaited check before the second arrives.
@@ -148,4 +178,59 @@ test("a second dispatch of a stacked task while its parent-head check awaits Git
   await secondCall;
   assert.equal(outcome.ok, true);
   assert.deepEqual(launches, [{ id: task.id, baseSha: PIN }], "exactly one task is provisioned, pinned to the parent head");
+});
+
+// ---- Inspector review 9: the plan's parent is checked against the task as it is now --------
+
+for (const [name, edit] of [
+  ["removed", (_parentId: string, _otherId: string) => []],
+  ["replaced by another prerequisite", (_parentId: string, otherId: string) => [stampedEdge(otherId, { title: "Other", stackPrUrl: "https://github.com/acme/repo/pull/9" })]],
+  ["switched to After merge", (parentId: string) => [stampedEdge(parentId, { mode: "merge" })]],
+] as const) {
+  test(`a stacked dependency ${name} while the parent-head check awaits GitHub is not launched on the old parent`, async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let fields = STACKED;
+    const { registry, tasks, launches } = harness(async () => {
+      await held;
+      return { ok: true, baseSha: PIN, fields };
+    });
+    const stacked = stackedChild(registry, tasks);
+    fields = stacked.fields;
+    const other = tasks.create({ repoRoot: "/repo", intent: "other", title: "Other", kind: "ship", agent: "claude", backlog: true });
+    registry.upsertTask({ ...registry.getTask(other.id)!, status: "running" });
+
+    const pending = tasks.dispatch(stacked.child.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    // The operator edits the child's dependencies while GitHub answers.
+    registry.upsertTask({ ...registry.getTask(stacked.child.id)!, dependencies: edit(stacked.parent.id, other.id) });
+    release();
+    const outcome = await pending;
+
+    assert.equal(outcome.ok, false, "the edited task is not launched on the plan made before the edit");
+    assert.equal(!outcome.ok && outcome.error, "task changed while it was being dispatched");
+    assert.deepEqual(launches, [], "nothing is provisioned");
+    const stored = registry.getTask(stacked.child.id)!;
+    assert.equal(stored.stackParentTaskId ?? null, null, "no lineage is recorded to a parent it no longer stacks on");
+    assert.equal(stored.stackBaseSha ?? null, null);
+  });
+}
+
+test("a dependency stamped while an unstacked dispatch's check awaits GitHub is not started on the default branch", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const { registry, tasks, launches } = harness(async () => {
+    await held;
+    return null;
+  });
+  const stacked = stackedChild(registry, tasks);
+  // Dispatched before the edge was stamped: the plan says "not stacked".
+  registry.upsertTask({ ...registry.getTask(stacked.child.id)!, dependencies: [] });
+  const pending = tasks.dispatch(stacked.child.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  registry.upsertTask({ ...registry.getTask(stacked.child.id)!, dependencies: [stampedEdge(stacked.parent.id)] });
+  release();
+  const outcome = await pending;
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(launches, [], "a task that now starts on a stack is not launched unpinned");
 });

@@ -432,7 +432,10 @@ pins the worktree to its current head, but only when that commit is exactly the 
 reports for the parent pull request. A branch name alone proves nothing: a pull request from a
 fork can share its name with an unrelated branch here. A refused readiness read is looked at
 again about a minute later, so a draft marked ready on GitHub releases its dependent without
-anything changing locally. If the parent head lacks the merge commit of another
+anything changing locally. A stamp that stands is read again on the same interval, so a parent
+turned back into a draft, closed, or moved out of the primary repository on GitHub withdraws it
+and the dependent reads as waiting again. A read that only failed keeps the stamp, because the
+dispatch checks everything again before it starts anything. If the parent head lacks the merge commit of another
 same-repository prerequisite that already merged, the dependent keeps waiting. That covers a
 standalone-session prerequisite too, when its merged pull request is in a repository this
 checkout's remotes name. Nothing falls

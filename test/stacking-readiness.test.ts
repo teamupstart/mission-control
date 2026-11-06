@@ -568,6 +568,93 @@ test("a pass that lands inside the refusal memo window leaves a re-check behind"
   r.stop();
 });
 
+// ---- Inspector review 4: a standing stamp is read again ----------------------------------
+
+test("a parent pull request turned back into a draft on GitHub unstamps its dependent with no local event", async () => {
+  const w = world();
+  const s = script();
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+  assert.deepEqual(declaredBlockers(w.tasks.get("C")!, [...w.tasks.values()]), []);
+  assert.equal(t.live.size, 1, "a standing stamp keeps one re-check armed");
+  assert.ok([...t.live.values()][0]!.due > 61_000, "after the recheck interval");
+
+  // On GitHub only: the parent is marked draft. Nothing local happens.
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, isDraft: true });
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "the stamp no longer stands and is withdrawn");
+  assert.equal(declaredBlockers(w.tasks.get("C")!, [...w.tasks.values()]).length, 1, "the board shows the dependent waiting again");
+  r.stop();
+});
+
+test("a re-read that confirms the stamp writes nothing; a failed read keeps it; a closed parent clears it", async () => {
+  const w = world();
+  const s = script();
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  const writes = w.writes;
+  const reads = s.reads;
+
+  // Inside the interval a local event re-reads nothing.
+  t.advance(30_000);
+  r.reconcile();
+  await settle();
+  assert.equal(s.reads, reads, "a fresh stamp is not read again on every event");
+
+  // The interval passes: read again, same facts, no write, still stamped since 1_000.
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(s.reads, reads + 1);
+  assert.equal(w.writes, writes, "an unchanged stamp raises no task write");
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "the stamp keeps the time it first became ready");
+
+  // GitHub cannot be read: the stamp stays (the dispatch revalidates anyway).
+  const parentRefs = s.refs.get(PARENT_PR)!;
+  s.refs.delete(PARENT_PR);
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "a failed read is not a refusal");
+
+  // The parent closes: a definite answer withdraws the stamp.
+  s.refs.set(PARENT_PR, { ...parentRefs, state: "CLOSED" });
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+  r.stop();
+});
+
+test("a stamp found on start is read again before it is trusted", async () => {
+  const w = world();
+  const s = script();
+  const first = readiness(w, s);
+  first.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+  first.stop();
+  // A fresh process (a daemon restart) with the parent now a draft.
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, isDraft: true });
+  const t = fakeTimers(2_000);
+  const restarted = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  restarted.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+  restarted.stop();
+});
+
 test("stopping readiness cancels its pending re-checks", async () => {
   const w = world();
   const s = script();

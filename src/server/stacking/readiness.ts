@@ -61,6 +61,14 @@ export type StackedDispatchPlan =
 
 /** How long one prerequisite's failed or refused readiness read is not repeated. */
 const RETRY_MS = 60_000;
+/**
+ * How long a stamp stands on one successful read before the prerequisite's pull request is
+ * read again. A pull request can be turned back into a draft, closed or moved on GitHub with
+ * no local event, and a stamp that outlived that would show the dependent as ready until a
+ * dispatch failed. One small read per stamped prerequisite per interval, only while stamps
+ * exist.
+ */
+const RECHECK_MS = 60_000;
 
 /** The prerequisite's finished-episode facts, read synchronously from live state. */
 interface FinishedEpisode {
@@ -119,6 +127,8 @@ export class StackReadiness {
   private stopped = false;
   /** One pending re-check per prerequisite whose read was refused or deferred. */
   private retries = new Map<string, unknown>();
+  /** When each prerequisite's pull request last read as stackable on. */
+  private verifiedAt = new Map<string, number>();
 
   constructor(
     private readonly registry: StackRegistry,
@@ -219,10 +229,18 @@ export class StackReadiness {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, this.now()) });
       }
       if (eligibility.ok && finished) {
+        const parentId = eligibility.parent.id;
         const edge = (changed ? dependencies : task.dependencies).find(
-          (candidate): candidate is TaskEdge => candidate.type === "task" && candidate.taskId === eligibility.parent.id,
+          (candidate): candidate is TaskEdge => candidate.type === "task" && candidate.taskId === parentId,
         );
-        if (edge && !stamped(edge)) wanted.set(eligibility.parent.id, eligibility.parent);
+        if (edge && !stamped(edge)) wanted.set(parentId, eligibility.parent);
+        else if (edge) {
+          // A standing stamp is only as good as its last read: read it again once that is
+          // RECHECK_MS old, and make sure a pass comes round then even if nothing local moves.
+          const verified = this.verifiedAt.get(parentId);
+          if (verified === undefined || this.now() - verified >= RECHECK_MS) wanted.set(parentId, eligibility.parent);
+          else if (!this.retries.has(parentId)) this.retryLater(parentId, verified + RECHECK_MS - this.now() + 1);
+        }
       }
     }
     for (const parent of wanted.values()) void this.stampFor(parent.id);
@@ -255,10 +273,16 @@ export class StackReadiness {
         // ready has a reason somewhere other than a silent cache.
         console.error(`[stacking] ${parent.title} is not ready to stack on: ${read.error}`);
         this.refused.set(parentId, { at: this.now(), prUrl: finished.prUrl });
+        this.verifiedAt.delete(parentId);
+        // A definite answer (a draft again, closed, moved out of the primary repository)
+        // withdraws stamps it no longer supports. A read that simply failed keeps them: the
+        // dispatch revalidates anyway, and a network blip should not unready a whole stack.
+        if (read.definite) this.clearStampsOn(parentId);
         this.retryLater(parentId);
         return;
       }
       this.refused.delete(parentId);
+      this.verifiedAt.set(parentId, this.now());
       // Re-read after the await: the episode may have moved, or a dependent may have been
       // edited, while GitHub answered.
       const still = this.registry.getTask(parentId);
@@ -275,7 +299,9 @@ export class StackReadiness {
         if (this.stopped) return;
         if (missing) {
           // Waiting on the parent's branch to catch up with a merged sibling, which is a
-          // push on GitHub rather than a local event: look again later.
+          // push on GitHub rather than a local event: look again later. A stamp from an
+          // earlier read no longer stands on this head.
+          this.clearStamp(task.id, parentId);
           this.retryLater(parentId);
           continue;
         }
@@ -285,10 +311,18 @@ export class StackReadiness {
         const dependencies = latest.dependencies.map((edge) => {
           if (edge.type !== "task" || edge.taskId !== parentId || edge.satisfiedAt !== null) return edge;
           if (effectiveEdgeMode(edge, config) !== "stack") return edge;
+          // A re-read that confirms the same facts writes nothing: the stamp keeps the time it
+          // first became ready, and an unchanged board raises no task event.
+          if (
+            stamped(edge) &&
+            edge.stackBaseBranch === read.headRefName &&
+            edge.stackBaseSha === read.headSha &&
+            edge.stackPrUrl === finished.prUrl
+          ) return edge;
           changed = true;
           return {
             ...edge,
-            stackReadyAt: this.now(),
+            stackReadyAt: stamped(edge) ? edge.stackReadyAt! : this.now(),
             stackBaseBranch: read.headRefName,
             stackBaseSha: read.headSha,
             stackPrUrl: finished.prUrl,
@@ -298,8 +332,11 @@ export class StackReadiness {
           this.registry.upsertTask({ ...latest, dependencies, updatedAt: Math.max(latest.updatedAt, this.now()) });
         }
       }
+      // While anything stands on this read, read it again later.
+      if (this.hasStampsOn(parentId)) this.retryLater(parentId, RECHECK_MS + 1);
     } catch (error) {
       this.refused.set(parentId, { at: this.now(), prUrl: finished.prUrl });
+      this.verifiedAt.delete(parentId);
       this.retryLater(parentId);
       console.error("[stacking] readiness read failed:", parentId, error);
     } finally {
@@ -315,18 +352,19 @@ export class StackReadiness {
   private async readParent(
     parent: Task,
     finished: FinishedEpisode,
-  ): Promise<{ ok: true; headSha: string; headRefName: string } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; headSha: string; headRefName: string } | { ok: false; error: string; definite: boolean }> {
     const secondary = pendingSecondary(parent, finished);
-    if (secondary) return { ok: false, error: secondary };
+    if (secondary) return { ok: false, error: secondary, definite: true };
     const repositories = await this.github.repositories(parent.repoRoot);
     if (!prInRepositories(finished.prUrl, repositories)) {
-      return { ok: false, error: `${finished.prUrl} is not in ${parent.title}'s primary repository` };
+      return { ok: false, error: `${finished.prUrl} is not in ${parent.title}'s primary repository`, definite: true };
     }
     const refs = await this.github.prRefs(parent.repoRoot, finished.prUrl);
-    if (!refs.ok || !refs.value) return { ok: false, error: refs.error ?? "could not read the pull request" };
-    if (refs.value.state !== "OPEN") return { ok: false, error: `#${stackPrNumber(finished.prUrl)} is not open` };
-    if (refs.value.isDraft) return { ok: false, error: `#${stackPrNumber(finished.prUrl)} is still a draft` };
-    if (!refs.value.headRefName) return { ok: false, error: "GitHub did not report the pull request's branch" };
+    if (!refs.ok || !refs.value) return { ok: false, error: refs.error ?? "could not read the pull request", definite: false };
+    const number = stackPrNumber(finished.prUrl);
+    if (refs.value.state !== "OPEN") return { ok: false, error: `#${number} is not open`, definite: true };
+    if (refs.value.isDraft) return { ok: false, error: `#${number} is still a draft`, definite: true };
+    if (!refs.value.headRefName) return { ok: false, error: "GitHub did not report the pull request's branch", definite: false };
     return { ok: true, headSha: refs.value.headSha, headRefName: refs.value.headRefName };
   }
 
@@ -367,6 +405,23 @@ export class StackReadiness {
       if (!contains.value) return `waiting for the parent to include #${parsed.number}`;
     }
     return null;
+  }
+
+  /** Backlog tasks whose edge to `parentId` carries a readiness stamp. */
+  private stampedOn(parentId: string): Task[] {
+    return this.registry.listTasks().filter(
+      (task) =>
+        task.status === "backlog" &&
+        task.dependencies.some((edge) => edge.type === "task" && edge.taskId === parentId && stamped(edge)),
+    );
+  }
+
+  private hasStampsOn(parentId: string): boolean {
+    return this.stampedOn(parentId).length > 0;
+  }
+
+  private clearStampsOn(parentId: string): void {
+    for (const task of this.stampedOn(parentId)) this.clearStamp(task.id, parentId);
   }
 
   /** Remove the readiness stamp from one task's edge to `parentId`, if it carries one. */

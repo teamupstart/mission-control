@@ -64,12 +64,6 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
   amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-  # A proposal that swaps a requirement for another, restated without the prefix.
-  swap-proposal) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature with manual review in place of tests\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-  # An option pick restated without the prefix, with an ordinary "but" refinement in it.
-  pick-but) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but change the Overrides by model label to Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
-  # The same pick, with a label replaced rather than changed.
-  pick-replace-label) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but replace the Overrides label with Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
   # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
   initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
@@ -84,16 +78,6 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   initial-path-only) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
   amend-long) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"${LONG_AMENDMENT}\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Keep the drawer fast\\",\\"reason\\":\\"The instruction adds a requirement to the existing outcome.\\"}\\n\`\`\`"}' ;;
   negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
-  # The retraction at the head keeps coming back as a failing amendment; anything else the
-  # session is told is ordinary steering.
-  retract-then-steer)
-    case "$request" in
-      *"drop the existing test requirement"*)
-        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
-      *)
-        printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
-    esac
-    ;;
   rapid)
     case "$request" in
       *"also expose the current intent in the Foreman drawer"*)
@@ -126,9 +110,6 @@ const setMode = (
     | "blank"
     | "amend"
     | "shrink"
-    | "pick-but"
-    | "pick-replace-label"
-    | "swap-proposal"
     | "negate"
     | "initial-path"
     | "initial-spaced-path"
@@ -137,7 +118,6 @@ const setMode = (
     | "initial-path-only"
     | "amend-long"
     | "rapid"
-    | "retract-then-steer"
     | "replace"
     | "model-unclear",
 ): void => {
@@ -328,27 +308,22 @@ test("an amendment updates the objective shown on the card and advances its vers
 });
 
 /**
- * Drive one rejected amendment and assert how it resolved. Either way the contract, its card
- * text and its version stand, the queue moves on, and exactly one log line names the session,
- * revision and broken rule - never the text. As steering it carries the stable marker, writes
- * a steering row, and unpauses Foreman; as an intentional retraction it is `unclear`, writes
- * no steering row, and keeps Foreman paused.
+ * Drive one rejected amendment and assert it resolved as steering: the contract, its card
+ * text and its version stand, the queue moved on, the rationale carries the stable marker,
+ * and exactly one log line names the session, revision and broken rule - never the text.
  */
-async function assertRejectedAmendment(
+async function assertRejectedAmendmentSteers(
   t: TestContext,
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but" | "pick-replace-label" | "swap-proposal";
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long";
     /** The fake reply that establishes the opening objective. */
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
     rule: string;
-    /** Steering, unless the amendment may retract part of the contract: then it stays pending. */
-    resolvesAs?: "steer" | "pending";
   },
 ): Promise<void> {
-  const steer = (opts.resolvesAs ?? "steer") === "steer";
   const { r, s, env } = withSession(opts.id, opts.pane);
   setMode(opts.initialMode ?? "good");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
@@ -365,10 +340,8 @@ async function assertRejectedAmendment(
     r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: opts.instruction }));
 
     await until(
-      () => steer
-        ? r.getGoal(s.id)?.resolvedPromptRevision === 2
-        : r.getGoal(s.id)?.rationale?.startsWith("Needs review:") === true,
-      "the rejected amendment to be handled",
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the rejected amendment to resolve as steering",
       FLOOR_MS + RUN_TIMEOUT_MS,
     );
     // Cross another complete debounce window: a resolved revision spends no further calls.
@@ -380,42 +353,30 @@ async function assertRejectedAmendment(
     assert.equal(goal.text, prior.text, "the card adopted the model's proposed objective");
     assert.equal(goal.objectiveVersion, prior.objectiveVersion, "a rejected amendment advanced the objective version");
     assert.equal(goal.promptRevision, 2);
-    assert.equal(
-      goal.resolvedPromptRevision,
-      steer ? 2 : 1,
-      steer ? "the rejected amendment latched the queue head" : "a possible retraction resolved",
-    );
-    assert.equal(goal.relationship, steer ? "steer" : "unclear");
-    assert.deepEqual(goal.pendingPrompts, steer ? [] : [{ revision: 2, prompt: opts.instruction }]);
-    assert.match(
-      goal.rationale ?? "",
-      steer
-        ? /^Treated as steering: the proposed amendment did not retain the current objective\. /
-        : /^Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering\. /,
-    );
+    assert.equal(goal.resolvedPromptRevision, 2, "the rejected amendment latched the queue head");
+    assert.equal(goal.relationship, "steer");
+    assert.deepEqual(goal.pendingPrompts, []);
+    assert.match(goal.rationale ?? "", /^Treated as steering: the proposed amendment did not retain the current objective\. /);
     assert.equal(runsAsking(opts.instruction), 1, "the rejected amendment spent more than one model call");
     // The gate Foreman's prompted wrap-up checks at step 8 before it can claim the bound
-    // Workflow. A latched head made this null forever; a possible retraction keeps it null.
-    assert.deepEqual(resolvedSessionIntent(goal), steer
-      ? {
-        objective: prior.objective,
-        objectiveVersion: prior.objectiveVersion,
-        promptRevision: 2,
-        episodeKey: `intent:${prior.objectiveVersion}:2`,
-      }
-      : null, steer ? "Foreman still reads this session's intent as unresolved" : "a retraction unpaused Foreman");
+    // Workflow. A latched head made this null forever.
+    assert.deepEqual(resolvedSessionIntent(goal), {
+      objective: prior.objective,
+      objectiveVersion: prior.objectiveVersion,
+      promptRevision: 2,
+      episodeKey: `intent:${prior.objectiveVersion}:2`,
+    }, "Foreman still reads this session's intent as unresolved");
     assert.deepEqual(
       r.getGoalSteering(s.id, 2).map((note) => [note.revision, note.instruction, note.rationale]),
-      steer ? [[2, opts.instruction, goal.rationale]] : [],
-      steer ? "the steering row was not recorded at the resolved revision" : "a retraction reached the next run as steering",
+      [[2, opts.instruction, goal.rationale]],
+      "the steering row was not recorded at the resolved revision",
     );
 
     const rejection = logged.filter((line) => line.includes("did not preserve the objective"));
     assert.equal(rejection.length, 1, `expected one rejection log line, saw: ${JSON.stringify(logged)}`);
     assert.equal(
       rejection[0],
-      `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); ${
-        steer ? "treated as steering" : "it may retract part of the objective, left pending"}`,
+      `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); treated as steering`,
     );
     assert.equal(
       r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
@@ -429,7 +390,7 @@ async function assertRejectedAmendment(
 }
 
 test("a schema-valid amendment that drops the current objective resolves as steering", async (t) => {
-  await assertRejectedAmendment(t, {
+  await assertRejectedAmendmentSteers(t, {
     id: "r18",
     pane: "%48",
     mode: "shrink",
@@ -438,128 +399,28 @@ test("a schema-valid amendment that drops the current objective resolves as stee
   });
 });
 
-test("a retraction with no additive connector stays pending, not treated as steering", async (t) => {
-  await assertRejectedAmendment(t, {
+test("an amendment that keeps the prefix but adds no additive connector resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
     id: "r19",
     pane: "%49",
     mode: "negate",
     instruction: "drop the existing test requirement",
     rule: "no-additive-connector",
-    resolvesAs: "pending",
   });
 });
 
-test("a retraction after an additive connector stays pending, not treated as steering", async (t) => {
-  await assertRejectedAmendment(t, {
+test("an amendment that adds with a connector and then retracts a requirement resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
     id: "r31",
     pane: "%61",
     mode: "retract",
     instruction: "also drop the existing test requirement",
     rule: "retracting-word",
-    resolvesAs: "pending",
   });
-});
-
-test("an instruction that asks to drop a requirement stays pending even when the proposal says nothing", async (t) => {
-  // "Only expose current intent ..." carries no retracting word; the human's own words do.
-  await assertRejectedAmendment(t, {
-    id: "r36",
-    pane: "%66",
-    mode: "shrink",
-    instruction: "we no longer need the tests, just expose the intent in the drawer",
-    rule: "not-a-prefix",
-    resolvesAs: "pending",
-  });
-});
-
-test("an instruction that replaces a requirement stays pending even when the proposal says nothing", async (t) => {
-  // Replacing a requirement removes the old one; "replace ... with" counts as removing language.
-  await assertRejectedAmendment(t, {
-    id: "r39",
-    pane: "%69",
-    mode: "shrink",
-    instruction: "replace the test requirement with manual review",
-    rule: "not-a-prefix",
-    resolvesAs: "pending",
-  });
-});
-
-test("a proposal that swaps a requirement for another stays pending", async (t) => {
-  await assertRejectedAmendment(t, {
-    id: "r40",
-    pane: "%70",
-    mode: "swap-proposal",
-    instruction: "use manual review for the tests",
-    rule: "not-a-prefix",
-    resolvesAs: "pending",
-  });
-});
-
-test("an option pick with an ordinary \"but\" refinement resolves as steering", async (t) => {
-  // "but" and "change" refine a pick; neither removes a requirement, in the instruction or in
-  // the model's restatement of it. Treating them as a retraction would recreate the stall.
-  await assertRejectedAmendment(t, {
-    id: "r38",
-    pane: "%68",
-    mode: "pick-but",
-    instruction: "B, but change the Overrides by model label to Advisor Overrides",
-    rule: "not-a-prefix",
-  });
-});
-
-test("an option pick that replaces a label resolves as steering", async (t) => {
-  // "replace ... with" removes something only when what it replaces is part of the contract.
-  // A label in the mockup the person just picked is an implementation detail.
-  await assertRejectedAmendment(t, {
-    id: "r41",
-    pane: "%71",
-    mode: "pick-replace-label",
-    instruction: "Pick B, but replace the Overrides label with Advisor Overrides",
-    rule: "not-a-prefix",
-  });
-});
-
-test("a later steering instruction cannot clear a pending retraction's pause", async () => {
-  const { r, s, env } = withSession("r37", "%67");
-  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
-  const stop = startGoalRefiner(r);
-  const retraction = "drop the existing test requirement please";
-  const later = "fix the lint warning in the drawer next";
-  const errors: string[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
-  try {
-    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
-    const prior = r.getGoal(s.id)!;
-    setMode("retract-then-steer");
-    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: retraction }));
-    await until(() => r.getGoal(s.id)?.rationale?.startsWith("Needs review:") === true, "the retraction to wait");
-
-    // An unrelated steering instruction arrives. It buys the blocked head one retry with that
-    // context, the head is still a retraction, and nothing behind it may resolve.
-    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: later }));
-    await until(() => runsAsking(retraction) === 2, "the head to be retried with the new context");
-    await new Promise((resolve) => setTimeout(resolve, FLOOR_MS + 50));
-
-    const goal = r.getGoal(s.id)!;
-    assert.equal(goal.objective, prior.objective);
-    assert.equal(goal.objectiveVersion, prior.objectiveVersion);
-    assert.equal(goal.resolvedPromptRevision, 1, "the retraction was resolved behind the person's back");
-    assert.deepEqual(goal.pendingPrompts, [{ revision: 2, prompt: retraction }, { revision: 3, prompt: later }]);
-    assert.equal(goal.relationship, "unclear");
-    assert.equal(resolvedSessionIntent(goal), null, "the later steering unpaused Foreman");
-    assert.equal(runsAsking(later), 0, "a later instruction leapfrogged the pending retraction");
-    assert.deepEqual(r.getGoalSteering(s.id, 3), [], "the retraction reached a run as steering");
-    assert.equal(errors.filter((line) => line.includes("left pending")).length, 2);
-  } finally {
-    console.error = original;
-    stop();
-    setMode("good");
-  }
 });
 
 test("a path inside a sentence stays in the comparison, so dropping it resolves as steering", async (t) => {
-  await assertRejectedAmendment(t, {
+  await assertRejectedAmendmentSteers(t, {
     id: "r32",
     pane: "%62",
     initialMode: "initial-inline-path",
@@ -570,7 +431,7 @@ test("a path inside a sentence stays in the comparison, so dropping it resolves 
 });
 
 test("an amendment to an objective that is only a path line resolves as steering", async (t) => {
-  await assertRejectedAmendment(t, {
+  await assertRejectedAmendmentSteers(t, {
     id: "r33",
     pane: "%63",
     initialMode: "initial-path-only",
@@ -585,7 +446,7 @@ test("an amendment with no room left to keep an omitted attachment line resolves
   // elide the middle of a text whose head is the objective the check just validated.
   assert.equal(LONG_AMENDMENT.length > 4000 - "\n/tmp/uploads/shot.png".length, true,
     "precondition: the proposal leaves no room for the attachment line");
-  await assertRejectedAmendment(t, {
+  await assertRejectedAmendmentSteers(t, {
     id: "r34",
     pane: "%64",
     initialMode: "initial-path",

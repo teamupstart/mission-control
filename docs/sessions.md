@@ -1652,33 +1652,19 @@ No command or special vocabulary is required. The model infers the relationship 
 instruction and conversation. An amendment is accepted only when its proposed contract
 explicitly retains the existing objective as its prefix. A line that is nothing but an
 absolute file path, such as a screenshot you attached (spaces included, as in
-`/Users/you/Desktop/Screen Shot.png`), is ignored by that comparison. An accepted amendment
-keeps every such line of the objective it extends, so the attachment stays in the contract a
-run reviews against. An amendment too long to keep those lines within the stored objective's
-length limit is not shortened to fit; it fails the check.
-
-An amendment that fails the check never changes the objective or its version, and the daemon
-log records which rule failed without quoting the objective. What happens next depends on
-whether it might be taking something away:
-
-- If your instruction asks to drop, remove, skip, replace or otherwise retract a requirement,
-  or the proposal would, the instruction waits at the head of the queue, as it did before. A
-  requirement here is something the sentence names as part of the contract (tests, acceptance
-  criteria, scope, a deliverable), so "replace the test requirement with manual review" waits
-  while "pick B, but replace the label" does not. The drawer shows a rationale that starts
-  "Needs review:", nothing behind it is reconciled, and prompted wrap-up stays paused, so no
-  Workflow starts against a contract you may have meant to change.
-  Each later instruction gives it one more look with that new context; saying plainly that the
-  requirement is gone settles it as a replacement.
-- Otherwise it is treated as **steering** and the queue moves on. The drawer shows a rationale
-  that starts "Treated as steering:", the instruction reaches the next Workflow run as steering
-  context, and prompted wrap-up can proceed.
-
-The classifier is also told that a reply picking one of the options a session offered is
-steering. That is guidance to the model, not a guarantee: if it still calls the pick an
-amendment and the amendment passes the check, the amendment is accepted; if it fails the
-check, it resolves as above. An effective amendment or replacement updates the Goal and
-advances its objective version, while steering changes only the latest focus.
+`/Users/you/Desktop/Screen Shot.png`), is ignored by that comparison, and an accepted
+amendment keeps every such line of the objective it extends, so the attachment stays
+in the contract a run reviews against. An amendment too long to keep those lines within the
+stored objective's length limit is not shortened to fit. Like any amendment that fails the
+check, it is treated as steering: the objective and its version stay as they were, the drawer
+shows the relationship as **steering** with a rationale that starts "Treated as steering:",
+the instruction reaches the next Workflow run as steering context, and the daemon log records
+which rule failed without quoting the objective. The classifier is also told that a reply
+picking one of the options a session offered is steering. That is guidance to the model, not
+a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
+amendment is accepted; if it fails the check, it is treated as steering as above. An effective
+amendment or replacement updates the Goal and advances its objective version, while steering
+changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;

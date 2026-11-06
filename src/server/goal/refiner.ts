@@ -24,13 +24,11 @@ import { clampPrompt } from "../util/prompt-text.ts";
 // provider and which model - the `goal` job in `@shared/llm-jobs.ts`, edited in Settings,
 // resolved per call.
 //
-// A rejected amendment no longer stops the queue by default. When its proposed objective fails
-// the mechanical preservation check below, the objective and its version stand, the reason is
-// logged, and the revision resolves as steering with a stable "Treated as steering:" marker.
-// It used to stamp `unclear` and leave the head pending for good, which paused prompted wrap-up
-// with no exit - a session bound to a Workflow never reached it. The one exception is an
-// amendment that may retract part of the contract: that still waits at the head, now logged
-// and marked "Needs review:", for a later instruction that settles it or a person.
+// A model verdict is never a reason to pause. An amendment whose proposed objective fails the
+// mechanical preservation check below resolves as steering: the objective and its version stand,
+// the rationale says so with a stable "Treated as steering:" marker, the reason is logged, and
+// the queue moves on. It used to stamp `unclear` and latch the head, which paused prompted
+// wrap-up with no surface and no exit - a session bound to a Workflow simply never reached it.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
@@ -289,52 +287,11 @@ function amendmentPreservationFailure(
   if (!/^(?:[.;,:+-]\s*)?(?:also\b|additionally\b|and\b|plus\b)/.test(addition)) {
     return "no-additive-connector";
   }
-  return RETRACTING.test(addition) ? "retracting-word" : null;
-}
-
-/** Language that takes something out of a contract rather than adding to it. */
-const RETRACTING =
-  /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
-
-/**
- * Language that takes something away or swaps it for another. Narrower than `RETRACTING` on
- * purpose: a bare "but", "except" or "instead", or "change ... to", is an ordinary refinement
- * ("B, but change the label"), evidence that an amendment did not merely extend the contract
- * but never evidence that it removes something.
- */
-const REMOVING =
-  /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget|swap|substitute|supersede)\b|\breplace\b[^.;:\n]*\bwith\b|\bin place of\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
-
-/**
- * Words that name the completion contract itself rather than an implementation detail. What a
- * sentence removes or replaces decides whether it is a retraction: "replace the test
- * requirement with manual review" takes a requirement away, "replace the Overrides label with
- * Advisor Overrides" edits the UI the person just picked.
- */
-const CONTRACT_TERM =
-  /\b(?:requirements?|required|criteria|criterion|acceptance|tests?|testing|e2e|coverage|objective|scope|deliverables?|spec|specification)\b/;
-
-/** A sentence that removes or replaces something named as part of the contract. */
-function removesRequirement(text: string): boolean {
-  return text
-    .toLowerCase()
-    .split(/[.;!?](?:\s|$)|\n/)
-    .some((sentence) => REMOVING.test(sentence) && CONTRACT_TERM.test(sentence));
-}
-
-/**
- * Whether a rejected amendment may be an intentional retraction: the instruction, or the part
- * of the proposal past any retained prefix (the whole proposal, when it kept none), removes
- * or replaces part of the contract. Such an instruction cannot safely be steering - a steering
- * row would ask the next run to drop a requirement the durable contract still holds - so it
- * stays pending for a person or a later instruction that settles it. Everything else, an
- * option pick with its label and layout edits included, resolves as steering.
- */
-function amendmentRetracts(current: string | null, proposed: string, instruction: string): boolean {
-  if (removesRequirement(instruction)) return true;
-  const prior = current ? comparableObjective(current) : "";
-  const next = comparableObjective(proposed);
-  return removesRequirement(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
+  return /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/.test(
+    addition,
+  )
+    ? "retracting-word"
+    : null;
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */
@@ -513,40 +470,19 @@ async function refine(
       }
       if (failed) {
         // A model can choose "amend" while returning a narrower objective - or call a pick
-        // between offered options an amendment. Its objective is never adopted, and the
-        // revision always resolves, so the queue moves on. The log names the session id,
-        // revision and rule, never objective text: a prompt can hold anything a person typed,
-        // and a session's title may be derived from it.
-        if (amendmentRetracts(currentObjective, r.value.objective, prompt.prompt)) {
-          // A possible retraction is not steering, and resolving it any other way would let a
-          // later instruction overwrite the relationship and unpause wrap-up while the disputed
-          // requirement is still in the contract. It stays at the queue head, so nothing behind
-          // it resolves: a later instruction buys one retry with that new context (an explicit
-          // replacement settles it), and a person can accept a change.
-          console.error(
-            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); it may retract part of the objective, left pending`,
-          );
-          failedFor.set(s.id, failureKey(pending));
-          registry.upsertGoal(s.id, {
-            relationship: "unclear",
-            rationale: goalLine(
-              `Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering. ${r.value.reason}`,
-              480,
-            ),
-          });
-          return;
-        } else {
-          // Otherwise the contract and its version stand and the instruction resolves as
-          // steering, whose note reaches the next run.
-          console.error(
-            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); treated as steering`,
-          );
-          relationship = "steer";
-          rationale = goalLine(
-            `Treated as steering: the proposed amendment did not retain the current objective. ${r.value.reason}`,
-            480,
-          );
-        }
+        // between offered options an amendment. Its objective is not adopted: the revision
+        // resolves as steering, so the contract and its version stand, and the steering note
+        // reaches the next run. The log names the session id, revision and rule, never
+        // objective text: a prompt can hold anything a person typed, and a session's title
+        // may be derived from it.
+        console.error(
+          `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); treated as steering`,
+        );
+        relationship = "steer";
+        rationale = goalLine(
+          `Treated as steering: the proposed amendment did not retain the current objective. ${r.value.reason}`,
+          480,
+        );
       }
 
       // A steering or unclear classification is not authorised to shrink the completion

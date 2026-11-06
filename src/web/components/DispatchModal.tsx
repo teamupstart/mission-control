@@ -3464,7 +3464,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner for a Stack dependency once its PR is open." : "and dispatches when their PRs merge."}
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner on a Stack dependency once its PR is open and every other dependency has merged." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}

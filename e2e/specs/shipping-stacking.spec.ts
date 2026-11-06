@@ -115,14 +115,14 @@ test("with Stack as the default, only a dependency that can stack earns the 'soo
   await add.selectOption(await optionFor(elsewhere.title));
   await expect(dialog.getByRole("group", { name: /When to start after Groundwork in the other repo/ })).toHaveCount(0);
   await expect(dialog).toContainText("and dispatches when their PRs merge.");
-  await expect(dialog).not.toContainText("or sooner for a Stack dependency", { timeout: 1_000 });
+  await expect(dialog).not.toContainText("or sooner on a Stack dependency", { timeout: 1_000 });
 
   // A same-repository task prerequisite inheriting the Stack default does earn it.
   await add.selectOption(await optionFor(same.title));
   const group = dialog.getByRole("group", { name: /When to start after Groundwork in this repo/ });
   await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
   await expect(group).toContainText("default");
-  await expect(dialog).toContainText("or sooner for a Stack dependency once its PR is open");
+  await expect(dialog).toContainText("or sooner on a Stack dependency once its PR is open and every other dependency has merged.");
   await dialog.getByText(/Waits for \d+ dependenc/).scrollIntoViewIfNeeded();
   await shoot(dialog, "dispatch-wait-note-stackable-only");
 });
@@ -191,7 +191,7 @@ test("a prerequisite whose pull request already merged offers no Stack control",
   await add.selectOption(value);
   await expect(dialog.locator(".dep-chip", { hasText: "Merged groundwork" })).toBeVisible();
   await expect(dialog.getByRole("group", { name: /When to start after Merged groundwork/ })).toHaveCount(0);
-  await expect(dialog).not.toContainText("or sooner for a Stack dependency", { timeout: 1_000 });
+  await expect(dialog).not.toContainText("or sooner on a Stack dependency", { timeout: 1_000 });
   await dialog.getByText(/Dependencies each waits/).scrollIntoViewIfNeeded();
   await shoot(dialog, "dispatch-merged-prerequisite-no-stack");
 });
@@ -222,7 +222,7 @@ test("a dependency chip toggles Stack / After merge in the dispatch form and the
   await group.getByRole("button", { name: "Stack" }).click();
   await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
   await expect(group).not.toContainText("default");
-  await expect(dialog).toContainText("or sooner for a Stack dependency once its PR is open");
+  await expect(dialog).toContainText("or sooner on a Stack dependency once its PR is open and every other dependency has merged.");
   await shoot(dialog, "dispatch-chip-stack");
   await dialog.getByRole("button", { name: /Schedule after dependencies|Add to backlog/ }).first().click();
   await expect(dialog).toBeHidden();

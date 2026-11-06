@@ -134,7 +134,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     // Uncommitted work is reviewed through the capture's review snapshot, so `dirty` means a
     // submission captured before snapshots existed: it has no commit holding what it reviewed.
     if (input.coderabbit?.dirty) return block("This submission captured uncommitted changes without a review snapshot", undefined, undefined, false, "Submit again so Mission Control captures one");
-    if (yaml.committed === false) return block("The captured .coderabbit.yaml is not the one in the reviewed commit", undefined, undefined, false, "Make sure .coderabbit.yaml is not ignored, then submit again");
+    if (yaml.committed === false) return block(`The captured ${yaml.source} is not the one in the reviewed commit`, undefined, undefined, false, `Make sure ${yaml.source} is not ignored, then submit again`);
     failureStage = "comparison";
     comparison = await input.coderabbit!.comparison();
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");

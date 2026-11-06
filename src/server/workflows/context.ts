@@ -1,4 +1,4 @@
-import { captureCodeRabbitConfig } from "./coderabbit-config.ts";
+import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -923,10 +923,10 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
     const root = await run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
     coderabbit = captureCodeRabbitConfig(root.code === 0 ? root.stdout.trim() : null);
     if (coderabbit.enabled) {
-      // The YAML CodeRabbit will read is the one in the commit it reviews.
-      const committedYaml = await run("git", ["-C", cwd, "show", `${reviewCommit ?? "HEAD"}:.coderabbit.yaml`], { maxBuffer: 64 * 1024 });
-      coderabbit.committed = committedYaml.code === 0 && !committedYaml.overflowed
-        && !committedYaml.outcomeUnknown && sha(committedYaml.stdout) === coderabbit.digest;
+      // The config CodeRabbit will read is the one in the commit it reviews.
+      const committedConfig = await run("git", ["-C", cwd, "show", `${reviewCommit ?? "HEAD"}:${coderabbit.source ?? CODERABBIT_YAML}`], { maxBuffer: 64 * 1024 });
+      coderabbit.committed = committedConfig.code === 0 && !committedConfig.overflowed
+        && !committedConfig.outcomeUnknown && sha(committedConfig.stdout) === coderabbit.digest;
     }
   }
   // `committed` is derived from the head, the content tree and the YAML digest, all fingerprinted

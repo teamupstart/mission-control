@@ -49,7 +49,7 @@ Six fixed slots ship with the product - test, lint, typecheck, build, documentat
 ## Overrides, and saving one
 <!-- stage: command-overrides -->
 
-Ordinary slots use a repository command override or the machine-wide default. CodeRabbit offers optional repository tuning for base ref and severity; root .coderabbit.yaml enables it when reviews.auto_review.enabled is boolean true, even without a Library override. Removing tuning restores defaults and leaves YAML enablement unchanged. Save Command executes nothing. A later workflow run needs the repository's Workflows grant in Trust and Settings > Workflows > Allow workflow Commands.
+Ordinary slots use a repository command override or the machine-wide default. CodeRabbit offers optional repository tuning for base ref and severity; either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false. Save Command executes nothing. A later workflow run needs the repository's Workflows grant in Trust and Settings > Workflows > Allow workflow Commands.
 
 ## The builder
 <!-- stage: workflow-builder -->

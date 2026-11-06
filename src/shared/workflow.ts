@@ -2807,7 +2807,7 @@ export interface CodeRabbitTuning {
   severity: CodeRabbitSeverity;
 }
 export interface CodeRabbitConfigSnapshot {
-  source: ".coderabbit.yaml";
+  source: ".coderabbit.yaml" | ".coderabbit.config.ts";
   committed?: boolean;
   digest: string | null;
   enabled: boolean;
@@ -3006,7 +3006,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
-  coderabbit: "Committed CodeRabbit review, enabled only by root .coderabbit.yaml reviews.auto_review.enabled: true.",
+  coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",

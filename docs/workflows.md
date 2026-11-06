@@ -2726,23 +2726,22 @@ stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and befor
 Bindings keep their published version until explicitly upgraded. Earlier versions and other
 built-ins are unchanged.
 
-Enable it in the reviewed repository's root `.coderabbit.yaml`:
+Either `.coderabbit.yaml` or `.coderabbit.config.ts` in the repository root enables it, unless the
+YAML turns it off:
 
 ```yaml
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-inheritance: true
 reviews:
   auto_review:
-    enabled: true
+    enabled: false
 ```
 
-Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
-Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
-Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
-skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
-Submission capture freezes the decision; retries reuse it and new submissions refresh it.
+With neither file, or with that opt-out, the check skips with a warning and starts no CodeRabbit
+process. Invalid, ambiguous, oversized or unreadable YAML also skips and displays a configuration
+error. Mission Control does not fetch inherited settings. Only a run whose pinned graph contains a
+CodeRabbit check captures this snapshot. Submission capture freezes the decision; retries reuse it
+and new submissions refresh it.
 
-No Library override is needed. Optional repository-root tuning selects a base ref and severity
+Optional repository-root tuning selects a base ref and severity
 (default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
 the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
 these defaults. The command previews its owned argv, never an editable shell recipe.

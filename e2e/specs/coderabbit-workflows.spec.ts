@@ -62,7 +62,7 @@ test("Library typed tuning saves, reloads and removes without changing YAML enab
  await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("10");
  await expect(dashboard.getByLabel("If the command is unavailable")).toBeDisabled();
  await expect(dashboard.getByLabel("When the run budget is exhausted")).toBeDisabled();
- await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("No Library override is required");
+ await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("unless the YAML turns it off");
  await expect(dashboard.getByRole("main")).toContainText("completed review. Granting");
  await dashboard.getByLabel("Repository root for CodeRabbit tuning").fill(daemon.repo);await dashboard.keyboard.press("Escape");
  await dashboard.getByRole("button",{name:"Add repository tuning"}).click();
@@ -227,7 +227,7 @@ test("the new No-Mistakes stage uses YAML defaults without tuning",async({dashbo
  await dashboard.getByRole("tab",{name:/^Evidence/}).click();
  await dashboard.getByRole("button",{name:"Continue to review"}).click();
  await expect.poll(async()=>{const d=await detail(daemon,r.id);return d.attempts.find(a=>a.nodeId==="nmr-check-coderabbit")?.output;},{timeout:60000}).toMatchObject({status:"skipped",warning:expect.any(String)});
- await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await dashboard.getByRole("tab",{name:/^Review worklist/}).click();await dashboard.getByRole("group",{name:"Worklist segment"}).getByRole("button",{name:/^Passed/}).click();await dashboard.getByRole("button",{name:/^Skipped Command · coderabbit/}).click();await expect(dashboard.getByRole("main")).toContainText("Root .coderabbit.yaml is missing");await dashboard.locator(".wf-run-summary").filter({hasText:"Root .coderabbit.yaml is missing"}).scrollIntoViewIfNeeded();await shot(dashboard,"no-mistakes-yaml-gate");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await dashboard.getByRole("tab",{name:/^Review worklist/}).click();await dashboard.getByRole("group",{name:"Worklist segment"}).getByRole("button",{name:/^Passed/}).click();await dashboard.getByRole("button",{name:/^Skipped Command · coderabbit/}).click();await expect(dashboard.getByRole("main")).toContainText("Neither root .coderabbit.yaml nor .coderabbit.config.ts exists");await dashboard.locator(".wf-run-summary").filter({hasText:"Neither root .coderabbit.yaml nor .coderabbit.config.ts exists"}).scrollIntoViewIfNeeded();await shot(dashboard,"no-mistakes-yaml-gate");
 });
 
 test("an existing binding stays on No-Mistakes version 21 and never gains CodeRabbit implicitly",async({dashboard,daemon})=>{

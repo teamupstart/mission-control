@@ -13,6 +13,7 @@ import {
   type LaunchTurnMarker,
 } from "./launch-presentation.ts";
 import { sleep } from "./util/timers.ts";
+import { endedOnShutdown } from "./http-shutdown.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
@@ -47,7 +48,7 @@ const RESUME_MAX_BYTES = 2 * 1024 * 1024;
  */
 export function transcriptStreamHandler(registry: Registry) {
   return (c: Context) =>
-    streamSSE(c, async (stream) => {
+    streamSSE(c, endedOnShutdown(async (stream) => {
       const send = (m: TranscriptStreamMsg) => stream.writeSSE({ data: JSON.stringify(m) });
 
       const id = c.req.param("id");
@@ -159,5 +160,5 @@ export function transcriptStreamHandler(registry: Registry) {
           sinceHeartbeat = 0;
         }
       }
-    });
+    }));
 }

@@ -295,6 +295,7 @@ import {
 } from "./tasks.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
+import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
@@ -5018,7 +5019,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
+    // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
+    const ended = new AbortController();
+    const release = openEndedRequests.add(() => ended.abort());
+    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
   });

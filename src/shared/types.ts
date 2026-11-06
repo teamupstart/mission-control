@@ -2936,6 +2936,13 @@ export interface StackLineage {
   baseSha: string | null;
   /** The child head the release check passed for. Null or another head means held. */
   releasedHeadSha: string | null;
+  /**
+   * The parent state that release was granted under. A release under a MERGED parent is final;
+   * one under a CLOSED parent is re-evaluated, because the parent can be reopened and then
+   * merge, and a merge brings its own ancestry requirement. Null on a release recorded before
+   * this was, which is treated as closed.
+   */
+  releasedBasis?: "merged" | "closed" | null;
   /** Each change of the current parent. Empty until a replacement parent takes over. */
   history: StackLineageChange[];
   /** One line about the last base correction, for the merge queue. */
@@ -3142,7 +3149,15 @@ export interface SettingsStatus {
    * Optional so a snapshot from a daemon that predates stacking still parses; a reader then
    * falls back to `STACKING_SHIPPED_DEFAULT`.
    */
-  shipping: { autoMerge: boolean; stacking?: "merge" | "stack" };
+  shipping: {
+    autoMerge: boolean;
+    stacking?: "merge" | "stack";
+    /**
+     * The Stacked pull requests depth cap, so a blocked card can say a stack is too deep
+     * rather than promise one. Optional for the same reason as `stacking`.
+     */
+    maxStackDepth?: number;
+  };
   /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
   taskSources: { failing: number };
   /**

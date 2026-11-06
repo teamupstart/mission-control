@@ -70,6 +70,8 @@ export interface SessionViewProps {
   backlogTrust?: BacklogTrustView | null;
   /** Route task-local trust explanations to the existing Trust matrix. */
   onManageForemanTrust?: () => void;
+  /** The Shipping Stacked pull requests depth cap, for blocked stack cards. Absent: unknown. */
+  maxStackDepth?: number;
   /** Every workflow summary; the backlog bulk edit offers the published ones as After work. */
   workflowSummaries?: WorkflowSummary[];
   selectedId: string | null;

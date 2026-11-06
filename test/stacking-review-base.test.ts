@@ -107,6 +107,7 @@ const seam: StackGitHub = {
   isAncestor: unused,
   branchSha: unused,
   repositories: unused,
+  primaryRepository: unused,
   retarget: unused,
   mergeBase: async (_cwd, _owner, _repo, base, head) => {
     compares.push(`${base}...${head}`);

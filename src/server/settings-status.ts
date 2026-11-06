@@ -58,7 +58,7 @@ export function settingsStatus(): SettingsStatus {
   const pipelines = getPipelinesConfig();
   return {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
-    shipping: { autoMerge: shipping.autoMerge, stacking: effectiveStacking(shipping) },
+    shipping: { autoMerge: shipping.autoMerge, stacking: effectiveStacking(shipping), maxStackDepth: shipping.maxStackDepth },
     taskSources: { failing },
     // Keep the append-only `present` compatibility fact for older dashboards. The current
     // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch

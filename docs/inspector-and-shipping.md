@@ -422,7 +422,11 @@ A dependency stacks only when all of these hold. Otherwise it waits for merge as
 The dependent is released to **start** (not completed: the edge is still unsatisfied, and
 *Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode
 has an open, non-draft pull request in its primary repository and its agent has finished
-the episode: idle, nothing queued. The daemon records that readiness on the dependency edge,
+the episode: idle, nothing queued. The primary repository is the one `origin` names when
+`origin` is a GitHub remote, otherwise the checkout's only GitHub remote. A pull request in any
+other remote's repository is never stacked on, and a checkout where neither rule names one
+stacks on nothing, because the child's own pull request would open somewhere else and get no
+stack lineage. The daemon records that readiness on the dependency edge,
 and the backlog card and the Line row read *Stacked on #N*. It clears the readiness when the
 prerequisite starts a new turn, or when the edge stops qualifying, for example when the
 default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
@@ -468,11 +472,13 @@ only:
 | Open | never | the parent has to merge or close first |
 
 The release is recorded against the head it was verified for, and a new head is checked
-again. Anything that cannot be read holds. A release under a merged parent is final, because a
-merge cannot be undone. A release under a closed parent is checked again on every tick, because
-a closed pull request can be reopened: a reopened parent, a parent that can no longer be read,
-or a base that is no longer the default branch withdraws the release, and the child is held
-until the check passes again. Lineage belongs to the pull request, so switching
+again. Anything that cannot be read holds. The release also records the parent state it was
+granted under. One granted under a merged parent is final, because a merge cannot be undone
+and that release verified the merge commit is in the child. One granted under a closed parent
+is checked again on every tick, because a closed pull request can be reopened. A reopened
+parent, a parent that can no longer be read, or a base that is no longer the default branch
+withdraws it. A parent that is reopened and then merges needs its merge commit in the child,
+like any merged parent. The child is held until the check passes again. Lineage belongs to the pull request, so switching
 the setting off or flipping a chip to *After merge* stops **new** stacks only: a pull request
 that is already stacked keeps its hold until it is released. This release does not yet
 retarget, restack or prompt anything on its own; those steps are the person's for now.

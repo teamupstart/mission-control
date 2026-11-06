@@ -456,6 +456,22 @@ test("a finished prerequisite with an open pull request releases a stacked depen
   const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#32" });
   await expect(queued).toContainText("stacked on another pull request's branch");
   await shoot(dashboard, "daemon-stacked-base-hold");
+
+  // ---- the depth cap, said on the card ----
+  //
+  // The child is itself stacked on the parent, so a grandchild stacked on the child would make
+  // a stack two deep. With the cap at 1, readiness never releases it, and its card says why
+  // rather than promising a stack once the child's pull request is open.
+  await api(daemon, "/api/shipping/config", { maxStackDepth: 1 }, "PUT");
+  expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).maxStackDepth).toBe(1);
+  const grandchild = await backlogTask(daemon, "Parser phase three", {
+    dependencies: [{ type: "task", taskId: child.id, mode: "stack" }],
+  });
+  await boardLayout(dashboard, daemon);
+  const deep = dashboard.locator(".bl-card", { hasText: grandchild.title });
+  await expect(deep.locator(".bl-blocked")).toHaveText("can't stack yet - the stack under Parser phase two is already 1 deep", { timeout: 30_000 });
+  await expect(deep.locator(".bl-stacked")).toHaveCount(0);
+  await shoot(deep, "backlog-depth-cap");
 });
 
 test("the merge queue names both stacking holds and a non-default base", async ({ dashboard, daemon }) => {

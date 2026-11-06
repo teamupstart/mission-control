@@ -229,3 +229,15 @@ test("stackedOnLabel names the parent pull request a task was cut on", () => {
   assert.equal(stackedOnLabel(mkTask({ stackParentTaskId: "A", stackPrUrl: "https://github.com/acme/repo/pull/42" })), "Stacked on #42");
   assert.equal(stackedOnLabel(mkTask()), null);
 });
+
+test("a blocked stack card names the depth cap when the board has it", async () => {
+  const { stackWaitLabel } = await import("../src/web/lib/backlog-copy.ts");
+  const root = mkTask({ id: "R", title: "Root", status: "running" });
+  const a = mkTask({ id: "A", title: "Phase A", status: "running", stackParentTaskId: "R", dependencies: [edge("R")] });
+  const c = mkTask({ id: "C", dependencies: [edge("A", { mode: "stack" })] });
+  const tasks = byId(root, a, c);
+  assert.equal(stackWaitLabel(c, tasks, 1), "can't stack yet - the stack under Phase A is already 1 deep");
+  assert.equal(stackWaitLabel(c, tasks, 2), "stacks on Phase A once its pull request is open and its agent is done");
+  assert.equal(stackWaitLabel(c, tasks), "stacks on Phase A once its pull request is open and its agent is done",
+    "without the cap only the structural rule is checked");
+});

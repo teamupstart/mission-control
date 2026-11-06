@@ -112,7 +112,7 @@ function ghSource(id: string): TaskSourceInstance {
 
 const ALL_OFF: SettingsStatus = {
   inspector: { enabled: false, mode: "dry-run" },
-  shipping: { autoMerge: false, stacking: "merge" },
+  shipping: { autoMerge: false, stacking: "merge", maxStackDepth: 3 },
   taskSources: { failing: 0 },
   // No engine at this test's configured binary path and nothing configured, which is what an
   // ordinary installation looks like and the state in which the Conductor rail row does not exist.
@@ -332,6 +332,10 @@ test("the suppression compares every field, so no change can be dropped in silen
     "shipping.stacking": {
       ...base,
       shipping: { ...base.shipping, stacking: base.shipping.stacking === "stack" ? "merge" : "stack" },
+    },
+    "shipping.maxStackDepth": {
+      ...base,
+      shipping: { ...base.shipping, maxStackDepth: (base.shipping.maxStackDepth ?? 3) + 1 },
     },
     "taskSources.failing": { ...base, taskSources: { failing: base.taskSources.failing + 1 } },
     "pipelines.present": { ...base, pipelines: { ...base.pipelines, present: !base.pipelines.present } },

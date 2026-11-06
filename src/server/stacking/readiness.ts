@@ -374,8 +374,8 @@ export class StackReadiness {
   ): Promise<{ ok: true; headSha: string; headRefName: string } | { ok: false; error: string; definite: boolean }> {
     const secondary = pendingSecondary(parent, finished);
     if (secondary) return { ok: false, error: secondary, definite: true };
-    const repositories = await this.github.repositories(parent.repoRoot);
-    if (!prInRepositories(finished.prUrl, repositories)) {
+    const primary = await this.github.primaryRepository(parent.repoRoot);
+    if (!primary || !prInRepositories(finished.prUrl, [primary])) {
       return { ok: false, error: `${finished.prUrl} is not in ${parent.title}'s primary repository`, definite: true };
     }
     const refs = await this.github.prRefs(parent.repoRoot, finished.prUrl);
@@ -501,8 +501,8 @@ export class StackReadiness {
     if (!edge.stackPrUrl || finished.prUrl !== edge.stackPrUrl) {
       return refuse(`${parent.title}'s pull request changed since it was ready to stack on`);
     }
-    const repositories = await this.github.repositories(parent.repoRoot);
-    if (!prInRepositories(edge.stackPrUrl, repositories)) {
+    const primary = await this.github.primaryRepository(parent.repoRoot);
+    if (!primary || !prInRepositories(edge.stackPrUrl, [primary])) {
       return refuse(`${edge.stackPrUrl} is not in ${parent.title}'s primary repository`);
     }
     const refs = await this.github.prRefs(parent.repoRoot, edge.stackPrUrl);
@@ -534,6 +534,14 @@ export class StackReadiness {
     }
     const missing = await this.missingMergedPrerequisite(task, byId, tip.value);
     if (missing) return refuseAndDefer(missing);
+    // The fetch and the ancestry checks awaited GitHub too, and the parent can start a new turn
+    // meanwhile: the plan is only as good as the readiness evidence at the moment it is
+    // returned, so the finished episode and its pull request are checked once more, last.
+    const atEnd = this.registry.getTask(parent.id);
+    const finishedAtEnd = atEnd ? this.finishedEpisode(atEnd) : null;
+    if (!finishedAtEnd || finishedAtEnd.episodeId !== finished.episodeId || finishedAtEnd.prUrl !== finished.prUrl) {
+      return refuse(`${parent.title} is working again, so it is not ready to stack on`);
+    }
     return {
       ok: true,
       baseSha: tip.value,

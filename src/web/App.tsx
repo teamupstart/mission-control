@@ -2795,6 +2795,7 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
+    maxStackDepth: settingsStatus?.shipping.maxStackDepth,
     workflowSummaries,
     selectedId,
     consoleZone,
@@ -4259,6 +4260,7 @@ export function App(): React.JSX.Element {
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             backlogTrust={backlogTrust}
             onManageTrust={openForemanTrust}
+            maxStackDepth={settingsStatus?.shipping.maxStackDepth}
             onClose={closeLineDrawer}
             onEditTask={openTaskEditor}
             onOpenSitrep={() => {

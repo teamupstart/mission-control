@@ -2081,6 +2081,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       stack_parent_pr_url TEXT,
       stack_base_sha     TEXT,
       stack_released_head_sha TEXT,
+      stack_released_basis TEXT,         -- merged | closed: the parent state the release was granted under
       stack_lineage_history TEXT,
       stack_note         TEXT,
       adopted_at       INTEGER NOT NULL,
@@ -4287,6 +4288,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "inspector_prs", "stack_parent_pr_url", "TEXT");
   addColumn(d, "inspector_prs", "stack_base_sha", "TEXT");
   addColumn(d, "inspector_prs", "stack_released_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_basis", "TEXT");
   addColumn(d, "inspector_prs", "stack_lineage_history", "TEXT");
   addColumn(d, "inspector_prs", "stack_note", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
@@ -14077,6 +14079,7 @@ interface InspectorPrRow {
   stack_parent_pr_url?: string | null;
   stack_base_sha?: string | null;
   stack_released_head_sha?: string | null;
+  stack_released_basis?: string | null;
   stack_lineage_history?: string | null;
   stack_note?: string | null;
   adopted_at: number;
@@ -14109,6 +14112,7 @@ function rowToStackLineage(r: InspectorPrRow): StackLineage | null {
     parentPrUrl: r.stack_parent_pr_url,
     baseSha: r.stack_base_sha ?? null,
     releasedHeadSha: r.stack_released_head_sha ?? null,
+    releasedBasis: r.stack_released_basis === "merged" || r.stack_released_basis === "closed" ? r.stack_released_basis : null,
     history: parseLineageHistory(r.stack_lineage_history),
     note: r.stack_note ?? null,
   };
@@ -14304,13 +14308,13 @@ export function updateInspectorPr(
  * or a second writer can never rewrite what the row is built on. The current parent changes
  * only through the replacement-parent transition, which is not this function.
  */
-export function recordInspectorPrLineage(key: string, lineage: Omit<StackLineage, "releasedHeadSha" | "note">): boolean {
+export function recordInspectorPrLineage(key: string, lineage: Omit<StackLineage, "releasedHeadSha" | "releasedBasis" | "note">): boolean {
   const result = openDb()
     .prepare(
       `UPDATE inspector_prs
           SET stack_task_id = ?, stack_episode = ?, stack_adopted_at = ?,
               stack_parent_pr_url = ?, stack_base_sha = ?, stack_lineage_history = ?,
-              stack_released_head_sha = NULL
+              stack_released_head_sha = NULL, stack_released_basis = NULL
         WHERE key = ? AND stack_parent_pr_url IS NULL`,
     )
     .run(
@@ -14361,15 +14365,20 @@ export function latestStackedPr(
   return row ? rowToInspectorPr(row) : null;
 }
 
-/** Record that the stack release check passed for exactly this child head. */
-export function releaseInspectorPrStack(key: string, headSha: string, now: number): boolean {
+/**
+ * Record that the stack release check passed for exactly this child head, and under which
+ * parent state (`basis`). Rewritten when either changes: a release first granted under a
+ * closed parent that later merged is re-recorded as merged once that ancestry is verified.
+ */
+export function releaseInspectorPrStack(key: string, headSha: string, basis: "merged" | "closed", now: number): boolean {
   const result = openDb()
     .prepare(
-      `UPDATE inspector_prs SET stack_released_head_sha = ?, updated_at = ?
+      `UPDATE inspector_prs SET stack_released_head_sha = ?, stack_released_basis = ?, updated_at = ?
         WHERE key = ? AND stack_parent_pr_url IS NOT NULL
-          AND (stack_released_head_sha IS NULL OR stack_released_head_sha <> ?)`,
+          AND (stack_released_head_sha IS NULL OR stack_released_head_sha <> ?
+               OR stack_released_basis IS NULL OR stack_released_basis <> ?)`,
     )
-    .run(headSha, now, key, headSha);
+    .run(headSha, basis, now, key, headSha, basis);
   return Number(result.changes) > 0;
 }
 
@@ -14380,7 +14389,7 @@ export function releaseInspectorPrStack(key: string, headSha: string, now: numbe
 export function revokeInspectorPrStack(key: string, now: number): boolean {
   const result = openDb()
     .prepare(
-      `UPDATE inspector_prs SET stack_released_head_sha = NULL, updated_at = ?
+      `UPDATE inspector_prs SET stack_released_head_sha = NULL, stack_released_basis = NULL, updated_at = ?
         WHERE key = ? AND stack_released_head_sha IS NOT NULL`,
     )
     .run(now, key);

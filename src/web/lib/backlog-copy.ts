@@ -3,7 +3,7 @@ import { missingTaskRepoRoots } from "@shared/allowlist.ts";
 import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
 import { relativeTime, repoLeaf } from "./format.ts";
-import { stackCandidate, stackPrNumber, stackStartEdge } from "@shared/stacking.ts";
+import { stackCandidate, stackEligibility, stackPrNumber, stackStartEdge } from "@shared/stacking.ts";
 
 /**
  * How a blocked backlog item's state is SAID, in one place.
@@ -57,8 +57,13 @@ export function stackedStartLabel(task: Task, byId: ReadonlyMap<string, Task>): 
  * plain "after X" - or null when no such edge exists. Read for an explicit Stack choice only:
  * the board does not hold the Shipping default, and an inherited edge reads "after X" until
  * the daemon releases it, which is true either way.
+ *
+ * `maxStackDepth` is the Shipping depth cap when the board has it. With it, the full
+ * eligibility rule decides, so a parent already at the cap reads "can't stack yet - the stack
+ * under X is already N deep" instead of promising a stack that readiness will never grant.
+ * Without it (a daemon that predates the field) only the structural rule can be checked.
  */
-export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>): string | null {
+export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>, maxStackDepth?: number): string | null {
   if (task.status !== "backlog") return null;
   const wantsStack = task.dependencies.some(
     (edge) => edge.type === "task" && edge.satisfiedAt === null && edge.mode === "stack",
@@ -67,6 +72,11 @@ export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>): str
   const candidate = stackCandidate(task, byId);
   if (!candidate.ok) return `can't stack yet - ${candidate.reason}`;
   if (candidate.edge.mode !== "stack") return null;
+  if (maxStackDepth !== undefined) {
+    // The edge is an explicit Stack, so the Shipping default does not enter into it.
+    const eligible = stackEligibility(task, byId, { stacking: "stack", maxStackDepth });
+    if (!eligible.ok) return `can't stack yet - ${eligible.reason}`;
+  }
   return `stacks on ${candidate.parent.title} once its pull request is open and its agent is done`;
 }
 

@@ -92,6 +92,7 @@ function seam(g: Gh): StackGitHub {
     },
     branchSha: async () => ({ ok: false, reason: "unused", outcomeUnknown: false }),
     repositories: async () => g.repositories,
+    primaryRepository: async () => g.repositories[0] ?? null,
     retarget: async (_cwd, _o, _r, number, base) => {
       g.retargets.push({ number, base });
       return { ok: true };
@@ -124,7 +125,7 @@ test("the first child pull request is seeded from the task's dispatch", async ()
   const lineage = getInspectorPr(key)?.stack;
   assert.deepEqual(lineage && { ...lineage }, {
     taskId: "child", episode: "ep1", adoptedAt: 2_000, parentPrUrl: PARENT, baseSha: CUT,
-    releasedHeadSha: null, history: [], note: null,
+    releasedHeadSha: null, releasedBasis: null, history: [], note: null,
   });
   // Written once: a second adoption signal cannot rewrite it.
   assert.equal(adoptStackLineage(key, { task: stackedTask({ stackPrUrl: REPLACEMENT_PARENT }), episodeId: "ep1" }, 3_000), false);
@@ -538,4 +539,37 @@ test("a stored release whose parent cannot be read is withdrawn; one under a mer
   g2.ancestry.clear();
   assert.equal(await refreshStackRelease(rowOf(merged), snapshot(), "/repo", seam(g2), 5_000), true, "a merge cannot be undone");
   assert.equal(rowOf(merged).stack!.releasedHeadSha, CHILD_HEAD);
+});
+
+// ---- Inspector review 16: a release keeps the parent state it was granted under ------------
+
+test("a release granted under a closed parent is checked against the merge commit once that parent reopens and merges", async () => {
+  const g = gh();
+  const { key, head } = await releasedOnClosedParent(g);
+  assert.equal(rowOf(key).stack!.releasedBasis, "closed");
+
+  // The parent is reopened and merged. The child's head is unchanged and lacks the merge commit.
+  g.refs.set(PARENT, refs({ state: "MERGED", headSha: PARENT_HEAD, mergeCommitSha: MERGE }));
+  g.ancestry.set(`${MERGE}..${head}`, false);
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: head }), "/repo", seam(g), 5_000), false,
+    "the closed-parent release does not stand in for the merged-parent ancestry check");
+  assert.equal(rowOf(key).stack!.releasedHeadSha, null, "and it is withdrawn");
+
+  // Once the head carries the merge commit, it is released again - as merged, and final.
+  const RESTACKED = "7".repeat(40);
+  g.ancestry.set(`${MERGE}..${RESTACKED}`, true);
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: RESTACKED }), "/repo", seam(g), 6_000), true);
+  assert.deepEqual([rowOf(key).stack!.releasedHeadSha, rowOf(key).stack!.releasedBasis], [RESTACKED, "merged"]);
+  g.ancestry.clear();
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: RESTACKED }), "/repo", seam(g), 7_000), true,
+    "a release granted under a merged parent stands without asking again");
+});
+
+test("a closed-parent release that already carries the later merge commit is re-recorded as merged", async () => {
+  const g = gh();
+  const { key, head } = await releasedOnClosedParent(g);
+  g.refs.set(PARENT, refs({ state: "MERGED", headSha: PARENT_HEAD, mergeCommitSha: MERGE }));
+  g.ancestry.set(`${MERGE}..${head}`, true);
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: head }), "/repo", seam(g), 5_000), true);
+  assert.deepEqual([rowOf(key).stack!.releasedHeadSha, rowOf(key).stack!.releasedBasis], [head, "merged"]);
 });

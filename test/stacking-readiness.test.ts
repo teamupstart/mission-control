@@ -72,6 +72,8 @@ function registryOf(w: World): StackRegistry {
 interface Script {
   refs: Map<string, PrRefs>;
   repositories: { owner: string; repo: string }[];
+  /** The checkout's primary repository; by default its only GitHub remote, as the daemon reads it. */
+  primary?: { owner: string; repo: string } | null;
   tip: { ok: true; value: string } | { ok: false; reason: string; outcomeUnknown: boolean };
   ancestry: Map<string, boolean>;
   /** Run during the parent read, to model the world moving while GitHub answers. */
@@ -115,6 +117,7 @@ function githubOf(s: Script): StackGitHub {
       return s.tip;
     },
     repositories: async () => s.repositories,
+    primaryRepository: async () => (s.primary !== undefined ? s.primary : s.repositories.length === 1 ? s.repositories[0]! : null),
     retarget: async () => ({ ok: true }),
   };
 }
@@ -777,6 +780,64 @@ test("a stamp cleared by a new turn during a recheck's ancestry check is not wri
   await settle();
   await settle();
   assert.equal(childEdge(w).stackReadyAt ?? null, null, "the cleared stamp stays cleared");
+  r.stop();
+});
+
+// ---- Inspector review 16 ----------------------------------------------------------------------
+
+test("a parent that starts a new turn during the dispatch's ancestry check is not stacked on", async () => {
+  const w = world();
+  const s = script();
+  withMergedSibling(w, s);
+  s.tip = { ok: true, value: HEAD };
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+  // The dispatch's merged-sibling check is answered after the parent started working again.
+  s.duringAncestry = () => {
+    s.duringAncestry = undefined;
+    w.sessions.set("sA", mkSession({ id: "sA", state: "working" }));
+  };
+  const plan = await r.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(plan?.ok, false, "the plan is not returned on a parent that is working again");
+  assert.match(!plan?.ok ? plan!.error : "", /working again/);
+  r.stop();
+});
+
+test("a parent pull request in the checkout's secondary GitHub remote is neither stamped nor stacked on", async () => {
+  const UPSTREAM_PR = "https://github.com/acme/upstream/pull/7";
+  const w = world();
+  w.bindings.set("A", { episodeId: "ep1", sessionId: "sA", prUrl: UPSTREAM_PR });
+  const s = script();
+  s.refs.set(UPSTREAM_PR, { ...s.refs.get(PARENT_PR)! });
+  // Two GitHub remotes; origin names acme/repo, so that is where the child's PR opens.
+  s.repositories = [{ owner: "acme", repo: "upstream" }, { owner: "acme", repo: "repo" }];
+  s.primary = { owner: "acme", repo: "repo" };
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "a PR in another remote's repository is not a stack base");
+
+  // A stamp that names it anyway (written before this check existed) is refused at dispatch.
+  w.tasks.set("C", { ...w.tasks.get("C")!, dependencies: [{ ...childEdge(w), stackReadyAt: 1, stackBaseBranch: "feat/a", stackBaseSha: HEAD, stackPrUrl: UPSTREAM_PR }] });
+  const plan = await r.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(plan?.ok, false);
+  assert.match(!plan?.ok ? plan!.error : "", /not in Phase 1's primary repository/);
+  r.stop();
+});
+
+test("a checkout whose primary repository cannot be told stacks on nothing", async () => {
+  const w = world();
+  const s = script();
+  s.repositories = [{ owner: "acme", repo: "upstream" }, { owner: "acme", repo: "repo" }];
+  s.primary = null;
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
   r.stop();
 });
 

@@ -100,7 +100,7 @@ interface Row {
  * The row still prints the blocker beside the parked pill, so nothing is hidden - resuming it
  * moves it up one band rather than into the ready list, and it says so before you click.
  */
-function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex): Row[] {
+function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex, maxStackDepth?: number): Row[] {
   const ready = readyBacklog(tasks, plan);
   const readyIds = new Set(ready.map((t) => t.id));
   const row = (task: Task, band: Band): Row => ({
@@ -109,7 +109,7 @@ function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex)
     blockers: blockersIn(task, index),
     deadBlockers: deadBlockersFor(task, index),
     stackedOn: stackedStartLabel(task, index.byId),
-    stackWait: stackWaitLabel(task, index.byId),
+    stackWait: stackWaitLabel(task, index.byId, maxStackDepth),
   });
   // One order for both bands now (`backlogTasks` is `byBacklogRank`), which is why this is a
   // plain set difference rather than a re-sort: a blocked row sits exactly where the operator
@@ -342,6 +342,7 @@ export function BacklogDrawer({
   onSetAutoBacklog,
   backlogTrust = null,
   onManageTrust,
+  maxStackDepth,
 }: {
   tasks: Task[];
   backlogPlan: BacklogPlan | null;
@@ -357,6 +358,8 @@ export function BacklogDrawer({
   backlogTrust?: BacklogTrustView | null;
   /** Open the Trust matrix after dismissing this drawer. */
   onManageTrust?: () => void;
+  /** The Shipping depth cap, so a blocked stack row can say it is too deep. Absent: unknown. */
+  maxStackDepth?: number;
 }): React.JSX.Element {
   // Per-task rather than one flag for the panel: two rows are two decisions, and a switch
   // that went inert because somebody launched a different task reads as a broken control.
@@ -368,8 +371,8 @@ export function BacklogDrawer({
     // One index for the whole pass, and the planner's "unblocks N" reads the same one:
     // `blockersIn` is the only definition of what blocks what, forwards or backwards.
     const built = backlogIndex(tasks, backlogPlan);
-    return { rows: partition(tasks, backlogPlan, built), index: built };
-  }, [tasks, backlogPlan]);
+    return { rows: partition(tasks, backlogPlan, built, maxStackDepth), index: built };
+  }, [tasks, backlogPlan, maxStackDepth]);
   const ready = rows.filter((r) => r.band === "ready");
   const held = rows.filter((r) => r.band !== "ready");
 

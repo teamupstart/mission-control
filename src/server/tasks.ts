@@ -3323,44 +3323,71 @@ export class TaskManager {
       this.stackDispatching.add(id);
       let launch: DispatchOptions = options;
       try {
-        const stacked = await this.stackReadiness.planStackedDispatch(t);
-        if (stacked && !stacked.ok) {
-          return { ok: false, error: stacked.error, task: this.registry.getTask(id) ?? t };
+        const stackEdgeOf = (task: Task) =>
+          stackStartEdge(task, new Map(this.registry.listTasks().map((candidate) => [candidate.id, candidate])));
+        // Bounded: a parent pushing on every attempt is refused after the last one, never
+        // looped on forever, and the next dispatch tries again.
+        const MAX_PLANS = 3;
+        let planned = t;
+        for (let attempt = 1; ; attempt += 1) {
+          // The stamp this plan starts from. Readiness may rewrite it while GitHub answers -
+          // to a new head when the parent pushes - and a plan made against the old one would
+          // launch the child without the parent's latest work.
+          const before = stackEdgeOf(planned);
+          const stacked = await this.stackReadiness.planStackedDispatch(planned);
+          if (stacked && !stacked.ok) {
+            return { ok: false, error: stacked.error, task: this.registry.getTask(id) ?? t };
+          }
+          if (stacked?.ok && options.baseSha) {
+            return { ok: false, error: "a stacked task starts from its prerequisite's head and cannot take another pinned base", task: t };
+          }
+          const current = this.registry.getTask(id);
+          if (!current || current.status !== t.status || this.dependencyBlockers(current).length > 0) {
+            return { ok: false, error: "task changed while it was being dispatched", task: current ?? t };
+          }
+          // The plan was made on the task as it stood before GitHub answered. An edit meanwhile
+          // can remove or replace the stacked dependency - or stamp one - and still leave the
+          // task with no blockers, so the plan's parent is checked against the task NOW: the
+          // stamped edge it starts on must be the very edge the plan pinned, and an unstacked
+          // plan must still have none. Otherwise the task would be pinned to, and record as its
+          // lineage, a parent it no longer depends on (or start on the default branch while a
+          // stack is pending).
+          const nowEdge = stackEdgeOf(current);
+          const samePlan = stacked?.ok
+            ? nowEdge !== null &&
+              nowEdge.taskId === stacked.fields.stackParentTaskId &&
+              nowEdge.stackPrUrl === stacked.fields.stackPrUrl &&
+              nowEdge.stackBaseBranch === stacked.fields.stackBaseBranch
+            : nowEdge === null;
+          if (!samePlan) {
+            return { ok: false, error: "task changed while it was being dispatched", task: current };
+          }
+          // Same parent, pull request and branch, but the stamp moved to another head while
+          // this plan was made: the parent pushed, and the plan may pin the commit before it.
+          // Check the parent's head again rather than launch on a superseded one.
+          if (stacked?.ok && nowEdge!.stackBaseSha !== before?.stackBaseSha) {
+            if (attempt >= MAX_PLANS) {
+              return {
+                ok: false,
+                error: `${nowEdge!.title} kept moving while this task was being dispatched; it will be tried again`,
+                task: current,
+              };
+            }
+            planned = current;
+            continue;
+          }
+          const fields = stacked?.ok ? stacked.fields : UNSTACKED;
+          if (
+            (current.stackParentTaskId ?? null) !== fields.stackParentTaskId ||
+            (current.stackBaseBranch ?? null) !== fields.stackBaseBranch ||
+            (current.stackBaseSha ?? null) !== fields.stackBaseSha ||
+            (current.stackPrUrl ?? null) !== fields.stackPrUrl
+          ) {
+            this.registry.upsertTask({ ...current, ...fields, updatedAt: Date.now() });
+          }
+          if (stacked?.ok) launch = { ...options, baseSha: stacked.baseSha };
+          break;
         }
-        if (stacked?.ok && options.baseSha) {
-          return { ok: false, error: "a stacked task starts from its prerequisite's head and cannot take another pinned base", task: t };
-        }
-        const current = this.registry.getTask(id);
-        if (!current || current.status !== t.status || this.dependencyBlockers(current).length > 0) {
-          return { ok: false, error: "task changed while it was being dispatched", task: current ?? t };
-        }
-        // The plan was made on the task as it stood before GitHub answered. An edit meanwhile
-        // can remove or replace the stacked dependency - or stamp one - and still leave the
-        // task with no blockers, so the plan's parent is checked against the task NOW: the
-        // stamped edge it starts on must be the very edge the plan pinned, and an unstacked
-        // plan must still have none. Otherwise the task would be pinned to, and record as its
-        // lineage, a parent it no longer depends on (or start on the default branch while a
-        // stack is pending).
-        const nowEdge = stackStartEdge(current, new Map(this.registry.listTasks().map((task) => [task.id, task])));
-        const samePlan = stacked?.ok
-          ? nowEdge !== null &&
-            nowEdge.taskId === stacked.fields.stackParentTaskId &&
-            nowEdge.stackPrUrl === stacked.fields.stackPrUrl &&
-            nowEdge.stackBaseBranch === stacked.fields.stackBaseBranch
-          : nowEdge === null;
-        if (!samePlan) {
-          return { ok: false, error: "task changed while it was being dispatched", task: current };
-        }
-        const fields = stacked?.ok ? stacked.fields : UNSTACKED;
-        if (
-          (current.stackParentTaskId ?? null) !== fields.stackParentTaskId ||
-          (current.stackBaseBranch ?? null) !== fields.stackBaseBranch ||
-          (current.stackBaseSha ?? null) !== fields.stackBaseSha ||
-          (current.stackPrUrl ?? null) !== fields.stackPrUrl
-        ) {
-          this.registry.upsertTask({ ...current, ...fields, updatedAt: Date.now() });
-        }
-        if (stacked?.ok) launch = { ...options, baseSha: stacked.baseSha };
       } finally {
         this.stackDispatching.delete(id);
       }

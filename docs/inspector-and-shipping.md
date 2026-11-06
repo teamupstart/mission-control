@@ -430,7 +430,9 @@ before it starts: it must still be open, not a draft, on the same branch and epi
 agent still finished. The dispatch then fetches the parent branch at the repository root and
 pins the worktree to its current head, but only when that commit is exactly the head GitHub
 reports for the parent pull request. A branch name alone proves nothing: a pull request from a
-fork can share its name with an unrelated branch here. A refused readiness read is looked at
+fork can share its name with an unrelated branch here. If the parent pushes while that check
+runs, the check is made again on the new head, up to three times, and the dispatch is refused
+rather than started on a superseded commit if the parent is still moving. A refused readiness read is looked at
 again about a minute later, so a draft marked ready on GitHub releases its dependent without
 anything changing locally. A stamp that stands is read again on the same interval, so a parent
 turned back into a draft, closed, or moved out of the primary repository on GitHub withdraws it

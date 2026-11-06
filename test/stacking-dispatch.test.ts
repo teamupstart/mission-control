@@ -234,3 +234,51 @@ test("a dependency stamped while an unstacked dispatch's check awaits GitHub is 
   assert.equal(outcome.ok, false);
   assert.deepEqual(launches, [], "a task that now starts on a stack is not launched unpinned");
 });
+
+// ---- Inspector review 10: a stamp moved to a new head while the plan was made -------------
+
+test("a parent that pushes while the dispatch's check awaits GitHub is checked again and the child starts on the new head", async () => {
+  const NEWER = "b".repeat(40);
+  let plans = 0;
+  let parentId = "";
+  let fields = STACKED;
+  const { registry, tasks, launches } = harness(async (task) => {
+    plans += 1;
+    if (plans === 1) {
+      // While this plan awaits GitHub, the parent pushes and readiness restamps the edge.
+      const edge = task.dependencies[0] as TaskEdge;
+      registry.upsertTask({ ...registry.getTask(task.id)!, dependencies: [{ ...edge, stackBaseSha: NEWER }] });
+      return { ok: true, baseSha: PIN, fields };
+    }
+    return { ok: true, baseSha: NEWER, fields: { ...fields, stackParentTaskId: parentId, stackBaseSha: NEWER } };
+  });
+  const stacked = stackedChild(registry, tasks);
+  parentId = stacked.parent.id;
+  fields = stacked.fields;
+
+  const outcome = await tasks.dispatch(stacked.child.id);
+  assert.equal(outcome.ok, true);
+  assert.equal(plans, 2, "the moved stamp sends the dispatch back to the parent-head check once");
+  assert.deepEqual(launches, [{ id: stacked.child.id, baseSha: NEWER }], "the child starts on the parent's latest head, not the superseded one");
+  assert.equal(registry.getTask(stacked.child.id)!.stackBaseSha, NEWER, "and records that head as what it was cut on");
+});
+
+test("a parent that keeps pushing on every check is refused after the last attempt, with nothing provisioned", async () => {
+  let plans = 0;
+  let fields = STACKED;
+  const { registry, tasks, launches } = harness(async (task) => {
+    plans += 1;
+    const edge = task.dependencies[0] as TaskEdge;
+    registry.upsertTask({ ...registry.getTask(task.id)!, dependencies: [{ ...edge, stackBaseSha: String(plans).repeat(40) }] });
+    return { ok: true, baseSha: PIN, fields };
+  });
+  const stacked = stackedChild(registry, tasks);
+  fields = stacked.fields;
+
+  const outcome = await tasks.dispatch(stacked.child.id);
+  assert.equal(outcome.ok, false);
+  assert.match(!outcome.ok ? outcome.error : "", /kept moving while this task was being dispatched/);
+  assert.equal(plans, 3, "bounded: three checks, not a loop");
+  assert.deepEqual(launches, []);
+  assert.equal(registry.getTask(stacked.child.id)!.stackBaseSha ?? null, null, "no lineage is recorded");
+});

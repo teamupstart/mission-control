@@ -48,7 +48,8 @@ carries `.modal-bleed`.
    above the session `dl` with the sentence and two buttons: **Accept objective as is**
    (`api.acceptGoal`, disabled in flight, errors in `p.wf-error[role=alert]`) and **Submit bound
    version**, which triggers the footer's existing `perform(true)`. Do not duplicate the submit
-   logic.
+   logic. The accept button renders only when `session.goal.text` (the card's objective summary)
+   is set, the drawer's rule; the submit button stays either way.
 5. `styles.css`: `.workflow-binding-stall` and `.workflow-bind-chip.stalled` (amber mark).
 6. `docs/workflows.md`: the stall state, the notice and both actions, beside the existing
    **Submit bound version** paragraph.
@@ -66,6 +67,9 @@ No server or wire change; the predicate reads fields every card already carries.
   workflow and version.
 - `test/console-detail-header.test.ts`: a stalled fixture renders the `stalled` chip and
   tooltip; an unstalled one keeps today's title.
+- A `renderToStaticMarkup` case for the band, in the pattern of `test/foreman-intent-drawer.test.ts`:
+  a stalled session whose goal has no objective shows the notice with **Submit bound version**
+  only.
 - `e2e/specs/workflow-stall-chip.spec.ts`: publish a `foreman_complete` preview workflow and
   bind it from the chip (as `workflow-bind-chip-returns.spec.ts` does); send a plain follow-up
   and wait for `unclear`; `POST /hooks/Stop` with the harness token (as

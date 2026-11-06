@@ -1,7 +1,7 @@
 # Foreman stuck-goal recovery: an unresolved intent must never silently stop a bound workflow
 
-Status: revision 7 (2026-11-06), repaired after Plan Validation rounds 1 to 3 and the pull
-request review; sections 3.1, 3.2, 3.3 and 7 carry the repairs. Decisions adopted from the first
+Status: revision 8 (2026-11-06), repaired after Plan Validation rounds 1 to 3 and two pull
+request review rounds; sections 3.1, 3.2, 3.3 and 7 carry the repairs. Decisions adopted from the first
 review are in section 10. Nothing here is implemented.
 
 Source: the investigation report for task `4bda9656` ("Move Advisor Settings to Harness Page",
@@ -107,8 +107,7 @@ through the outbox reserves nothing (`journalDelivered` only journals and emits
 `turn_delivered`), so the echo is captured as a second instruction. `docs/sessions.md:1576-1578`
 describes the intended design, "Agent SDK delivery records that boundary directly from the
 driver's acknowledgement; terminal delivery observes it through the harness's prompt hook", and
-no test pins it for a follow-up: `test/sdk-supervisor.test.ts` drives a fake driver that fires no
-hooks, and the hook calls in `test/pending-turn-manager.test.ts` carry no prompt text.
+no existing test pins a follow-up's hook echo.
 
 ## 2. Every way the head can latch
 
@@ -219,10 +218,8 @@ because every human SDK turn is captured by its own send. The ledger is in memor
 authorship ledger; a restart between a delivery and its echo lets one duplicate through, and with
 section 3.1 in place a duplicate is harmless.
 
-The launch is already handled by `isSeededLaunchEcho` and the dispatcher's `acceptedGoalPrompt`.
-The phase that builds this verifies whether delegated turns (`session_delegated_turns`) and
-resident wakes reach the outbox and therefore the same reservation; if any human-authored
-delivery bypasses `pending-turns.ts`, it gets the same three calls.
+The launch is already handled by `isSeededLaunchEcho` and the dispatcher's `acceptedGoalPrompt`;
+Phase 2 verifies that delegated turns and resident wakes reach the same reservation.
 
 ### 3.3 Escape hatch: accept the objective as is
 
@@ -251,11 +248,15 @@ not `unclear` is returned unchanged.
   `refiner.ts:371-376`.
 
 **Drawer.** `IntentSummary` in `src/web/components/ForemanDrawer.tsx` renders a button
-**Accept objective as is** when the intent is resolving or `unclear`, with the tooltip "Record
-the pending instructions as steering and let Foreman judge completion against this objective".
-It calls the route and shows the error inline on failure. The drawer is opened by the
-`Foreman intent` control in the console detail header. The same control also appears in the
-bind dialog's stall notice (section 3.4, adopted as D4).
+**Accept objective as is** when the goal has an objective and the intent is resolving or
+`unclear`, with the tooltip "Record the pending instructions as steering and let Foreman judge
+completion against this objective". It calls the route and shows the error inline on failure.
+A goal with no objective keeps the drawer's existing empty state and no button; since
+`captureAcceptedPrompt` seeds a heuristic objective from the first captured prompt, that state
+is an uninstructed session or a legacy row, and the empty state says the next instruction
+becomes the objective. The route's 409 is reachable only by a direct call. The drawer is opened
+by the `Foreman intent` control in the console detail header. The same control also appears in
+the bind dialog's stall notice (section 3.4, adopted as D4), under the same objective rule.
 
 **Goal line.** The two paused tooltips in `GoalLine` end with "Open Foreman intent to accept
 the objective as is." so the state names its exit.
@@ -368,7 +369,7 @@ Every agent binary stays faked. No spec or test spends model tokens.
 | `test/prompted-wrapup.test.ts` | An accepted goal is a resolved intent whose episode key is `intent:<version>:<revision>`; the step-8 skip cases are unchanged. |
 | `test/prompted-wrapup-worker-e2e.test.ts` | A session skipped for unresolved intent proceeds to verification, consumes the generation and claims the bound workflow on the tick after the objective is accepted. |
 | `test/workflow-run-intent-snapshot.test.ts` | A run frozen after acceptance carries the former pending instructions as steering at the new resolved revision and classifies as `objective`, not `unreconciled`. |
-| `test/foreman-intent-drawer.test.ts` | `renderToStaticMarkup` shows **Accept objective as is** for resolving and `unclear` intents and not for a settled one. |
+| `test/foreman-intent-drawer.test.ts` | `renderToStaticMarkup` shows **Accept objective as is** for resolving and `unclear` intents that have an objective, not for a settled one, and not for a goal without an objective, whose empty state says the next instruction becomes the objective. |
 | `test/held.test.ts` (new or existing) | `workflowCompletionStall` as a table: each conjunct false yields null; the stall sentence names the workflow and version. |
 
 ### 5.2 Playwright, in `e2e/`

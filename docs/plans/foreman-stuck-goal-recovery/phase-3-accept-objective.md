@@ -28,7 +28,8 @@ the chip and dialog (Phase 4); any change to `objective`, `objectiveVersion`,
 `session_upsert`. `upsertSessionGoalWithSteering` (`db.ts:10743`) writes one row and requires
 `steer` at the resolved revision. `GET /api/sessions/:id/goal` is `routes.ts:6779`; `api.goal`
 is `api.ts:2128`; `useIntent` (`ConsoleDetail.tsx:150`) is keyed on `intentRefreshStamp`;
-`IntentSummary` is `ForemanDrawer.tsx:165-215`; `GoalLine` tooltips are `session-bits.tsx:1438`.
+`IntentSummary` (`ForemanDrawer.tsx:165-215`) returns its empty state before any reading when
+`intent.objective` is null; `GoalLine` tooltips are `session-bits.tsx:1438`.
 
 ## Implementation steps
 
@@ -48,7 +49,11 @@ is `api.ts:2128`; `useIntent` (`ConsoleDetail.tsx:150`) is keyed on `intentRefre
 5. `ForemanDrawer.tsx`: an `onAcceptObjective` prop; when resolving or `unclear`, a
    `button.fd-intent-accept` labelled **Accept objective as is** inside `fd-intent-reading`,
    tooltip "Record the pending instructions as steering and let Foreman judge completion against
-   this objective", disabled in flight, errors in `p.wf-error[role=alert]`.
+   this objective", disabled in flight, errors in `p.wf-error[role=alert]`. `fd-intent-reading`
+   sits past the existing `!intent?.objective` early return, so a goal with no objective never
+   shows the button; that empty state's copy gains "The next instruction becomes the
+   objective." because `captureAcceptedPrompt` seeds one from the first captured prompt, and
+   the route's 409 is reachable only by a direct call.
 6. `ConsoleDetail.tsx`: implement it with `api.acceptGoal(session.id)` and set the drawer's
    intent from the response.
 7. `GoalLine`: append "Open Foreman intent to accept the objective as is." to the resolving and
@@ -75,7 +80,9 @@ abandoned by the compare at `refiner.ts:371-376`.
   verified, consumed and claims its bound workflow on the tick after acceptance.
 - `test/workflow-run-intent-snapshot.test.ts`: a run frozen after acceptance carries the former
   pending instructions as steering and classifies `objective`.
-- `test/foreman-intent-drawer.test.ts`: the control renders for resolving and `unclear` only.
+- `test/foreman-intent-drawer.test.ts`: the control renders for resolving and `unclear` intents
+  with an objective only; a goal with no objective renders the empty state with the seeding
+  sentence and no button.
 - `e2e/specs/goal-accept-objective.spec.ts`: dispatch, send a plain follow-up, wait for
   `unclear`, open `Foreman intent`, assert "needs more context" and the button, click, assert
   "steering", the button gone, equal revisions, objective unchanged. `npm run build`, then run
@@ -89,7 +96,8 @@ All of the above pass; the three docs describe the control.
 ## Downstream handoff
 
 Phase 4 may rely on the route (404 / 409 / 200 with `SessionGoal`), `api.acceptGoal(id)` and the
-`Accepted by you:` marker; it must not change the route.
+`Accepted by you:` marker; it must not change the route, and it shows the accept control only
+when the goal has an objective, as the drawer does.
 
 ## Cross-phase audit record
 

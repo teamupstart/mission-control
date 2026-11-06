@@ -486,3 +486,56 @@ test("the base-commit check leaves ordinary default-branch pull requests and new
   g.mergeBases.set(`${BASE_V1}...${CHILD_HEAD}`, MB_OLD);
   assert.equal(await reviewedStackBase(rowOf(plain), snapshot({ baseRefName: "release/1", baseSha: REBASED }), "/repo", seam(g), 6_000), "changed");
 });
+
+// ---- Inspector review 2: a stored release is not trusted while the parent can come back ---
+
+/** A child released against a parent that closed without merging, at MOVED (off the parent). */
+async function releasedOnClosedParent(g: Gh): Promise<{ key: string; head: string }> {
+  const key = await stackedRow(g);
+  const MOVED = "6".repeat(40);
+  g.refs.set(PARENT, refs({ state: "CLOSED", headSha: PARENT_HEAD }));
+  g.ancestry.set(`${CUT}..${MOVED}`, false);
+  g.ancestry.set(`${PARENT_HEAD}..${MOVED}`, false);
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: MOVED }), "/repo", seam(g), 3_000), true);
+  assert.equal(rowOf(key).stack!.releasedHeadSha, MOVED);
+  updateInspectorPr(key, { headSha: MOVED, reviewPosture: "live", round: 1, reviewComplete: true, reviewedBaseRef: "main" }, 3_000);
+  return { key, head: MOVED };
+}
+
+test("a parent reopened after its child was released withdraws the release, and YOLO holds again", async () => {
+  const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
+  const inspector = setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: ["/repo"] });
+  setShippingConfig({ autoMerge: true, repoAllowlist: ["/repo"], soakMinutes: 0, stacking: "stack" });
+  const g = gh();
+  const { key, head } = await releasedOnClosedParent(g);
+
+  // Still closed: the stored release keeps passing on the same head.
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: head }), "/repo", seam(g), 4_000), true);
+  assert.equal(rowOf(key).stack!.releasedHeadSha, head);
+
+  // Reopened, child head unchanged: the prerequisite is open again.
+  g.refs.set(PARENT, refs({ state: "OPEN", headSha: PARENT_HEAD }));
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: head }), "/repo", seam(g), 5_000), false);
+  assert.equal(rowOf(key).stack!.releasedHeadSha, null, "the release is withdrawn, not trusted");
+  const merged = await maybeMerge(inspector, rowOf(key), "/repo", snapshot({ headSha: head }), new Map(), 1_000_000);
+  assert.equal(merged, false, "YOLO never merges a child whose prerequisite is open");
+  assert.equal(rowOf(key).mergeBlock, "stack-hold");
+});
+
+test("a stored release whose parent cannot be read is withdrawn; one under a merged parent is final", async () => {
+  const g = gh();
+  const { key, head } = await releasedOnClosedParent(g);
+  g.refs.delete(PARENT);
+  assert.equal(await refreshStackRelease(rowOf(key), snapshot({ headSha: head }), "/repo", seam(g), 4_000), false);
+  assert.equal(rowOf(key).stack!.releasedHeadSha, null, "an unconfirmed release is not trusted");
+
+  // A merged parent: once released for this head, the release stands without ancestry calls.
+  const g2 = gh();
+  const merged = await stackedRow(g2);
+  g2.refs.set(PARENT, refs({ state: "MERGED", mergeCommitSha: MERGE }));
+  g2.ancestry.set(`${MERGE}..${CHILD_HEAD}`, true);
+  assert.equal(await refreshStackRelease(rowOf(merged), snapshot(), "/repo", seam(g2), 4_000), true);
+  g2.ancestry.clear();
+  assert.equal(await refreshStackRelease(rowOf(merged), snapshot(), "/repo", seam(g2), 5_000), true, "a merge cannot be undone");
+  assert.equal(rowOf(merged).stack!.releasedHeadSha, CHILD_HEAD);
+});

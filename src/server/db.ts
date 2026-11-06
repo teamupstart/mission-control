@@ -14369,6 +14369,20 @@ export function releaseInspectorPrStack(key: string, headSha: string, now: numbe
   return Number(result.changes) > 0;
 }
 
+/**
+ * Withdraw a stack release that no longer holds (its parent was reopened, or can no longer be
+ * confirmed). The next release check has to pass again before the row may merge.
+ */
+export function revokeInspectorPrStack(key: string, now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = NULL, updated_at = ?
+        WHERE key = ? AND stack_released_head_sha IS NOT NULL`,
+    )
+    .run(now, key);
+  return Number(result.changes) > 0;
+}
+
 /** One line about the last stacked-base correction, shown in the merge queue. */
 export function noteInspectorPrStack(key: string, note: string | null, now: number): void {
   openDb()

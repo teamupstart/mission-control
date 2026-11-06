@@ -6,6 +6,7 @@ import {
   noteInspectorPrStack,
   recordInspectorPrLineage,
   releaseInspectorPrStack,
+  revokeInspectorPrStack,
   updateInspectorPr,
 } from "../db.ts";
 import { parsePrUrl, type PrSnapshot } from "../inspector/github.ts";
@@ -109,12 +110,19 @@ export async function correctStackBase(
 
 /**
  * Run the stack release check for a lineage-bearing row against the snapshot this tick just
- * read, and record the release against that exact head when it passes.
+ * read, and record the release against that exact head when it passes. True when the row is
+ * released for this head after the call.
  *
  * Asked only while the base is already the default branch - before then the check cannot
  * pass, so its compare calls would buy nothing. The current parent is read from GitHub
  * rather than from the ledger, because the ledger retires a finished pull request's row
  * and may never have polled its merge.
+ *
+ * A release already recorded for this head is final only once the parent has MERGED: a merge
+ * cannot be undone, and its merge commit was verified in this head. A release granted while
+ * the parent was closed is re-evaluated on every call, because a closed pull request can be
+ * reopened, and a reopened parent is an unmerged prerequisite again. A release that no longer
+ * passes, or whose parent can no longer be read, is revoked rather than trusted.
  */
 export async function refreshStackRelease(
   pr: InspectorPr,
@@ -125,12 +133,19 @@ export async function refreshStackRelease(
 ): Promise<boolean> {
   const lineage = pr.stack;
   if (!lineage || !snapshot.headSha) return false;
-  if (lineage.releasedHeadSha === snapshot.headSha) return true;
+  const releasedHere = lineage.releasedHeadSha === snapshot.headSha;
+  // The ledger already saw the parent merge: final, and nothing to ask GitHub.
+  if (releasedHere && ledgerParentState(lineage.parentPrUrl) === "MERGED") return true;
+  const withdraw = (): false => {
+    if (releasedHere) revokeInspectorPrStack(pr.key, now);
+    return false;
+  };
   const base = snapshot.baseRefName || null;
   const defaultBranch = snapshot.defaultBranch || null;
-  if (!base || !defaultBranch || base !== defaultBranch) return false;
+  if (!base || !defaultBranch || base !== defaultBranch) return withdraw();
   const parent = await github.prRefs(dir, lineage.parentPrUrl);
-  if (!parent.ok || !parent.value) return false;
+  if (!parent.ok || !parent.value) return withdraw();
+  if (releasedHere && parent.value.state === "MERGED") return true;
   const ancestry = async (commit: string | null): Promise<Ancestry> => {
     if (!commit) return null;
     const answer = await github.isAncestor(dir, pr.owner, pr.repo, commit, snapshot.headSha);
@@ -146,8 +161,8 @@ export async function refreshStackRelease(
     stackBaseInHead: closed ? await ancestry(lineage.baseSha) : null,
     parentLastHeadInHead: closed ? await ancestry(parent.value.headSha) : null,
   });
-  if (!released) return false;
-  releaseInspectorPrStack(pr.key, snapshot.headSha, now);
+  if (!released) return withdraw();
+  if (!releasedHere) releaseInspectorPrStack(pr.key, snapshot.headSha, now);
   return true;
 }
 

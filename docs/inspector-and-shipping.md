@@ -463,7 +463,11 @@ only:
 | Open | never | the parent has to merge or close first |
 
 The release is recorded against the head it was verified for, and a new head is checked
-again. Anything that cannot be read holds. Lineage belongs to the pull request, so switching
+again. Anything that cannot be read holds. A release under a merged parent is final, because a
+merge cannot be undone. A release under a closed parent is checked again on every tick, because
+a closed pull request can be reopened: a reopened parent, a parent that can no longer be read,
+or a base that is no longer the default branch withdraws the release, and the child is held
+until the check passes again. Lineage belongs to the pull request, so switching
 the setting off or flipping a chip to *After merge* stops **new** stacks only: a pull request
 that is already stacked keeps its hold until it is released. This release does not yet
 retarget, restack or prompt anything on its own; those steps are the person's for now.

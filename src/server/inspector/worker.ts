@@ -11,6 +11,7 @@ import {
   inTransaction,
   loadInspectorComments,
   loadOpenInspectorPrs,
+  revokeInspectorPrStack,
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
@@ -786,13 +787,19 @@ async function processPr(
   // Stacked pull requests: run the release check for a row with lineage BEFORE the merge
   // gate reads it, so a restack verified on this tick can merge on this tick. Read only from
   // GitHub (the compare API), never by running git here.
+  // A release already recorded for this head is checked again too: a parent closed without
+  // merging can be reopened, and then the child is stacked on an open prerequisite again.
   let gated = pr;
-  if (pr.stack && pr.stack.releasedHeadSha !== s.headSha) {
+  if (pr.stack) {
     try {
-      if (await refreshStackRelease(pr, s, dir, stackGitHub, now)) gated = getInspectorPr(pr.key) ?? pr;
+      await refreshStackRelease(pr, s, dir, stackGitHub, now);
     } catch (error) {
+      // A release that could not be checked is not trusted.
+      revokeInspectorPrStack(pr.key, now);
       console.error("[inspector] stack release check failed:", pr.key, error);
     }
+    // Re-read either way: the check may have recorded a release or withdrawn one.
+    gated = getInspectorPr(pr.key) ?? pr;
   }
   // Stacked pull requests: the same head on the same base NAME can still be a different diff,
   // when the parent was rebased underneath it. Judged by GitHub's merge base before the

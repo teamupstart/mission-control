@@ -381,7 +381,7 @@ export function ProductIssueModal({
               placeholder="One line someone scanning the issue list would understand"
               onChange={(e) => onDraftChange({ ...draft, title: e.target.value })}
               onKeyDown={(e) => {
-                if (e.key === "Enter") e.preventDefault();
+                if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) e.preventDefault();
               }}
               disabled={submitting}
               aria-label="Title"

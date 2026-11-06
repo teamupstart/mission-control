@@ -2345,10 +2345,9 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
-    // Ensemble has no route through here. Its primary slot is Review-then-Launch, its shelve
-    // button is not rendered, and ⌘↵ is refused - so this is not a reachable path but a
-    // statement of which payload the mode owns: an Ensemble goes out through
-    // `useEnsembleLaunch`, whole, and never as a single task built from this draft.
+    // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
+    // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
+    // An Ensemble goes out whole, never as a single task built from this draft.
     if (mode.kind === "ensemble") return;
     // A new task with unmet dependencies is filed into the backlog even from the primary
     // action. It is not launching yet, so an unavailable Foreman must not erase the user's

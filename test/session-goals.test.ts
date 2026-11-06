@@ -583,6 +583,47 @@ test("a later prompt re-queues an unclear instruction, so accepting records both
   ]);
 });
 
+test("an unclear verdict with a newer instruction queued is kept as steering, never dropped", () => {
+  const { r, s, key } = acceptFixture("unclear-with-queue", ["maybe also restyle it", "then add the test"]);
+  const before = r.getGoal(s.id)!;
+  // The refiner judges revision 2 while revision 3 already waits.
+  r.resolveGoal(s.id, {
+    objective: before.objective,
+    text: before.text,
+    source: "model",
+    relationship: "unclear",
+    rationale: "Could mean a new requirement or a passing remark.",
+    objectiveVersion: before.objectiveVersion,
+    resolvedPromptRevision: 2,
+    pendingPrompts: [{ revision: 3, prompt: "then add the test" }],
+  }, "maybe also restyle it", 8_100);
+  const kept = r.getGoal(s.id)!;
+  assert.equal(kept.relationship, "steer");
+  assert.equal(kept.rationale,
+    "Kept as steering: a newer instruction arrived before this one was clear. Could mean a new requirement or a passing remark.");
+  assert.equal(kept.objective, before.objective);
+  assert.equal(kept.objectiveVersion, before.objectiveVersion);
+  assert.deepEqual(readSessionGoalSteering(key, 2).map((n) => [n.revision, n.instruction]),
+    [[2, "maybe also restyle it"]]);
+
+  // Accepting now records the rest; nothing typed is missing from the steering log.
+  const result = r.acceptGoalObjective(s.id, 8_200);
+  assert.ok(result && result.accepted);
+  assert.deepEqual(readSessionGoalSteering(key, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "then add the test"],
+  ]);
+});
+
+test("a final unclear verdict, with nothing newer queued, still pauses", () => {
+  const { r, s, key } = acceptFixture("unclear-final", ["maybe also restyle it"]);
+  r.resolveGoal(s.id, {
+    relationship: "unclear", rationale: "ambiguous", resolvedPromptRevision: 2, pendingPrompts: [],
+  }, "maybe also restyle it");
+  assert.equal(r.getGoal(s.id)!.relationship, "unclear");
+  assert.deepEqual(readSessionGoalSteering(key, 2), []);
+});
+
 test("only an unclear verdict is re-queued; a settled instruction stays resolved", () => {
   const { r, s, key } = acceptFixture("no-requeue-after-steer", ["use the existing helper"]);
   r.resolveGoal(s.id, {

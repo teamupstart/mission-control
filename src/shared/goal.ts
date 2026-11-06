@@ -55,6 +55,14 @@ export function goalLine(text: string, max = GOAL_MAX_CHARS): string {
 export const GOAL_ACCEPTED_RATIONALE =
   "Accepted by you: the current objective is the completion contract.";
 
+/**
+ * The rationale prefix for an instruction the reconciler judged `unclear` while a newer one was
+ * already queued. It is kept as steering rather than dropped, because the next resolution
+ * replaces the only copy of its text.
+ */
+export const GOAL_KEPT_AS_STEERING_RATIONALE =
+  "Kept as steering: a newer instruction arrived before this one was clear.";
+
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
   const objective = goal?.objective?.trim() ?? "";
   if (

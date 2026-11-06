@@ -96,7 +96,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
-import { GOAL_ACCEPTED_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -8577,6 +8577,22 @@ export class Registry extends EventEmitter {
   resolveGoal(id: string, patch: SetGoal, instruction: string, now = Date.now()): SessionGoal | null {
     const session = this.sessions.get(id);
     if (!session) return null;
+    // An `unclear` verdict while newer instructions already wait is this instruction's last
+    // chance to be kept: the next resolution replaces the goal's `prompt`, and nothing else
+    // holds its text. Keep it as steering, which never changes the objective (the refiner's
+    // unclear patch already carries the current objective and version). A final `unclear`,
+    // with nothing newer queued, still pauses wrap-up; capture re-queues it if a newer
+    // instruction arrives later.
+    if (patch.relationship === "unclear" && (patch.pendingPrompts?.length ?? 0) > 0) {
+      patch = {
+        ...patch,
+        relationship: "steer",
+        rationale: goalLine(
+          `${GOAL_KEPT_AS_STEERING_RATIONALE}${patch.rationale ? ` ${patch.rationale}` : ""}`,
+          480,
+        ),
+      };
+    }
     const revision = patch.resolvedPromptRevision;
     // Accepted revisions already passed the Goal pipeline's consuming authorship guard.
     // A permanent transcript label would wrongly suppress a later human retype here.

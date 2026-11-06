@@ -220,4 +220,62 @@ test.describe("while the latest instruction is still reconciling", () => {
     expect(after.objectiveVersion).toBe(before.objectiveVersion);
     await expect(goalLine).not.toHaveClass(/goal-unclear|goal-resolving/);
   });
+  test("a goal read that started before the accept cannot put the pause back", async ({ dashboard, daemon }) => {
+    const sessionId = await dispatch(dashboard, daemon);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+    const detail = dashboard.locator(".console-detail");
+    const reply = detail.getByPlaceholder(/^Reply to this session/);
+    await expect(reply).toBeEnabled();
+    await reply.fill(FOLLOW_UP);
+    await reply.press("Enter");
+    await settled(daemon, sessionId);
+    const stale = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);
+    expect(stale.resolvedPromptRevision).toBeLessThan(stale.promptRevision);
+
+    await detail.getByRole("button", { name: "Foreman intent", exact: true }).click();
+    const drawer = dashboard.locator(".foreman-drawer");
+    const relation = drawer.locator(".fd-intent-reading .fd-intent-relation");
+    await expect(relation).toHaveText("reconciling");
+    const accept = drawer.getByRole("button", { name: "Accept objective as is", exact: true });
+
+    // The accept's own server event moves the drawer's refresh stamp, which starts a goal read.
+    // Hold the accept's answer until that read is in flight, then answer the read with the
+    // paused record it would have seen a moment earlier - after the accept has been applied.
+    let readStarted!: () => void;
+    const readSeen = new Promise<void>((resolve) => { readStarted = resolve; });
+    let acceptAnswered!: () => void;
+    const acceptDelivered = new Promise<void>((resolve) => { acceptAnswered = resolve; });
+    // Only the first read and the first accept are held. (Not `{ times: 1 }`: that drops the
+    // route as soon as it matches, which lets a held request continue to the daemon.)
+    const base = `**/api/sessions/${encodeURIComponent(sessionId)}`;
+    let heldRead = false;
+    await dashboard.route(`${base}/goal`, async (route) => {
+      if (heldRead) return route.continue();
+      heldRead = true;
+      readStarted();
+      await acceptDelivered;
+      await expect(relation).toHaveText("steering");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(stale) });
+    });
+    let heldAccept = false;
+    await dashboard.route(`${base}/goal/accept`, async (route) => {
+      if (heldAccept) return route.continue();
+      heldAccept = true;
+      const response = await route.fetch();
+      await readSeen;
+      await route.fulfill({ response });
+      acceptAnswered();
+    });
+
+    const staleRead = dashboard.waitForEvent("requestfinished", (request) =>
+      new URL(request.url()).pathname === `/api/sessions/${encodeURIComponent(sessionId)}/goal`);
+    await accept.click();
+    await staleRead;
+    // Let the late read's promise chain and React's commit run before judging the drawer.
+    await dashboard.evaluate(() => new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)))));
+    await expect(relation).toHaveText("steering");
+    await expect(accept).toHaveCount(0);
+    await expect(drawer.locator(".fd-intent-reading")).toContainText("Accepted by you:");
+  });
 });

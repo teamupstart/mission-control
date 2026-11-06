@@ -157,23 +157,32 @@ function useIntent(
   open: boolean,
 ): [SessionGoal | null, (goal: SessionGoal) => void] {
   const [intent, setIntent] = useState<SessionGoal | null>(null);
+  // Bumped by every fetch and by every record a write hands back. A read applies only while it
+  // is still the newest, so a GET that started before an accept cannot land after it and put
+  // the paused reading back.
+  const generation = useRef(0);
   useEffect(() => {
     if (!open) return;
-    let live = true;
+    const mine = ++generation.current;
+    const current = () => generation.current === mine;
     setIntent(null);
     void api
       .goal(sessionId)
       .then((goal) => {
-        if (live) setIntent(goal);
+        if (current()) setIntent(goal);
       })
       .catch(() => {
-        if (live) setIntent(null);
+        if (current()) setIntent(null);
       });
     return () => {
-      live = false;
+      if (current()) generation.current++;
     };
   }, [sessionId, refreshStamp, open]);
-  return [intent, setIntent];
+  const applyWritten = useCallback((goal: SessionGoal) => {
+    generation.current++;
+    setIntent(goal);
+  }, []);
+  return [intent, applyWritten];
 }
 
 /**

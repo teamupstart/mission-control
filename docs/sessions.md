@@ -1648,8 +1648,10 @@ Each reconciliation records one of five relationships:
 - **amend** extends the existing completion contract;
 - **replace** supersedes the old outcome; and
 - **unclear** keeps the existing objective while completion remains ambiguous. An unclear
-  instruction is not dropped when a newer one arrives: it goes back into the queue ahead of
-  the newer instruction and is reconsidered with it.
+  instruction is never dropped when a newer one arrives. If the newer one arrives after the
+  verdict, the unclear instruction goes back into the queue ahead of it and is reconsidered
+  with it. If it is judged unclear while a newer instruction is already waiting, it is kept as
+  steering ("Kept as steering: …"), and only the latest instruction can pause wrap-up.
 
 No command or special vocabulary is required. The model infers the relationship from the
 instruction and conversation. An amendment is accepted only when its proposed contract

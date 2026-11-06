@@ -240,6 +240,29 @@ test("an unclear instruction is reconsidered with the next one instead of being 
   ]);
 });
 
+test("two quick instructions judged unclear: the earlier is kept as steering, the later pauses, accept records both", async () => {
+  const id = "unclear-pair";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "maybe also restyle it", id);
+  registry.captureAcceptedPrompt(id, "or perhaps the other heading", id);
+  await classify(registry, id, "unclear");
+  const paused = registry.getGoal(id)!;
+  assert.equal(paused.relationship, "unclear", "the latest instruction still pauses wrap-up");
+  assert.equal(paused.resolvedPromptRevision, 3);
+  assert.equal(paused.objective, "Ship the feature");
+  const kept = readSessionGoalSteering(id, 3);
+  assert.deepEqual(kept.map((n) => [n.revision, n.instruction]), [[2, "maybe also restyle it"]]);
+  assert.match(kept[0]!.rationale, /^Kept as steering: a newer instruction arrived before this one was clear\./);
+
+  const accepted = registry.acceptGoalObjective(id, 900);
+  assert.ok(accepted && accepted.accepted);
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "or perhaps the other heading"],
+  ]);
+  assert.equal(registry.getGoal(id)!.objective, "Ship the feature");
+});
+
 test("revision controls ordering and cutoff even when timestamps tie; pruning protects live keys", () => {
   const id = "ordered-steering";
   const registry = session(id);

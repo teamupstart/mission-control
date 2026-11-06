@@ -114,3 +114,38 @@ test("an existing agent is never handed a task that starts on a stack", async ()
   assert.equal(refused.ok, false);
   assert.match(!refused.ok ? refused.error ?? "" : "", /stacked on its prerequisite's pull request/);
 });
+
+test("a second dispatch of a stacked task while its parent-head check awaits GitHub is refused, and one task is provisioned", async () => {
+  // The revalidation is held open, as a slow GitHub read would hold it.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let checks = 0;
+  const { tasks, launches } = harness(async () => {
+    checks += 1;
+    await held;
+    return { ok: true, baseSha: PIN, fields: STACKED };
+  });
+  const task = backlogTask(tasks);
+
+  const first = tasks.dispatch(task.id);
+  // Let the first call reach the awaited check before the second arrives.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(checks, 1, "the first dispatch is awaiting the parent-head check");
+  const secondCall = tasks.dispatch(task.id);
+  // Bounded: without the guard the second call would wait on the same held check instead.
+  const second = await Promise.race([
+    secondCall,
+    new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), 1_000)),
+  ]);
+  assert.notEqual(second, "still waiting", "the second dispatch is answered at once, not queued behind the first");
+  assert.equal(second !== "still waiting" && second.ok, false);
+  assert.equal(second !== "still waiting" && !second.ok && second.error, "task is already being dispatched");
+  assert.equal(checks, 1, "the refused call never starts a second check");
+  assert.deepEqual(launches, [], "nothing is provisioned while the check is open");
+
+  release();
+  const outcome = await first;
+  await secondCall;
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(launches, [{ id: task.id, baseSha: PIN }], "exactly one task is provisioned, pinned to the parent head");
+});

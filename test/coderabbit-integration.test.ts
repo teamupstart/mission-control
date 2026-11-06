@@ -79,7 +79,7 @@ test("eight long finding titles still produce a schema-valid outcome for Persona
 test("skipped and blocked review summaries without a Command view use shared CodeRabbit defaults", async () => {
  for (const state of ["skipped", "blocked"] as const) {
   const i = input(); i.command = null;
-  if (state === "skipped") i.coderabbit!.yaml = parseCodeRabbitConfig(Buffer.from(""));
+  if (state === "skipped") i.coderabbit!.yaml = parseCodeRabbitConfig(Buffer.from("reviews: {auto_review: {enabled: false}}"));
   else i.policy.checksEnabled = false;
   const r = await runCheck(i, { codeRabbitProbe: async () => { throw new Error("must not probe"); },
    execute: async () => { throw new Error("must not execute"); } });
@@ -95,8 +95,8 @@ test("skipped and blocked review summaries without a Command view use shared Cod
   }
  }
 });
-test("missing/false/invalid YAML skip with warning before trust/budget/probe/execute; invalid exposes error",async()=>{
- for(const source of ["","reviews: {auto_review: {enabled: false}}","reviews: ["]) {
+test("opt-out/invalid YAML skip with warning before trust/budget/probe/execute; invalid exposes error",async()=>{
+ for(const source of ["reviews: {auto_review: {enabled: false}}","reviews: ["]) {
   const i=input();i.coderabbit!.yaml=parseCodeRabbitConfig(Buffer.from(source));i.policy.checksEnabled=false;i.reserveRun=()=>{throw new Error("must not reserve");};
   const r=await runCheck(i,{codeRabbitProbe:async()=>{throw new Error("must not probe");},execute:async()=>{throw new Error("must not execute");}});
   assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"skipped");assert.ok(r.outcome.warning);if(source.endsWith("["))assert.ok(r.outcome.diagnosticError);}

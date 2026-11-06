@@ -366,8 +366,9 @@ from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](ui.md#the-sta
 fleet, and its **Ship log →** header action lands here.
 
 The built-in `coderabbit` Command uses typed repository-root tuning in the existing Commands
-editor. YAML owns enablement: `.coderabbit.yaml` must explicitly contain boolean
-`reviews.auto_review.enabled: true`; no override is required. Tuning changes base ref/severity,
+editor. Repository config owns enablement: a root `.coderabbit.yaml` enables it unless it sets
+`reviews.auto_review.enabled: false`, and with no YAML a root `.coderabbit.config.ts` enables it;
+no override is required. Tuning changes base ref/severity,
 not enablement, and removing it restores defaults. The editor previews the committed-review
 argv and shows derived policies: enabled unavailability blocks; exhausted allowance warns and
 skips. The initial allowance is ten executions shared across nodes per workflow run. See

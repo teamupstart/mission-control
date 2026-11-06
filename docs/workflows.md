@@ -2726,20 +2726,29 @@ stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and befor
 Bindings keep their published version until explicitly upgraded. Earlier versions and other
 built-ins are unchanged.
 
-Enable it in the reviewed repository's root `.coderabbit.yaml`:
+It runs when the reviewed repository has CodeRabbit configuration at its root:
+
+- A `.coderabbit.yaml` enables it, including an empty or comment-only file, unless it sets
+  `reviews.auto_review.enabled: false`. A missing `auto_review` key means on, matching
+  CodeRabbit's own default.
+- With no `.coderabbit.yaml`, a `.coderabbit.config.ts` enables it. Mission Control only detects
+  the file; it never executes or parses it.
+- The YAML wins when both exist, so `enabled: false` opts a repository out even if it also has a
+  `.coderabbit.config.ts`.
+
+To opt out:
 
 ```yaml
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-inheritance: true
 reviews:
   auto_review:
-    enabled: true
+    enabled: false
 ```
 
-Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
-Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
-Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
-skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
+Mission Control does not fetch inherited settings. A repository with neither file, or an explicit
+`false`, skips with a warning and starts no CodeRabbit process. Invalid, ambiguous (duplicate keys,
+tags, aliases, multiple documents, or a non-boolean `enabled`), oversized or unreadable YAML also
+displays a configuration error while skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
 Submission capture freezes the decision; retries reuse it and new submissions refresh it.
 
 No Library override is needed. Optional repository-root tuning selects a base ref and severity

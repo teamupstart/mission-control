@@ -483,6 +483,91 @@ test("a draft that becomes ready on GitHub is picked up when the refusal memo ex
   assert.equal(childEdge(w).stackReadyAt, clock, "the timer's pass re-reads and stamps the now-ready pull request");
 });
 
+/** A fake clock and timer table that honours `clear`, so only live timers can fire. */
+function fakeTimers(start: number) {
+  let clock = start;
+  let next = 0;
+  const live = new Map<number, { run: () => void; due: number }>();
+  return {
+    now: () => clock,
+    timers: {
+      set: (run: () => void, ms: number) => { next += 1; live.set(next, { run, due: clock + ms }); return next; },
+      clear: (handle: unknown) => { live.delete(handle as number); },
+    },
+    live,
+    advance(to: number) { clock = to; },
+    /** Fire every live timer due by now. */
+    fireDue() {
+      // A snapshot: a timer armed while these run is not due in this same pass.
+      for (const [id, timer] of Array.from(live)) {
+        if (timer.due <= clock) { live.delete(id); timer.run(); }
+      }
+    },
+  };
+}
+
+test("a parent that moves to another refused pull request rearms the re-check for the new refusal", async () => {
+  const w = world();
+  const s = script();
+  const PR_B = "https://github.com/acme/repo/pull/8";
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, isDraft: true });
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  assert.equal(t.live.size, 1, "PR A's refusal arms one re-check");
+  const timerForA = [...t.live.values()][0]!.due;
+
+  // Thirty seconds later the parent's episode is on PR B, also a draft: refused too.
+  t.advance(31_000);
+  w.bindings.set("A", { episodeId: "ep1", sessionId: "sA", prUrl: PR_B });
+  s.refs.set(PR_B, { ...s.refs.get(PARENT_PR)!, isDraft: true });
+  r.reconcile();
+  await settle();
+  assert.equal(t.live.size, 1, "still one timer per prerequisite");
+  assert.ok([...t.live.values()][0]!.due > timerForA, "the timer now follows B's refusal, not A's");
+
+  // B is marked ready on GitHub only. Nothing local happens; at A's old due time no read is
+  // possible (B's memo is still live), and B's own timer then picks it up.
+  s.refs.set(PR_B, { ...s.refs.get(PR_B)!, isDraft: false });
+  t.advance(timerForA);
+  t.fireDue();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, t.now(), "the dependent is stamped once B's memo expires");
+  assert.equal(childEdge(w).stackPrUrl, PR_B);
+  r.stop();
+});
+
+test("a pass that lands inside the refusal memo window leaves a re-check behind", async () => {
+  const w = world();
+  const s = script();
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, isDraft: true });
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  // The pending timer is lost (fired early, say) while the memo still holds.
+  const [id, early] = Array.from(t.live)[0]!;
+  t.live.delete(id);
+  t.advance(30_000);
+  early.run();
+  await settle();
+  assert.equal(t.live.size, 1, "the skipped pass arms a re-check for when the memo expires");
+  assert.ok([...t.live.values()][0]!.due > 61_000, "after the memo window");
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, isDraft: false });
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(typeof childEdge(w).stackReadyAt, "number", "the now-ready pull request is stamped");
+  r.stop();
+});
+
 test("stopping readiness cancels its pending re-checks", async () => {
   const w = world();
   const s = script();

@@ -141,13 +141,20 @@ export class StackReadiness {
    * waits on usually happen on GitHub - a draft marked ready, a branch catching up - which
    * produce neither. Without this a dependent could stay blocked until something unrelated
    * moved. One timer per prerequisite, so a burst of refusals schedules one re-check.
+   *
+   * A new refusal REPLACES the pending timer rather than keeping it: the prerequisite may
+   * have moved to another pull request, whose memo expires later than the timer armed for the
+   * previous one. A timer that fired inside the memo window would re-read nothing and leave
+   * no timer behind.
    */
-  private retryLater(parentId: string): void {
-    if (this.stopped || this.retries.has(parentId)) return;
+  private retryLater(parentId: string, ms = RETRY_MS + 1): void {
+    if (this.stopped) return;
+    const pending = this.retries.get(parentId);
+    if (pending !== undefined) this.timers.clear(pending);
     this.retries.set(parentId, this.timers.set(() => {
       this.retries.delete(parentId);
       this.schedule();
-    }, RETRY_MS + 1));
+    }, Math.max(1, ms)));
   }
 
   /** Coalesce a burst of session and task events into one pass on the next turn. */
@@ -233,7 +240,12 @@ export class StackReadiness {
     const finished = this.finishedEpisode(parent);
     if (!finished) return;
     const memo = this.refused.get(parentId);
-    if (memo && memo.prUrl === finished.prUrl && this.now() - memo.at < RETRY_MS) return;
+    if (memo && memo.prUrl === finished.prUrl && this.now() - memo.at < RETRY_MS) {
+      // The memo skips this read, so make sure something reads once it expires: a pass that
+      // lands inside the window (an early timer, or a local event) must not be the last one.
+      if (!this.retries.has(parentId)) this.retryLater(parentId, memo.at + RETRY_MS - this.now() + 1);
+      return;
+    }
     this.inFlight.add(parentId);
     try {
       const read = await this.readParent(parent, finished);

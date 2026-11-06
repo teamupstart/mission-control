@@ -2,7 +2,7 @@
 
 Source plan: `docs/plans/resident-display-surfaces/plan.md`, managed plan
 `3b3f339a-a7dd-4a62-9a3a-2890c71d2c4d`, the `plan.md` saved in the same revision as this index
-(revision 11). The source plan is the requirement. This index and its phase files are the
+(revision 12). The source plan is the requirement. This index and its phase files are the
 proposed route.
 
 ## Incorporated human decisions
@@ -108,7 +108,8 @@ Phase 1 owns these, and Phase 2 must not change them. The one exception is
   named region, `ResidentDrawerCardBody`, that Phase 2 fills. Phase 1 renders the tags and the
   Open, Run now and Pause / Resume actions there.
 - App drawer state: open, pinned, the selected resident id, and the return target used by
-  Escape, which is set only when a resident is opened from the floating drawer.
+  Escape. The return target holds the resident's id, is set only when that resident is opened
+  from the floating drawer, and is cleared as soon as the open detail is anything else.
 - The `alt+1`…`alt+9` reservation and the `code`-based matcher, active in both placements.
 
 ## Task map
@@ -168,3 +169,7 @@ do not create them again. Each depends on the planning session (task
   drawer closed would have been both the open detail and a visitor card. Its visitor card is now
   withheld while its own detail is open, in the source plan, Phase 1 step 4, and its e2e
   coverage, so no fleet list names an open resident.
+- **Inspector review round 3 on PR #1382:** the floating-drawer return target could outlive its
+  resident if another session was selected before Escape. It now holds the resident's id and is
+  cleared whenever the open detail changes, in the source plan, Phase 1 steps 8 and 10, and its
+  e2e coverage.

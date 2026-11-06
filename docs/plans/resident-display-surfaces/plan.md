@@ -73,7 +73,9 @@ Submitted from the dashboard review of revision 2.
 - When a resident was opened from the floating drawer, which closes as the detail opens, Escape
   out of the detail reopens the floating drawer with that resident still selected. A pinned
   drawer stays on screen while the detail is open, so Escape leaves the detail and moves focus to
-  that resident's card in the pinned drawer. No floating drawer opens in that case.
+  that resident's card in the pinned drawer. No floating drawer opens in that case. Moving to
+  any other session first drops the return, so a later Escape never reopens the drawer for a
+  resident that is no longer open.
 - The ⌘K palette finds a live resident by name or label and opens its detail the same way.
 
 ### When a resident needs you

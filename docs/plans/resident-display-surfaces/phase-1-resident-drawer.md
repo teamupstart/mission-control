@@ -175,9 +175,12 @@ No inherited contracts. This phase defines the ones listed in the index.
    In `fleet` mode all three behave exactly as today.
 8. **Opening a resident.** One function, `openResidentDetail(sessionId, { fromDrawer })`:
    - Closes the floating drawer, leaving a pinned one in place.
-   - Records `returnTo` only when the open came from the floating drawer. An open from the
-     pinned drawer records no `returnTo`: the pinned drawer stays on screen with that resident
-     still selected.
+   - Records `returnTo` (the resident's session id) only when the open came from the floating
+     drawer. An open from the pinned drawer records no `returnTo`: the pinned drawer stays on
+     screen with that resident still selected.
+   - Clears `returnTo` whenever the open detail stops being that resident: another session is
+     selected or opened, the detail closes by any route other than the Escape in step 10, or the
+     resident leaves the live list. A stale `returnTo` must never reopen the drawer.
    - Calls `openSessionOnFleet`, which opens the detail where the current layout shows it:
      - **Board:** the drill-in (`selectedId` plus `boardOpen`).
      - **Console:** the detail pane (`selectedId` alone).
@@ -198,8 +201,9 @@ No inherited contracts. This phase defines the ones listed in the index.
    opens per layout: the Board drill-in in Board, the Console detail pane in Console.
 10. **Escape returns to the drawer.** The Escape that leaves the detail is the one that closes
     the Board drill-in, or in Console the one that hands the reader back to the rail.
-    - **Opened from the floating drawer** (`returnTo` set): that Escape reopens the floating
-      drawer with the resident selected, then clears `returnTo`.
+    - **Opened from the floating drawer** (`returnTo` equals the open detail's id): that
+      Escape reopens the floating drawer with the resident selected, then clears `returnTo`.
+      A `returnTo` naming any other session is treated as unset.
     - **Opened from the pinned drawer** (no `returnTo`): that Escape leaves the detail as usual
       and moves focus to the resident's card in the pinned drawer, which still has it selected.
       No floating drawer opens.
@@ -258,7 +262,9 @@ proves:
   Console in the detail pane with the Board drill-in never involved. After an open from the
   floating drawer, Escape reopens it with the resident selected. After an open from the pinned
   drawer, Escape leaves the detail, focus lands on that resident's card in the pinned drawer, and
-  no floating drawer (no second Residents dialog) appears.
+  no floating drawer (no second Residents dialog) appears. After an open from the floating
+  drawer followed by selecting a fleet session, Escape leaves that session's detail as usual and
+  the drawer does not reopen.
 - While a resident's detail is open, no Board column, drill-in rail row or Console rail row names
   it. That includes a resident that needs you, opened by `⌥1` with the drawer closed: it has no
   visitor card while its detail is open, and the card returns when the detail closes if the ask
@@ -323,3 +329,6 @@ which exists for that purpose. It keeps that region's Open, Run now and Pause / 
 - CodeRabbit review on PR #1382: step 4 takes `openDetailId` again and withholds the open
   resident's own visitor card, so a needs-you resident opened by `⌥N` with the drawer closed is
   not both the open detail and a visitor. The e2e spec covers that case.
+- Inspector review round 3 on PR #1382: `returnTo` holds the resident's id and is cleared
+  whenever the open detail changes (step 8), step 10 ignores a `returnTo` that names another
+  session, and the e2e spec checks that selecting a fleet session drops the return.

@@ -297,13 +297,16 @@ const RETRACTING =
   /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
 
 /**
- * Language that actually takes a requirement away. Narrower than `RETRACTING` on purpose:
- * "but", "except", "instead" and "replace" are ordinary refinements in both an instruction and
- * a model's restatement of it ("B, but change the label"), so they are evidence that an
- * amendment did not merely extend the contract, never evidence that it removes something.
+ * Language that takes a requirement away or swaps it for another. Narrower than `RETRACTING`
+ * on purpose: a bare "but", "except" or "instead", or "change ... to", is an ordinary
+ * refinement in both an instruction and a model's restatement of it ("B, but change the
+ * label"), so it is evidence that an amendment did not merely extend the contract, never
+ * evidence that it removes something. An explicit replacement is different - "replace the test
+ * requirement with manual review" removes the old requirement as surely as "drop" does - so
+ * "replace ... with" within one clause, "swap", "substitute", "in place of" and "supersede" count.
  */
 const REMOVING =
-  /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget)\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
+  /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget|swap|substitute|supersede)\b|\breplace\b[^.;:\n]*\bwith\b|\bin place of\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
 
 /**
  * Whether a rejected amendment may be an intentional retraction: the instruction, or the part

@@ -64,6 +64,8 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
   amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  # A proposal that swaps a requirement for another, restated without the prefix.
+  swap-proposal) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature with manual review in place of tests\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An option pick restated without the prefix, with an ordinary "but" refinement in it.
   pick-but) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but change the Overrides by model label to Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
@@ -123,6 +125,7 @@ const setMode = (
     | "amend"
     | "shrink"
     | "pick-but"
+    | "swap-proposal"
     | "negate"
     | "initial-path"
     | "initial-spaced-path"
@@ -333,7 +336,7 @@ async function assertRejectedAmendment(
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but";
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but" | "swap-proposal";
     /** The fake reply that establishes the opening objective. */
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
@@ -461,6 +464,29 @@ test("an instruction that asks to drop a requirement stays pending even when the
     pane: "%66",
     mode: "shrink",
     instruction: "we no longer need the tests, just expose the intent in the drawer",
+    rule: "not-a-prefix",
+    resolvesAs: "pending",
+  });
+});
+
+test("an instruction that replaces a requirement stays pending even when the proposal says nothing", async (t) => {
+  // Replacing a requirement removes the old one; "replace ... with" counts as removing language.
+  await assertRejectedAmendment(t, {
+    id: "r39",
+    pane: "%69",
+    mode: "shrink",
+    instruction: "replace the test requirement with manual review",
+    rule: "not-a-prefix",
+    resolvesAs: "pending",
+  });
+});
+
+test("a proposal that swaps a requirement for another stays pending", async (t) => {
+  await assertRejectedAmendment(t, {
+    id: "r40",
+    pane: "%70",
+    mode: "swap-proposal",
+    instruction: "use manual review for the tests",
     rule: "not-a-prefix",
     resolvesAs: "pending",
   });

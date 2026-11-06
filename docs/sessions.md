@@ -1661,8 +1661,8 @@ An amendment that fails the check never changes the objective or its version, an
 log records which rule failed without quoting the objective. What happens next depends on
 whether it might be taking something away:
 
-- If your instruction asks to drop, remove, skip or otherwise retract a requirement, or the
-  proposal would, the instruction waits at the head of the queue, as it did before. The drawer
+- If your instruction asks to drop, remove, skip, replace or otherwise retract a requirement,
+  or the proposal would, the instruction waits at the head of the queue, as it did before. The drawer
   shows a rationale that starts "Needs review:", nothing behind it is reconciled, and prompted
   wrap-up stays paused, so no Workflow starts against a contract you may have meant to change.
   Each later instruction gives it one more look with that new context; saying plainly that the

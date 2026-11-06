@@ -28,8 +28,9 @@ name: Release
 #
 # This does not publish to npm or own binary publication. The App-created tag starts
 # ci.yml. After successful push CI, distribution.yml can publish a signed/notarized
-# ZIP and DMG and expose its manifest last. The existing CI dmg is a developer
-# artifact, never the binary readiness signal. See docs/release-verification.md.
+# ZIP and DMG and expose its manifest last. CI's dispatch-only dmg is a developer
+# artifact, never the binary readiness signal, and never runs on a tag push. See
+# docs/release-verification.md.
 #
 # `CHANGELOG.md` is generated. Never hand-edit it.
 
@@ -85,7 +86,8 @@ jobs:
       # The version equality the updater depends on, checked against the tag that was actually
       # created rather than against the pull request that proposed it. This runs after the
       # Release exists, so it is a loud failure rather than a gate - the same assertion also
-      # runs in `ci.yml`'s `package` job, which is where it blocks an artifact.
+      # runs on the tag's push CI (`ci.yml`'s `gates` job) and in `distribution.yml` before
+      # signing, which is where it blocks a binary.
       - name: Check out the released tag
         if: ${{ steps.release.outputs.release_created }}
         uses: actions/checkout@v5

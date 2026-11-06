@@ -17,8 +17,15 @@ name: CI
 # matrices split both suites far enough that slower runs preserve their diagnostics instead of
 # being terminated by an aggressive timeout.
 #
-# The release-only package job stays pinned to `macos-14` because changing that image changes
-# the operating system used to build the shipped dmg.
+# The one macOS job, `package`, runs only on `workflow_dispatch`, never on a push. A push run's
+# conclusion is the readiness signal `distribution.yml` consumes: it signs and publishes a
+# commit only after push CI for that exact commit and ref concludes `success`. A job that
+# runs on tag pushes alone can therefore decide whether a stable release ever gets a binary.
+# That happened to v2.0.0 and v2.0.1: GitHub retired the `macos-14` image the package job was
+# pinned to, the job was cancelled before it started, every other check passed, and the
+# whole tag run concluded `cancelled`, so neither release was signed. Every job a push runs
+# is a Linux job that also runs on `main`, so a tag run gates exactly what a main run gates.
+# `test/distribution-workflow.test.ts` pins this.
 
 on:
   push:
@@ -28,8 +35,11 @@ on:
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a fresh push doesn't queue behind stale work.
+# The event is part of the group so a manual dispatch never cancels, or is cancelled by, the
+# push run on the same ref: a cancelled push run on `main` or a `v*` tag means no binary is
+# signed for that commit.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -130,6 +140,15 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # The packaged app's `package.json` version is what the updater compares against a
+      # release tag, so a tag that disagrees produces a release the updater either never offers
+      # or offers forever. Failing the tag's push CI here stops distribution before it signs
+      # anything. This check needs no macOS runner, so it lives on this Linux job rather than
+      # the dispatch-only `package` job.
+      - name: Assert the tag, package.json, and lockfile agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
 
   # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used
   # unflagged from Node 24); this pins the supported floor and the current release. Node 25
@@ -306,17 +325,25 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
-  # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
-  # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.
-  # There are no native modules to rebuild (node:sqlite is a builtin), so this just
-  # bundles + wraps with electron-builder and uploads the dmg as an artifact.
+  # Unsigned macOS app packaging for developers. It's slow (downloads the Electron runtime +
+  # builds a dmg), so it only runs on a manual dispatch. There are no native modules to rebuild
+  # (node:sqlite is a builtin), so this just bundles + wraps with electron-builder and uploads
+  # the dmg as an artifact.
   #
-  # Stays pinned to GitHub's macOS 14 image. Moving it to `macos-latest` would silently bump
-  # the operating system used to build the shipped dmg.
+  # Dispatch-only, never on a tag push. The signed, notarized dmg a release ships comes from
+  # `distribution.yml`; this dmg is a developer artifact and must not be able to decide
+  # whether that happens. See the runner policy at the top of this file. A dispatched run is
+  # `event: workflow_dispatch`, which distribution ignores, and its concurrency group is
+  # separate from the push run on the same ref.
+  #
+  # Pinned to the same image as the signing producer in `distribution.yml`, so this build runs
+  # on the OS the shipped app is built on. Not `macos-latest`: that label moves without notice.
+  # When GitHub retires this image, move both jobs together.
   package:
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    runs-on: macos-14
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
     name: package (macOS arm64)
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -329,14 +356,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      # A dmg is only worth building if its version is the one the tag claims: the packaged
-      # app's `package.json` version is what the updater compares against a release tag, so a
-      # tag that disagrees produces an artifact the updater either never offers or offers
-      # forever. Tag runs only - a `workflow_dispatch` build has no tag to agree with.
-      - name: Assert the tag, package.json, and lockfile agree
-        if: startsWith(github.ref, 'refs/tags/')
-        run: node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"
 
       - name: Package
         run: npm run package

@@ -83,9 +83,9 @@ Submitted from the dashboard review of revision 2.
 - **While the drawer is closed**, a visitor card appears in the Board's **Needs you** column, or
   among the Console rail's sessions that need you. It is a dashed outline in the marker color
   with the chip, the name, and *Resident · opens in the drawer*.
-- The visitor card disappears when the drawer is open or pinned, because the drawer is already
-  showing the ask. It also disappears once the resident no longer needs you. Closing the drawer
-  brings it back if the ask is still open.
+- The visitor card disappears when the drawer is open or pinned, or while that resident's own
+  detail is open, because the ask is already on screen. It also disappears once the resident no
+  longer needs you. Closing the drawer or the detail brings it back if the ask is still open.
 - Clicking the visitor card, or Enter on it, opens the drawer with that resident selected and
   expanded. The arrow keys reach it. `⌘`-numbers skip it, so they don't shift while an
   ask is open.

@@ -2,7 +2,7 @@
 
 Source plan: `docs/plans/resident-display-surfaces/plan.md`, managed plan
 `3b3f339a-a7dd-4a62-9a3a-2890c71d2c4d`, the `plan.md` saved in the same revision as this index
-(revision 10). The source plan is the requirement. This index and its phase files are the
+(revision 11). The source plan is the requirement. This index and its phase files are the
 proposed route.
 
 ## Incorporated human decisions
@@ -98,7 +98,8 @@ Phase 1 owns these, and Phase 2 must not change them. The one exception is
   `residentDrawerPinned: boolean` (default `false`) in `src/shared/protocol.ts`.
 - `src/web/lib/resident-placement.ts`, the single placement function. It returns the resident
   ids excluded from the fleet and the visitor ids, from the placement, `residentBySession`, the
-  attention tone, and the drawer's open or pinned state.
+  attention tone, the drawer's open or pinned state, and the open detail id, so an open
+  resident's own visitor card is withheld.
 - App's `detailSession` lookup: the fleet list first, then the open resident from all sessions.
   It is passed to `BoardView` and `ConsoleView` and read by the selected-session actions.
 - `src/web/residents/useResidentLaunches.ts`, the one launch-state source for the dock and the
@@ -163,3 +164,7 @@ do not create them again. Each depends on the planning session (task
   e2e coverage say so.
 - **Inspector review on PR #1382:** the task map now records the created task ids and their
   direct dependencies instead of instructions to create them.
+- **CodeRabbit review on PR #1382:** a resident that needs you and is opened by `⌥N` with the
+  drawer closed would have been both the open detail and a visitor card. Its visitor card is now
+  withheld while its own detail is open, in the source plan, Phase 1 step 4, and its e2e
+  coverage, so no fleet list names an open resident.

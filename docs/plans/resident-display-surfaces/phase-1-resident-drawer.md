@@ -113,13 +113,18 @@ No inherited contracts. This phase defines the ones listed in the index.
    - `residentIds`
    - a way to read each resident's tone, the same tone `orderSessions` groups by
    - `drawerOpen` (true when floating open or pinned)
+   - `openDetailId`: the session whose detail is open, if any. Derive it from `selectedId`,
+     `boardOpen` and `layout`, not from `visible`, so the predicate does not depend on its own
+     output.
 
    It returns:
    - `excluded: Set<string>`: residents not placed on the fleet
    - `visitors: Set<string>`: residents shown as visitor cards
 
    Rules in Drawer mode:
-   - A resident is a visitor when its tone is `attention` and the drawer is not open.
+   - A resident is a visitor when its tone is `attention`, the drawer is not open, and it is not
+     `openDetailId`. The open detail is already showing its ask, so its visitor card is withheld
+     until the detail closes.
    - Every other resident is excluded, including the one whose detail is open.
 
    In `fleet` mode nothing is excluded and the sets are empty.
@@ -255,7 +260,9 @@ proves:
   drawer, Escape leaves the detail, focus lands on that resident's card in the pinned drawer, and
   no floating drawer (no second Residents dialog) appears.
 - While a resident's detail is open, no Board column, drill-in rail row or Console rail row names
-  it.
+  it. That includes a resident that needs you, opened by `⌥1` with the drawer closed: it has no
+  visitor card while its detail is open, and the card returns when the detail closes if the ask
+  is still open.
 - Pin docks the drawer, narrows the Board, and survives a reload.
 - A resident made to need you through `askResident()` (`POST /mcp/reviews`) shows a visitor card
   only while the drawer is closed. The card opens the drawer on that resident, and disappears once
@@ -313,3 +320,6 @@ which exists for that purpose. It keeps that region's Open, Run now and Pause / 
 - Repair round 5: section 4 now describes `openSessionOnFleet` as it is, layout-aware. Steps 8
   and 9 state that a resident opens as the Board drill-in in Board and in the detail pane in
   Console, and the e2e spec covers both layouts.
+- CodeRabbit review on PR #1382: step 4 takes `openDetailId` again and withholds the open
+  resident's own visitor card, so a needs-you resident opened by `⌥N` with the drawer closed is
+  not both the open detail and a visitor. The e2e spec covers that case.

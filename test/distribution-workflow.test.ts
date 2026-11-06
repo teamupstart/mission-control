@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { distributionInput, resolveDistributionTag } from '../scripts/distribution-input.mjs';
-import { distributionMetadata } from '../scripts/distribution-contract.mjs';
+import { DISTRIBUTION_OUTPUT, distributionMetadata } from '../scripts/distribution-contract.mjs';
 import { distributionCredentials, distributionBuilderConfig } from '../scripts/package-distribution.mjs';
 import { APPROVED_DEVELOPER_TEAM_ID, binaryPublisherPolicy } from '../src/shared/binary-publisher-policy.mjs';
 import { BINARY_BUNDLE_ID, BINARY_REPO } from '../src/shared/binary-distribution.mjs';
@@ -175,4 +175,57 @@ test('workflow keeps secrets behind canonical push checks, exact checkout, envir
   assert.equal(config.asar, false);
   assert.equal(config.mac.identity, null, 'local developer packaging remains credential-free');
   assert.ok(config.files.includes('src/shared/binary-publisher-policy.mjs'));
+});
+
+const parseWorkflow = (file: string) => {
+  const {parse} = createRequire(import.meta.url)('yaml') as {parse(input: string): any};
+  return parse(readFileSync(`.github/workflows/${file}`, 'utf8'));
+};
+
+// v2.0.0 and v2.0.1 shipped no binary: GitHub retired the macOS image of a job that ran only
+// on tag pushes, the job was cancelled before it started, and the whole tag run concluded
+// `cancelled` with every other check green. Distribution signs only after a `success`
+// conclusion, so a job a tag push runs is a job that decides whether a stable release ships.
+test('stable distribution is gated by exactly the CI jobs that also gate main', () => {
+  const ci = parseWorkflow('ci.yml');
+  const distribution = parseWorkflow('distribution.yml');
+  assert.equal(ci.name, 'CI');
+  assert.deepEqual(distribution.on.workflow_run.workflows, [ci.name]);
+  assert.deepEqual(ci.on.push, {branches: ['main'], tags: ['v*']});
+  const conditional = Object.entries(ci.jobs).filter(([, job]: [string, any]) => job.if !== undefined);
+  assert.deepEqual(conditional.map(([id]) => id), ['package'], 'only the developer dmg may opt out of push runs');
+  assert.equal(ci.jobs.package.if, "github.event_name == 'workflow_dispatch'",
+    'the developer dmg never runs on a push, so its runner cannot cancel or fail the readiness signal');
+  for (const [id, job] of Object.entries(ci.jobs) as [string, any][]) {
+    if (id === 'package') continue;
+    assert.equal(job['runs-on'], 'ubuntu-latest', `${id} runs on every push, so it must not wait on a retiring macOS image`);
+  }
+  assert.match(ci.concurrency.group, /github\.event_name/, 'a dispatch on a tag must not cancel that tag\'s push run');
+  assert.match(ci.concurrency.group, /github\.ref/);
+});
+
+test('the developer dmg builds on the signing producer image, and tag CI still checks versions', () => {
+  const ci = parseWorkflow('ci.yml');
+  const distribution = parseWorkflow('distribution.yml');
+  assert.match(distribution.jobs.package['runs-on'], /^macos-\d+$/, 'pin an explicit image, never macos-latest');
+  assert.equal(ci.jobs.package['runs-on'], distribution.jobs.package['runs-on']);
+  const versionCheck = ci.jobs.gates.steps.find((step: any) => /assert-release-version\.mjs/.test(step.run ?? ''));
+  assert.equal(versionCheck?.if, "startsWith(github.ref, 'refs/tags/')");
+  assert.equal(versionCheck?.run, 'node scripts/assert-release-version.mjs "$GITHUB_REF_NAME"');
+});
+
+// v1.27.1's retention step found nothing because the producer had failed and exited zero, not
+// because of a path mismatch. Keep the producer, publisher and workflow on one output path so a
+// later move cannot recreate that symptom for a real reason.
+test('distribution retains and publishes the directory the producer writes', async () => {
+  const job = parseWorkflow('distribution.yml').jobs.package;
+  const retain = job.steps.find((step: any) => step.name === 'Retain original qualified bytes for publication retries');
+  assert.equal(retain.with['if-no-files-found'], 'error');
+  const paths = retain.with.path.trim().split('\n');
+  assert.deepEqual(paths, ['zip', 'dmg', 'json'].map((ext) => `${DISTRIBUTION_OUTPUT}/*.${ext}`));
+  for (const script of ['package-distribution.mjs', 'publish-distribution.mjs']) {
+    const source = readFileSync(`scripts/${script}`, 'utf8');
+    assert.match(source, /\bDISTRIBUTION_OUTPUT\b/, `${script} must use the shared output path`);
+    assert.doesNotMatch(source, /'release\/distribution'/, `${script} must not restate the output path`);
+  }
 });

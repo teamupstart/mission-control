@@ -1,5 +1,6 @@
 import type { BinaryAsset, BinaryBuildMetadata, BinaryManifest } from '../src/shared/binary-distribution.mjs';
 import type { ReleaseVersions } from './assert-release-version.mjs';
+export const DISTRIBUTION_OUTPUT: 'release/distribution';
 export type DistributionFiles = Record<'app-zip' | 'dmg', string>;
 export type LocalDistributionAsset = Omit<BinaryAsset, 'id'>;
 export function distributionMetadata(input: {channel: string; tag?: string; commit: string; versions: ReleaseVersions}): BinaryBuildMetadata;

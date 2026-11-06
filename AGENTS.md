@@ -129,7 +129,7 @@ MISSION_TEST_CONCURRENCY=4 npm test
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
 
-CI reports eighty-seven non-package checks. Two independent `dependencies` checks use GitHub-hosted
+CI reports eighty-seven checks on every push and pull request, all on Linux. Two independent `dependencies` checks use GitHub-hosted
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
 `gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
 producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
@@ -140,7 +140,10 @@ derived from its matrix. The shared unit steps live in `.github/actions/run-unit
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns
 CI red - `main` carries no branch protection, so that is a signal to act on and not a mechanical
-block. `.github/workflows/ci.yml` documents the runner and worker policy.
+block. The one macOS job, `package (macOS arm64)`, builds an unsigned developer dmg on
+`workflow_dispatch` only, pinned to the same image as the signing producer in
+`distribution.yml`. It never runs on a push, because a tag push run that does not conclude
+`success` gets no signed binary. `.github/workflows/ci.yml` documents the runner and worker policy.
 
 ## Working rules
 

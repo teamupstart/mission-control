@@ -1438,10 +1438,12 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
     (session.goal.resolvedPromptRevision ?? 0) < (session.goal.promptRevision ?? 0);
   const unclear = session.goal.relationship === "unclear";
   const stateClass = resolving ? "resolving" : unclear ? "unclear" : session.goal.source ?? "heuristic";
+  // Both paused states name their exit, which lives in the Foreman drawer.
+  const exit = "Open Foreman intent to accept the objective as is.";
   const detail = resolving
-    ? `${session.goal.text} (reconciling the latest instruction with this objective)`
+    ? `${session.goal.text} (reconciling the latest instruction with this objective) ${exit}`
     : unclear
-      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused)`
+      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused) ${exit}`
       : session.goal.source === "heuristic"
         ? `${session.goal.text} (initial objective, being refined)`
         : session.goal.text;

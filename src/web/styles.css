@@ -33542,6 +33542,35 @@ body.foreman-sidecar-open .modal-backdrop {
   text-transform: uppercase;
   white-space: nowrap;
 }
+/* The exit from a paused goal spans the reading's two columns, under the sentence that says
+   wrap-up is paused, so the action sits beside the state it ends. */
+.fd-intent-reading > .tt-anchor,
+.fd-intent-accept,
+.fd-intent-accept-error {
+  grid-column: 1 / -1;
+}
+.fd-intent-reading > .tt-anchor,
+.fd-intent-accept {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in oklab, var(--intent-tone) 55%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--intent-tone) 10%, transparent);
+  color: var(--fg);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.fd-intent-accept:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--intent-tone) 18%, transparent);
+}
+.fd-intent-accept:focus-visible {
+  outline: 2px solid var(--intent-tone);
+  outline-offset: 2px;
+}
+.fd-intent-accept:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
 .fd-intent-empty p {
   margin: 8px 0 0;
   color: var(--muted);

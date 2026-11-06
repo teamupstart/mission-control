@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -14,15 +14,19 @@ process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "10";
 const fake = join(home, "claude");
 const reply = join(home, "reply.json");
-writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\ncat '${reply}'\n`);
+// While `gate` exists the fake marks `started` and holds its answer: a classification that is
+// in flight, for the test that accepts the objective underneath one.
+const gate = join(home, "gate");
+const started = join(home, "started");
+writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\nif [ -f '${gate}' ]; then touch '${started}'; while [ -f '${gate}' ]; do sleep 0.02; done; fi\ncat '${reply}'\n`);
 chmodSync(fake, 0o755);
 process.env.MISSION_CLAUDE_BIN = fake;
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const restore = configureClaudeRunnerTransport(() => "print");
 const { Registry } = await import("../src/server/registry.ts");
 const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
-const { openDb, closeDb, getSessionGoal, upsertSessionGoalWithSteering, readSessionGoalSteering,
-  pruneSessionGoalSteering } = await import("../src/server/db.ts");
+const { openDb, closeDb, getSessionGoal, upsertSessionGoalWithSteering, upsertSessionGoalWithSteeringNotes,
+  readSessionGoalSteering, pruneSessionGoalSteering } = await import("../src/server/db.ts");
 const { reserveInjection, confirmReservedInjection } = await import("../src/server/injections.ts");
 after(() => { restore(); rmSync(home, { recursive: true, force: true }); });
 
@@ -119,6 +123,43 @@ for (const [reason, relationship, resolvedPromptRevision] of [
   });
 }
 
+for (const [reason, relationship, resolvedPromptRevision, revisions] of [
+  ["non-steering goal", "amend", 3, [2, 3]],
+  ["note past the resolved revision", "steer", 2, [2, 3]],
+  ["an empty list", "steer", 3, []],
+] as const) {
+  test(`the list steering writer rejects ${reason} before persisting anything`, () => {
+    const id = `invalid-steering-list-${reason.replace(/\W+/g, "-")}`;
+    const template = session(`${id}-template`).getGoal(`${id}-template`)!;
+    const goal = { ...template, noteKey: id, relationship, resolvedPromptRevision, promptRevision: 3 };
+    const notes = revisions.map((revision) => ({
+      revision, instruction: `instruction ${revision}`, relationship: "steer" as const,
+      rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 100,
+    }));
+    assert.throws(() => upsertSessionGoalWithSteeringNotes(goal, notes), {
+      name: "Error", message: "Steering must belong to the resolved goal revision",
+    });
+    assert.equal(getSessionGoal(id), undefined, "the invalid goal must not be persisted");
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), []);
+  });
+}
+
+test("the list steering writer commits the goal and every note at or below its resolved revision", () => {
+  const id = "steering-list";
+  const template = session(`${id}-template`).getGoal(`${id}-template`)!;
+  const goal = { ...template, noteKey: id, relationship: "steer" as const, promptRevision: 3, resolvedPromptRevision: 3 };
+  const notes = [2, 3].map((revision) => ({
+    revision, instruction: `instruction ${revision}`, relationship: "steer" as const,
+    rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 100,
+  }));
+  upsertSessionGoalWithSteeringNotes(goal, notes);
+  assert.equal(getSessionGoal(id)?.resolvedPromptRevision, 3);
+  assert.deepEqual(readSessionGoalSteering(id, 3), notes);
+  // Same conflict rule as the single-note writer: a second write keeps the first note.
+  upsertSessionGoalWithSteeringNotes(goal, notes.map((n) => ({ ...n, instruction: "rewritten" })));
+  assert.deepEqual(readSessionGoalSteering(id, 3), notes);
+});
+
 test("duplicate writes are idempotent and a failure after the goal update rolls back both durable and cached state", () => {
   const id = "atomic-steering";
   const registry = session(id);
@@ -137,6 +178,111 @@ test("duplicate writes are idempotent and a failure after the goal update rolls 
   const note = readSessionGoalSteering(id, 2)[0]!;
   upsertSessionGoalWithSteering(registry.getGoal(id)!, note);
   assert.deepEqual(readSessionGoalSteering(id, 2), [note]);
+});
+
+test("accepting the objective rolls back the goal and every earlier note when a later note fails", () => {
+  const id = "atomic-steering-list";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "B", id);
+  registry.captureAcceptedPrompt(id, "B, but rename the heading", id);
+  const before = registry.getGoal(id)!;
+  assert.deepEqual(before.pendingPrompts.map((p) => p.revision), [2, 3]);
+  // Fails the SECOND insert, so the goal update and revision 2's note have already been
+  // written inside the transaction when the error arrives.
+  openDb().exec(`CREATE TRIGGER reject_second_steering BEFORE INSERT ON session_goal_steering
+    WHEN NEW.note_key = 'atomic-steering-list' AND NEW.revision = 3
+    BEGIN SELECT RAISE(ABORT, 'injected second append failure'); END`);
+  try {
+    assert.throws(() => registry.acceptGoalObjective(id, 100), /injected second append failure/);
+    assert.deepEqual(getSessionGoal(id), before, "the goal update rolled back");
+    assert.deepEqual(registry.getGoal(id), before, "the cached goal never moved");
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), [],
+      "revision 2's note, written before the failure, rolled back too");
+  } finally { openDb().exec("DROP TRIGGER reject_second_steering"); }
+  const accepted = registry.acceptGoalObjective(id, 100);
+  assert.ok(accepted && accepted.accepted);
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => n.revision), [2, 3]);
+});
+
+test("a classification already in flight cannot overwrite an objective accepted as is", async () => {
+  const id = "accept-during-refine";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "B", id);
+  const before = registry.getGoal(id)!;
+  // The verdict that would do the most damage if it landed: a replacement of the objective.
+  writeFileSync(reply, JSON.stringify({ result: JSON.stringify({ relationship: "replace",
+    objective: "A smaller, different objective", goal: "Smaller", focus: "B", reason: "late verdict" }) }));
+  writeFileSync(gate, "");
+  const stop = startGoalRefiner(registry);
+  try {
+    const until = Date.now() + 10_000;
+    while (!existsSync(started) && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(existsSync(started), "the classifier call should be in flight");
+
+    const accepted = registry.acceptGoalObjective(id, 500);
+    assert.ok(accepted && accepted.accepted);
+    unlinkSync(gate);
+    // Let the held verdict return and reach the refiner's resolution check.
+    await new Promise((r) => setTimeout(r, 500));
+  } finally {
+    stop();
+    if (existsSync(gate)) unlinkSync(gate);
+    if (existsSync(started)) unlinkSync(started);
+  }
+  const goal = registry.getGoal(id)!;
+  assert.equal(goal.relationship, "steer");
+  assert.match(goal.rationale ?? "", /^Accepted by you:/);
+  assert.equal(goal.objective, before.objective);
+  assert.equal(goal.text, before.text);
+  assert.equal(goal.objectiveVersion, before.objectiveVersion);
+  assert.equal(goal.resolvedPromptRevision, 2);
+  assert.deepEqual(getSessionGoal(id)!.objective, before.objective, "durable objective unchanged");
+  assert.deepEqual(readSessionGoalSteering(id, 2).map((n) => [n.revision, n.instruction]), [[2, "B"]]);
+});
+
+test("an unclear instruction is reconsidered with the next one instead of being dropped", async () => {
+  const id = "unclear-reconsidered";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "maybe also restyle it", id);
+  await classify(registry, id, "unclear");
+  assert.equal(registry.getGoal(id)!.relationship, "unclear");
+  assert.deepEqual(readSessionGoalSteering(id, 2), [], "an unclear verdict records no steering");
+
+  registry.captureAcceptedPrompt(id, "use the existing button styles", id);
+  assert.deepEqual(registry.getGoal(id)!.pendingPrompts.map((p) => p.revision), [2, 3]);
+  // With the newer instruction in view the real refiner now reads both as steering.
+  await classify(registry, id, "steer");
+  const goal = registry.getGoal(id)!;
+  assert.equal(goal.relationship, "steer");
+  assert.equal(goal.resolvedPromptRevision, 3);
+  assert.equal(goal.objective, "Ship the feature");
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "use the existing button styles"],
+  ]);
+});
+
+test("two quick instructions judged unclear: the earlier is kept as steering, the later pauses, accept records both", async () => {
+  const id = "unclear-pair";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "maybe also restyle it", id);
+  registry.captureAcceptedPrompt(id, "or perhaps the other heading", id);
+  await classify(registry, id, "unclear");
+  const paused = registry.getGoal(id)!;
+  assert.equal(paused.relationship, "unclear", "the latest instruction still pauses wrap-up");
+  assert.equal(paused.resolvedPromptRevision, 3);
+  assert.equal(paused.objective, "Ship the feature");
+  const kept = readSessionGoalSteering(id, 3);
+  assert.deepEqual(kept.map((n) => [n.revision, n.instruction]), [[2, "maybe also restyle it"]]);
+  assert.match(kept[0]!.rationale, /^Kept as steering: a newer instruction arrived before this one was clear\./);
+
+  const accepted = registry.acceptGoalObjective(id, 900);
+  assert.ok(accepted && accepted.accepted);
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "or perhaps the other heading"],
+  ]);
+  assert.equal(registry.getGoal(id)!.objective, "Ship the feature");
 });
 
 test("revision controls ordering and cutoff even when timestamps tie; pruning protects live keys", () => {

@@ -10760,6 +10760,37 @@ export function upsertSessionGoalWithSteering(g: SessionGoal, note: WorkflowStee
   }
 }
 
+/**
+ * Commit a goal and several steering records together: a person accepting the objective as
+ * is resolves every pending revision at once. Same transaction and conflict rule as the
+ * single-note writer, which stays the refiner's path; this one never replaces it.
+ */
+export function upsertSessionGoalWithSteeringNotes(g: SessionGoal, notes: WorkflowSteeringNote[]): void {
+  const parsed = notes.map((note) => WorkflowSteeringNoteSchema.parse(note));
+  if (
+    g.relationship !== "steer" ||
+    parsed.length === 0 ||
+    parsed.some((note) => note.revision > g.resolvedPromptRevision)
+  ) {
+    throw new Error("Steering must belong to the resolved goal revision");
+  }
+  const db = openDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    upsertSessionGoal(g);
+    const insert = db.prepare(`INSERT INTO session_goal_steering
+      (note_key, revision, instruction, relationship, rationale, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(note_key, revision) DO NOTHING`);
+    for (const note of parsed) {
+      insert.run(g.noteKey, note.revision, note.instruction, note.relationship, note.rationale, note.timestamp);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** Select newest revisions first, then return the retained suffix in conversation order. */
 export function readSessionGoalSteering(noteKey: string, resolvedRevision: number): WorkflowSteeringNote[] {
   const rows = openDb().prepare(`SELECT revision, instruction, relationship, rationale, timestamp

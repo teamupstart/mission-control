@@ -170,9 +170,29 @@ test("the relocated objective keeps GoalLine's state-specific tooltip", () => {
   assert.ok(
     hasTooltip(
       html,
-      "Implement durable session objectives (latest instruction may change this objective; automatic wrap-up is paused)",
+      "Implement durable session objectives (latest instruction may change this objective; automatic wrap-up is paused) Open Foreman intent to accept the objective as is.",
     ),
     "the unclear variant's tooltip should survive the move",
+  );
+});
+
+test("the resolving tooltip names the same exit as the unclear one", () => {
+  const html = render(
+    mkSession({
+      goal: goal({
+        text: "Implement durable session objectives",
+        relationship: null,
+        promptRevision: 3,
+        resolvedPromptRevision: 2,
+      }),
+    }),
+  );
+  assert.ok(
+    hasTooltip(
+      html,
+      "Implement durable session objectives (reconciling the latest instruction with this objective) Open Foreman intent to accept the objective as is.",
+    ),
+    "the resolving variant names the drawer's Accept objective as is",
   );
 });
 

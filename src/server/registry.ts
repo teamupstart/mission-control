@@ -96,7 +96,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { reportBucket } from "@shared/session.ts";
-import { goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -261,6 +261,7 @@ import {
   upsertQueueItem,
   upsertSessionGoal,
   upsertSessionGoalWithSteering,
+  upsertSessionGoalWithSteeringNotes,
   readSessionGoalSteering,
   isSessionGoalSteering,
   pruneSessionGoalSteering,
@@ -8501,13 +8502,26 @@ export class Registry extends EventEmitter {
     const prev = this.getGoal(id);
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
+    // An `unclear` verdict resolved its revision without incorporating it anywhere, and this
+    // capture is about to overwrite both that verdict and the only copy of its text (`prompt`).
+    // Re-queue it ahead of the new instruction instead: the refiner reconsiders it with the
+    // newer context, and accepting the objective as is records it as steering with the rest.
+    const unclearHead = prev && prev.relationship === "unclear" && prev.prompt &&
+      prev.promptRevision >= 1 && prev.resolvedPromptRevision === prev.promptRevision &&
+      prev.pendingPrompts.length === 0
+      ? { revision: prev.promptRevision, prompt: prev.prompt }
+      : null;
     return this.mergeGoal(id, {
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
       rationale: null,
       promptRevision: revision,
-      pendingPrompts: [...(prev?.pendingPrompts ?? []), { revision, prompt: raw }],
+      ...(unclearHead ? { resolvedPromptRevision: unclearHead.revision - 1 } : {}),
+      pendingPrompts: [
+        ...(unclearHead ? [unclearHead] : prev?.pendingPrompts ?? []),
+        { revision, prompt: raw },
+      ],
       ...(firstObjective
         ? {
             objective: raw,
@@ -8563,6 +8577,22 @@ export class Registry extends EventEmitter {
   resolveGoal(id: string, patch: SetGoal, instruction: string, now = Date.now()): SessionGoal | null {
     const session = this.sessions.get(id);
     if (!session) return null;
+    // An `unclear` verdict while newer instructions already wait is this instruction's last
+    // chance to be kept: the next resolution replaces the goal's `prompt`, and nothing else
+    // holds its text. Keep it as steering, which never changes the objective (the refiner's
+    // unclear patch already carries the current objective and version). A final `unclear`,
+    // with nothing newer queued, still pauses wrap-up; capture re-queues it if a newer
+    // instruction arrives later.
+    if (patch.relationship === "unclear" && (patch.pendingPrompts?.length ?? 0) > 0) {
+      patch = {
+        ...patch,
+        relationship: "steer",
+        rationale: goalLine(
+          `${GOAL_KEPT_AS_STEERING_RATIONALE}${patch.rationale ? ` ${patch.rationale}` : ""}`,
+          480,
+        ),
+      };
+    }
     const revision = patch.resolvedPromptRevision;
     // Accepted revisions already passed the Goal pipeline's consuming authorship guard.
     // A permanent transcript label would wrongly suppress a later human retype here.
@@ -8572,6 +8602,62 @@ export class Registry extends EventEmitter {
           rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
       : undefined;
     return this.mergeGoal(id, patch, now, steering);
+  }
+
+  /**
+   * A person's way out of a paused goal: confirm the current objective as the completion
+   * contract and record every pending instruction as steering, so Foreman judges completion
+   * on its next tick.
+   *
+   * Confirms, never rewrites. `objective`, `text`, `source`, `objectiveVersion` and
+   * `openingPrompt` are not in the patch, so neither a shrink nor a growth of the contract
+   * can come through here; changing it stays the refiner's job, through `amend` or `replace`.
+   * A refinement already in flight for an accepted revision is dropped when it returns:
+   * the refiner refuses any verdict whose revision is already resolved
+   * (`resolvedPromptRevision >= prompt.revision`), because accepting moves neither
+   * `promptRevision` nor `objectiveVersion`.
+   *
+   * Null without a session or goal; `{ accepted: false }` without an objective (there is no
+   * contract to accept). A goal that is already resolved and not `unclear` is returned as is.
+   */
+  acceptGoalObjective(
+    id: string,
+    now = Date.now(),
+  ): { accepted: true; goal: SessionGoal } | { accepted: false } | null {
+    const goal = this.getGoal(id);
+    if (!goal) return null;
+    if (!goal.objective?.trim()) return { accepted: false };
+    const pending = goal.pendingPrompts.filter(
+      (p) => p.revision > goal.resolvedPromptRevision && p.revision <= goal.promptRevision,
+    );
+    const settled =
+      goal.resolvedPromptRevision >= goal.promptRevision && goal.relationship !== "unclear";
+    if (goal.promptRevision < 1 || (pending.length === 0 && settled)) {
+      return { accepted: true, goal };
+    }
+    // An `unclear` verdict already resolved its revision and left nothing pending; the
+    // instruction it judged is the one being accepted, at its own revision.
+    const accepted = pending.length > 0
+      ? pending
+      : [{ revision: goal.promptRevision, prompt: goal.prompt }];
+    const notes: WorkflowSteeringNote[] = accepted.map((p) => ({
+      revision: p.revision,
+      instruction: p.prompt?.trim() ? clampPrompt(p.prompt.trim()) : "(not captured)",
+      relationship: "steer",
+      rationale: GOAL_ACCEPTED_RATIONALE,
+      timestamp: now,
+    }));
+    const lastPrompt = [...accepted].reverse().find((p) => p.prompt?.trim())?.prompt ?? null;
+    const count = notes.length;
+    const next = this.mergeGoal(id, {
+      relationship: "steer",
+      rationale: `${GOAL_ACCEPTED_RATIONALE} ${count} ${count === 1 ? "instruction was" : "instructions were"} recorded as steering.`,
+      resolvedPromptRevision: goal.promptRevision,
+      pendingPrompts: [],
+      // A lost legacy prompt has nothing to show; the focus it already had stays.
+      ...(lastPrompt ? { focus: goalLine(lastPrompt) } : {}),
+    }, now, notes);
+    return next ? { accepted: true, goal: next } : null;
   }
 
   getGoalSteering(id: string, resolvedRevision: number): WorkflowSteeringNote[] {
@@ -8589,7 +8675,7 @@ export class Registry extends EventEmitter {
     id: string,
     patch: SetGoal & { openingPrompt?: string },
     now: number,
-    steering?: WorkflowSteeringNote,
+    steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -8625,7 +8711,8 @@ export class Registry extends EventEmitter {
           : prev?.pendingPrompts ?? [],
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
-    if (steering) upsertSessionGoalWithSteering(next, steering);
+    if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);
+    else if (steering) upsertSessionGoalWithSteering(next, steering);
     else upsertSessionGoal(next);
     this.goals.set(key, next);
     this.syncSessionsForGoal(key);

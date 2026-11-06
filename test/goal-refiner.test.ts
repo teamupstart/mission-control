@@ -59,6 +59,13 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
   # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
   initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # Keeps the prefix and an additive connector, then retracts: only the retracting-word rule
+  # can reject it.
+  retract) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
+  # A path inside a sentence is part of that sentence, so it stays in the comparison.
+  initial-inline-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end, see /tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # An objective that is nothing but an attachment line compares as empty.
+  initial-path-only) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
   negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
   rapid)
     case "$request" in
@@ -94,6 +101,9 @@ const setMode = (
     | "shrink"
     | "negate"
     | "initial-path"
+    | "retract"
+    | "initial-inline-path"
+    | "initial-path-only"
     | "rapid"
     | "replace"
     | "model-unclear",
@@ -294,7 +304,9 @@ async function assertRejectedAmendmentSteers(
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate";
+    mode: "shrink" | "negate" | "retract" | "amend";
+    /** The fake reply that establishes the opening objective. */
+    initialMode?: "good" | "initial-inline-path" | "initial-path-only";
     instruction: string;
     rule: string;
     /** Words of the model's proposed objective that must never reach the log. */
@@ -302,11 +314,13 @@ async function assertRejectedAmendmentSteers(
   },
 ): Promise<void> {
   const { r, s, env } = withSession(opts.id, opts.pane);
+  setMode(opts.initialMode ?? "good");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
   const stop = startGoalRefiner(r);
   try {
     await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
     const prior = r.getGoal(s.id)!;
+    assert.equal(prior.objectiveVersion, 1, "precondition: the opening objective is version 1");
     const logged: string[] = [];
     const errors = t.mock.method(console, "error", (...args: unknown[]) => {
       logged.push(args.map(String).join(" "));
@@ -378,7 +392,7 @@ test("a schema-valid amendment that drops the current objective resolves as stee
   });
 });
 
-test("an amendment that preserves by prefix and then retracts a requirement resolves as steering", async (t) => {
+test("an amendment that keeps the prefix but adds no additive connector resolves as steering", async (t) => {
   await assertRejectedAmendmentSteers(t, {
     id: "r19",
     pane: "%49",
@@ -386,6 +400,41 @@ test("an amendment that preserves by prefix and then retracts a requirement reso
     instruction: "drop the existing test requirement",
     rule: "no-additive-connector",
     proposedWords: ["Ship", "Goal", "feature", "drop", "existing", "test requirement"],
+  });
+});
+
+test("an amendment that adds with a connector and then retracts a requirement resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r31",
+    pane: "%61",
+    mode: "retract",
+    instruction: "also drop the existing test requirement",
+    rule: "retracting-word",
+    proposedWords: ["Ship", "Goal", "feature", "drop", "existing", "test requirement"],
+  });
+});
+
+test("a path inside a sentence stays in the comparison, so dropping it resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r32",
+    pane: "%62",
+    initialMode: "initial-inline-path",
+    mode: "amend",
+    instruction: "also show its intent in the Foreman drawer",
+    rule: "not-a-prefix",
+    proposedWords: ["Ship", "Goal", "expose", "intent", "Foreman", "drawer"],
+  });
+});
+
+test("an amendment to an objective that is only a path line resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r33",
+    pane: "%63",
+    initialMode: "initial-path-only",
+    mode: "amend",
+    instruction: "also surface its intent in the Foreman drawer",
+    rule: "no-current-objective",
+    proposedWords: ["Ship", "Goal", "expose", "intent", "Foreman", "drawer"],
   });
 });
 

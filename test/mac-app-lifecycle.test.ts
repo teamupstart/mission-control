@@ -3,9 +3,9 @@ import test from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { copyFile, link, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   inspectAppLaunch, parseAppProcesses, parseLaunchServices, waitForBundleExit,
@@ -1447,9 +1447,13 @@ test("on this Mac, the real kernel record tells a Node-mode satellite from unreg
   const server = join(app, "Contents", "Resources", "app", "dist", "mcp", "server.mjs");
   await mkdir(join(app, "Contents", "MacOS"), {recursive: true});
   await mkdir(join(app, "Contents", "Resources", "app", "dist", "mcp"), {recursive: true});
-  await link(process.execPath, executable).catch(() => copyFile(process.execPath, executable));
-  await writeFile(server, "setInterval(() => {}, 1000);\n");
-  const start = (env: NodeJS.ProcessEnv) => spawn(executable, [server], {env, stdio: "ignore"});
+  // Give the fixture its own executable inode and preserve Node's relative library lookup.
+  // Homebrew Node 26 loads ../lib/libnode.*.dylib; relocating only its executable aborts
+  // before the script runs, leaving ps to report a zombie rather than a live bundle path.
+  await copyFile(process.execPath, executable);
+  await symlink(join(dirname(process.execPath), "..", "lib"), join(app, "Contents", "lib"), "dir");
+  await writeFile(server, 'process.stdout.write("ready\\n"); setInterval(() => {}, 1000);\n');
+  const start = (env: NodeJS.ProcessEnv) => spawn(executable, [server], {env, stdio: ["ignore", "pipe", "ignore"]});
   const base = {...process.env};
   delete base.ELECTRON_RUN_AS_NODE;
   const satellite = start({...base, ELECTRON_RUN_AS_NODE: "1"});
@@ -1462,6 +1466,13 @@ test("on this Mac, the real kernel record tells a Node-mode satellite from unreg
     disguised.kill("SIGKILL");
     await rm(root, {recursive: true, force: true});
   });
+  // A pid in ps alone can still be a child that failed during exec. Inspect only after
+  // every fixture reaches the script, and fail promptly if the relocated runtime cannot start.
+  await Promise.all([instance, satellite, disguised].map((child) => new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => reject(new Error(`fixture runtime exited before ready: ${code ?? signal}`)));
+    child.stdout!.once("data", () => resolve());
+  })));
   const ops = realMacAppOps();
   const running = async () => parseAppProcesses((await ops.run("/bin/ps", ["-axww", "-o", "pid=,ppid=,stat=,comm="])).stdout).map((row) => row.pid);
   for (let tries = 0; ; tries++) {
@@ -1492,7 +1503,15 @@ test("the state-lock addon reads a process's argv and environment as separate en
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)", "two words"], {env: {NOTE: "x ELECTRON_RUN_AS_NODE=1", EMPTY: ""}, stdio: "ignore"});
   t.after(() => child.kill("SIGKILL"));
   await new Promise((resolve) => child.once("spawn", resolve));
-  assert.deepEqual(binding.processArguments(child.pid!), {argv: [process.execPath, "-e", "setTimeout(() => {}, 10000)", "two words"], env: ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]});
+  const record = binding.processArguments(child.pid!);
+  assert.ok(record, "the running child has a readable kernel argument record");
+  assert.deepEqual(record.argv, [process.execPath, "-e", "setTimeout(() => {}, 10000)", "two words"]);
+  // KERN_PROCARGS2's string area can include Apple's startup metadata after the supplied
+  // environment (kern_exec.c's exec_add_apple_strings). It provides argc, not an env count,
+  // so assert our exact entries without assuming nothing follows them in the kernel record.
+  assert.deepEqual(record.env.slice(0, 2), ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]);
+  assert.equal(record.env.find((entry) => entry.startsWith("ELECTRON_RUN_AS_NODE=")), undefined,
+    "flag-looking text inside NOTE must not become a standalone environment entry");
   assert.equal(binding.processArguments(1), null, "launchd exists but is not described to this user");
   const exited = new Promise((resolve) => child.once("exit", resolve));
   child.kill("SIGKILL");

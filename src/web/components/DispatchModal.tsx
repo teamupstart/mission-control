@@ -1267,12 +1267,7 @@ function DispatchModal({
   // a text field: the pass has to put the caret in it when the question opens, and has to be
   // able to tell a key pressed IN it from one pressed anywhere else in the dialog.
   const repoInputRef = useRef<HTMLInputElement>(null);
-  // The overlay owns the dispatch chord, but its listener is intentionally stable (see
-  // `Overlay`). Point it at the current submit closure so a field edit does not leave the
-  // shortcut submitting the previous render's draft.
-  const submitRef = useRef<(dispatchNow: boolean) => Promise<void>>(async () => {});
-  // The guided pass's keys, reached the same way and for the same reason: `Overlay`'s
-  // listener is subscribed once, so pointing it at a ref rather than at a closure is what
+  // The guided pass's keys use a stable listener, so pointing it at a ref is what
   // keeps typing in the task box from re-subscribing a window listener on every keystroke.
   const guidedKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
   // Parsed once per render: the preview below and the submit body must never disagree
@@ -2350,10 +2345,9 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
-    // Ensemble has no route through here. Its primary slot is Review-then-Launch, its shelve
-    // button is not rendered, and ⌘↵ is refused - so this is not a reachable path but a
-    // statement of which payload the mode owns: an Ensemble goes out through
-    // `useEnsembleLaunch`, whole, and never as a single task built from this draft.
+    // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
+    // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
+    // An Ensemble goes out whole, never as a single task built from this draft.
     if (mode.kind === "ensemble") return;
     // A new task with unmet dependencies is filed into the backlog even from the primary
     // action. It is not launching yet, so an unavailable Foreman must not erase the user's
@@ -2470,7 +2464,6 @@ function DispatchModal({
     else onSubmitted(submitted);
   }
 
-  submitRef.current = submit;
   const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
     if (!guidedRunning) return false;
     event.preventDefault();
@@ -2479,22 +2472,9 @@ function DispatchModal({
   }, [guidedLeave, guidedRunning]);
 
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
-    // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
-    // still dispatches from inside a pass, which is the one shortcut that has to keep
-    // working while the questions are up.
-    if (guidedKeyRef.current(event)) return;
-    // This is the dialog's primary action, not a textarea editing command. Keeping it on
-    // the topmost overlay makes it work after the operator moves through Crew, Backlog
-    // details, or the footer, while Overlay's stack still prevents a covered dialog from
-    // acting. Ensemble keeps its deliberate Review-then-Launch flow.
-    if (
-      event.key !== "Enter" ||
-      (!event.metaKey && !event.ctrlKey) ||
-      ensembleMode
-    ) return;
-    event.preventDefault();
-    void submitRef.current(true);
-  }, [ensembleMode]);
+    // The guided pass refuses modifier chords; Overlay owns the default action.
+    guidedKeyRef.current(event);
+  }, []);
 
   // The brief - repo, title, task - is shared by both modes but arranged differently:
   // Single leads repo-then-task with the title folded into Backlog details, Ensemble puts
@@ -3559,6 +3539,7 @@ function DispatchModal({
           >
             <button
               ref={tourSubmitRef}
+              data-dialog-default
               className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={

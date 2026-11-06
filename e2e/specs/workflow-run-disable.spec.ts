@@ -182,7 +182,7 @@ async function openNextRound(
   await page.getByRole("dialog").getByRole("button", { name: "Preview unchanged" }).click();
 }
 
-test("critical feedback follows one Persona through every later round of this run", async ({
+test("Cmd+Enter saves critical feedback for one Persona through every later round of this run", async ({
   dashboard,
   daemon,
 }) => {
@@ -230,7 +230,8 @@ test("critical feedback follows one Persona through every later round of this ru
       fullPage: true,
     });
   }
-  await editor.getByRole("button", { name: "Save for future rounds" }).click();
+  await editor.getByRole("button", { name: "Cancel" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
   await expect(row("Blocking reviewer")).toContainText("Critical feedback active");
   await expect(row("Docs steward")).not.toContainText("Critical feedback active");
   await expect(editor).toBeHidden();

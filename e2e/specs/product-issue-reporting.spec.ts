@@ -118,6 +118,42 @@ test.beforeEach(async ({ dashboard, daemon }) => {
   await dashboard.reload();
 });
 
+test("Cmd+Enter authorizes the rendered feedback preview and publishes once", async ({ dashboard, daemon }) => {
+  await openFromTopbar(dashboard);
+  await fill(dashboard, "Bug", "Keyboard feedback", "Submit the rendered preview through the default dialog action.");
+  await expect(submit(dashboard)).toBeEnabled();
+  // A forged key event must not authorize publishing, just as a forged click cannot.
+  await form(dashboard).dispatchEvent("keydown", { key: "Enter", metaKey: true, bubbles: true });
+  expect(productCreates(daemon)).toHaveLength(0);
+  await form(dashboard).getByRole("textbox", { name: "Details", exact: true }).press("Meta+Enter");
+  await expect(form(dashboard)).toContainText(FAKE_GH_PRODUCT_ISSUE_URL);
+  await expect.poll(() => productCreates(daemon).length).toBe(1);
+  await form(dashboard).getByRole("button", { name: "Close feedback form" }).focus();
+  await dashboard.keyboard.press("Control+Enter");
+  await expect(form(dashboard)).toBeHidden();
+  expect(productCreates(daemon)).toHaveLength(1);
+});
+
+for (const modifier of ["Meta", "Control"]) {
+  test(`${modifier}+Enter publishes feedback from Title while plain Enter does not`, async ({ dashboard, daemon }) => {
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", `${modifier} keyboard title`, "The dialog shortcut must work from its Title field.");
+    await expect(submit(dashboard)).toBeEnabled();
+    await titleBox(dashboard).press("Enter");
+    await expect(form(dashboard)).toBeVisible();
+    expect(productCreates(daemon)).toHaveLength(0);
+    await titleBox(dashboard).press(`${modifier}+Enter`);
+    await expect(form(dashboard)).toContainText(FAKE_GH_PRODUCT_ISSUE_URL);
+    await expect.poll(() => productCreates(daemon).length).toBe(1);
+    expect(productCreates(daemon)[0]!.argv).toContain(`${modifier} keyboard title`);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = join(process.cwd(), "e2e/.artifacts/dialog-default-action");
+      mkdirSync(dir, { recursive: true });
+      await form(dashboard).screenshot({ path: join(dir, `title-${modifier.toLowerCase()}-feedback-published.png`) });
+    }
+  });
+}
+
 test("a loopback caller cannot authorize itself, while one Report click publishes", async ({
   dashboard,
   daemon,

@@ -663,6 +663,7 @@ export function WorkflowBindingDialog({
         </Tooltip>
         <Tooltip label="Attach the workflow and take an evidence snapshot to review now">
           <button
+            data-dialog-default
             className="btn"
             disabled={busy || !canSubmit || !evidenceSubmission.ready}
             onClick={() => void perform(true)}

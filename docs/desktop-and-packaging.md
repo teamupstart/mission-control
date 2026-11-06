@@ -701,6 +701,21 @@ under the existing helper lock before waiting for shutdown and immediately befor
   Foreground application. A label that merely resembles an application job is not sufficient.
 - Compare main executables with `lsappinfo list`. Electron helpers need not have their own
   Foreground registration. Any unregistered main instance blocks the update.
+- A main executable running as plain Node is not an instance. The MCP server and hooks that
+  Mission Control registers in `~/.claude.json` and `~/.claude/settings.json` run
+  `Contents/MacOS/Mission Control` with `ELECTRON_RUN_AS_NODE=1`, so a `claude` or `codex`
+  started in a terminal holds such a process. Only unregistered main processes are examined. Each
+  one's argv and environment are read from the kernel's own record (`KERN_PROCARGS2`) by the
+  `processArguments` export of the state-lock addon every app already ships. Per process that
+  costs two in-process `sysctl` calls (`KERN_ARGMAX` to size the buffer, then `KERN_PROCARGS2`),
+  plus a `kill(pid, 0)` only when the second call fails, and no child process. `ps -E` reads the
+  same record but joins its entries with unescaped spaces, so there a value such as
+  `NOTE=x ELECTRON_RUN_AS_NODE=1` is indistinguishable from the flag. The addon keeps every entry separate. A process is in Node
+  mode only when its first `ELECTRON_RUN_AS_NODE` entry is non-empty, matching how Electron itself
+  reads it with `getenv`. An argument naming the flag or a satellite script is not evidence, and
+  neither is another variable whose value contains it. A process LaunchServices lists in any role
+  stays an instance. A process whose record cannot be read is not treated as Node. The
+  environment is tested for that flag and discarded, never logged.
 
 A conflict names the job and the exact, quoted `launchctl bootout 'gui/<uid>/<label>'` command.
 Mission Control never removes the job itself. Inspection errors fail closed. A packaged start
@@ -710,7 +725,25 @@ This is diagnostic only: detecting an unmanaged start does not kill it. Parent P
 evidence, since ordinary LaunchServices launches also have launchd as their parent.
 
 After the parent exits, the helper waits up to two minutes for **all** processes whose executable
-is beneath the bundle, including orphan helpers and utility processes. After replacement it runs
+is beneath the bundle, including orphan helpers and utility processes. There is one exception: a
+Node-mode process that Mission Control does not own and whose first argument is one of this
+bundle's operator satellites. These are the scripts Mission Control registers in an operator's own
+agent configuration, listed once as `OPERATOR_SATELLITES` in `src/shared/owned-runtime.mjs`:
+`dist/mcp/server.mjs`, `dist/satellites/hook.mjs` and `dist/satellites/harness-statusline.mjs`.
+The integration installer resolves its paths from that list, and the daemon's MCP server path is
+tested against it. Such an MCP server
+can live as long as the operator's terminal session, and the updater has no authority to signal
+it. It also does not need to stop. Every swap renames bundles and never writes into one, so the
+process keeps the files it has open. Each satellite is a single bundle that imports only Node
+builtins, loads nothing beside itself and never opens the state database.
+`test/operator-satellites.test.ts` rebuilds each one from its `package.json` command and checks
+that. It also fails when the build emits a satellite the list neither includes nor names as
+daemon-launched, such as `dist/satellites/codex-hook.mjs`, which only dispatched sessions run. An
+operator satellite's next launch runs the new build. Any other
+Node-mode script, including an orphaned workflow check, is still waited on. A timeout names it as
+a script on Mission Control's bundled Node and names the program that started it, never as the
+app itself. Retry cleanup likewise neither refuses over nor signals a Node-mode main process.
+After replacement it runs
 `lsregister -f` using macOS's LaunchServices utility and waits up to 25 seconds for old bundle
 instances to disappear from `lsappinfo list`. It then rechecks launch conflicts and calls `open`
 on the exact bundle. It never directly executes the application binary or requests a new instance

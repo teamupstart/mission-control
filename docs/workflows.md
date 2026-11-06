@@ -2726,11 +2726,8 @@ stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and befor
 Bindings keep their published version until explicitly upgraded. Earlier versions and other
 built-ins are unchanged.
 
-It runs when the repository root has a `.coderabbit.yaml` or `.coderabbit.config.ts`, unless the
-YAML sets `reviews.auto_review.enabled: false`. The YAML wins when both exist. Mission Control
-detects `.coderabbit.config.ts` but never executes it.
-
-To opt out:
+Either `.coderabbit.yaml` or `.coderabbit.config.ts` in the repository root enables it, unless the
+YAML turns it off:
 
 ```yaml
 reviews:

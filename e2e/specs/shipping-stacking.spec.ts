@@ -248,6 +248,62 @@ test("a dependency chip toggles Stack / After merge in the dispatch form and the
   }).toBe("merge");
 });
 
+test("an explicit After merge choice overrides a Stack Shipping default, and survives a reopen", async ({ dashboard, daemon }) => {
+  // The default is Stack, so an eligible dependency inherits Stack until told otherwise.
+  await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");
+  const parent = await backlogTask(daemon, "Schema groundwork");
+  await boardLayout(dashboard, daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Schema phase two after the groundwork merges");
+  await dialog.getByRole("button", { name: "Backlog details" }).click();
+  const add = dialog.getByRole("combobox", { name: "Add dependency" });
+  const value = await add.evaluate((element, title) =>
+    [...(element as HTMLSelectElement).options].find((option) => option.textContent?.includes(title))?.value ?? "",
+  parent.title);
+  expect(value).not.toBe("");
+  await add.selectOption(value);
+  const group = dialog.getByRole("group", { name: /When to start after Schema groundwork/ });
+  await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group).toContainText("default");
+  await expect(dialog).toContainText("or sooner on a Stack dependency");
+
+  // The operator opts this one dependency out of stacking.
+  await group.getByRole("button", { name: "After merge" }).click();
+  await expect(group.getByRole("button", { name: "After merge" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "false");
+  await expect(group).not.toContainText("default", { timeout: 1_000 });
+  await expect(dialog).toContainText("and dispatches when their PRs merge.");
+  await expect(dialog).not.toContainText("or sooner on a Stack dependency", { timeout: 1_000 });
+  await shoot(dialog, "dispatch-after-merge-over-stack-default");
+  await dialog.getByRole("button", { name: /Schedule after dependencies|Add to backlog/ }).first().click();
+  await expect(dialog).toBeHidden();
+
+  // Stored as an explicit choice, not left to inherit the Stack default.
+  let child!: Task;
+  await expect.poll(async () => {
+    child = (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id !== parent.id && task.dependencies.length > 0)!;
+    return child?.dependencies[0]?.type === "task" ? child.dependencies[0].mode ?? "inherit" : null;
+  }).toBe("merge");
+
+  // Reopened from the board after a reload, the choice reads back and still overrides Stack.
+  await dashboard.reload();
+  await dashboard.locator(".bl-card", { hasText: child.title }).getByRole("button", { name: child.title, exact: true }).click();
+  const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  await expect(editor).toBeVisible();
+  const editGroup = editor.getByRole("group", { name: /When to start after Schema groundwork/ });
+  await expect(editGroup.getByRole("button", { name: "After merge" })).toHaveAttribute("aria-pressed", "true");
+  await expect(editGroup.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "false");
+  await expect(editGroup).not.toContainText("default", { timeout: 1_000 });
+  await expect(editor).not.toContainText("or sooner on a Stack dependency", { timeout: 1_000 });
+  // The Shipping default is still Stack: the override is per dependency, not a setting change.
+  expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking).toBe("stack");
+});
+
 test("a finished prerequisite with an open pull request releases a stacked dependent that starts on its head", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");

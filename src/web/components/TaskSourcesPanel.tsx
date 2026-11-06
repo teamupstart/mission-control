@@ -1284,6 +1284,7 @@ export function SourceCard({
             </Tooltip>
             <Tooltip label="Drop every delivery this source is holding">
               <button
+                data-dialog-default
                 className="btn btn-danger"
                 type="button"
                 disabled={busy !== null}

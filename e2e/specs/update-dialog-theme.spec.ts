@@ -176,6 +176,40 @@ test("the updater asks through a themed modal and its answer carries the questio
   ]);
 });
 
+test("Cmd+Enter answers each Update dialog with its primary action and exact request id", async ({ dashboard }) => {
+  await installDialogBridge(dashboard);
+  const requests: Array<UpdateDialogRequest & { expectedChoice: string }> = [
+    { ...UPDATE_DIALOGS.available({ currentVersion: "1.9.0", newVersion: "1.9.1", name: "Keyboard update", notes: "No actual update is installed by this bridge fixture." }), id: "shortcut-download", expectedChoice: "confirm" },
+    { ...UPDATE_DIALOGS.ready("1.9.1"), id: "shortcut-install", expectedChoice: "confirm" },
+    { ...UPDATE_DIALOGS.upToDate("1.9.1"), id: "shortcut-acknowledge", expectedChoice: "dismiss" },
+  ];
+  for (const { expectedChoice, ...request } of requests) {
+    await dashboard.evaluate((next) => window.updateDialogFixture.push(next), request);
+    const modal = dashboard.getByRole("dialog", { name: "Mission Control update" });
+    await expectContentClearsBorder(modal);
+    // Focus the close affordance deliberately; it must not replace the dialog's primary.
+    await modal.getByRole("button", { name: "Close" }).focus();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = join(process.cwd(), "e2e/.artifacts/update-dialog-theme");
+      await mkdir(dir, { recursive: true });
+      await modal.screenshot({ path: join(dir, `cmd-enter-${request.id}-ready.png`) });
+    }
+    await dashboard.keyboard.press("Meta+Enter");
+    await expect(modal).toBeHidden();
+    expect(await dashboard.evaluate(() => window.updateDialogFixture.answers())).toEqual(
+      requests.slice(0, requests.findIndex((item) => item.id === request.id) + 1)
+        .map((item) => ({ id: item.id, choice: item.expectedChoice })),
+    );
+    expect((await dashboard.evaluate(() => window.updateDialogFixture.answers())).at(-1))
+      .toEqual({ id: request.id, choice: expectedChoice });
+  }
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = join(process.cwd(), "e2e/.artifacts/update-dialog-theme");
+    await mkdir(dir, { recursive: true });
+    await dashboard.screenshot({ path: join(dir, "cmd-enter-all-answered.png") });
+  }
+});
+
 test("a multiline update error wraps and scrolls safely, and Escape answers it", async ({ dashboard }) => {
   await installDialogBridge(dashboard);
 

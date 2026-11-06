@@ -306,6 +306,7 @@ export function DecisionForm({
         >
           <button
             className="btn btn-approve"
+            data-dialog-default
             disabled={busy || !complete}
             onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}
           >

@@ -30,7 +30,13 @@ async function shoot(page: Page, name: string, fullPage = false): Promise<void> 
   console.log(`CAPTURED e2e/.artifacts/settings-worktrees/${name}.png`);
 }
 
-test("safe prune removes conductor scratch while preserving unknown pipeline work", async ({ dashboard, daemon }) => {
+test("Cmd+Enter executes safe prune and refuses a blocked worktree preview", async ({ dashboard, daemon }) => {
+  const executions: unknown[] = [];
+  dashboard.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/worktrees/actions/execute") {
+      executions.push(request.postDataJSON());
+    }
+  });
   const acquire = async () => {
     const response = await dashboard.request.post(`${daemon.baseURL}/api/worktrees/manual/acquire`, {
       data: { repositoryPath: daemon.repo, label: "pipeline scratch regression" },
@@ -63,12 +69,14 @@ test("safe prune removes conductor scratch while preserving unknown pipeline wor
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
   await expectContentClearsBorder(preview);
   await shoot(dashboard, "12-scratch-safe-prune-preview");
-  await preview.getByRole("button", { name: "Execute" }).click();
+  await preview.getByRole("button", { name: "Cancel" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
   await expect(preview).toHaveCount(0);
   await expect(pool.locator(".wt-slot", { hasText: scratch.path })).toHaveCount(0, { timeout: EXECUTES_MS });
   await expect(pool.locator(".wt-slot", { hasText: work.path })).toBeVisible();
   expect(existsSync(scratch.path)).toBe(false);
   expect(existsSync(join(work.path, ".pipeline/notes.txt"))).toBe(true);
+  expect(executions).toHaveLength(1);
   await shoot(dashboard, "13-scratch-pruned-real-work-preserved");
 
   // With only real work left, the next preview must explain why pruning is unavailable.
@@ -76,6 +84,11 @@ test("safe prune removes conductor scratch while preserving unknown pipeline wor
   await expect(preview.getByText("No clean, merged, process-free, unreferenced slots are safe to prune.")).toBeVisible();
   await expect(preview.getByRole("button", { name: "Execute" })).toBeDisabled();
   await expectContentClearsBorder(preview);
+  await preview.getByRole("button", { name: "Cancel" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(preview).toBeVisible();
+  expect(executions).toHaveLength(1);
+  expect(existsSync(join(work.path, ".pipeline/notes.txt"))).toBe(true);
   await shoot(dashboard, "14-real-work-blocks-safe-prune");
 });
 

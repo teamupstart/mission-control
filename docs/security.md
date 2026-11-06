@@ -51,14 +51,15 @@ Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review a
 nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control through a capability claimed once as the authorization module loads and retained only in
-that module's closure, outside the React hot-refresh boundary. The owned control requires a
-trusted native click before it uses the capability with the current preview's request id and
-draft identity. Synthetic clicks, implicit form submits,
+publicly** press or Cmd+Enter / Ctrl+Enter. The context-isolated Electron preload captures the
+trusted input event through a capability claimed once as the authorization module loads and
+retained only in that module's closure, outside the React hot-refresh boundary. The dialog requires a
+trusted native input event before it uses the capability with the current preview's request id and
+draft identity. Synthetic clicks and key events, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
-dashboard web contents, with the preload requiring a trusted click still in dispatch.
+dashboard web contents, with the preload requiring a trusted click or non-repeating,
+non-composing Cmd+Enter / Ctrl+Enter still in dispatch.
 A held press remains valid even if Chromium's transient user activation expires before release;
 synthetic clicks and calls after dispatch ends remain refused. It shows no
 second dialog. The daemon then asks
@@ -67,7 +68,7 @@ port. An authorization is short-lived and single-use, so another loopback proces
 call the confirmation route but cannot produce the private reply that mints a grant.
 
 The daemon keeps preview and mutation separate internally. Previewing never returns a publish
-token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+token. After the shell authorizes the Report action, the daemon mints a grant pinned to one report
 opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
 labels, source, environment and body at submission prevents a configuration change between
 preview and publication from sending content the form did not show. The request id and submission

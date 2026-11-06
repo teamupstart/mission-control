@@ -1,3 +1,15 @@
+# Dialog keyboard actions
+
+**Cmd+Enter** (or **Ctrl+Enter**) performs the topmost dialog's default action, such as
+Dispatch now, Send answer, Submit decisions, Save, or a confirmation. It works from any
+control in the dialog. Disabled actions stay disabled, including incomplete questions and
+actions already in flight. Plain Enter and Shift+Enter keep their normal field behavior.
+
+When a review queue contains several questions, the question holding keyboard focus owns
+the shortcut. With focus outside the questions, the first question is next. An incomplete
+question never falls through to a different question's enabled action. Covered dialogs
+cannot act on the shortcut.
+
 # The Line (the pipeline strip above the fleet)
 
 A permanent strip sits above every fleet layout: **intake → backlog → working → review
@@ -264,7 +276,7 @@ screenshot locators, never repository metadata or filesystem paths. See
 environment line and image locators may contain and what they never contain.
 
 **Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
-has its trusted control click captured by the isolated desktop preload, authorizes that exact
+or Cmd+Enter / Ctrl+Enter has its trusted input event captured by the isolated desktop preload, authorizes that exact
 preview through the desktop shell, and files it without a warning dialog or
 a second button press. The button stays busy through the internal authorization, confirmation,
 and submission requests, so another press cannot race the first one. If the derived content

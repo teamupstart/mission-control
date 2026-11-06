@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/teamupstart/mission-control/compare/v2.0.0...v2.0.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **updates:** let terminal MCP servers and hooks run through a macOS update ([#1365](https://github.com/teamupstart/mission-control/issues/1365)) ([9bd4e9b](https://github.com/teamupstart/mission-control/commit/9bd4e9bbcea267f6c7d0e9ff960fd4ac1a131058))
+
 ## [2.0.0](https://github.com/teamupstart/mission-control/compare/v1.27.2...v2.0.0) (2026-11-05)
 
 

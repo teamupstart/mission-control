@@ -115,7 +115,7 @@ export function AssignResetModal({
           </button>
         </Tooltip>
         <Tooltip label="Reset this agent's checkout and give it this task instead">
-          <button className="btn btn-danger" onClick={() => void go()} disabled={busy}>
+          <button data-dialog-default className="btn btn-danger" onClick={() => void go()} disabled={busy}>
             {busy ? "Handing over…" : "Reset & hand over"}
           </button>
         </Tooltip>

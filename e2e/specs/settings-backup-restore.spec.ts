@@ -5,6 +5,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const EVIDENCE = artifactsDir("settings-backup-restore");
 
@@ -42,7 +43,7 @@ interface BackupList {
   }>;
 }
 
-test("verified restore reloads its window and invalidates other windows without losing drafts", async ({
+test("Cmd+Enter requires the exact restore phrase, then restores settings and reloads without losing drafts", async ({
   dashboard,
   daemon,
 }) => {
@@ -280,19 +281,33 @@ test("verified restore reloads its window and invalidates other windows without 
 
   await dashboard.getByRole("button", { name: "Restore settings" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Confirm settings restore" });
+  await expectContentClearsBorder(dialog);
+  const restoreRequests: unknown[] = [];
+  dashboard.on("request", (req) => {
+    if (req.method() === "POST" && new URL(req.url()).pathname.endsWith(`/api/settings-backups/${snapshotId}/restore`)) {
+      restoreRequests.push(req.postDataJSON());
+    }
+  });
   const confirmation = dialog.getByLabel(/Type RESTORE SETTINGS to continue/);
   await expect(confirmation).toBeFocused();
   const finalRestore = dialog.getByRole("button", { name: "Restore settings" });
   await confirmation.fill("restore settings");
   await expect(finalRestore).toBeDisabled();
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(dialog).toBeVisible();
+  expect(restoreRequests).toHaveLength(0);
+  expect(await request(daemon, "/api/ui/config")).toMatchObject({ config: { richText: true } });
+  await shoot(dashboard, "cmd-enter-blocked-by-wrong-phrase");
   await confirmation.fill("RESTORE SETTINGS");
   await expect(finalRestore).toBeEnabled();
   await shoot(dashboard, "exact-confirmation");
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
 
   await Promise.all([
     dashboard.waitForEvent("load"),
-    finalRestore.click(),
+    dashboard.keyboard.press("Meta+Enter"),
   ]);
+  expect(restoreRequests).toHaveLength(1);
   await expect(dashboard.getByRole("heading", { name: "Restore", exact: true })).toBeVisible();
   await expect(dashboard.getByRole("radio", { name: /Select Safety snapshot from/ })).toBeEnabled();
 

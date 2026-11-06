@@ -1077,6 +1077,74 @@ test("authentication recovery resumes even when the stale process never drains a
   assert.equal(done.some((event) => event.kind === "exited"), false, "the resumed session stays live");
 });
 
+test("an undrained stale process can neither steer nor end the resumed session", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.return = () => new Promise<never>(() => {});
+  stale.emit(INIT("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "first resumed turn" }), "started");
+  const fresh = starts[1]!.query;
+  fresh.emit(INIT("agent-auth-superseded"));
+  fresh.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // The stale process finally speaks: none of it may reach the live conversation.
+  stale.emit({
+    type: "assistant",
+    session_id: "agent-auth-superseded",
+    message: { role: "assistant", content: [{ type: "text", text: "stale frame" }] },
+  } as ClaudeSdkMessage);
+  stale.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await handle.sendIfIdle({ text: "fresh is idle" }), "started", "a stale frame must not mark the fresh turn busy");
+  fresh.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // A second recovery replaces `recoveringQuery` while the first stale pump is still open.
+  fresh.emit(NOT_LOGGED_IN("agent-auth-superseded"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "second resumed turn" }), "started");
+  assert.equal(starts.length, 3);
+
+  const ended = collect(handle.events, (event) => event.kind === "exited" || event.kind === "turn_done");
+  stale.end();
+  await new Promise((resolve) => setImmediate(resolve));
+  starts[2]!.query.emit(INIT("agent-auth-superseded"));
+  starts[2]!.query.emit({ type: "result", subtype: "success", session_id: "agent-auth-superseded" } as ClaudeSdkMessage);
+  const events = await ended;
+  assert.equal(events.some((event) => event.kind === "exited"), false, "the first stale process ending must not end the session");
+  assert.equal(events.at(-1)?.kind, "turn_done");
+});
+
+test("a turn the CLI resumes after the driver closed it still reports its completion", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-resumed"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-resumed"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  // Past the grace, the CLI turns out to be working after all.
+  query.emit({
+    type: "assistant",
+    session_id: "agent-auth-resumed",
+    message: { role: "assistant", content: [{ type: "text", text: "continuing" }] },
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "state" && event.state === "working");
+  query.emit({ type: "result", subtype: "success", session_id: "agent-auth-resumed" } as ClaudeSdkMessage);
+  const done = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(done.at(-1)?.kind, "turn_done", "the reopened turn's result is its real completion");
+  assert.equal(await handle.sendIfIdle({ text: "next turn" }), "started");
+  assert.equal(starts.length, 1, "working credentials need no relaunch");
+});
+
 test("a late result for an auth-failed turn the driver already closed is not reported twice", async (t) => {
   const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
   const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));

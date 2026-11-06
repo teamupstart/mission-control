@@ -976,6 +976,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
     let reason = "the session ended";
     try {
       for await (const message of query) {
+        // Authentication recovery can resume past a stale process that never drained, so
+        // this pump may outlive its query's place in the session. Once a replacement is
+        // attached, nothing the stale process says describes the live conversation.
+        if (this.query !== null && this.query !== query) continue;
         this.consume(message);
       }
     } catch (err) {
@@ -984,6 +988,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (this.recoveringQuery === query && !this.stopped) {
         this.recoveringQuery = null;
         if (this.query === query) this.query = null;
+      } else if (this.query !== null && this.query !== query && !this.stopped) {
+        // A superseded stale process ending, possibly after a later recovery replaced
+        // `recoveringQuery`. Its end is not this session's end.
       } else if (
         this.authenticationFailed &&
         this.agentSessionId !== null &&
@@ -1029,11 +1036,18 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;
       this.armAuthenticationStall();
-    } else if (message.type === "assistant" && !message.parent_tool_use_id && this.authenticationStall) {
+    } else if (
+      message.type === "assistant" &&
+      !message.parent_tool_use_id &&
+      (this.authenticationStall || this.authenticationClosedTurn)
+    ) {
       // The CLI answered again after reporting the failure, so its credentials work after
       // all: a relaunch on the next send would only interrupt a turn that is progressing.
+      // Even when the stall already reported the turn done, this frame reopens it, and the
+      // `result` that follows is that turn's real completion rather than a late duplicate.
       this.disarmAuthenticationStall();
       this.authenticationFailed = false;
+      this.authenticationClosedTurn = null;
     }
     // The init frame is the one authoritative answer to "which model did this launch
     // actually bind?" It is especially important on resume: the durable launch request may

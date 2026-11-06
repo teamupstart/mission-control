@@ -199,7 +199,11 @@ let db: DatabaseSync | undefined;
 // 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
 //     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
 // 19: durable driver usage checkpoints, result receipts, and legacy replay flags.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 19;
+// 20: Stacked pull requests: a task's stack pin (`tasks.stack_parent_task_id`,
+//     `stack_base_branch`, `stack_base_sha`, `stack_pr_url`) and a pull request's base,
+//     review base and stack lineage on `inspector_prs`. All nullable with no backfill: NULL is
+//     unstacked, and a row with no recorded base counts only on the default branch.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 20;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };

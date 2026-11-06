@@ -92,6 +92,41 @@ test("the Stacked pull requests card sets the default and it survives a reload",
   await expect(dashboard.locator("[data-anchor='shipping/stacking']").getByRole("spinbutton", { name: "stacked pull requests above one on the default branch" })).toHaveValue("2");
 });
 
+test("with Stack as the default, only a dependency that can stack earns the 'sooner' wait note", async ({ dashboard, daemon }) => {
+  // A prerequisite in ANOTHER repository can never stack: a pull request has one base. With
+  // the Shipping default set to Stack, the form must not promise it an early start.
+  await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");
+  const elsewhere = await backlogTask(daemon, "Groundwork in the other repo", { repoRoot: daemon.secondRepo });
+  const same = await backlogTask(daemon, "Groundwork in this repo");
+  await boardLayout(dashboard, daemon);
+
+  await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Work after both prerequisites");
+  await dialog.getByRole("button", { name: "Backlog details" }).click();
+  const add = dialog.getByRole("combobox", { name: "Add dependency" });
+  const optionFor = (title: string) => add.evaluate((element, wanted) =>
+    [...(element as HTMLSelectElement).options].find((option) => option.textContent?.includes(wanted))?.value ?? "",
+  title);
+
+  await add.selectOption(await optionFor(elsewhere.title));
+  await expect(dialog.getByRole("group", { name: /When to start after Groundwork in the other repo/ })).toHaveCount(0);
+  await expect(dialog).toContainText("and dispatches when their PRs merge.");
+  await expect(dialog).not.toContainText("or sooner for a Stack dependency", { timeout: 1_000 });
+
+  // A same-repository task prerequisite inheriting the Stack default does earn it.
+  await add.selectOption(await optionFor(same.title));
+  const group = dialog.getByRole("group", { name: /When to start after Groundwork in this repo/ });
+  await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group).toContainText("default");
+  await expect(dialog).toContainText("or sooner for a Stack dependency once its PR is open");
+  await dialog.getByText(/Waits for \d+ dependenc/).scrollIntoViewIfNeeded();
+  await shoot(dialog, "dispatch-wait-note-stackable-only");
+});
+
 test("a dependency chip toggles Stack / After merge in the dispatch form and the backlog editor", async ({ dashboard, daemon }) => {
   const parent = await backlogTask(daemon, "Phase one groundwork");
   await boardLayout(dashboard, daemon);

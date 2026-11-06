@@ -265,9 +265,14 @@ export class StackReadiness {
       return;
     }
     this.inFlight.add(parentId);
+    const startedAt = this.now();
     try {
       const read = await this.readParent(parent, finished);
       if (this.stopped) return;
+      // A dispatch refused while GitHub answered deferred this prerequisite: its refusal is
+      // newer than this read, so it wins, and the pending re-check reads again later.
+      const deferred = this.refused.get(parentId);
+      if (deferred && deferred.prUrl === finished.prUrl && deferred.at >= startedAt) return;
       if (!read.ok) {
         // Logged once per prerequisite per memo window, so a dependent that never reads as
         // ready has a reason somewhere other than a silent cache.
@@ -457,6 +462,19 @@ export class StackReadiness {
       this.clearStamp(task.id, edge.taskId);
       return { ok: false, error };
     };
+    // A refusal the readiness read cannot see for itself - origin's branch could not be
+    // fetched, it is not the pull request's head, or it lacks a merged prerequisite - would be
+    // stamped again by the very next pass, and the same dispatch refused on every Foreman
+    // tick. It defers this prerequisite through the same refusal memo a refused read uses,
+    // so the dependent is offered again only after the memo's re-check reads it afresh.
+    const refuseAndDefer = (error: string): StackedDispatchPlan => {
+      if (edge.stackPrUrl) {
+        this.refused.set(edge.taskId, { at: this.now(), prUrl: edge.stackPrUrl });
+        this.verifiedAt.delete(edge.taskId);
+        this.retryLater(edge.taskId);
+      }
+      return refuse(error);
+    };
     const eligibility = stackEligibility(task, byId, this.config());
     if (!eligibility.ok || eligibility.edge.taskId !== edge.taskId) {
       return refuse(`cannot stack: ${eligibility.ok ? "the stacked prerequisite changed" : eligibility.reason}`);
@@ -488,20 +506,20 @@ export class StackReadiness {
       return refuse(`${parent.title} is working again, so it is not ready to stack on`);
     }
     const tip = await this.github.branchSha(task.repoRoot, edge.stackBaseBranch);
-    if (!tip.ok) return refuse(`could not fetch ${edge.stackBaseBranch}: ${tip.reason}`);
+    if (!tip.ok) return refuseAndDefer(`could not fetch ${edge.stackBaseBranch}: ${tip.reason}`);
     // The branch is fetched from THIS repository's origin by name, and a name proves nothing:
     // a pull request opened from a fork can share its branch name with an unrelated branch
     // here. Only the head GitHub reports for the pull request is the parent's code, so the
     // fetched tip must be exactly that commit. A parent that pushed in between also lands
-    // here, and the next readiness pass stamps the new head.
+    // here, and the re-check after the deferral stamps the new head.
     if (tip.value !== refs.value.headSha) {
-      return refuse(
+      return refuseAndDefer(
         `origin's ${edge.stackBaseBranch} is at ${tip.value.slice(0, 12)}, not #${number}'s head ${refs.value.headSha.slice(0, 12)}` +
           " (the pull request may come from a fork, or it just moved), so it is not stacked on",
       );
     }
     const missing = await this.missingMergedPrerequisite(task, byId, tip.value);
-    if (missing) return refuse(missing);
+    if (missing) return refuseAndDefer(missing);
     return {
       ok: true,
       baseSha: tip.value,

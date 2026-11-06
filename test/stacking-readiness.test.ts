@@ -75,7 +75,7 @@ interface Script {
   tip: { ok: true; value: string } | { ok: false; reason: string; outcomeUnknown: boolean };
   ancestry: Map<string, boolean>;
   /** Run during the parent read, to model the world moving while GitHub answers. */
-  duringRead?: () => void;
+  duringRead?: () => void | Promise<void>;
   reads: number;
   fetches: string[];
 }
@@ -98,7 +98,7 @@ function githubOf(s: Script): StackGitHub {
   return {
     prRefs: async (_cwd, url) => {
       s.reads += 1;
-      s.duringRead?.();
+      await s.duringRead?.();
       const refs = s.refs.get(url);
       return refs ? { ok: true, value: refs } : { ok: false, error: "no such pull request" };
     },
@@ -264,7 +264,7 @@ test("dispatch revalidates a stale stamp: draft, closed, moved branch, new turn,
     ["queued work", (w) => w.sessions.set("sA", mkSession({ id: "sA", state: "idle", queue: { openCount: 2 } as Session["queue"] })), /working again/],
     ["new episode", (w) => w.episodes.set("sA", "ep2"), /working again/],
     ["new pull request", (w) => w.bindings.set("A", { episodeId: "ep1", sessionId: "sA", prUrl: "https://github.com/acme/repo/pull/8" }), /pull request changed/],
-    ["turn started mid-read", (w, s) => { s.duringRead = () => w.sessions.set("sA", mkSession({ id: "sA", state: "working" })); }, /working again/],
+    ["turn started mid-read", (w, s) => { s.duringRead = () => { w.sessions.set("sA", mkSession({ id: "sA", state: "working" })); }; }, /working again/],
   ];
   for (const [name, spoil, why] of cases) {
     const w = world();
@@ -653,6 +653,72 @@ test("a stamp found on start is read again before it is trusted", async () => {
   await settle();
   assert.equal(childEdge(w).stackReadyAt ?? null, null);
   restarted.stop();
+});
+
+// ---- CodeRabbit: a dispatch-only refusal defers the next stamp ---------------------------
+
+test("a fork-tip refusal is not stamped again until the deferral's re-check, so the dispatch is not retried every tick", async () => {
+  const w = world();
+  const s = script(); // origin's tip (NEWER) is not the pull request's head (HEAD)
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+  const refused = await r.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(refused?.ok, false);
+  assert.match(!refused?.ok ? refused!.error : "", /not #7's head/);
+  assert.equal(childEdge(w).stackReadyAt ?? null, null);
+
+  // Foreman's next ticks and any local event: the read is deferred, nothing is re-stamped.
+  const reads = s.reads;
+  for (const at of [2_000, 20_000, 50_000]) {
+    t.advance(at);
+    r.reconcile();
+    await settle();
+  }
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "the dependent is not offered again inside the deferral");
+  assert.equal(s.reads, reads, "and the prerequisite is not re-read");
+  assert.equal(t.live.size, 1, "one re-check is pending");
+
+  // Origin catches up with the pull request's head; the re-check stamps and the dispatch pins.
+  s.tip = { ok: true, value: HEAD };
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  assert.equal(typeof childEdge(w).stackReadyAt, "number", "stamped again after the deferral");
+  const plan = await r.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(plan?.ok && plan.baseSha, HEAD);
+  r.stop();
+});
+
+test("a dispatch refused while a readiness read is in flight is not overwritten by that read", async () => {
+  const w = world();
+  const s = script();
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+
+  // The recheck's read is answered only after a dispatch of the child was refused on the
+  // fork-tip check.
+  const midRead: { plan: Awaited<ReturnType<StackReadiness["planStackedDispatch"]>> } = { plan: null };
+  let once = true;
+  s.duringRead = async () => {
+    if (!once) return;
+    once = false;
+    midRead.plan = await r.planStackedDispatch(w.tasks.get("C")!);
+  };
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  await settle();
+  assert.equal(midRead.plan?.ok, false, "the dispatch was refused during the read");
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "the in-flight read does not stamp over the newer refusal");
+  r.stop();
 });
 
 test("stopping readiness cancels its pending re-checks", async () => {

@@ -1408,6 +1408,19 @@ function DispatchModal({
     return required.map(requirement => `Required by pinned plan ${requirement.title} revision ${requirement.input.revision}.`).join(" ")
       + " Retain this prerequisite to preserve the exact originating work episode or local publication artifact. Changing it requires updating the plan input and dependency together.";
   }
+  /**
+   * Can this dependency start the task on its open pull request at all? Stacking covers a
+   * same-repository TASK prerequisite that has not merged: a pull request has one base, and
+   * only a task records what it was cut on. The chip's Stack / After merge control and the
+   * wait note both ask this, so neither promises a stack the other would not offer.
+   */
+  function isStackable(dependency: TaskDependencyInput): dependency is Extract<TaskDependencyInput, { type: "task" }> {
+    if (dependency.type !== "task") return false;
+    const target = tasks.find((task) => task.id === dependency.taskId);
+    return target !== undefined
+      && target.repoRoot === draft.repoRoot.trim()
+      && editing?.dependencies.find((stored) => dependencyKey(dependencyInputOf(stored)) === dependencyKey(dependency))?.satisfiedAt == null;
+  }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -3352,15 +3365,7 @@ function DispatchModal({
                       const key = dependencyKey(dependency);
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
                       const reason = removalReason(key);
-                      // Stacking covers a same-repository TASK prerequisite only: a pull
-                      // request has one base, and only a task records what it was cut on.
-                      const target = dependency.type === "task"
-                        ? tasks.find((task) => task.id === dependency.taskId)
-                        : undefined;
-                      const stackable = dependency.type === "task"
-                        && target !== undefined
-                        && target.repoRoot === draft.repoRoot.trim()
-                        && editing?.dependencies.find((stored) => dependencyKey(dependencyInputOf(stored)) === key)?.satisfiedAt == null;
+                      const stackable = isStackable(dependency);
                       const mode = dependency.type === "plan" ? undefined : dependency.mode;
                       const shown = mode ?? stackingDefault;
                       return (
@@ -3453,7 +3458,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => dependency.type !== "plan" && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner for a Stack dependency once its PR is open." : "and dispatches when their PRs merge."}
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner for a Stack dependency once its PR is open." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}

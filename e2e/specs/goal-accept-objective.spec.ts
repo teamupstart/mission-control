@@ -145,7 +145,7 @@ test("Accept objective as is ends a paused Goal without changing the objective",
 test.describe("while the latest instruction is still reconciling", () => {
   test.use({ daemonEnv: { MISSION_GOAL_POLL_MS: "20", MISSION_GOAL_REFRESH_MS: "600000" } });
 
-  test("a failed accept keeps the pause and the control, and a retry succeeds", async ({ dashboard, daemon }) => {
+  test("a failed or unreachable accept keeps the pause and the control, and a retry succeeds", async ({ dashboard, daemon }) => {
     const sessionId = await dispatch(dashboard, daemon);
     const before = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);
 
@@ -172,8 +172,23 @@ test.describe("while the latest instruction is still reconciling", () => {
     await expect(reading.locator(".fd-intent-relation")).toHaveText("reconciling");
     const accept = drawer.getByRole("button", { name: "Accept objective as is", exact: true });
 
-    // The daemon refuses once; nothing about the pause may change.
     const ACCEPT_ROUTE = `**/api/sessions/${encodeURIComponent(sessionId)}/goal/accept`;
+
+    // The request never reaches the daemon: `fetch` itself rejects. `acceptGoal` must turn
+    // that into a refusal rather than throw past the drawer, so the pause and the control stay.
+    await dashboard.route(ACCEPT_ROUTE, (route) => route.abort("failed"));
+    await accept.click();
+    await expect(drawer.getByRole("alert")).toHaveText(/^The objective was not accepted: Failed to fetch\.$/);
+    await expect(reading.locator(".fd-intent-relation")).toHaveText("reconciling");
+    await expect(reading).toContainText("Automatic wrap-up is paused until this instruction is classified.");
+    await expect(accept).toBeEnabled();
+    await expect(goalLine).toHaveClass(/goal-resolving/);
+    const afterAbort = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);
+    expect(afterAbort.resolvedPromptRevision).toBe(pending.resolvedPromptRevision);
+    expect(afterAbort.pendingPrompts).toEqual(pending.pendingPrompts);
+    await dashboard.unroute(ACCEPT_ROUTE);
+
+    // The daemon refuses once; nothing about the pause may change.
     await dashboard.route(ACCEPT_ROUTE, (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "injected failure" }) }),
     );

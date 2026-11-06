@@ -1653,11 +1653,12 @@ instruction and conversation. An amendment is accepted only when its proposed co
 explicitly retains the existing objective as its prefix. A line that is nothing but an
 absolute file path, such as a screenshot you attached, is ignored by that comparison, and an
 accepted amendment keeps every such line of the objective it extends, so the attachment stays
-in the contract a run reviews against. An amendment that fails the check is treated as
-steering: the objective and its version stay as they were, the drawer shows the relationship
-as **steering** with a rationale that starts "Treated as steering:", the instruction reaches
-the next Workflow run as steering context, and the daemon log records which rule failed
-without quoting the objective. A reply that picks one of the options a session offered is
+in the contract a run reviews against. An amendment too long to keep those lines within the
+stored objective's length limit is not shortened to fit. Like any amendment that fails the
+check, it is treated as steering: the objective and its version stay as they were, the drawer
+shows the relationship as **steering** with a rationale that starts "Treated as steering:",
+the instruction reaches the next Workflow run as steering context, and the daemon log records
+which rule failed without quoting the objective. A reply that picks one of the options a session offered is
 steering too. An effective amendment or replacement updates the Goal and advances its
 objective version, while steering changes only the latest focus.
 

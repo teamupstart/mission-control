@@ -32,6 +32,14 @@ const modeFile = join(bin, "mode");
  */
 const runLog = join(bin, "runs");
 const RUN_DELIM = "##MISSION-RUN-END##";
+/**
+ * An amendment that passes every preservation rule and fills the 4,000-character storage bound
+ * by itself, so restoring an omitted attachment line would overflow it. Letters and spaces only,
+ * so it needs no escaping inside the fake's single-quoted reply.
+ */
+const LONG_AMENDMENT = `Ship the Goal feature end to end. Also ${"keep the drawer fast ".repeat(200)}`
+  .slice(0, 4000)
+  .trimEnd();
 const fake = join(bin, "claude.sh");
 writeFileSync(
   fake,
@@ -66,6 +74,7 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   initial-inline-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end, see /tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
   # An objective that is nothing but an attachment line compares as empty.
   initial-path-only) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  amend-long) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"${LONG_AMENDMENT}\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Keep the drawer fast\\",\\"reason\\":\\"The instruction adds a requirement to the existing outcome.\\"}\\n\`\`\`"}' ;;
   negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
   rapid)
     case "$request" in
@@ -104,6 +113,7 @@ const setMode = (
     | "retract"
     | "initial-inline-path"
     | "initial-path-only"
+    | "amend-long"
     | "rapid"
     | "replace"
     | "model-unclear",
@@ -304,9 +314,9 @@ async function assertRejectedAmendmentSteers(
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate" | "retract" | "amend";
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long";
     /** The fake reply that establishes the opening objective. */
-    initialMode?: "good" | "initial-inline-path" | "initial-path-only";
+    initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
     rule: string;
     /** Words of the model's proposed objective that must never reach the log. */
@@ -435,6 +445,22 @@ test("an amendment to an objective that is only a path line resolves as steering
     instruction: "also surface its intent in the Foreman drawer",
     rule: "no-current-objective",
     proposedWords: ["Ship", "Goal", "expose", "intent", "Foreman", "drawer"],
+  });
+});
+
+test("an amendment with no room left to keep an omitted attachment line resolves as steering", async (t) => {
+  // Appending the line would push the stored contract past the bound, and clamping it would
+  // elide the middle of a text whose head is the objective the check just validated.
+  assert.equal(LONG_AMENDMENT.length > 4000 - "\n/tmp/uploads/shot.png".length, true,
+    "precondition: the proposal leaves no room for the attachment line");
+  await assertRejectedAmendmentSteers(t, {
+    id: "r34",
+    pane: "%64",
+    initialMode: "initial-path",
+    mode: "amend-long",
+    instruction: "also keep the drawer fast",
+    rule: "attachments-exceed-limit",
+    proposedWords: ["drawer", "fast"],
   });
 });
 

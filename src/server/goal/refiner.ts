@@ -237,8 +237,11 @@ function comparableObjective(value: string): string {
  * Every path line of the current objective that an accepted amendment omits, appended in
  * original order. The comparison ignores those lines, so without this a model could drop an
  * attachment from the durable contract - and from the next frozen run contract - merely by
- * leaving it out. Re-clamped because the proposal already used the whole storage bound;
- * `clampPrompt` keeps the tail, which is where the retained lines go.
+ * leaving it out.
+ *
+ * Never clamped here. `clampPrompt` elides the middle of an over-long text, and the middle of
+ * a proposal that already fills the storage bound is the objective the preservation check just
+ * validated. A result that would need clamping is refused by the caller instead.
  */
 function retainPathLines(current: string | null, proposed: string): string {
   if (!current) return proposed;
@@ -250,7 +253,7 @@ function retainPathLines(current: string | null, proposed: string): string {
     present.add(path);
     missing.push(path);
   }
-  return missing.length ? clampPrompt(`${proposed}\n${missing.join("\n")}`) : proposed;
+  return missing.length ? `${proposed}\n${missing.join("\n")}` : proposed;
 }
 
 /** Which mechanical rule an amendment broke. Named so the log can say, never the text. */
@@ -258,7 +261,8 @@ type PreservationFailure =
   | "no-current-objective"
   | "not-a-prefix"
   | "no-additive-connector"
-  | "retracting-word";
+  | "retracting-word"
+  | "attachments-exceed-limit";
 
 /**
  * Amendments may extend the completion contract, never rewrite it from scratch. Requiring
@@ -445,10 +449,21 @@ async function refine(
 
       const currentObjective = current.objective ?? current.text ?? null;
       let rationale = r.value.reason;
-      const failed =
+      let failed =
         relationship === "amend"
           ? amendmentPreservationFailure(currentObjective, r.value.objective)
           : null;
+      // The contract an accepted amendment would store: the proposal plus any attachment line
+      // of the current objective it omitted. If that no longer fits the storage bound, storing
+      // it would clamp away part of the validated prefix, so it is refused like any other
+      // amendment that does not keep the objective whole.
+      const amended =
+        relationship === "amend" && !failed
+          ? retainPathLines(currentObjective, r.value.objective)
+          : r.value.objective;
+      if (relationship === "amend" && !failed && clampPrompt(amended) !== amended) {
+        failed = "attachments-exceed-limit";
+      }
       if (failed) {
         // A model can choose "amend" while returning a narrower objective - or call a pick
         // between offered options an amendment. Its objective is not adopted: the revision
@@ -473,7 +488,7 @@ async function refine(
       const objective = !mayChangeObjective
         ? currentObjective ?? current.prompt
         : relationship === "amend"
-          ? retainPathLines(currentObjective, r.value.objective)
+          ? amended
           : r.value.objective;
       const text = mayChangeObjective ? r.value.goal : current.text;
       const objectiveChanged = objective !== current.objective;

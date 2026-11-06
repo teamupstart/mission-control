@@ -67,6 +67,8 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
   # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
   initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # The same attachment as a macOS screenshot path, which has a space in it.
+  initial-spaced-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/Users/me/Desktop/Screen Shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
   # Keeps the prefix and an additive connector, then retracts: only the retracting-word rule
   # can reject it.
   retract) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
@@ -110,6 +112,7 @@ const setMode = (
     | "shrink"
     | "negate"
     | "initial-path"
+    | "initial-spaced-path"
     | "retract"
     | "initial-inline-path"
     | "initial-path-only"
@@ -305,11 +308,13 @@ test("an amendment updates the objective shown on the card and advances its vers
 });
 
 /**
- * Drive one rejected amendment and assert it resolved as steering: the contract, its card
- * text and its version stand, the queue moved on, the rationale carries the stable marker,
- * and exactly one log line names the session, revision and broken rule - never the text.
+ * Drive one rejected amendment and assert how it resolved. Either way the contract, its card
+ * text and its version stand, the queue moves on, and exactly one log line names the session,
+ * revision and broken rule - never the text. As steering it carries the stable marker, writes
+ * a steering row, and unpauses Foreman; as an intentional retraction it is `unclear`, writes
+ * no steering row, and keeps Foreman paused.
  */
-async function assertRejectedAmendmentSteers(
+async function assertRejectedAmendment(
   t: TestContext,
   opts: {
     id: string;
@@ -319,8 +324,11 @@ async function assertRejectedAmendmentSteers(
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
     rule: string;
+    /** How the rejection resolves. Steering unless the proposal retracts part of the contract. */
+    resolvesAs?: "steer" | "unclear";
   },
 ): Promise<void> {
+  const steer = (opts.resolvesAs ?? "steer") === "steer";
   const { r, s, env } = withSession(opts.id, opts.pane);
   setMode(opts.initialMode ?? "good");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
@@ -338,7 +346,7 @@ async function assertRejectedAmendmentSteers(
 
     await until(
       () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
-      "the rejected amendment to resolve as steering",
+      "the rejected amendment to resolve",
       FLOOR_MS + RUN_TIMEOUT_MS,
     );
     // Cross another complete debounce window: a resolved revision spends no further calls.
@@ -351,29 +359,37 @@ async function assertRejectedAmendmentSteers(
     assert.equal(goal.objectiveVersion, prior.objectiveVersion, "a rejected amendment advanced the objective version");
     assert.equal(goal.promptRevision, 2);
     assert.equal(goal.resolvedPromptRevision, 2, "the rejected amendment latched the queue head");
-    assert.equal(goal.relationship, "steer");
+    assert.equal(goal.relationship, steer ? "steer" : "unclear");
     assert.deepEqual(goal.pendingPrompts, []);
-    assert.match(goal.rationale ?? "", /^Treated as steering: the proposed amendment did not retain the current objective\. /);
+    assert.match(
+      goal.rationale ?? "",
+      steer
+        ? /^Treated as steering: the proposed amendment did not retain the current objective\. /
+        : /^Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering\. /,
+    );
     assert.equal(runsAsking(opts.instruction), 1, "the rejected amendment spent more than one model call");
     // The gate Foreman's prompted wrap-up checks at step 8 before it can claim the bound
-    // Workflow. A latched head made this null forever.
-    assert.deepEqual(resolvedSessionIntent(goal), {
-      objective: prior.objective,
-      objectiveVersion: prior.objectiveVersion,
-      promptRevision: 2,
-      episodeKey: `intent:${prior.objectiveVersion}:2`,
-    }, "Foreman still reads this session's intent as unresolved");
+    // Workflow. A latched head made this null forever; a retraction keeps it null on purpose.
+    assert.deepEqual(resolvedSessionIntent(goal), steer
+      ? {
+        objective: prior.objective,
+        objectiveVersion: prior.objectiveVersion,
+        promptRevision: 2,
+        episodeKey: `intent:${prior.objectiveVersion}:2`,
+      }
+      : null, steer ? "Foreman still reads this session's intent as unresolved" : "a retraction unpaused Foreman");
     assert.deepEqual(
       r.getGoalSteering(s.id, 2).map((note) => [note.revision, note.instruction, note.rationale]),
-      [[2, opts.instruction, goal.rationale]],
-      "the steering row was not recorded at the resolved revision",
+      steer ? [[2, opts.instruction, goal.rationale]] : [],
+      steer ? "the steering row was not recorded at the resolved revision" : "a retraction reached the next run as steering",
     );
 
     const rejection = logged.filter((line) => line.includes("did not preserve the objective"));
     assert.equal(rejection.length, 1, `expected one rejection log line, saw: ${JSON.stringify(logged)}`);
     assert.equal(
       rejection[0],
-      `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); treated as steering`,
+      `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); ${
+        steer ? "treated as steering" : "it retracts part of the objective, left unclear"}`,
     );
     assert.equal(
       r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
@@ -387,7 +403,7 @@ async function assertRejectedAmendmentSteers(
 }
 
 test("a schema-valid amendment that drops the current objective resolves as steering", async (t) => {
-  await assertRejectedAmendmentSteers(t, {
+  await assertRejectedAmendment(t, {
     id: "r18",
     pane: "%48",
     mode: "shrink",
@@ -396,28 +412,30 @@ test("a schema-valid amendment that drops the current objective resolves as stee
   });
 });
 
-test("an amendment that keeps the prefix but adds no additive connector resolves as steering", async (t) => {
-  await assertRejectedAmendmentSteers(t, {
+test("a retraction with no additive connector is left unclear, not treated as steering", async (t) => {
+  await assertRejectedAmendment(t, {
     id: "r19",
     pane: "%49",
     mode: "negate",
     instruction: "drop the existing test requirement",
     rule: "no-additive-connector",
+    resolvesAs: "unclear",
   });
 });
 
-test("an amendment that adds with a connector and then retracts a requirement resolves as steering", async (t) => {
-  await assertRejectedAmendmentSteers(t, {
+test("a retraction after an additive connector is left unclear, not treated as steering", async (t) => {
+  await assertRejectedAmendment(t, {
     id: "r31",
     pane: "%61",
     mode: "retract",
     instruction: "also drop the existing test requirement",
     rule: "retracting-word",
+    resolvesAs: "unclear",
   });
 });
 
 test("a path inside a sentence stays in the comparison, so dropping it resolves as steering", async (t) => {
-  await assertRejectedAmendmentSteers(t, {
+  await assertRejectedAmendment(t, {
     id: "r32",
     pane: "%62",
     initialMode: "initial-inline-path",
@@ -428,7 +446,7 @@ test("a path inside a sentence stays in the comparison, so dropping it resolves 
 });
 
 test("an amendment to an objective that is only a path line resolves as steering", async (t) => {
-  await assertRejectedAmendmentSteers(t, {
+  await assertRejectedAmendment(t, {
     id: "r33",
     pane: "%63",
     initialMode: "initial-path-only",
@@ -443,7 +461,7 @@ test("an amendment with no room left to keep an omitted attachment line resolves
   // elide the middle of a text whose head is the objective the check just validated.
   assert.equal(LONG_AMENDMENT.length > 4000 - "\n/tmp/uploads/shot.png".length, true,
     "precondition: the proposal leaves no room for the attachment line");
-  await assertRejectedAmendmentSteers(t, {
+  await assertRejectedAmendment(t, {
     id: "r34",
     pane: "%64",
     initialMode: "initial-path",
@@ -453,20 +471,23 @@ test("an amendment with no room left to keep an omitted attachment line resolves
   });
 });
 
-test("an amendment that omits an attachment line is accepted and keeps the line", async () => {
-  const { r, s, env } = withSession("r30", "%60");
-  setMode("initial-path");
+for (const attachment of [
+  { id: "r30", pane: "%60", mode: "initial-path", path: "/tmp/uploads/shot.png", ask: "also show its intent in the Foreman drawer" },
+  { id: "r35", pane: "%65", mode: "initial-spaced-path", path: "/Users/me/Desktop/Screen Shot.png", ask: "also put its intent in the Foreman drawer" },
+] as const) test(`an amendment that omits an attachment line is accepted and keeps the line (${attachment.path})`, async () => {
+  const { r, s, env } = withSession(attachment.id, attachment.pane);
+  setMode(attachment.mode);
   r.applyHook(
-    evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature\n/tmp/uploads/shot.png" }),
+    evt({ event: "UserPromptSubmit", env, prompt: `ship the Goal feature\n${attachment.path}` }),
   );
   const stop = startGoalRefiner(r);
   try {
     await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
-    assert.equal(r.getGoal(s.id)?.objective, "Ship the Goal feature end to end\n/tmp/uploads/shot.png");
+    assert.equal(r.getGoal(s.id)?.objective, `Ship the Goal feature end to end\n${attachment.path}`);
 
     setMode("amend");
     r.applyHook(
-      evt({ event: "UserPromptSubmit", env, prompt: "also show its intent in the Foreman drawer" }),
+      evt({ event: "UserPromptSubmit", env, prompt: attachment.ask }),
     );
     await until(
       () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
@@ -479,16 +500,16 @@ test("an amendment that omits an attachment line is accepted and keeps the line"
     assert.equal(goal.objectiveVersion, 2);
     assert.equal(
       goal.objective,
-      "Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\n/tmp/uploads/shot.png",
+      `Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\n${attachment.path}`,
       "the accepted amendment dropped the attachment from the durable contract",
     );
 
     // And the contract a run freezes after that amendment still names the attachment.
-    const binding = { id: "r30-binding", sessionId: s.id, noteKey: noteKeyFor(s) } as WorkflowBinding;
+    const binding = { id: `${attachment.id}-binding`, sessionId: s.id, noteKey: noteKeyFor(s) } as WorkflowBinding;
     const frozen = readWorkflowIntentSnapshot(r, binding);
     assert.ok(frozen, "a bound live conversation must produce a snapshot");
     assert.equal(frozen.rawGoal, goal.objective);
-    assert.match(frozen.rawGoal, /\n\/tmp\/uploads\/shot\.png$/);
+    assert.ok(frozen.rawGoal.endsWith(`\n${attachment.path}`), "the frozen contract lost the attachment");
   } finally {
     stop();
     setMode("good");

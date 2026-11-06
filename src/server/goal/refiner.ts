@@ -24,11 +24,12 @@ import { clampPrompt } from "../util/prompt-text.ts";
 // provider and which model - the `goal` job in `@shared/llm-jobs.ts`, edited in Settings,
 // resolved per call.
 //
-// A model verdict is never a reason to pause. An amendment whose proposed objective fails the
-// mechanical preservation check below resolves as steering: the objective and its version stand,
-// the rationale says so with a stable "Treated as steering:" marker, the reason is logged, and
-// the queue moves on. It used to stamp `unclear` and latch the head, which paused prompted
-// wrap-up with no surface and no exit - a session bound to a Workflow simply never reached it.
+// A rejected amendment never latches the queue. When its proposed objective fails the
+// mechanical preservation check below, the objective and its version stand, the reason is
+// logged, and the revision resolves: as steering, with a stable "Treated as steering:" marker,
+// unless the proposal retracts part of the contract, which resolves as `unclear` and keeps
+// wrap-up paused for a person. It used to stamp `unclear` and leave the head pending for good,
+// which paused prompted wrap-up with no exit - a session bound to a Workflow never reached it.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
@@ -215,7 +216,11 @@ function failureKey(pending: PendingRefinement): string {
  * part of that sentence.
  */
 function isPathLine(line: string): boolean {
-  return /^\/\S+$/.test(line.trim());
+  const trimmed = line.trim();
+  // A bare path with no spaces, or a multi-segment path whose last segment is a file with an
+  // extension - which is how a macOS screenshot ("/Users/me/Desktop/Screen Shot.png") arrives.
+  // The extension is what keeps a sentence that merely starts with a path out of this set.
+  return /^\/\S+$/.test(trimmed) || /^\/(?:[^/]+\/)+[^/]+\.[A-Za-z0-9]{1,8}$/.test(trimmed);
 }
 
 /**
@@ -283,11 +288,24 @@ function amendmentPreservationFailure(
   if (!/^(?:[.;,:+-]\s*)?(?:also\b|additionally\b|and\b|plus\b)/.test(addition)) {
     return "no-additive-connector";
   }
-  return /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/.test(
-    addition,
-  )
-    ? "retracting-word"
-    : null;
+  return RETRACTING.test(addition) ? "retracting-word" : null;
+}
+
+/** Language that takes something out of a contract rather than adding to it. */
+const RETRACTING =
+  /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
+
+/**
+ * Whether a rejected amendment reads as an intentional retraction: the part of the proposal
+ * past any retained prefix (or the whole proposal, when it kept none) uses retracting
+ * language. Such an instruction cannot safely be steering - the steering row would ask the
+ * next run to drop a requirement the durable contract still holds - so it is left for a
+ * person instead.
+ */
+function proposalRetracts(current: string | null, proposed: string): boolean {
+  const prior = current ? comparableObjective(current) : "";
+  const next = comparableObjective(proposed);
+  return RETRACTING.test(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */
@@ -466,19 +484,36 @@ async function refine(
       }
       if (failed) {
         // A model can choose "amend" while returning a narrower objective - or call a pick
-        // between offered options an amendment. Its objective is not adopted: the revision
-        // resolves as steering, so the contract and its version stand, and the steering note
-        // reaches the next run. The log names the session id, revision and rule, never
-        // objective text: a prompt can hold anything a person typed, and a session's title
-        // may be derived from it.
-        console.error(
-          `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); treated as steering`,
-        );
-        relationship = "steer";
-        rationale = goalLine(
-          `Treated as steering: the proposed amendment did not retain the current objective. ${r.value.reason}`,
-          480,
-        );
+        // between offered options an amendment. Its objective is never adopted, and the
+        // revision always resolves, so the queue moves on. The log names the session id,
+        // revision and rule, never objective text: a prompt can hold anything a person typed,
+        // and a session's title may be derived from it.
+        if (proposalRetracts(currentObjective, r.value.objective)) {
+          // An intentional retraction is not steering: a steering row would tell the next run
+          // to drop a requirement the durable contract still holds. It resolves as `unclear`,
+          // like a model's own unclear verdict - the contract stands, no steering row is
+          // written, and automatic wrap-up stays paused until later context or a person
+          // resolves it.
+          console.error(
+            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); it retracts part of the objective, left unclear`,
+          );
+          relationship = "unclear";
+          rationale = goalLine(
+            `Needs review: the proposed amendment would remove part of the current objective, so it was neither adopted nor treated as steering. ${r.value.reason}`,
+            480,
+          );
+        } else {
+          // Otherwise the contract and its version stand and the instruction resolves as
+          // steering, whose note reaches the next run.
+          console.error(
+            `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); treated as steering`,
+          );
+          relationship = "steer";
+          rationale = goalLine(
+            `Treated as steering: the proposed amendment did not retain the current objective. ${r.value.reason}`,
+            480,
+          );
+        }
       }
 
       // A steering or unclear classification is not authorised to shrink the completion

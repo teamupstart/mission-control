@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -14,7 +14,11 @@ process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "10";
 const fake = join(home, "claude");
 const reply = join(home, "reply.json");
-writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\ncat '${reply}'\n`);
+// While `gate` exists the fake marks `started` and holds its answer: a classification that is
+// in flight, for the test that accepts the objective underneath one.
+const gate = join(home, "gate");
+const started = join(home, "started");
+writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\nif [ -f '${gate}' ]; then touch '${started}'; while [ -f '${gate}' ]; do sleep 0.02; done; fi\ncat '${reply}'\n`);
 chmodSync(fake, 0o755);
 process.env.MISSION_CLAUDE_BIN = fake;
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
@@ -176,6 +180,42 @@ test("accepting the objective rolls back the goal and every earlier note when a 
   const accepted = registry.acceptGoalObjective(id, 100);
   assert.ok(accepted && accepted.accepted);
   assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => n.revision), [2, 3]);
+});
+
+test("a classification already in flight cannot overwrite an objective accepted as is", async () => {
+  const id = "accept-during-refine";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "B", id);
+  const before = registry.getGoal(id)!;
+  // The verdict that would do the most damage if it landed: a replacement of the objective.
+  writeFileSync(reply, JSON.stringify({ result: JSON.stringify({ relationship: "replace",
+    objective: "A smaller, different objective", goal: "Smaller", focus: "B", reason: "late verdict" }) }));
+  writeFileSync(gate, "");
+  const stop = startGoalRefiner(registry);
+  try {
+    const until = Date.now() + 10_000;
+    while (!existsSync(started) && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(existsSync(started), "the classifier call should be in flight");
+
+    const accepted = registry.acceptGoalObjective(id, 500);
+    assert.ok(accepted && accepted.accepted);
+    unlinkSync(gate);
+    // Let the held verdict return and reach the refiner's resolution check.
+    await new Promise((r) => setTimeout(r, 500));
+  } finally {
+    stop();
+    if (existsSync(gate)) unlinkSync(gate);
+    if (existsSync(started)) unlinkSync(started);
+  }
+  const goal = registry.getGoal(id)!;
+  assert.equal(goal.relationship, "steer");
+  assert.match(goal.rationale ?? "", /^Accepted by you:/);
+  assert.equal(goal.objective, before.objective);
+  assert.equal(goal.text, before.text);
+  assert.equal(goal.objectiveVersion, before.objectiveVersion);
+  assert.equal(goal.resolvedPromptRevision, 2);
+  assert.deepEqual(getSessionGoal(id)!.objective, before.objective, "durable objective unchanged");
+  assert.deepEqual(readSessionGoalSteering(id, 2).map((n) => [n.revision, n.instruction]), [[2, "B"]]);
 });
 
 test("revision controls ordering and cutoff even when timestamps tie; pruning protects live keys", () => {

@@ -367,12 +367,16 @@ async function refine(
       }
       // Newer prompts may arrive while the model is thinking. That is safe: they append after
       // this durable head. Only abandon the result if the head or the objective it was judged
-      // against changed, which means another reconciliation won the race.
+      // against changed, which means another reconciliation won the race - or if this
+      // revision was resolved meanwhile. A person accepting the objective as is resolves it
+      // without moving `promptRevision` or `objectiveVersion`, so the resolved revision is the
+      // fact that says this verdict arrived too late to apply.
       const current = registry.getGoal(s.id);
       if (
         current?.pendingPrompts[0]?.revision !== prompt.revision ||
         current.pendingPrompts[0].prompt !== prompt.prompt ||
-        current.objectiveVersion !== goal.objectiveVersion
+        current.objectiveVersion !== goal.objectiveVersion ||
+        current.resolvedPromptRevision >= prompt.revision
       ) return;
 
       const initial = prompt.revision === 1;

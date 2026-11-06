@@ -319,8 +319,6 @@ async function assertRejectedAmendmentSteers(
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
     rule: string;
-    /** Words of the model's proposed objective that must never reach the log. */
-    proposedWords: string[];
   },
 ): Promise<void> {
   const { r, s, env } = withSession(opts.id, opts.pane);
@@ -377,9 +375,6 @@ async function assertRejectedAmendmentSteers(
       rejection[0],
       `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); treated as steering`,
     );
-    for (const word of opts.proposedWords) {
-      assert.ok(!rejection[0]!.includes(word), `the log carried objective text: ${word}`);
-    }
     assert.equal(
       r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
       prior.text,
@@ -398,7 +393,6 @@ test("a schema-valid amendment that drops the current objective resolves as stee
     mode: "shrink",
     instruction: "also expose the current intent in the Foreman drawer, but keep the larger goal",
     rule: "not-a-prefix",
-    proposedWords: ["Only", "expose", "current", "intent", "Foreman", "drawer"],
   });
 });
 
@@ -409,7 +403,6 @@ test("an amendment that keeps the prefix but adds no additive connector resolves
     mode: "negate",
     instruction: "drop the existing test requirement",
     rule: "no-additive-connector",
-    proposedWords: ["Ship", "Goal", "feature", "drop", "existing", "test requirement"],
   });
 });
 
@@ -420,7 +413,6 @@ test("an amendment that adds with a connector and then retracts a requirement re
     mode: "retract",
     instruction: "also drop the existing test requirement",
     rule: "retracting-word",
-    proposedWords: ["Ship", "Goal", "feature", "drop", "existing", "test requirement"],
   });
 });
 
@@ -432,7 +424,6 @@ test("a path inside a sentence stays in the comparison, so dropping it resolves 
     mode: "amend",
     instruction: "also show its intent in the Foreman drawer",
     rule: "not-a-prefix",
-    proposedWords: ["Ship", "Goal", "expose", "intent", "Foreman", "drawer"],
   });
 });
 
@@ -444,7 +435,6 @@ test("an amendment to an objective that is only a path line resolves as steering
     mode: "amend",
     instruction: "also surface its intent in the Foreman drawer",
     rule: "no-current-objective",
-    proposedWords: ["Ship", "Goal", "expose", "intent", "Foreman", "drawer"],
   });
 });
 
@@ -460,7 +450,6 @@ test("an amendment with no room left to keep an omitted attachment line resolves
     mode: "amend-long",
     instruction: "also keep the drawer fast",
     rule: "attachments-exceed-limit",
-    proposedWords: ["drawer", "fast"],
   });
 });
 

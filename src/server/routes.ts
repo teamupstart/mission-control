@@ -1,3 +1,4 @@
+import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
   DeleteResidentMcpServerSchema,
@@ -124,6 +125,8 @@ import {
   type McpCreateTaskV3,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpListTasksSchema,
+  McpGetTaskSchema,
   type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
@@ -4929,6 +4932,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, McpCreateTaskV3Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true, true);
+  });
+
+  // Same token authority as task creation/update. These read durable task facts only,
+  // never private session state, so session-control capability is intentionally not used.
+  app.post("/mcp/tasks/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const query = parsed.data;
+    if (query.repository !== undefined) {
+      const selected = await resolveTaskRepositorySelector(query.repository);
+      if (!selected.ok) return c.json({ error: selected.error }, selected.status);
+      const resolved = await resolveTaskRepoRoot(selected.path);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      query.repository = resolved.repoRoot;
+    }
+    try {
+      return c.json(readTaskPage(query));
+    } catch (error) {
+      if (error instanceof InvalidTaskCursorError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/mcp/tasks/get", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpGetTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = tasks.getDurable(parsed.data.taskId);
+    return task ? c.json(taskReadSnapshot(task)) : c.json({ error: "no such task" }, 404);
   });
 
   app.post("/mcp/tasks/:id/update", async (c) => {

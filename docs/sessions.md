@@ -2113,6 +2113,23 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
+  `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
+  `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
+  Repository selectors accept an absolute checkout path or unique directory name; worktrees
+  resolve to their owning repository. Omitted filters read all tasks. Returns `{tasks, nextCursor}`
+  in descending creation-time order with descending task ID breaking ties. `limit` defaults to
+  50, with a maximum of 100. Pass `nextCursor` as `cursor` with unchanged filters to continue.
+  Pages are live rather than a frozen snapshot; newly inserted tasks before the cursor appear
+  on a fresh listing. Intent is omitted unless `includeIntent: true` is supplied.
+- `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
+  plan inputs, regardless of status or whether the task remains on the live board. Both read
+  tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  durable work-episode bindings, so running work can report a PR before completion. See
+  [MCP task-read access](security.md#mcp-task-reads) for the security contract.
+  Neither tool launches, modifies, or reorders work.
 - `update_task(taskId, ...)` - edit a task still in the backlog, using the same configuration
   fields and repository selectors as creation, plus `title` and `intent`. Only supplied fields
   change. Null `model` or `effort` restores inheritance; changing `agent` clears either override

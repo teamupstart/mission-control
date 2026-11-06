@@ -17,6 +17,18 @@ route and delegates to `TaskManager.remove`, the same owner used by dashboard de
 tasks are refused, and archive preservation and resource cleanup precede durable removal and
 the existing `task_remove` event.
 
+The read-only MCP `list_tasks` and `get_task` tools use
+`POST /mcp/tasks/list` and `POST /mcp/tasks/get` routes. POST carries validated query bodies;
+these routes perform no task mutations. Their access contract is defined in
+[MCP task reads](security.md#mcp-task-reads). Reads use
+SQLite task records rather than the live Registry, so completed tasks remain discoverable after
+restart. Listing reuses the durable reader's historical normalization, filters saved task facts,
+and returns bounded pages ordered by descending creation time and ID. The cursor carries the
+last ordering key and a digest of the filters; it does not depend on the anchor row still existing.
+The current implementation reads and normalizes the durable task collection before paging;
+`limit` bounds the response, not the storage scan. See the [MCP reference](sessions.md#review-channel-mcp)
+for filters and compact/full response options.
+
 The [task manager](../src/server/tasks.ts) owns task operations and dispatch integration.
 The [queue manager](../src/server/queue.ts) provides work-queue state. Recurring missions
 are managed through the [schedule manager](../src/server/schedules/manager.ts) and its

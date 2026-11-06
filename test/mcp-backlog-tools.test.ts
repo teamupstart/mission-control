@@ -9,11 +9,14 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Task } from "../src/shared/types.ts";
+import { TASK_STATUSES, type Task } from "../src/shared/types.ts";
 import { DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
 import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
-import { McpTaskConfigurationSchema } from "../src/shared/protocol.ts";
+import { McpTaskConfigurationSchema, type McpTaskSnapshot } from "../src/shared/protocol.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import type { TaskArchiveGate } from "../src/server/tasks.ts";
+
+ensureNativeStateLockAddon();
 
 const home = mkdtempSync(join(tmpdir(), "mission-mcp-backlog-"));
 const repos = join(home, "repos");
@@ -87,7 +90,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
     } as Record<string, string>,
     stderr: "pipe",
   }));
-  async function call(name: string, args: Record<string, unknown>, error?: RegExp) {
+  async function call<T = Task & { repository: string; additionalRepositories: string[] }>(name: string, args: Record<string, unknown>, error?: RegExp) {
     const result = await client.callTool({ name, arguments: args });
     const content = result.content as Array<{ type: string; text: string }>;
     const text = content.filter((item) => item.type === "text").map((item) => item.text).join("\n");
@@ -96,7 +99,7 @@ async function fixture(t: TestContext, oldDaemon = false, archives?: TaskArchive
       assert.match(text, error);
       return null;
     }
-    return JSON.parse(text) as Task & { repository: string; additionalRepositories: string[] };
+    return JSON.parse(text) as T;
   }
   async function create(over: Record<string, unknown> = {}) {
     return (await call("create_task", { title: "Backlog work", intent: "Deliver the requested change", repository: repoA, ...over }))!;
@@ -150,6 +153,56 @@ test("MCP configuration and exact local plan inputs coexist without changing eit
   const edited = await f.call("update_task", { taskId: created.id, title: "Retain exact input", priority: "high" });
   assert.equal(edited!.priority, "high");
   assert.deepEqual(getTask(created.id)!.planInputs, planInputs);
+  const read = (await f.call("get_task", { taskId: created.id }))!;
+  assert.deepEqual(read.planInputs, planInputs);
+  assert.deepEqual(read.dependencies, stored.dependencies);
+
+  await t.test("list_tasks returns saved configuration, exact plan inputs and the running task's durable PR", async () => {
+    const labels = ["mcp", "read-payload"];
+    await f.call("update_task", { taskId: created.id, labels, enabled: false });
+    const sessionId = `sdk:listed-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/1369";
+    // Persist execution facts without launching a session. The PR exists only in the
+    // work-episode binding: a running task has no completion outcome to fall back to.
+    openDb().prepare("UPDATE tasks SET status = 'running', session_id = ? WHERE id = ?")
+      .run(sessionId, created.id);
+    openDb().prepare(`INSERT INTO task_work_episode_bindings
+      (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "listed-native-id", prUrl);
+
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels }))!;
+    assert.equal(page.tasks.length, 1);
+    assert.equal(page.nextCursor, null);
+    const listed = page.tasks[0]!;
+    const expected = {
+      id: created.id,
+      title: "Retain exact input",
+      status: "running",
+      kind: "bugfix",
+      repository: repoA,
+      additionalRepositories: [],
+      agent: "codex",
+      model: "gpt-6-sol",
+      effort: "high",
+      advisorModel: null,
+      workflowId: null,
+      planPolicy: stored.planPolicy,
+      priority: "high",
+      labels,
+      enabled: false,
+      dependencies: stored.dependencies,
+      planInputs,
+      sessionId,
+      prUrl,
+      outcomeUrl: null,
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      assert.deepEqual(listed[field as keyof ReadTask], value, `list_tasks preserves ${field}`);
+    }
+    assert.equal(Object.hasOwn(listed, "intent"), false, "the default list remains compact");
+    const full = (await f.call<TaskPage>("list_tasks", { repository: repoA, status: "running", labels, includeIntent: true }))!;
+    assert.deepEqual(full.tasks, [{ ...listed, intent: stored.intent }], "full lists retain every summary field and add intent");
+  });
 });
 
 test("MCP advertises and persists every backlog configuration field without launching", async (t) => {
@@ -589,5 +642,232 @@ test("MCP plan conversion chooses storage-compatible workflows unless explicitly
     const explicitNone = await f.create({ kind: "ship", workflowId: null });
     const withoutWorkflow = await f.call("update_task", { taskId: explicitNone.id, kind: "plan", planStorage, workflowId: null });
     assert.equal(withoutWorkflow?.workflowId, null);
+  }
+});
+
+type ReadTask = Omit<McpTaskSnapshot, "repoRoot"> & { repository: string; additionalRepositories: string[] };
+type TaskPage = { tasks: ReadTask[]; nextCursor: string | null };
+
+test("read-only MCP task tools filter and page durable tasks without writes or session control", async (t) => {
+  const f = await fixture(t);
+  const label = `read-${randomUUID().slice(0, 8)}`;
+  const prerequisite = await f.create({ workflowId: null });
+  const config = { workflowId: null, labels: [label, "api"], priority: "high", enabled: false,
+    kind: "bugfix", dependsOnTaskIds: [prerequisite.id] };
+  const wanted = [];
+  for (let i = 0; i < 3; i++) wanted.push(await f.create({ ...config, title: `Read ${i}` }));
+  // Each near-match differs in exactly one filter, so dropping any predicate fails.
+  for (const patch of [
+    { repository: repoB }, { labels: [label] }, { priority: null }, { enabled: true },
+    { kind: "ship" }, { dependsOnTaskIds: [] },
+  ]) await f.create({ ...config, ...patch });
+  const running = await f.create(config);
+  openDb().prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(running.id);
+  // Identical timestamps exercise the id tie-breaker, not the clock's resolution.
+  for (const task of wanted) openDb().prepare("UPDATE tasks SET created_at = 1000 WHERE id = ?").run(task.id);
+  const query = { repository: "primary", status: "backlog", kind: "bugfix", labels: [label, "api"],
+    priority: "high", enabled: false, dependsOnTaskId: prerequisite.id, limit: 1 };
+  const before = listTasks();
+  const board = f.registry.snapshot();
+  const changes = openDb().prepare("SELECT total_changes() AS n").get();
+  const events: unknown[] = [];
+  const unsub = f.registry.subscribe((event) => {
+    if (event.type.startsWith("task_") || event.type.startsWith("session_")) events.push(event);
+  });
+  t.after(unsub);
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = (await f.call<TaskPage>("list_tasks", { ...query, ...(cursor ? { cursor } : {}) }))!;
+    assert.equal(page.tasks.length, 1);
+    const task = page.tasks[0]!;
+    assert.equal(Object.hasOwn(task, "intent"), false);
+    assert.equal(task.repository, repoA);
+    assert.deepEqual(task.labels, [label, "api"]);
+    assert.equal(task.sessionId, null);
+    assert.equal(task.outcomeUrl, null);
+    ids.push(task.id);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(ids, wanted.map((task) => task.id).sort().reverse());
+  const full = (await f.call<TaskPage>("list_tasks", { ...query, limit: 100, includeIntent: true }))!;
+  assert.equal(full.nextCursor, null);
+  assert.equal(full.tasks[0]!.intent, wanted[0]!.intent);
+  const empty = (await f.call<TaskPage>("list_tasks", { labels: [randomUUID()] }))!;
+  assert.deepEqual(empty, { tasks: [], nextCursor: null });
+  assert.deepEqual(listTasks(), before, "no task configuration, status, timestamp or rank changes");
+  assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "no SQLite writes");
+  const after = f.registry.snapshot();
+  assert.deepEqual(after.sessions, board.sessions, "no sessions launched");
+  assert.deepEqual(after.tasks, board.tasks, "no board task mutations");
+  assert.deepEqual(events, [], "reads publish no task or session events");
+});
+
+test("get_task reads full configuration in every status, including off-board completed tasks", async (t) => {
+  const f = await fixture(t);
+  const advertised = (await f.client.listTools()).tools;
+  for (const name of ["list_tasks", "get_task"]) {
+    const tool = advertised.find((tool) => tool.name === name)!;
+    assert.match(tool.description!, /read-only/i);
+    assert.equal(tool.annotations?.readOnlyHint, true);
+    assert.equal(tool.annotations?.destructiveHint, false);
+  }
+  const label = `statuses-${randomUUID().slice(0, 8)}`;
+  for (const status of TASK_STATUSES) {
+    const created = await f.create({ title: `Read ${status}`, intent: `Full ${status} intent`, labels: [label],
+      workflowId: null, agent: "codex", model: "gpt-6-sol", effort: "high", additionalRepositories: [repoB] });
+    // Update storage directly, leaving the board stale, as with records not restored at startup.
+    const sessionId = `sdk:private-${created.id}`;
+    const prUrl = "https://github.com/example/repo/pull/42";
+    const outcomeUrl = status === "running" ? null : prUrl;
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ?, outcome_url = ? WHERE id = ?")
+      .run(status, sessionId, outcomeUrl, created.id);
+    if (status === "running") {
+      openDb().prepare(`INSERT INTO task_work_episode_bindings
+        (task_id, episode_id, session_id, agent_session_id, pr_url, bound_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, 1)`).run(created.id, randomUUID(), sessionId, "private-native-id", prUrl);
+    }
+    const before = getTask(created.id)!;
+    const changes = openDb().prepare("SELECT total_changes() AS n").get();
+    const read = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    for (const [key, value] of Object.entries(created)) {
+      if (["status", "dependsOnTaskIds", "dependsOnCurrentSession", "planPrerequisites"].includes(key)) continue;
+      assert.deepEqual(read[key as keyof ReadTask], value, `get_task preserves ${key}`);
+    }
+    assert.equal(read.status, status);
+    assert.equal(read.sessionId, sessionId);
+    assert.equal(read.outcomeUrl, outcomeUrl);
+    assert.equal(read.prUrl, prUrl, "running tasks expose durable PR bindings before an outcome exists");
+    assert.equal(read.repoPrs[0]?.prUrl, prUrl);
+    assert.equal(Object.hasOwn(read, "transcript"), false);
+    const page = (await f.call<TaskPage>("list_tasks", { status, labels: [label], repository: "secondary" }))!;
+    assert.deepEqual(page.tasks.map((task) => task.id), [created.id], "status and secondary repo match durable rows");
+    assert.deepEqual(getTask(created.id), before);
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), changes, "get_task and list_tasks perform no writes");
+  }
+  await f.call("get_task", { taskId: "missing-task" }, /404.*no such task/);
+});
+
+test("task read cursors survive deletion and newer inserts and reject invalid or changed-filter requests", async (t) => {
+  const f = await fixture(t);
+  const label = `cursor-${randomUUID().slice(0, 8)}`;
+  const older = await f.create({ labels: [label], workflowId: null });
+  const newer = await f.create({ labels: [label], workflowId: null });
+  openDb().prepare("UPDATE tasks SET created_at = 100 WHERE id = ?").run(older.id);
+  openDb().prepare("UPDATE tasks SET created_at = 200 WHERE id = ?").run(newer.id);
+  const first = (await f.call<TaskPage>("list_tasks", { labels: [label], limit: 1 }))!;
+  assert.deepEqual(first.tasks.map((task) => task.id), [newer.id]);
+  assert.ok(first.nextCursor);
+  await f.call("delete_task", { taskId: newer.id });
+  await f.create({ labels: [label], workflowId: null });
+  const next = (await f.call<TaskPage>("list_tasks", { labels: [label], cursor: first.nextCursor }))!;
+  assert.deepEqual(next.tasks.map((task) => task.id), [older.id]);
+  assert.equal(next.nextCursor, null);
+  await f.call("list_tasks", { labels: [label], enabled: false, cursor: first.nextCursor }, /Invalid task cursor or changed filters/);
+  await f.call("list_tasks", { cursor: "not-a-cursor" }, /Invalid task cursor/);
+  for (const body of [{ labels: [label], enabled: false, cursor: first.nextCursor }, { cursor: "not-a-cursor" }]) {
+    const response = await f.app.request("/mcp/tasks/list", { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid task cursor or changed filters" });
+  }
+  for (const args of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { status: "unknown" }, { kind: "unknown" },
+    { enabled: "false" }, { labels: "api" }, { priority: "unknown" }, { taskId: "ignored" }]) {
+    await f.call("list_tasks", args, /Invalid|Unrecognized|Number/);
+  }
+  const unset = (await f.call<TaskPage>("list_tasks", { labels: [label], priority: null }))!;
+  assert.equal(unset.tasks.length, 2);
+});
+
+test("task read HTTP routes enforce token authentication and independent body validation", async (t) => {
+  const f = await fixture(t);
+  for (const [route, body] of [["list", {}], ["get", { taskId: "missing" }]] as const) {
+    for (const token of [undefined, "wrong-token"]) {
+      const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { "x-harness-token": token } : {}) },
+        body: JSON.stringify(body) });
+      assert.equal(response.status, 401);
+    }
+  }
+  for (const [route, body] of [["list", { limit: 101 }], ["list", { status: "unknown" }],
+    ["list", { cursor: "invalid" }], ["get", {}], ["get", { taskId: " " }], ["get", { taskId: "id", intent: "no writes" }]] as const) {
+    const response = await f.app.request(`/mcp/tasks/${route}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400, await response.text());
+  }
+});
+
+test("list_tasks canonicalizes linked worktree repository selectors", async (t) => {
+  const f = await fixture(t);
+  const root = gitRepo(`read-worktree-${randomUUID().slice(0, 8)}`);
+  execFileSync("git", ["-C", root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"]);
+  const worktree = join(home, `linked-${randomUUID()}`);
+  execFileSync("git", ["-C", root, "worktree", "add", "--detach", worktree], { stdio: "pipe" });
+  const first = await f.create({ repository: root, workflowId: null });
+  const second = await f.create({ repository: root, workflowId: null });
+  const fromWorktree = (await f.call<TaskPage>("list_tasks", { repository: worktree, limit: 1 }))!;
+  assert.equal(fromWorktree.tasks[0]!.repository, root);
+  assert.ok(fromWorktree.nextCursor);
+  const fromRoot = (await f.call<TaskPage>("list_tasks", { repository: root, cursor: fromWorktree.nextCursor }))!;
+  assert.deepEqual([...fromWorktree.tasks, ...fromRoot.tasks].map((task) => task.id).sort(), [first.id, second.id].sort());
+  assert.equal(fromRoot.nextCursor, null);
+});
+
+test("read tools include durable attached-repository PRs without live session feedback", async (t) => {
+  const f = await fixture(t);
+  const labels = [`attached-pr-${randomUUID().slice(0, 8)}`];
+  const created = await f.create({ agent: "codex", additionalRepositories: [repoB], labels, workflowId: null });
+  const sessionId = `sdk:attached-pr-${created.id}`;
+  const episodeId = randomUUID();
+  const abandonedEpisodeId = randomUUID();
+  const attachedPrUrl = "https://github.com/example/secondary/pull/1369";
+  openDb().prepare(`INSERT INTO task_work_episode_bindings
+    (task_id, episode_id, session_id, agent_session_id, bound_at, updated_at)
+    VALUES (?, ?, ?, 'attached-native-id', 1, 1)`).run(created.id, episodeId, sessionId);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'attached-head', NULL, 1)`)
+    .run(episodeId, repoB, sessionId, created.id, attachedPrUrl);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'abandoned-head', NULL, 2)`)
+    .run(abandonedEpisodeId, repoB, sessionId, created.id, "https://github.com/example/secondary/pull/1368");
+  const abandonedRow = openDb().prepare("SELECT * FROM work_episode_prs WHERE task_id = ? AND episode_id = ? AND repo_root = ?");
+  const abandonedBefore = abandonedRow.get(created.id, abandonedEpisodeId, repoB);
+  assert.equal(f.registry.getTask(created.id)!.extraRepos[0]!.prUrl, null,
+    "the live board has not loaded the durable attached PR");
+  assert.deepEqual(f.registry.snapshot().sessions, [], "no session or live PR feedback is needed");
+
+  for (const stage of [
+    { name: "current open PR", episode: episodeId, status: "running", prUrl: attachedPrUrl, prState: "open", mergedAt: null },
+    { name: "abandoned unmerged PR", episode: randomUUID(), status: "running", prUrl: null, prState: null, mergedAt: null },
+    { name: "merged PR from a previous episode", episode: randomUUID(), status: "done", prUrl: attachedPrUrl, prState: "merged", mergedAt: 1000 },
+  ] as const) {
+    openDb().prepare("UPDATE task_work_episode_bindings SET episode_id = ? WHERE task_id = ?")
+      .run(stage.episode, created.id);
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ? WHERE id = ?")
+      .run(stage.status, sessionId, created.id);
+    openDb().prepare("UPDATE work_episode_prs SET pr_state = ?, merged_at = ? WHERE task_id = ? AND episode_id = ? AND repo_root = ?")
+      .run(stage.mergedAt === null ? "open" : "merged", stage.mergedAt, created.id, episodeId, repoB);
+    const writesBefore = openDb().prepare("SELECT total_changes() AS n").get();
+    const task = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoB, labels }))!;
+    assert.equal(page.tasks.length, 1);
+    const expectedRepos = [
+      { repoRoot: repoA, primary: true, prUrl: null, prState: null, mergedAt: null, feedback: null },
+      { repoRoot: repoB, primary: false, prUrl: stage.prUrl, prState: stage.prState, mergedAt: stage.mergedAt, feedback: null },
+    ];
+    for (const [tool, result] of [["get_task", task], ["list_tasks", page.tasks[0]!]] as const) {
+      assert.equal(result.id, created.id);
+      assert.equal(result.status, stage.status);
+      assert.equal(result.prUrl, null, "the secondary PR is not substituted for the primary");
+      assert.equal(result.outcomeUrl, null, "there is no outcome URL to fall back to");
+      assert.deepEqual(result.repoPrs, expectedRepos, `${tool}: ${stage.name}`);
+    }
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), writesBefore,
+      "loading durable PR bindings is read-only");
+    assert.deepEqual(abandonedRow.get(created.id, abandonedEpisodeId, repoB), abandonedBefore,
+      "the distinct abandoned open PR is preserved and never returned");
   }
 });

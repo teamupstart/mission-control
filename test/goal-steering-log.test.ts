@@ -38,9 +38,14 @@ function session(id: string) {
   return registry;
 }
 
-async function classify(registry: InstanceType<typeof Registry>, id: string, relationship: IntentRelationship) {
+async function classify(
+  registry: InstanceType<typeof Registry>,
+  id: string,
+  relationship: IntentRelationship,
+  objective = relationship === "amend" ? "Ship the feature. Also add keyboard access" : "A new objective",
+) {
   writeFileSync(reply, JSON.stringify({ result: JSON.stringify({ relationship,
-    objective: relationship === "amend" ? "Ship the feature. Also add keyboard access" : "A new objective",
+    objective,
     goal: "A compact goal", focus: "Next step", reason: "Change the method, not the outcome" }) }));
   const revision = registry.getGoal(id)!.promptRevision;
   const stop = startGoalRefiner(registry);
@@ -70,6 +75,23 @@ test("only a steer verdict appends a durable instruction from the real refiner",
       assert.deepEqual(readSessionGoalSteering(id, 2), notes, "durable reader retains the classified note");
     }
   }
+});
+
+test("an amendment that fails the preservation check appends one steering row with the marker", async (t) => {
+  const id = "rejected-amendment";
+  const registry = session(id);
+  const instruction = "B";
+  registry.captureAcceptedPrompt(id, instruction, id);
+  t.mock.method(console, "error", () => {});
+  await classify(registry, id, "amend", "Implement mockup B");
+  const notes = readSessionGoalSteering(id, 2);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0]!.revision, 2);
+  assert.equal(notes[0]!.instruction, instruction);
+  assert.equal(notes[0]!.relationship, "steer");
+  assert.match(notes[0]!.rationale, /^Treated as steering: the proposed amendment did not retain the current objective\. /);
+  assert.equal(registry.getGoal(id)!.objective, "Ship the feature");
+  assert.equal(registry.getGoal(id)!.relationship, "steer");
 });
 
 for (const [reason, relationship, resolvedPromptRevision] of [

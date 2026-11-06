@@ -3,11 +3,12 @@ import { runJobStructured } from "../llm/jobs.ts";
 import { createLimiter, parseModelJson } from "../llm/structured.ts";
 import { unref } from "../util/timers.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
-import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
+import { GOAL_UNSUPPORTED, goalLine } from "@shared/goal.ts";
 import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
+import { clampPrompt } from "../util/prompt-text.ts";
 
 // Tier 2: reconcile each human prompt with the durable session objective, in captured
 // revision order, with one headless model call on the cheap tier.
@@ -22,6 +23,12 @@ import { readGoalWindow } from "./source.ts";
 // automatic completion stays paused at the unresolved revision. What IS configurable is which
 // provider and which model - the `goal` job in `@shared/llm-jobs.ts`, edited in Settings,
 // resolved per call.
+//
+// A model verdict is never a reason to pause. An amendment whose proposed objective fails the
+// mechanical preservation check below resolves as steering: the objective and its version stand,
+// the rationale says so with a stable "Treated as steering:" marker, the reason is logged, and
+// the queue moves on. It used to stamp `unclear` and latch the head, which paused prompted
+// wrap-up with no surface and no exit - a session bound to a Workflow simply never reached it.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
@@ -202,25 +209,81 @@ function failureKey(pending: PendingRefinement): string {
   return `${pending.prompt.revision}:${pending.prompt.prompt ?? "<lost>"}:${pending.goal.promptRevision}`;
 }
 
-function comparableObjective(value: string): string {
-  return value.replace(/\s+/g, " ").trim().toLowerCase();
+/**
+ * A line that is nothing but an absolute filesystem path - an attachment the human pasted
+ * under their request, such as a screenshot. Bare paths only: a path inside a sentence is
+ * part of that sentence.
+ */
+function isPathLine(line: string): boolean {
+  return /^\/\S+$/.test(line.trim());
 }
+
+/**
+ * The objective as the preservation check reads it. Path lines are dropped on both sides so
+ * a model that restates the request without its attachment line is not judged to have
+ * dropped the request; the stored text is never edited here (see `retainPathLines`).
+ */
+function comparableObjective(value: string): string {
+  return value
+    .split("\n")
+    .filter((line) => !isPathLine(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Every path line of the current objective that an accepted amendment omits, appended in
+ * original order. The comparison ignores those lines, so without this a model could drop an
+ * attachment from the durable contract - and from the next frozen run contract - merely by
+ * leaving it out. Re-clamped because the proposal already used the whole storage bound;
+ * `clampPrompt` keeps the tail, which is where the retained lines go.
+ */
+function retainPathLines(current: string | null, proposed: string): string {
+  if (!current) return proposed;
+  const present = new Set(proposed.split("\n").filter(isPathLine).map((line) => line.trim()));
+  const missing: string[] = [];
+  for (const line of current.split("\n")) {
+    const path = line.trim();
+    if (!isPathLine(path) || present.has(path)) continue;
+    present.add(path);
+    missing.push(path);
+  }
+  return missing.length ? clampPrompt(`${proposed}\n${missing.join("\n")}`) : proposed;
+}
+
+/** Which mechanical rule an amendment broke. Named so the log can say, never the text. */
+type PreservationFailure =
+  | "no-current-objective"
+  | "not-a-prefix"
+  | "no-additive-connector"
+  | "retracting-word";
 
 /**
  * Amendments may extend the completion contract, never rewrite it from scratch. Requiring
  * the prior contract as the explicit prefix makes preservation mechanically checkable
  * instead of trusting a schema-valid model classification to preserve it semantically.
+ *
+ * Returns null when the objective is preserved, otherwise the rule that failed.
  */
-function amendmentPreservesObjective(current: string | null, proposed: string): boolean {
-  if (!current) return false;
-  const prior = comparableObjective(current);
+function amendmentPreservationFailure(
+  current: string | null,
+  proposed: string,
+): PreservationFailure | null {
+  const prior = current ? comparableObjective(current) : "";
+  if (!prior) return "no-current-objective";
   const next = comparableObjective(proposed);
-  if (!prior || !next.startsWith(prior)) return false;
+  if (!next.startsWith(prior)) return "not-a-prefix";
   const addition = next.slice(prior.length).trim();
-  if (!/^(?:[.;,:+-]\s*)?(?:also\b|additionally\b|and\b|plus\b)/.test(addition)) return false;
-  return !/(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/.test(
+  if (!/^(?:[.;,:+-]\s*)?(?:also\b|additionally\b|and\b|plus\b)/.test(addition)) {
+    return "no-additive-connector";
+  }
+  return /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/.test(
     addition,
-  );
+  )
+    ? "retracting-word"
+    : null;
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */
@@ -381,29 +444,37 @@ async function refine(
       else if (relationship === "initial") relationship = "unclear";
 
       const currentObjective = current.objective ?? current.text ?? null;
-      if (
-        relationship === "amend" &&
-        !amendmentPreservesObjective(currentObjective, r.value.objective)
-      ) {
-        // A model can choose the right relationship while returning a narrower objective.
-        // Keep this revision unresolved at the queue head so later steering cannot make
-        // automatic wrap-up eligible against the older or proposed smaller contract.
-        failedFor.set(s.id, failureKey(pending));
-        registry.upsertGoal(s.id, {
-          relationship: "unclear",
-          rationale:
-            "The proposed amendment did not explicitly preserve the current objective; automatic wrap-up remains paused.",
-        });
-        return;
+      let rationale = r.value.reason;
+      const failed =
+        relationship === "amend"
+          ? amendmentPreservationFailure(currentObjective, r.value.objective)
+          : null;
+      if (failed) {
+        // A model can choose "amend" while returning a narrower objective - or call a pick
+        // between offered options an amendment. Its objective is not adopted: the revision
+        // resolves as steering, so the contract and its version stand, and the steering note
+        // reaches the next run. The log names the session id, revision and rule, never
+        // objective text: a prompt can hold anything a person typed, and a session's title
+        // may be derived from it.
+        console.error(
+          `[goal] ${s.id}: amendment at revision ${prompt.revision} did not preserve the objective (${failed}); treated as steering`,
+        );
+        relationship = "steer";
+        rationale = goalLine(
+          `Treated as steering: the proposed amendment did not retain the current objective. ${r.value.reason}`,
+          480,
+        );
       }
 
       // A steering or unclear classification is not authorised to shrink the completion
       // contract. Amend and replace are the only relationships that may change it.
       const mayChangeObjective =
         relationship === "amend" || relationship === "replace" || relationship === "initial";
-      const objective = mayChangeObjective
-        ? r.value.objective
-        : currentObjective ?? current.prompt;
+      const objective = !mayChangeObjective
+        ? currentObjective ?? current.prompt
+        : relationship === "amend"
+          ? retainPathLines(currentObjective, r.value.objective)
+          : r.value.objective;
       const text = mayChangeObjective ? r.value.goal : current.text;
       const objectiveChanged = objective !== current.objective;
       const objectiveVersion =
@@ -421,7 +492,7 @@ async function refine(
         // Resolving an older transition must not make the drawer appear to move backwards.
         focus: current.pendingPrompts.length === 1 ? r.value.focus : current.focus,
         relationship,
-        rationale: r.value.reason,
+        rationale,
         objectiveVersion,
         resolvedPromptRevision: prompt.revision,
         pendingPrompts: current.pendingPrompts.slice(1),

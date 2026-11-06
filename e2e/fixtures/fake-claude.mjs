@@ -713,6 +713,13 @@ function headlessAnswer(prompt) {
         goal: "Ship the steering context feature", focus: objective,
         reason: "The human deferred a step while its harness is broken" });
     }
+    // A pick between offered options, misread as an amendment whose objective does not keep
+    // the current one as its prefix: the shape that used to latch a session's goal for good.
+    if (objective.includes("E2E_AMEND_SHRINK")) {
+      return JSON.stringify({ relationship: "amend", objective: "Implement option B only",
+        goal: "Implement option B only", focus: "Implement option B",
+        reason: "The human picked option B" });
+    }
     return JSON.stringify({
       relationship: "initial",
       objective,

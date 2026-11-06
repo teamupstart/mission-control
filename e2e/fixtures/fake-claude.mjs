@@ -566,6 +566,21 @@ function foremanUsageFailure(prompt) {
 }
 
 function headlessAnswer(prompt) {
+  // Foreman's completion verifier, for a session whose objective carries the marker. Without
+  // a verdict the worker can never reach a Workflow claim, so a spec that needs Foreman itself
+  // to start a bound Workflow puts this marker in the dispatched request.
+  if (
+    prompt.startsWith("You are Foreman, verifying one unit of work")
+    && prompt.includes("E2E_VERIFY_COMPLETE")
+  ) {
+    return JSON.stringify({
+      complete: true,
+      summary: "The requested change is present in the diff",
+      gaps: [],
+      resolved: [],
+      confidence: 0.95,
+    });
+  }
   if (
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
     && prompt.includes("Compact workflow intent without rewriting it.")
@@ -712,6 +727,13 @@ function headlessAnswer(prompt) {
       return JSON.stringify({ relationship: "steer", objective: "Ship the steering context feature",
         goal: "Ship the steering context feature", focus: objective,
         reason: "The human deferred a step while its harness is broken" });
+    }
+    // A pick between offered options, misread as an amendment whose objective does not keep
+    // the current one as its prefix: the shape that used to latch a session's goal for good.
+    if (objective.includes("E2E_AMEND_SHRINK")) {
+      return JSON.stringify({ relationship: "amend", objective: "Implement option B only",
+        goal: "Implement option B only", focus: "Implement option B",
+        reason: "The human picked option B" });
     }
     return JSON.stringify({
       relationship: "initial",

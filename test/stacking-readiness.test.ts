@@ -76,6 +76,8 @@ interface Script {
   ancestry: Map<string, boolean>;
   /** Run during the parent read, to model the world moving while GitHub answers. */
   duringRead?: () => void | Promise<void>;
+  /** Run during an ancestry (compare) call, to model the world moving while GitHub answers. */
+  duringAncestry?: () => void | Promise<void>;
   reads: number;
   fetches: string[];
 }
@@ -103,6 +105,7 @@ function githubOf(s: Script): StackGitHub {
       return refs ? { ok: true, value: refs } : { ok: false, error: "no such pull request" };
     },
     isAncestor: async (_cwd, _owner, _repo, ancestor, head) => {
+      await s.duringAncestry?.();
       const answer = s.ancestry.get(`${ancestor}..${head}`);
       return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: answer };
     },
@@ -718,6 +721,62 @@ test("a dispatch refused while a readiness read is in flight is not overwritten 
   await settle();
   assert.equal(midRead.plan?.ok, false, "the dispatch was refused during the read");
   assert.equal(childEdge(w).stackReadyAt ?? null, null, "the in-flight read does not stamp over the newer refusal");
+  r.stop();
+});
+
+// ---- Inspector review 6: the stamp is written only on evidence that still holds ----------
+
+/** C stacks on A and also depends on merged A2, whose merge commit A's head carries. */
+function withMergedSibling(w: World, s: Script): void {
+  const A2_URL = "https://github.com/acme/repo/pull/5";
+  const MERGE_A2 = "c".repeat(40);
+  w.tasks.set("A2", mkTask({ id: "A2", title: "Phase A", status: "done", repoRoot: "/repo" }));
+  w.tasks.set("C", mkTask({ id: "C", title: "Phase 2", repoRoot: "/repo", dependencies: [
+    edge("A"),
+    edge("A2", { satisfiedAt: 3, prUrl: A2_URL }),
+  ] }));
+  s.refs.set(A2_URL, { state: "MERGED", isDraft: false, headSha: "d".repeat(40), headRefName: "feat/a2", baseRefName: "main", defaultBranch: "main", mergeCommitSha: MERGE_A2 });
+  s.ancestry.set(`${MERGE_A2}..${HEAD}`, true);
+}
+
+test("a parent that starts a new turn during the merged-sibling check is not stamped on", async () => {
+  const w = world();
+  const s = script();
+  withMergedSibling(w, s);
+  s.duringAncestry = () => { w.sessions.set("sA", mkSession({ id: "sA", state: "working" })); };
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "the read's evidence no longer holds when the stamp would be written");
+  r.stop();
+});
+
+test("a stamp cleared by a new turn during a recheck's ancestry check is not written back", async () => {
+  const w = world();
+  const s = script();
+  withMergedSibling(w, s);
+  const t = fakeTimers(1_000);
+  const r = new StackReadiness(registryOf(w), () => w.config, githubOf(s), t.now, t.timers);
+  r.reconcile();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+
+  // The recheck's ancestry call is answered after the parent started a new turn and the
+  // ensuing reconcile cleared the stamp.
+  s.duringAncestry = () => {
+    s.duringAncestry = undefined;
+    w.sessions.set("sA", mkSession({ id: "sA", state: "working" }));
+    r.reconcile();
+  };
+  t.advance([...t.live.values()][0]!.due);
+  t.fireDue();
+  await settle();
+  await settle();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "the cleared stamp stays cleared");
   r.stop();
 });
 

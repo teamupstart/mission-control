@@ -310,12 +310,26 @@ export class StackReadiness {
           this.retryLater(parentId);
           continue;
         }
+        // The ancestry check awaited GitHub, and the world may have moved meanwhile. Write
+        // nothing unless the evidence this stamp stands on still holds NOW: the parent is
+        // still finished on the same episode and pull request (a new turn clears stamps, and
+        // must not be written over), no dispatch refusal deferred it, and the dependent
+        // still stacks on this parent under the current config.
+        const nowParent = this.registry.getTask(parentId);
+        const nowFinished = nowParent ? this.finishedEpisode(nowParent) : null;
+        if (!nowFinished || nowFinished.episodeId !== finished.episodeId || nowFinished.prUrl !== finished.prUrl) return;
+        const deferredNow = this.refused.get(parentId);
+        if (deferredNow && deferredNow.prUrl === finished.prUrl && deferredNow.at >= startedAt) return;
         const latest = this.registry.getTask(task.id);
         if (!latest || latest.status !== "backlog") continue;
+        const nowTasks = new Map(this.registry.listTasks().map((candidate) => [candidate.id, candidate]));
+        const nowConfig = this.config();
+        const nowEligible = stackEligibility(latest, nowTasks, nowConfig);
+        if (!nowEligible.ok || nowEligible.parent.id !== parentId) continue;
         let changed = false;
         const dependencies = latest.dependencies.map((edge) => {
           if (edge.type !== "task" || edge.taskId !== parentId || edge.satisfiedAt !== null) return edge;
-          if (effectiveEdgeMode(edge, config) !== "stack") return edge;
+          if (effectiveEdgeMode(edge, nowConfig) !== "stack") return edge;
           // A re-read that confirms the same facts writes nothing: the stamp keeps the time it
           // first became ready, and an unchanged board raises no task event.
           if (

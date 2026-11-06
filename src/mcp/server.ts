@@ -39,7 +39,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -417,6 +417,7 @@ function taskConfiguration(task: Task) {
     priority: task.priority,
     labels: task.labels,
     dependencies: task.dependencies,
+    planInputs: task.planInputs,
   };
 }
 
@@ -554,6 +555,75 @@ server.registerTool(
           2,
         ),
       );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+/** Saved task facts only: never resolve another session's private state. */
+function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
+  const { intent, ...configuration } = taskConfiguration(task);
+  return {
+    ...configuration,
+    ...(includeIntent ? { intent } : {}),
+    sessionId: task.sessionId,
+    outcomeUrl: task.outcomeUrl,
+    prUrl: task.prUrl,
+    repoPrs: task.repoPrs,
+    outcome: task.outcome,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    dispatchedAt: task.dispatchedAt,
+    completedAt: task.completedAt,
+  };
+}
+
+server.registerTool(
+  "list_tasks",
+  {
+    title: "List saved tasks (read-only)",
+    description: "Read-only: list saved Mission Control tasks in any status, without launching, modifying or reordering anything. " +
+      "Uses the same daemon-token access as create_task and update_task; no Control other sessions opt-in is required. " +
+      "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
+      "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
+      "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot.",
+    inputSchema: McpListTasksSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (query) => {
+    try {
+      const res = await http("/mcp/tasks/list", "POST", query);
+      if (!res.ok) return textResult(`Could not list tasks (${res.status}): ${await res.text()}`, true);
+      const page = await res.json() as { tasks: McpTaskSnapshot[]; nextCursor: string | null };
+      return textResult(JSON.stringify({
+        tasks: page.tasks.map((task) => taskReadResult(task, query.includeIntent)),
+        nextCursor: page.nextCursor,
+      }, null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "get_task",
+  {
+    title: "Read a saved task (read-only)",
+    description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
+      "Includes linked sessionId, prUrl and per-repository repoPrs. " +
+      "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
+      "Never launches, modifies or reorders work and does not read session-private state.",
+    inputSchema: McpGetTaskSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/get", "POST", { taskId });
+      if (!res.ok) return textResult(`Could not get task (${res.status}): ${await res.text()}`, true);
+      return textResult(JSON.stringify(taskReadResult(await res.json() as McpTaskSnapshot, true), null, 2));
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

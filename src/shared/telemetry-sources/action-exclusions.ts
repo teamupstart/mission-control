@@ -1,5 +1,7 @@
 /** Audited operations owned by earlier phases or explicitly excluded from action counts. */
 export const ACTION_EXCLUSIONS = [
+  ["POST", "/mcp/tasks/list", "Read-only saved-task query with filters and pagination; no task is launched, modified or reordered."],
+  ["POST", "/mcp/tasks/get", "Read-only saved-task configuration query; no task is launched, modified or reordered."],
   ["POST", "/mcp/plan-publication", "Read-only plan-publication ownership query; no plan is published by this operation."],
   ["POST", "/mcp/plans/context", "Read-only managed-plan policy and repository query; not a publication or action outcome."],
   ["POST", "/mcp/plans/read", "Read-only exact revision or catalog query; not a publication or action outcome."],

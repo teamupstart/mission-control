@@ -3,6 +3,7 @@ import test from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { once } from "node:events";
 import { copyFile, link, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1489,10 +1490,14 @@ test("the state-lock addon reads a process's argv and environment as separate en
     assert.throws(() => binding.processArguments(process.pid), {code: "ENOTSUP"});
     return;
   }
-  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)", "two words"], {env: {NOTE: "x ELECTRON_RUN_AS_NODE=1", EMPTY: ""}, stdio: "ignore"});
+  const script = 'process.stdout.write("ready"); setTimeout(() => {}, 10000)';
+  const child = spawn(process.execPath, ["-e", script, "two words"], {env: {NOTE: "x ELECTRON_RUN_AS_NODE=1", EMPTY: ""}, stdio: ["ignore", "pipe", "ignore"]});
   t.after(() => child.kill("SIGKILL"));
-  await new Promise((resolve) => child.once("spawn", resolve));
-  assert.deepEqual(binding.processArguments(child.pid!), {argv: [process.execPath, "-e", "setTimeout(() => {}, 10000)", "two words"], env: ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]});
+  // The spawn event can precede dyld clearing its startup metadata from the kernel's
+  // argument record. Inspect a running program, not that transient loader state.
+  const [ready] = await once(child.stdout!, "data", {signal: AbortSignal.timeout(10_000)});
+  assert.equal(ready.toString(), "ready");
+  assert.deepEqual(binding.processArguments(child.pid!), {argv: [process.execPath, "-e", script, "two words"], env: ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]});
   assert.equal(binding.processArguments(1), null, "launchd exists but is not described to this user");
   const exited = new Promise((resolve) => child.once("exit", resolve));
   child.kill("SIGKILL");

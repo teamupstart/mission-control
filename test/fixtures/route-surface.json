@@ -334,6 +334,8 @@
   "POST /mcp/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks/:id/update": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/tasks/delete": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/tasks/get": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/tasks/list": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v2/reviews": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v2/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/v3/tasks": "401 {\"error\":\"unauthorized\"}",

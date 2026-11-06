@@ -137,7 +137,12 @@ there is no signing and no trust badge.
 What that does not cover is the content itself. Mission Control does not encrypt the scout
 library, an archive can hold whatever the investigation touched, and a synchronised folder
 takes its contents wherever it goes. Deletion is explicit and local.
+## MCP task reads
 
+The read-only backlog MCP tools `list_tasks` and `get_task` use the same daemon-token
+boundary as task creation and editing. They read saved task configuration and durable pull
+request references, including completed tasks. They do not expose session transcripts or
+private session state and do not require the session-control grant below.
 
 ## Delegated session control
 
@@ -150,7 +155,7 @@ resident profile whose pinned revision turns **Control other sessions** on (see
 surface and session-control tools cannot create one. Resetting or replacing that identity
 revokes it.
 
-The MCP read/action endpoints require both the machine token and the existing signed
+The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
 machine token alone cannot select a controller. The daemon checks the current grant and
 live credential binding on every request, then translates a closed set of typed operations

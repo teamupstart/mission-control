@@ -79,10 +79,11 @@ import {
   PROMPTED_RECOVERY_REASONS,
   SESSION_RUNTIMES,
   TASK_KINDS,
+  TASK_STATUSES,
   THINKING_LEVELS,
   ADVISOR_CHOICES,
 } from "./types.ts";
-import type { AdvisorChoice, AgentType, SessionRuntime, Task } from "./types.ts";
+import type { AdvisorChoice, AgentType, SessionRuntime, Task, TaskRepoPrSummary } from "./types.ts";
 import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
@@ -1464,6 +1465,28 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).extend({
   repository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+}).strict();
+
+/** Durable task facts plus pull request references, without session-private state. */
+export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+
+/** Read-only task queries share validation between the MCP child and daemon. */
+export const McpListTasksSchema = z.object({
+  status: z.enum(TASK_STATUSES).optional().describe("Saved task status; done is successful completion"),
+  kind: z.enum(TASK_KINDS).optional(),
+  repository: z.string().trim().min(1).optional().describe("Absolute checkout path or unique repository directory name; matches primary or attached repositories. Omit for all tasks"),
+  labels: z.array(z.string().trim().min(1)).max(MAX_LABELS).optional().describe("Require every supplied label (exact, case-sensitive matches)"),
+  priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
+  enabled: z.boolean().optional(),
+  dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
+  includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
+}).strict();
+export type McpListTasks = z.infer<typeof McpListTasksSchema>;
+
+export const McpGetTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of a task in any status"),
 }).strict();
 
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */

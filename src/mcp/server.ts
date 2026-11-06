@@ -412,6 +412,7 @@ function taskConfiguration(task: Task) {
     effort: task.effort,
     advisorModel: task.advisorModel,
     workflowId: task.workflowId,
+    planPolicy: task.planPolicy,
     enabled: task.enabled,
     priority: task.priority,
     labels: task.labels,
@@ -428,7 +429,7 @@ server.registerTool(
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
-      "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "labels, planStorage (plan tasks only), and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
       "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
       "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +

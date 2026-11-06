@@ -4862,7 +4862,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId });
+      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId, planStorage: data.planStorage });
     } catch (error) {
       if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       throw error;

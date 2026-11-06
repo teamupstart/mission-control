@@ -1076,6 +1076,9 @@ export const HarnessModelCatalogQuerySchema = z
   .strict();
 
 
+export const TaskPlanStorageSchema = z.enum(["repository", "local"]).nullable().optional()
+  .describe("Plan tasks only: local or repository; null resolves and pins the current global default. Omit on update to keep the pin.");
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -1124,6 +1127,7 @@ export const DispatchSchema = z
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     backlog: z.boolean().optional().default(false),
     /**
      * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
@@ -1421,6 +1425,7 @@ const UpdateTaskFieldsSchema = z
     effort: EffortLevelSchema.nullable().optional(),
     advisorModel: z.null().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
   });

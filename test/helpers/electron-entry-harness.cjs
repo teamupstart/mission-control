@@ -120,6 +120,20 @@ function simulateLaunchInventory(registration) {
     else throw new Error(`Unexpected startup subprocess: ${command}`);
     callback(null, stdout);
   };
+  // The kernel argument record is the last piece of that inventory: an unregistered main process
+  // is read through the state-lock addon's `processArguments` to tell a Node-mode MCP server or
+  // hook from an app instance. This process is the app, so its record has no Node-mode flag. The
+  // real addon still loads and keeps every other export; only off macOS would this read answer
+  // ENOTSUP, which the forced platform above would otherwise turn into "could not verify".
+  const load = Module._load;
+  Module._load = function (request, parent, isMain) {
+    const loaded = load.call(this, request, parent, isMain);
+    if (!String(request).endsWith("state-lock.node")) return loaded;
+    return {...loaded, processArguments: (pid) => {
+      observed.inspection.push({command: "processArguments", args: [String(pid)]});
+      return pid === process.pid ? {argv: [binary], env: []} : undefined;
+    }};
+  };
 }
 
 if (launchRegistration) {

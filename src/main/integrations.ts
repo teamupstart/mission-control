@@ -40,6 +40,7 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
 import { stateDir } from "@shared/harness-runtime.mjs";
+import { OPERATOR_SATELLITES } from "@shared/owned-runtime.mjs";
 import { integrationRuntime, ownedHook, ownedStatusline, repairOwnedMcp, sameRegistration, INTEGRATION_REPAIR_NONCE } from "./integration-runtime.ts";
 import { createMigrationConfigPort, editIntegrationSettings } from "./migration-integration-config.ts";
 import { createMigrationIntegrationPorts } from "./migration-integration-ports.ts";
@@ -73,14 +74,15 @@ type Runtime = ReturnType<typeof integrationRuntime>;
  * Absolute paths to the shipped satellites. We package with `asar: false`, so the
  * bundle lays the build outputs out as plain files under the app's Resources -
  * required because other processes launch these scripts through the app runtime. Dev and packaged paths are thus
- * identical (both relative to the app root).
+ * identical (both relative to the app root). The paths come from `OPERATOR_SATELLITES`, the
+ * same list the updater uses to let these scripts keep running through a bundle swap.
  */
 function satellitePaths(): { hook: string; mcp: string; statusline: string } {
   const root = app.getAppPath();
   return {
-    hook: join(root, "dist", "satellites", "hook.mjs"),
-    mcp: join(root, "dist", "mcp", "server.mjs"),
-    statusline: join(root, "dist", "satellites", "harness-statusline.mjs"),
+    hook: join(root, OPERATOR_SATELLITES.hook),
+    mcp: join(root, OPERATOR_SATELLITES.mcpServer),
+    statusline: join(root, OPERATOR_SATELLITES.statusline),
   };
 }
 

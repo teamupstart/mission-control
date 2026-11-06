@@ -6,7 +6,8 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processIdentity } from "./update-lock.mjs";
 import { createHash } from "node:crypto";
-import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
+import { createRequire } from "node:module";
+import { CHECK_SUPERVISOR_MARKER, OPERATOR_SATELLITES } from "../src/shared/owned-runtime.mjs";
 
 export const APP_ID = "com.mission-control.app";
 export const LAUNCH_TIMEOUT_MS = 25_000;
@@ -54,12 +55,42 @@ export function realMacAppOps(directory) {
       });
     }),
     identity: processIdentity,
+    processArguments: (pid) => stateLockAddon().processArguments(pid),
     kill: (pid, signal) => process.kill(pid, signal),
     readAck: (nonce) => {
       try { return JSON.parse(readFileSync(launchAckPath(directory, nonce), "utf8")); }
       catch { return null; }
     },
   };
+}
+
+let addon;
+/**
+ * Where the shipped addon sits relative to this code, in both shapes the code runs in. As ESM
+ * (`scripts/`, including the detached updater's copy) this file is `scripts/mac-app-lifecycle.mjs`.
+ * esbuild also bundles it into the CommonJS Electron main, `dist/main/index.cjs`, and empties
+ * `import.meta` there, so `new URL(..., import.meta.url)` would throw and turn the startup launch
+ * check into "could not verify" for exactly the unregistered start it exists to diagnose.
+ */
+function stateLockAddonPath() {
+  if (import.meta.url) return fileURLToPath(new URL("../dist/native/state-lock.node", import.meta.url));
+  if (typeof __dirname === "string") return join(__dirname, "..", "native", "state-lock.node");
+  throw new Error("The packaged runtime cannot locate its native addon. Reinstall Mission Control before updating.");
+}
+
+/**
+ * The state-lock addon every app ships, which the detached updater copies with its own modules
+ * (`UPDATE_HELPER_FILES`). Loaded only when an argument read is needed, so a sweep with no
+ * unregistered main process never touches it.
+ */
+function stateLockAddon() {
+  if (!addon) {
+    const path = stateLockAddonPath();
+    const loaded = createRequire(path)(path);
+    if (typeof loaded.processArguments !== "function") throw new Error("The packaged runtime cannot read process arguments. Reinstall Mission Control before updating.");
+    addon = loaded;
+  }
+  return addon;
 }
 
 async function read(ops, command, args, timeout) {
@@ -103,6 +134,60 @@ const processes = async (ops, timeout) => {
   return rows;
 };
 const registered = (rows, bundle, pid) => rows.some((row) => row.id === APP_ID && canonical(row.bundle) === canonical(bundle) && row.pid === pid && row.type === "Foreground");
+
+/**
+ * Which of `pids` the app's Electron binary is running as plain Node rather than as the app.
+ *
+ * Electron decides that from one thing, a non-empty `ELECTRON_RUN_AS_NODE` in its environment
+ * (`getenv`, so the first entry with that name wins), and that is the only thing read here: no
+ * argument, script name or parent is evidence of it. The MCP server and hooks that Mission
+ * Control registers in `~/.claude.json` and `~/.claude/settings.json` run the MAIN executable this
+ * way, so a `claude` an operator starts in a terminal holds a `Contents/MacOS` process that never
+ * was, and never will be, a GUI instance.
+ *
+ * Each process's argv and environment come from `ops.processArguments` - the kernel's own record,
+ * read in-process by the shipped state-lock addon with no child process. Per pid that costs two
+ * `sysctl` calls (`KERN_ARGMAX` to size the buffer, then `KERN_PROCARGS2`) into one `ARG_MAX`-sized
+ * buffer, plus a `kill(pid, 0)` only when the second call fails, to tell an exited pid from an
+ * unreadable one. `ps -E` reads the same record and then joins its entries with unescaped
+ * spaces, so there a value such as `NOTE=x ELECTRON_RUN_AS_NODE=1` reads exactly like a real flag; here each environment
+ * entry is its own string, and only an entry whose own name is the flag counts. A caller pays for
+ * this only when such a process exists (see `inspectAppLaunches` for why that budget matters).
+ *
+ * The environment can hold credentials (a dispatched MCP server's carries its daemon bearer).
+ * It is tested for the one flag and discarded, never stored, returned, logged or put in an error.
+ *
+ * Returns pid -> {nodeMode, argv}. A pid missing from the map was no longer running; one whose
+ * arguments could not be read is not Node mode, which keeps it the caller's conservative answer.
+ */
+function readProcessModes(ops, pids) {
+  const modes = new Map();
+  for (const pid of new Set(pids)) {
+    const record = ops.processArguments ? ops.processArguments(pid) : null;
+    if (record === undefined) continue;
+    const flag = record?.env.find((entry) => entry.startsWith("ELECTRON_RUN_AS_NODE="));
+    modes.set(pid, {nodeMode: Boolean(flag && flag.length > "ELECTRON_RUN_AS_NODE=".length), argv: record?.argv ?? []});
+  }
+  return modes;
+}
+
+/**
+ * The bundled scripts Mission Control registers for agents it does not launch itself, from the
+ * one shared list. `OPERATOR_SATELLITES` documents why letting them run through a swap is safe,
+ * and `test/operator-satellites.test.ts` checks that claim against the real build.
+ */
+const SATELLITE_SCRIPTS = Object.values(OPERATOR_SATELLITES);
+
+/**
+ * True when a Node-mode process's FIRST argument is one of this bundle's own satellite scripts.
+ * Only the first argument counts: a satellite path passed further along is data to some other
+ * script, which this cannot vouch for.
+ */
+function runsSatellite(argv, bundle) {
+  const script = argv[1];
+  return typeof script === "string" && [...new Set([bundle, canonical(bundle)])]
+    .some((root) => SATELLITE_SCRIPTS.some((path) => script === `${root}/Contents/Resources/app/${path}`));
+}
 
 /** Read shell words and mark expansion, without evaluating it or reading environment values. */
 function literalShellWords(command) {
@@ -447,6 +532,11 @@ export async function inspectAppLaunch(
  * a concurrency-6 test suite, which is why a fixed 15s cap refused 20 of 25 loaded sweeps. A
  * detached install used to run five sweeps - its parent-exit checkpoint asked about the source
  * and the target separately, twice - and now runs three (2,855 probe calls down to 1,738).
+ *
+ * An unregistered main process adds one in-process argument read per such pid - two `sysctl`
+ * calls, a third system call only when the read fails - shared by every bundle and spawning
+ * nothing (`readProcessModes`), which is what tells an MCP server or hook
+ * running the binary as Node from a second app instance. A sweep with none pays nothing.
  */
 export async function inspectAppLaunches(
   bundles,
@@ -473,9 +563,22 @@ export async function inspectAppLaunches(
     }
   };
   if (!(await readGuiJobs(ops, budget, evaluate))) await printGuiJobs(ops, budget, evaluate);
+  const candidates = bundles.map((bundle) => running.filter((row) => isMain(row.executable, bundle) && !registered(registrations, bundle, row.pid)));
+  // Only an unregistered main process needs its command line read, and every bundle shares the
+  // read. A process that checked in with LaunchServices in any role is an app, whatever its
+  // environment says, so it is never read and stays a conflict.
+  const checkedIn = (pid) => registrations.some((app) => app.pid === pid);
+  const modes = readProcessModes(ops, candidates.flat().filter((row) => !checkedIn(row.pid)).map((row) => row.pid));
+  const appInstance = (row) => {
+    if (checkedIn(row.pid)) return true;
+    // Read and not found: it exited, so it can no longer conflict with a launch. That is what
+    // lets a hook that ends between the snapshot and the read pass.
+    const mode = modes.get(row.pid);
+    return mode ? !mode.nodeMode : false;
+  };
   return bundles.map((bundle, index) => ({
     jobs: jobs[index].sort(),
-    unregistered: running.filter((row) => isMain(row.executable, bundle) && !registered(registrations, bundle, row.pid)).map((row) => row.pid),
+    unregistered: candidates[index].filter(appInstance).map((row) => row.pid),
   }));
 }
 
@@ -531,20 +634,47 @@ async function poll(ops, timeout, check, message) {
   throw new Error(typeof message === "function" ? message() : message);
 }
 
-async function describeBundleHolder(row, bundle, ops) {
-  if (isMain(row.executable, bundle)) return `pid ${row.pid} (the Mission Control app is still running)`;
-  let args = "";
-  try {
+/**
+ * One unowned bundle holder, for a person. `mode` is its `readProcessModes` entry, when the last
+ * poll read one; `parent` is its parent's row from the same snapshot. The command line is tested
+ * for the check-supervisor marker and otherwise never printed.
+ */
+async function describeBundleHolder(row, bundle, ops, mode, parent) {
+  if (isMain(row.executable, bundle) && !mode?.nodeMode) return `pid ${row.pid} (the Mission Control app is still running)`;
+  let args = mode?.nodeMode ? mode.argv.join(" ") : "";
+  if (!mode?.nodeMode) try {
     const result = await ops.run("/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="], COMMAND_TIMEOUT_MS);
     if (result.code === 0) args = result.stdout;
   } catch { /* The executable still identifies a helper below. */ }
   const orphaned = row.ppid === 1 ? " whose parent already exited" : "";
   if (args.includes(CHECK_SUPERVISOR_MARKER)) return `pid ${row.pid} (a workflow check${orphaned} is still running)`;
+  // Name who started it, which is what a person can act on: the terminal session or tool that
+  // runs a script on this app's runtime, not the app itself.
+  if (mode?.nodeMode) return orphaned || !parent
+    ? `pid ${row.pid} (a script on Mission Control's bundled Node${orphaned || " whose parent could not be identified"} is still running)`
+    : `pid ${row.pid} (a script ${basename(parent.executable)} runs on Mission Control's bundled Node is still running)`;
   return `pid ${row.pid} (${basename(row.executable)}${orphaned} is still running)`;
 }
 
+/**
+ * Wait until nothing that must stop before the swap still runs from `bundle`.
+ *
+ * That is every process beneath the bundle with one exception: a Node-mode process (see
+ * `readProcessModes`) that Mission Control does not own and that runs one of this bundle's own
+ * satellite scripts (`runsSatellite`) - the MCP server or a hook that a terminal `claude` or
+ * `codex` started from the user-level integrations. Such a process may live as long as its
+ * session, so waiting for it would fail the update for as long as the operator keeps working,
+ * and it is not this updater's to signal. Nor does it need to stop: every swap renames bundles
+ * and never writes into one, so the process keeps the files it already has open, and its
+ * satellite read its single bundled script whole at startup. Its next launch runs the new build.
+ *
+ * Any other Node-mode script, an orphaned workflow check included, is still waited on, and a
+ * timeout names it as a script on the bundled runtime and who started it, never as the app.
+ */
 export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaiting, owners = []) {
   let remaining = [];
+  let snapshot = [];
+  let modes = new Map();
   const started = ops.now();
   const signalled = new Map();
   const ownerOf = (row) => {
@@ -559,7 +689,14 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaitin
   let timedOut = false;
   try {
     await poll(ops, timeout, async (budget) => {
-      remaining = (await processes(ops, budget)).filter((row) => inBundle(row.executable, bundle));
+      snapshot = await processes(ops, budget);
+      remaining = snapshot.filter((row) => inBundle(row.executable, bundle));
+      // One in-process argument read (two `sysctl` calls) per bundle process, spawning nothing.
+      // Ownership is the one thing that keeps a satellite in the wait: work Mission Control owns
+      // is always cleaned up.
+      modes = readProcessModes(ops, remaining.map((row) => row.pid));
+      const operatorSatellite = (row) => modes.get(row.pid)?.nodeMode && runsSatellite(modes.get(row.pid).argv, bundle);
+      remaining = remaining.filter((row) => ownerOf(row) || !operatorSatellite(row));
       for (const row of remaining) {
         const owner = ownerOf(row);
         row.work = owner?.work ?? 'Mission Control bundle process; work ownership could not be verified';
@@ -584,7 +721,7 @@ export async function waitForBundleExit(bundle, ops, timeout = 120_000, onWaitin
     if (!timedOut || !remaining.length) throw error;
     const named = remaining.slice(0, BUNDLE_HOLDERS_NAMED);
     const holders = await Promise.all(named.map((row) => ownerOf(row)
-      ? `pid ${describe(row)}` : describeBundleHolder(row, bundle, ops)));
+      ? `pid ${describe(row)}` : describeBundleHolder(row, bundle, ops, modes.get(row.pid), snapshot.find((parent) => parent.pid === row.ppid))));
     const more = remaining.length - named.length;
     const unverified = named.some((row) => !ownerOf(row)) ? "; work ownership could not be verified" : "";
     throw new Error(`Mission Control bundle processes did not exit: ${holders.join("; ")}${more ? `; and ${more} more` : ""}${unverified}. Mission Control will reopen the previous build automatically.`);
@@ -616,8 +753,16 @@ export async function verifyAppLaunch(bundle, nonce, ops, timeout = LAUNCH_TIMEO
 export async function stopAttemptLaunch(bundle, nonce, ops) {
   if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Error("Invalid update launch identity.");
   const owned = [];
-  for (const row of await processes(ops)) {
-    if (!isMain(row.executable, bundle)) continue;
+  const main = (await processes(ops)).filter((row) => isMain(row.executable, bundle));
+  // A main binary running as Node is never a launch, this attempt's or anyone's, so it neither
+  // refuses the cleanup nor is signalled by it. The bundle-exit wait below decides about it.
+  const modes = readProcessModes(ops, main.map((row) => row.pid));
+  for (const row of main) {
+    // No mode at all means the kernel reported the pid gone since the snapshot: nothing to stop,
+    // and its `ps` read below would fail the retry. An unreadable record still has a mode, so it
+    // stays conservative. The bundle-exit wait below rechecks everything that remains.
+    const mode = modes.get(row.pid);
+    if (!mode || mode.nodeMode) continue;
     const identity = ops.identity(row.pid);
     const command = await read(ops, "/bin/ps", ["-ww", "-p", String(row.pid), "-o", "args="]);
     if (!command.includes(`--mission-update-launch ${nonce}`) || !identity) throw new Error("An app outside this update attempt is running. Close it manually before recovery; no process was signalled.");

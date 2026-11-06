@@ -936,7 +936,7 @@ export function CommandLibrary({
               so the rule connecting them had to be assembled by the reader. */}
           {isCodeRabbit ? (
             <section className="wf-command-review-tuning" aria-label="CodeRabbit tuning">
-              <p className="wf-command-note">Either a root .coderabbit.yaml or .coderabbit.config.ts enables review, unless the YAML turns it off with reviews.auto_review.enabled: false. No Library override is required. Removing tuning restores defaults.</p>
+              <p className="wf-command-note">Either a root .coderabbit.yaml or .coderabbit.config.ts enables review, unless the YAML turns it off with reviews.auto_review.enabled: false.</p>
               <p className="wf-command-hint">Derived policy: unavailable or incomplete enabled reviews block with an error and Settings &gt; Setup link. Exhausted allowance always skips with a warning. Default base: observed origin/HEAD; otherwise set an explicit ref. Default severity: major.</p>
               <pre className="wf-command-preview">coderabbit review --agent --gate major --committed --base-commit &lt;resolved-merge-base&gt;</pre>
               {draft.overrides.map((entry) => (

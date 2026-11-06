@@ -2741,7 +2741,7 @@ error. Mission Control does not fetch inherited settings. Only a run whose pinne
 CodeRabbit check captures this snapshot. Submission capture freezes the decision; retries reuse it
 and new submissions refresh it.
 
-No Library override is needed. Optional repository-root tuning selects a base ref and severity
+Optional repository-root tuning selects a base ref and severity
 (default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
 the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
 these defaults. The command previews its owned argv, never an editable shell recipe.

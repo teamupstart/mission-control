@@ -412,10 +412,6 @@ function noteFailure(
 }
 
 /**
- * Record a PR as ours to review. Idempotent - the DB's `DO NOTHING` is the dedup, so
- * both adoption signals can call this freely.
- */
-/**
  * Adopt a pull request a session just opened, and - in the SAME synchronous turn - record its
  * stack lineage when that session runs a stacked task. Nothing can inspect the row between
  * the two writes, so the merge gate never sees a stacked child without its lineage.
@@ -445,6 +441,10 @@ export function adoptOpenedPr(
   }
 }
 
+/**
+ * Record a PR as ours to review. Idempotent - the DB's `DO NOTHING` is the dedup, so
+ * both adoption signals can call this freely.
+ */
 export function adoptPr(
   url: string,
   ctx: { sessionId: string | null; cwd: string | null; repoRoot: string | null },

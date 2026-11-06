@@ -495,10 +495,19 @@ advertises. The child's head is read from the repository root too (`git worktree
 merge base the diff starts from is computed there from explicit commit ids, and the diff is
 read from the repository root as well, naming the child's checkout explicitly (`--git-dir`,
 `--work-tree`) and staging its working tree into a temporary index and object directory, so
-the child's own index is never written. If any of that cannot be done, the capture fails with
-*stacked base could not be refreshed* instead of reviewing against a stale or wrong base. The
-review capture every workflow shares (status, content tree, review snapshot) still reads the
-session's checkout, read-only, exactly as it does for any other task.
+the child's own index is never written. Either half can fail, and neither falls back to
+another base or to an ordinary diff:
+
+- **Resolving the base** (reading the pull request's current base, fetching and verifying the
+  branch, reading the child's head, computing the merge base) fails with *stacked base could
+  not be refreshed*, followed by the reason.
+- **Capturing the child's work** fails the review capture with *Could not capture repository
+  diff*, followed by the step that failed. For example, *could not stage the child's working
+  tree* when staging fails, or *could not capture the child's working tree* when the tree
+  cannot be written.
+
+The review capture every workflow shares (status, content tree, review snapshot) still reads
+the session's checkout, read-only, exactly as it does for any other task.
 
 It never merges into a branch other than the default branch, never force-pushes, never
 stacks across repositories, and never runs a git command that changes a worktree's checkout,

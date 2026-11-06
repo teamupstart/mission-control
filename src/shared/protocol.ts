@@ -966,7 +966,6 @@ const TASK_TRIAGE_FIELDS = {
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
 };
 
-/** A dependency target selected from the backlog or the live-session list. */
 /**
  * How a same-repository dependency releases its dependent: after its pull request merges, or
  * as soon as it has an open one (stacked). Absent means "inherit the Shipping default at
@@ -975,6 +974,7 @@ const TASK_TRIAGE_FIELDS = {
  */
 export const DependencyModeSchema = z.enum(["merge", "stack"]);
 
+/** A dependency target selected from the backlog or the live-session list. */
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task"), taskId: z.string().min(1), mode: DependencyModeSchema.optional() }),
   z.object({ type: z.literal("session"), sessionId: z.string().min(1), mode: DependencyModeSchema.optional() }),

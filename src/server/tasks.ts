@@ -696,7 +696,6 @@ export interface TaskArchiveGate {
 const DISABLED_REFUSAL =
   "task is disabled - Foreman will not schedule it (launch it yourself to override)";
 
-/** True when this call must be refused because the task is parked and nobody claimed an override. */
 /**
  * Give a resolved edge the operator's stack/after-merge choice. An absent `mode` means
  * inherit the Shipping default, so it is removed rather than stored. Changing the mode drops
@@ -712,6 +711,7 @@ function withEdgeMode<T extends Exclude<TaskDependency, { type: "plan" }>>(
   return { ...rest, ...(mode ? { mode } : {}) } as T;
 }
 
+/** True when this call must be refused because the task is parked and nobody claimed an override. */
 function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): boolean {
   // Scoped to `backlog`: `enabled` gates SCHEDULING, and the retry path for a cleanly
   // failed task is not scheduling - that task already ran.

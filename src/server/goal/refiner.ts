@@ -297,25 +297,26 @@ const RETRACTING =
   /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
 
 /**
- * What a person says when they mean to take a requirement away. Narrower than `RETRACTING` on
- * purpose: it reads the human's own words, where "but" and "change" are ordinary refinements
- * ("B, but change the label") rather than retractions.
+ * Language that actually takes a requirement away. Narrower than `RETRACTING` on purpose:
+ * "but", "except", "instead" and "replace" are ordinary refinements in both an instruction and
+ * a model's restatement of it ("B, but change the label"), so they are evidence that an
+ * amendment did not merely extend the contract, never evidence that it removes something.
  */
-const INSTRUCTION_RETRACTING =
+const REMOVING =
   /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget)\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
 
 /**
- * Whether a rejected amendment may be an intentional retraction: the instruction asks to take
- * something away, or the part of the proposal past any retained prefix (the whole proposal,
- * when it kept none) uses retracting language. Such an instruction cannot safely be steering -
- * a steering row would ask the next run to drop a requirement the durable contract still
- * holds - so it stays pending for a person or a later instruction that settles it.
+ * Whether a rejected amendment may be an intentional retraction: the instruction, or the part
+ * of the proposal past any retained prefix (the whole proposal, when it kept none), uses
+ * removing language. Such an instruction cannot safely be steering - a steering row would ask
+ * the next run to drop a requirement the durable contract still holds - so it stays pending
+ * for a person or a later instruction that settles it.
  */
 function amendmentRetracts(current: string | null, proposed: string, instruction: string): boolean {
-  if (INSTRUCTION_RETRACTING.test(instruction.toLowerCase())) return true;
+  if (REMOVING.test(instruction.toLowerCase())) return true;
   const prior = current ? comparableObjective(current) : "";
   const next = comparableObjective(proposed);
-  return RETRACTING.test(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
+  return REMOVING.test(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */

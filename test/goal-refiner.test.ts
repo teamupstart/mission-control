@@ -64,6 +64,8 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
   amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  # An option pick restated without the prefix, with an ordinary "but" refinement in it.
+  pick-but) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but change the Overrides by model label to Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
   # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
   initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
@@ -120,6 +122,7 @@ const setMode = (
     | "blank"
     | "amend"
     | "shrink"
+    | "pick-but"
     | "negate"
     | "initial-path"
     | "initial-spaced-path"
@@ -330,7 +333,7 @@ async function assertRejectedAmendment(
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long";
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but";
     /** The fake reply that establishes the opening objective. */
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
@@ -460,6 +463,18 @@ test("an instruction that asks to drop a requirement stays pending even when the
     instruction: "we no longer need the tests, just expose the intent in the drawer",
     rule: "not-a-prefix",
     resolvesAs: "pending",
+  });
+});
+
+test("an option pick with an ordinary \"but\" refinement resolves as steering", async (t) => {
+  // "but" and "change" refine a pick; neither removes a requirement, in the instruction or in
+  // the model's restatement of it. Treating them as a retraction would recreate the stall.
+  await assertRejectedAmendment(t, {
+    id: "r38",
+    pane: "%68",
+    mode: "pick-but",
+    instruction: "B, but change the Overrides by model label to Advisor Overrides",
+    rule: "not-a-prefix",
   });
 });
 

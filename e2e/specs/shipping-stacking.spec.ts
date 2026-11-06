@@ -127,6 +127,75 @@ test("with Stack as the default, only a dependency that can stack earns the 'soo
   await shoot(dialog, "dispatch-wait-note-stackable-only");
 });
 
+test("a prerequisite whose pull request already merged offers no Stack control", async ({ dashboard, daemon }) => {
+  test.setTimeout(120_000);
+  // Stack is the default, so only the merge state can be what hides the control.
+  await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");
+  const parent = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, intent: "Land the merged groundwork", title: "Merged groundwork",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === parent.id)!;
+    return session?.state && session.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  // The prerequisite's work, on a branch of its own, as a real agent would leave it.
+  const git = (...args: string[]) => execFileSync("git", ["-C", session.cwd!, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "e2e", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "e2e", GIT_COMMITTER_EMAIL: "e2e@example.invalid" },
+  }).trim();
+  git("switch", "-c", "feat/merged-groundwork");
+  writeFileSync(join(session.cwd!, "merged.txt"), "merged\n");
+  git("add", "merged.txt");
+  git("commit", "-q", "-m", "merged groundwork");
+  const prUrl = "https://github.com/acme/mission-e2e/pull/41";
+  writeGhPullRequests(daemon.home, [{
+    cwd: session.cwd!, number: 41, url: prUrl, state: "MERGED", createdAt: new Date().toISOString(),
+    mergedAt: new Date().toISOString(), headRefOid: git("rev-parse", "HEAD"), headRefName: "feat/merged-groundwork",
+  }]);
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  // PostToolUse only: the agent is still working after its pull request merged, so the task
+  // is still running and its session is still offered as a prerequisite. (A Stop would let the
+  // daemon settle the task as merged, and a finished task is not offered at all.)
+  const res = await fetch(`${daemon.baseURL}/hooks/PostToolUse`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": token },
+    body: JSON.stringify({
+      agent: session.agent, sessionId: session.agentSessionId, cwd: session.cwd,
+      toolName: "Bash", prCreated: true, prUrl, prUrls: [prUrl],
+    }),
+  });
+  expect(res.status).toBe(204);
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.prState, { timeout: 30_000 }).toBe("merged");
+
+  await boardLayout(dashboard, daemon);
+  await dashboard.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Build on the merged groundwork");
+  await dialog.getByRole("button", { name: "Backlog details" }).click();
+  const add = dialog.getByRole("combobox", { name: "Add dependency" });
+  // The picker fills from the live session list, which arrives over the event stream after
+  // the page loads.
+  let value = "";
+  await expect.poll(async () => {
+    value = await add.evaluate((element, title) =>
+      [...(element as HTMLSelectElement).options].find((option) => option.textContent?.includes(title))?.value ?? "",
+    parent.title);
+    return value;
+  }, { timeout: 30_000 }).not.toBe("");
+  await expect(add.locator("option", { hasText: "Merged groundwork" })).toContainText("(merged)");
+  await add.selectOption(value);
+  await expect(dialog.locator(".dep-chip", { hasText: "Merged groundwork" })).toBeVisible();
+  await expect(dialog.getByRole("group", { name: /When to start after Merged groundwork/ })).toHaveCount(0);
+  await expect(dialog).not.toContainText("or sooner for a Stack dependency", { timeout: 1_000 });
+  await dialog.getByText(/Dependencies each waits/).scrollIntoViewIfNeeded();
+  await shoot(dialog, "dispatch-merged-prerequisite-no-stack");
+});
+
 test("a dependency chip toggles Stack / After merge in the dispatch form and the backlog editor", async ({ dashboard, daemon }) => {
   const parent = await backlogTask(daemon, "Phase one groundwork");
   await boardLayout(dashboard, daemon);

@@ -1417,9 +1417,15 @@ function DispatchModal({
   function isStackable(dependency: TaskDependencyInput): dependency is Extract<TaskDependencyInput, { type: "task" }> {
     if (dependency.type !== "task") return false;
     const target = tasks.find((task) => task.id === dependency.taskId);
-    return target !== undefined
-      && target.repoRoot === draft.repoRoot.trim()
-      && editing?.dependencies.find((stored) => dependencyKey(dependencyInputOf(stored)) === dependencyKey(dependency))?.satisfiedAt == null;
+    if (target === undefined || target.repoRoot !== draft.repoRoot.trim()) return false;
+    // Already merged, so the edge is satisfied the moment it is saved and there is no open
+    // parent to start on: a stored edge says so itself, and a prerequisite added now is
+    // judged the way the server will record it - a finished task, or a live session whose
+    // pull request merged (see `TaskManager`'s dependency resolution).
+    const stored = editing?.dependencies.find((edge) => dependencyKey(dependencyInputOf(edge)) === dependencyKey(dependency));
+    if (stored?.satisfiedAt != null) return false;
+    if (target.status === "done") return false;
+    return !sessions.some((session) => session.state !== "exited" && session.task?.id === target.id && session.prState === "merged");
   }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();

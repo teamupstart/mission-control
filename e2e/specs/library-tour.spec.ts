@@ -403,7 +403,7 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   dialog = step(dashboard, "Overrides, and saving one");
   await expect(dialog).toContainText("base ref and severity");
   await expect(dialog).toContainText("reviews.auto_review.enabled");
-  await expect(dialog).toContainText("even without a Library override");
+  await expect(dialog).toContainText("unless the YAML turns it off");
   await expect(dialog).toContainText("Step 8 of 15");
   await expect(dashboard.locator("tr.wf-command-rule.is-add")).toHaveCSS("outline-width", "2px");
   await shoot(dashboard, "review-r4-command-overrides");

@@ -112,3 +112,63 @@ test("a Claude Agent SDK session reloads external login state on its next turn",
     console.log("CAPTURED e2e/.artifacts/agent-sdk-auth-recovery/external-login-recovery.png");
   }
 });
+
+// The resident hang: the CLI reported "Not logged in" and never closed its turn, and the
+// process ignored its input closing. The session sat at `working` for hours, so neither the
+// resident loop nor the operator's own message ever reached the recovery that relaunches it.
+test("a Claude Agent SDK session whose expired login never closes the turn still recovers", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(150_000);
+  await dispatch(dashboard, daemon);
+
+  const rail = dashboard.getByRole("navigation", { name: "Sessions" });
+  await rail.locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  const reply = detail.getByPlaceholder(/^Reply to this session/);
+  const turn = (text: string) => detail.locator(".turn").getByText(text, { exact: true });
+  const sessionState = async () => {
+    const [session] = await api<Array<{ state: string }>>(daemon, "/api/sessions");
+    return session?.state;
+  };
+
+  await expect(turn("Mock reply to: start authenticated")).toBeVisible();
+  await expect.poll(sessionState).toBe("idle");
+  const [before] = await api<Array<{ id: string; cwd: string; agentSessionId: string | null }>>(
+    daemon,
+    "/api/sessions",
+  );
+
+  await reply.fill("E2E_EXPIRE_CLAUDE_AUTH_WEDGED");
+  await reply.press("Enter");
+  await expect(turn("Not logged in · Please run /login")).toBeVisible();
+  expect(await sessionState()).toBe("working");
+  // No `result` is coming. The driver's grace for one is 30 seconds.
+  await expect.poll(sessionState, { timeout: 60_000 }).toBe("idle");
+
+  writeFileSync(join(daemon.recordDir, "claude-auth-restored"), "ok\n");
+
+  const sdkInvocations = (): Array<{ argv: string[]; cwd: string }> =>
+    recordsIn<{ argv: string[]; cwd: string }>(join(daemon.recordDir, "claude"))
+      .filter((record) =>
+        record.cwd === before?.cwd && argvValue(record.argv, "--input-format") === "stream-json",
+      );
+  await reply.fill("continue after external login");
+  await reply.press("Enter");
+  // Recovery waits out the stale process ignoring its closed input, then stops it.
+  await expect.poll(() => sdkInvocations().length, { timeout: 45_000 }).toBe(2);
+  await expect(turn("Mock reply to: continue after external login")).toBeVisible();
+  await expect(detail.getByText(/^Queued\. Press Up Arrow/)).toBeHidden();
+
+  const [after] = await api<Array<{ id: string; agentSessionId: string | null }>>(daemon, "/api/sessions");
+  expect(after?.id).toBe(before?.id);
+  expect(after?.agentSessionId).toBe(before?.agentSessionId);
+  expect(sdkInvocations().at(-1)?.argv).toContain(`--resume=${before?.agentSessionId}`);
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await detail.screenshot({ path: join(EVIDENCE, "wedged-login-recovery.png") });
+    console.log("CAPTURED e2e/.artifacts/agent-sdk-auth-recovery/wedged-login-recovery.png");
+  }
+});

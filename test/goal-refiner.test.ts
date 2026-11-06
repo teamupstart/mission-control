@@ -68,6 +68,8 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   swap-proposal) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature with manual review in place of tests\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An option pick restated without the prefix, with an ordinary "but" refinement in it.
   pick-but) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but change the Overrides by model label to Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  # The same pick, with a label replaced rather than changed.
+  pick-replace-label) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Implement mockup B, but replace the Overrides label with Advisor Overrides\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   # An opening objective with an attachment line under it. \`amend\` then restates the objective
   # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
   initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
@@ -125,6 +127,7 @@ const setMode = (
     | "amend"
     | "shrink"
     | "pick-but"
+    | "pick-replace-label"
     | "swap-proposal"
     | "negate"
     | "initial-path"
@@ -336,7 +339,7 @@ async function assertRejectedAmendment(
   opts: {
     id: string;
     pane: string;
-    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but" | "swap-proposal";
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long" | "pick-but" | "pick-replace-label" | "swap-proposal";
     /** The fake reply that establishes the opening objective. */
     initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
     instruction: string;
@@ -500,6 +503,18 @@ test("an option pick with an ordinary \"but\" refinement resolves as steering", 
     pane: "%68",
     mode: "pick-but",
     instruction: "B, but change the Overrides by model label to Advisor Overrides",
+    rule: "not-a-prefix",
+  });
+});
+
+test("an option pick that replaces a label resolves as steering", async (t) => {
+  // "replace ... with" removes something only when what it replaces is part of the contract.
+  // A label in the mockup the person just picked is an implementation detail.
+  await assertRejectedAmendment(t, {
+    id: "r41",
+    pane: "%71",
+    mode: "pick-replace-label",
+    instruction: "Pick B, but replace the Overrides label with Advisor Overrides",
     rule: "not-a-prefix",
   });
 });

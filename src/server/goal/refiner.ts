@@ -297,29 +297,44 @@ const RETRACTING =
   /(?:\b(?:but|except|instead|drop|remove|omit|ignore|discard|relax|weaken|narrow|replace|supersede|abandon|cancel|undo|retract)\b|\bno longer\b|\bnot required\b|\bneed not\b|\brather than\b)/;
 
 /**
- * Language that takes a requirement away or swaps it for another. Narrower than `RETRACTING`
- * on purpose: a bare "but", "except" or "instead", or "change ... to", is an ordinary
- * refinement in both an instruction and a model's restatement of it ("B, but change the
- * label"), so it is evidence that an amendment did not merely extend the contract, never
- * evidence that it removes something. An explicit replacement is different - "replace the test
- * requirement with manual review" removes the old requirement as surely as "drop" does - so
- * "replace ... with" within one clause, "swap", "substitute", "in place of" and "supersede" count.
+ * Language that takes something away or swaps it for another. Narrower than `RETRACTING` on
+ * purpose: a bare "but", "except" or "instead", or "change ... to", is an ordinary refinement
+ * ("B, but change the label"), evidence that an amendment did not merely extend the contract
+ * but never evidence that it removes something.
  */
 const REMOVING =
   /\b(?:drop|remove|omit|skip|discard|abandon|cancel|undo|retract|forget|swap|substitute|supersede)\b|\breplace\b[^.;:\n]*\bwith\b|\bin place of\b|\bno longer\b|\bnot (?:required|needed|necessary)\b|\b(?:don't|do not|no) need\b|\bnever ?mind\b|\bwithout\b|\binstead of\b|\brather than\b/;
 
 /**
+ * Words that name the completion contract itself rather than an implementation detail. What a
+ * sentence removes or replaces decides whether it is a retraction: "replace the test
+ * requirement with manual review" takes a requirement away, "replace the Overrides label with
+ * Advisor Overrides" edits the UI the person just picked.
+ */
+const CONTRACT_TERM =
+  /\b(?:requirements?|required|criteria|criterion|acceptance|tests?|testing|e2e|coverage|objective|scope|deliverables?|spec|specification)\b/;
+
+/** A sentence that removes or replaces something named as part of the contract. */
+function removesRequirement(text: string): boolean {
+  return text
+    .toLowerCase()
+    .split(/[.;!?](?:\s|$)|\n/)
+    .some((sentence) => REMOVING.test(sentence) && CONTRACT_TERM.test(sentence));
+}
+
+/**
  * Whether a rejected amendment may be an intentional retraction: the instruction, or the part
- * of the proposal past any retained prefix (the whole proposal, when it kept none), uses
- * removing language. Such an instruction cannot safely be steering - a steering row would ask
- * the next run to drop a requirement the durable contract still holds - so it stays pending
- * for a person or a later instruction that settles it.
+ * of the proposal past any retained prefix (the whole proposal, when it kept none), removes
+ * or replaces part of the contract. Such an instruction cannot safely be steering - a steering
+ * row would ask the next run to drop a requirement the durable contract still holds - so it
+ * stays pending for a person or a later instruction that settles it. Everything else, an
+ * option pick with its label and layout edits included, resolves as steering.
  */
 function amendmentRetracts(current: string | null, proposed: string, instruction: string): boolean {
-  if (REMOVING.test(instruction.toLowerCase())) return true;
+  if (removesRequirement(instruction)) return true;
   const prior = current ? comparableObjective(current) : "";
   const next = comparableObjective(proposed);
-  return REMOVING.test(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
+  return removesRequirement(prior && next.startsWith(prior) ? next.slice(prior.length) : next);
 }
 
 /** The oldest unresolved prompt, or null when there is nothing safe to reconcile. */

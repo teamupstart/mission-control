@@ -8583,8 +8583,10 @@ export class Registry extends EventEmitter {
    * Confirms, never rewrites. `objective`, `text`, `source`, `objectiveVersion` and
    * `openingPrompt` are not in the patch, so neither a shrink nor a growth of the contract
    * can come through here; changing it stays the refiner's job, through `amend` or `replace`.
-   * A refinement already in flight for the old head is abandoned by the refiner's own
-   * head-and-version compare once it returns.
+   * A refinement already in flight for an accepted revision is dropped when it returns:
+   * the refiner refuses any verdict whose revision is already resolved
+   * (`resolvedPromptRevision >= prompt.revision`), because accepting moves neither
+   * `promptRevision` nor `objectiveVersion`.
    *
    * Null without a session or goal; `{ accepted: false }` without an objective (there is no
    * contract to accept). A goal that is already resolved and not `unclear` is returned as is.

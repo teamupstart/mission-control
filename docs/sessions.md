@@ -1678,7 +1678,8 @@ card sentence and the opening request are left exactly as they were. Growing or 
 the objective stays the reconciler's job, through the next **amend** or **replace**. A
 session with no objective yet has nothing to accept, so the drawer shows no button; its
 next instruction becomes the objective. Pressing it again once the Goal has settled changes
-nothing. The route behind the control, and what it may and may not write, are specified in
+nothing. If the request fails, the drawer shows why under the button and the pause stays as it
+was, so it can be pressed again. The route behind the control, and what it may and may not write, are specified in
 [Who may change a Goal's objective](agent-guides/change-contracts.md#who-may-change-a-goals-objective).
 
 What it deliberately isn't:

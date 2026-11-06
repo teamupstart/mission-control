@@ -82,3 +82,11 @@ test("the persisted snapshot schema accepts a .coderabbit.config.ts source",()=>
     assert.equal(CodeRabbitConfigSnapshotSchema.safeParse(snapshot).success, true);
   });
 });
+test("gate: an oversized .coderabbit.config.ts is invalid, not enabled",()=>{
+  withRepo({ ".coderabbit.config.ts": "//" + "x".repeat(65537) }, (root) => {
+    const snapshot = captureCodeRabbitConfig(root);
+    assert.equal(snapshot.enabled, false);
+    assert.equal(snapshot.state, "invalid");
+    assert.equal(snapshot.source, ".coderabbit.config.ts");
+  });
+});

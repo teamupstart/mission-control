@@ -95,12 +95,14 @@ export function captureCodeRabbitConfig(checkoutRoot: string | null): CodeRabbit
   if (yaml.code === "oversized") return { ...base, state: "invalid", diagnostic: "CodeRabbit YAML exceeds the 64 KiB source limit" };
   if (yaml.code === "unreadable") return base;
   const ts = readRootFile(root, CODERABBIT_CONFIG_TS);
-  if ("bytes" in ts || ts.code === "oversized") {
-    // The file is only detected, never executed or parsed; the digest pins its content when small enough.
+  if ("bytes" in ts) {
+    // The file is only detected, never executed or parsed; the digest pins its content.
     return { source: CODERABBIT_CONFIG_TS, enabled: true, state: "enabled",
-      digest: "bytes" in ts ? createHash("sha256").update(ts.bytes).digest("hex") : null,
+      digest: createHash("sha256").update(ts.bytes).digest("hex"),
       diagnostic: "Root .coderabbit.config.ts exists; CodeRabbit is enabled" };
   }
+  // Too large to hash and compare with the committed file, so it cannot be trusted to enable review.
+  if (ts.code === "oversized") return { ...base, source: CODERABBIT_CONFIG_TS, state: "invalid", diagnostic: "CodeRabbit config.ts exceeds the 64 KiB source limit" };
   if (ts.code === "unreadable") return { ...base, source: CODERABBIT_CONFIG_TS, diagnostic: "CodeRabbit config.ts could not be read safely" };
   return { ...base, state: "missing", diagnostic: "Neither root .coderabbit.yaml nor .coderabbit.config.ts exists" };
 }

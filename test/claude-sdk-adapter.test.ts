@@ -982,6 +982,142 @@ test("a stop racing authentication relaunch disposes the fresh query before atta
   }
 });
 
+/**
+ * The shape of the AP - PR Shepherd hang: credentials expired during a long tool call, the
+ * CLI folded a background-task notification into the running turn, its API call failed, and
+ * it emitted the synthetic "Not logged in" frame with NO `result` after it. The process stayed
+ * alive and silent, so the turn never closed, the resident never went idle, and the recovery
+ * that runs on the next send never got a next send.
+ */
+function wedgedAuthDeps(opts: { staleIgnoresInputClose: boolean }) {
+  const starts: Harnessed[] = [];
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    authFailureTurnGraceMs: 20,
+    authRecoveryDrainMs: 20,
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        // A wedged CLI does not act on its input closing; only `return()` ends it.
+        if (!(opts.staleIgnoresInputClose && launchIndex === 0)) query.end();
+      })();
+      return query;
+    },
+  };
+  return { starts, deps };
+}
+
+const NOT_LOGGED_IN = (sessionId: string): ClaudeSdkMessage => ({
+  type: "assistant",
+  session_id: sessionId,
+  error: "authentication_failed",
+  message: { role: "assistant", content: [{ type: "text", text: "Not logged in · Please run /login" }] },
+} as ClaudeSdkMessage);
+
+test("an authentication failure the CLI never closes still ends the turn and recovers on the next send", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  stale.emit(INIT("agent-auth-wedged"));
+  await collect(handle.events, (event) => event.kind === "bound");
+
+  stale.emit(NOT_LOGGED_IN("agent-auth-wedged"));
+  // No `result` follows. Before the fix nothing ever left `working` from here.
+  const closing = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(closing.some((event) => event.kind === "exited"), false, "the session must stay resumable");
+  const done = closing.find((event) => event.kind === "turn_done");
+  assert.equal(done?.kind === "turn_done" && done.usage, null, "the driver invents no usage");
+
+  // The resident loop's next wake (or a human message) goes through sendIfIdle.
+  assert.equal(await handle.sendIfIdle({ text: "continue after claude login" }), "started");
+  assert.deepEqual(stale.control, ["return"], "a stale process that ignores its closed input is stopped");
+  assert.equal(starts.length, 2, "the stale SDK process is replaced exactly once");
+  assert.equal(starts[1]!.options.resume, "agent-auth-wedged");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts[1]!.turns[0]?.message.content, "continue after claude login");
+});
+
+test("authentication recovery resumes even when the stale process never drains after return()", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  // Neither the closed input nor the SDK's own stop ends this process: `return()` never
+  // settles and the stale query's stream never finishes.
+  let returnCalls = 0;
+  stale.return = () => {
+    returnCalls += 1;
+    return new Promise<never>(() => {});
+  };
+  stale.emit(INIT("agent-auth-undrained"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-undrained"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const sent = await Promise.race([
+    handle.sendIfIdle({ text: "continue after claude login" }),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2_000).unref()),
+  ]);
+  assert.equal(sent, "started", "recovery must not wait on a stale process forever");
+  assert.equal(returnCalls, 1, "the SDK was asked once to stop the stale process");
+  assert.equal(starts.length, 2, "a replacement was launched anyway");
+  assert.equal(starts[1]!.options.resume, "agent-auth-undrained");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts[1]!.turns.map((turn) => turn.message.content), ["continue after claude login"]);
+
+  starts[1]!.query.emit(INIT("agent-auth-undrained"));
+  starts[1]!.query.emit({ type: "result", subtype: "success", session_id: "agent-auth-undrained" } as ClaudeSdkMessage);
+  const done = await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(done.some((event) => event.kind === "exited"), false, "the resumed session stays live");
+});
+
+test("a late result for an auth-failed turn the driver already closed is not reported twice", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-late"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-late"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  query.emit({ type: "result", subtype: "error_during_execution", session_id: "agent-auth-late" } as ClaudeSdkMessage);
+  query.emit({ type: "system", subtype: "status", session_id: "agent-auth-late" } as ClaudeSdkMessage);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const stopped = collect(handle.events, (event) => event.kind === "exited");
+  await handle.stop();
+  const after = await stopped;
+  assert.equal(after.filter((event) => event.kind === "turn_done").length, 0, "the late result is absorbed");
+});
+
+test("an auth-failed turn the CLI goes on to finish is not cut short or relaunched", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: false });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const query = starts[0]!.query;
+  query.emit(INIT("agent-auth-healed"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  query.emit(NOT_LOGGED_IN("agent-auth-healed"));
+  query.emit({
+    type: "assistant",
+    session_id: "agent-auth-healed",
+    message: { role: "assistant", content: [{ type: "text", text: "refreshed and continuing" }] },
+  } as ClaudeSdkMessage);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await handle.sendIfIdle({ text: "must not join a running turn" }), null, "the turn is still running");
+
+  query.emit({ type: "result", subtype: "success", session_id: "agent-auth-healed" } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  assert.equal(await handle.sendIfIdle({ text: "next turn" }), "started");
+  assert.equal(starts.length, 1, "working credentials need no relaunch");
+});
+
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {
   const { deps, started } = fakeDeps();
   const handle = await claudeSdkSpec(deps).launch(launchOpts());

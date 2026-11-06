@@ -411,7 +411,22 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly cwd: string, private readonly resumedConversation: string | null) {}
+  /**
+   * Closes the turn an `authentication_failed` frame opened when no `result` follows it.
+   * Armed by that frame; disarmed by the turn's `result`, a later healthy frame, or the end.
+   */
+  private authenticationStall: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The query whose auth-failed turn the driver closed itself. Its late `result`, if one
+   * ever comes, describes a turn already reported done and must not be reported again.
+   */
+  private authenticationClosedTurn: ClaudeSdkQuery | null = null;
+
+  constructor(
+    private readonly cwd: string,
+    private readonly resumedConversation: string | null,
+    private readonly authTiming: ClaudeAuthTiming = DEFAULT_AUTH_TIMING,
+  ) {}
 
   get recoveryProcessId(): number | null {
     return this.authenticationRecovery ? null : this.query?.recoveryProcessId ?? null;
@@ -494,8 +509,21 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
 
     this.recoveringQuery = stale;
+    this.disarmAuthenticationStall();
     this.turns.close();
-    await draining;
+    // Closing the input is the polite ending, and the one that lets a CLI still finishing up
+    // release the conversation file itself. A process that has stopped making progress - the
+    // reason this recovery exists - may never act on it, so the wait is bounded and the SDK
+    // is then asked to stop the subprocess outright.
+    if (!(await settlesWithin(draining, this.authTiming.drainMs))) {
+      console.warn(
+        `[claude-sdk] stale process for ${this.agentSessionId} did not exit after its input closed; stopping it`,
+      );
+      await settlesWithin(stale.return(undefined), this.authTiming.drainMs);
+      if (!(await settlesWithin(draining, this.authTiming.drainMs))) {
+        console.warn(`[claude-sdk] stale process for ${this.agentSessionId} has not drained; resuming anyway`);
+      }
+    }
     if (this.stopped) throw new Error("this session's driver has stopped");
 
     this.turns = new TurnStream();
@@ -775,6 +803,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   attach(query: ClaudeSdkQuery): void {
     this.query = query;
     this.queryEnded = false;
+    this.authenticationClosedTurn = null;
     const pump = this.pump(query);
     this.queryPump = pump;
     void pump.catch((error) => {
@@ -972,6 +1001,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private finish(reason: string): void {
+    this.disarmAuthenticationStall();
     this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
@@ -998,6 +1028,12 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;
+      this.armAuthenticationStall();
+    } else if (message.type === "assistant" && !message.parent_tool_use_id && this.authenticationStall) {
+      // The CLI answered again after reporting the failure, so its credentials work after
+      // all: a relaunch on the next send would only interrupt a turn that is progressing.
+      this.disarmAuthenticationStall();
+      this.authenticationFailed = false;
     }
     // The init frame is the one authoritative answer to "which model did this launch
     // actually bind?" It is especially important on resume: the durable launch request may
@@ -1030,6 +1066,15 @@ class ClaudeSdkSession implements SdkSessionHandle {
       return;
     }
     if (message.type === "result") {
+      this.disarmAuthenticationStall();
+      if (this.authenticationClosedTurn !== null && this.authenticationClosedTurn === this.query) {
+        // The late close of a turn the stall already reported done. Its usage snapshot is
+        // left for the next result, which repeats the conversation totals, to account.
+        this.authenticationClosedTurn = null;
+        this.turnActive = false;
+        this.turnFailure = null;
+        return;
+      }
       this.turnActive = false;
       const failure = this.turnFailure ?? claudeResultCapacityFailure(message);
       this.turnFailure = null;
@@ -1053,6 +1098,33 @@ class ClaudeSdkSession implements SdkSessionHandle {
       this.refreshRateLimits();
       return;
     }
+  }
+
+  private armAuthenticationStall(): void {
+    this.disarmAuthenticationStall();
+    const query = this.query;
+    const timer = setTimeout(() => {
+      if (this.authenticationStall !== timer) return;
+      this.authenticationStall = null;
+      if (this.stopped || this.query !== query || !this.turnActive || !this.authenticationFailed) return;
+      console.warn(
+        `[claude-sdk] ${this.agentSessionId ?? "an unbound session"} reported an authentication failure without closing its turn; closing it so the next turn can reload credentials`,
+      );
+      // The bookkeeping a `result` would have done, minus usage: the CLI reported none, and
+      // the next result's cumulative totals still carry anything this turn spent.
+      this.turnActive = false;
+      this.turnFailure = null;
+      this.authenticationClosedTurn = query;
+      this.out.emit({ kind: "turn_done", usage: null });
+      this.compaction.finish();
+    }, this.authTiming.turnGraceMs);
+    timer.unref?.();
+    this.authenticationStall = timer;
+  }
+
+  private disarmAuthenticationStall(): void {
+    if (this.authenticationStall) clearTimeout(this.authenticationStall);
+    this.authenticationStall = null;
   }
 
   private bind(agentSessionId: string): void {
@@ -1291,6 +1363,38 @@ function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, 
  * pending. Long enough for a server fetched on first use, such as an `npx` package, to come up.
  */
 const RESIDENT_MCP_SETTLE_MS = 60_000;
+
+interface ClaudeAuthTiming {
+  /** How long an `authentication_failed` frame waits for the `result` that closes its turn. */
+  turnGraceMs: number;
+  /** How long recovery waits on a stale subprocess, before and after asking it to stop. */
+  drainMs: number;
+}
+
+/**
+ * Claude Code normally closes an auth-failed turn with a `result` straight after the
+ * synthetic "Not logged in" frame. A turn that failed while folding in a mid-turn
+ * background-task notification has been seen to emit that frame and then nothing, leaving
+ * the process alive and the turn open for hours - and recovery runs only on the NEXT send,
+ * which an open turn holds back. The grace is far longer than the gap between the two frames
+ * and far shorter than any resident pacing interval.
+ */
+const DEFAULT_AUTH_TIMING: ClaudeAuthTiming = { turnGraceMs: 30_000, drainMs: 10_000 };
+
+/** Whether `promise` settled within `ms` (nothing to wait for counts). The timer never holds the daemon open. */
+async function settlesWithin(promise: Promise<unknown> | null, ms: number): Promise<boolean> {
+  if (!promise) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise.then(() => true, () => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const RESIDENT_MCP_POLL_MS = 200;
 
 /**
@@ -1378,10 +1482,14 @@ async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, 
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   const settleMs = deps.residentMcpSettleMs ?? RESIDENT_MCP_SETTLE_MS;
+  const authTiming: ClaudeAuthTiming = {
+    turnGraceMs: deps.authFailureTurnGraceMs ?? DEFAULT_AUTH_TIMING.turnGraceMs,
+    drainMs: deps.authRecoveryDrainMs ?? DEFAULT_AUTH_TIMING.drainMs,
+  };
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
-      const session = new ClaudeSdkSession(opts.cwd, opts.resume);
+      const session = new ClaudeSdkSession(opts.cwd, opts.resume, authTiming);
       // Turn one is queued before the query is constructed, so the first thing the CLI
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);

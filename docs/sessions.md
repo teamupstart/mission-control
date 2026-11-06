@@ -437,6 +437,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 - if a Claude SDK session reports that it is no longer logged in, authenticate Claude from
   any terminal. Its next Mission Control message replaces the stale SDK subprocess, resumes
   the same Claude conversation, and delivers that message with the credentials now on disk.
+  A resident's next scheduled wake does the same. If Claude reports the failure but never
+  closes its turn, Mission Control closes it after 30 seconds so the session returns to idle
+  and that next message or wake can reach it. If the stale subprocess then ignores its input
+  closing, it is stopped after 10 seconds instead of holding up the recovery.
   `/login` is not an interactive command in the embedded composer. If authentication fails
   before Claude reports a conversation id, there is nothing safe to resume; the session exits
   as unresumable so the operator can start a new conversation;

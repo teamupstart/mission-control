@@ -40,8 +40,11 @@ the positive "nothing landed" outcomes. In `supervisor.send` (`supervisor.ts:692
    `releaseHumanEcho` (drops an entry that is not captured); `claimHumanEcho(sessionId, text):
    "skip" | "capture" | "none"` ("skip" for a captured entry, which it consumes; "capture" for
    an open or confirmed entry, which it marks captured; "none" when nothing matches);
-   `expireHumanEchoes(sessionId, now)` drops entries older than 120 seconds. `forgetInjections`
-   clears both maps.
+   `expireHumanEchoes(sessionId, now)` drops entries older than 120 seconds. Age is also checked
+   lazily on every read: `claimHumanEcho`, `confirmHumanEcho` and `releaseHumanEcho` take `now`
+   (defaulting to `Date.now()`), drop a matching entry older than 120 seconds before answering,
+   and then answer as if it never existed. No timer is needed. `forgetInjections` clears both
+   maps.
 2. `supervisor.send`: when `acceptedGoal` is passed, expect before `handle.send`; after it
    resolves, confirm, and run `captureGoalBestEffort` only when the hook has not already
    captured; release in the catch path when the driver refused before accepting.
@@ -55,8 +58,9 @@ the positive "nothing landed" outcomes. In `supervisor.send` (`supervisor.ts:692
    return; on "none" fall through to the existing checks.
 5. Expiry at turn end: where the registry completes a work cycle on the harness's turn-end
    signal (`completeWorkCycle`), call `expireHumanEchoes` for that session with a zero age so
-   every entry of the finished turn is dropped; the 120-second age bound covers sessions that
-   never finish a turn.
+   every entry of the finished turn is dropped. A session that never finishes a turn relies on
+   the lazy age check in step 1: the next claim for the same text finds the stale entry, drops
+   it, answers "none", and the arrival is captured through the ordinary hook path.
 6. `docs/sessions.md`: extend "counted once, not twice" to every SDK follow-up; each delivered
    turn is captured by exactly one door, and a retype is its own send, so it is still heard.
 7. Update the `isSeededLaunchEcho` comment describing the two doors.
@@ -77,13 +81,17 @@ delivery and echo lets one duplicate through, which Phase 1 makes harmless.
   (`markBoundaryUncertain`) yields exactly one revision; a refused send with no echo captures
   nothing and leaves no entry; a successful send with no echo followed by an identical retype
   yields one revision per send; after the session's turn end an unconsumed entry no longer
-  answers "skip", so a later hook-only arrival of the same text is captured.
+  answers "skip", so a later hook-only arrival of the same text is captured; with no turn end at
+  all, a captured entry older than 120 seconds (clock injected through the manager's `now`
+  dependency and the ledger's `now` parameter) no longer answers "skip", so a later identical
+  hook-only arrival is captured.
 - `test/sdk-supervisor.test.ts`: a direct `send` with `acceptedGoal` plus a matching echo
   yields `promptRevision 2` in either order; a driver refusal releases the entry; an early echo
   followed by a driver refusal yields exactly one revision.
 - A ledger test (new `test/human-echo-ledger.test.ts`): the open / confirmed / captured
   transitions, "skip" versus "capture" versus "none", release never dropping a captured entry,
-  120-second expiry, the per-session ceiling, and `originOf` never reporting a human echo.
+  the explicit 120-second sweep, the lazy age check on claim, confirm and release with an
+  injected `now`, the per-session ceiling, and `originOf` never reporting a human echo.
 - `npm run typecheck`, `npm run lint`.
 
 ## Merge and exit criteria
@@ -93,8 +101,8 @@ All of the above pass. Manual check: one SDK follow-up shows `promptRevision 2`.
 ## Downstream handoff
 
 One revision per accepted human turn on SDK sessions, captured by exactly one door; an
-unconsumed entry expires at the next turn end. Do not add a third capture door, give
-`TurnOrigin` a human value, or let an entry outlive the turn it belongs to.
+unconsumed entry expires at the next turn end or by age on its next read. Do not add a third
+capture door, give `TurnOrigin` a human value, or let an entry outlive the turn it belongs to.
 
 ## Cross-phase audit record
 

@@ -82,12 +82,14 @@ session's pull request merging, which publishes the paths the tasks name.
 - Rationale markers: Phase 1 writes `Treated as steering:`, Phase 3 writes `Accepted by you:`.
 - Phase 1 stores an accepted amendment with every ignored path line retained; Phase 2's echo
   ledger captures each delivered turn through exactly one door and expires an unconsumed
-  expectation at the next turn end (source plan sections 3.1, 3.2 and 7).
+  expectation at the next turn end or by age on its next read (source plan sections 3.1, 3.2
+  and 7).
 - Documentation owners: Phase 1 and Phase 2 edit different paragraphs of `docs/sessions.md`;
   Phase 3 owns `docs/foreman.md`, the Goal section of `docs/sessions.md` and
   `docs/agent-guides/change-contracts.md`; Phase 4 owns `docs/workflows.md` only.
-- Steering rows carry `relationship: "steer"` at a resolved revision; Phase 3 adds a list writer
-  beside the unchanged single-note writer.
+- Steering rows carry `relationship: "steer"` at a resolved revision. The refiner (Phase 1)
+  writes through the existing single-note writer; the accept route (Phase 3) writes through the
+  new list writer `upsertSessionGoalWithSteeringNotes`, and neither phase changes the other's writer.
 - Phase 3 owns `POST /api/sessions/:id/goal/accept` and `api.acceptGoal`; Phase 4 calls them
   unchanged. Phase 4 owns `workflowCompletionStall` in `src/web/lib/held.ts` and adds nothing to
   the wire. The source plan's section 7 invariants hold in every phase.

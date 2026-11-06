@@ -1,9 +1,10 @@
 # Foreman stuck-goal recovery: an unresolved intent must never silently stop a bound workflow
 
-Status: revision 4 (2026-11-05), repaired after Plan Validation round 1: an accepted amendment
-keeps every attachment path line, the echo ledger's capture and expiry rules are defined, and the
-change contract has one owner (Phase 3). Decisions adopted from the first review are in section
-10. Nothing here is implemented.
+Status: revision 5 (2026-11-05), repaired after Plan Validation rounds 1 and 2: an accepted
+amendment keeps every attachment path line, the echo ledger's capture rules are defined and its
+expiry is checked on every read, the accept route has one steering writer, and the change
+contract has one owner (Phase 3). Decisions adopted from the first review are in section 10.
+Nothing here is implemented.
 
 Source: the investigation report for task `4bda9656` ("Move Advisor Settings to Harness Page",
 session `sdk:3cf99086`, note key `dd55fb3a`, binding `5a6e1be2`). Every claim below was
@@ -197,8 +198,12 @@ whichever arrives first:
 - **Uncertain outcome, no echo.** The expectation stays open until it expires.
 - **Expiry.** An expectation nobody consumed expires at the session's next completed turn (the
   turn-end signal `completeWorkCycle` already observes) or after 120 seconds, whichever comes
-  first, so a stale entry can never suppress a later arrival. A retype of identical text is safe
-  regardless: it is its own send, with its own expectation, captured at its own acknowledgement.
+  first, so a stale entry can never suppress a later arrival. The age bound needs no timer:
+  every read of the ledger (`claimHumanEcho`, `confirmHumanEcho`, `releaseHumanEcho`) treats an
+  entry older than 120 seconds as absent and drops it, so a session that never completes a turn
+  still cannot have a captured entry swallow a later identical hook-only arrival. A retype of
+  identical text is safe regardless: it is its own send, with its own expectation, captured at
+  its own acknowledgement.
 
 `Registry.captureHookGoalPrompt` consults the ledger after the launch-echo check and before the
 daemon-authorship check. "Saying the same thing twice still works" (`docs/sessions.md`) holds
@@ -220,11 +225,13 @@ not `unclear` is returned unchanged.
 
 **Registry.** `acceptGoalObjective(id, now)`:
 
-- Every pending revision is recorded as a steering note through the existing
-  `upsertSessionGoalWithSteering` path, instruction = the pending prompt, or `(not captured)`
-  for a legacy null, rationale `Accepted by you: the current objective is the completion
-  contract.` A resolved-but-`unclear` goal with nothing pending records its latest prompt at its
-  own revision the same way.
+- Every pending revision is recorded as a steering note in one transaction through a new list
+  writer, `upsertSessionGoalWithSteeringNotes(goal, notes)` in `src/server/db.ts`, which sits
+  beside the refiner's single-note writer `upsertSessionGoalWithSteering` and leaves it
+  unchanged. Each note has instruction = the pending prompt, or `(not captured)` for a legacy
+  null, and rationale `Accepted by you: the current objective is the completion contract.` A
+  resolved-but-`unclear` goal with nothing pending records its latest prompt at its own revision
+  the same way, as a one-note list.
 - `relationship = "steer"`, `resolvedPromptRevision = promptRevision`, `pendingPrompts = []`,
   `focus` = the last pending prompt's `goalLine`, `rationale` as above with the count of
   instructions recorded.
@@ -347,7 +354,7 @@ Every agent binary stays faked. No spec or test spends model tokens.
 | `test/workflow-run-intent-snapshot.test.ts` (Phase 1 case) | A run frozen after such an amendment carries the path line in `rawGoal`, so the frozen contract retained it too. |
 | `test/foreman-reads-goal.test.ts` or a new `test/goal-prompt.test.ts` | The rendered goal prompt carries the option-pick rule. |
 | `test/goal-steering-log.test.ts` | A downgraded amendment appends exactly one steering row, with the marker rationale, and a later run reads it. |
-| `test/pending-turn-manager.test.ts` | An SDK follow-up echoed by a `UserPromptSubmit` carrying the same text opens one revision whether the echo arrives before or after the acknowledgement; an early echo followed by a refused or an uncertain acknowledgement still yields exactly one revision; a refused send with no echo captures nothing and releases the expectation; a successful send with no echo followed by an identical retype yields one revision per send; an expectation expires at the next turn end and cannot suppress a later arrival. |
+| `test/pending-turn-manager.test.ts` | An SDK follow-up echoed by a `UserPromptSubmit` carrying the same text opens one revision whether the echo arrives before or after the acknowledgement; an early echo followed by a refused or an uncertain acknowledgement still yields exactly one revision; a refused send with no echo captures nothing and releases the expectation; a successful send with no echo followed by an identical retype yields one revision per send; an expectation expires at the next turn end and cannot suppress a later arrival; with no turn end at all, a captured entry older than 120 seconds (injected clock) no longer suppresses a later identical hook-only arrival, which is captured. |
 | `test/session-goals.test.ts` | `acceptGoalObjective`: pending revisions become steering rows in order; `(not captured)` for a null legacy prompt; objective, version, source and opening prompt untouched; idempotent; an `unclear` goal with nothing pending records its latest prompt. |
 | `test/workflow-bindings-http.test.ts` or a sibling HTTP test | `POST /api/sessions/:id/goal/accept`: 404, 409, 200, idempotent 200; a `session_upsert` reaches an SSE subscriber with the resolved summary. |
 | `test/prompted-wrapup.test.ts` | An accepted goal is a resolved intent whose episode key is `intent:<version>:<revision>`; the step-8 skip cases are unchanged. |
@@ -397,8 +404,8 @@ Selectors use roles, labels and placeholders. No `data-testid`.
 5. The refiner's compare-and-set (`refiner.ts:371-376`) still abandons a verdict whose head or
    objective moved, including when a person accepted the objective mid-flight.
 6. The echo ledger never loses a human turn: exactly one of the two doors captures each
-   delivered turn, an unconsumed expectation expires at the next turn end, and a retype is its
-   own send with its own capture.
+   delivered turn, an unconsumed expectation expires at the next turn end or by age on its next
+   read, and a retype is its own send with its own capture.
 
 Each line is pinned by a test in section 5.
 

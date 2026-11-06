@@ -12,6 +12,12 @@ const CursorSchema = z.object({
   id: z.string().min(1),
 }).strict();
 
+export class InvalidTaskCursorError extends Error {
+  constructor() {
+    super("Invalid task cursor or changed filters");
+  }
+}
+
 export function taskReadSnapshot(task: Task): McpTaskSnapshot {
   const primary = primaryRepoPrForTask(task.id);
   const prUrl = primary.prUrl ?? task.outcomeUrl;
@@ -35,7 +41,7 @@ export function readTaskPage(query: McpListTasks) {
       after = CursorSchema.parse(JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8")));
       if (after.filters !== filters) throw new Error("changed filters");
     } catch {
-      throw new Error("Invalid task cursor or changed filters");
+      throw new InvalidTaskCursorError();
     }
   }
   // Reuse the durable task reader's normalization of historical labels/dependencies.

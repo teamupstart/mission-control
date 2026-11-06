@@ -765,6 +765,12 @@ test("task read cursors survive deletion and newer inserts and reject invalid or
   assert.equal(next.nextCursor, null);
   await f.call("list_tasks", { labels: [label], enabled: false, cursor: first.nextCursor }, /Invalid task cursor or changed filters/);
   await f.call("list_tasks", { cursor: "not-a-cursor" }, /Invalid task cursor/);
+  for (const body of [{ labels: [label], enabled: false, cursor: first.nextCursor }, { cursor: "not-a-cursor" }]) {
+    const response = await f.app.request("/mcp/tasks/list", { method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": ensureToken() }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "Invalid task cursor or changed filters" });
+  }
   for (const args of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { status: "unknown" }, { kind: "unknown" },
     { enabled: "false" }, { labels: "api" }, { priority: "unknown" }, { taskId: "ignored" }]) {
     await f.call("list_tasks", args, /Invalid|Unrecognized|Number/);
@@ -814,6 +820,7 @@ test("read tools include durable attached-repository PRs without live session fe
   const created = await f.create({ agent: "codex", additionalRepositories: [repoB], labels, workflowId: null });
   const sessionId = `sdk:attached-pr-${created.id}`;
   const episodeId = randomUUID();
+  const abandonedEpisodeId = randomUUID();
   const attachedPrUrl = "https://github.com/example/secondary/pull/1369";
   openDb().prepare(`INSERT INTO task_work_episode_bindings
     (task_id, episode_id, session_id, agent_session_id, bound_at, updated_at)
@@ -822,6 +829,12 @@ test("read tools include durable attached-repository PRs without live session fe
     (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
     VALUES (?, ?, ?, ?, ?, 'open', 'attached-head', NULL, 1)`)
     .run(episodeId, repoB, sessionId, created.id, attachedPrUrl);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'abandoned-head', NULL, 2)`)
+    .run(abandonedEpisodeId, repoB, sessionId, created.id, "https://github.com/example/secondary/pull/1368");
+  const abandonedRow = openDb().prepare("SELECT * FROM work_episode_prs WHERE task_id = ? AND episode_id = ? AND repo_root = ?");
+  const abandonedBefore = abandonedRow.get(created.id, abandonedEpisodeId, repoB);
   assert.equal(f.registry.getTask(created.id)!.extraRepos[0]!.prUrl, null,
     "the live board has not loaded the durable attached PR");
   assert.deepEqual(f.registry.snapshot().sessions, [], "no session or live PR feedback is needed");
@@ -835,10 +848,8 @@ test("read tools include durable attached-repository PRs without live session fe
       .run(stage.episode, created.id);
     openDb().prepare("UPDATE tasks SET status = ?, session_id = ? WHERE id = ?")
       .run(stage.status, sessionId, created.id);
-    if (stage.mergedAt !== null) {
-      openDb().prepare("UPDATE work_episode_prs SET pr_state = 'merged', merged_at = ? WHERE task_id = ?")
-        .run(stage.mergedAt, created.id);
-    }
+    openDb().prepare("UPDATE work_episode_prs SET pr_state = ?, merged_at = ? WHERE task_id = ? AND episode_id = ? AND repo_root = ?")
+      .run(stage.mergedAt === null ? "open" : "merged", stage.mergedAt, created.id, episodeId, repoB);
     const writesBefore = openDb().prepare("SELECT total_changes() AS n").get();
     const task = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
     const page = (await f.call<TaskPage>("list_tasks", { repository: repoB, labels }))!;
@@ -856,5 +867,7 @@ test("read tools include durable attached-repository PRs without live session fe
     }
     assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), writesBefore,
       "loading durable PR bindings is read-only");
+    assert.deepEqual(abandonedRow.get(created.id, abandonedEpisodeId, repoB), abandonedBefore,
+      "the distinct abandoned open PR is preserved and never returned");
   }
 });

@@ -1,4 +1,4 @@
-import { readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
+import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
   DeleteResidentMcpServerSchema,
@@ -4951,7 +4951,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       return c.json(readTaskPage(query));
     } catch (error) {
-      if (error instanceof Error && error.message === "Invalid task cursor or changed filters") {
+      if (error instanceof InvalidTaskCursorError) {
         return c.json({ error: error.message }, 400);
       }
       throw error;

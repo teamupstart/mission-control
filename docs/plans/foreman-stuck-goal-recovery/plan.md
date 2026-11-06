@@ -1,10 +1,11 @@
 # Foreman stuck-goal recovery: an unresolved intent must never silently stop a bound workflow
 
-Status: revision 5 (2026-11-05), repaired after Plan Validation rounds 1 and 2: an accepted
-amendment keeps every attachment path line, the echo ledger's capture rules are defined and its
-expiry is checked on every read, the accept route has one steering writer, and the change
-contract has one owner (Phase 3). Decisions adopted from the first review are in section 10.
-Nothing here is implemented.
+Status: revision 6 (2026-11-05), repaired after Plan Validation rounds 1 to 3: an accepted
+amendment keeps every attachment path line, the echo ledger's capture rules are defined, an
+expectation is marked captured only after a capture has succeeded at either door, its expiry is
+checked on every read, the accept route has one steering writer, and the change contract has one
+owner (Phase 3). Decisions adopted from the first review are in section 10. Nothing here is
+implemented.
 
 Source: the investigation report for task `4bda9656` ("Move Advisor Settings to Harness Page",
 session `sdk:3cf99086`, note key `dd55fb3a`, binding `5a6e1be2`). Every claim below was
@@ -187,12 +188,16 @@ An expectation is *open* (sent, not acknowledged), *confirmed* (acknowledged) or
 (one revision exists for it). Exactly one of the two doors captures each delivered turn,
 whichever arrives first:
 
-- **Echo first.** The hook finds an open expectation, captures the prompt itself and marks the
-  expectation captured. The acknowledgement path then confirms and skips its own capture. If the
-  acknowledgement instead fails, is refused, or stays uncertain, nothing is lost: the hook has
-  already proved the agent received the turn.
-- **Acknowledgement first.** The send path captures as it does today and marks the expectation
-  captured; the later echo finds a captured expectation, consumes it and is dropped.
+- **Echo first.** The hook finds an open or confirmed expectation and captures the prompt
+  itself; only once `captureAcceptedPrompt` has returned a goal does it mark the expectation
+  captured. The acknowledgement path then confirms, sees the mark and skips its own capture. If
+  the acknowledgement instead fails, is refused, or stays uncertain, nothing is lost: the hook has
+  already proved the agent received the turn. If the hook's capture returns null or throws, the
+  entry is left as it was and the acknowledgement records the turn as if no echo had arrived.
+- **Acknowledgement first.** Either send path captures as it does today and, once the registry
+  has returned a goal, marks the expectation captured; the later echo finds a captured
+  expectation, consumes it and is dropped. A capture that fails at acknowledgement leaves the
+  entry confirmed, so a later echo records the turn instead.
 - **Refused send, no echo.** The expectation is released; nothing was delivered and nothing is
   captured.
 - **Uncertain outcome, no echo.** The expectation stays open until it expires.
@@ -354,7 +359,8 @@ Every agent binary stays faked. No spec or test spends model tokens.
 | `test/workflow-run-intent-snapshot.test.ts` (Phase 1 case) | A run frozen after such an amendment carries the path line in `rawGoal`, so the frozen contract retained it too. |
 | `test/foreman-reads-goal.test.ts` or a new `test/goal-prompt.test.ts` | The rendered goal prompt carries the option-pick rule. |
 | `test/goal-steering-log.test.ts` | A downgraded amendment appends exactly one steering row, with the marker rationale, and a later run reads it. |
-| `test/pending-turn-manager.test.ts` | An SDK follow-up echoed by a `UserPromptSubmit` carrying the same text opens one revision whether the echo arrives before or after the acknowledgement; an early echo followed by a refused or an uncertain acknowledgement still yields exactly one revision; a refused send with no echo captures nothing and releases the expectation; a successful send with no echo followed by an identical retype yields one revision per send; an expectation expires at the next turn end and cannot suppress a later arrival; with no turn end at all, a captured entry older than 120 seconds (injected clock) no longer suppresses a later identical hook-only arrival, which is captured. |
+| `test/pending-turn-manager.test.ts` | Exactly one revision for an SDK follow-up echoed by a `UserPromptSubmit` with the same text, whether the echo arrives before or after the acknowledgement; after an early echo whose acknowledgement is refused or uncertain; and after an early echo whose capture fails (the registry refuses the prompt, or the Goal write throws once through `t.mock.method`), which leaves the expectation in place for the acknowledgement to record. A refused send with no echo captures nothing and releases the expectation; an identical retype after a send with no echo yields one revision per send; an expectation expires at the next turn end; with no turn end at all, a captured entry older than 120 seconds (injected clock) no longer suppresses a later identical hook-only arrival, which is captured. |
+| `test/sdk-supervisor.test.ts` | A direct `send` with `acceptedGoal` whose acknowledgement captured the turn marks the expectation captured, so a later matching echo is dropped and `captureAcceptedPrompt` ran once; an early echo whose capture throws once is recorded by the acknowledgement; exactly one revision in each case. |
 | `test/session-goals.test.ts` | `acceptGoalObjective`: pending revisions become steering rows in order; `(not captured)` for a null legacy prompt; objective, version, source and opening prompt untouched; idempotent; an `unclear` goal with nothing pending records its latest prompt. |
 | `test/workflow-bindings-http.test.ts` or a sibling HTTP test | `POST /api/sessions/:id/goal/accept`: 404, 409, 200, idempotent 200; a `session_upsert` reaches an SSE subscriber with the resolved summary. |
 | `test/prompted-wrapup.test.ts` | An accepted goal is a resolved intent whose episode key is `intent:<version>:<revision>`; the step-8 skip cases are unchanged. |
@@ -404,8 +410,9 @@ Selectors use roles, labels and placeholders. No `data-testid`.
 5. The refiner's compare-and-set (`refiner.ts:371-376`) still abandons a verdict whose head or
    objective moved, including when a person accepted the objective mid-flight.
 6. The echo ledger never loses a human turn: exactly one of the two doors captures each
-   delivered turn, an unconsumed expectation expires at the next turn end or by age on its next
-   read, and a retype is its own send with its own capture.
+   delivered turn, an expectation is marked captured only after that door's capture has
+   succeeded, an unconsumed expectation expires at the next turn end or by age on its next read,
+   and a retype is its own send with its own capture.
 
 Each line is pinned by a test in section 5.
 

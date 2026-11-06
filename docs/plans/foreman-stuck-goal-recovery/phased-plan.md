@@ -81,9 +81,9 @@ session's pull request merging, which publishes the paths the tasks name.
 
 - Rationale markers: Phase 1 writes `Treated as steering:`, Phase 3 writes `Accepted by you:`.
 - Phase 1 stores an accepted amendment with every ignored path line retained; Phase 2's echo
-  ledger captures each delivered turn through exactly one door and expires an unconsumed
-  expectation at the next turn end or by age on its next read (source plan sections 3.1, 3.2
-  and 7).
+  ledger captures each delivered turn through exactly one door, marks an expectation captured
+  only after that capture succeeded, and expires an unconsumed expectation at the next turn end
+  or by age on its next read (source plan sections 3.1, 3.2 and 7).
 - Documentation owners: Phase 1 and Phase 2 edit different paragraphs of `docs/sessions.md`;
   Phase 3 owns `docs/foreman.md`, the Goal section of `docs/sessions.md` and
   `docs/agent-guides/change-contracts.md`; Phase 4 owns `docs/workflows.md` only.

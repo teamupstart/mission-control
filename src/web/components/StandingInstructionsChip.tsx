@@ -76,7 +76,7 @@ export function StandingInstructionsChip({
             />
             <div className="modal-foot">
               <Tooltip label="Close">
-                <button type="button" className="btn" onClick={() => setOpen(false)}>
+                <button data-dialog-default type="button" className="btn" onClick={() => setOpen(false)}>
                   Close
                 </button>
               </Tooltip>

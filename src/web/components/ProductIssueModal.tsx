@@ -244,6 +244,7 @@ export function ProductIssueModal({
    */
   const outcomeRef = useRef<HTMLParagraphElement | null>(null);
   const authorizedSubmitRef = useRef(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   useEffect(() => {
     if (!result) return;
@@ -265,6 +266,26 @@ export function ProductIssueModal({
 
   const typeUi = PRODUCT_ISSUE_TYPE_UI[draft.type];
 
+  function authorize(trusted: boolean): boolean {
+    authorizedSubmitRef.current = false;
+    if (!trusted || blocked || !matched) return false;
+    try {
+      authorizedSubmitRef.current = onAuthorize({
+        requestId: matched.requestId,
+        draftIdentity: matched.draftIdentity,
+      });
+    } catch (error) {
+      console.error("Product issue authorization failed", error);
+    }
+    setAuthorizationError(authorizedSubmitRef.current ? null :
+      !window.missionDesktop
+        ? "Nothing was published. This browser cannot authorize reports. " +
+          "Open this report in the Mission Control desktop app to publish it."
+        : "Nothing was published. Mission Control could not authorize this report. " +
+          "Quit and reopen the desktop app, then try again.");
+    return authorizedSubmitRef.current;
+  }
+
   return (
     <Overlay
       id={OVERLAY_IDS.productIssue}
@@ -273,8 +294,14 @@ export function ProductIssueModal({
       role="dialog"
       ariaLabel="Report product feedback"
       closable={!submitting}
+      // Programmatic button.click() is untrusted. Authorize from the original key event,
+      // then use the same validated form submission as a trusted Report click.
+      onDefaultAction={created ? undefined : (event) => {
+        if (authorize(event.isTrusted)) formRef.current?.requestSubmit();
+      }}
     >
       <form
+        ref={formRef}
         onSubmit={(event) => {
           event.preventDefault();
           if (blocked || !authorizedSubmitRef.current) return;
@@ -516,7 +543,7 @@ export function ProductIssueModal({
                uncertain result rather than a refusal, which is the worst answer to get. */
             <span className="feedback-created-actions">
               <Tooltip label="Close this feedback form">
-                <button type="button" className="btn btn-ghost" onClick={onClose}>
+                <button data-dialog-default type="button" className="btn btn-ghost" onClick={onClose}>
                   Close
                 </button>
               </Tooltip>
@@ -550,27 +577,7 @@ export function ProductIssueModal({
               disabled={blocked}
               aria-label="Report publicly"
               onClick={(event) => {
-                authorizedSubmitRef.current = false;
-                if (!event.nativeEvent.isTrusted || blocked || !matched) {
-                  event.preventDefault();
-                  return;
-                }
-                try {
-                  authorizedSubmitRef.current = onAuthorize({
-                    requestId: matched.requestId,
-                    draftIdentity: matched.draftIdentity,
-                  });
-                } catch (error) {
-                  // A missing or stale desktop bridge must not leave an inert control.
-                  console.error("Product issue authorization failed", error);
-                }
-                setAuthorizationError(authorizedSubmitRef.current ? null :
-                  !window.missionDesktop
-                    ? "Nothing was published. This browser cannot authorize reports. " +
-                      "Open this report in the Mission Control desktop app to publish it."
-                    : "Nothing was published. Mission Control could not authorize this report. " +
-                      "Quit and reopen the desktop app, then try again.");
-                if (!authorizedSubmitRef.current) event.preventDefault();
+                if (!authorize(event.nativeEvent.isTrusted)) event.preventDefault();
               }}
             >
               {submitting

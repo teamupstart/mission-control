@@ -8,6 +8,7 @@ import type { Locator, Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * The backlog has ONE order and it is the operator's, proven the only way it can be: a
@@ -615,7 +616,9 @@ test.describe("dropped on an idle agent", () => {
     };
   }
 
-  test("the same drag hands the card to an idle agent, and never reorders it", async ({
+  for (const confirmReset of [false, true]) test(confirmReset
+    ? "Cmd+Enter confirms Assign Reset once and hands the backlog task to the agent"
+    : "the same drag hands the card to an idle agent, and never reorders it", async ({
     dashboard,
     daemon,
   }) => {
@@ -624,6 +627,7 @@ test.describe("dropped on an idle agent", () => {
     // that is `draggable` and a tile that has an `onDrop`, and none of them can see that a
     // drop target added to the column ate the drop meant for the agent - or that the tile's
     // drop quietly started reordering instead of handing the task over.
+    if (confirmReset) execFileSync("git", ["-C", daemon.repo, "switch", "-c", "shortcut-handover"]);
     const agent = startPane(daemon);
     pane = agent;
     const task = await seedTask(daemon, "Hand me over");
@@ -643,6 +647,12 @@ test.describe("dropped on an idle agent", () => {
     // Every request the drop makes, so the ENDING can be named rather than inferred from a
     // side effect two layers away.
     const posted: string[] = [];
+    let releaseAssign!: () => void;
+    const assignGate = new Promise<void>((resolve) => { releaseAssign = resolve; });
+    if (confirmReset) await dashboard.route("**/api/tasks/*/assign", async (route) => {
+      if (route.request().postDataJSON().confirmReset) await assignGate;
+      await route.continue();
+    });
     dashboard.on("request", (r) => {
       if (r.method() !== "POST") return;
       if (/\/api\/tasks\/[^/]+\/(assign|reorder)$/.test(new URL(r.url()).pathname)) {
@@ -659,6 +669,24 @@ test.describe("dropped on an idle agent", () => {
     await shoot(dashboard, "drag-over-the-idle-agent");
     await drag.drop(tile);
     await drag.end();
+
+    if (confirmReset) {
+      const dialog = dashboard.getByRole("dialog", { name: "Confirm handing this task to a running agent" });
+      await expectContentClearsBorder(dialog);
+      await expect(dialog).toContainText("shortcut-handover");
+      await dialog.getByRole("button", { name: "Cancel" }).focus();
+      try {
+        await dashboard.keyboard.press("Meta+Enter");
+        await expect.poll(() => posted.length).toBe(2);
+        await expect(dialog.getByRole("button", { name: "Handing over…" })).toBeDisabled();
+        await dashboard.keyboard.press("Meta+Enter");
+        expect(posted).toHaveLength(2);
+        await shoot(dashboard, "cmd-enter-handover-busy-guard", dialog);
+      } finally {
+        releaseAssign();
+      }
+      await expect(dialog).toBeHidden();
+    }
 
     // THE ENDING, in the daemon's own words: the task is RUNNING, and it is running on the
     // session that lives in our pane. Polled on the API rather than the DOM because
@@ -688,10 +716,11 @@ test.describe("dropped on an idle agent", () => {
       await api<Array<{ id: string; task: { title: string } | null }>>(daemon, "/api/sessions")
     ).find((session) => session.task?.title === "Hand me over")?.id;
 
-    // Exactly one POST, on the assign route, naming this task and this session - and NO
-    // reorder, so the column's new drop targets did not take a drag aimed past them.
+    // The original assign, plus one explicit reset confirmation when required, and no
+    // duplicate from the busy shortcut. Neither ending ever posts a reorder.
     expect(posted).toEqual([
       `/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":false}`,
+      ...(confirmReset ? [`/api/tasks/${task.id}/assign {"sessionId":"${sessionId}","overrideDisabled":true,"confirmReset":true}`] : []),
     ]);
 
     // And it arrived where a handover actually ends: typed into the pane, on the far side of

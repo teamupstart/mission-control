@@ -1,3 +1,15 @@
+# Dialog keyboard actions
+
+**Cmd+Enter** (or **Ctrl+Enter**) performs the topmost dialog's default action, such as
+Dispatch now, Send answer, Submit decisions, Save, or a confirmation. It works from any
+control in the dialog. Disabled actions stay disabled, including incomplete questions and
+actions already in flight. Plain Enter and Shift+Enter keep their normal field behavior.
+
+When a review queue contains several questions, the question holding keyboard focus owns
+the shortcut. With focus outside the questions, the first question is next. An incomplete
+question never falls through to a different question's enabled action. Covered dialogs
+cannot act on the shortcut.
+
 # The Line (the pipeline strip above the fleet)
 
 A permanent strip sits above every fleet layout: **intake → backlog → working → review

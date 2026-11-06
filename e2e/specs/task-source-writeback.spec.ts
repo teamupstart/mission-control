@@ -431,7 +431,7 @@ test("the write-back switches arrive off, gate each other, and survive a reload"
   ).not.toBeChecked();
 });
 
-test("a refused delivery says why, Retry clears it, and Discard empties the queue", async ({
+test("Cmd+Enter discards the write-back queue after a refused delivery is retried", async ({
   page,
   daemon,
 }) => {
@@ -491,7 +491,8 @@ test("a refused delivery says why, Retry clears it, and Discard empties the queu
   await expectContentClearsBorder(dialog);
   await shoot(page, "writeback-discard-confirm");
 
-  await dialog.getByRole("button", { name: "Discard queue" }).click();
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await page.keyboard.press("Meta+Enter");
   await expect(page.getByText(/Discarded 1 delivery\(s\)\./)).toBeVisible();
   await expect(page.getByText(/Nothing written back yet\./)).toBeVisible();
   expect(await queue(page, daemon)).toMatchObject({

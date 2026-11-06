@@ -355,6 +355,7 @@ export function ResidentDispatch({
             : blocked ?? "Launch this resident in the Agent SDK"}
         >
           <button
+            data-dialog-default
             className="btn btn-primary"
             disabled={blocked !== null || changedAfterUncertain}
             onClick={() => void launch()}

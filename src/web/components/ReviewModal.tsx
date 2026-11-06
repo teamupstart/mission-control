@@ -196,7 +196,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`}>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
@@ -304,6 +304,7 @@ export function ReviewCard({
           >
             <button
               className="btn btn-send"
+              data-dialog-default
               disabled={busy || !answer.trim()}
               onClick={() => void resolve("answer", answer.trim())}
             >
@@ -333,6 +334,7 @@ export function ReviewCard({
           <Tooltip label="Approve this and let the agent carry on">
             <button
               className="btn btn-approve"
+              data-dialog-default
               disabled={busy}
               onClick={() => void resolve("approve", note.trim() || null)}
             >

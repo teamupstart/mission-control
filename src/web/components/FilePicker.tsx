@@ -144,6 +144,7 @@ export function FilePicker({
             ref={index === activeIndex ? activeRef : undefined}
             type="button"
             role="option"
+            data-dialog-default={index === activeIndex ? "true" : undefined}
             aria-selected={index === activeIndex}
             className={`file-picker-option${index === activeIndex ? " is-active" : ""}`}
             onMouseMove={() => setActive(index)}

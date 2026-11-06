@@ -199,6 +199,7 @@ export function RecurringMissionsPanel({
           {screen.kind === "catalog" ? (
             <Tooltip label="Create a new recurring mission">
               <button
+                data-dialog-default
                 className="btn btn-primary"
                 onClick={() => {
                   setEditorDirty(false);
@@ -322,6 +323,7 @@ export function RecurringMissionsPanel({
               </Tooltip>
               <Tooltip label="Discard the unsaved changes">
                 <button
+                  data-dialog-default
                   className="btn btn-danger"
                   disabled={editorBusy}
                   onClick={() => {

@@ -73,7 +73,7 @@ async function authorProfile(page: Page, daemon: DaemonHandle): Promise<void> {
   await capture(page.locator("main.residents-page"), "residents-page");
 }
 
-test("a resident authored on #/residents launches from Dispatch > Resident with its persona, and ends on Complete & close", async ({
+test("Cmd+Enter launches an authored Resident with its persona, and closes its standing instructions", async ({
   dashboard,
   daemon,
 }) => {
@@ -93,7 +93,8 @@ test("a resident authored on #/residents launches from Dispatch > Resident with 
   await expectContentClearsBorder(dialog);
   await capture(dialog, "dispatch-resident-mode");
 
-  await dialog.getByRole("button", { name: "Launch resident" }).click();
+  await dialog.getByRole("button", { name: "Cancel" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
   await expect(dialog).toBeHidden({ timeout: 60_000 });
 
   // The launch is a `resident` task on the profile's harness, with no after-work Workflow.
@@ -121,8 +122,10 @@ test("a resident authored on #/residents launches from Dispatch > Resident with 
   await expect(received).toContainText(PROFILE_BRIEF);
   await expect(received).toContainText(RUN_BRIEF);
   await capture(received, "standing-instructions");
-  await received.getByRole("button", { name: "Close" }).click();
+  await received.getByRole("button", { name: "Close" }).focus();
+  await dashboard.keyboard.press("Meta+Enter");
   await expect(received).toBeHidden();
+  await capture(card, "cmd-enter-resident-running");
 
   // Complete & close is the one way a resident ends.
   const complete = card.getByRole("button", { name: "Complete" });

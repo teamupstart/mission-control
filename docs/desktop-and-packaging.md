@@ -532,6 +532,14 @@ if the overall deadline is reached, Electron reaps the remaining utilities. Work
 start draining before slower session shutdown. The detached helper then handles any verified
 survivors before replacing the bundle.
 
+The daemon's last shutdown step closes its HTTP server. Requests that never end on their own -
+the dashboard's `/events` stream, transcript streams, and MCP review long-polls - are ended at
+once: a stream finishes its body, and a long-poll answers as its timeout would, so the agent
+polls the next daemon. Any other request gets a five-second grace, and only one still open after
+that is cut. Without this, an open dashboard held every quit until the utility deadline
+force-killed the daemon. `daemon.log` records `shutdown finished in <ms>` after the database
+close and lock release, on every orderly exit.
+
 If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
 summary of the executable and check-supervisor marker. The helper never prints command lines
 or uses that fallback description as authority to signal a process. Rollback outcomes use the

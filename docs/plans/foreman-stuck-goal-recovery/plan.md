@@ -1,11 +1,8 @@
 # Foreman stuck-goal recovery: an unresolved intent must never silently stop a bound workflow
 
-Status: revision 6 (2026-11-05), repaired after Plan Validation rounds 1 to 3: an accepted
-amendment keeps every attachment path line, the echo ledger's capture rules are defined, an
-expectation is marked captured only after a capture has succeeded at either door, its expiry is
-checked on every read, the accept route has one steering writer, and the change contract has one
-owner (Phase 3). Decisions adopted from the first review are in section 10. Nothing here is
-implemented.
+Status: revision 7 (2026-11-06), repaired after Plan Validation rounds 1 to 3 and the pull
+request review; sections 3.1, 3.2, 3.3 and 7 carry the repairs. Decisions adopted from the first
+review are in section 10. Nothing here is implemented.
 
 Source: the investigation report for task `4bda9656` ("Move Advisor Settings to Harness Page",
 session `sdk:3cf99086`, note key `dd55fb3a`, binding `5a6e1be2`). Every claim below was
@@ -142,10 +139,13 @@ that a person can now end the pause.
 - `rationale` is `Treated as steering: the proposed amendment did not retain the current
   objective. <model reason>`, clamped by `goalLine(…, 480)` like every rationale. The prefix is
   a stable marker the drawer, tests and the log can match on.
-- `console.error("[goal] <session>: amendment at revision <n> did not preserve the objective;
-  treated as steering: <first 160 characters of the proposed objective>")`, mirroring the
-  transport and parse branches. The report could not say which rule the incident broke because
-  the proposed text was never written anywhere; from now on it is in the log.
+- `console.error("[goal] <session>: amendment at revision <n> did not preserve the objective
+  (<rule>); treated as steering")`, mirroring the transport and parse branches, where `<rule>`
+  is the mechanical check that failed (`not-a-prefix`, `no-additive-connector` or
+  `retracting-word`), reported by the preservation check in place of a bare boolean. The log
+  never carries objective text: a prompt can hold anything a person typed, and daemon logs are
+  not the goal row. The model's reason stays in the rationale, beside the prompt it describes.
+  The report could not say which rule the incident broke; from now on the rule is in the log.
 - `failedFor` and `transportAttempts` are cleared exactly as on any resolution.
 
 Two small companions land in the same change:
@@ -201,14 +201,17 @@ whichever arrives first:
 - **Refused send, no echo.** The expectation is released; nothing was delivered and nothing is
   captured.
 - **Uncertain outcome, no echo.** The expectation stays open until it expires.
-- **Expiry.** An expectation nobody consumed expires at the session's next completed turn (the
-  turn-end signal `completeWorkCycle` already observes) or after 120 seconds, whichever comes
-  first, so a stale entry can never suppress a later arrival. The age bound needs no timer:
-  every read of the ledger (`claimHumanEcho`, `confirmHumanEcho`, `releaseHumanEcho`) treats an
-  entry older than 120 seconds as absent and drops it, so a session that never completes a turn
-  still cannot have a captured entry swallow a later identical hook-only arrival. A retype of
-  identical text is safe regardless: it is its own send, with its own expectation, captured at
-  its own acknowledgement.
+- **Expiry.** Each expectation records the turn it belongs to: the completed work-cycle
+  generation plus one, or plus two when a cycle is active at the send, because the driver queues
+  a follow-up sent mid-turn and Claude dequeues it after that turn, so its hook can arrive after
+  the previous turn's `completeWorkCycle`. An expectation expires when its own turn completes,
+  never at the end of the turn it was queued behind. It also expires by age, 120 seconds after
+  it becomes eligible: at creation for a send into an idle session, at the previous turn's
+  completion for a queued one. The age bound needs no timer: every read of the ledger drops an
+  eligible entry older than 120 seconds before answering, so a session that never completes a
+  turn still cannot have a captured entry swallow a later identical hook-only arrival. A retype
+  of identical text is its own send, with its own expectation, captured at its own
+  acknowledgement.
 
 `Registry.captureHookGoalPrompt` consults the ledger after the launch-echo check and before the
 daemon-authorship check. "Saying the same thing twice still works" (`docs/sessions.md`) holds
@@ -355,12 +358,11 @@ Every agent binary stays faked. No spec or test spends model tokens.
 
 | File | Cases |
 |------|-------|
-| `test/goal-refiner.test.ts` | Rewrite "a schema-valid amendment that drops the current objective fails closed" into "… resolves as steering": objective, text and version unchanged; `resolvedPromptRevision` advances; `relationship === "steer"`; `pendingPrompts` empty; rationale starts with "Treated as steering"; `console.error` called once with the proposed objective head (`t.mock.method(console, "error")`); the fake was asked once. Same reshaping for "cannot preserve by prefix and then retract". New: an amendment that preserves the objective once an attachment line is ignored is accepted and advances the version, and the stored objective still carries that path line (D1); a steering note exists for the downgraded revision. |
+| `test/goal-refiner.test.ts` | Rewrite "a schema-valid amendment that drops the current objective fails closed" into "… resolves as steering": objective, text and version unchanged; `resolvedPromptRevision` advances; `relationship === "steer"`; `pendingPrompts` empty; rationale starts with "Treated as steering"; `console.error` called once naming the session, revision and failed rule and carrying no objective text (`t.mock.method(console, "error")`); the fake was asked once. Same reshaping for "cannot preserve by prefix and then retract". New: an amendment that preserves the objective once an attachment line is ignored is accepted and advances the version, and the stored objective still carries that path line (D1); a steering note exists for the downgraded revision. |
 | `test/workflow-run-intent-snapshot.test.ts` (Phase 1 case) | A run frozen after such an amendment carries the path line in `rawGoal`, so the frozen contract retained it too. |
 | `test/foreman-reads-goal.test.ts` or a new `test/goal-prompt.test.ts` | The rendered goal prompt carries the option-pick rule. |
 | `test/goal-steering-log.test.ts` | A downgraded amendment appends exactly one steering row, with the marker rationale, and a later run reads it. |
-| `test/pending-turn-manager.test.ts` | Exactly one revision for an SDK follow-up echoed by a `UserPromptSubmit` with the same text, whether the echo arrives before or after the acknowledgement; after an early echo whose acknowledgement is refused or uncertain; and after an early echo whose capture fails (the registry refuses the prompt, or the Goal write throws once through `t.mock.method`), which leaves the expectation in place for the acknowledgement to record. A refused send with no echo captures nothing and releases the expectation; an identical retype after a send with no echo yields one revision per send; an expectation expires at the next turn end; with no turn end at all, a captured entry older than 120 seconds (injected clock) no longer suppresses a later identical hook-only arrival, which is captured. |
-| `test/sdk-supervisor.test.ts` | A direct `send` with `acceptedGoal` whose acknowledgement captured the turn marks the expectation captured, so a later matching echo is dropped and `captureAcceptedPrompt` ran once; an early echo whose capture throws once is recorded by the acknowledgement; exactly one revision in each case. |
+| `test/pending-turn-manager.test.ts`, `test/sdk-supervisor.test.ts`, new `test/human-echo-ledger.test.ts` | The cases Phase 2 lists in full: exactly one revision for an SDK follow-up whether its echo arrives before or after the acknowledgement, after an early echo whose acknowledgement is refused or uncertain, after a failed capture at either door (a throw through `t.mock.method`, or a null from a stale note key), for a follow-up acknowledged while a turn is running and echoed after that turn completes, and per send on an identical retype; a refused send with no echo captures nothing; an entry is gone once its own turn completes; with no turn end at all, a captured entry for an idle send older than 120 seconds (injected clock) no longer suppresses a later identical hook-only arrival, which is captured. |
 | `test/session-goals.test.ts` | `acceptGoalObjective`: pending revisions become steering rows in order; `(not captured)` for a null legacy prompt; objective, version, source and opening prompt untouched; idempotent; an `unclear` goal with nothing pending records its latest prompt. |
 | `test/workflow-bindings-http.test.ts` or a sibling HTTP test | `POST /api/sessions/:id/goal/accept`: 404, 409, 200, idempotent 200; a `session_upsert` reaches an SSE subscriber with the resolved summary. |
 | `test/prompted-wrapup.test.ts` | An accepted goal is a resolved intent whose episode key is `intent:<version>:<revision>`; the step-8 skip cases are unchanged. |
@@ -411,8 +413,9 @@ Selectors use roles, labels and placeholders. No `data-testid`.
    objective moved, including when a person accepted the objective mid-flight.
 6. The echo ledger never loses a human turn: exactly one of the two doors captures each
    delivered turn, an expectation is marked captured only after that door's capture has
-   succeeded, an unconsumed expectation expires at the next turn end or by age on its next read,
-   and a retype is its own send with its own capture.
+   succeeded, an unconsumed expectation expires when its own turn completes or by age once
+   eligible and never at the end of the turn it was queued behind, and a retype is its own send
+   with its own capture.
 
 Each line is pinned by a test in section 5.
 
@@ -456,5 +459,5 @@ Opus 5.5 or higher when scheduled.
   orders.
 - Whether Codex SDK sessions and delegated turns double the same way. The steering-log
   duplicates on this machine are all Claude SDK sessions; P2 verifies the other paths.
-- The proposed objective text the incident's revision 5 was rejected for. It was never
-  persisted; P1 logs it from now on.
+- Which rule the incident's revision 5 broke. The proposed text was never persisted and is not
+  logged (section 3.1); P1 logs the failed rule from now on.

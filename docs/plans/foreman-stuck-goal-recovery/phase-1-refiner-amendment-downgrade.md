@@ -30,9 +30,12 @@ loop against a fake `claude` with mode-selected replies; `fake-claude.mjs:698-71
 
 ## Implementation steps
 
-1. Rejection branch: keep the condition; inside it call `console.error` with "[goal] <session>:
-   amendment at revision <n> did not preserve the objective; treated as steering: <first 160
-   characters of the proposed objective>", set `relationship = "steer"` and a local rationale of
+1. Rejection branch: have `amendmentPreservesObjective` report why it failed instead of a bare
+   boolean (`null` when preserved, else `no-current-objective`, `not-a-prefix`,
+   `no-additive-connector` or `retracting-word`). Keep the condition; inside it call
+   `console.error` with "[goal] <session>: amendment at revision <n> did not preserve the
+   objective (<rule>); treated as steering", with no objective text in the message, set
+   `relationship = "steer"` and a local rationale of
    `goalLine("Treated as steering: the proposed amendment did not retain the current objective. " + r.value.reason, 480)`.
    Do not return; let the existing path run with that rationale.
 2. `comparableObjective`: drop lines whose trimmed text matches `/^\/\S+$/` before folding.
@@ -60,7 +63,8 @@ takes the new branch.
 - `test/goal-refiner.test.ts`: rewrite both fail-closed amendment tests to assert objective,
   text and version unchanged, `resolvedPromptRevision` advanced, `steer`, empty
   `pendingPrompts`, a rationale starting `Treated as steering`, one `console.error`
-  (`t.mock.method`), one spawn; add the attachment-line case: the opening prompt ends with a
+  (`t.mock.method`) naming the session, the revision and the failed rule and containing no
+  word of the proposed objective, one spawn; add the attachment-line case: the opening prompt ends with a
   `/tmp/uploads/shot.png` line, a new fake mode answers `amend` with the objective repeated
   without that line plus `. Also …`; assert the amendment is accepted, `objectiveVersion` is 2,
   and the stored `objective` carries both the addition and the path line.
@@ -83,7 +87,8 @@ All of the above pass; `automatic wrap-up remains paused` remains only in the lo
 
 A rejected amendment is a `steer` with a rationale starting `Treated as steering:` and a steering
 row at its revision; an accepted amendment keeps every path line of the objective it extends.
-Do not change the marker, re-introduce a latch, widen the normalization, or drop a retained line.
+Do not change the marker, re-introduce a latch, widen the normalization, drop a retained line,
+or put objective text in a log line.
 
 ## Cross-phase audit record
 

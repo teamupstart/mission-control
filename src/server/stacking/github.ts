@@ -50,7 +50,7 @@ export const defaultStackGitHub: StackGitHub = {
   },
   isAncestor,
   mergeBase,
-  branchSha: (repoRoot, branch) => freshRemoteBranchSha(repoRoot, branch),
+  branchSha: (repoRoot, branch) => primaryBranchSha(repoRoot, branch),
   repositories: configuredGitHubRepositories,
   primaryRepository: (repoRoot) => primaryGitHubRepository(repoRoot),
   retarget: retargetPr,
@@ -66,13 +66,44 @@ export const defaultStackGitHub: StackGitHub = {
  * A read of the repository root's git config; it never runs git inside a worktree.
  */
 export async function primaryGitHubRepository(repoRoot: string): Promise<GitHubRepositoryIdentity | null> {
-  const origin = await run("git", ["config", "--get", "remote.origin.url"], { cwd: repoRoot });
-  if (origin.code === 0 && !origin.outcomeUnknown) {
-    const identity = parseGitHubRemoteUrl(origin.stdout.trim());
-    if (identity) return identity;
+  return (await primaryGitHubRemote(repoRoot))?.identity ?? null;
+}
+
+/** `primaryGitHubRepository`, with the name of the git remote it was read from. */
+export async function primaryGitHubRemote(
+  repoRoot: string,
+): Promise<{ remote: string; identity: GitHubRepositoryIdentity } | null> {
+  const result = await run("git", ["-C", repoRoot, "config", "--get-regexp", "^remote\\..*\\.url$"], { cwd: repoRoot });
+  if (result.outcomeUnknown || result.code !== 0) return null;
+  const remotes: { remote: string; identity: GitHubRepositoryIdentity }[] = [];
+  for (const line of result.stdout.split("\n")) {
+    const match = /^remote\.(.+)\.url\s+(.+)$/.exec(line.trim());
+    const identity = match ? parseGitHubRemoteUrl(match[2]!) : null;
+    if (match && identity) remotes.push({ remote: match[1]!, identity });
   }
-  const all = await configuredGitHubRepositories(repoRoot);
-  return all.length === 1 ? all[0]! : null;
+  const origin = remotes.find((entry) => entry.remote === "origin");
+  if (origin) return origin;
+  const distinct = new Map(remotes.map((entry) => [`${entry.identity.owner}/${entry.identity.repo}`.toLowerCase(), entry]));
+  return distinct.size === 1 ? [...distinct.values()][0]! : null;
+}
+
+/**
+ * Fetch a stack parent's branch and return its verified tip: from `origin` first, and - only
+ * when that fails and the primary GitHub repository is a different remote - from that remote.
+ * The parent's pull request is in the primary repository, so a checkout whose `origin` is not
+ * GitHub (a local mirror, say) can lack the branch there. Either way the tip is then checked
+ * against the head GitHub reports for the pull request by the caller, so a same-named branch
+ * on the wrong remote is still refused. The fetch writes only that remote's remote-tracking
+ * ref, at the repository root.
+ */
+export async function primaryBranchSha(repoRoot: string, branch: string): Promise<RemoteProbe<string>> {
+  const fromOrigin = await freshRemoteBranchSha(repoRoot, branch);
+  if (fromOrigin.ok) return fromOrigin;
+  const primary = await primaryGitHubRemote(repoRoot);
+  if (!primary || primary.remote === "origin") return fromOrigin;
+  const fromPrimary = await freshRemoteBranchSha(repoRoot, branch, run, primary.remote);
+  if (fromPrimary.ok) return fromPrimary;
+  return { ...fromPrimary, reason: `${fromOrigin.reason}; ${fromPrimary.reason}` };
 }
 
 /** Does this pull request URL belong to one of the repositories a checkout names? */

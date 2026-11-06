@@ -330,35 +330,39 @@ export async function freshRemoteBranchSha(
   root: string,
   branch: string,
   execute: Run = run,
+  remote = "origin",
 ): Promise<RemoteProbe<string>> {
   if (!safeBranchName(branch)) {
     return { ok: false, reason: `"${branch.slice(0, 80)}" is not a branch name this can fetch`, outcomeUnknown: false };
   }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) {
+    return { ok: false, reason: `"${remote.slice(0, 80)}" is not a remote name this can fetch from`, outcomeUnknown: false };
+  }
   const remoteRef = `refs/heads/${branch}`;
-  const trackingRef = `refs/remotes/origin/${branch}`;
+  const trackingRef = `refs/remotes/${remote}/${branch}`;
   let fetched: Awaited<ReturnType<Run>> | null = null;
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
     fetched = await execute(
       "git",
-      ["-C", root, "fetch", "--no-tags", "origin", `+${remoteRef}:${trackingRef}`],
+      ["-C", root, "fetch", "--no-tags", remote, `+${remoteRef}:${trackingRef}`],
       { timeoutMs: NETWORK_TIMEOUT_MS },
     );
     if (!failed(fetched)) break;
     if (!staleRemoteTrackingRef(fetched) || attempt === MAX_FETCH_ATTEMPTS) {
-      return failure(`git fetch origin ${branch}`, fetched, NETWORK_TIMEOUT_MS);
+      return failure(`git fetch ${remote} ${branch}`, fetched, NETWORK_TIMEOUT_MS);
     }
   }
-  const listed = await execute("git", ["-C", root, "ls-remote", "origin", remoteRef], {
+  const listed = await execute("git", ["-C", root, "ls-remote", remote, remoteRef], {
     timeoutMs: NETWORK_TIMEOUT_MS,
   });
-  if (failed(listed)) return failure(`git ls-remote origin ${branch}`, listed, NETWORK_TIMEOUT_MS);
+  if (failed(listed)) return failure(`git ls-remote ${remote} ${branch}`, listed, NETWORK_TIMEOUT_MS);
   let advertised: string | null = null;
   for (const line of listed.stdout.split("\n")) {
     const [oid, name] = line.split("\t");
     if (name?.trim() === remoteRef && FULL_SHA.test(oid?.trim() ?? "")) advertised = oid!.trim();
   }
   if (!advertised) {
-    return { ok: false, reason: `origin has no branch ${branch}`, outcomeUnknown: false };
+    return { ok: false, reason: `${remote} has no branch ${branch}`, outcomeUnknown: false };
   }
   const resolved = await execute(
     "git",
@@ -375,7 +379,7 @@ export async function freshRemoteBranchSha(
   if (local !== advertised) {
     return {
       ok: false,
-      reason: `origin advertised ${branch} at ${advertised} but this repository fetched ${local} - the branch moved during the observation`,
+      reason: `${remote} advertised ${branch} at ${advertised} but this repository fetched ${local} - the branch moved during the observation`,
       outcomeUnknown: false,
     };
   }

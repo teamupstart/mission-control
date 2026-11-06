@@ -431,7 +431,8 @@ and the backlog card and the Line row read *Stacked on #N*. It clears the readin
 prerequisite starts a new turn, or when the edge stops qualifying, for example when the
 default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
 before it starts: it must still be open, not a draft, on the same branch and episode, and its
-agent still finished. The dispatch then fetches the parent branch at the repository root and
+agent still finished. The dispatch then fetches the parent branch at the repository root (from
+`origin`, or from the primary GitHub remote when `origin` is another remote that lacks it) and
 pins the worktree to its current head, but only when that commit is exactly the head GitHub
 reports for the parent pull request. A branch name alone proves nothing: a pull request from a
 fork can share its name with an unrelated branch here. If the parent pushes while that check

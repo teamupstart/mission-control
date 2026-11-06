@@ -110,6 +110,12 @@ export interface FakePullRequest {
   headRefName?: string;
   /** The branch it targets. Defaults to `main`, the fixture repository's default branch. */
   baseRefName?: string;
+  /**
+   * The base branch's tip, which a review records so a rebased parent under an unchanged
+   * head is reviewed again. Defaults to one fixed commit: the base never moves unless a
+   * spec says so.
+   */
+  baseRefOid?: string;
   isDraft?: boolean;
   /** The merge commit once merged, for the stack release check. */
   mergeCommit?: string | null;
@@ -704,7 +710,8 @@ if (argv[0] === "--version") {
   if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
-    baseRefName: pr.baseRefName ?? "main", mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
     repository: { defaultBranchRef: { name: "main" } },
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -719,7 +726,8 @@ if (argv[0] === "--version") {
   const pr = scriptedPrs().find((p) => String(p.number) === numberArg?.slice(7));
   process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
-    baseRefName: pr.baseRefName ?? "main", mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
     repository: { defaultBranchRef: { name: "main" } },
   } : null } } }));
 } else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {

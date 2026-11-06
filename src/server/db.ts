@@ -2067,6 +2067,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       title              TEXT,           -- as of the last poll; NULL until one happens
       base_ref_name      TEXT,           -- the branch the PR targets, as of the last poll
       reviewed_base_ref  TEXT,           -- the base head_sha's review was made against
+      reviewed_base_sha  TEXT,           -- that base's tip, for the merge-base check
       merge_commit_sha   TEXT,           -- GitHub's merge commit once it merged
       -- Stack lineage (Stacked pull requests). Written once at adoption for a stacked
       -- task's primary repository; stack_parent_pr_url NULL = no lineage. See StackLineage.
@@ -4274,6 +4275,7 @@ function migrate(d: DatabaseSync): void {
   // merge commit, and no stack lineage - so neither stacking gate ever evaluates it.
   addColumn(d, "inspector_prs", "base_ref_name", "TEXT");
   addColumn(d, "inspector_prs", "reviewed_base_ref", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_sha", "TEXT");
   addColumn(d, "inspector_prs", "merge_commit_sha", "TEXT");
   addColumn(d, "inspector_prs", "stack_task_id", "TEXT");
   addColumn(d, "inspector_prs", "stack_episode", "TEXT");
@@ -14063,6 +14065,7 @@ interface InspectorPrRow {
   title: string | null;
   base_ref_name?: string | null;
   reviewed_base_ref?: string | null;
+  reviewed_base_sha?: string | null;
   merge_commit_sha?: string | null;
   stack_task_id?: string | null;
   stack_episode?: string | null;
@@ -14139,6 +14142,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     title: r.title,
     baseRefName: r.base_ref_name ?? null,
     reviewedBaseRef: r.reviewed_base_ref ?? null,
+    reviewedBaseSha: r.reviewed_base_sha ?? null,
     mergeCommitSha: r.merge_commit_sha ?? null,
     stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
@@ -14238,6 +14242,8 @@ export function updateInspectorPr(
     baseRefName?: string | null;
     /** Written beside `headSha` by a completed review. */
     reviewedBaseRef?: string | null;
+    /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
+    reviewedBaseSha?: string | null;
     mergeCommitSha?: string | null;
   },
   now: number,
@@ -14254,7 +14260,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
-              title = ?, base_ref_name = ?, reviewed_base_ref = ?, merge_commit_sha = ?,
+              title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -14280,6 +14286,7 @@ export function updateInspectorPr(
       next.title,
       next.baseRefName ?? null,
       next.reviewedBaseRef ?? null,
+      next.reviewedBaseSha ?? null,
       next.mergeCommitSha ?? null,
       now,
       key,

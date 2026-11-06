@@ -208,6 +208,12 @@ export interface PrSnapshot {
    * fixtures stay valid; `fetchPr` always fills them.
    */
   baseRefName?: string;
+  /**
+   * The base branch's tip as GitHub reports it for this pull request. Stacked reviews record
+   * it, because a parent rebased under an unchanged child head changes the pull request's
+   * diff without changing either branch name.
+   */
+  baseSha?: string;
   defaultBranch?: string;
   mergeCommitSha?: string | null;
   title: string;
@@ -302,7 +308,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
-      baseRefName mergeCommit{ oid } repository{ defaultBranchRef{ name } }
+      baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:100){
         nodes{
@@ -470,13 +476,16 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
 }
 
 /** The base, default branch and merge commit of one GraphQL pull request node. */
-function refFields(pr: Record<string, unknown>): { baseRefName: string; defaultBranch: string; mergeCommitSha: string | null } {
+function refFields(
+  pr: Record<string, unknown>,
+): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null } {
   const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
   const defaultBranch = (
     (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
   )?.name;
   return {
     baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
+    baseSha: typeof pr.baseRefOid === "string" ? pr.baseRefOid : "",
     defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
     mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
   };
@@ -495,6 +504,8 @@ export interface PrRefs {
   headSha: string;
   headRefName: string;
   baseRefName: string;
+  /** The base branch's tip. Optional only so hand-built fixtures stay valid. */
+  baseSha?: string;
   defaultBranch: string;
   mergeCommitSha: string | null;
 }
@@ -502,7 +513,7 @@ export interface PrRefs {
 const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state isDraft headRefOid headRefName baseRefName mergeCommit{ oid }
+      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid }
       repository{ defaultBranchRef{ name } }
     }
   }
@@ -572,6 +583,31 @@ export async function isAncestor(
   if (status === "ahead" || status === "identical") return { ok: true, value: true };
   if (status === "behind" || status === "diverged") return { ok: true, value: false };
   return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
+ * The merge base of two commits, per GitHub's compare API: the commit a pull request from
+ * `head` onto `base` is diffed from. A read; no git runs in any worktree. An unknown commit
+ * or an answer that is not a commit id is a failure, never a guess.
+ */
+export async function mergeBase(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", ".merge_base_commit.sha"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare merge base)", res);
+  const sha = res.stdout.trim();
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+    return { ok: false, error: `compare reported no merge base ("${sha.slice(0, 40)}")` };
+  }
+  return { ok: true, value: sha };
 }
 
 /**

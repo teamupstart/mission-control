@@ -2898,6 +2898,13 @@ export interface InspectorPr {
    * branch.
    */
   reviewedBaseRef?: string | null;
+  /**
+   * The base branch's tip when that review was made, or the latest tip since then that GitHub
+   * confirmed gives the same merge base. A stacked parent rebased under an unchanged child
+   * head moves the merge base, so the diff changed and the review no longer counts. Null when
+   * not recorded.
+   */
+  reviewedBaseSha?: string | null;
   /** The merge commit GitHub reported once this pull request merged. */
   mergeCommitSha?: string | null;
   /** Stack lineage. See `StackLineage`. Absent or null `stackParentPrUrl` = no lineage. */

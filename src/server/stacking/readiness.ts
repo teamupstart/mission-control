@@ -323,18 +323,28 @@ export class StackReadiness {
    * not in `parentHead`'s history, as a sentence; or null when the parent already carries every
    * one. A child cut from a parent that predates a merged sibling would start without code that
    * already landed on the default branch.
+   *
+   * A sibling is a task edge or a standalone-session edge. A task sibling is in this
+   * repository when its task is; a session edge records no repository, so its merged pull
+   * request is in this repository when the checkout's own remotes name that repository.
    */
   private async missingMergedPrerequisite(
     task: Task,
     byId: ReadonlyMap<string, Task>,
     parentHead: string,
   ): Promise<string | null> {
+    let repositories: Awaited<ReturnType<StackGitHub["repositories"]>> | null = null;
     for (const edge of task.dependencies) {
-      if (edge.type !== "task" || edge.satisfiedAt === null || !edge.prUrl) continue;
-      // Only a sibling we can still place in this repository: an ancestry question asked in
-      // the wrong repository has no answer, and a gone task has no repository to ask about.
-      const sibling = byId.get(edge.taskId);
-      if (!sibling || sibling.repoRoot !== task.repoRoot) continue;
+      if (edge.type === "plan" || edge.satisfiedAt === null || !edge.prUrl) continue;
+      if (edge.type === "task") {
+        // Only a sibling we can still place in this repository: an ancestry question asked in
+        // the wrong repository has no answer, and a gone task has no repository to ask about.
+        const sibling = byId.get(edge.taskId);
+        if (!sibling || sibling.repoRoot !== task.repoRoot) continue;
+      } else {
+        repositories ??= await this.github.repositories(task.repoRoot);
+        if (!prInRepositories(edge.prUrl, repositories)) continue;
+      }
       const parsed = parsePrUrl(edge.prUrl);
       if (!parsed) return `could not read ${edge.title}'s merged pull request`;
       const refs = await this.github.prRefs(task.repoRoot, edge.prUrl);

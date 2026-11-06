@@ -106,6 +106,7 @@ function githubOf(s: Script): StackGitHub {
       const answer = s.ancestry.get(`${ancestor}..${head}`);
       return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: answer };
     },
+    mergeBase: async () => ({ ok: false, error: "unused" }),
     branchSha: async (_root, branch) => {
       s.fetches.push(branch);
       return s.tip;
@@ -326,6 +327,72 @@ test("a merged sibling prerequisite must already be in the parent's head", async
   const refused = await fresh.planStackedDispatch(w.tasks.get("C")!);
   assert.equal(refused?.ok, false);
   assert.match(!refused?.ok ? refused!.error : "", /waiting for the parent to include #5/);
+});
+
+type SessionEdge = Extract<TaskDependency, { type: "session" }>;
+
+function sessionEdge(sessionId: string, over: Partial<SessionEdge> = {}): SessionEdge {
+  return {
+    type: "session", sessionId, title: `session ${sessionId}`, episodeId: null, agentSessionId: null,
+    branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null, ...over,
+  };
+}
+
+test("a merged standalone-session prerequisite must already be in the parent's head too", async () => {
+  // C stacks on A's open pull request and also depends on a bare session whose pull request
+  // in this repository has merged. A's head predates that merge commit.
+  const w = world();
+  const s = script();
+  const SESSION_PR = "https://github.com/acme/repo/pull/4";
+  const MERGE_S = "c".repeat(40);
+  w.tasks.set("C", mkTask({ id: "C", title: "Phase 2", repoRoot: "/repo", dependencies: [
+    edge("A"),
+    sessionEdge("sX", { satisfiedAt: 3, prUrl: SESSION_PR }),
+  ] }));
+  s.refs.set(SESSION_PR, { state: "MERGED", isDraft: false, headSha: "d".repeat(40), headRefName: "fix/x", baseRefName: "main", defaultBranch: "main", mergeCommitSha: MERGE_S });
+  s.ancestry.set(`${MERGE_S}..${HEAD}`, false);
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "not released while A lacks the session's merged work");
+  r.stop();
+
+  // A merges the default branch in: its head now carries the session's merge commit.
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, headSha: NEWER });
+  s.ancestry.set(`${MERGE_S}..${NEWER}`, true);
+  const fresh = readiness(w, s);
+  fresh.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000);
+  s.tip = { ok: true, value: NEWER };
+  const plan = await fresh.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(plan?.ok && plan.baseSha, NEWER);
+
+  // And the dispatch-time revalidation refuses if A's branch fell behind it again.
+  const STALE = "e".repeat(40);
+  s.tip = { ok: true, value: STALE };
+  s.refs.set(PARENT_PR, { ...s.refs.get(PARENT_PR)!, headSha: STALE });
+  s.ancestry.set(`${MERGE_S}..${STALE}`, false);
+  const refused = await fresh.planStackedDispatch(w.tasks.get("C")!);
+  assert.equal(refused?.ok, false);
+  assert.match(!refused?.ok ? refused!.error : "", /waiting for the parent to include #4/);
+  fresh.stop();
+});
+
+test("a merged session prerequisite in another repository is not asked about", async () => {
+  const w = world();
+  const s = script();
+  const ELSEWHERE = "https://github.com/acme/other/pull/4";
+  w.tasks.set("C", mkTask({ id: "C", title: "Phase 2", repoRoot: "/repo", dependencies: [
+    edge("A"),
+    sessionEdge("sX", { satisfiedAt: 3, prUrl: ELSEWHERE }),
+  ] }));
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "an ancestry question in another repository has no answer");
+  assert.equal(s.refs.has(ELSEWHERE), false);
+  r.stop();
 });
 
 // ---- review round 2 ----------------------------------------------------------------------

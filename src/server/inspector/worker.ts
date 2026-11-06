@@ -49,7 +49,7 @@ import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { reviewBaseChanged } from "@shared/shipping.ts";
 import { defaultStackGitHub, type StackGitHub } from "../stacking/github.ts";
-import { adoptStackLineage, correctStackBase, refreshStackRelease } from "../stacking/lineage.ts";
+import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
@@ -794,8 +794,27 @@ async function processPr(
       console.error("[inspector] stack release check failed:", pr.key, error);
     }
   }
+  // Stacked pull requests: the same head on the same base NAME can still be a different diff,
+  // when the parent was rebased underneath it. Judged by GitHub's merge base before the
+  // merge gate and the review reuse below may trust the recorded review.
+  let baseReview: "current" | "changed" | "unknown" = "current";
+  try {
+    baseReview = await reviewedStackBase(gated, s, dir, stackGitHub, now);
+  } catch (error) {
+    baseReview = "unknown";
+    console.error("[inspector] stacked review base check failed:", pr.key, error);
+  }
+  if (baseReview === "unknown") {
+    // Neither merge on a review that may describe another diff nor spend a review on a
+    // question GitHub did not answer: try again on a later tick.
+    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", now, tick) || acted;
+  }
   // Incomplete provenance must recover before it can authorize Shipping too.
-  if (gated.reviewComplete !== false && await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)) return true;
+  if (
+    baseReview === "current" &&
+    gated.reviewComplete !== false &&
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+  ) return true;
 
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
@@ -814,6 +833,8 @@ async function processPr(
     // The same head against a different base is a different diff: a stacked pull request
     // retargeted without a restack must be reviewed again, never reuse the old verdict.
     !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
+    // ...and the same base name over a moved merge base is a different diff too.
+    baseReview === "current" &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -1021,6 +1042,7 @@ async function reviewRound(
       {
         headSha: s.headSha,
         reviewedBaseRef: s.baseRefName || null,
+        reviewedBaseSha: s.baseSha || null,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
         lastReviewedAt: now,
         reviewComplete: false,
@@ -1187,6 +1209,7 @@ async function reviewRound(
       // The base this diff was taken against. A later base change under the same head is
       // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).
       reviewedBaseRef: s.baseRefName || null,
+      reviewedBaseSha: s.baseSha || null,
       reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
       round,
       reviewComplete: plan.droppedOffDiff === 0 && plan.droppedOverCap === 0,

@@ -15,7 +15,7 @@ import type { StackGitHub } from "../src/server/stacking/github.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-stacking-lineage-"));
 process.env.HARNESS_HOME = home;
 const { openDb, adoptInspectorPr, getInspectorPr, loadInspectorInspections, recordInspectorPrLineage, updateInspectorPr } = await import("../src/server/db.ts");
-const { adoptStackLineage, correctStackBase, refreshStackRelease, stackPrInstruction } = await import(
+const { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase, stackPrInstruction } = await import(
   "../src/server/stacking/lineage.ts"
 );
 const { maybeMerge } = await import("../src/server/shipping/merge.ts");
@@ -61,12 +61,18 @@ function stackedTask(over: Partial<Task> = {}): Task {
 interface Gh {
   refs: Map<string, PrRefs>;
   ancestry: Map<string, boolean>;
+  /** `${base}...${head}` -> merge base. Absent = GitHub could not answer. */
+  mergeBases: Map<string, string>;
+  compares: string[];
   retargets: { number: number; base: string }[];
   repositories: { owner: string; repo: string }[];
 }
 
 function gh(): Gh {
-  return { refs: new Map(), ancestry: new Map(), retargets: [], repositories: [{ owner: "acme", repo: "repo" }] };
+  return {
+    refs: new Map(), ancestry: new Map(), mergeBases: new Map(), compares: [], retargets: [],
+    repositories: [{ owner: "acme", repo: "repo" }],
+  };
 }
 
 function seam(g: Gh): StackGitHub {
@@ -77,6 +83,11 @@ function seam(g: Gh): StackGitHub {
     },
     isAncestor: async (_cwd, _o, _r, ancestor, head) => {
       const answer = g.ancestry.get(`${ancestor}..${head}`);
+      return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: answer };
+    },
+    mergeBase: async (_cwd, _o, _r, base, head) => {
+      g.compares.push(`${base}...${head}`);
+      const answer = g.mergeBases.get(`${base}...${head}`);
       return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: answer };
     },
     branchSha: async () => ({ ok: false, reason: "unused", outcomeUnknown: false }),
@@ -395,4 +406,83 @@ test("an ordinary task's pull request is adopted without lineage, and one in ano
   assert.equal(adoptOpenedPr({ taskForSession: () => stackedTask(), workEpisodeForSession: () => ({ episodeId: "ep1" }) as never },
     { url: secondary, sessionId: "s1", cwd: "/repo", repoRoot: "/repo" }, 2_000), true);
   assert.equal(getInspectorPr(`acme/second#${secondary.split("/").at(-1)}`)!.stack, null, "a secondary-repository pull request gets no lineage");
+});
+
+// ---- Inspector review 1: the reviewed base is a COMMIT, not just a branch name ------------
+
+const BASE_V1 = "1".repeat(40);
+const BASE_V2 = "2".repeat(40);
+const REBASED = "3".repeat(40);
+const MB_OLD = "4".repeat(40);
+const MB_NEW = "5".repeat(40);
+
+/** A stacked child reviewed at CHILD_HEAD against the parent branch at BASE_V1. */
+async function reviewedStackedRow(g: Gh): Promise<string> {
+  const key = await stackedRow(g);
+  updateInspectorPr(key, {
+    headSha: CHILD_HEAD, reviewPosture: "live", round: 1, reviewComplete: true,
+    reviewedBaseRef: "feat/parent", reviewedBaseSha: BASE_V1,
+  }, 3_000);
+  return key;
+}
+
+const onParent = (baseSha: string) => snapshot({ baseRefName: "feat/parent", baseSha });
+
+test("a parent rebased under an unchanged child head and base name invalidates the review", async () => {
+  const g = gh();
+  const key = await reviewedStackedRow(g);
+  g.mergeBases.set(`${REBASED}...${CHILD_HEAD}`, MB_NEW);
+  g.mergeBases.set(`${BASE_V1}...${CHILD_HEAD}`, MB_OLD);
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(REBASED), "/repo", seam(g), 4_000), "changed");
+  assert.equal(rowOf(key).reviewedBaseSha, BASE_V1, "a changed diff never advances the reviewed base");
+});
+
+test("a parent that only moved forward keeps the review, and the new tip is recorded once", async () => {
+  const g = gh();
+  const key = await reviewedStackedRow(g);
+  g.mergeBases.set(`${BASE_V2}...${CHILD_HEAD}`, MB_OLD);
+  g.mergeBases.set(`${BASE_V1}...${CHILD_HEAD}`, MB_OLD);
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(BASE_V2), "/repo", seam(g), 4_000), "current");
+  assert.equal(rowOf(key).reviewedBaseSha, BASE_V2);
+  const calls = g.compares.length;
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(BASE_V2), "/repo", seam(g), 5_000), "current");
+  assert.equal(g.compares.length, calls, "an unchanged tip asks GitHub nothing");
+});
+
+test("an unanswerable merge base for the current tip is unknown; a vanished reviewed tip is a change", async () => {
+  const g = gh();
+  const key = await reviewedStackedRow(g);
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(REBASED), "/repo", seam(g), 4_000), "unknown");
+  g.mergeBases.set(`${REBASED}...${CHILD_HEAD}`, MB_NEW);
+  assert.equal(
+    await reviewedStackBase(rowOf(key), onParent(REBASED), "/repo", seam(g), 4_000),
+    "changed",
+    "the force-pushed tip GitHub no longer knows cannot vouch for the old diff",
+  );
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(""), "/repo", seam(g), 4_000), "unknown", "no reported tip is unknown");
+});
+
+test("a review with no recorded base commit does not count for a stacked pull request", async () => {
+  const g = gh();
+  const key = await stackedRow(g);
+  updateInspectorPr(key, { headSha: CHILD_HEAD, reviewPosture: "live", round: 1, reviewComplete: true, reviewedBaseRef: "feat/parent" }, 3_000);
+  assert.equal(await reviewedStackBase(rowOf(key), onParent(BASE_V1), "/repo", seam(g), 4_000), "changed");
+});
+
+test("the base-commit check leaves ordinary default-branch pull requests and new heads alone", async () => {
+  const g = gh();
+  const plain = adopt(childUrl());
+  updateInspectorPr(plain, { headSha: CHILD_HEAD, reviewPosture: "live", round: 1, reviewComplete: true, reviewedBaseRef: "main" }, 3_000);
+  assert.equal(await reviewedStackBase(rowOf(plain), snapshot({ baseSha: BASE_V2 }), "/repo", seam(g), 4_000), "current");
+  assert.equal(await reviewedStackBase(rowOf(plain), snapshot({ baseRefName: "" }), "/repo", seam(g), 4_000), "current",
+    "an unknown base on an ordinary pull request is the merge gate's to refuse");
+  const key = await reviewedStackedRow(g);
+  assert.equal(await reviewedStackBase(rowOf(key), { ...onParent(REBASED), headSha: "9".repeat(40) }, "/repo", seam(g), 4_000), "current",
+    "a new head is reviewed again on its own");
+  assert.deepEqual(g.compares, []);
+  // An ordinary pull request on a non-default base is checked the same way as a stacked one.
+  updateInspectorPr(plain, { reviewedBaseRef: "release/1", reviewedBaseSha: BASE_V1 }, 5_000);
+  g.mergeBases.set(`${REBASED}...${CHILD_HEAD}`, MB_NEW);
+  g.mergeBases.set(`${BASE_V1}...${CHILD_HEAD}`, MB_OLD);
+  assert.equal(await reviewedStackBase(rowOf(plain), snapshot({ baseRefName: "release/1", baseSha: REBASED }), "/repo", seam(g), 6_000), "changed");
 });

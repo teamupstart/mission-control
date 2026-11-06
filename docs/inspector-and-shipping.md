@@ -433,7 +433,9 @@ reports for the parent pull request. A branch name alone proves nothing: a pull 
 fork can share its name with an unrelated branch here. A refused readiness read is looked at
 again about a minute later, so a draft marked ready on GitHub releases its dependent without
 anything changing locally. If the parent head lacks the merge commit of another
-same-repository prerequisite that already merged, the dependent keeps waiting. Nothing falls
+same-repository prerequisite that already merged, the dependent keeps waiting. That covers a
+standalone-session prerequisite too, when its merged pull request is in a repository this
+checkout's remotes name. Nothing falls
 back to the default branch silently: a stacked task that cannot be pinned is refused with the
 reason. A stacked task is always dispatched into a fresh worktree; it is never assigned to an
 existing agent.
@@ -470,6 +472,13 @@ retarget, restack or prompt anything on its own; those steps are the person's fo
 current base, and the reviewed head records that base. A base that changes under an
 unchanged head (a retarget without a restack) is reviewed again rather than trusted, and a
 review recorded before bases were recorded counts only while the base is the default branch.
+The review also records the base's commit, because a parent rebased or force-pushed under an
+unchanged child keeps both branch names while the diff GitHub shows changes. When the base
+commit moves, GitHub's merge base for the old and new commit is compared: the same merge base
+keeps the review (the parent only moved forward), and a different one, or an old commit GitHub
+no longer knows, means review again. If GitHub cannot report the merge base for the current
+commit, the pull request neither merges nor reuses the review on that sweep. This applies to a
+pull request with stack lineage or a known base other than the default branch.
 Workflow Personas and the CodeRabbit merge base use the same base for a stacked task: the
 pull request's current base, read from GitHub for each review rather than taken from the last
 poll (a pull request adopted moments ago has not been polled yet), or the parent branch before

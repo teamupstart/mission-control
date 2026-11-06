@@ -6,6 +6,7 @@ import {
   noteInspectorPrStack,
   recordInspectorPrLineage,
   releaseInspectorPrStack,
+  updateInspectorPr,
 } from "../db.ts";
 import { parsePrUrl, type PrSnapshot } from "../inspector/github.ts";
 import type { StackGitHub } from "./github.ts";
@@ -148,6 +149,54 @@ export async function refreshStackRelease(
   if (!released) return false;
   releaseInspectorPrStack(pr.key, snapshot.headSha, now);
   return true;
+}
+
+/**
+ * Whether the review recorded on `pr` still describes the pull request's diff, judged by the
+ * base COMMIT rather than the base branch name.
+ *
+ * GitHub diffs a pull request from the merge base of its head and its base. A stacked
+ * parent that is rebased or force-pushed keeps its branch name while that merge base moves,
+ * so the child's diff changes under an unchanged head and an unchanged base name. A review
+ * made before that cannot authorize a merge after it.
+ *
+ * - `current`: nothing to check, or GitHub confirms the merge base is the one reviewed. A
+ *   base that only moved forward is recorded as the new reviewed tip, so the two compare
+ *   calls run once per base move, not once per tick.
+ * - `changed`: the merge base moved, or no reviewed base was recorded: review again.
+ * - `unknown`: GitHub could not say for the current base: neither merge nor re-review.
+ *
+ * Checked only for a pull request with stack lineage or a known base other than the default
+ * branch. A pull request on the default branch keeps the head-only rule: that branch
+ * advancing never moves the merge base of an unchanged head.
+ */
+export async function reviewedStackBase(
+  pr: InspectorPr,
+  snapshot: PrSnapshot,
+  dir: string,
+  github: StackGitHub,
+  now: number,
+): Promise<"current" | "changed" | "unknown"> {
+  const base = snapshot.baseRefName || null;
+  const defaultBranch = snapshot.defaultBranch || null;
+  const stacked = pr.stack !== null && pr.stack !== undefined;
+  // An unknown base on an ordinary pull request is the merge gate's to refuse
+  // (`base-not-default`), not a reason to stop reviewing it.
+  if (!stacked && !(base && defaultBranch && base !== defaultBranch)) return "current";
+  // A new head is reviewed again anyway, and the review gate matches heads first.
+  if (!snapshot.headSha || snapshot.headSha !== pr.headSha) return "current";
+  const tip = snapshot.baseSha || null;
+  if (!tip) return "unknown";
+  if (pr.reviewedBaseSha === tip) return "current";
+  if (!pr.reviewedBaseSha) return "changed";
+  const current = await github.mergeBase(dir, pr.owner, pr.repo, tip, snapshot.headSha);
+  if (!current.ok || !current.value) return "unknown";
+  // A reviewed tip GitHub no longer knows (force-pushed away and collected) cannot vouch for
+  // anything: review again.
+  const then = await github.mergeBase(dir, pr.owner, pr.repo, pr.reviewedBaseSha, snapshot.headSha);
+  if (!then.ok || !then.value || then.value !== current.value) return "changed";
+  updateInspectorPr(pr.key, { reviewedBaseSha: tip }, now);
+  return "current";
 }
 
 /** The parent's state as far as the local ledger knows it, without asking GitHub. */

@@ -2807,7 +2807,7 @@ export interface CodeRabbitTuning {
   severity: CodeRabbitSeverity;
 }
 export interface CodeRabbitConfigSnapshot {
-  source: ".coderabbit.yaml";
+  source: ".coderabbit.yaml" | ".coderabbit.config.ts";
   committed?: boolean;
   digest: string | null;
   enabled: boolean;

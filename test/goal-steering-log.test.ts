@@ -21,8 +21,8 @@ const { configureClaudeRunnerTransport } = await import("../src/server/llm/claud
 const restore = configureClaudeRunnerTransport(() => "print");
 const { Registry } = await import("../src/server/registry.ts");
 const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
-const { openDb, closeDb, getSessionGoal, upsertSessionGoalWithSteering, readSessionGoalSteering,
-  pruneSessionGoalSteering } = await import("../src/server/db.ts");
+const { openDb, closeDb, getSessionGoal, upsertSessionGoalWithSteering, upsertSessionGoalWithSteeringNotes,
+  readSessionGoalSteering, pruneSessionGoalSteering } = await import("../src/server/db.ts");
 const { reserveInjection, confirmReservedInjection } = await import("../src/server/injections.ts");
 after(() => { restore(); rmSync(home, { recursive: true, force: true }); });
 
@@ -97,6 +97,43 @@ for (const [reason, relationship, resolvedPromptRevision] of [
   });
 }
 
+for (const [reason, relationship, resolvedPromptRevision, revisions] of [
+  ["non-steering goal", "amend", 3, [2, 3]],
+  ["note past the resolved revision", "steer", 2, [2, 3]],
+  ["an empty list", "steer", 3, []],
+] as const) {
+  test(`the list steering writer rejects ${reason} before persisting anything`, () => {
+    const id = `invalid-steering-list-${reason.replace(/\W+/g, "-")}`;
+    const template = session(`${id}-template`).getGoal(`${id}-template`)!;
+    const goal = { ...template, noteKey: id, relationship, resolvedPromptRevision, promptRevision: 3 };
+    const notes = revisions.map((revision) => ({
+      revision, instruction: `instruction ${revision}`, relationship: "steer" as const,
+      rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 100,
+    }));
+    assert.throws(() => upsertSessionGoalWithSteeringNotes(goal, notes), {
+      name: "Error", message: "Steering must belong to the resolved goal revision",
+    });
+    assert.equal(getSessionGoal(id), undefined, "the invalid goal must not be persisted");
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), []);
+  });
+}
+
+test("the list steering writer commits the goal and every note at or below its resolved revision", () => {
+  const id = "steering-list";
+  const template = session(`${id}-template`).getGoal(`${id}-template`)!;
+  const goal = { ...template, noteKey: id, relationship: "steer" as const, promptRevision: 3, resolvedPromptRevision: 3 };
+  const notes = [2, 3].map((revision) => ({
+    revision, instruction: `instruction ${revision}`, relationship: "steer" as const,
+    rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 100,
+  }));
+  upsertSessionGoalWithSteeringNotes(goal, notes);
+  assert.equal(getSessionGoal(id)?.resolvedPromptRevision, 3);
+  assert.deepEqual(readSessionGoalSteering(id, 3), notes);
+  // Same conflict rule as the single-note writer: a second write keeps the first note.
+  upsertSessionGoalWithSteeringNotes(goal, notes.map((n) => ({ ...n, instruction: "rewritten" })));
+  assert.deepEqual(readSessionGoalSteering(id, 3), notes);
+});
+
 test("duplicate writes are idempotent and a failure after the goal update rolls back both durable and cached state", () => {
   const id = "atomic-steering";
   const registry = session(id);
@@ -115,6 +152,30 @@ test("duplicate writes are idempotent and a failure after the goal update rolls 
   const note = readSessionGoalSteering(id, 2)[0]!;
   upsertSessionGoalWithSteering(registry.getGoal(id)!, note);
   assert.deepEqual(readSessionGoalSteering(id, 2), [note]);
+});
+
+test("accepting the objective rolls back the goal and every earlier note when a later note fails", () => {
+  const id = "atomic-steering-list";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "B", id);
+  registry.captureAcceptedPrompt(id, "B, but rename the heading", id);
+  const before = registry.getGoal(id)!;
+  assert.deepEqual(before.pendingPrompts.map((p) => p.revision), [2, 3]);
+  // Fails the SECOND insert, so the goal update and revision 2's note have already been
+  // written inside the transaction when the error arrives.
+  openDb().exec(`CREATE TRIGGER reject_second_steering BEFORE INSERT ON session_goal_steering
+    WHEN NEW.note_key = 'atomic-steering-list' AND NEW.revision = 3
+    BEGIN SELECT RAISE(ABORT, 'injected second append failure'); END`);
+  try {
+    assert.throws(() => registry.acceptGoalObjective(id, 100), /injected second append failure/);
+    assert.deepEqual(getSessionGoal(id), before, "the goal update rolled back");
+    assert.deepEqual(registry.getGoal(id), before, "the cached goal never moved");
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), [],
+      "revision 2's note, written before the failure, rolled back too");
+  } finally { openDb().exec("DROP TRIGGER reject_second_steering"); }
+  const accepted = registry.acceptGoalObjective(id, 100);
+  assert.ok(accepted && accepted.accepted);
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => n.revision), [2, 3]);
 });
 
 test("revision controls ordering and cutoff even when timestamps tie; pruning protects live keys", () => {

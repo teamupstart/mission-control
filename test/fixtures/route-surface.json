@@ -206,6 +206,7 @@
   "POST /api/sessions/:id/foreman-episode": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/foreman-episode/resolve": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/foreman-invite": "404 {\"error\":\"no such session\"}",
+  "POST /api/sessions/:id/goal/accept": "404 {\"error\":\"no goal for this session\"}",
   "POST /api/sessions/:id/handoff": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/html-block-anchor": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/html-block-target": "404 {\"error\":\"no such session\"}",

@@ -391,6 +391,15 @@ relationship or reconciliation state, and Foreman's rationale. This is the inspe
 for what Foreman currently believes the session is trying to finish; the rows below it remain
 the decision history.
 
+When that reading is paused (an instruction still reconciling, or a relationship of **needs
+more context**), the section offers **Accept objective as is**. It records every pending
+instruction as steering, confirms the objective shown as the completion contract without
+changing it or its version, and leaves the rest to Foreman's next tick, which verifies the
+work and can claim the session's bound Workflow. Before that, Foreman skips the session on
+every tick, because it never judges completion against an unresolved instruction. A failure
+appears under the button and leaves the pause as it was. A session with no objective yet shows
+no button: its next instruction becomes the objective. See [Goal](sessions.md#goal).
+
 Only one worker drives the sessions at a time. A manually started worker beside the packaged
 app is safe: the second process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work

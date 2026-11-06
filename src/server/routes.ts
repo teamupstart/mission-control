@@ -6821,6 +6821,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(goal);
   });
 
+  // A person's exit from a paused goal: every pending instruction becomes steering and the
+  // current objective is confirmed as the completion contract, unchanged and at the same
+  // version. Foreman judges completion on its next tick. No body; idempotent on a goal that
+  // is already resolved. The answer is the full record, so the drawer can render it at once.
+  app.post("/api/sessions/:id/goal/accept", (c) => {
+    const result = registry.acceptGoalObjective(c.req.param("id"));
+    if (!result) return c.json({ error: "no goal for this session" }, 404);
+    if (!result.accepted) {
+      return c.json({ error: "this session has no objective to accept yet" }, 409);
+    }
+    return c.json(result.goal);
+  });
+
   // Re-attach an orphaned queue onto this live session. Always an explicit click:
   // a different agent at the same cwd may be doing something else entirely.
   app.post("/api/sessions/:id/queue/reattach", async (c) => {

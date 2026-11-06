@@ -27,6 +27,7 @@ export function ForemanDrawer({
   open,
   onClose,
   onWithdraw,
+  onAcceptObjective,
 }: {
   /**
    * The session this record is about. Carried whole rather than as the one field the
@@ -44,6 +45,13 @@ export function ForemanDrawer({
    * place, and the parent is what has to close this drawer afterwards.
    */
   onWithdraw: () => void;
+  /**
+   * Accept the current objective as is: the pending instructions become steering and Foreman
+   * judges completion against this objective on its next tick. Owned by the parent, which
+   * holds the drawer's intent and replaces it with the answer. Resolves to an error sentence
+   * on failure, null on success.
+   */
+  onAcceptObjective: () => Promise<string | null>;
 }): React.JSX.Element | null {
   const [selected, setSelected] = useState<number | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -131,7 +139,7 @@ export function ForemanDrawer({
           <ForemanEpisodeCard episode={detail} detail />
         ) : (
           <>
-            <IntentSummary intent={intent} />
+            <IntentSummary intent={intent} onAcceptObjective={onAcceptObjective} />
             <div className="fd-history-head">
               <span>Decision history</span>
               <span>{episodes.length}</span>
@@ -162,12 +170,26 @@ const RELATIONSHIP_LABEL: Record<IntentRelationship, string> = {
 };
 
 /** What Foreman will treat as the completion contract on its next prompted wrap-up. */
-function IntentSummary({ intent }: { intent: SessionGoal | null }): React.JSX.Element {
+function IntentSummary({
+  intent,
+  onAcceptObjective,
+}: {
+  intent: SessionGoal | null;
+  onAcceptObjective: () => Promise<string | null>;
+}): React.JSX.Element {
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  // No objective, no button: there is no contract to accept. Capture seeds one from the
+  // first instruction, so this is an uninstructed session or a legacy row.
   if (!intent?.objective) {
     return (
       <section className="fd-intent fd-intent-empty">
         <span className="fd-intent-kicker">Current intent</span>
-        <p>Waiting for the session&apos;s first substantive instruction.</p>
+        <p>
+          Waiting for the session&apos;s first substantive instruction. The next instruction
+          becomes the objective.
+        </p>
       </section>
     );
   }
@@ -179,6 +201,16 @@ function IntentSummary({ intent }: { intent: SessionGoal | null }): React.JSX.El
     : relationship
       ? RELATIONSHIP_LABEL[relationship]
       : "not classified";
+  // The two states that pause automatic wrap-up, and so the two that need an exit.
+  const paused = resolving || relationship === "unclear";
+
+  async function accept(): Promise<void> {
+    setAccepting(true);
+    setAcceptError(null);
+    const error = await onAcceptObjective();
+    setAccepting(false);
+    setAcceptError(error);
+  }
 
   return (
     <section className={`fd-intent fd-intent-${relationship ?? "pending"}`}>
@@ -209,6 +241,23 @@ function IntentSummary({ intent }: { intent: SessionGoal | null }): React.JSX.El
             ? "Automatic wrap-up is paused until this instruction is classified."
             : intent.rationale ?? "No classification rationale is available yet."}
         </span>
+        {paused && (
+          <Tooltip label="Record the pending instructions as steering and let Foreman judge completion against this objective">
+            <button
+              type="button"
+              className="fd-intent-accept"
+              disabled={accepting}
+              onClick={() => void accept()}
+            >
+              Accept objective as is
+            </button>
+          </Tooltip>
+        )}
+        {paused && acceptError && (
+          <p className="wf-error fd-intent-accept-error" role="alert">
+            {acceptError}
+          </p>
+        )}
       </div>
     </section>
   );

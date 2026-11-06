@@ -136,6 +136,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["DELETE", "/api/sessions/:id/foreman-invite", "foreman.withdraw", "foreman"],
   ["POST", "/api/sessions/:id/foreman-episode", "foreman.episode", "foreman"],
   ["POST", "/api/sessions/:id/foreman-episode/resolve", "foreman.episode_resolve", "foreman"],
+  ["POST", "/api/sessions/:id/goal/accept", "foreman.goal_accept", "foreman"],
   ["POST", "/api/sessions/:id/queue/wrapup/asked", "foreman.wrapup_asked", "foreman"],
   ["POST", "/api/sessions/:id/queue/wrapup/prompted", "foreman.completion_claim", "foreman"],
   ["POST", "/api/sessions/:id/queue/wrapup/prompted/undelivered", "foreman.completion_undelivered", "foreman"],

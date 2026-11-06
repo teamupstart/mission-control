@@ -695,6 +695,119 @@ test("an explicit chat Workflow reaches ordinary verification and claims that Wo
   );
 });
 
+test("a session skipped for unresolved intent claims its bound workflow on the tick after acceptance", async () => {
+  // The stuck-goal exit (docs/plans/foreman-stuck-goal-recovery, phase 3). While the latest
+  // instruction is unresolved Foreman skips at step 8 every tick and nothing is gathered or
+  // claimed. Once a person accepts the objective as is, the goal route answers with the
+  // shape `Registry.acceptGoalObjective` writes - same objective and version, the pending
+  // revision resolved as steering - and the very next tick verifies, consumes and claims.
+  const repo = tmp("pw-accept-");
+  const fake = mkFakeClaude({ fail: false });
+  const session = mkSession(repo);
+  const paused = {
+    ...goalRecord,
+    prompt: "B",
+    focus: "B",
+    relationship: "unclear",
+    rationale: "The proposed amendment did not explicitly preserve the current objective.",
+    promptRevision: 2,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [{ revision: 2, prompt: "B" }],
+  };
+  const accepted = {
+    ...paused,
+    relationship: "steer",
+    rationale: "Accepted by you: the current objective is the completion contract. 1 instruction was recorded as steering.",
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  };
+  let queue = mkQueue(repo);
+  let pausedReads = 0;
+  let acceptedAt = 0;
+  let claimedAt = 0;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return { status: 200, json: cfg({ mode: "live", repoAllowlist: [repo], wrapup: "pr" }) };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") {
+      return { status: 200, json: [{ ...session, lastSeen: Date.now() }] };
+    }
+    if (p === "/api/reviews" || p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/sessions/s1/queue") return { status: 200, json: queue };
+    if (p === "/api/sessions/s1/goal") {
+      if (acceptedAt) return { status: 200, json: accepted };
+      // Two skipped ticks, then the person presses Accept objective as is.
+      if (++pausedReads >= 2) acceptedAt = Date.now();
+      return { status: 200, json: paused };
+    }
+    if (p === "/api/sessions/s1/diff") {
+      return { status: 200, json: { ok: true, patch: "diff --git a/up.ts b/up.ts\n+retry();\n", truncated: false, headSha: "abc123" } };
+    }
+    if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
+    if (p === "/api/sessions/s1/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: [{ role: "user", text: GOAL, tools: [] }, { role: "assistant", text: "Added a retry.", tools: [] }],
+          truncated: false,
+        },
+      };
+    }
+    if (p === "/api/sessions/s1/standards") return { status: 200, json: { docs: [], truncated: false } };
+    if (p === "/api/sessions/s1/workflow-completion") {
+      const body = JSON.parse(raw) as { expectedWorkCycle: { generation: number } };
+      queue = { ...queue, promptedConsumedGeneration: body.expectedWorkCycle.generation, updatedAt: Date.now() };
+      claimedAt = Date.now();
+      return { status: 200, json: { claimed: true, runId: "run-review", submissionId: "sub-1", state: "started" } };
+    }
+    if (p === "/api/sessions/s1/queue/wrapup/prompted") {
+      const body = JSON.parse(raw) as { generation: number };
+      queue = { ...queue, promptedConsumedGeneration: body.generation, updatedAt: Date.now() };
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+
+  let out: string;
+  try {
+    out = await runWorker({
+      port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 30_000,
+      until: () => claimedAt !== 0 && Date.now() - claimedAt >= IDLE_SETTLE_MS,
+    });
+  } finally {
+    await stub.close();
+  }
+
+  const goalReads = stub.to("GET", "/api/sessions/s1/goal");
+  const firstAcceptedRead = stub.calls.indexOf(goalReads[2]!);
+  assert.ok(pausedReads >= 2 && acceptedAt > 0, `the worker never reached the paused goal twice\n${out}`);
+  // Nothing was gathered or verified while the instruction was unresolved.
+  const diffs = stub.to("GET", "/api/sessions/s1/diff");
+  assert.ok(diffs.length >= 1, `the accepted goal was never verified\n${out}`);
+  assert.ok(
+    stub.calls.indexOf(diffs[0]!) > firstAcceptedRead,
+    `evidence was gathered while the intent was unresolved\n${out}`,
+  );
+  const claims = stub.to("POST", "/api/sessions/s1/workflow-completion");
+  assert.equal(claims.length, 1, `expected exactly one workflow claim after acceptance\n${out}`);
+  const claim = claims[0]!.body as {
+    expectedWorkCycle: { generation: number };
+    expectedIntent: { objective: string; objectiveVersion: number; promptRevision: number; episodeKey: string };
+  };
+  assert.equal(claim.expectedWorkCycle.generation, 1, "the skipped generation is the one consumed");
+  assert.deepEqual(claim.expectedIntent, {
+    objective: GOAL,
+    objectiveVersion: 1,
+    promptRevision: 2,
+    episodeKey: "intent:1:2",
+  }, "the claim is guarded by the accepted, unchanged objective");
+  assert.equal(claudeCalls(fake.log).length, 1, `verified more than once\n${out}`);
+  assert.equal(queue.promptedConsumedGeneration, 1, out);
+});
+
 // Local bundles have no Git patch. Exercise the real worker through verification and
 // the claim boundary; the daemon's exact approval/publication gates have their own tests.
 for (const triggerMode of ["foreman_complete", "manual"] as const) test(`a local plan with an empty diff reaches its ${triggerMode} workflow`, async () => {

@@ -959,6 +959,29 @@ export async function resolveRepo(
   }
 }
 
+/** What accepting a goal's objective answered: the full record, or the refusal. */
+export type AcceptGoalResult =
+  | { ok: true; goal: SessionGoal }
+  | { ok: false; error: string; status?: number };
+
+/**
+ * POST the accept route and hand back the full goal it answers with. Its own fetch rather than
+ * `post`, which spreads the body into an `ActionResult` and would mix the record's fields with
+ * the transport's. Never throws.
+ */
+async function acceptGoal(id: string): Promise<AcceptGoalResult> {
+  try {
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/goal/accept`, {
+      method: "POST",
+    });
+    const data = (await res.json().catch(() => ({}))) as SessionGoal & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    return { ok: true, goal: data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
 export async function fetchRepos(): Promise<string[]> {
   try {
@@ -2127,6 +2150,12 @@ export const api = {
   /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
   goal: (id: string) =>
     fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
+  /**
+   * Accept the current objective as is: record every pending instruction as steering and let
+   * Foreman judge completion against this objective on its next tick. Never changes the
+   * objective. 404 without a goal, 409 without an objective, otherwise the full record.
+   */
+  acceptGoal: (id: string) => acceptGoal(id),
 
   /**
    * The answers this session's human gave, oldest first - the durable half of the

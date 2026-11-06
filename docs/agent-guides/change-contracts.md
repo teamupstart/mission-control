@@ -1025,6 +1025,30 @@ wrong page with no error anywhere.
 `PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
 place the engine's control verbs go; filling it must not restructure the header around it.
 
+## Who may change a Goal's objective
+
+A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
+`Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
+from the first substantive instruction, and only while the Goal has no objective yet. After that,
+only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
+relationship. `steer` and `unclear` never change them, and no other writer does.
+`openingPrompt` is write-once.
+
+`POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
+paused Goal, and it CONFIRMS the objective rather than rewriting it. It resolves every pending
+revision as steering through `upsertSessionGoalWithSteeringNotes`, one row per revision with the
+rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
+`resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
+`source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
+`resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
+contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
+action, if one is ever wanted, is a separate route with its own review, not a body on this one.
+
+Steering rows always carry `relationship: "steer"` at or below the Goal's resolved revision. The
+refiner writes one through `upsertSessionGoalWithSteering` and the accept route writes several
+through the list writer; neither replaces the other.
+
 ## Prompted completion: one generation, one reason, one write
 
 A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that

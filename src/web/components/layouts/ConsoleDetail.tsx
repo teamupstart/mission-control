@@ -146,12 +146,16 @@ export function intentRefreshStamp(goal: Session["goal"]): string {
   ].join(":");
 }
 
-/** Load the full completion contract only for the drawer that can render it. */
+/**
+ * Load the full completion contract only for the drawer that can render it. The setter lets
+ * a write that answers with the full record (accepting the objective) show it at once: an
+ * `unclear` verdict accepted with nothing pending moves no revision the stamp reads.
+ */
 function useIntent(
   sessionId: string,
   refreshStamp: string,
   open: boolean,
-): SessionGoal | null {
+): [SessionGoal | null, (goal: SessionGoal) => void] {
   const [intent, setIntent] = useState<SessionGoal | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -169,7 +173,7 @@ function useIntent(
       live = false;
     };
   }, [sessionId, refreshStamp, open]);
-  return intent;
+  return [intent, setIntent];
 }
 
 /**
@@ -246,7 +250,7 @@ export function ConsoleDetail({
    */
   const conversationView = useSessionConversationView(session.id);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
-  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
@@ -366,6 +370,14 @@ export function ConsoleDetail({
     } finally {
       setInviteBusy(false);
     }
+  }
+
+  /** The drawer's exit from a paused goal. Returns the refusal sentence, or null on success. */
+  async function acceptObjective(): Promise<string | null> {
+    const res = await api.acceptGoal(session.id);
+    if (!res.ok) return `The objective was not accepted: ${res.error.replace(/[.\s]+$/, "")}.`;
+    setIntent(res.goal);
+    return null;
   }
 
   async function withdrawForeman(): Promise<void> {
@@ -748,6 +760,7 @@ export function ConsoleDetail({
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           onWithdraw={() => void withdrawForeman()}
+          onAcceptObjective={acceptObjective}
         />
       )}
 

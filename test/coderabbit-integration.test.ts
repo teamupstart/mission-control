@@ -118,6 +118,7 @@ for(const [name,change] of [
 });
 for(const [name,change,remedy] of [
  ["dirty content without a review snapshot",(i:RunCheckInput)=>{i.coderabbit!.dirty=true;},/without a review snapshot\. Submit again so Mission Control captures one\.$/],
+ ["config.ts absent from the reviewed commit",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,source:".coderabbit.config.ts",committed:false};},/The captured \.coderabbit\.config\.ts is not the one in the reviewed commit\. Make sure \.coderabbit\.config\.ts is not ignored, then submit again\.$/],
  ["YAML absent from the reviewed commit",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};},/not the one in the reviewed commit\. Make sure \.coderabbit\.yaml is not ignored, then submit again\.$/],
 ] as const) test(`${name} blocks before any probe with its own remedy, never Setup`,async()=>{
  const i=input(),d=deps();change(i);d.codeRabbitProbe=async()=>{throw new Error("must not probe");};d.execute=async()=>{throw new Error("must not execute");};

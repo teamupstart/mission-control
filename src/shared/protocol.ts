@@ -6124,7 +6124,7 @@ const WorkflowSteeringContextSchema = z.union([
 ]);
 
 export const CodeRabbitConfigSnapshotSchema = z.object({
-  source: z.literal(".coderabbit.yaml"), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
+  source: z.enum([".coderabbit.yaml", ".coderabbit.config.ts"]), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
   state: z.enum(["enabled", "disabled", "missing", "invalid", "unreadable"]), diagnostic: z.string().max(1000),
 });
 const WorkflowContextSnapshotInputSchema = z.object({

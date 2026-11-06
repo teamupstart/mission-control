@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, symlinkSync, rmSync, mkdirSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureCodeRabbitConfig, parseCodeRabbitConfig } from "../src/server/workflows/coderabbit-config.ts";
+import { CodeRabbitConfigSnapshotSchema } from "../src/shared/protocol.ts";
 const parse=(source:string)=>parseCodeRabbitConfig(Buffer.from(source));
 test("explicit boolean true with schema comment and inheritance enables locally",()=>{
  assert.equal(parse('# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json\ninheritance: true\nreviews:\n  auto_review:\n    enabled: true\n').enabled,true);
@@ -72,4 +73,12 @@ test("gate: a bare empty .coderabbit.yaml runs",()=>{
 });
 test("gate: a comment-only .coderabbit.yaml runs",()=>{
   withRepo({ ".coderabbit.yaml": "# TODO configure\n" }, (root) => assert.equal(captureCodeRabbitConfig(root).enabled, true));
+});
+
+test("the persisted snapshot schema accepts a .coderabbit.config.ts source",()=>{
+  withRepo({ ".coderabbit.config.ts": CONFIG_TS }, (root) => {
+    const snapshot = captureCodeRabbitConfig(root);
+    assert.equal(snapshot.source, ".coderabbit.config.ts");
+    assert.equal(CodeRabbitConfigSnapshotSchema.safeParse(snapshot).success, true);
+  });
 });

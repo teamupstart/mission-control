@@ -861,3 +861,25 @@ test("criterion mapping never emits a claim this submission did not declare", ()
     }
   }
 });
+
+test("a committed .coderabbit.config.ts alone is captured as the committed CodeRabbit config", async () => {
+  const repo = join(home, "coderabbit-config-ts-only");mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  git("init", "-q", "-b", "main");git("config", "user.name", "Fixture");git("config", "user.email", "fixture@example.com");git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, ".coderabbit.config.ts"), "export default { reviews: {} };\n");
+  git("add", ".");git("commit", "-qm", "base");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "coderabbit-config-ts-only", agent: "claude", name: "ts-only", nameSource: "process",
+    cwd: repo, gitBranch: "main", gitRoot: repo, repoRoot: repo, pid: 1, tty: "ttys-ts-only", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
+  const session = registry.getSession("coderabbit-config-ts-only")!;
+  const binding = { id: "ts-only-binding", sessionId: session.id, noteKey: noteKeyFor(session) } as WorkflowBinding;
+  const codeRabbitGraph = BUILTIN_WORKFLOWS.find(w => w.definition.id === "builtin-workflow:no-mistakes-review")!
+    .versions.find(v => v.id.endsWith("@22"))!.graph;
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], null, codeRabbitGraph);
+  const snapshot = captured.context.evidence.coderabbit!;
+  assert.equal(snapshot.source, ".coderabbit.config.ts");
+  assert.equal(snapshot.enabled, true);
+  assert.equal(snapshot.committed, true);
+});

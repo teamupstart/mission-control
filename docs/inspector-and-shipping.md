@@ -417,11 +417,7 @@ A dependency stacks only when all of these hold. Otherwise it waits for merge as
   repository has merged, and every secondary repository the prerequisite changed has merged.
   A secondary repository counts as changed unless the daemon has observed it unchanged, so a
   change with no pull request yet, or one it could not read, keeps the dependent waiting.
-- The stack under the prerequisite is shorter than the depth cap. The count follows each
-  task's recorded parent until an edge has merged, or until a pull request was released onto
-  the default branch after its parent closed unmerged. That pull request carries none of the
-  closed parent, so it starts a new stack. If the parent is reopened, the release is withdrawn
-  and the link counts again.
+- The stack under the prerequisite is shorter than the depth cap.
 
 The dependent is released to **start** (not completed: the edge is still unsatisfied, and
 *Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode

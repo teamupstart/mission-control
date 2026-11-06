@@ -8,7 +8,6 @@ import {
   withoutStackStamp,
 } from "@shared/stacking.ts";
 import { parsePrUrl } from "../inspector/github.ts";
-import { latestStackedPr } from "../db.ts";
 import { prInRepositories, type StackGitHub } from "./github.ts";
 
 // The daemon's half of a stacked start: the readiness stamp on a dependency edge, and the
@@ -115,25 +114,6 @@ function pendingSecondary(parent: Task, finished: FinishedEpisode): string | nul
   return null;
 }
 
-/**
- * Does `task`'s current pull request start a NEW stack, though `task` was cut on a parent?
- *
- * True when its latest stacked pull request in the current episode holds a release granted
- * under a CLOSED parent: that release verified the pull request is on the default branch and
- * carries none of the closed parent, so a task stacked on it is one deep, not two. A release
- * granted under a merged parent does not count here, because a merged parent's edge is already
- * satisfied and `stackDepth` stops there by itself. When the parent is reopened the release is
- * withdrawn, and the recorded link counts again.
- */
-function releasedOntoDefaultBranch(task: Task, registry: Pick<StackRegistry, "workEpisodeForTask">): boolean {
-  if (!task.stackParentTaskId || !task.stackPrUrl) return false;
-  const parsed = parsePrUrl(task.stackPrUrl);
-  if (!parsed) return false;
-  const episode = registry.workEpisodeForTask(task.id)?.episodeId ?? null;
-  const row = latestStackedPr(task.id, parsed.owner, parsed.repo, episode);
-  return row?.stack?.releasedBasis === "closed" && row.stack.releasedHeadSha !== null;
-}
-
 function stamped(edge: TaskDependency): boolean {
   return edge.type !== "plan" && typeof edge.stackReadyAt === "number";
 }
@@ -156,8 +136,6 @@ export class StackReadiness {
     private readonly github: StackGitHub,
     private readonly now: () => number = Date.now,
     private readonly timers: StackTimers = realTimers,
-    /** See `releasedOntoDefaultBranch`. Injectable so the depth rule is testable without a ledger. */
-    private readonly startsNewStack: (task: Task) => boolean = (task) => releasedOntoDefaultBranch(task, registry),
   ) {}
 
   stop(): void {
@@ -232,7 +210,7 @@ export class StackReadiness {
     const wanted = new Map<string, Task>();
     for (const task of tasks) {
       if (task.status !== "backlog") continue;
-      const eligibility = stackEligibility(task, byId, config, this.startsNewStack);
+      const eligibility = stackEligibility(task, byId, config);
       const keep = eligibility.ok ? eligibility.edge.taskId : null;
       const finished = eligibility.ok ? this.finishedEpisode(eligibility.parent) : null;
       let changed = false;
@@ -320,7 +298,7 @@ export class StackReadiness {
       const config = this.config();
       for (const task of tasks) {
         if (task.status !== "backlog") continue;
-        const eligibility = stackEligibility(task, byId, config, this.startsNewStack);
+        const eligibility = stackEligibility(task, byId, config);
         if (!eligibility.ok || eligibility.parent.id !== parentId) continue;
         const missing = await this.missingMergedPrerequisite(task, byId, read.headSha);
         if (this.stopped) return;
@@ -346,7 +324,7 @@ export class StackReadiness {
         if (!latest || latest.status !== "backlog") continue;
         const nowTasks = new Map(this.registry.listTasks().map((candidate) => [candidate.id, candidate]));
         const nowConfig = this.config();
-        const nowEligible = stackEligibility(latest, nowTasks, nowConfig, this.startsNewStack);
+        const nowEligible = stackEligibility(latest, nowTasks, nowConfig);
         if (!nowEligible.ok || nowEligible.parent.id !== parentId) continue;
         let changed = false;
         const dependencies = latest.dependencies.map((edge) => {
@@ -511,7 +489,7 @@ export class StackReadiness {
       }
       return refuse(error);
     };
-    const eligibility = stackEligibility(task, byId, this.config(), this.startsNewStack);
+    const eligibility = stackEligibility(task, byId, this.config());
     if (!eligibility.ok || eligibility.edge.taskId !== edge.taskId) {
       return refuse(`cannot stack: ${eligibility.ok ? "the stacked prerequisite changed" : eligibility.reason}`);
     }

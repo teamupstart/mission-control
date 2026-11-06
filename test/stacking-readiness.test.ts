@@ -841,47 +841,6 @@ test("a checkout whose primary repository cannot be told stacks on nothing", asy
   r.stop();
 });
 
-// ---- Inspector review 18: a parent restacked onto the default branch starts a new stack ----
-
-test("a parent whose pull request was released onto the default branch under a closed parent is one deep, not two", async () => {
-  const { adoptInspectorPr, recordInspectorPrLineage, releaseInspectorPrStack, revokeInspectorPrStack } = await import("../src/server/db.ts");
-  const ROOT_PR = "https://github.com/acme/repo/pull/3";
-  const A_PR_KEY = "acme/repo#7";
-  // R opened #3 and closed it unmerged. A was cut on it (its edge to R is still unmerged) and
-  // opened #7 (PARENT_PR); C stacks on A, with the cap at one stacked pull request.
-  const w = world();
-  w.tasks.set("R", mkTask({ id: "R", title: "Root", status: "running", repoRoot: "/repo" }));
-  w.tasks.set("A", { ...w.tasks.get("A")!, stackParentTaskId: "R", stackBaseBranch: "feat/r", stackBaseSha: "9".repeat(40), stackPrUrl: ROOT_PR, dependencies: [edge("R")] });
-  w.config = ShippingConfigSchema.parse({ stacking: "stack", maxStackDepth: 1 });
-  const s = script();
-
-  // A's pull request in the ledger, with its lineage to #3 but not released: two deep.
-  adoptInspectorPr({
-    key: A_PR_KEY, url: PARENT_PR, owner: "acme", repo: "repo", number: 7, repoRoot: "/repo", cwd: "/repo", sessionId: "sA", source: "hook",
-    state: "open", headSha: null, reviewPosture: null, round: 0, lastReviewedAt: null, lastError: null, failCount: 0,
-    lastFailKind: null, nextAttemptAt: null, lastAttemptSha: null, mergedAt: null, mergeBlock: null,
-    observedHeadSha: null, observedState: null, observedAt: null, headRefName: null, title: null, adoptedAt: 1, updatedAt: 1,
-  });
-  recordInspectorPrLineage(A_PR_KEY, { taskId: "A", episode: "ep1", adoptedAt: 1, parentPrUrl: ROOT_PR, baseSha: "9".repeat(40), history: [] });
-  const r = readiness(w, s);
-  r.reconcile();
-  await settle();
-  assert.equal(childEdge(w).stackReadyAt ?? null, null, "two stacked pull requests would exceed the cap");
-
-  // #7 is moved onto the default branch and passes the release check while #3 is closed.
-  releaseInspectorPrStack(A_PR_KEY, HEAD, "closed", 2);
-  r.reconcile();
-  await settle();
-  assert.equal(childEdge(w).stackReadyAt, 1_000, "A's pull request now starts a new stack, so C is one deep");
-
-  // #3 is reopened: the release is withdrawn, A is stacked on R again, and C waits.
-  revokeInspectorPrStack(A_PR_KEY, 3);
-  r.reconcile();
-  await settle();
-  assert.equal(childEdge(w).stackReadyAt ?? null, null);
-  r.stop();
-});
-
 test("stopping readiness cancels its pending re-checks", async () => {
   const w = world();
   const s = script();

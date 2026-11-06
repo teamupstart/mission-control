@@ -78,22 +78,12 @@ function unmergedTaskEdges(task: Task): TaskEdge[] {
  *
  * Read from what each task RECORDED at dispatch (`stackParentTaskId`) and whether its edge
  * to that parent has merged since, so a parent that merged shortens every stack above it.
- *
- * `startsNewStack` lets a caller that can see pull request lineage end the count early: a
- * task whose pull request was released onto the default branch after its parent closed
- * unmerged carries none of that parent, so it is the bottom of a NEW stack even though its
- * recorded link and unsatisfied edge remain. Readers without lineage omit it and count the
- * recorded links, which can only over-count.
  */
-export function stackDepth(
-  task: Task,
-  byId: ReadonlyMap<string, Task>,
-  startsNewStack?: (task: Task) => boolean,
-): number {
+export function stackDepth(task: Task, byId: ReadonlyMap<string, Task>): number {
   const visited = new Set<string>();
   let depth = 0;
   let current: Task | undefined = task;
-  while (current?.stackParentTaskId && !visited.has(current.id) && !startsNewStack?.(current)) {
+  while (current?.stackParentTaskId && !visited.has(current.id)) {
     visited.add(current.id);
     const parentId: string = current.stackParentTaskId;
     const edge = current.dependencies.find(
@@ -186,7 +176,6 @@ export function stackEligibility(
   task: Task,
   tasks: readonly Task[] | ReadonlyMap<string, Task>,
   config: Pick<ShippingConfig, "stacking" | "maxStackDepth">,
-  startsNewStack?: (task: Task) => boolean,
 ): StackEligibility {
   const byId = tasks instanceof Map
     ? tasks as ReadonlyMap<string, Task>
@@ -197,7 +186,7 @@ export function stackEligibility(
     return { ok: false, code: "after-merge", reason: "set to start after merge", edge: candidate.edge };
   }
   const max = config.maxStackDepth ?? STACK_DEPTH_LIMITS.default;
-  if (stackDepth(candidate.parent, byId, startsNewStack) + 1 > max) {
+  if (stackDepth(candidate.parent, byId) + 1 > max) {
     return {
       ok: false,
       code: "too-deep",

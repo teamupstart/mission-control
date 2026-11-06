@@ -257,15 +257,3 @@ test("an inherited Stack edge gets the same wait reason as an explicit one, when
   const merge = { ...c, dependencies: [edge("A", { mode: "merge" })] };
   assert.equal(stackWaitLabel(merge, byId(root, a, merge), { stacking: "stack", maxStackDepth: 1 }), null);
 });
-
-test("the depth count stops at a task whose pull request starts a new stack", () => {
-  const root = mkTask({ id: "R", status: "running" });
-  const a = mkTask({ id: "A", status: "running", stackParentTaskId: "R", dependencies: [edge("R")] });
-  const c = mkTask({ id: "C", dependencies: [edge("A")] });
-  const tasks = byId(root, a, c);
-  assert.equal(stackDepth(a, tasks), 1, "the recorded link counts by default");
-  assert.equal(stackDepth(a, tasks, (task) => task.id === "A"), 0, "a pull request restacked onto the default branch is a new bottom");
-  const capped = { ...STACK, maxStackDepth: 1 };
-  assert.equal(stackEligibility(c, [root, a, c], capped).ok, false);
-  assert.equal(stackEligibility(c, [root, a, c], capped, (task) => task.id === "A").ok, true);
-});

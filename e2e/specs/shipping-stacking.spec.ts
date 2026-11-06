@@ -467,11 +467,21 @@ test("a finished prerequisite with an open pull request releases a stacked depen
   const grandchild = await backlogTask(daemon, "Parser phase three", {
     dependencies: [{ type: "task", taskId: child.id, mode: "stack" }],
   });
+  // The same wait with no choice made: the dependency inherits the Shipping default, which this
+  // case set to Stack at the start, and gets the same reason.
+  const inherited = await backlogTask(daemon, "Parser phase three, inherited", {
+    dependencies: [{ type: "task", taskId: child.id }],
+  });
   await boardLayout(dashboard, daemon);
-  const deep = dashboard.locator(".bl-card", { hasText: grandchild.title });
-  await expect(deep.locator(".bl-blocked")).toHaveText("can't stack yet - the stack under Parser phase two is already 1 deep", { timeout: 30_000 });
+  const tooDeep = "can't stack yet - the stack under Parser phase two is already 1 deep";
+  const deep = dashboard.locator(".bl-card", { hasText: grandchild.title }).filter({ hasNotText: "inherited" });
+  await expect(deep.locator(".bl-blocked")).toHaveText(tooDeep, { timeout: 30_000 });
   await expect(deep.locator(".bl-stacked")).toHaveCount(0);
+  const inheritedCard = dashboard.locator(".bl-card", { hasText: inherited.title });
+  await expect(inheritedCard.locator(".bl-blocked")).toHaveText(tooDeep);
+  await expect(inheritedCard.locator(".bl-stacked")).toHaveCount(0);
   await shoot(deep, "backlog-depth-cap");
+  await shoot(inheritedCard, "backlog-depth-cap-inherited");
 });
 
 test("the merge queue names both stacking holds and a non-default base", async ({ dashboard, daemon }) => {

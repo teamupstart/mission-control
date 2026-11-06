@@ -552,10 +552,11 @@ Changing the setting later moves every chip you never set.
 
 A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
 until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
-dependents** behave exactly as above. A released card reads *Stacked on #N*; a card whose
-chip is set to Stack but cannot stack yet (two unmerged prerequisites in one repository, a
-prerequisite in another repository, a stack at the depth cap) says why in place of
-*after X*. A stacked task is always **dispatched** into a fresh worktree cut from the
+dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
+cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
+prerequisites in one repository, a prerequisite in another repository, or a stack at the
+depth cap. A stacked task is always **dispatched** into a fresh worktree cut from the
 prerequisite pull request's current head, and opens its pull request against that branch;
 drag-to-assign and Foreman never hand it to an existing agent. Session dependencies without
 a task, plan publications and cross-repository dependencies always wait for merge. See

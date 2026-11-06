@@ -15,6 +15,7 @@ import {
   blockersNeedYou,
   stackedStartLabel,
   stackWaitLabel,
+  type StackShipping,
   type BacklogTaskNoticeView,
   type BacklogTrustView,
 } from "../../lib/backlog-copy.ts";
@@ -108,7 +109,7 @@ export function BacklogColumn({
   onManageTrust,
   sessions = [],
   workflowSummaries = [],
-  maxStackDepth,
+  stackShipping,
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -147,8 +148,8 @@ export function BacklogColumn({
   sessions?: Session[];
   /** Published workflows, offered by the bulk edit as After work. */
   workflowSummaries?: WorkflowSummary[];
-  /** The Shipping depth cap, so a blocked stack card can say it is too deep. Absent: unknown. */
-  maxStackDepth?: number;
+  /** The Shipping stacking default and depth cap, so a blocked stack card can say why. */
+  stackShipping?: StackShipping;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   /**
@@ -451,7 +452,7 @@ export function BacklogColumn({
                 task={t}
                 blockers={blockersIn(t, index)}
                 stacking={index.byId}
-                maxStackDepth={maxStackDepth}
+                stackShipping={stackShipping}
                 deadBlockers={deadBlockersFor(t, index)}
                 nextUp={t.id === nextUp}
                 lifted={t.id === inAir}
@@ -661,14 +662,14 @@ function BacklogCard({
   onSelect,
   cardRef,
   stacking,
-  maxStackDepth,
+  stackShipping,
 }: {
   task: Task;
   blockers: BacklogBlocker[];
   /** Every task by id, for the Stacked pull requests marks. */
   stacking?: ReadonlyMap<string, Task>;
-  /** The Shipping depth cap, for the stack wait reason. */
-  maxStackDepth?: number;
+  /** The Shipping stacking default and depth cap, for the stack wait reason. */
+  stackShipping?: StackShipping;
   /** Cancelled/failed tasks blocking this card, directly or up its chain. */
   deadBlockers: Task[];
   /** True on the item Foreman's autopilot would pick up next. */
@@ -715,7 +716,7 @@ function BacklogCard({
   const blocked = blockers.length > 0;
   const declaredBlocked = blockers.some((blocker) => blocker.source === "declared");
   const stackedOn = stacking ? stackedStartLabel(task, stacking) : null;
-  const stackWait = stacking ? stackWaitLabel(task, stacking, maxStackDepth) : null;
+  const stackWait = stacking ? stackWaitLabel(task, stacking, stackShipping) : null;
 
   async function launch(): Promise<void> {
     setBusy(true);

@@ -236,8 +236,24 @@ test("a blocked stack card names the depth cap when the board has it", async () 
   const a = mkTask({ id: "A", title: "Phase A", status: "running", stackParentTaskId: "R", dependencies: [edge("R")] });
   const c = mkTask({ id: "C", dependencies: [edge("A", { mode: "stack" })] });
   const tasks = byId(root, a, c);
-  assert.equal(stackWaitLabel(c, tasks, 1), "can't stack yet - the stack under Phase A is already 1 deep");
-  assert.equal(stackWaitLabel(c, tasks, 2), "stacks on Phase A once its pull request is open and its agent is done");
+  assert.equal(stackWaitLabel(c, tasks, { maxStackDepth: 1 }), "can't stack yet - the stack under Phase A is already 1 deep");
+  assert.equal(stackWaitLabel(c, tasks, { maxStackDepth: 2 }), "stacks on Phase A once its pull request is open and its agent is done");
   assert.equal(stackWaitLabel(c, tasks), "stacks on Phase A once its pull request is open and its agent is done",
     "without the cap only the structural rule is checked");
+});
+
+test("an inherited Stack edge gets the same wait reason as an explicit one, when the board has the default", async () => {
+  const { stackWaitLabel } = await import("../src/web/lib/backlog-copy.ts");
+  const root = mkTask({ id: "R", title: "Root", status: "running" });
+  const a = mkTask({ id: "A", title: "Phase A", status: "running", stackParentTaskId: "R", dependencies: [edge("R")] });
+  // No mode on the edge: it inherits the Shipping default.
+  const c = mkTask({ id: "C", dependencies: [edge("A")] });
+  const tasks = byId(root, a, c);
+  assert.equal(stackWaitLabel(c, tasks, { stacking: "stack", maxStackDepth: 1 }), "can't stack yet - the stack under Phase A is already 1 deep");
+  assert.equal(stackWaitLabel(c, tasks, { stacking: "stack", maxStackDepth: 3 }), "stacks on Phase A once its pull request is open and its agent is done");
+  assert.equal(stackWaitLabel(c, tasks, { stacking: "merge", maxStackDepth: 1 }), null, "a Wait for merge default keeps the plain after-X copy");
+  assert.equal(stackWaitLabel(c, tasks, { maxStackDepth: 1 }), null, "without the default, only an explicit Stack choice is read");
+  // An explicit After merge under a Stack default is not a stack.
+  const merge = { ...c, dependencies: [edge("A", { mode: "merge" })] };
+  assert.equal(stackWaitLabel(merge, byId(root, a, merge), { stacking: "stack", maxStackDepth: 1 }), null);
 });

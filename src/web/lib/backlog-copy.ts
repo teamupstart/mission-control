@@ -3,7 +3,7 @@ import { missingTaskRepoRoots } from "@shared/allowlist.ts";
 import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
 import { relativeTime, repoLeaf } from "./format.ts";
-import { stackCandidate, stackEligibility, stackPrNumber, stackStartEdge } from "@shared/stacking.ts";
+import { effectiveEdgeMode, stackCandidate, stackEligibility, stackPrNumber, stackStartEdge, type StackingMode } from "@shared/stacking.ts";
 
 /**
  * How a blocked backlog item's state is SAID, in one place.
@@ -52,29 +52,39 @@ export function stackedStartLabel(task: Task, byId: ReadonlyMap<string, Task>): 
   return number === null ? `Stacked on ${edge.title}` : `Stacked on #${number}`;
 }
 
+/** The Shipping facts the board has for Stacked pull requests, from the settings status. */
+export interface StackShipping {
+  /** The effective Stacked pull requests default; absent from a daemon that predates it. */
+  stacking?: StackingMode;
+  /** The depth cap; absent from a daemon that predates it. */
+  maxStackDepth?: number;
+}
+
 /**
- * Why an item whose dependency the operator set to Stack is still waiting, in place of the
- * plain "after X" - or null when no such edge exists. Read for an explicit Stack choice only:
- * the board does not hold the Shipping default, and an inherited edge reads "after X" until
- * the daemon releases it, which is true either way.
+ * Why an item whose dependency stacks is still waiting, in place of the plain "after X" - or
+ * null when it has no Stack edge, or is already released.
  *
- * `maxStackDepth` is the Shipping depth cap when the board has it. With it, the full
- * eligibility rule decides, so a parent already at the cap reads "can't stack yet - the stack
- * under X is already N deep" instead of promising a stack that readiness will never grant.
- * Without it (a daemon that predates the field) only the structural rule can be checked.
+ * With `shipping` known, an edge stacks by its effective mode: its own Stack / After merge
+ * choice, or the Shipping default it inherits. The full eligibility rule then decides, so a
+ * parent already at the depth cap reads "can't stack yet - the stack under X is already N
+ * deep" whether the edge chose Stack or inherited it. Without the default (a daemon that
+ * predates it) only an explicit Stack choice counts, and without the cap only the structural
+ * rule can be checked.
  */
-export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>, maxStackDepth?: number): string | null {
+export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>, shipping: StackShipping = {}): string | null {
   if (task.status !== "backlog") return null;
+  const modeOf = (edge: Task["dependencies"][number]): StackingMode | undefined =>
+    edge.type === "plan" ? "merge" : shipping.stacking ? effectiveEdgeMode(edge, { stacking: shipping.stacking }) : edge.mode;
   const wantsStack = task.dependencies.some(
-    (edge) => edge.type === "task" && edge.satisfiedAt === null && edge.mode === "stack",
+    (edge) => edge.type === "task" && edge.satisfiedAt === null && modeOf(edge) === "stack",
   );
   if (!wantsStack || stackStartEdge(task, byId)) return null;
   const candidate = stackCandidate(task, byId);
   if (!candidate.ok) return `can't stack yet - ${candidate.reason}`;
-  if (candidate.edge.mode !== "stack") return null;
-  if (maxStackDepth !== undefined) {
-    // The edge is an explicit Stack, so the Shipping default does not enter into it.
-    const eligible = stackEligibility(task, byId, { stacking: "stack", maxStackDepth });
+  if (modeOf(candidate.edge) !== "stack") return null;
+  if (shipping.maxStackDepth !== undefined) {
+    // Explicit Stack, or the inherited default: either way this edge stacks.
+    const eligible = stackEligibility(task, byId, { stacking: "stack", maxStackDepth: shipping.maxStackDepth });
     if (!eligible.ok) return `can't stack yet - ${eligible.reason}`;
   }
   return `stacks on ${candidate.parent.title} once its pull request is open and its agent is done`;

@@ -24,13 +24,11 @@ the chip and dialog (Phase 4); any change to `objective`, `objectiveVersion`,
 
 ## Repository findings and inherited contracts
 
-`SessionGoal` (`types.ts:1204`) and `SetGoalSchema` (`protocol.ts:1770`) describe every field
-written. `Registry.mergeGoal` (`registry.ts:8596`) persists and `syncSessionsForGoal` emits
-`session_upsert`. `upsertSessionGoalWithSteering` (`db.ts:10743`) writes one row in
-`BEGIN IMMEDIATE` with `ON CONFLICT DO NOTHING` and requires `steer` at the resolved revision.
-`GET /api/sessions/:id/goal` is `routes.ts:6779`; `api.goal` is `api.ts:2128`; `useIntent`
-(`ConsoleDetail.tsx:150`) is keyed on `intentRefreshStamp`; `IntentSummary` is
-`ForemanDrawer.tsx:165-215`; `GoalLine` tooltips are `session-bits.tsx:1438-1447`.
+`Registry.mergeGoal` (`registry.ts:8596`) persists and `syncSessionsForGoal` emits
+`session_upsert`. `upsertSessionGoalWithSteering` (`db.ts:10743`) writes one row and requires
+`steer` at the resolved revision. `GET /api/sessions/:id/goal` is `routes.ts:6779`; `api.goal`
+is `api.ts:2128`; `useIntent` (`ConsoleDetail.tsx:150`) is keyed on `intentRefreshStamp`;
+`IntentSummary` is `ForemanDrawer.tsx:165-215`; `GoalLine` tooltips are `session-bits.tsx:1438`.
 
 ## Implementation steps
 
@@ -71,8 +69,7 @@ abandoned by the compare at `refiner.ts:371-376`.
 - `test/session-goals.test.ts`: steering rows in order; `(not captured)` for a null legacy
   prompt; objective, version, source and opening prompt unchanged; equal revisions; idempotent;
   the `unclear`-with-nothing-pending case; `{ accepted: false }` without an objective.
-- A route test (new `test/goal-accept-http.test.ts`): 404, 409, 200, idempotent 200, and a
-  `session_upsert` reaching an SSE subscriber.
+- New `test/goal-accept-http.test.ts`: 404, 409, 200, idempotent 200, one `session_upsert`.
 - `test/prompted-wrapup.test.ts`: an accepted goal yields a `check` candidate.
 - `test/prompted-wrapup-worker-e2e.test.ts`: a session skipped for unresolved intent is
   verified, consumed and claims its bound workflow on the tick after acceptance.

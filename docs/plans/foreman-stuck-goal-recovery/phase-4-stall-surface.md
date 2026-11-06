@@ -23,16 +23,14 @@ the submit route and what it freezes (D3), the drawer (Phase 3).
 
 ## Repository findings and inherited contracts
 
-The chip (`ConsoleDetail.tsx:601-640`) is gated by `sessionCanBindWorkflow(workflowRuns)`, reads
-`view.workflowBindingBySession` and `view.workflowRunsBySession` (lines 206-210), and takes its
-tooltip from `workflowBindChipTitle` (`held.ts:171`, pinned by
-`test/workflow-bind-chip-title.test.ts`); `test/console-detail-header.test.ts` renders the
-header with `mkSessionView`. `Session.goal` carries the revision pair and `relationship`;
-`Session.workCycle` carries `generation`, `active`, `completedAt`; `workflowRunIsOpen` is the
-open-run predicate. `WorkflowBindingDialogHost` (`App.tsx:4612`) does not receive
-`workflowRunsBySession` (`App.tsx:2140`); the dialog fetches bindings, computes `existing`,
-renders notices above the session `dl`, and offers **Submit bound version** when
-`existing.state === "active"`. A band that draws a background carries `.modal-bleed`.
+The chip (`ConsoleDetail.tsx:601-640`) reads `view.workflowBindingBySession` and
+`view.workflowRunsBySession` (lines 206-210) and takes its tooltip from `workflowBindChipTitle`
+(`held.ts:171`, pinned by `test/workflow-bind-chip-title.test.ts`). `Session.goal` carries the
+revision pair and `relationship`; `Session.workCycle` carries `generation`, `active`,
+`completedAt`; `workflowRunIsOpen` is the open-run predicate. `WorkflowBindingDialogHost`
+(`App.tsx:4612`) does not receive `workflowRunsBySession` (`App.tsx:2140`); the dialog computes
+`existing` and offers **Submit bound version** when it is active. A band that draws a background
+carries `.modal-bleed`.
 
 ## Implementation steps
 
@@ -73,7 +71,7 @@ No server or wire change; the predicate reads fields every card already carries.
   and wait for `unclear`; `POST /hooks/Stop` with the harness token (as
   `dispatch-and-converse.spec.ts:709-720` does); assert the stall tooltip; open the dialog,
   assert both buttons and `expectContentClearsBorder`; click **Accept objective as is** and
-  assert the notice and stall state clear. Second case: **Submit bound version** produces a run
+  assert the notice and stall state clear. Second case: **Submit bound version** yields a run
   whose Intent tab shows the `unreconciled` badge. `npm run build`, then run that spec.
 - `npm run typecheck`, `npm run lint`, full `npm run test:e2e` before merge.
 

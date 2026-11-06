@@ -26,8 +26,7 @@ the stall surface (Phase 4), the parse and transport branches, `resolvedSessionI
 at lines 400-430 computes the steer values and `registry.resolveGoal` (`registry.ts:8563`)
 records the steering note. `comparableObjective` (`refiner.ts:205`) has one caller. `RULES` in
 `prompt.ts:35-69` defines `steer` at lines 50-51. `test/goal-refiner.test.ts` drives the real
-loop against a fake `claude` whose modes `shrink` and `negate` return non-preserving amendments.
-`e2e/fixtures/fake-claude.mjs:698-713` answers goal jobs.
+loop against a fake `claude` with mode-selected replies; `fake-claude.mjs:698-713` answers goal jobs.
 
 ## Implementation steps
 
@@ -37,6 +36,10 @@ loop against a fake `claude` whose modes `shrink` and `negate` return non-preser
    `goalLine("Treated as steering: the proposed amendment did not retain the current objective. " + r.value.reason, 480)`.
    Do not return; let the existing path run with that rationale.
 2. `comparableObjective`: drop lines whose trimmed text matches `/^\/\S+$/` before folding.
+   Then, in the resolution path where `objective` is chosen for an accepted `amend`, append to
+   the proposed objective every such path line of the current objective that the proposal omits,
+   in original order, before it is stored. The comparison never edits stored text; the
+   retention step is what keeps the durable contract and the next frozen run contract complete.
 3. `prompt.ts`, under `steer`: when the objective explicitly offers choices, a reply naming one
    of them is steering, not an amendment.
 4. `fake-claude.mjs`: before the `initial` fallback, answer `amend` with a non-prefixed objective
@@ -57,8 +60,12 @@ takes the new branch.
 - `test/goal-refiner.test.ts`: rewrite both fail-closed amendment tests to assert objective,
   text and version unchanged, `resolvedPromptRevision` advanced, `steer`, empty
   `pendingPrompts`, a rationale starting `Treated as steering`, one `console.error`
-  (`t.mock.method`), one spawn; add the attachment-line case (a trailing `/tmp/uploads/shot.png`
-  line, objective repeated without it plus an addition, version advances to 2).
+  (`t.mock.method`), one spawn; add the attachment-line case: the opening prompt ends with a
+  `/tmp/uploads/shot.png` line, a new fake mode answers `amend` with the objective repeated
+  without that line plus `. Also …`; assert the amendment is accepted, `objectiveVersion` is 2,
+  and the stored `objective` carries both the addition and the path line.
+- `test/workflow-run-intent-snapshot.test.ts`: a run frozen after that amendment carries the
+  path line in its `rawGoal` (fixture pattern from the existing steering-freeze test).
 - `test/goal-steering-log.test.ts`: one steering row with the marker rationale.
 - `test/foreman-reads-goal.test.ts` or new `test/goal-prompt.test.ts`: the option-pick sentence.
 - `e2e/specs/goal-amendment-downgrade.spec.ts`: dispatch, send `E2E_AMEND_SHRINK pick option B`,
@@ -75,7 +82,8 @@ All of the above pass; `automatic wrap-up remains paused` remains only in the lo
 ## Downstream handoff
 
 A rejected amendment is a `steer` with a rationale starting `Treated as steering:` and a steering
-row at its revision. Do not change the marker, re-introduce a latch, or widen the normalization.
+row at its revision; an accepted amendment keeps every path line of the objective it extends.
+Do not change the marker, re-introduce a latch, widen the normalization, or drop a retained line.
 
 ## Cross-phase audit record
 

@@ -6,7 +6,8 @@ merge units; each phase file is the implementation guide its task points at.
 ## Incorporated decisions
 
 Requirements, submitted on the 2026-11-05 review: **D1** include the attachment-line
-normalization in the prefix comparison (stored text never changes); **D2** surface the stall on
+normalization in the prefix comparison (the comparison never changes stored text, and an
+accepted amendment keeps every path line); **D2** surface the stall on
 the console bind chip and bind dialog, not the board tile; **D3** keep the `unreconciled` badge
 on manual runs, no snapshot schema change; **D4** put **Accept objective as is** in the Foreman
 drawer and the dialog notice; phased follow-up selected; bundle approved at revision 1, whose
@@ -27,17 +28,13 @@ Verified at `74eaf9434` and against the operator's `harness.db`, read-only.
   daemon-authored injections. The reservation has two call sites, not the one the source plan
   names. Delegated turns use the same route; resident wakes are `resident` injections.
 - `injections.ts` already has the ledger shape; `TurnOrigin` (`types.ts:3560`) has no human
-  value and must not gain one.
-- `upsertSessionGoalWithSteering` (`db.ts:10743`) writes one note at the resolved revision;
-  accepting several pending revisions needs a list writer.
-- `GET /api/sessions/:id/goal` (`routes.ts:6779`) has no POST sibling. The drawer loads intent
-  through `useIntent` (`ConsoleDetail.tsx:150-171`), keyed on `intentRefreshStamp`.
-- The bind chip lives only in `ConsoleDetail.tsx:601-640` with `workflowBindChipTitle`
-  (`held.ts:171`). The bind dialog is mounted by `WorkflowBindingDialogHost` (`App.tsx:4612`),
-  where `workflowRunsBySession` (`App.tsx:2140`) is in scope but not passed.
+  value and must not gain one. `completeWorkCycle` runs on the harness's turn-end signal.
+- `upsertSessionGoalWithSteering` (`db.ts:10743`) writes one note; accepting several pending
+  revisions needs a list writer. `GET /api/sessions/:id/goal` (`routes.ts:6779`) has no POST.
+- The bind chip lives only in `ConsoleDetail.tsx:601-640`; `WorkflowBindingDialogHost`
+  (`App.tsx:4612`) does not receive `workflowRunsBySession` (`App.tsx:2140`).
 - `fake-claude.mjs:698-713` answers goal jobs with `initial`, which the refiner turns into
-  `unclear` for later revisions: the deterministic stalled shape. `dispatch-and-converse.spec.ts:709-720`
-  completes a cycle via `/hooks/Stop`; `overlay-escape-ownership.spec.ts:69` opens the drawer.
+  `unclear` for later revisions: the deterministic stalled shape for the Playwright specs.
 
 ## Sizing estimate
 
@@ -83,6 +80,12 @@ session's pull request merging, which publishes the paths the tasks name.
 ## Cross-phase contracts
 
 - Rationale markers: Phase 1 writes `Treated as steering:`, Phase 3 writes `Accepted by you:`.
+- Phase 1 stores an accepted amendment with every ignored path line retained; Phase 2's echo
+  ledger captures each delivered turn through exactly one door and expires an unconsumed
+  expectation at the next turn end (source plan sections 3.1, 3.2 and 7).
+- Documentation owners: Phase 1 and Phase 2 edit different paragraphs of `docs/sessions.md`;
+  Phase 3 owns `docs/foreman.md`, the Goal section of `docs/sessions.md` and
+  `docs/agent-guides/change-contracts.md`; Phase 4 owns `docs/workflows.md` only.
 - Steering rows carry `relationship: "steer"` at a resolved revision; Phase 3 adds a list writer
   beside the unchanged single-note writer.
 - Phase 3 owns `POST /api/sessions/:id/goal/accept` and `api.acceptGoal`; Phase 4 calls them

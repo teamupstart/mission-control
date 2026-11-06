@@ -1,7 +1,9 @@
 # Foreman stuck-goal recovery: an unresolved intent must never silently stop a bound workflow
 
-Status: revision 2 (2026-11-05), decisions adopted from the first review; see section 10.
-Nothing here is implemented.
+Status: revision 4 (2026-11-05), repaired after Plan Validation round 1: an accepted amendment
+keeps every attachment path line, the echo ledger's capture and expiry rules are defined, and the
+change contract has one owner (Phase 3). Decisions adopted from the first review are in section
+10. Nothing here is implemented.
 
 Source: the investigation report for task `4bda9656` ("Move Advisor Settings to Harness Page",
 session `sdk:3cf99086`, note key `dd55fb3a`, binding `5a6e1be2`). Every claim below was
@@ -154,7 +156,11 @@ Two small companions land in the same change:
   line that is only an absolute filesystem path before folding, on both sides of the comparison.
   The stored objective, the card text and the frozen run contract are untouched: the screenshot
   path is part of what the human asked about and Personas may need it. The downgrade alone
-  prevents the latch; the normalization lets genuine amendments through as amendments.
+  prevents the latch; the normalization lets genuine amendments through as amendments. An
+  accepted amendment can therefore omit a path line the comparison ignored, so before the
+  refiner stores it, every bare absolute-path line of the current objective that the proposal
+  omits is appended to the proposed objective, in its original order. The durable contract and
+  the next frozen run contract keep every path line; the model cannot drop one by leaving it out.
 
 What this gives up: the pause was meant to make a person notice that the objective might need
 to grow. It had no surface and no exit, so in practice it made nobody notice anything. The
@@ -169,20 +175,36 @@ steering" rationale, and the steering note reaches the next workflow run.
 because `TurnOrigin` has no human value and must not get one: the conversation log reads
 `originOf` to label automation, and a human turn must keep reading as the human's.
 
-`src/server/pending-turns.ts`, SDK delivery (around lines 895-953): reserve the echo
-**before** `sdk.send`, confirm it once the driver acknowledges, and release it only on positive
-evidence that nothing was delivered (`accepted === null`, or a throw before the acceptance
-boundary). An uncertain outcome keeps the reservation, the same rule `releaseInjection`
-states. Reserving before the send matters for the same reason the restart continuation reserves
-before its send (`supervisor.ts:1419-1432`): the agent can submit the turn and fire the hook
-before the daemon's send promise resolves.
+Both human send sites expect the echo **before** the driver send: `SdkSupervisor.send` when it
+is handed an accepted goal (the direct `/inject` path through `sdk/deliver.ts:62-67`), and the
+outbox's `deliverSdk` in `src/server/pending-turns.ts` (around lines 895-953). Expecting before
+the send matters for the same reason the restart continuation reserves before its send
+(`supervisor.ts:1419-1432`): the agent can submit the turn and fire the hook before the daemon's
+send promise resolves.
 
-`Registry.captureHookGoalPrompt` claims a human echo after the launch-echo check and before the
-daemon-authorship check. One delivery earns one suppression, so "saying the same thing twice
-still works" (`docs/sessions.md`) holds: the second arrival of the same text with no reservation
-left is the human typing it again. The ledger is in memory, like the authorship ledger; a
-restart between a delivery and its echo lets one duplicate through, and with section 3.1 in
-place a duplicate is harmless.
+An expectation is *open* (sent, not acknowledged), *confirmed* (acknowledged) or *captured*
+(one revision exists for it). Exactly one of the two doors captures each delivered turn,
+whichever arrives first:
+
+- **Echo first.** The hook finds an open expectation, captures the prompt itself and marks the
+  expectation captured. The acknowledgement path then confirms and skips its own capture. If the
+  acknowledgement instead fails, is refused, or stays uncertain, nothing is lost: the hook has
+  already proved the agent received the turn.
+- **Acknowledgement first.** The send path captures as it does today and marks the expectation
+  captured; the later echo finds a captured expectation, consumes it and is dropped.
+- **Refused send, no echo.** The expectation is released; nothing was delivered and nothing is
+  captured.
+- **Uncertain outcome, no echo.** The expectation stays open until it expires.
+- **Expiry.** An expectation nobody consumed expires at the session's next completed turn (the
+  turn-end signal `completeWorkCycle` already observes) or after 120 seconds, whichever comes
+  first, so a stale entry can never suppress a later arrival. A retype of identical text is safe
+  regardless: it is its own send, with its own expectation, captured at its own acknowledgement.
+
+`Registry.captureHookGoalPrompt` consults the ledger after the launch-echo check and before the
+daemon-authorship check. "Saying the same thing twice still works" (`docs/sessions.md`) holds
+because every human SDK turn is captured by its own send. The ledger is in memory, like the
+authorship ledger; a restart between a delivery and its echo lets one duplicate through, and with
+section 3.1 in place a duplicate is harmless.
 
 The launch is already handled by `isSeededLaunchEcho` and the dispatcher's `acceptedGoalPrompt`.
 The phase that builds this verifies whether delegated turns (`session_delegated_turns`) and
@@ -321,10 +343,11 @@ Every agent binary stays faked. No spec or test spends model tokens.
 
 | File | Cases |
 |------|-------|
-| `test/goal-refiner.test.ts` | Rewrite "a schema-valid amendment that drops the current objective fails closed" into "… resolves as steering": objective, text and version unchanged; `resolvedPromptRevision` advances; `relationship === "steer"`; `pendingPrompts` empty; rationale starts with "Treated as steering"; `console.error` called once with the proposed objective head (`t.mock.method(console, "error")`); the fake was asked once. Same reshaping for "cannot preserve by prefix and then retract". New: an amendment that preserves the objective after an attachment line is dropped is accepted and advances the version (D1); a steering note exists for the downgraded revision. |
+| `test/goal-refiner.test.ts` | Rewrite "a schema-valid amendment that drops the current objective fails closed" into "… resolves as steering": objective, text and version unchanged; `resolvedPromptRevision` advances; `relationship === "steer"`; `pendingPrompts` empty; rationale starts with "Treated as steering"; `console.error` called once with the proposed objective head (`t.mock.method(console, "error")`); the fake was asked once. Same reshaping for "cannot preserve by prefix and then retract". New: an amendment that preserves the objective once an attachment line is ignored is accepted and advances the version, and the stored objective still carries that path line (D1); a steering note exists for the downgraded revision. |
+| `test/workflow-run-intent-snapshot.test.ts` (Phase 1 case) | A run frozen after such an amendment carries the path line in `rawGoal`, so the frozen contract retained it too. |
 | `test/foreman-reads-goal.test.ts` or a new `test/goal-prompt.test.ts` | The rendered goal prompt carries the option-pick rule. |
 | `test/goal-steering-log.test.ts` | A downgraded amendment appends exactly one steering row, with the marker rationale, and a later run reads it. |
-| `test/pending-turn-manager.test.ts` | An SDK follow-up echoed by a `UserPromptSubmit` carrying the same text opens one revision, whether the echo arrives before or after the acknowledgement; a refused send releases the reservation so a later typed copy is captured; a second echo with no reservation left is captured as a retype. |
+| `test/pending-turn-manager.test.ts` | An SDK follow-up echoed by a `UserPromptSubmit` carrying the same text opens one revision whether the echo arrives before or after the acknowledgement; an early echo followed by a refused or an uncertain acknowledgement still yields exactly one revision; a refused send with no echo captures nothing and releases the expectation; a successful send with no echo followed by an identical retype yields one revision per send; an expectation expires at the next turn end and cannot suppress a later arrival. |
 | `test/session-goals.test.ts` | `acceptGoalObjective`: pending revisions become steering rows in order; `(not captured)` for a null legacy prompt; objective, version, source and opening prompt untouched; idempotent; an `unclear` goal with nothing pending records its latest prompt. |
 | `test/workflow-bindings-http.test.ts` or a sibling HTTP test | `POST /api/sessions/:id/goal/accept`: 404, 409, 200, idempotent 200; a `session_upsert` reaches an SSE subscriber with the resolved summary. |
 | `test/prompted-wrapup.test.ts` | An accepted goal is a resolved intent whose episode key is `intent:<version>:<revision>`; the step-8 skip cases are unchanged. |
@@ -367,12 +390,15 @@ Selectors use roles, labels and placeholders. No `data-testid`.
 2. The human route never changes `objective`, `objectiveVersion`, `source` or `openingPrompt`.
    It confirms the existing contract and records the pending instructions as steering.
 3. The prefix check stays mechanical. The normalization in D1 is applied identically to both
-   sides and only removes lines that are bare absolute paths.
+   sides and only removes lines that are bare absolute paths, and an accepted amendment never
+   drops one: every ignored path line the proposal omits is appended to the stored objective.
 4. `resolvedSessionIntent`, `sessionIntentMatches`, the claim guard in `claimCompletion` and the
    frozen run contract are unchanged.
 5. The refiner's compare-and-set (`refiner.ts:371-376`) still abandons a verdict whose head or
    objective moved, including when a person accepted the objective mid-flight.
-6. The echo ledger suppresses at most one arrival per delivery, so a retype is still captured.
+6. The echo ledger never loses a human turn: exactly one of the two doors captures each
+   delivered turn, an unconsumed expectation expires at the next turn end, and a retype is its
+   own send with its own capture.
 
 Each line is pinned by a test in section 5.
 
@@ -389,8 +415,8 @@ rows on this machine all carry the amend-rejection rationale.
 |-------|-------|-------|------------|
 | P1 | Refiner downgrade, log line, prompt rule, D1 normalization, `docs/sessions.md` | server, node:test | none |
 | P2 | Expected-echo ledger, outbox reservation, hook claim, `docs/sessions.md` | server, node:test | none |
-| P3 | Accept route and registry method, drawer control, Goal line copy, `docs/foreman.md` | server + UI, node:test + e2e | none |
-| P4 | Stall predicate, chip state, bind dialog notice, `docs/workflows.md`, change contract | UI, node:test + e2e | P3 (the notice calls its route) |
+| P3 | Accept route and registry method, drawer control, Goal line copy, `docs/foreman.md`, `docs/sessions.md`, the change contract | server + UI, node:test + e2e | none |
+| P4 | Stall predicate, chip state, bind dialog notice, `docs/workflows.md` | UI, node:test + e2e | P3 (the notice calls its route) |
 
 P1, P2 and P3 can land in any order. Every UI phase carries its Playwright spec and uses Claude
 Opus 5.5 or higher when scheduled.
@@ -398,7 +424,8 @@ Opus 5.5 or higher when scheduled.
 ## 10. Adopted decisions (2026-11-05 review)
 
 - **D1 Attachment normalization in the prefix comparison: include.** `comparableObjective`
-  ignores bare absolute-path lines on both sides; stored text is never changed.
+  ignores bare absolute-path lines on both sides; the comparison never changes stored text, and
+  an accepted amendment keeps every path line the proposal omitted (round 1 repair).
 - **D2 Stall surface scope: console bind chip plus bind dialog notice.** The board card tile is
   not flagged.
 - **D3 Unreconciled instructions on a manual run: keep the existing `unreconciled` badge and rely

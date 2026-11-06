@@ -542,8 +542,11 @@ dispatch was not attempted. A launch refusal after a successful save is reported
 
 A same-repository task dependency can **stack**: the dependent starts as soon as its
 prerequisite has an open, non-draft pull request and its agent has finished the episode,
-instead of waiting for the merge. Each same-repository task chip carries a **Stack** /
-**After merge** toggle. Until you pick one it shows the mode it inherits, marked *default*,
+instead of waiting for the merge. The chip of a same-repository task dependency that has not
+merged yet carries a **Stack** / **After merge** toggle. A prerequisite that has already merged
+(its task is finished, or its pull request merged) has nothing left to stack on, so its chip
+has no toggle, and neither does a dependency on a session with no task or on a task in
+another repository. Until you pick one the toggle shows the mode it inherits, marked *default*,
 from **Settings → Shipping → Stacked pull requests** (which ships as *Wait for merge*).
 Changing the setting later moves every chip you never set.
 

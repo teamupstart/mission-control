@@ -2000,7 +2000,7 @@ export type TaskPriority = "low" | "med" | "high" | "blocker";
  */
 export type TaskDependency =
   | (PlanIdentity & { type: "plan"; title: string; selectedAt: number | null; satisfiedAt: number | null; sessionId: null; episodeId: null; agentSessionId: null; branch: null; prUrl: null })
-  | {
+  | ({
       type: "task";
       taskId: string;
       title: string;
@@ -2011,8 +2011,8 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    }
-  | {
+    } & StackEdgeFields)
+  | ({
       type: "session";
       sessionId: string;
       title: string;
@@ -2022,7 +2022,30 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    };
+    } & StackEdgeFields);
+
+/**
+ * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
+ * edge stored before stacking existed parses unchanged and means "inherit, unstamped".
+ *
+ * `mode` is the operator's override; absent inherits the Shipping default when it is read
+ * (`effectiveEdgeMode`). The four `stack*` fields are the daemon's READINESS STAMP: written
+ * only when the prerequisite's current episode has an open, non-draft pull request in its
+ * primary repository and its agent finished the episode, and cleared when that stops being
+ * true before the dependent starts. Only a recorded `stackReadyAt` timestamp releases an edge
+ * to start, and `satisfiedAt` keeps meaning "the prerequisite merged" - stacking never
+ * touches it.
+ */
+export interface StackEdgeFields {
+  mode?: "merge" | "stack";
+  stackReadyAt?: number | null;
+  /** The prerequisite pull request's head branch when the stamp was written. */
+  stackBaseBranch?: string | null;
+  /** Its head commit when the stamp was written. Dispatch reads the branch afresh. */
+  stackBaseSha?: string | null;
+  /** The prerequisite's primary-repository pull request the stamp was read from. */
+  stackPrUrl?: string | null;
+}
 
 /**
  * One SECONDARY repository attached to a multi-repo task.
@@ -2263,6 +2286,21 @@ export interface Task {
    * too: it costs one column write and keeps one code path.
    */
   baseSha: string | null;
+  /**
+   * Stacked pull requests: what this task's CURRENT work episode was cut on, written at every
+   * dispatch. A stacked dispatch records the prerequisite task, its pull request's head
+   * branch and URL, and the exact parent commit the primary repository was pinned to (the same
+   * value as `baseSha`). An unstacked dispatch writes null to all four, so a rescheduled task's
+   * new episode records its own parent or none. Primary repository only: secondary
+   * repositories are always cut from their default branch.
+   *
+   * Optional on read for rows and fixtures from before the columns existed; absent and null
+   * both mean "not stacked".
+   */
+  stackParentTaskId?: string | null;
+  stackBaseBranch?: string | null;
+  stackBaseSha?: string | null;
+  stackPrUrl?: string | null;
   /**
    * Secondary repositories attached to this task, in `position` order. Empty for the
    * single-repo tasks that are nearly all of them.
@@ -2851,8 +2889,56 @@ export interface InspectorPr {
    * `headRefName` rather than treating null as an empty title.
    */
   title: string | null;
+  /** The branch the pull request targets, as of the last poll. Null until polled. */
+  baseRefName?: string | null;
+  /**
+   * The base the review recorded in `headSha` was made against. A base that changed under
+   * an unchanged head is a different diff, so the review no longer counts. Null on rows
+   * reviewed before this was recorded, which count only while the base is the default
+   * branch.
+   */
+  reviewedBaseRef?: string | null;
+  /** The merge commit GitHub reported once this pull request merged. */
+  mergeCommitSha?: string | null;
+  /** Stack lineage. See `StackLineage`. Absent or null `stackParentPrUrl` = no lineage. */
+  stack?: StackLineage | null;
   adoptedAt: number;
   updatedAt: number;
+}
+
+/**
+ * The stack lineage of one pull request row, written once when the row is adopted for a
+ * stacked task's primary repository.
+ *
+ * It outlives the session, a restart and the Shipping setting: switching stacking off decides
+ * whether a dependent STARTS early, never what an already-stacked pull request is built on.
+ * The first child pull request of a work episode is seeded from the task's dispatch; every
+ * later one in the same task, repository and episode copies the most recently adopted
+ * previous row's lineage unchanged.
+ */
+export interface StackLineage {
+  /** The stacked task this pull request belongs to. */
+  taskId: string;
+  /** The task's work episode when the row was adopted. Inheritance never crosses it. */
+  episode: string | null;
+  /** When the row was adopted. "Most recently adopted" is the highest value. */
+  adoptedAt: number;
+  /** The CURRENT parent pull request. */
+  parentPrUrl: string;
+  /** The parent commit the child was cut at. Never changes. */
+  baseSha: string | null;
+  /** The child head the release check passed for. Null or another head means held. */
+  releasedHeadSha: string | null;
+  /** Each change of the current parent. Empty until a replacement parent takes over. */
+  history: StackLineageChange[];
+  /** One line about the last base correction, for the merge queue. */
+  note: string | null;
+}
+
+export interface StackLineageChange {
+  from: string;
+  to: string;
+  at: number;
 }
 
 /**
@@ -3042,8 +3128,14 @@ export interface LlmStatus {
 export interface SettingsStatus {
   /** The Inspector's two switches the dots care about; its allowlist is not a dot fact. */
   inspector: { enabled: boolean; mode: "dry-run" | "live" };
-  /** YOLO mode's master switch. Armed is an amber dot; the soak/method are not dot facts. */
-  shipping: { autoMerge: boolean };
+  /**
+   * YOLO mode's master switch (armed is an amber dot; the soak/method are not dot facts), and
+   * the EFFECTIVE Stacked pull requests default - the stored choice or the shipped default -
+   * which a dependency chip shows as the mode an edge inherits until the operator sets one.
+   * Optional so a snapshot from a daemon that predates stacking still parses; a reader then
+   * falls back to `STACKING_SHIPPED_DEFAULT`.
+   */
+  shipping: { autoMerge: boolean; stacking?: "merge" | "stack" };
   /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
   taskSources: { failing: number };
   /**

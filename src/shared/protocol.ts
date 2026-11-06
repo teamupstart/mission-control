@@ -967,9 +967,17 @@ const TASK_TRIAGE_FIELDS = {
 };
 
 /** A dependency target selected from the backlog or the live-session list. */
+/**
+ * How a same-repository dependency releases its dependent: after its pull request merges, or
+ * as soon as it has an open one (stacked). Absent means "inherit the Shipping default at
+ * evaluation time" (`effectiveEdgeMode` in `@shared/stacking.ts`), so an edge stored before
+ * this field existed follows whatever the operator sets later.
+ */
+export const DependencyModeSchema = z.enum(["merge", "stack"]);
+
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
-  z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal("task"), taskId: z.string().min(1), mode: DependencyModeSchema.optional() }),
+  z.object({ type: z.literal("session"), sessionId: z.string().min(1), mode: DependencyModeSchema.optional() }),
   PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
@@ -2551,6 +2559,24 @@ export const ShippingConfigSchema = z.object({
    * this is a switch and not a hard-coded answer.
    */
   closeSessionAfterMerge: z.boolean().default(false),
+  /**
+   * Stacked pull requests: whether a same-repository dependency without its own `mode` lets
+   * its dependent start on the prerequisite's open pull request (`stack`) or waits for it to
+   * merge (`merge`).
+   *
+   * Optional with NO default, and that is the contract rather than an omission. Absent means
+   * "the shipped default" (`effectiveStacking` / `STACKING_SHIPPED_DEFAULT` in
+   * `@shared/stacking.ts`), so an install that never chose follows that constant when a later
+   * release changes it. A Zod default here would write the current value into every saved
+   * blob and pin every install to it. Only an explicit operator choice writes this key.
+   */
+  stacking: DependencyModeSchema.optional(),
+  /**
+   * The deepest a stack may grow: how many unmerged stacked pull requests may sit above one
+   * that targets the default branch. A dependent whose parent is already this deep waits for
+   * the bottom of its stack to merge.
+   */
+  maxStackDepth: z.number().int().min(1).max(5).default(3),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 

@@ -192,6 +192,9 @@ import {
   type PendingTurnResetBoundary,
 } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
+import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
+import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -692,6 +695,21 @@ const DISABLED_REFUSAL =
   "task is disabled - Foreman will not schedule it (launch it yourself to override)";
 
 /** True when this call must be refused because the task is parked and nobody claimed an override. */
+/**
+ * Give a resolved edge the operator's stack/after-merge choice. An absent `mode` means
+ * inherit the Shipping default, so it is removed rather than stored. Changing the mode drops
+ * the readiness stamp: a stamp records a decision made under the old mode, and the daemon
+ * re-derives it on its next pass.
+ */
+function withEdgeMode<T extends Exclude<TaskDependency, { type: "plan" }>>(
+  edge: T,
+  mode: "merge" | "stack" | undefined,
+): T {
+  if ((edge.mode ?? undefined) === mode) return edge;
+  const { mode: _previous, ...rest } = withoutStackStamp(edge);
+  return { ...rest, ...(mode ? { mode } : {}) } as T;
+}
+
 function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): boolean {
   // Scoped to `backlog`: `enabled` gates SCHEDULING, and the retry path for a cleanly
   // failed task is not scheduling - that task already ran.
@@ -972,6 +990,13 @@ export class TaskManager {
    * behaviour: nothing is owed and nothing is written.
    */
   private writeback?: WritebackEnqueuer;
+  /**
+   * Stacked pull requests: the readiness stamp on dependency edges and the revalidation a
+   * stacked dispatch runs before it pins its prerequisite's head. See `stacking/readiness.ts`.
+   * Its GitHub and git seam is replaceable for tests through `useStackGitHub`.
+   */
+  private stackReadiness: StackReadiness;
+  private readonly stackDispatching = new Set<string>();
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -1002,6 +1027,7 @@ export class TaskManager {
   ) {
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
+    this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
@@ -1083,7 +1109,13 @@ export class TaskManager {
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
+    // Stack readiness follows the same two signals every other "has the prerequisite
+    // finished" question here does: a session changing state, and a task (a dependent or its
+    // prerequisite) being edited. One coalesced pass per burst.
     this.subscriptions.push(registry.subscribe((e) => {
+      if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
+        this.stackReadiness.schedule();
+      }
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1745,6 +1777,7 @@ export class TaskManager {
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     this.stopMissionSessionClosures();
+    this.stackReadiness.stop();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
     this.stopping = this.settleWorktreeReturns();
     return this.stopping;
@@ -2551,6 +2584,20 @@ export class TaskManager {
     return getDurableTask(id);
   }
 
+  /**
+   * Re-derive every stack readiness stamp now. The Shipping config route calls this after a
+   * save, so a dependent that would now wait for merge stops reading as ready at once.
+   */
+  reconcileStackReadiness(): void {
+    this.stackReadiness.reconcile();
+  }
+
+  /** Replace the GitHub and git seam stacking reads through. For tests. */
+  useStackGitHub(github: StackGitHub): void {
+    this.stackReadiness.stop();
+    this.stackReadiness = new StackReadiness(this.registry, getShippingConfig, github);
+  }
+
   /** Explicit blockers are enforced on every path that can start a task. */
   dependencyBlockers(task: Task): BacklogBlocker[] {
     const declared = declaredBlockers(task, this.registry.listTasks());
@@ -2611,7 +2658,7 @@ export class TaskManager {
       } else if (input.type === "session") {
         const kept = existing.get(`session:${input.sessionId}`);
         if (kept?.type === "session") {
-          dependency = kept;
+          dependency = withEdgeMode(kept, input.mode);
           const key = `session:${dependency.sessionId}`;
           if (!seen.has(key)) resolved.push(dependency);
           seen.add(key);
@@ -2716,6 +2763,7 @@ export class TaskManager {
         }
       }
 
+      if (input.type !== "plan" && dependency.type !== "plan") dependency = withEdgeMode(dependency, input.mode);
       const key = dependencyInputKey(dependency);
       if (dependency.type === "task" && dependency.taskId === taskId) {
         throw new TaskDependencyError("a task cannot depend on itself");
@@ -3261,6 +3309,41 @@ export class TaskManager {
       // through here. Null for every other kind, so nothing else changes.
       const planBlock = planDispatchBlock(t);
       if (planBlock) return { ok: false, error: planBlock, task: t };
+      // Stacked pull requests. A task whose start rests on a readiness stamp is revalidated
+      // and pinned to its prerequisite's current head here; every other dispatch records that
+      // it is NOT stacked, so a rescheduled task's new episode never inherits an earlier
+      // episode's parent. The revalidation awaits GitHub, so a second dispatch of the same
+      // task arriving meanwhile is refused rather than racing it.
+      if (this.stackDispatching.has(id)) {
+        return { ok: false, error: "task is already being dispatched", task: t };
+      }
+      this.stackDispatching.add(id);
+      let launch: DispatchOptions = options;
+      try {
+        const stacked = await this.stackReadiness.planStackedDispatch(t);
+        if (stacked && !stacked.ok) {
+          return { ok: false, error: stacked.error, task: this.registry.getTask(id) ?? t };
+        }
+        if (stacked?.ok && options.baseSha) {
+          return { ok: false, error: "a stacked task starts from its prerequisite's head and cannot take another pinned base", task: t };
+        }
+        const current = this.registry.getTask(id);
+        if (!current || current.status !== t.status || this.dependencyBlockers(current).length > 0) {
+          return { ok: false, error: "task changed while it was being dispatched", task: current ?? t };
+        }
+        const fields = stacked?.ok ? stacked.fields : UNSTACKED;
+        if (
+          (current.stackParentTaskId ?? null) !== fields.stackParentTaskId ||
+          (current.stackBaseBranch ?? null) !== fields.stackBaseBranch ||
+          (current.stackBaseSha ?? null) !== fields.stackBaseSha ||
+          (current.stackPrUrl ?? null) !== fields.stackPrUrl
+        ) {
+          this.registry.upsertTask({ ...current, ...fields, updatedAt: Date.now() });
+        }
+        if (stacked?.ok) launch = { ...options, baseSha: stacked.baseSha };
+      } finally {
+        this.stackDispatching.delete(id);
+      }
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
       // the layer that acts on it - including `defaultModel`, which it ranks between the
       // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
@@ -3272,7 +3355,7 @@ export class TaskManager {
       // again. The launch-only value now travels with the launch, and an unpinned task stays
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
-      void this.dispatcher.dispatch(id, options);
+      void this.dispatcher.dispatch(id, launch);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
   }
@@ -4229,6 +4312,16 @@ export class TaskManager {
       return {
         ok: false,
         error: `task is waiting on ${dependencyBlockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
+    }
+    // A task starting on its prerequisite's open pull request has to be CUT from that
+    // pull request's head, which only a fresh worktree can be. An existing session is
+    // standing on whatever it last checked out. Dispatch it instead.
+    if (stackStartEdge(t, new Map(this.registry.listTasks().map((task) => [task.id, task])))) {
+      return {
+        ok: false,
+        error: `${t.title} is stacked on its prerequisite's pull request, so it has to be dispatched into a fresh worktree cut from it`,
         scope: "task",
       };
     }

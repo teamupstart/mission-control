@@ -84,6 +84,8 @@ export interface PrHandoffInput {
    * a session running two reviews must be told which repository's.
    */
   repoRoot: string | null;
+  /** Stacked pull requests: the base this pull request belongs on, or null when not stacked. */
+  stackInstruction?: string | null;
 }
 
 /**
@@ -145,6 +147,12 @@ export interface SessionActionPacketInput {
   pullRequestCi?: boolean;
   /** PR completion or a required Pull Request skill, including older published actions. */
   pullRequestPolicy?: boolean;
+  /**
+   * Stacked pull requests: the base the session's pull request belongs on, computed when the
+   * packet is prepared. Rendered only beside the pull-request policy, and only when non-null,
+   * so every unstacked packet is byte-identical to what it was.
+   */
+  stackInstruction?: string | null;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -772,7 +780,9 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
   const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
     ? ["", workflowPullRequestCiContract(), ""]
     : [];
-  const prPolicy = input.pullRequestPolicy ? ["", pullRequestPolicyContract(), ""] : [];
+  const prPolicy = input.pullRequestPolicy
+    ? ["", pullRequestPolicyContract(), ...(input.stackInstruction ? ["", sanitizeWorkflowFeedback(input.stackInstruction)] : []), ""]
+    : [];
   const payload = `${[...lines, authorization, ...ciPolicy, ...prPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
@@ -807,6 +817,7 @@ export function renderPrHandoff(input: PrHandoffInput): RenderedWorkflowFeedback
     "",
     pullRequestPolicyContract(),
     "",
+    ...(input.stackInstruction ? [bounded(input.stackInstruction), ""] : []),
     "Original user goal:",
     bounded(input.originalGoal),
     "",

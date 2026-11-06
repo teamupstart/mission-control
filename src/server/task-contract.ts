@@ -62,6 +62,12 @@ export interface TaskContractInputs {
   /** The server resolved a Persona node in the selected immutable workflow graph. */
   workflowEvidence?: boolean;
   planDiscovery?: string;
+  /**
+   * Stacked pull requests: which base the task's pull request belongs on, computed by the
+   * caller when the text is composed (`stackPrInstruction`). Null for every task that was
+   * not cut on a parent.
+   */
+  stackInstruction?: string | null;
 }
 
 /**
@@ -153,6 +159,7 @@ export function withTaskKindContract(
     }) : null,
     inputs.planDiscovery ?? null,
     KIND_CONTRACT[task.kind](task, inputs),
+    inputs.stackInstruction ?? null,
     // Whether a Persona will read evidence is the workflow's property, resolved once by the
     // eligibility reader this flag arrives from - so it is not re-decided per kind here. A
     // scout dispatched with a Persona workflow gets its report contract AND this one, in that

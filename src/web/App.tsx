@@ -4502,6 +4502,7 @@ export function App(): React.JSX.Element {
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 harnessesRevision={harnessesRevision}
+                stackingDefault={settingsStatus?.shipping.stacking}
                 pipelinesRevision={
                   settingsStatus?.pipelines.observedRepoKeys
                     ? JSON.stringify({

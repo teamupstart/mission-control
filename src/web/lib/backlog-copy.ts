@@ -3,6 +3,7 @@ import { missingTaskRepoRoots } from "@shared/allowlist.ts";
 import { allowsBacklogAutopilot, PRIORITY_LABELS, priorityRank } from "@shared/task.ts";
 import type { ForemanStatus, Task } from "@shared/types.ts";
 import { relativeTime, repoLeaf } from "./format.ts";
+import { stackCandidate, stackPrNumber, stackStartEdge } from "@shared/stacking.ts";
 
 /**
  * How a blocked backlog item's state is SAID, in one place.
@@ -36,6 +37,37 @@ export function blockedLabel(blockers: BacklogBlocker[]): string {
   if (off.length > 0) return `${off[0]!.title} is disabled`;
   if (blockers.length === 1) return `after ${blockers[0]!.title}`;
   return `after ${blockers[0]!.title} +${blockers.length - 1}`;
+}
+
+/**
+ * "Stacked on #N" for a backlog item the daemon released to start on its prerequisite's open
+ * pull request, or null. The same `stackStartEdge` the blocker predicate reads, so the card
+ * says "stacked" exactly when its blocker chip for that prerequisite has gone.
+ */
+export function stackedStartLabel(task: Task, byId: ReadonlyMap<string, Task>): string | null {
+  if (task.status !== "backlog") return null;
+  const edge = stackStartEdge(task, byId);
+  if (!edge) return null;
+  const number = stackPrNumber(edge.stackPrUrl);
+  return number === null ? `Stacked on ${edge.title}` : `Stacked on #${number}`;
+}
+
+/**
+ * Why an item whose dependency the operator set to Stack is still waiting, in place of the
+ * plain "after X" - or null when no such edge exists. Read for an explicit Stack choice only:
+ * the board does not hold the Shipping default, and an inherited edge reads "after X" until
+ * the daemon releases it, which is true either way.
+ */
+export function stackWaitLabel(task: Task, byId: ReadonlyMap<string, Task>): string | null {
+  if (task.status !== "backlog") return null;
+  const wantsStack = task.dependencies.some(
+    (edge) => edge.type === "task" && edge.satisfiedAt === null && edge.mode === "stack",
+  );
+  if (!wantsStack || stackStartEdge(task, byId)) return null;
+  const candidate = stackCandidate(task, byId);
+  if (!candidate.ok) return `can't stack yet - ${candidate.reason}`;
+  if (candidate.edge.mode !== "stack") return null;
+  return `stacks on ${candidate.parent.title} once its pull request is open and its agent is done`;
 }
 
 /**

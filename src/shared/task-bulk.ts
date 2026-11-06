@@ -10,9 +10,12 @@ export function dependencyInputKey(dependency: TaskDependencyInput): string {
 /** A stored edge as the input that names it, which is what an update body carries. */
 export function dependencyInputOf(dependency: TaskDependency): TaskDependencyInput {
   if (dependency.type === "plan") return { type: "plan", repoKey: dependency.repoKey, planId: dependency.planId, revision: dependency.revision };
+  // The operator's stack/after-merge override travels with the edge, so an edit that only
+  // touches another field does not silently reset it to the inherited default.
+  const mode = dependency.mode ? { mode: dependency.mode } : {};
   return dependency.type === "task"
-    ? { type: "task", taskId: dependency.taskId }
-    : { type: "session", sessionId: dependency.sessionId };
+    ? { type: "task", taskId: dependency.taskId, ...mode }
+    : { type: "session", sessionId: dependency.sessionId, ...mode };
 }
 
 /** Labels compare case-insensitively everywhere else (`normalizeLabels`), so here too. */

@@ -89,6 +89,8 @@ import type {
   TaskPriority,
   TaskResidentRestart,
   TaskRepoEntry,
+  StackEdgeFields,
+  StackLineage,
   TaskStatus,
   TrackedGap,
   WorkItem,
@@ -412,6 +414,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- that iterates task_repos alone therefore cannot see the primary and must read this.
       -- Nullable: every task dispatched before this column existed genuinely has no baseline.
       base_sha      TEXT,
+      -- Stacked pull requests: what the CURRENT episode's primary repository was cut on.
+      -- Written at every dispatch (NULL for an unstacked one). See Task.stackParentTaskId.
+      stack_parent_task_id TEXT,
+      stack_base_branch    TEXT,
+      stack_base_sha       TEXT,
+      stack_pr_url         TEXT,
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
@@ -2057,6 +2065,19 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
       title              TEXT,           -- as of the last poll; NULL until one happens
+      base_ref_name      TEXT,           -- the branch the PR targets, as of the last poll
+      reviewed_base_ref  TEXT,           -- the base head_sha's review was made against
+      merge_commit_sha   TEXT,           -- GitHub's merge commit once it merged
+      -- Stack lineage (Stacked pull requests). Written once at adoption for a stacked
+      -- task's primary repository; stack_parent_pr_url NULL = no lineage. See StackLineage.
+      stack_task_id      TEXT,
+      stack_episode      TEXT,
+      stack_adopted_at   INTEGER,
+      stack_parent_pr_url TEXT,
+      stack_base_sha     TEXT,
+      stack_released_head_sha TEXT,
+      stack_lineage_history TEXT,
+      stack_note         TEXT,
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -4151,6 +4172,13 @@ function migrate(d: DatabaseSync): void {
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  // Stacked pull requests. Nullable with no default: an existing row was never stacked, and
+  // NULL is exactly that reading. Every dispatch writes all four, so a rescheduled task's next
+  // episode records its own parent or none.
+  addColumn(d, "tasks", "stack_parent_task_id", "TEXT");
+  addColumn(d, "tasks", "stack_base_branch", "TEXT");
+  addColumn(d, "tasks", "stack_base_sha", "TEXT");
+  addColumn(d, "tasks", "stack_pr_url", "TEXT");
   // A dispatch that failed before its session started. NULL on an upgraded row is the honest
   // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
   // every historical failed task as a fresh "did not start" would bury the board.
@@ -4241,6 +4269,20 @@ function migrate(d: DatabaseSync): void {
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
   addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
+  // Stacked pull requests. All nullable with no default. A row written before these existed
+  // has no recorded base (its review counts only while the base is the default branch), no
+  // merge commit, and no stack lineage - so neither stacking gate ever evaluates it.
+  addColumn(d, "inspector_prs", "base_ref_name", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_ref", "TEXT");
+  addColumn(d, "inspector_prs", "merge_commit_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_task_id", "TEXT");
+  addColumn(d, "inspector_prs", "stack_episode", "TEXT");
+  addColumn(d, "inspector_prs", "stack_adopted_at", "INTEGER");
+  addColumn(d, "inspector_prs", "stack_parent_pr_url", "TEXT");
+  addColumn(d, "inspector_prs", "stack_base_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_lineage_history", "TEXT");
+  addColumn(d, "inspector_prs", "stack_note", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -5580,6 +5622,10 @@ interface TaskRow {
   provider: string | null;
   worktree_lease_id: string | null;
   base_sha: string | null;
+  stack_parent_task_id?: string | null;
+  stack_base_branch?: string | null;
+  stack_base_sha?: string | null;
+  stack_pr_url?: string | null;
   home_name: string | null;
   home_backend: string | null;
   terminal_resource_id: string | null;
@@ -5763,6 +5809,31 @@ function parseLabels(raw: string | null): string[] {
   }
 }
 
+/**
+ * The stacked-pull-request fields of one stored edge. Every one is optional: an edge written
+ * before stacking existed has none, and reads as "inherit, unstamped" - the fields absent,
+ * the same shape as an edge created in memory. An unknown `mode` is dropped to "inherit"
+ * rather than failing the whole row.
+ */
+function parseStackEdgeFields(row: Record<string, unknown>): StackEdgeFields {
+  const out: StackEdgeFields = {};
+  if (row.mode === "merge" || row.mode === "stack") out.mode = row.mode;
+  // A stamp is all four facts or none: half a stamp could not have been written by the
+  // daemon, and reading it as stamped would release a dependent on a guess.
+  if (
+    typeof row.stackReadyAt === "number" &&
+    typeof row.stackBaseBranch === "string" && row.stackBaseBranch &&
+    typeof row.stackBaseSha === "string" && row.stackBaseSha &&
+    typeof row.stackPrUrl === "string" && row.stackPrUrl
+  ) {
+    out.stackReadyAt = row.stackReadyAt;
+    out.stackBaseBranch = row.stackBaseBranch;
+    out.stackBaseSha = row.stackBaseSha;
+    out.stackPrUrl = row.stackPrUrl;
+  }
+  return out;
+}
+
 /** Read dependency JSON defensively: one stale row must not take down the backlog. */
 function parseTaskDependencies(raw: string | null): Task["dependencies"] {
   if (!raw) return [];
@@ -5776,6 +5847,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
       const row = value as Record<string, unknown>;
       const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
       const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
+      const stack = parseStackEdgeFields(row);
       if (row.type === "plan") {
         const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
         out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
@@ -5796,6 +5868,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -5816,6 +5889,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -5930,6 +6004,10 @@ function rowToTask(
     provider: r.provider as WorktreeProvider | null,
     worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
+    stackParentTaskId: r.stack_parent_task_id ?? null,
+    stackBaseBranch: r.stack_base_branch ?? null,
+    stackBaseSha: r.stack_base_sha ?? null,
+    stackPrUrl: r.stack_pr_url ?? null,
     extraRepos,
     homeName: r.home_name,
     homeBackend: r.home_backend,
@@ -5987,12 +6065,12 @@ export function upsertTask(t: Task): string[] {
          workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
-         base_sha,
+         base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -6012,6 +6090,9 @@ export function upsertTask(t: Task): string[] {
          worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
          base_sha=excluded.base_sha, home_name=excluded.home_name,
+         stack_parent_task_id=excluded.stack_parent_task_id,
+         stack_base_branch=excluded.stack_base_branch,
+         stack_base_sha=excluded.stack_base_sha, stack_pr_url=excluded.stack_pr_url,
          home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          terminal_launch=excluded.terminal_launch,
@@ -6043,6 +6124,7 @@ export function upsertTask(t: Task): string[] {
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
+      t.stackParentTaskId ?? null, t.stackBaseBranch ?? null, t.stackBaseSha ?? null, t.stackPrUrl ?? null,
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
@@ -13979,8 +14061,50 @@ interface InspectorPrRow {
   observed_at: number | null;
   head_ref_name: string | null;
   title: string | null;
+  base_ref_name?: string | null;
+  reviewed_base_ref?: string | null;
+  merge_commit_sha?: string | null;
+  stack_task_id?: string | null;
+  stack_episode?: string | null;
+  stack_adopted_at?: number | null;
+  stack_parent_pr_url?: string | null;
+  stack_base_sha?: string | null;
+  stack_released_head_sha?: string | null;
+  stack_lineage_history?: string | null;
+  stack_note?: string | null;
   adopted_at: number;
   updated_at: number;
+}
+
+/** A lineage history blob read defensively: a malformed one reads as empty, never throws. */
+function parseLineageHistory(raw: string | null | undefined): StackLineage["history"] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const row = entry as Record<string, unknown> | null;
+      return row && typeof row.from === "string" && typeof row.to === "string" && typeof row.at === "number"
+        ? [{ from: row.from, to: row.to, at: row.at }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function rowToStackLineage(r: InspectorPrRow): StackLineage | null {
+  if (!r.stack_parent_pr_url || !r.stack_task_id) return null;
+  return {
+    taskId: r.stack_task_id,
+    episode: r.stack_episode ?? null,
+    adoptedAt: r.stack_adopted_at ?? r.adopted_at,
+    parentPrUrl: r.stack_parent_pr_url,
+    baseSha: r.stack_base_sha ?? null,
+    releasedHeadSha: r.stack_released_head_sha ?? null,
+    history: parseLineageHistory(r.stack_lineage_history),
+    note: r.stack_note ?? null,
+  };
 }
 
 function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
@@ -14013,6 +14137,10 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     observedAt: r.observed_at,
     headRefName: r.head_ref_name,
     title: r.title,
+    baseRefName: r.base_ref_name ?? null,
+    reviewedBaseRef: r.reviewed_base_ref ?? null,
+    mergeCommitSha: r.merge_commit_sha ?? null,
+    stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -14107,6 +14235,10 @@ export function updateInspectorPr(
     headRefName?: string | null;
     /** Re-recorded every tick, so a retitled pull request stops being stale. */
     title?: string | null;
+    baseRefName?: string | null;
+    /** Written beside `headSha` by a completed review. */
+    reviewedBaseRef?: string | null;
+    mergeCommitSha?: string | null;
   },
   now: number,
 ): void {
@@ -14122,7 +14254,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
-              title = ?,
+              title = ?, base_ref_name = ?, reviewed_base_ref = ?, merge_commit_sha = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -14146,9 +14278,95 @@ export function updateInspectorPr(
       next.observedAt,
       next.headRefName,
       next.title,
+      next.baseRefName ?? null,
+      next.reviewedBaseRef ?? null,
+      next.mergeCommitSha ?? null,
       now,
       key,
     );
+}
+
+/**
+ * Write a pull request row's stack lineage, once.
+ *
+ * Guarded in SQL on the lineage still being absent, so a repeated adoption signal, a restart
+ * or a second writer can never rewrite what the row is built on. The current parent changes
+ * only through the replacement-parent transition, which is not this function.
+ */
+export function recordInspectorPrLineage(key: string, lineage: Omit<StackLineage, "releasedHeadSha" | "note">): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET stack_task_id = ?, stack_episode = ?, stack_adopted_at = ?,
+              stack_parent_pr_url = ?, stack_base_sha = ?, stack_lineage_history = ?,
+              stack_released_head_sha = NULL
+        WHERE key = ? AND stack_parent_pr_url IS NULL`,
+    )
+    .run(
+      lineage.taskId,
+      lineage.episode,
+      lineage.adoptedAt,
+      lineage.parentPrUrl,
+      lineage.baseSha,
+      lineage.history.length > 0 ? JSON.stringify(lineage.history) : null,
+      key,
+    );
+  return Number(result.changes) > 0;
+}
+
+/**
+ * The lineage a later child pull request of the same task inherits: the most recently
+ * adopted earlier row for this task, repository and work episode. Highest `stack_adopted_at`
+ * wins, and the higher rowid breaks a tie. Never crosses an episode, so a rescheduled task's
+ * first pull request is seeded from its new dispatch instead.
+ */
+export function latestStackLineage(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey: string,
+): StackLineage | null {
+  return latestStackedPr(taskId, owner, repo, episode, exceptKey)?.stack ?? null;
+}
+
+/** The row `latestStackLineage` reads, whole: its current base is what a review diffs against. */
+export function latestStackedPr(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey = "",
+): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_episode IS ? AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, episode, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/** Record that the stack release check passed for exactly this child head. */
+export function releaseInspectorPrStack(key: string, headSha: string, now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = ?, updated_at = ?
+        WHERE key = ? AND stack_parent_pr_url IS NOT NULL
+          AND (stack_released_head_sha IS NULL OR stack_released_head_sha <> ?)`,
+    )
+    .run(headSha, now, key, headSha);
+  return Number(result.changes) > 0;
+}
+
+/** One line about the last stacked-base correction, shown in the merge queue. */
+export function noteInspectorPrStack(key: string, note: string | null, now: number): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET stack_note = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(note, now, key);
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {

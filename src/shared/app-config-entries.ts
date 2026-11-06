@@ -240,6 +240,8 @@ const shippingFields = {
   method: "setting",
   repoAllowlist: "setting",
   closeSessionAfterMerge: "setting",
+  stacking: "setting",
+  maxStackDepth: "setting",
 } satisfies Record<keyof ShippingConfig, AppConfigValueClass>;
 
 const pipelinesFields = {

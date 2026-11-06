@@ -115,7 +115,16 @@ function providerRetryDelayMs(failures: number): number {
  */
 export const CHECK_CLEANUP_UNRESOLVED_PHASE = WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE;
 
+import type { StackDiffBase } from "../stacking/diff-base.ts";
+import type { WorkflowBinding } from "@shared/workflow.ts";
+
 export interface WorkflowEngineOptions {
+  /**
+   * Stacked pull requests: the verified base a stacked task's review compares against, for
+   * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
+   * be refreshed, which the comparison reports as its error rather than using a stale ref.
+   */
+  stackDiffBase?: (binding: WorkflowBinding) => Promise<StackDiffBase | null>;
   /**
    * The daemon's shared review budget. Injected from `src/server/index.ts` so Persona
    * attempts and context compaction cannot each spend a private ceiling of their own.
@@ -424,6 +433,7 @@ export class WorkflowEngine {
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
+  private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
   private stopped = true;
   private checkShutdown = new AbortController();
   private pumping = false;
@@ -452,6 +462,7 @@ export class WorkflowEngine {
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
+    this.stackDiffBase = options.stackDiffBase ?? (async () => null);
   }
 
   start(): void {
@@ -1412,6 +1423,7 @@ export class WorkflowEngine {
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
               repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
               yaml: context.data.evidence.coderabbit!, command: commandView!,
+              stackBase: () => this.stackDiffBase(binding),
             })),
         } : undefined,
         command: commandView,

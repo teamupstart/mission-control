@@ -108,6 +108,11 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
  */
 export interface FakePullRequest {
   headRefName?: string;
+  /** The branch it targets. Defaults to `main`, the fixture repository's default branch. */
+  baseRefName?: string;
+  isDraft?: boolean;
+  /** The merge commit once merged, for the stack release check. */
+  mergeCommit?: string | null;
   reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
   issueComments?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
   reviewError?: boolean;
@@ -125,6 +130,15 @@ export interface FakePullRequest {
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
 export function ghPullRequestsPath(home: string): string {
   return join(home, "gh-prs.json");
+}
+
+/**
+ * Script GitHub's compare API: `"<ancestor>...<head>"` to the `status` it reports (`ahead`,
+ * `identical`, `behind`, `diverged`). An unscripted pair fails the call, which the stack
+ * release check reads as unknown and holds on.
+ */
+export function writeGhCompare(home: string, statuses: Record<string, string>): void {
+  writeFileSync(join(home, "gh-prs-compare.json"), JSON.stringify(statuses, null, 2));
 }
 
 /** Script what `gh` reports, for this daemon, from now on. Re-read by the fake per call. */
@@ -690,11 +704,43 @@ if (argv[0] === "--version") {
   if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    repository: { defaultBranchRef: { name: "main" } },
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
   } : null } } }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeCommit"))) {
+  // The small pull-request refs read Stacked pull requests makes (state, draft, head, base,
+  // merge commit). Answered by number from ANY checkout: the daemon asks from the
+  // prerequisite's repository root, not from the worktree that opened the pull request.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
+    state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    repository: { defaultBranchRef: { name: "main" } },
+  } : null } } }));
+} else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {
+  let statuses = {};
+  try { statuses = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_PRS.slice(0, -".json".length) + "-compare.json", "utf8")); } catch {}
+  const pair = (argv[1] || "").split("/compare/")[1];
+  if (statuses[pair]) process.stdout.write(statuses[pair] + "\\n");
+  else { process.stderr.write("HTTP 404: No common ancestor (fake)\\n"); process.exitCode = 1; }
+} else if (argv[0] === "api" && argv[1] === "user") {
+  // The Inspector's identity check (\`gh api user --jq .login\`): a fixed bot login, so a
+  // spec that arms the Inspector reaches its merge gate instead of abstaining.
+  process.stdout.write("mission-e2e-bot\\n");
+} else if (argv[0] === "api" && argv[1] === "--method" && argv[2] === "PATCH" && (argv[3] || "").split("/").at(-2) === "pulls") {
+  // A pull request base edit. The body is recorded beside the argv so a spec can read WHICH
+  // base the daemon asked for; nothing is published.
+  if (dir) {
+    let input = "";
+    try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
+    writeFileSync(join(dir, \`gh-patch-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
+  }
+  process.stdout.write("{}\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);

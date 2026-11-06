@@ -39,6 +39,9 @@ export type MergeBlock =
   | "review-unpublished"
   | "not-open"
   | "draft"
+  | "stacked-base"
+  | "stack-hold"
+  | "base-not-default"
   | "workflow-gate-pending"
   | "workflow-gate-spent"
   | "not-reviewed"
@@ -71,6 +74,11 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
     "this push was reviewed without live publishing; GitHub Inspector must review it again live",
   "not-open": "the pull request is closed",
   draft: "still a draft",
+  // Both stacking blocks lead with "stacked" so the one ellipsized merge-queue line says what
+  // kind of wait this is before it says why.
+  "stacked-base": "stacked on another pull request's branch - it merges once its base is the default branch",
+  "stack-hold": "stacked pull request held until it is restacked onto the default branch",
+  "base-not-default": "its base is not, or is not known to be, the default branch, so it never merges itself",
   "workflow-gate-pending": "an active workflow still owns the GitHub Inspector final gate",
   // Front-loaded deliberately. The Merge queue's standing column is one ellipsized line
   // (`.sc-standing`), so roughly the first forty characters are all an operator reads
@@ -123,7 +131,19 @@ export interface MergeInput {
     checks: ChecksState;
     /** Any review thread on the PR that nobody has resolved - ours or a colleague's. */
     unresolvedThreads: number;
+    /** The branch it targets and the repository's default branch. Null when unknown. */
+    baseRefName: string | null;
+    defaultBranch: string | null;
   };
+  /**
+   * Stacked pull requests. `lineage` is true for a pull request adopted for a stacked task
+   * (its row records a parent); `releasedForHead` is true when the stack release check passed
+   * for the CURRENT head. A pull request without lineage is never evaluated by either
+   * stacking gate.
+   */
+  stack: { lineage: boolean; releasedForHead: boolean };
+  /** The base `reviewedSha`'s review was made against; null for reviews recorded before it was. */
+  reviewedBase: string | null;
   /**
    * What the Inspector could actually do about this PR - see `inspectorPosture`.
    *
@@ -153,6 +173,40 @@ export interface MergeVerdict {
 }
 
 const ready: MergeVerdict = { merge: true, block: null, waitMs: 0 };
+
+/**
+ * Does a recorded review still describe the pull request's current base?
+ *
+ * A review is a diff, and a diff is head AGAINST base: the same head retargeted from a parent
+ * branch to the default branch shows a different, usually much larger, change. So the base
+ * must match as well as the head. A review recorded before bases were recorded (null) counts
+ * only while the base is the default branch, which is what every such review was against
+ * unless somebody retargeted by hand. Unknown values never match.
+ */
+export function reviewBaseMatches(
+  reviewedBase: string | null,
+  currentBase: string | null,
+  defaultBranch: string | null,
+): boolean {
+  if (!currentBase) return false;
+  if (reviewedBase !== null) return reviewedBase === currentBase;
+  return defaultBranch !== null && currentBase === defaultBranch;
+}
+
+/**
+ * Has the base positively changed since the review - the case that must trigger a new one?
+ *
+ * Deliberately narrower than `!reviewBaseMatches`: an UNKNOWN current base is not a change.
+ * The merge gate fails closed on unknown, but the reviewer must not re-run a model review on
+ * every tick merely because one read came back without a base.
+ */
+export function reviewBaseChanged(
+  reviewedBase: string | null,
+  currentBase: string | null,
+  defaultBranch: string | null,
+): boolean {
+  return currentBase !== null && !reviewBaseMatches(reviewedBase, currentBase, defaultBranch);
+}
 
 function blocked(block: MergeBlock, waitMs = 0): MergeVerdict {
   return { merge: false, block, waitMs };
@@ -208,6 +262,27 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
 
   if (pr.state !== "OPEN") return blocked("not-open");
   if (pr.isDraft) return blocked("draft");
+  // Stacked pull requests, after the consent and open/draft gates (so an off switch or a
+  // closed PR still reads as the reason) and before every review and CI gate. Only a pull
+  // request with recorded stack lineage is evaluated, so one without lineage merges exactly
+  // as it did before stacking existed. Merging a child into its parent's branch would fold
+  // it silently into the parent and skip its own review, so the base must be the default
+  // branch, known on both sides. And a base change alone proves nothing - GitHub retargets a
+  // child by itself when the parent's branch is deleted - so the child stays held until the
+  // release check passed for this exact head.
+  if (input.stack.lineage) {
+    if (!pr.baseRefName || !pr.defaultBranch || pr.baseRefName !== pr.defaultBranch) {
+      return blocked("stacked-base");
+    }
+    if (!input.stack.releasedForHead) return blocked("stack-hold");
+  } else if (!pr.baseRefName || !pr.defaultBranch || pr.baseRefName !== pr.defaultBranch) {
+    // The same rule for a pull request with no stack lineage: YOLO mode lands work on the
+    // default branch and nowhere else, whoever chose the base. Not a stacking gate (those
+    // read lineage, and this one never does). Fail closed: a base or default branch GitHub
+    // did not report cannot be shown to be the default branch, and a review recorded
+    // against that same unknown-default base must not be enough to merge.
+    return blocked("base-not-default");
+  }
   // Both values veto; they differ only in what the operator should do about it, which is
   // the difference between "wait" and "this needs you and will not resolve itself".
   if (input.workflowGate === "pending") return blocked("workflow-gate-pending");
@@ -215,7 +290,13 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
 
   // The review has to be of THIS push. `rounds` alone would let a PR that was reviewed
   // clean three force-pushes ago merge whatever is on the branch now.
-  if (input.rounds < 1 || !pr.headSha || input.reviewedSha !== pr.headSha) {
+  // And of THIS base: a retarget under an unchanged head changes the diff the review judged.
+  if (
+    input.rounds < 1 ||
+    !pr.headSha ||
+    input.reviewedSha !== pr.headSha ||
+    !reviewBaseMatches(input.reviewedBase, pr.baseRefName, pr.defaultBranch)
+  ) {
     return blocked("not-reviewed");
   }
   // Current live consent cannot retroactively publish a review completed while the

@@ -1309,6 +1309,7 @@ export class Registry extends EventEmitter {
       prev.inspector.enabled === status.inspector.enabled &&
       prev.inspector.mode === status.inspector.mode &&
       prev.shipping.autoMerge === status.shipping.autoMerge &&
+      (prev.shipping.stacking ?? null) === (status.shipping.stacking ?? null) &&
       prev.taskSources.failing === status.taskSources.failing &&
       prev.pipelines.present === status.pipelines.present &&
       prev.pipelines.observing === status.pipelines.observing &&

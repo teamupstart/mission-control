@@ -1034,6 +1034,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("shipping"),
   },
   {
+    id: "stacked-pull-requests",
+    label: "Stacked pull requests",
+    description: "Whether a same-repository dependent starts on its prerequisite's open pull request or waits for it to merge.",
+    category: "shipping",
+    anchor: "shipping/stacking",
+    keywords: ["stack", "stacked", "dependency", "dependent", "base branch", "parent", "after merge", "depth"],
+    kind: "jump",
+    backup: backupDomains("shipping"),
+  },
+  {
     id: "trust-grants",
     label: "Trust grants",
     description: "Which repositories each subsystem may act in.",

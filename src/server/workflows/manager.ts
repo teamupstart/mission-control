@@ -226,6 +226,8 @@ import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
+import { stackPrInstruction } from "../stacking/lineage.ts";
+import { resolveStackDiffBase } from "../stacking/diff-base.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -677,6 +679,11 @@ export class WorkflowManager {
         },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
+        // The CodeRabbit merge base follows the same stacked base as the Persona diff.
+        stackDiffBase: options.engine?.stackDiffBase ?? (async (binding) => {
+          const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+          return session ? resolveStackDiffBase(this.registry, session, binding.repoRoot || null) : null;
+        }),
       },
     );
     this.registry.initializeWorkflowRuns(this.runs());
@@ -3270,6 +3277,7 @@ export class WorkflowManager {
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
+      stackInstruction: this.stackInstructionFor(session, binding.repoRoot || null),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4843,6 +4851,18 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /**
+   * Stacked pull requests: what to tell this session about its pull request's base, for the
+   * task it is running, when the packet targets that task's PRIMARY repository. Stacking never
+   * covers a secondary repository, so a per-repository run in one gets no line at all.
+   */
+  private stackInstructionFor(session: Session, repoRoot: string | null): string | null {
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task?.stackParentTaskId) return null;
+    if (repoRoot && repoRoot !== task.repoRoot) return null;
+    return stackPrInstruction(task, this.registry.workEpisodeForSession(session.id)?.episodeId ?? null);
+  }
+
   private originalGoal(runId: string): string {
     for (const submission of this.store.listSubmissions(runId)) {
       if (submission.mode !== "full_workflow") continue;
@@ -5526,6 +5546,10 @@ export class WorkflowManager {
         && this.options.trackCiFailures?.() === true,
       pullRequestPolicy: snapshot.completion.kind === "pull_request"
         || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
+      stackInstruction: snapshot.completion.kind === "pull_request"
+        || snapshot.requiredSkillId === PULL_REQUEST_SKILL
+        ? this.stackInstructionFor(session, binding.repoRoot || null)
+        : null,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot

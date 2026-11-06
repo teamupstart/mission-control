@@ -200,6 +200,16 @@ export interface PrSnapshot {
    * lets downstream stages run.
    */
   headRefName: string;
+  /**
+   * The branch the pull request targets, the repository's default branch, and the merge
+   * commit once it merged. Read for stacked pull requests: the merge gate's base checks, the
+   * base-aware review record, and the stack release check. Empty strings / null mean GitHub
+   * did not report one, which every reader treats as unknown. Optional only so hand-built
+   * fixtures stay valid; `fetchPr` always fills them.
+   */
+  baseRefName?: string;
+  defaultBranch?: string;
+  mergeCommitSha?: string | null;
   title: string;
   body: string;
   isDraft: boolean;
@@ -292,6 +302,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
+      baseRefName mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:100){
         nodes{
@@ -430,6 +441,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+    ...refFields(pr),
     title: typeof pr.title === "string" ? pr.title : "",
     body: typeof pr.body === "string" ? pr.body : "",
     isDraft: pr.isDraft === true,
@@ -455,6 +467,132 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     reviews: reviewPage.reviews,
     reviewsPageInfo: reviewPage.pageInfo,
   };
+}
+
+/** The base, default branch and merge commit of one GraphQL pull request node. */
+function refFields(pr: Record<string, unknown>): { baseRefName: string; defaultBranch: string; mergeCommitSha: string | null } {
+  const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
+  const defaultBranch = (
+    (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
+  )?.name;
+  return {
+    baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
+    defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
+    mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
+  };
+}
+
+/**
+ * The few facts about a pull request that stacking needs, without its threads or reviews.
+ *
+ * Read for a pull request the Inspector does not otherwise poll this instant: a stacked
+ * dispatch revalidating its parent, the release check reading the current parent, and base
+ * correction on adoption. One small GraphQL call each.
+ */
+export interface PrRefs {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headSha: string;
+  headRefName: string;
+  baseRefName: string;
+  defaultBranch: string;
+  mergeCommitSha: string | null;
+}
+
+const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      state isDraft headRefOid headRefName baseRefName mergeCommit{ oid }
+      repository{ defaultBranchRef{ name } }
+    }
+  }
+}`;
+
+export async function fetchPrRefs(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<PrRefs>> {
+  const res = await run(
+    ghBin(),
+    ["api", "graphql", "-f", `query=${PR_REFS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api graphql (pull request refs)", res);
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    const state = pr.state;
+    if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") {
+      return { ok: false, error: "the pull request state was not reported" };
+    }
+    if (typeof pr.headRefOid !== "string" || !pr.headRefOid || typeof pr.isDraft !== "boolean") {
+      return { ok: false, error: "the pull request head was not reported" };
+    }
+    return {
+      ok: true,
+      value: {
+        state,
+        isDraft: pr.isDraft,
+        headSha: pr.headRefOid,
+        headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+        ...refFields(pr),
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh output: ${String(err)}` };
+  }
+}
+
+/**
+ * Is `ancestor` in `head`'s history? GitHub's compare API answers from the remote, so no
+ * git runs in any worktree: `ahead` or `identical` means yes, `behind` or `diverged` means
+ * no, and anything else (a failed call, a commit GitHub does not know) is unknown.
+ */
+export async function isAncestor(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  ancestor: string,
+  head: string,
+): Promise<GhResult<boolean>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${ancestor}...${head}`, "--jq", ".status"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare)", res);
+  const status = res.stdout.trim();
+  if (status === "ahead" || status === "identical") return { ok: true, value: true };
+  if (status === "behind" || status === "diverged") return { ok: true, value: false };
+  return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
+ * Change the branch a pull request targets. Metadata only: it writes no commit and moves no
+ * branch, so it is the one GitHub write stacking makes on its own. REST, in the same `gh api`
+ * style as `mergePr`.
+ */
+export async function retargetPr(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  base: string,
+): Promise<GhResult<void>> {
+  const res = await run(
+    ghBin(),
+    ["api", "--method", "PATCH", `repos/${owner}/${repo}/pulls/${number}`, "--input", "-"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ base }) },
+  );
+  if (res.code !== 0) return fail("gh api (retarget pull request)", res);
+  return { ok: true };
 }
 
 function threadPageInfo(raw: unknown): ThreadPageInfo {

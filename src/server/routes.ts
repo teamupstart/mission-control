@@ -7235,6 +7235,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ShippingConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const next = setShippingConfig(parsed.data);
+    // The Stacked pull requests default decides which readiness stamps still stand, so a
+    // dependent that would now wait for merge stops reading as ready at once.
+    tasks.reconcileStackReadiness();
     // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
     publishSettingsStatus(registry);
     return c.json(next);

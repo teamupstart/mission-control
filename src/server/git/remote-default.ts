@@ -297,3 +297,87 @@ export async function freshRemoteDefaultSha(
   if (!fetched.ok) return fetched;
   return currentRemoteDefaultSha(root, execute);
 }
+
+/** A branch name that is safe to splice into a refspec: no option, no ref syntax. */
+function safeBranchName(branch: string): boolean {
+  return (
+    branch.length > 0 &&
+    branch.length <= 255 &&
+    !branch.startsWith("-") &&
+    !branch.includes("..") &&
+    !/[\s~^:?*[\\]/.test(branch) &&
+    ![...branch].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f) &&
+    !branch.endsWith("/") &&
+    !branch.endsWith(".lock")
+  );
+}
+
+/**
+ * Fetch ONE branch of `origin` into its remote-tracking ref, then return the commit it is at,
+ * verified against what the remote itself advertises.
+ *
+ * Stacked pull requests need this twice: a stacked dispatch pins its prerequisite branch's
+ * current head, and every review diff of a stacked task is taken against its parent branch,
+ * which keeps moving while the child is reviewed. Both run at the repository root and touch
+ * nothing but `refs/remotes/origin/<branch>` - no checkout, no local branch, no worktree.
+ *
+ * The same discipline as `currentRemoteDefaultSha`: the SHA returned is the one `ls-remote`
+ * advertised, and the fetched remote-tracking ref must equal it, which proves the commit is
+ * present locally. A missing remote branch, a failed fetch, and a disagreement (the branch
+ * moved mid-observation) are all refusals with a reason, never a fall back to a stale ref.
+ */
+export async function freshRemoteBranchSha(
+  root: string,
+  branch: string,
+  execute: Run = run,
+): Promise<RemoteProbe<string>> {
+  if (!safeBranchName(branch)) {
+    return { ok: false, reason: `"${branch.slice(0, 80)}" is not a branch name this can fetch`, outcomeUnknown: false };
+  }
+  const remoteRef = `refs/heads/${branch}`;
+  const trackingRef = `refs/remotes/origin/${branch}`;
+  let fetched: Awaited<ReturnType<Run>> | null = null;
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+    fetched = await execute(
+      "git",
+      ["-C", root, "fetch", "--no-tags", "origin", `+${remoteRef}:${trackingRef}`],
+      { timeoutMs: NETWORK_TIMEOUT_MS },
+    );
+    if (!failed(fetched)) break;
+    if (!staleRemoteTrackingRef(fetched) || attempt === MAX_FETCH_ATTEMPTS) {
+      return failure(`git fetch origin ${branch}`, fetched, NETWORK_TIMEOUT_MS);
+    }
+  }
+  const listed = await execute("git", ["-C", root, "ls-remote", "origin", remoteRef], {
+    timeoutMs: NETWORK_TIMEOUT_MS,
+  });
+  if (failed(listed)) return failure(`git ls-remote origin ${branch}`, listed, NETWORK_TIMEOUT_MS);
+  let advertised: string | null = null;
+  for (const line of listed.stdout.split("\n")) {
+    const [oid, name] = line.split("\t");
+    if (name?.trim() === remoteRef && FULL_SHA.test(oid?.trim() ?? "")) advertised = oid!.trim();
+  }
+  if (!advertised) {
+    return { ok: false, reason: `origin has no branch ${branch}`, outcomeUnknown: false };
+  }
+  const resolved = await execute(
+    "git",
+    ["-C", root, "rev-parse", "--verify", "--quiet", `${trackingRef}^{commit}`],
+    { timeoutMs: LOCAL_TIMEOUT_MS },
+  );
+  if (resolved.outcomeUnknown || resolved.overflowed) {
+    return failure(`git rev-parse ${trackingRef}`, resolved, LOCAL_TIMEOUT_MS);
+  }
+  const local = resolved.stdout.trim();
+  if (resolved.code !== 0 || !FULL_SHA.test(local)) {
+    return { ok: false, reason: `${trackingRef} is not in this repository after the fetch`, outcomeUnknown: false };
+  }
+  if (local !== advertised) {
+    return {
+      ok: false,
+      reason: `origin advertised ${branch} at ${advertised} but this repository fetched ${local} - the branch moved during the observation`,
+      outcomeUnknown: false,
+    };
+  }
+  return { ok: true, value: advertised };
+}

@@ -24,6 +24,7 @@ const SHIPPING: ShippingState = {
     method: "squash",
     repoAllowlist: ["/repo"],
     closeSessionAfterMerge: false,
+    maxStackDepth: 3,
   },
   inspections: [],
   update: async () => true,

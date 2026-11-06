@@ -17,6 +17,8 @@ import {
   blockedLabel,
   blockersNeedYou,
   plannerFacts,
+  stackedStartLabel,
+  stackWaitLabel,
   type AutopilotGate,
   type BacklogTaskNoticeView,
   type BacklogTrustView,
@@ -83,6 +85,10 @@ interface Row {
   band: Band;
   blockers: BacklogBlocker[];
   deadBlockers: Task[];
+  /** "Stacked on #N" for an item released to start on a prerequisite's open pull request. */
+  stackedOn: string | null;
+  /** Why an item whose dependency is set to Stack is still waiting, in place of "after X". */
+  stackWait: string | null;
 }
 
 /**
@@ -102,6 +108,8 @@ function partition(tasks: Task[], plan: BacklogPlan | null, index: BacklogIndex)
     band,
     blockers: blockersIn(task, index),
     deadBlockers: deadBlockersFor(task, index),
+    stackedOn: stackedStartLabel(task, index.byId),
+    stackWait: stackWaitLabel(task, index.byId),
   });
   // One order for both bands now (`backlogTasks` is `byBacklogRank`), which is why this is a
   // plain set difference rather than a re-sort: a blocked row sits exactly where the operator
@@ -173,7 +181,7 @@ function BacklogRow({
   notice: BacklogTaskNoticeView | null;
   onManageTrust?: () => void;
 }): React.JSX.Element {
-  const { task, band, blockers, deadBlockers } = row;
+  const { task, band, blockers, deadBlockers, stackedOn, stackWait } = row;
   const nextUp = planner !== null;
   // Amber down the leading edge only where a person is genuinely the missing part - a dead or
   // disabled prerequisite. Two rows this deliberately does NOT tone, against the mockup:
@@ -231,10 +239,15 @@ function BacklogRow({
         {/* Said on a parked row too, not just a blocked one: an item can be both, and a row
             that printed only the pill for the band it landed in would promise that resuming
             it puts it at the front of the queue. */}
+        {stackedOn && (
+          <Tooltip label="Ready to start on its prerequisite's open pull request - it is cut from that branch and opens its own pull request against it">
+            <span className="bl-stacked">{stackedOn}</span>
+          </Tooltip>
+        )}
         {blockers.length > 0 && (
           <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
             <span className={`bl-blocked${needsYou ? " is-stopped" : ""}`}>
-              {blockedLabel(blockers)}
+              {(!needsYou && stackWait) || blockedLabel(blockers)}
             </span>
           </Tooltip>
         )}

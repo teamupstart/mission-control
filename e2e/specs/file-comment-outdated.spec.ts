@@ -189,7 +189,13 @@ test.describe("a comment whose text the agent deleted", () => {
         message: "the three comments never reached the queue",
       })
       .toEqual([1, 3, 5]);
-    expect(storedQueue(daemon)[0]!.status, "the opener is out with the agent").not.toBe("queued");
+    // Polled, not read once: "sending is delivering", but the delivery is the daemon's write
+    // into the agent's turn, which lands after the row exists. Under a loaded host the single
+    // read above could come first and see the opener still queued - a race in the read, not
+    // in the product - so wait for the delivery that this test is built on.
+    await expect
+      .poll(() => storedQueue(daemon)[0]!.status, { message: "the opener is out with the agent" })
+      .not.toBe("queued");
 
     // ---- the edit that removes what the head comment quotes ----
     //

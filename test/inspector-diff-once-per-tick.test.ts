@@ -133,6 +133,8 @@ if (args[0] === "api" && args[1] === "user") {
         pullRequest: {
           state: "OPEN",
           headRefOid: state.headSha,
+          baseRefName: "main",
+          repository: { defaultBranchRef: { name: "main" } },
           isDraft: false,
           title: "Inspector diff sharing",
           body: "Exercise the once-per-tick diff fetch.",

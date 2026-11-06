@@ -11678,6 +11678,43 @@ button.dispatch-guided-rung .dispatch-guided-num {
 .dep-chip-x:hover {
   color: var(--fg);
 }
+/* Stacked pull requests: the per-dependency Stack / After merge choice, inside the chip it
+   belongs to. Two small segments rather than a select, so both choices are readable at once
+   and the inherited one is visibly marked as such ("default") until somebody picks. */
+.dep-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+.dep-mode-opt {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.dep-mode-opt:hover {
+  color: var(--fg);
+}
+.dep-mode-opt.is-on {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--working) 45%, var(--border));
+  background: color-mix(in srgb, var(--working) 14%, var(--panel));
+}
+.dep-mode-opt.is-on.is-inherited {
+  border-style: dashed;
+}
+.dep-mode-default {
+  font-size: 10px;
+  color: var(--dim);
+}
 /* Doubled selector for the same tie-break reason as .agent-accent-select: the shared
    dropdown rule's `border:` shorthand would otherwise re-solid the dash. The fixed width
    stops the closed control sizing to its longest OPTION (a dependency title), which as a
@@ -26787,9 +26824,15 @@ span.line-run-prov {
    column of their own, and `align-self: flex-start` would hang all three off the row's top. */
 .line-bl-marks .bl-next,
 .line-bl-marks .bl-blocked,
-.line-bl-marks .bl-off {
+.line-bl-marks .bl-off,
+.line-bl-marks .bl-stacked {
   align-self: center;
   flex: none;
+}
+/* Ready to start on a prerequisite's open pull request: a fact about the base, not a wait. */
+.bl-stacked {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--working) 45%, var(--border));
 }
 /* The blocker is the one mark here whose content is unbounded, so it is the one that yields:
    it may shrink and ellipsize, while `next up` and `parked` are two fixed words that would
@@ -30296,7 +30339,8 @@ span.line-run-prov {
 }
 .bl-blocked,
 .bl-off,
-.bl-next {
+.bl-next,
+.bl-stacked {
   align-self: flex-start;
   padding: 0 6px;
   font-size: 10px;

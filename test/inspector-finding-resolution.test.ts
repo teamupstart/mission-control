@@ -112,6 +112,8 @@ if (args[0] === "api" && args[1] === "user") {
             state: "OPEN",
             headRefOid: state.headSha,
             headRefName: "feature",
+            baseRefName: "main",
+            repository: { defaultBranchRef: { name: "main" } },
             isDraft: false,
             title: "Inspector finding resolution",
             body: "Exercise the route out of an open finding.",

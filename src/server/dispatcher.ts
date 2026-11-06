@@ -78,6 +78,7 @@ import {
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { stackPrInstruction } from "./stacking/lineage.ts";
 import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
@@ -669,6 +670,9 @@ export class Dispatcher {
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
           planDiscovery,
+          // A stacked launch was just pinned to its prerequisite's open pull request, so the
+          // base it names is that pull request's branch. `undefined`: no episode exists yet.
+          stackInstruction: stackPrInstruction(provisioned, undefined),
         });
       const intent = composeTurnOne(standingPrefix);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose

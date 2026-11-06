@@ -7,15 +7,22 @@ import { processIdentity } from '../../scripts/update-lock.mjs';
 /** Observe an actual on-screen native dialog without granting Accessibility/Screen Recording.
  * Its exact displayed text comes from the production osascript invocation; CoreGraphics
  * independently proves that this helper's dialog reached the window server.
+ *
+ * `osascript` dialogs sit at the modal-panel window level. An app's OWN alert does not
+ * reliably: current macOS presents Electron's startup error box as an ordinary level-0
+ * window. A caller observing a process that has no other window (the app failed before it
+ * opened one) passes `appAlert: true` to accept that level as well; every other caller keeps
+ * the stricter modal-panel filter.
  */
-export function nativeDialogWindows(directory: string) {
+export function nativeDialogWindows(directory: string, options: { appAlert?: boolean } = {}) {
   const source = join(directory, 'progress-windows.swift');
   const executable = join(directory, 'progress-windows');
   writeFileSync(source, `import Foundation
 import CoreGraphics
 let pid = Int(CommandLine.arguments[1])!
 let all = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-let windows = all.filter { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.modalPanelWindow)) }
+let levels: Set<Int> = ${options.appAlert ? "[Int(CGWindowLevelForKey(.modalPanelWindow)), Int(CGWindowLevelForKey(.normalWindow))]" : "[Int(CGWindowLevelForKey(.modalPanelWindow))]"}
+let windows = all.filter { ($0[kCGWindowOwnerPID as String] as? Int) == pid && levels.contains(($0[kCGWindowLayer as String] as? Int) ?? -1) }
 print(String(data: try! JSONSerialization.data(withJSONObject: windows), encoding: .utf8)!)
 `);
   execFileSync('/usr/bin/swiftc', [source, '-o', executable]);

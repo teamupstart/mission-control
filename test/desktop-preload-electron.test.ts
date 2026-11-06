@@ -25,6 +25,7 @@ interface DesktopPreloadResult {
     duringClick: boolean;
     afterClick: boolean;
   };
+  keyboardAuthorization: Record<string, boolean>;
 }
 
 test("the sandboxed preload identifies the desktop shell before the dashboard paints", () => {
@@ -100,6 +101,25 @@ test("the sandboxed preload identifies the desktop shell before the dashboard pa
       duringClick: true,
       afterClick: false,
     }, "only a trusted click in progress with the private capability can arm a report");
+    assert.deepEqual(result.keyboardAuthorization, {
+      synthetic: false,
+      syntheticWrongCapability: false,
+      plain: false,
+      plainWrongCapability: false,
+      plainAfter: false,
+      other: false,
+      otherWrongCapability: false,
+      otherAfter: false,
+      repeat: false,
+      repeatWrongCapability: false,
+      repeatAfter: false,
+      meta: true,
+      metaWrongCapability: false,
+      metaAfter: false,
+      control: true,
+      controlWrongCapability: false,
+      controlAfter: false,
+    }, "only a trusted Cmd/Ctrl+Enter in progress with the private capability can arm a report");
   } finally {
     rmSync(dir, { force: true, recursive: true });
     rmSync(profile, { force: true, recursive: true });

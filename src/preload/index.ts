@@ -27,6 +27,13 @@ let trustedClick: MouseEvent | null = null;
 window.addEventListener("click", (event) => {
   trustedClick = event;
 }, true);
+// Feedback also accepts the dialog's default-action chord, but only during that exact
+// trusted dispatch. Session-control grants below retain their click-only rule.
+let trustedReportShortcut: KeyboardEvent | null = null;
+window.addEventListener("keydown", (event) => {
+  trustedReportShortcut = event.key === "Enter" && (event.metaKey || event.ctrlKey)
+    && !event.repeat && !event.isComposing ? event : null;
+}, true);
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
@@ -49,11 +56,13 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     capability: string,
     input: ProductIssueAuthorizationInput,
   ): boolean => {
+    const clickInProgress = trustedClick?.isTrusted === true && trustedClick.eventPhase !== Event.NONE;
+    const shortcutInProgress = trustedReportShortcut?.isTrusted === true
+      && trustedReportShortcut.eventPhase !== Event.NONE;
     if (
       !productIssueAuthorizationClaimed ||
       capability !== productIssueAuthorizationCapability ||
-      trustedClick?.isTrusted !== true ||
-      trustedClick.eventPhase === Event.NONE
+      (!clickInProgress && !shortcutInProgress)
     ) return false;
     return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
   },

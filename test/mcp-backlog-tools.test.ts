@@ -807,3 +807,54 @@ test("list_tasks canonicalizes linked worktree repository selectors", async (t) 
   assert.deepEqual([...fromWorktree.tasks, ...fromRoot.tasks].map((task) => task.id).sort(), [first.id, second.id].sort());
   assert.equal(fromRoot.nextCursor, null);
 });
+
+test("read tools include durable attached-repository PRs without live session feedback", async (t) => {
+  const f = await fixture(t);
+  const labels = [`attached-pr-${randomUUID().slice(0, 8)}`];
+  const created = await f.create({ agent: "codex", additionalRepositories: [repoB], labels, workflowId: null });
+  const sessionId = `sdk:attached-pr-${created.id}`;
+  const episodeId = randomUUID();
+  const attachedPrUrl = "https://github.com/example/secondary/pull/1369";
+  openDb().prepare(`INSERT INTO task_work_episode_bindings
+    (task_id, episode_id, session_id, agent_session_id, bound_at, updated_at)
+    VALUES (?, ?, ?, 'attached-native-id', 1, 1)`).run(created.id, episodeId, sessionId);
+  openDb().prepare(`INSERT INTO work_episode_prs
+    (episode_id, repo_root, session_id, task_id, pr_url, pr_state, pr_head_sha, merged_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'open', 'attached-head', NULL, 1)`)
+    .run(episodeId, repoB, sessionId, created.id, attachedPrUrl);
+  assert.equal(f.registry.getTask(created.id)!.extraRepos[0]!.prUrl, null,
+    "the live board has not loaded the durable attached PR");
+  assert.deepEqual(f.registry.snapshot().sessions, [], "no session or live PR feedback is needed");
+
+  for (const stage of [
+    { name: "current open PR", episode: episodeId, status: "running", prUrl: attachedPrUrl, prState: "open", mergedAt: null },
+    { name: "abandoned unmerged PR", episode: randomUUID(), status: "running", prUrl: null, prState: null, mergedAt: null },
+    { name: "merged PR from a previous episode", episode: randomUUID(), status: "done", prUrl: attachedPrUrl, prState: "merged", mergedAt: 1000 },
+  ] as const) {
+    openDb().prepare("UPDATE task_work_episode_bindings SET episode_id = ? WHERE task_id = ?")
+      .run(stage.episode, created.id);
+    openDb().prepare("UPDATE tasks SET status = ?, session_id = ? WHERE id = ?")
+      .run(stage.status, sessionId, created.id);
+    if (stage.mergedAt !== null) {
+      openDb().prepare("UPDATE work_episode_prs SET pr_state = 'merged', merged_at = ? WHERE task_id = ?")
+        .run(stage.mergedAt, created.id);
+    }
+    const writesBefore = openDb().prepare("SELECT total_changes() AS n").get();
+    const task = (await f.call<ReadTask>("get_task", { taskId: created.id }))!;
+    const page = (await f.call<TaskPage>("list_tasks", { repository: repoB, labels }))!;
+    assert.equal(page.tasks.length, 1);
+    const expectedRepos = [
+      { repoRoot: repoA, primary: true, prUrl: null, prState: null, mergedAt: null, feedback: null },
+      { repoRoot: repoB, primary: false, prUrl: stage.prUrl, prState: stage.prState, mergedAt: stage.mergedAt, feedback: null },
+    ];
+    for (const [tool, result] of [["get_task", task], ["list_tasks", page.tasks[0]!]] as const) {
+      assert.equal(result.id, created.id);
+      assert.equal(result.status, stage.status);
+      assert.equal(result.prUrl, null, "the secondary PR is not substituted for the primary");
+      assert.equal(result.outcomeUrl, null, "there is no outcome URL to fall back to");
+      assert.deepEqual(result.repoPrs, expectedRepos, `${tool}: ${stage.name}`);
+    }
+    assert.deepEqual(openDb().prepare("SELECT total_changes() AS n").get(), writesBefore,
+      "loading durable PR bindings is read-only");
+  }
+});

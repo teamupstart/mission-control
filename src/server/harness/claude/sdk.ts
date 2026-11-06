@@ -519,7 +519,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
       console.warn(
         `[claude-sdk] stale process for ${this.agentSessionId} did not exit after its input closed; stopping it`,
       );
-      await settlesWithin(stale.return(undefined), this.authTiming.drainMs);
+      // Deferred so a transport that throws synchronously (already torn down) counts as
+      // settled instead of escaping and aborting the relaunch this recovery exists for.
+      await settlesWithin(Promise.resolve().then(() => stale.return(undefined)), this.authTiming.drainMs);
       if (!(await settlesWithin(draining, this.authTiming.drainMs))) {
         console.warn(`[claude-sdk] stale process for ${this.agentSessionId} has not drained; resuming anyway`);
       }

@@ -1077,6 +1077,27 @@ test("authentication recovery resumes even when the stale process never drains a
   assert.equal(done.some((event) => event.kind === "exited"), false, "the resumed session stays live");
 });
 
+test("authentication recovery resumes when stopping the stale process throws synchronously", async (t) => {
+  const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
+  const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));
+  t.after(() => handle.stop());
+  const stale = starts[0]!.query;
+  // A transport that is already torn down may refuse the stop outright rather than reject.
+  stale.return = () => {
+    throw new Error("transport already closed");
+  };
+  stale.emit(INIT("agent-auth-throwing-stop"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit(NOT_LOGGED_IN("agent-auth-throwing-stop"));
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  assert.equal(await handle.sendIfIdle({ text: "continue after claude login" }), "started");
+  assert.equal(starts.length, 2, "the replacement is launched despite the refused stop");
+  assert.equal(starts[1]!.options.resume, "agent-auth-throwing-stop");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(starts[1]!.turns.map((turn) => turn.message.content), ["continue after claude login"]);
+});
+
 test("an undrained stale process can neither steer nor end the resumed session", async (t) => {
   const { starts, deps } = wedgedAuthDeps({ staleIgnoresInputClose: true });
   const handle = await claudeSdkSpec(deps).launch(launchOpts({ prompt: "" }));

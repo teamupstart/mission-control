@@ -80,6 +80,14 @@ const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
 const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
 const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
 /**
+ * Expires the login the way it went wrong for a long-running resident: the synthetic
+ * "Not logged in" frame arrives and NO `result` follows. The process then stays alive and
+ * ignores its input closing, exactly as the wedged CLI did, so only a signal from the SDK's
+ * own close can end it.
+ */
+const WEDGE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH_WEDGED";
+let authenticationWedged = false;
+/**
  * Ends its turn the way Claude Code does once its own 529 retries are spent: an assistant
  * API-error frame tagged `server_error`, then an error `result`. Only the prompt itself fails;
  * Mission Control's continuation that follows is answered normally.
@@ -1271,6 +1279,7 @@ function answerAuthenticationFailure() {
     error: "authentication_failed",
     message: { role: "assistant", content: [{ type: "text", text }] },
   });
+  if (authenticationWedged) return;
   emit({
     type: "result",
     subtype: "error_during_execution",
@@ -1531,6 +1540,7 @@ rl.on("line", (line) => {
     if (prompt.includes(SLOW_STOP)) slowStop = true;
 
     if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
+    if (prompt === WEDGE_AUTH_TURN) authenticationExpired = authenticationWedged = true;
     if (authenticationExpired && !AUTHENTICATED_AT_START) {
       answerAuthenticationFailure();
       return;
@@ -1679,6 +1689,12 @@ rl.on("line", (line) => {
 // close into `{kind:"exited"}` and evicts the session. Stay alive until the SDK closes
 // stdin, then leave cleanly.
 rl.on("close", () => {
+  // A wedged CLI never notices its input closed. Only the SDK's SIGTERM ends it.
+  // The interval stands in for the hung request that kept the real process alive.
+  if (authenticationWedged) {
+    setInterval(() => {}, 60_000);
+    return;
+  }
   const leave = () => {
     if (slowStop) setTimeout(() => process.exit(0), SLOW_STOP_MS);
     else process.exit(0);

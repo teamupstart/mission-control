@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { ServerEvent } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
+import { endedOnShutdown } from "./http-shutdown.ts";
 
 const HEARTBEAT_MS = 15000;
 
@@ -19,7 +20,7 @@ interface RegistryEventStream {
  */
 export function sseHandler(registry: Registry) {
   return (c: Context) =>
-    streamSSE(c, (stream) => streamRegistryEvents(registry, stream));
+    streamSSE(c, endedOnShutdown((stream) => streamRegistryEvents(registry, stream)));
 }
 
 /**

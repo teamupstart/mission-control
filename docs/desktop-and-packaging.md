@@ -532,6 +532,14 @@ if the overall deadline is reached, Electron reaps the remaining utilities. Work
 start draining before slower session shutdown. The detached helper then handles any verified
 survivors before replacing the bundle.
 
+The daemon's last shutdown step closes its HTTP server. Requests that never end on their own -
+the dashboard's `/events` stream, transcript streams, and MCP review long-polls - are ended at
+once: a stream finishes its body, and a long-poll answers as its timeout would, so the agent
+polls the next daemon. Any other request gets a five-second grace, and only one still open after
+that is cut. Without this, an open dashboard held every quit until the utility deadline
+force-killed the daemon. `daemon.log` records `shutdown finished in <ms>` after the database
+close and lock release, on every orderly exit.
+
 If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
 summary of the executable and check-supervisor marker. The helper never prints command lines
 or uses that fallback description as authority to signal a process. Rollback outcomes use the
@@ -861,10 +869,12 @@ published assets. The desktop consumer bounds release and asset pagination, excl
 prereleases from stable selection, and checks the accepted tag against the manifest commit.
 
 Tags created by the release workflow are pushed with the short-lived App installation token, so
-they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
-package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
-release build check; the dmg is not attached to the GitHub Release. The package job can also be run
-manually through `workflow_dispatch`.
+they start a new `ci.yml` run. That run executes the same Linux checks as a `main` push, plus a
+`gates` step that fails when the tag and package versions disagree. It builds no dmg. `ci.yml`'s
+`package` job builds an unsigned developer dmg and uploads it as an Actions artifact, but only
+when run manually through `workflow_dispatch`, on the same pinned macOS image as the signing
+producer. It never runs on a push: a job that ran only for tags once kept two stable releases
+from being signed (see [release verification](release-verification.md#tag-ci-cancelled-by-a-retired-runner-2026-11-06-utc)).
 
 The separate [signed distribution producer](release-verification.md) consumes successful
 canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,

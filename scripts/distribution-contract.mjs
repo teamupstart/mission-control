@@ -7,6 +7,10 @@ import { BINARY_MANIFEST_PROTOCOL, BINARY_RECEIPT_SCHEMA, BINARY_REPO, BINARY_BU
 import { MINIMUM_DISTRIBUTION_MACOS, MAX_BINARY_MANIFEST_BYTES } from '../src/shared/binary-publisher-policy.mjs';
 import { releaseVersionProblem } from './assert-release-version.mjs';
 
+// Where `package:distribution` writes qualified bytes, relative to the checkout root. The
+// publisher reads it and `distribution.yml` retains it, so all three name this one value.
+export const DISTRIBUTION_OUTPUT = 'release/distribution';
+
 export function distributionMetadata({channel, tag, commit, versions}) {
   const problem = releaseVersionProblem({tag: channel === 'stable' ? tag : `v${versions.packageVersion}`, ...versions});
   if (problem) throw new Error(problem);

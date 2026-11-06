@@ -8502,13 +8502,26 @@ export class Registry extends EventEmitter {
     const prev = this.getGoal(id);
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
+    // An `unclear` verdict resolved its revision without incorporating it anywhere, and this
+    // capture is about to overwrite both that verdict and the only copy of its text (`prompt`).
+    // Re-queue it ahead of the new instruction instead: the refiner reconsiders it with the
+    // newer context, and accepting the objective as is records it as steering with the rest.
+    const unclearHead = prev && prev.relationship === "unclear" && prev.prompt &&
+      prev.promptRevision >= 1 && prev.resolvedPromptRevision === prev.promptRevision &&
+      prev.pendingPrompts.length === 0
+      ? { revision: prev.promptRevision, prompt: prev.prompt }
+      : null;
     return this.mergeGoal(id, {
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
       rationale: null,
       promptRevision: revision,
-      pendingPrompts: [...(prev?.pendingPrompts ?? []), { revision, prompt: raw }],
+      ...(unclearHead ? { resolvedPromptRevision: unclearHead.revision - 1 } : {}),
+      pendingPrompts: [
+        ...(unclearHead ? [unclearHead] : prev?.pendingPrompts ?? []),
+        { revision, prompt: raw },
+      ],
       ...(firstObjective
         ? {
             objective: raw,

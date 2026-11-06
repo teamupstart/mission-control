@@ -218,6 +218,28 @@ test("a classification already in flight cannot overwrite an objective accepted 
   assert.deepEqual(readSessionGoalSteering(id, 2).map((n) => [n.revision, n.instruction]), [[2, "B"]]);
 });
 
+test("an unclear instruction is reconsidered with the next one instead of being dropped", async () => {
+  const id = "unclear-reconsidered";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "maybe also restyle it", id);
+  await classify(registry, id, "unclear");
+  assert.equal(registry.getGoal(id)!.relationship, "unclear");
+  assert.deepEqual(readSessionGoalSteering(id, 2), [], "an unclear verdict records no steering");
+
+  registry.captureAcceptedPrompt(id, "use the existing button styles", id);
+  assert.deepEqual(registry.getGoal(id)!.pendingPrompts.map((p) => p.revision), [2, 3]);
+  // With the newer instruction in view the real refiner now reads both as steering.
+  await classify(registry, id, "steer");
+  const goal = registry.getGoal(id)!;
+  assert.equal(goal.relationship, "steer");
+  assert.equal(goal.resolvedPromptRevision, 3);
+  assert.equal(goal.objective, "Ship the feature");
+  assert.deepEqual(readSessionGoalSteering(id, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "use the existing button styles"],
+  ]);
+});
+
 test("revision controls ordering and cutoff even when timestamps tie; pruning protects live keys", () => {
   const id = "ordered-steering";
   const registry = session(id);

@@ -1647,7 +1647,9 @@ Each reconciliation records one of five relationships:
   objective;
 - **amend** extends the existing completion contract;
 - **replace** supersedes the old outcome; and
-- **unclear** keeps the existing objective while completion remains ambiguous.
+- **unclear** keeps the existing objective while completion remains ambiguous. An unclear
+  instruction is not dropped when a newer one arrives: it goes back into the queue ahead of
+  the newer instruction and is reconsidered with it.
 
 No command or special vocabulary is required. The model infers the relationship from the
 instruction and conversation. An amendment is accepted only when its proposed contract

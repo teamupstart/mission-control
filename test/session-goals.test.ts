@@ -550,6 +550,50 @@ test("an unclear verdict with nothing pending accepts its latest prompt at its o
   );
 });
 
+test("a later prompt re-queues an unclear instruction, so accepting records both", () => {
+  const { r, s, key } = acceptFixture("accept-unclear-then-more", ["maybe also restyle it"]);
+  r.resolveGoal(s.id, {
+    relationship: "unclear",
+    rationale: "Could mean a new requirement or a passing remark.",
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, "maybe also restyle it");
+
+  // Revision 3 arrives before anyone presses Accept. Without the re-queue, capture would
+  // overwrite both the verdict and the only copy of revision 2's text.
+  r.captureAcceptedPrompt(s.id, "then add the regression test", key);
+  const reopened = r.getGoal(s.id)!;
+  assert.equal(reopened.resolvedPromptRevision, 1);
+  assert.equal(reopened.promptRevision, 3);
+  assert.equal(reopened.relationship, null);
+  assert.deepEqual(reopened.pendingPrompts, [
+    { revision: 2, prompt: "maybe also restyle it" },
+    { revision: 3, prompt: "then add the regression test" },
+  ]);
+  // Durable: a restart reads the same queue back.
+  assert.deepEqual(getSessionGoal(key)?.pendingPrompts, reopened.pendingPrompts);
+
+  const result = r.acceptGoalObjective(s.id, 7_500);
+  assert.ok(result && result.accepted);
+  assert.equal(result.goal.resolvedPromptRevision, 3);
+  assert.equal(result.goal.objectiveVersion, reopened.objectiveVersion);
+  assert.deepEqual(readSessionGoalSteering(key, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "then add the regression test"],
+  ]);
+});
+
+test("only an unclear verdict is re-queued; a settled instruction stays resolved", () => {
+  const { r, s, key } = acceptFixture("no-requeue-after-steer", ["use the existing helper"]);
+  r.resolveGoal(s.id, {
+    relationship: "steer", rationale: "method", resolvedPromptRevision: 2, pendingPrompts: [],
+  }, "use the existing helper");
+  r.captureAcceptedPrompt(s.id, "then add the regression test", key);
+  const goal = r.getGoal(s.id)!;
+  assert.equal(goal.resolvedPromptRevision, 2);
+  assert.deepEqual(goal.pendingPrompts, [{ revision: 3, prompt: "then add the regression test" }]);
+});
+
 test("accepting is idempotent: a settled goal comes back unchanged", () => {
   const { r, s, key } = acceptFixture("accept-idempotent", ["then add a test"]);
   const first = r.acceptGoalObjective(s.id, 8_000);

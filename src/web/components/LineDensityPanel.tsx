@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { LINE_DENSITY_OPTIONS, useLineDensity } from "../lib/line-density.ts";
+import { LINE_DENSITY_OPTIONS, useLineChoice, type LineChoice } from "../lib/line-density.ts";
 import { PREVIEW_LINE_SUMMARY } from "../lib/line-preview.ts";
-import type { LineDensity } from "@shared/protocol.ts";
 import { LineStrip } from "./LineStrip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -29,7 +28,7 @@ const PREVIEW_NATURAL_WIDTH = 1200;
  * reasons `ViewThumb` documents at length: a viewBox with neither resolves to the width of
  * the row, and an unfilled rect paints SVG-default black rather than `currentColor`.
  */
-function DensityThumb({ mode }: { mode: LineDensity }): React.JSX.Element {
+function DensityThumb({ mode }: { mode: LineChoice }): React.JSX.Element {
   const art =
     mode === "hidden"
       ? [
@@ -101,7 +100,7 @@ function DensityThumb({ mode }: { mode: LineDensity }): React.JSX.Element {
  *
  * Disabled has nothing to draw, so the stage says so in the space the strip would take.
  */
-function LinePreview({ density }: { density: LineDensity }): React.JSX.Element {
+function LinePreview({ density }: { density: LineChoice }): React.JSX.Element {
   const stageRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
 
@@ -155,11 +154,11 @@ function LinePreview({ density }: { density: LineDensity }): React.JSX.Element {
  *
  * The same fold lives on the strip itself as a caret, and <kbd>Shift+L</kbd> steps it;
  * neither reaches Disabled, nor leaves it. All three write the one
- * `app_config.ui.lineDensity` through `useLineDensity`, so none of them can disagree
- * about the band.
+ * `app_config.ui.lineDensity` (Disabled is `app_config.ui.lineHidden`, which only this
+ * panel writes), so none of them can disagree about the band.
  */
 export function LineDensityPanel(): React.JSX.Element {
-  const [density, setDensity] = useLineDensity();
+  const [density, setDensity] = useLineChoice();
   return (
     <div className="topbar-line-setting">
       <h4 className="settings-subhead">The Line</h4>

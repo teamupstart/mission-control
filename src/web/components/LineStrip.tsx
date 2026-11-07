@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import type { LineStageId, LineStageSummary, LineSummary } from "@shared/line.ts";
 import { LINE_STAGES, LINE_STAGE_LABELS, lineStage } from "@shared/line.ts";
 import type { LineDensity } from "@shared/protocol.ts";
-import { lineUrgentReadout, nextLineDensity } from "../lib/line-density.ts";
+import { lineUrgentReadout, nextLineDensity, type LineChoice } from "../lib/line-density.ts";
 import { lineStageHasDrawer } from "../lib/line-targets.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -132,7 +132,7 @@ export function LineStrip({
    * because of a missing prop. The product default lives in `UI_CONFIG_DEFAULTS`, where
    * one line decides it, and `App` passes it in.
    */
-  density?: LineDensity;
+  density?: LineChoice;
   /**
    * Which stage's drawer is showing, or null. The strip does not own this - App does - and
    * it is passed IN rather than held here because the drawer is a sibling of the strip, not

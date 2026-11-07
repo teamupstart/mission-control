@@ -4091,6 +4091,10 @@ body {
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
 .is-desktop .bl-planner-pop,
+/* The backlog Filter menu. It is fixed to the viewport and opens ABOVE its button when there
+   is no room below, clamped to the top of the window - which is the bar. Its rows are the
+   only way to set or clear a backlog filter. */
+.is-desktop .bl-filter-pop,
 /* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
    the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
    entries above were each added after it failed. It is a scrollable panel whose only control

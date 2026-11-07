@@ -117,6 +117,7 @@ export function LineStrip({
   stageRef,
   onStage,
   onDensity,
+  preview = false,
 }: {
   /** The daemon's fold, or null before the first snapshot lands. */
   summary: LineSummary | null;
@@ -155,6 +156,13 @@ export function LineStrip({
    * `renderToStaticMarkup` tests and the tour render the strip without wiring a store.
    */
   onDensity?: (next: LineDensity) => void;
+  /**
+   * A picture of the strip - the Settings preview - rather than the fleet's own. It does not
+   * register as the See work tour's `see-work:line` target: a tour started from Settings
+   * would otherwise find this copy, and lose it when the page changes to the fleet, in place
+   * of the strip the tour is about.
+   */
+  preview?: boolean;
 }): React.JSX.Element | null {
   const tourRef = useTourTargetRef<HTMLElement>("see-work:line");
   // Switched off in Settings. Nothing at all rather than a zero-height band: an empty `nav`
@@ -172,7 +180,7 @@ export function LineStrip({
 
   return (
     <nav
-      ref={tourRef}
+      ref={preview ? undefined : tourRef}
       className={`line${condensed ? " is-condensed" : ""}`}
       aria-label="The Line"
     >

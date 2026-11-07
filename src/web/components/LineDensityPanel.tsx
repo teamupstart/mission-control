@@ -132,7 +132,7 @@ function LinePreview({ density }: { density: LineDensity }): React.JSX.Element {
           </p>
         ) : (
           <div style={{ zoom, width: PREVIEW_NATURAL_WIDTH }}>
-            <LineStrip summary={PREVIEW_LINE_SUMMARY} density={density} onStage={noop} />
+            <LineStrip summary={PREVIEW_LINE_SUMMARY} density={density} onStage={noop} preview />
           </div>
         )}
       </div>

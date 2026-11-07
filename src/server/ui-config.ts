@@ -41,6 +41,21 @@ function migrateRetiredLayout(raw: unknown): unknown {
  * from a build before this key existed. A missing key on an existing record is therefore an
  * explicit off migration, while `undefined` still reaches the schema's shipped true default.
  */
+/**
+ * The one build that stored Disabled as a third density (#1399) wrote `lineDensity: "hidden"`.
+ * This one keeps that as its own key, `lineHidden`, because a third density fails every UI
+ * preference on any daemon before it (see `LINE_DENSITIES`) - so a stored "hidden" is moved
+ * across rather than refused, or the same failure would land on this build instead. The
+ * density it was switched off from was never recorded, so the shipped one stands in.
+ */
+function migrateHiddenLineDensity(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const stored = raw as Record<string, unknown>;
+  return stored.lineDensity === "hidden"
+    ? { ...stored, lineDensity: UI_CONFIG_DEFAULTS.lineDensity, lineHidden: true }
+    : raw;
+}
+
 function migrateGuidedTour(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const stored = raw as Record<string, unknown>;
@@ -82,7 +97,7 @@ export function getUiConfig(persistMigration = true): UiConfig {
   // marker still means "written before this build".
   const migrated = stored === undefined
     ? {}
-    : seedHiddenDisplayItems(migrateGuidedTour(migrateRetiredLayout(stored)));
+    : seedHiddenDisplayItems(migrateGuidedTour(migrateHiddenLineDensity(migrateRetiredLayout(stored))));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
     persistUiConfig(config, stored, false);

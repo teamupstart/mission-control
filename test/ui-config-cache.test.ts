@@ -222,6 +222,10 @@ test("a cached Disabled Line survives a cold paint, and only a real true switche
   store.set("mission-control.ui", JSON.stringify({ lineHidden: true, lineDensity: "expanded" }));
   assert.equal(readCache().lineHidden, true);
   assert.equal(readCache().lineDensity, "expanded", "switching off keeps the density to return to");
+  // A cache from the build that stored Disabled as a density still reads as switched off.
+  store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineHidden, true);
+  assert.equal(readCache().lineDensity, "condensed");
   store.set("mission-control.ui", JSON.stringify({ lineHidden: "yes" }));
   assert.equal(readCache().lineHidden, false);
   store.clear();

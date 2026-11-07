@@ -300,6 +300,20 @@ test("Disabled Line is stored as its own key, so a daemon from before it still o
   assert.equal("lineHidden" in older, false);
 });
 
+test("a Disabled Line stored as lineDensity \"hidden\" by #1399 is moved to lineHidden, not refused", () => {
+  openDb()
+    .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
+    .run("ui", JSON.stringify({ layout: "console", lineDensity: "hidden" }));
+  const config = getUiConfig();
+  assert.equal(config.lineHidden, true);
+  assert.equal(config.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(config.layout, "console", "the rest of the record survived the move");
+  // Persisted, so a daemon from before `lineHidden` reading this state never sees "hidden".
+  const raw = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
+  assert.equal(raw.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
+  assert.equal(raw.lineHidden, true);
+});
+
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {
   // Forward-compatibility: a value written by a newer build must not throw an older one.
   openDb()

@@ -21,10 +21,12 @@ export const MAX_SESSION_FILE_ENTRIES = 10_000;
 /**
  * Where the `mockups` skill keeps a session's mock-ups, git-ignored by its own `.gitignore`.
  *
- * Mock-ups are for looking at, not for shipping. The skill makes this directory ignore itself
- * (`docs/mockups/.gitignore` holding `*`), so nothing in it shows in `git status`, is staged
- * by `git add -A`, or is captured in a workflow's review snapshot - which would otherwise
- * carry an untracked mock-up into "commit everything that was reviewed". The listing below
+ * Mock-ups are for looking at, not for shipping. The skill keeps every mock-up here
+ * git-ignored - a `docs/mockups/.gitignore` holding `*` when the repository has none of its
+ * own, each path verified with `git check-ignore`, and the checkout's local `info/exclude` as
+ * the fallback - so nothing in it shows in `git status`, is staged by `git add -A`, or is
+ * captured in a workflow's review snapshot, which would otherwise carry an untracked mock-up
+ * into "commit everything that was reviewed". The listing below
  * still reports the files, because a mock-up the operator cannot open is no mock-up at all.
  *
  * Only this one directory is listed through its ignore rule, and only what a mock-up can be.

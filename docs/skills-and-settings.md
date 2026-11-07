@@ -179,13 +179,14 @@ and names each checkout-relative path on its own line, such as
 Files tab and previews the page or image inline at the foot of the turn, as
 [Message formatting](ui.md#message-formatting) describes.
 
-**Mock-ups are not committed unless a plan needs them.** The session makes `docs/mockups/`
-ignore itself with a `docs/mockups/.gitignore` holding `*`, so nothing in it appears in
-`git status`, is staged by `git add -A`, or is captured in a workflow's review snapshot - the
-snapshot a workflow's pull request step commits. Before writing each mock-up the session confirms
-with `git check-ignore` that its path is ignored. Where the repository's own rules defeat the
-marker, it adds `docs/mockups/` to the checkout's local `info/exclude`, which is never committed,
-and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
+**Mock-ups are not committed unless a plan needs them.** Every mock-up under `docs/mockups/` must
+be git-ignored before it is written, so it never appears in `git status`, is never staged by
+`git add -A`, and is never captured in a workflow's review snapshot - the snapshot a workflow's
+pull request step commits. When `docs/mockups/.gitignore` does not exist yet, the session creates
+it holding `*`; a repository's own `docs/mockups/.gitignore` is left as it is and may not ignore
+anything, so the marker alone proves nothing. Either way, the session confirms with
+`git check-ignore` that each mock-up path is ignored before writing it. Where it is not, it adds
+`docs/mockups/` to the checkout's local `info/exclude`, which is never committed, and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
 another name. Before presenting mock-ups, it checks again that every `docs/mockups/` path it names
 is ignored and that git has nothing to commit there. The Files list shows the ignored HTML pages
 and browser images in `docs/mockups/` anyway. It is the only ignored directory it lists, and the

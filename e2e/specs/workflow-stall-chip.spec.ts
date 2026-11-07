@@ -67,20 +67,29 @@ async function shoot(target: Page | Locator, page: Page, name: string): Promise<
   console.log(`CAPTURED e2e/.artifacts/workflow-stall-chip/${name}.png`);
 }
 
-/** Dispatch one agent with no workflow, and wait for its opening instruction to be the objective. */
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
+/**
+ * Dispatch one agent with no workflow, and wait for its opening instruction to be the objective.
+ * Any session already live is passed in `known`, so a second dispatch waits on the new one.
+ */
+async function dispatch(
+  page: Page,
+  daemon: DaemonHandle,
+  objective = OBJECTIVE,
+  known: ReadonlySet<string> = new Set(),
+): Promise<string> {
   await page.getByRole("button", { name: "Dispatch", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
-  await dialog.getByPlaceholder("What should this agent do?").fill(OBJECTIVE);
+  await dialog.getByPlaceholder("What should this agent do?").fill(objective);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
 
   let sessionId = "";
   await expect.poll(async () => {
-    const live = (await api<SessionView[]>(daemon, "/api/sessions")).find((s) => s.state !== "exited");
+    const live = (await api<SessionView[]>(daemon, "/api/sessions"))
+      .find((s) => s.state !== "exited" && !known.has(s.id));
     sessionId = live?.id ?? "";
     return live?.state ?? "";
   }, { message: "the dispatched session should settle", timeout: 60_000 }).toBe("idle");
@@ -90,7 +99,7 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
 }
 
 /** A published one-reviewer workflow whose reviewer passes, so a submitted run can finish. */
-async function publishWorkflow(daemon: DaemonHandle, name = WORKFLOW): Promise<void> {
+async function publishWorkflow(daemon: DaemonHandle, name = WORKFLOW): Promise<string> {
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: `${name} reviewer`,
     guidanceMarkdown: `# ${name} reviewer\n\nE2E_PASS_VERDICT`,
@@ -110,7 +119,12 @@ async function publishWorkflow(daemon: DaemonHandle, name = WORKFLOW): Promise<v
       ],
     },
   });
-  await api(daemon, `/api/workflows/${workflow.workflow.id}/publish`, { expectedDraftRevision: 1 });
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 1 },
+  );
+  return published.version.id;
 }
 
 /** Console layout, the one session's detail open. */
@@ -259,6 +273,111 @@ test.describe("a follow-up judged as needing more context", () => {
     await expect(chip).not.toHaveClass(/\bstalled\b/);
     await expect(chip).toHaveAccessibleDescription(CHIP_ARMED);
     await expect(chip.locator(".wbc-mark")).toHaveText(ARMED_MARK);
+  });
+});
+
+test.describe("two stalled sessions on the same version", () => {
+  test.use({ daemonEnv: { MISSION_GOAL_POLL_MS: "20", MISSION_GOAL_REFRESH_MS: "20" } });
+
+  /** Send a human follow-up through the composer's outbox route, then wait for the stall. */
+  async function stallWithFollowUp(daemon: DaemonHandle, sessionId: string): Promise<void> {
+    const sent = await fetch(`${daemon.baseURL}/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: FOLLOW_UP, origin: "human" }),
+    });
+    expect(sent.ok, await sent.clone().text()).toBe(true);
+    await expect.poll(async () => {
+      const session = (await api<SessionView[]>(daemon, "/api/sessions")).find((s) => s.id === sessionId)!;
+      const goal = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);
+      const cycle = session.workCycle;
+      return session.state === "idle" && session.pendingTurns.length === 0
+        && goal.promptRevision >= 2 && goal.relationship === "unclear"
+        && goal.resolvedPromptRevision === goal.promptRevision
+        && Boolean(cycle && cycle.generation >= 1 && !cycle.active && cycle.completedAt !== null);
+    }, { message: `session ${sessionId} should stall as needing more context`, timeout: 60_000 }).toBe(true);
+  }
+
+  test("switching sessions resets a failed or in-flight accept", async ({ dashboard, daemon }) => {
+    test.setTimeout(180_000);
+    await api(daemon, "/api/foreman/config", { enabled: true }, "PUT");
+    const first = await dispatch(dashboard, daemon, OBJECTIVE);
+    const second = await dispatch(dashboard, daemon, "Ship the second stalled session", new Set([first]));
+    const versionId = await publishWorkflow(daemon);
+    for (const sessionId of [first, second]) {
+      await api(daemon, "/api/workflow-bindings", {
+        workflowVersionId: versionId,
+        sessionId,
+        triggerMode: "foreman_complete",
+        deliveryMode: "preview",
+      });
+      await stallWithFollowUp(daemon, sessionId);
+    }
+
+    // Opened with no session pinned, so the Session select is live: the one path on which a
+    // single mounted dialog moves between two stalled sessions on the same bound version.
+    await dashboard.goto(`${daemon.baseURL}/#/runs`);
+    await dashboard.reload();
+    await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
+    const sessionSelect = dialog.getByRole("combobox", { name: "Session", exact: true });
+    await expect(sessionSelect).toBeEnabled();
+    const notice = dialog.getByRole("status", { name: "Workflow waiting on the goal" });
+    const accept = notice.getByRole("button", { name: "Accept objective as is", exact: true });
+
+    // The first session's accept is refused.
+    await sessionSelect.selectOption(first);
+    await expect(dialog.getByRole("combobox", { name: "Published workflow" })).toHaveValue(versionId);
+    await expect(notice).toContainText(STALL);
+    const firstRoute = `**/api/sessions/${encodeURIComponent(first)}/goal/accept`;
+    await dashboard.route(firstRoute, (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "injected failure" }) }),
+    );
+    await accept.click();
+    await expect(notice.getByRole("alert")).toHaveText("The objective was not accepted: injected failure.");
+
+    // The second session, same bound version: its own notice, without the first one's error.
+    await sessionSelect.selectOption(second);
+    await expect(dialog.getByRole("combobox", { name: "Published workflow" })).toHaveValue(versionId);
+    await expect(notice).toContainText(STALL);
+    await expect(notice.getByRole("alert")).toHaveCount(0);
+    await expect(accept).toBeEnabled();
+    await shoot(dialog, dashboard, "05-session-switch-clean-notice");
+    await dashboard.unroute(firstRoute);
+
+    // An accept still in flight for the first session must not disable the second's.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await dashboard.route(firstRoute, async (route) => {
+      await held;
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "late" }) });
+    });
+    await sessionSelect.selectOption(first);
+    await expect(notice).toContainText(STALL);
+    await accept.click();
+    await expect(accept).toBeDisabled();
+    await sessionSelect.selectOption(second);
+    await expect(notice).toContainText(STALL);
+    await expect(accept).toBeEnabled();
+    const lateDone = dashboard.waitForEvent("requestfinished", (request) =>
+      new URL(request.url()).pathname === `/api/sessions/${encodeURIComponent(first)}/goal/accept`);
+    release();
+    await lateDone;
+    // The first session's late refusal lands after the switch, and must not surface here.
+    await dashboard.evaluate(() => new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50)))));
+    await expect(notice.getByRole("alert")).toHaveCount(0);
+    await expect(accept).toBeEnabled();
+    await dashboard.unroute(firstRoute);
+
+    // And the second session's accept still works, through the real route.
+    await accept.click();
+    await expect(notice).toHaveCount(0);
+    const resolved = await api<Goal>(daemon, `/api/sessions/${second}/goal`);
+    expect(resolved.relationship).toBe("steer");
+    expect(resolved.resolvedPromptRevision).toBe(resolved.promptRevision);
+    const untouched = await api<Goal>(daemon, `/api/sessions/${first}/goal`);
+    expect(untouched.relationship).toBe("unclear");
   });
 });
 

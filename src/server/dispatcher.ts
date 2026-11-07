@@ -53,6 +53,7 @@ import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import {
+  personaLaunchRefusal,
   pipelineHostStanding,
   resolveTaskPersona,
   withTaskPersona,
@@ -1820,7 +1821,7 @@ export class Dispatcher {
     const resolved = refusal
       ? { ok: false as const, error: refusal }
       : resolveTaskPersona(this.deps.persona, task.personaId);
-    if (!resolved.ok) throw new Error(`${resolved.error}; choose another Persona, or none, under Advanced`);
+    if (!resolved.ok) throw new Error(personaLaunchRefusal(resolved.error));
     return resolved.persona;
   }
 

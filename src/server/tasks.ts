@@ -61,7 +61,12 @@ import {
   taskKindPersonaRefusal,
   taskRequeueRefusal,
 } from "@shared/task.ts";
-import { resolveTaskPersona, type PersonaLookup } from "./instructions/persona.ts";
+import {
+  isPersonaLaunchRefusal,
+  personaLaunchRefusal,
+  resolveTaskPersona,
+  type PersonaLookup,
+} from "./instructions/persona.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
@@ -3350,7 +3355,14 @@ export class TaskManager {
       // click reads the refusal here, and the Dispatcher refuses it again for every other door.
       const personaBlock = t.personaId ? this.personaProblem(t.kind, t.personaId) : null;
       if (personaBlock) {
-        return { ok: false, error: `${personaBlock}; choose another Persona, or none, under Advanced`, task: t };
+        // Recorded on the task, which stays in the backlog, because the refusal will not change
+        // until the operator does something: `readyBacklog` passes over a task with an error, so
+        // autopilot cannot pick it again every tick and hold up the work behind it, and the card
+        // says why. Choosing another Persona clears it (see `prepareUpdate`).
+        const error = personaLaunchRefusal(personaBlock);
+        const refused = { ...t, error, updatedAt: Date.now() };
+        this.registry.upsertTask(refused);
+        return { ok: false, error, task: refused };
       }
       // Stacked pull requests. A task whose start rests on a readiness stamp is revalidated
       // and pinned to its prerequisite's current head here; every other dispatch records that
@@ -4088,6 +4100,9 @@ export class TaskManager {
       effort,
       advisorModel,
       personaId,
+      // A recorded Persona refusal is answered by choosing another Persona (or none), so that
+      // edit returns the task to autopilot. Any other recorded error is left for its own fix.
+      ...(personaId !== t.personaId && isPersonaLaunchRefusal(t.error) ? { error: null } : {}),
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
       workflowId,

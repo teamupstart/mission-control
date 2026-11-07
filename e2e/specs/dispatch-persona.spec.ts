@@ -254,10 +254,22 @@ test("a shelved task whose Persona was archived or deleted keeps it visible, ref
   await expectContentClearsBorder(editor);
   await shoot(page, "07-archived-persona-editor", editor);
   // Dispatch now is refused on the form, with the reason, and the task stays shelved.
+  const refusal = "the Persona Archived Reviewer is archived; choose another Persona, or none, under Advanced";
   await editor.getByRole("button", { name: "Dispatch now" }).click();
-  await expect(editor.locator(".dispatch-error"))
-    .toContainText("the Persona Archived Reviewer is archived; choose another Persona, or none, under Advanced");
+  await expect(editor.locator(".dispatch-error")).toContainText(refusal);
+  // The refusal is recorded on the shelved card, which is also what keeps autopilot from
+  // picking the same task again every tick ahead of the work behind it.
+  await page.keyboard.press("Escape");
+  await expect(editor).toBeHidden();
+  const archivedCard = page.locator(".bl-card", { hasText: archivedTask.title });
+  await expect(archivedCard.locator(".bl-recovery")).toContainText(refusal);
+  await reopen(archivedTask.title);
+  await advancedOf(editor).click();
   await clearAndSave(archivedTask);
+  // Choosing another Persona - here, none - answers the refusal and returns the task.
+  await expect(archivedCard.locator(".bl-recovery")).toHaveCount(0);
+  expect(((await (await fetch(`${daemon.baseURL}/api/tasks`)).json()) as Task[])
+    .find((candidate) => candidate.id === archivedTask.id)?.error).toBeNull();
 
   // Deleted: kept as an unavailable choice rather than silently reading as No Persona.
   await reopen(deletedTask.title);

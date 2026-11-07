@@ -16,6 +16,19 @@ import { appendStandingSections } from "./compose.ts";
 /** Reads any Persona the Library can name, built-in or authored, or null. */
 export type PersonaLookup = (id: string) => Persona | null;
 
+/** What every Persona launch refusal tells the operator to do, after saying why. */
+const PERSONA_REFUSAL_REMEDY = "choose another Persona, or none, under Advanced";
+
+/** A launch refusal for a Persona problem, as the task's error and the dispatch answer. */
+export function personaLaunchRefusal(problem: string): string {
+  return `${problem}; ${PERSONA_REFUSAL_REMEDY}`;
+}
+
+/** Whether a recorded task error is a Persona launch refusal, which a new Persona answers. */
+export function isPersonaLaunchRefusal(error: string | null): boolean {
+  return error !== null && error.endsWith(`; ${PERSONA_REFUSAL_REMEDY}`);
+}
+
 /** The heading the Persona section of the standing instructions opens with. */
 export const TASK_PERSONA_HEADING = "## Persona";
 

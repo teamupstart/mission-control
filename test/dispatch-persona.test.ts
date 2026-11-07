@@ -33,6 +33,7 @@ const { DispatchSchema, UpdateTaskSchema, McpTaskConfigurationSchema, McpUpdateT
 );
 const { TASK_KINDS } = await import("../src/shared/types.ts");
 const { TASK_KIND_BEHAVIOR, taskKindPersonaRefusal } = await import("../src/shared/task.ts");
+const { readyBacklog } = await import("../src/shared/backlog.ts");
 const { appendStandingSections } = await import("../src/server/instructions/compose.ts");
 const { TASK_PERSONA_HEADING, pipelineHostStanding, resolveTaskPersona, taskPersonaSection, withTaskPersona } = await import(
   "../src/server/instructions/persona.ts"
@@ -250,10 +251,28 @@ test("a Persona archived while the task waited refuses the dispatch on the click
   tasks.registerPersonaLookup((id) => library.get(id) ?? null);
   const task = tasks.create({ ...shelf, personaId: REVIEWER.id });
   library.set(REVIEWER.id, { ...REVIEWER, archivedAt: 9 });
+  const behind = tasks.create({ ...shelf, title: "Behind it" });
   const r = await tasks.dispatch(task.id);
   assert.equal(r.ok, false);
-  assert.match(r.ok ? "" : r.error, /the Persona Reviewer is archived; choose another Persona, or none, under Advanced/);
-  assert.equal(registry.getTask(task.id)?.status, "backlog");
+  const refusal = "the Persona Reviewer is archived; choose another Persona, or none, under Advanced";
+  assert.equal(r.ok ? "" : r.error, refusal);
+  // Recorded on the task, which stays shelved: autopilot's ready set passes over it, so it
+  // cannot be picked again every tick ahead of the work behind it, and its card says why.
+  const refused = registry.getTask(task.id)!;
+  assert.equal(refused.status, "backlog");
+  assert.equal(refused.error, refusal);
+  assert.equal(getTask(task.id)?.error, refusal, "the refusal is durable");
+  // Scoped to this case's two tasks: earlier cases leave their own shelved tasks in the store.
+  const ready = () => readyBacklog(registry.listTasks(), null)
+    .map((t) => t.id)
+    .filter((id) => id === task.id || id === behind.id);
+  assert.deepEqual(ready(), [behind.id]);
+
+  // An unrelated edit leaves it; choosing another Persona answers it and returns the task.
+  assert.equal((await tasks.update(task.id, { priority: "high" })).task?.error, refusal);
+  library.set("persona-other", persona({ id: "persona-other", name: "Other", normalizedName: "other" }));
+  assert.equal((await tasks.update(task.id, { personaId: "persona-other" })).task?.error, null);
+  assert.deepEqual(new Set(ready()), new Set([task.id, behind.id]));
 });
 
 // ---- the launch ----

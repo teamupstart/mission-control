@@ -165,10 +165,12 @@ session's **See standing instructions** chip shows what the launch actually sent
 that record.
 
 The task stores the Persona's id, not a copy of its text. Like the model and effort, a backlogged
-task reads the Persona as it stands when it launches, so an edit made while the task waits
-reaches it. A Persona archived or deleted while the task waits refuses the dispatch with the
-reason; reopen the task and choose another Persona or **No Persona**. Saving a task with an
-archived Persona it already carries is allowed, so an unrelated edit is never blocked by it.
+task reads the Persona as it stands when it launches, so an edit made while the task waits reaches
+it. A Persona archived or deleted while the task waits refuses the dispatch with the reason. The
+reason stays on the task's backlog card and backlog autopilot passes the task over, so it cannot
+hold up the work behind it; reopen the task and choose another Persona or **No Persona**, which
+clears the reason and returns the task to autopilot. Saving a task with an archived Persona it
+already carries is allowed, so an unrelated edit is never blocked by it.
 
 A Persona is only delivered at launch, so a task that names one cannot be
 [handed to an agent that is already running](#hand-a-shelved-task-to-an-agent-thats-already-running):

@@ -803,6 +803,8 @@ export interface ResidentMcpLaunch {
 }
 
 export interface SdkLaunchOptions {
+  /** Profile-owned state, shared across runs and recreated on SDK restore. */
+  residentStateDir?: string;
   residentCompaction?: { threshold: number; /** Previously measured native limit, replayed on resume. */ tokenLimit?: number };
   cwd: string;
   /** Disposable Mission Control state home shared by this session's agent and MCP children. */

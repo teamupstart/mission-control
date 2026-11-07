@@ -108,6 +108,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PATCH", "/api/residents/profiles/:id", "resident.profile_edit", "residents"],
   ["DELETE", "/api/residents/profiles/:id", "resident.profile_archive", "residents"],
   ["POST", "/api/residents/profiles/:id/launch", "resident.launch", "residents"],
+  ["POST", "/api/residents/profiles/:id/state/reset", "resident.state_reset", "residents"],
   ["PUT", "/api/residents/skill-sources", "resident.skills_configure", "residents"],
   ["POST", "/api/residents/skills/rescan", "resident.skills_scan", "residents"],
   ["POST", "/api/residents/mcp-servers", "resident.mcp_server_create", "residents"],

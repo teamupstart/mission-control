@@ -807,6 +807,27 @@ launch refusals outside that resource phase also remain failed, and once any lau
 exists recovery keeps the conservative behavior below instead of assuming whether an agent or
 checkout survived.
 
+### Search and filter the backlog
+
+The Board's Backlog column and the Line's **Backlog** drawer both carry a search button and a
+**Filter** menu in their header.
+
+- **Search** opens a field that matches every word you type against a task's title, task text,
+  labels, and repository name, ignoring case. Matching words are highlighted in each title.
+  `Esc` in the field, or the search button again, clears the search and hides the field.
+- **Filter** opens a menu with two groups. **Dependencies** offers **Ready to start** (no unmet
+  dependency) and **Blocked** (at least one). **Autopilot** offers **Autopilot on** and
+  **Autopilot off**, read from each task's own [autopilot switch](#hold-a-backlog-item-back).
+  Values in one group widen the view, the two groups narrow each other, and each row's count is
+  how many tasks it would show with the search and the other group applied. **Ready to start**
+  with **Autopilot on** is the list autopilot schedules from.
+
+While anything is filtered, the header count reads `3 of 23`, each active filter shows as a chip
+you can click to remove, and a line says how many tasks are hidden with a **Clear** link. The
+filter only hides tasks: the order, the **next up** mark, and what autopilot takes next do not
+change. Reordering, selecting, and `Cmd`-`A` act on the cards you can see. Search and filters
+reset when the dashboard reloads.
+
 ### Edit or delete several shelved tasks at once
 
 On the [Board](ui.md#layout-console-or-board-in-settings)'s Backlog column, **select several

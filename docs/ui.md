@@ -12,17 +12,18 @@ cannot act on the shortcut.
 
 # The Line (the pipeline strip above the fleet)
 
-A permanent strip sits above every fleet layout: **intake → backlog → working → review
-→ decide → shipped**. Six stages, wired left to right, each carrying a glyph, a count and one
-sentence - the fleet's whole pipeline in one glance, in the order work actually moves through
-it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
+Unless you switch it off, a strip sits above every fleet layout: **intake → backlog →
+working → review → decide → shipped**. Six stages, wired left to right, each carrying a
+glyph, a count and one sentence - the fleet's whole pipeline in one glance, in the order work
+actually moves through it. A stage turns **amber when it is waiting on you**, and the wire feeding it lights with it.
 
-It draws at one of two **densities**, and the shipped default is the shorter one:
+It draws at one of two **densities**, or not at all, and the shipped default is the shorter one:
 
 | Density | Band | What it draws |
 |---------|------|---------------|
 | **Condensed** (default) | ~38px | One row of six segments: glyph, name, count. No sentences, no wires. Whatever is amber has its sentence promoted to the right of the row, beside that stage's glyph. |
 | **Expanded** | ~86px | Two rows: the same six stages as cards, each with its sentence underneath, wired left to right. |
+| **Disabled** | none | No strip. The fleet starts directly under the top bar, and the stage drawers are not reachable from the fleet. |
 
 The strip is `flex: none` inside a shell that does not scroll, so the **~47px** between the
 two is handed straight to the conversation pane below - about 11% more of the window on a
@@ -30,8 +31,18 @@ two is handed straight to the conversation pane below - about 11% more of the wi
 and each stage's sentence stays in its tooltip and in its accessible name.
 
 Fold it with the **caret at the right of the strip**, with <kbd>Shift+L</kbd> from the fleet,
-or from **Settings → Display → The Line**. All three write one per-machine preference
+or from **Settings → Display → Top bar → The Line**. All three write one per-machine preference
 (`app_config.ui.lineDensity`), so it survives a reload and cannot disagree with itself.
+The settings section draws a live preview of the strip at the selected density above the
+choices, so you can see what each one changes before leaving the page.
+
+**Disabled** is chosen only in Settings. The caret goes with the strip, and <kbd>Shift+L</kbd>
+neither switches the Line off nor back on, so a stray keypress on the fleet cannot undo the
+choice. It is stored as its own preference (`app_config.ui.lineHidden`) beside the density,
+so switching the Line back on returns to the density it was switched off from, and an older
+build reading the same state simply draws the strip rather than failing to load your display
+preferences. The See work tour still shows the strip, condensed, for its first stop while the tour
+runs, without changing the stored preference.
 
 | Stage | The count is | The sentence says | Amber when |
 |-------|--------------|-------------------|------------|
@@ -366,7 +377,8 @@ The `page` kind has exactly one member, and that is a statement about the app ra
 unfinished list: the [Ship log](library-and-line.md#the-ship-log) is the only full page with no door in the
 permanent chrome. The one door it does have is two clicks inside the fleet - the Line's ⚑
 Shipped stage opens its [drawer](#the-stage-drawers), whose header escalates here - so
-<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app.
+<kbd>⌘</kbd><kbd>K</kbd> and its hash are how it is reached from anywhere else in the app, and
+the only way at all while the Line is Disabled.
 Fleet, the Library, Runs and Scouts are one press of the segmented control away, and a
 palette row beside a visible door would only be a second door. Scouts has one anyway,
 because the words an operator reaches for - investigation, findings, evidence, research -
@@ -462,7 +474,8 @@ work tour** in the palette's **Do** group. It teaches
 the operating half of the product and runs an isolated evaluation of `driver.js@1.8.0`. It has
 no resume state, new top-bar control, or chapter beyond this one guided sequence:
 
-1. **Fleet and the Line** spotlights the permanent pipeline strip.
+1. **Fleet and the Line** spotlights the pipeline strip, drawing it condensed for the tour
+   when the Line is Disabled.
 2. **Board View** switches through the existing layout owner and spotlights the real Board.
 3. **Session detail** opens an existing session's Board drill-in and describes Conversation,
    Work queue, Workflows, Diff, and Files as one desk. When the tour starts on an empty fleet,
@@ -783,7 +796,10 @@ available:
   spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
-  The **Board** drills into that same detail when you open a tile. In Console and Board, the
+  The **Board** drills into that same detail when you open a tile. Its outer tracks animate,
+  while the conversation lays out at its final reading width so opening a task does not
+  rewrap its history and displace the initial position at the bottom. New output still
+  leaves intentional scrollback alone. In Console and Board, the
   Diff tab contains the complete checkout diff reader; the tab itself and
   <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:

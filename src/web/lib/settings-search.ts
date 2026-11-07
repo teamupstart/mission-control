@@ -111,7 +111,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "line-density",
     label: "Line density",
-    description: "Fold the pipeline strip to one row, or expand it to read each stage's sentence.",
+    description: "Under Top bar: fold the pipeline strip to one row, expand it to read each stage's sentence, or turn it off.",
     category: "display",
     anchor: "display/line-density",
     keywords: [
@@ -124,6 +124,10 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "expand",
       "vertical space",
       "real estate",
+      "top bar",
+      "shipping bar",
+      "disable",
+      "hide",
     ],
     kind: "jump",
     backup: backupDomains("ui"),

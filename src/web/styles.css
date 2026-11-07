@@ -4091,6 +4091,10 @@ body {
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
 .is-desktop .bl-planner-pop,
+/* The backlog Filter menu. It is fixed to the viewport and opens ABOVE its button when there
+   is no room below, clamped to the top of the window - which is the bar. Its rows are the
+   only way to set or clear a backlog filter. */
+.is-desktop .bl-filter-pop,
 /* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
    the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
    entries above were each added after it failed. It is a scrollable panel whose only control
@@ -27700,6 +27704,13 @@ span.line-run-prov {
 }
 .console-rail {
   overflow-y: auto;
+  /* The containing block for every absolutely positioned row descendant, above all
+     Tooltip's 1px `.tt-desc`. Unpositioned, those resolved to the nearest positioned
+     ancestor outside this scroller (`main.board` on a drilled-in Board), escaped its clip,
+     and stretched that box's scrollable overflow to the rail's full length. A drilled-in
+     Board computes its vertical overflow to `auto`, so that drew a second, useless
+     scrollbar beside the session detail (#1393). */
+  position: relative;
   border-right: 1px solid var(--border-soft);
   background: color-mix(in oklab, var(--bg-2) 55%, transparent);
 }
@@ -29104,6 +29115,8 @@ span.line-run-prov {
    flex-grow / min-width / opacity move (all numbers or px), so it interpolates cleanly
    both ways with no measuring - see `.board:not([data-focus="none"])` below. */
 .board {
+  --board-rail-width: 320px;
+  container-type: inline-size;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -29123,6 +29136,8 @@ span.line-run-prov {
 .board:not([data-focus="none"]) {
   padding: 0;
   overflow-x: hidden;
+  /* Establish the reading width immediately; only the outer tracks morph. */
+  transition: none;
 }
 /* Collapsed columns and the rail sit flush against the detail pane. */
 .board:not([data-focus="none"]) .board-col + .board-col {
@@ -29159,7 +29174,7 @@ span.line-run-prov {
    rows, and only the divider border the console rail carries. */
 .board:not([data-focus="none"]) .board-col.is-rail {
   flex-grow: 0;
-  min-width: 320px;
+  min-width: var(--board-rail-width);
   opacity: 1;
   border-radius: 0;
   border-color: transparent;
@@ -29428,6 +29443,16 @@ span.line-run-prov {
   flex-grow: 1;
   min-width: 440px;
 }
+/* Lay out the reader at its destination width while the outer track reveals it.
+   Measuring a transcript inside the growing track starts at almost zero width, then
+   crosses the activity-rail breakpoint. That rewraps the cached history after its
+   initial tail positioning and browser anchoring can strand it far above the bottom.
+   Query the Board, not the viewport, so a pinned Residents drawer is accounted for.
+   No scroll correction is needed, and intentional scrollback remains untouched. */
+.board-detail > .cdetail {
+  width: max(440px, calc(100cqw - var(--board-rail-width)));
+  align-self: flex-start;
+}
 @media (prefers-reduced-motion: no-preference) {
   .board {
     transition: padding 0.34s ease;
@@ -29573,6 +29598,8 @@ span.line-run-prov {
   gap: 9px;
   padding: 9px;
   overflow-y: auto;
+  /* Contains its rows' hidden tooltip sentences; see `.console-rail`. */
+  position: relative;
 }
 .board-col-empty {
   margin: 0;
@@ -32506,7 +32533,8 @@ span.line-run-prov {
    the margin separates a later heading from the rows above it, and `:first-child` keeps a
    heading that opens its block tight to the top. */
 .board-card-group-head .settings-subhead,
-.board-card-checklist .settings-subhead {
+.board-card-checklist .settings-subhead,
+.topbar-line-setting .settings-subhead {
   margin: 16px 0 0;
   font-size: 10px;
   font-weight: 620;
@@ -32519,7 +32547,8 @@ span.line-run-prov {
   margin-top: 0;
 }
 .board-card-group-head .settings-blurb,
-.board-card-checklist .settings-blurb {
+.board-card-checklist .settings-blurb,
+.topbar-line-setting .settings-blurb {
   margin: 0 0 2px;
 }
 .board-card-preview {
@@ -32583,6 +32612,48 @@ span.line-run-prov {
 .topbar-preview-stage .topbar-preview,
 .topbar-preview-stage .topbar-preview * {
   cursor: default;
+}
+/* Display > Top bar's Line block sits under the bar's two lists, divided from them like a
+   second group of the same section. */
+.topbar-line-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 22px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+/* Display > Top bar > The Line's preview: the real strip, laid out at a fleet window's width and
+   zoomed into the stage by `LinePreview`. Its page margin is the gap above the board, which
+   inside a framed stage is just a lopsided border. Disabled has no strip to draw, so the
+   stage holds a dashed band the height of a condensed strip and says what is missing. */
+.line-preview-stage {
+  overflow: hidden;
+  margin-bottom: 12px;
+  /* The card and bar previews' stage, restated rather than borrowed: specs reach those
+     previews through `.board-card-preview-stage`, and a third match would be ambiguous. */
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.line-preview-stage .line {
+  margin: 0;
+}
+.line-preview-stage .line-stage,
+.line-preview-stage .line-stage * {
+  cursor: default;
+}
+.line-preview-off {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  margin: 0;
+  border: 1px dashed var(--border-soft);
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 12px;
 }
 .topbar-customizer {
   display: grid;
@@ -38281,3 +38352,221 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-selected > li > button { margin-left: auto; }
 .resident-mcp-add { display: flex; gap: 12px; align-items: end; }
 .resident-mcp-add .field { flex: 1; min-width: 0; }
+
+.resident-state { font-size: 12px; }
+.resident-state-path { overflow-wrap: anywhere; }
+.resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.resident-state ul { max-height: 240px; overflow: auto; }
+
+/* ---- backlog search and filters ----
+
+   Shared by the Board's Backlog column and the Line's Backlog drawer (BacklogFilterControls).
+   The buttons sit in the host's header so its height does not change while nothing is
+   filtered; the strip below the header appears only while a search or filter is on. The menu
+   is fixed to the viewport because both hosts clip their own overflow. */
+.bl-filter-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Backlog head wraps rather than clipping: its width control keeps its space while
+   invisible, so a minimum-width column has no room for the filter buttons beside the count.
+   They come last, so they are what moves to a second line. */
+.board-backlog > .board-col-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.bl-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 11px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.bl-filter-btn.is-on {
+  color: var(--fg);
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 16%, var(--panel));
+}
+.bl-filter-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.bl-filter-badge {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--working);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.bl-filter-pop {
+  position: fixed;
+  z-index: 60;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-deep);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
+}
+.bl-filter-head {
+  margin: 4px 6px 2px;
+  color: var(--dim);
+  font: 700 10px var(--sans);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.bl-filter-row,
+.bl-filter-reset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.bl-filter-row:hover,
+.bl-filter-row:focus-visible,
+.bl-filter-reset:hover,
+.bl-filter-reset:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.bl-filter-box {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+}
+.bl-filter-row.is-on .bl-filter-box {
+  border-color: var(--working);
+  background: var(--working);
+  box-shadow: inset 0 0 0 2px var(--panel-deep);
+}
+.bl-filter-label {
+  flex: 1;
+}
+.bl-filter-count {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.bl-filter-reset {
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0 0 6px 6px;
+  color: var(--working);
+}
+.bl-filter-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bl-filter-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--dim);
+}
+.bl-filter-search:focus-within {
+  border-color: var(--working);
+  /* The input drops its own outline, so the field draws the keyboard focus ring instead. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 28%, transparent);
+}
+.bl-filter-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  outline: none;
+}
+.bl-filter-search input::placeholder {
+  color: var(--dim);
+}
+.bl-filter-x {
+  padding: 2px 5px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.bl-filter-x:hover {
+  color: var(--fg);
+}
+.bl-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.bl-filter-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--working);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 14%, var(--panel));
+  color: var(--fg);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-chip span {
+  margin-left: 3px;
+  color: var(--muted);
+}
+.bl-filter-hidden {
+  margin: 2px 0 0;
+  padding: 7px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-align: center;
+}
+.bl-filter-hidden.line-bl-hidden {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  border-color: var(--border-soft);
+}
+.bl-filter-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--working);
+  font: inherit;
+  cursor: pointer;
+}
+.bl-hit {
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--find) 40%, transparent);
+  color: inherit;
+}

@@ -94,3 +94,14 @@ export function deleteResidentMcpServer(id: string, expectedRevision: number): P
     body: JSON.stringify({ expectedRevision }),
   });
 }
+
+export interface ResidentStateView { directory: string; files: Array<{ path: string }> }
+export function fetchResidentState(id: string): Promise<ResidentStateView> {
+  return residentRequest(`/api/residents/profiles/${encodeURIComponent(id)}/state`, { method: "GET" });
+}
+export function fetchResidentStateFile(id: string, path: string): Promise<{ text: string }> {
+  return residentRequest(`/api/residents/profiles/${encodeURIComponent(id)}/state/file?path=${encodeURIComponent(path)}`, { method: "GET" });
+}
+export function resetResidentState(id: string): Promise<{ ok: true }> {
+  return residentRequest(`/api/residents/profiles/${encodeURIComponent(id)}/state/reset`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+}

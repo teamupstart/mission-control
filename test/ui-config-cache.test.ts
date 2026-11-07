@@ -82,6 +82,8 @@ test("a written cache round-trips", () => {
     residentDrawerPinned: true,
     conversationView: "chat",
     lineDensity: "expanded",
+    // Off its default, so it cannot round-trip by falling back.
+    lineHidden: true,
     // Not Default, so it cannot round-trip by falling back to the default.
     skin: "daylight",
     // Off on both, so neither round-trips by falling back to its default.
@@ -121,6 +123,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.residentDrawerPinned, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
+  assert.equal(config.lineHidden, true);
   assert.equal(config.skin, "daylight");
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
@@ -203,12 +206,30 @@ test("a rendering this build does not ship reads as the shipped one", () => {
 });
 
 test("a density this build does not ship reads as the shipped one", () => {
-  // The third member the study drew and held in reserve - `hidden`, at zero height - is
-  // the realistic version of this: a profile that used a build which shipped it must not
-  // paint a strip this build cannot draw, and must not PUT the value back as if it were
-  // real. It falls to the shipped default, which is a strip you can see.
+  // A profile that used a build which shipped some other density must not paint a strip
+  // this build cannot draw, and must not PUT the value back as if it were real. It falls
+  // to the shipped default, which is a strip you can see. `hidden` included: switching the
+  // Line off is `lineHidden`, never a density.
+  for (const lineDensity of ["hairline", "hidden"]) {
+    store.set("mission-control.ui", JSON.stringify({ lineDensity }));
+    assert.equal(readCache().lineDensity, "condensed");
+  }
+});
+
+test("a cached Disabled Line survives a cold paint, and only a real true switches it off", () => {
+  // Dropping it here would draw the strip on the first frame and remove it the moment the
+  // daemon answered, stepping the whole fleet up by a band on every load.
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: true, lineDensity: "expanded" }));
+  assert.equal(readCache().lineHidden, true);
+  assert.equal(readCache().lineDensity, "expanded", "switching off keeps the density to return to");
+  // A cache from the build that stored Disabled as a density still reads as switched off.
   store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineHidden, true);
   assert.equal(readCache().lineDensity, "condensed");
+  store.set("mission-control.ui", JSON.stringify({ lineHidden: "yes" }));
+  assert.equal(readCache().lineHidden, false);
+  store.clear();
+  assert.equal(readCache().lineHidden, false);
 });
 
 test("a skin this build does not ship reads as Default, and a cached one paints first", () => {

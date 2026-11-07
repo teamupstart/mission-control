@@ -177,8 +177,10 @@ for (const [agent, mechanism] of [
     assert.doesNotMatch(start.prompt, /release branches and flag regressions/, "the persona is not turn one");
     const delivery = start.standingInstructions!.delivery;
     assert.equal(delivery.mechanism, mechanism);
+    assert.ok(delivery.text.includes(`/residents/profiles/${created.profile.id}/state`));
+    assert.match(delivery.text, /RESIDENT_STATE_DIR/);
     assert.equal(
-      delivery.text,
+      delivery.text.split("\n\n### Durable resident state")[0],
       [
         `${RESIDENT_STANDING_HEADING}: ${PERSONA.name}`,
         PERSONA.guidanceMarkdown,
@@ -203,7 +205,7 @@ test("a resident without a Persona launches on its profile instructions, and its
   if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
 
   assert.equal(
-    supervisor.starts[0]!.standingInstructions!.delivery.text,
+    supervisor.starts[0]!.standingInstructions!.delivery.text.split("\n\n### Durable resident state")[0],
     `${RESIDENT_STANDING_HEADING}: ${settings.identity.name}\n\n### Profile instructions\n\nSummarize blockers first.`,
   );
   const stored = getResidentRun(outcome.result.run.id)!;
@@ -264,6 +266,7 @@ test("a resume replays the persona the run pinned, after the profile and the Per
 test("the composer adds nothing when every contributor is silent, and keeps a repository mechanism", () => {
   const repository = { text: "rules", mechanism: "claude-sdk-system-prompt-append" as const, sources: [] };
   const run = {
+    profileId: "test-profile",
     persona: { personaId: "p", name: "P", guidanceMarkdown: "" },
     settings: ResidentProfileRevisionSchema.parse({ identity: { name: "n" }, persona: { personaId: "p" } }),
     runInstructions: "",
@@ -274,7 +277,8 @@ test("the composer adds nothing when every contributor is silent, and keeps a re
   );
   const composed = composeResidentLaunch({ run, agent: "claude", runtime: "sdk" }, repository).standing;
   assert.equal(composed.mechanism, "claude-sdk-system-prompt-append");
-  assert.equal(composed.text, `rules\n\n${RESIDENT_STANDING_HEADING}: P`);
+  assert.equal(composed.text.split("\n\n### Durable resident state")[0], `rules\n\n${RESIDENT_STANDING_HEADING}: P`);
+  assert.match(composed.text, /residents\/profiles\/test-profile\/state/);
 });
 
 test("a resident task dispatched without a composer fails rather than starting an agent with no role", async () => {

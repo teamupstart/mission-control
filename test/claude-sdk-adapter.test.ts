@@ -2012,3 +2012,16 @@ test("resumed Claude ledger, session and fleet reconcile with transcript request
     + `${expected.input} input, ${expected.output} output, ${expected.cacheRead} cache-read, `
     + `${expected.cacheWrite} cache-write tokens reconcile with ledger, card/session and fleet after resume`);
 });
+
+test("resident durable memory uses flag settings and the same directory on resume", async () => {
+  for (const resume of [null, "previous-conversation"]) {
+    const { deps, started } = fakeDeps();
+    const handle = await claudeSdkSpec(deps).launch(launchOpts({ residentStateDir: "/state/profile", resume }));
+    const { options } = await started;
+    assert.equal(options.settings?.autoMemoryDirectory, "/state/profile");
+    assert.equal(options.settings?.autoMemoryEnabled, true);
+    assert.equal(options.env.RESIDENT_STATE_DIR, "/state/profile");
+    assert.ok(options.additionalDirectories?.includes("/state/profile"));
+    await handle.stop();
+  }
+});

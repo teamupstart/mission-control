@@ -545,6 +545,31 @@ See [security](security.md#resident-mcp-secrets).
 When a run ends, its copy of the servers and their values, its launch tickets and its Codex
 configuration overlay are removed once its session has stopped.
 
+## Durable profile state
+
+Each profile owns `$MISSION_HOME/residents/profiles/<profile-id>/state/`, independent of its
+repository or run workspace. New runs and SDK restores reuse it. Renaming or editing a profile
+keeps the same state; duplicating one creates a new identity with empty state. Concurrent runs
+of one profile share it, so residents should coordinate writes to ledgers and watermarks.
+
+The run receives `RESIDENT_STATE_DIR` and standing instructions explaining the directory.
+Claude Code receives `autoMemoryDirectory` and `autoMemoryEnabled` in launch-scoped settings,
+using this directory for its `MEMORY.md` and topic files. Existing per-run memories and handmade
+state folders are not automatically imported. Copy desired notes into the profile directory.
+The [Claude memory reference](https://code.claude.com/docs/en/memory#storage-location) describes
+this setting. Codex receives the directory and instructions for explicit notes and ledgers.
+
+Open a saved profile in **Residents**, then **View state** to see its path and files, including
+text previews up to 256 KiB. **Refresh state** reloads the list. **Reset state** asks before
+permanently clearing the files, including auto-memory. Complete and close every run first;
+pausing a loop leaves its session alive, so reset refuses it. Reset keeps profile settings and
+run history. Run completion, pauses, daemon restarts and profile archival retain the state.
+Profiles are archived rather than hard-deleted, so archival retains their state too.
+
+State files are machine-local and are not included in settings snapshots or database recovery
+points. Back them up separately when moving an installation. The existing run history remains
+the source of lifecycle records; no additional run-log file is maintained in this directory.
+
 ## Backups
 
 Resident profiles are part of [automatic settings snapshots](configuration.md#automatic-settings-snapshots).

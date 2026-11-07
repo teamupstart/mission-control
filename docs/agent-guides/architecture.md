@@ -229,6 +229,14 @@ A repo-less resident is the exception to task repository ownership. Its task car
 workspace marker, and `taskHasRepository` excludes it from Git, worktree, retention and repository
 grouping paths. `ResidentManager` owns its per-run directory through the existing run-end events
 and startup reconciliation; removal waits for SDK shutdown and durable session removal.
+Profile state is separate: `residents/state.ts` owns
+`residents/profiles/<profile-id>/state`, never removed by run cleanup. The resident launch
+contributor describes it, and the SDK supervisor derives it from the run's profile identity
+on launch and restore. Drivers expose it and grant directory access; Claude also sets its
+flag-layer auto-memory directory. `ResidentManager.resetState` excludes launch reservations
+while clearing state and refuses all open runs or surviving runtimes, including ended runs.
+Archival retains state, matching the profile's durable history.
+
 
 ## Dispatch runtime
 

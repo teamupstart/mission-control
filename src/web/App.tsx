@@ -88,7 +88,7 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
-import { toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
+import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions } from "./lib/fleet-order.ts";
@@ -371,6 +371,9 @@ export function App(): React.JSX.Element {
   }, [route]);
   const [layout, setLayout] = useLayoutMode();
   const [lineDensity, setLineDensity] = useLineDensity();
+  // Switched off in Settings (Display > Top bar > The Line > Disabled). Its own key, not a
+  // density - see `LINE_DENSITIES` for why an older daemon must never read a third one.
+  const lineHidden = useUiConfig().lineHidden;
   const foreman = useForeman();
   // Owned here rather than by SettingsPage, on the `foreman` precedent: the topbar spend
   // popover and the Cost panel read the same `view` setting, so a local copy in the page
@@ -4469,11 +4472,16 @@ export function App(): React.JSX.Element {
             pull requests that shipped this week, and the strip is where that is said. */}
         <LineStrip
           summary={lineSummary}
-          density={lineDensity}
+          // Switched off draws nothing - except under the See work tour, whose first stop
+          // spotlights this strip and would otherwise point at nothing. It borrows the
+          // condensed row for the length of the tour and writes no preference.
+          density={lineHidden && seeWorkRun ? "condensed" : lineChoice({ lineDensity, lineHidden })}
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}
-          onDensity={setLineDensity}
+          // No caret on a strip the tour borrowed while the Line is off: folding it would send
+          // a density, which the daemon reads as switching the Line back on.
+          onDensity={lineHidden ? undefined : setLineDensity}
         />
 
         {/* A dispatched task with no session now renders inside the fleet, at the top of the

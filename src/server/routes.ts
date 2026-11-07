@@ -1,3 +1,5 @@
+import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
+import { getResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
@@ -162,6 +164,7 @@ import {
   CreateResidentProfileSchema,
   UpdateResidentProfileSchema,
   ArchiveResidentProfileSchema,
+  ResetResidentStateSchema,
   LaunchResidentRequestSchema,
   RunScheduleNowSchema,
   ScheduleHistoryQuerySchema,
@@ -8684,6 +8687,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/residents/profiles", (c) => {
     if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
     return c.json(registry.listResidentProfiles());
+  });
+
+  app.get("/api/residents/profiles/:id/state", async (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try {
+      const directory = ensureResidentState(c.req.param("id"));
+      return c.json({ directory, files: await listSessionFiles(directory, { kind: "resident", workspaceKind: "resident-workspace" }) });
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "State unavailable" }, 409); }
+  });
+  app.get("/api/residents/profiles/:id/state/file", (c) => {
+    if (!stateProfile(c.req.param("id"))) return c.json({ error: "No such resident profile" }, 404);
+    try { return c.json({ text: readResidentStateFile(c.req.param("id"), c.req.query("path") ?? "") }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State file unavailable" }, 409); }
+  });
+  app.post("/api/residents/profiles/:id/state/reset", async (c) => {
+    if (!residents) return c.json({ error: "Resident service unavailable" }, 503);
+    const parsed = await parseBody(c, ResetResidentStateSchema);
+    if (!parsed.ok) return parsed.res;
+    try { await residents.resetState(c.req.param("id")); return c.json({ ok: true }); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "State reset failed" }, 409); }
   });
 
   app.post("/api/residents/profiles", async (c) => {

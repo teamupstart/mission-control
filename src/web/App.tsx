@@ -1886,8 +1886,11 @@ export function App(): React.JSX.Element {
   }, [residentDrawerPinned]);
   const setResidentDrawerPinned = useCallback((pinned: boolean): void => {
     setResidentDrawerOpen(false);
+    // The pinned column lives on Fleet, so pinning from another page goes there to keep the
+    // drawer on screen rather than making it vanish.
+    if (pinned) navigate({ page: "fleet" });
     void updateUiConfig({ residentDrawerPinned: pinned });
-  }, []);
+  }, [navigate]);
   residentActionsRef.current = {
     openSurface: () => {
       if (!residentsInDrawer) openResidentsDock();
@@ -2397,6 +2400,7 @@ export function App(): React.JSX.Element {
     visitors: placement.visitors,
     openDrawerOn: openResidentDrawerOn,
     leftDetail: (_sessionId: string): void => {},
+    leaveConsoleDetail: (_sessionId: string): void => {},
   });
   residentKeysRef.current = {
     entries: residentEntries,
@@ -2414,6 +2418,12 @@ export function App(): React.JSX.Element {
         setResidentReturnTo(null);
         setResidentDrawerOpen(true);
       }
+    },
+    // Console: an open resident has no rail row to hand the keyboard back to, so the Escape that
+    // would peel the reader leaves the detail instead.
+    leaveConsoleDetail: (sessionId) => {
+      setSelectedId(null);
+      residentKeysRef.current.leftDetail(sessionId);
     },
   };
 
@@ -3582,8 +3592,7 @@ export function App(): React.JSX.Element {
             // A Console resident has no rail row to hand the keyboard back to, so this is the
             // Escape that leaves its detail.
             if (layout === "console" && residentOpen) {
-              setSelectedId(null);
-              residentKeysRef.current.leftDetail(residentOpen.id);
+              residentKeysRef.current.leaveConsoleDetail(residentOpen.id);
               return;
             }
             setConsoleZone("rail");
@@ -4564,6 +4573,7 @@ export function App(): React.JSX.Element {
                 onOpenLaunch={openResidentLaunch}
                 onManage={() => navigate({ page: "residents" })}
                 focusRequest={residentCardFocus}
+                onFocusRequestHandled={() => setResidentCardFocus(null)}
               />
             </div>
           );

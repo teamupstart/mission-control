@@ -472,3 +472,24 @@ test("the Keyboard panel refuses ⌥1 as macOS delivers it, and drops a binding 
     panel.locator('[data-anchor="keyboard/diff"]').getByRole("button", { name: /^Change shortcut for Open diff \(currently ⇧D\)/ }),
   ).toBeVisible();
 });
+
+test("pinning from another page lands on Fleet, and the palette there focuses the pinned drawer's card", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await useDrawer(page, daemon, "board");
+  const pinned = page.getByRole("complementary", { name: "Residents", exact: true });
+
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.keyboard.press("Shift+KeyH");
+  await drawerOf(page).getByRole("button", { name: "Pin" }).click();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(pinned).toBeVisible();
+
+  // The pinned drawer mounts on Fleet with the palette's focus request already set.
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await expect(pinned).toHaveCount(0);
+  await page.keyboard.press("Meta+K");
+  await page.keyboard.type("Residents drawer or dock");
+  await page.getByRole("option", { name: "Open the Residents drawer or dock, command" }).click();
+  await expect(page).toHaveURL(/#\/fleet/);
+  await expect(headOf(pinned)).toBeFocused();
+});

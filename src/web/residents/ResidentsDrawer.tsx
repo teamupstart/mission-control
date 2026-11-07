@@ -80,6 +80,8 @@ export interface ResidentsDrawerProps {
    * Escape out of a detail opened from it.
    */
   focusRequest?: { sessionId: string; nonce: number } | null;
+  /** The request above has been applied; App clears it so a remount does not replay it. */
+  onFocusRequestHandled?: () => void;
 }
 
 /**
@@ -136,13 +138,17 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
     focusPending.current = false;
   };
 
-  const handledFocus = useRef(props.focusRequest?.nonce);
+  // A focus request is consumed, not compared: one already set when the drawer mounts (App
+  // navigated to Fleet to show the pinned drawer) is applied, and once its card can take focus App
+  // clears it, so a later remount never replays it.
+  const { focusRequest, onFocusRequestHandled } = props;
   useEffect(() => {
-    const request = props.focusRequest;
-    if (!request || request.nonce === handledFocus.current) return;
-    handledFocus.current = request.nonce;
-    focusCard(request.sessionId);
-  }, [props.focusRequest]);
+    if (!focusRequest) return;
+    const head = cardHead(focusRequest.sessionId);
+    if (!head) return;
+    head.focus({ preventScroll: false });
+    onFocusRequestHandled?.();
+  });
 
   const openable = entries.filter((entry): entry is ResidentDrawerEntry & { session: Session } => entry.session !== null);
 

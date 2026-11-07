@@ -8,8 +8,10 @@ import { envVar } from "../config.ts";
 import {
   adoptInspectorPr,
   getInspectorPr,
+  inTransaction,
   loadInspectorComments,
   loadOpenInspectorPrs,
+  revokeInspectorPrStack,
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
@@ -46,6 +48,9 @@ import {
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
+import { reviewBaseChanged } from "@shared/shipping.ts";
+import { defaultStackGitHub, type StackGitHub } from "../stacking/github.ts";
+import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
@@ -339,6 +344,16 @@ export const DENY_SETTINGS = JSON.stringify({
  * of the repo. Every `gh` call here is owner/repo-explicit, so the directory only ever
  * supplies credentials and the reviewer's read scope, never the identity of the PR.
  */
+/** The GitHub seam stacking reads through. Replaced only by tests. */
+let stackGitHub: StackGitHub = defaultStackGitHub;
+export function useInspectorStackGitHub(github: StackGitHub): () => void {
+  const previous = stackGitHub;
+  stackGitHub = github;
+  return () => {
+    stackGitHub = previous;
+  };
+}
+
 function liveDir(pr: InspectorPr): string | null {
   if (pr.cwd && existsSync(pr.cwd)) return pr.cwd;
   if (pr.repoRoot && existsSync(pr.repoRoot)) return pr.repoRoot;
@@ -394,6 +409,36 @@ function noteFailure(
     now,
   );
   return false;
+}
+
+/**
+ * Adopt a pull request a session just opened, and - in the SAME synchronous turn - record its
+ * stack lineage when that session runs a stacked task. Nothing can inspect the row between
+ * the two writes, so the merge gate never sees a stacked child without its lineage.
+ */
+export function adoptOpenedPr(
+  registry: Pick<Registry, "taskForSession" | "workEpisodeForSession">,
+  e: Pick<PrOpened, "url" | "sessionId" | "cwd" | "repoRoot">,
+  now: number,
+): boolean {
+  const source = {
+    task: registry.taskForSession(e.sessionId, e.cwd),
+    episodeId: registry.workEpisodeForSession(e.sessionId)?.episodeId ?? null,
+  };
+  // One transaction: a lineage write that fails takes the adoption with it. The pull request
+  // is then simply not ours to review or merge, which fails closed, rather than adopted as an
+  // ordinary pull request that the stacking gates would never evaluate.
+  try {
+    return inTransaction(() => {
+      const adopted = adoptPr(e.url, { sessionId: e.sessionId, cwd: e.cwd, repoRoot: e.repoRoot }, "hook", now);
+      const parsed = adopted ? parsePrUrl(e.url) : null;
+      if (parsed) adoptStackLineage(parsed.key, source, now);
+      return adopted;
+    });
+  } catch (error) {
+    console.error("[inspector] could not adopt the pull request:", e.url, error);
+    return false;
+  }
 }
 
 /**
@@ -610,6 +655,8 @@ async function processPr(
       observedState: s.state,
       observedAt: now,
       headRefName: s.headRefName || null,
+      baseRefName: s.baseRefName || null,
+      mergeCommitSha: s.mergeCommitSha ?? null,
       // Re-recorded on every tick rather than written once, because a pull request gets
       // renamed - most often from the placeholder its author opened it with. The empty
       // string `normalizePr` yields for a missing title collapses to null so the ledger
@@ -737,8 +784,44 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
+  // Stacked pull requests: run the release check for a row with lineage BEFORE the merge
+  // gate reads it, so a restack verified on this tick can merge on this tick. Read only from
+  // GitHub (the compare API), never by running git here.
+  // A release already recorded for this head is checked again too: a parent closed without
+  // merging can be reopened, and then the child is stacked on an open prerequisite again.
+  let gated = pr;
+  if (pr.stack) {
+    try {
+      await refreshStackRelease(pr, s, dir, stackGitHub, now);
+    } catch (error) {
+      // A release that could not be checked is not trusted.
+      revokeInspectorPrStack(pr.key, now);
+      console.error("[inspector] stack release check failed:", pr.key, error);
+    }
+    // Re-read either way: the check may have recorded a release or withdrawn one.
+    gated = getInspectorPr(pr.key) ?? pr;
+  }
+  // Stacked pull requests: the same head on the same base NAME can still be a different diff,
+  // when the parent was rebased underneath it. Judged by GitHub's merge base before the
+  // merge gate and the review reuse below may trust the recorded review.
+  let baseReview: "current" | "changed" | "unknown" = "current";
+  try {
+    baseReview = await reviewedStackBase(gated, s, dir, stackGitHub, now);
+  } catch (error) {
+    baseReview = "unknown";
+    console.error("[inspector] stacked review base check failed:", pr.key, error);
+  }
+  if (baseReview === "unknown") {
+    // Neither merge on a review that may describe another diff nor spend a review on a
+    // question GitHub did not answer: try again on a later tick.
+    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", now, tick) || acted;
+  }
   // Incomplete provenance must recover before it can authorize Shipping too.
-  if (pr.reviewComplete !== false && await maybeMerge(cfg, pr, dir, s, rows, now, workflowGate)) return true;
+  if (
+    baseReview === "current" &&
+    gated.reviewComplete !== false &&
+    await maybeMerge(cfg, gated, dir, s, rows, now, workflowGate)
+  ) return true;
 
   // 3. Nothing pushed: reuse the completed review and finish any pending publication.
   //
@@ -754,6 +837,11 @@ async function processPr(
   if (
     s.headSha &&
     s.headSha === pr.headSha &&
+    // The same head against a different base is a different diff: a stacked pull request
+    // retargeted without a restack must be reviewed again, never reuse the old verdict.
+    !reviewBaseChanged(pr.reviewedBaseRef ?? null, s.baseRefName || null, s.defaultBranch || null) &&
+    // ...and the same base name over a moved merge base is a different diff too.
+    baseReview === "current" &&
     !reviewNeedsLiveRerun(posture, pr.reviewPosture)
     // A legacy or incomplete review cannot certify safety. Once its retained findings
     // are resolved, review again on this head; only complete provenance can be reused.
@@ -960,6 +1048,8 @@ async function reviewRound(
       pr.key,
       {
         headSha: s.headSha,
+        reviewedBaseRef: s.baseRefName || null,
+        reviewedBaseSha: s.baseSha || null,
         reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
         lastReviewedAt: now,
         reviewComplete: false,
@@ -1123,6 +1213,10 @@ async function reviewRound(
     pr.key,
     {
       headSha: s.headSha,
+      // The base this diff was taken against. A later base change under the same head is
+      // a different diff, so it is reviewed again rather than trusted (`reviewBaseChanged`).
+      reviewedBaseRef: s.baseRefName || null,
+      reviewedBaseSha: s.baseSha || null,
       reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
       round,
       reviewComplete: plan.droppedOffDiff === 0 && plan.droppedOverCap === 0,
@@ -1215,12 +1309,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // Inspector on afterwards can never review any of them, because the proof they were
   // ours went by while nobody was listening and cannot be recovered.
   const offPrOpened = registry.onPrOpened((e: PrOpened) => {
-    const adopted = adoptPr(
-      e.url,
-      { sessionId: e.sessionId, cwd: e.cwd, repoRoot: e.repoRoot },
-      "hook",
-      Date.now(),
-    );
+    const adopted = adoptOpenedPr(registry, e, Date.now());
     // Refresh NOW rather than waiting for the next tick. The chip is how anyone knows the
     // PR was adopted at all, and a card that shows a PR with no inspector chip means
     // something specific - "we didn't open this one" - so leaving it in that state for up
@@ -1228,7 +1317,16 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     if (adopted) {
       registry.refreshInspections();
       const parsed = parsePrUrl(e.url);
-      if (parsed) notifyInspection(registry, parsed.key, null, null);
+      if (parsed) {
+        notifyInspection(registry, parsed.key, null, null);
+        // Stacked pull requests: the lineage is already on the row (`adoptOpenedPr`). The
+        // base check reads GitHub, so it runs off the hook's path.
+        if (getInspectorPr(parsed.key)?.stack) {
+          void correctStackBase(parsed.key, stackGitHub, Date.now())
+            .then(() => registry.refreshInspections())
+            .catch((error) => console.error("[inspector] could not check the stacked base:", parsed.key, error));
+        }
+      }
     }
   });
   const offPipelineRun = registry.onPipelineRun((run) => {

@@ -388,6 +388,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onManageTrust={props.onManageForemanTrust}
         sessions={props.sessions}
         workflowSummaries={props.workflowSummaries}
+        stackShipping={props.stackShipping}
       />
 
       <RestoringSessionsColumn

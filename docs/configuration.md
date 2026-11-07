@@ -373,6 +373,15 @@ Settings snapshots include it; restoring an older snapshot leaves it off. It aut
 CodeRabbit follow-up observation and prompts through Foreman, independently of `autoMerge` and
 Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
 
+Shipping also stores the [Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests)
+pair. `stacking` is `merge` (wait for the prerequisite to merge) or `stack` (start on its open
+pull request), and it has **no stored default**: an absent key means the shipped default, so an
+install that never chose follows a later release's default. Only an explicit choice on the
+Shipping card writes it, and saving another Shipping card leaves it absent. `maxStackDepth` is
+an integer from 1 to 5, default 3. Settings snapshots include both, and a snapshot taken before
+an explicit choice restores with `stacking` still absent. A dependency edge's own `mode`
+(`merge` or `stack`, absent meaning inherit) overrides `stacking` for that edge.
+
 ### CodeRabbit workflow reviews
 
 `MISSION_CODERABBIT_BIN` (with the existing `FLEET_`/`HARNESS_` compatibility prefixes) selects

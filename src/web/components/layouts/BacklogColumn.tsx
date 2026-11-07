@@ -13,6 +13,9 @@ import {
   backlogTaskNotice,
   blockedLabel,
   blockersNeedYou,
+  stackedStartLabel,
+  stackWaitLabel,
+  type StackShipping,
   type BacklogTaskNoticeView,
   type BacklogTrustView,
 } from "../../lib/backlog-copy.ts";
@@ -106,6 +109,7 @@ export function BacklogColumn({
   onManageTrust,
   sessions = [],
   workflowSummaries = [],
+  stackShipping,
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -144,6 +148,8 @@ export function BacklogColumn({
   sessions?: Session[];
   /** Published workflows, offered by the bulk edit as After work. */
   workflowSummaries?: WorkflowSummary[];
+  /** The Shipping stacking default and depth cap, so a blocked stack card can say why. */
+  stackShipping?: StackShipping;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   /**
@@ -445,6 +451,8 @@ export function BacklogColumn({
               <BacklogCard
                 task={t}
                 blockers={blockersIn(t, index)}
+                stacking={index.byId}
+                stackShipping={stackShipping}
                 deadBlockers={deadBlockersFor(t, index)}
                 nextUp={t.id === nextUp}
                 lifted={t.id === inAir}
@@ -653,9 +661,15 @@ function BacklogCard({
   selected,
   onSelect,
   cardRef,
+  stacking,
+  stackShipping,
 }: {
   task: Task;
   blockers: BacklogBlocker[];
+  /** Every task by id, for the Stacked pull requests marks. */
+  stacking?: ReadonlyMap<string, Task>;
+  /** The Shipping stacking default and depth cap, for the stack wait reason. */
+  stackShipping?: StackShipping;
   /** Cancelled/failed tasks blocking this card, directly or up its chain. */
   deadBlockers: Task[];
   /** True on the item Foreman's autopilot would pick up next. */
@@ -701,6 +715,8 @@ function BacklogCard({
   const [deadBlockerOpen, setDeadBlockerOpen] = useState(false);
   const blocked = blockers.length > 0;
   const declaredBlocked = blockers.some((blocker) => blocker.source === "declared");
+  const stackedOn = stacking ? stackedStartLabel(task, stacking) : null;
+  const stackWait = stacking ? stackWaitLabel(task, stacking, stackShipping) : null;
 
   async function launch(): Promise<void> {
     setBusy(true);
@@ -1039,10 +1055,15 @@ function BacklogCard({
       {/* A generated task's recurring-mission origin. The shared chip stops propagation so
           opening its history does not also open Dispatch or start a drag. */}
       <ScheduleOriginChip task={task} scheduleNames={scheduleNameById} onOpen={onOpenSchedule} />
+      {stackedOn && (
+        <Tooltip label="Ready to start on its prerequisite's open pull request - it is cut from that branch and opens its own pull request against it">
+          <span className="bl-stacked">{stackedOn}</span>
+        </Tooltip>
+      )}
       {blocked && (
         <Tooltip label={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}>
           <span className={`bl-blocked${blockersNeedYou(blockers) ? " is-stopped" : ""}`}>
-            {blockedLabel(blockers)}
+            {(!blockersNeedYou(blockers) && stackWait) || blockedLabel(blockers)}
           </span>
         </Tooltip>
       )}

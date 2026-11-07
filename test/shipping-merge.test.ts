@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MERGE_BLOCK_LABEL, mergeVerdict } from "../src/shared/shipping.ts";
+import { MERGE_BLOCK_LABEL, mergeVerdict, reviewBaseChanged } from "../src/shared/shipping.ts";
 import type { MergeBlock, MergeInput } from "../src/shared/shipping.ts";
 import { ShippingConfigSchema } from "../src/shared/protocol.ts";
 
@@ -32,8 +32,12 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
       reviewDecision: null,
       checks: "passing",
       unresolvedThreads: 0,
+      baseRefName: "main",
+      defaultBranch: "main",
       ...(over.pr ?? {}),
     },
+    stack: { lineage: false, releasedForHead: false },
+    reviewedBase: "main",
     inspector: "live",
     reviewedSha: "abc",
     reviewPosture: "live",
@@ -268,6 +272,9 @@ test("every block code the gate can return has a sentence for the panel", () => 
     "review-unpublished",
     "not-open",
     "draft",
+    "stacked-base",
+    "stack-hold",
+    "base-not-default",
     "workflow-gate-pending",
     "workflow-gate-spent",
     "not-reviewed",
@@ -288,4 +295,103 @@ test("every block code the gate can return has a sentence for the panel", () => 
     codes.length,
     "a label was added or removed without this list following it",
   );
+});
+
+// ---- Stacked pull requests -----------------------------------------------------------
+//
+// The two stacking gates evaluate only a pull request whose row records stack lineage. They
+// sit after the consent and open/draft gates and before every review and CI gate.
+
+const stacked = (pr: Partial<MergeInput["pr"]>, stack: MergeInput["stack"], extra: Partial<MergeInput> = {}): MergeInput =>
+  ready({ ...extra, pr: { ...ready().pr, ...pr }, stack });
+
+test("a stacked pull request whose base is its parent's branch never merges", () => {
+  assert.equal(
+    blockOf(stacked({ baseRefName: "feat/parent" }, { lineage: true, releasedForHead: true }, { reviewedBase: "feat/parent" })),
+    "stacked-base",
+  );
+});
+
+test("a stacked pull request with an unknown base or default branch fails closed", () => {
+  assert.equal(blockOf(stacked({ baseRefName: null }, { lineage: true, releasedForHead: true })), "stacked-base");
+  assert.equal(blockOf(stacked({ defaultBranch: null }, { lineage: true, releasedForHead: true })), "stacked-base");
+});
+
+test("a stacked pull request already on main stays held until the release check passed for this head", () => {
+  // The automatic retarget: GitHub moved the base to main, the head is unchanged.
+  assert.equal(blockOf(stacked({}, { lineage: true, releasedForHead: false })), "stack-hold");
+  assert.deepEqual(
+    mergeVerdict(stacked({}, { lineage: true, releasedForHead: true })),
+    { merge: true, block: null, waitMs: 0 },
+  );
+});
+
+test("the stacking gates never evaluate a pull request without lineage", () => {
+  // Off the default branch, unknown base, unknown default: none of it is a stacking block.
+  for (const pr of [
+    { baseRefName: "release/next" },
+    { baseRefName: null },
+    { defaultBranch: null },
+  ]) {
+    const block = mergeVerdict(stacked(pr, { lineage: false, releasedForHead: false })).block;
+    assert.notEqual(block, "stacked-base");
+    assert.notEqual(block, "stack-hold");
+  }
+});
+
+test("YOLO mode never merges a pull request whose base is not the default branch", () => {
+  // No stack lineage, reviewed clean on that same base: still not a default-branch merge.
+  assert.equal(
+    blockOf(stacked({ baseRefName: "release/next" }, { lineage: false, releasedForHead: false }, { reviewedBase: "release/next" })),
+    "base-not-default",
+  );
+  // Unknown either way fails closed - including a review recorded against the current base
+  // while GitHub did not say what the default branch is.
+  assert.equal(blockOf(stacked({ baseRefName: null }, { lineage: false, releasedForHead: false })), "base-not-default");
+  assert.equal(
+    blockOf(stacked({ baseRefName: "feature/x", defaultBranch: null }, { lineage: false, releasedForHead: false }, { reviewedBase: "feature/x" })),
+    "base-not-default",
+  );
+  assert.equal(
+    blockOf(stacked({ baseRefName: "main", defaultBranch: null }, { lineage: false, releasedForHead: false }, { reviewedBase: "main" })),
+    "base-not-default",
+  );
+  // The default branch is unaffected.
+  assert.equal(mergeVerdict(ready()).merge, true);
+});
+
+test("the stacking gates come after the consent and draft gates", () => {
+  assert.equal(
+    blockOf(stacked({ baseRefName: "feat/parent", isDraft: true }, { lineage: true, releasedForHead: false })),
+    "draft",
+  );
+  assert.equal(
+    blockOf(stacked({ baseRefName: "feat/parent" }, { lineage: true, releasedForHead: false }, { cfg: { ...cfg, autoMerge: false } })),
+    "off",
+  );
+});
+
+test("a review of one base never authorizes a merge against another", () => {
+  // Retargeted from the parent branch to main without a new review: same head, new diff.
+  assert.equal(blockOf(stacked({}, { lineage: true, releasedForHead: true }, { reviewedBase: "feat/parent" })), "not-reviewed");
+  assert.equal(blockOf(ready({ reviewedBase: "feat/other" })), "not-reviewed");
+});
+
+test("a review recorded before bases were recorded counts only on the default branch", () => {
+  assert.equal(mergeVerdict(ready({ reviewedBase: null })).merge, true);
+  assert.equal(
+    blockOf(stacked({ baseRefName: "release/next" }, { lineage: false, releasedForHead: false }, { reviewedBase: null })),
+    "base-not-default",
+  );
+});
+
+test("the Inspector re-reviews a positive base change, never an unknown base", () => {
+  // Retargeted from the parent branch to main under the same head: a different diff.
+  assert.equal(reviewBaseChanged("feat/parent", "main", "main"), true);
+  assert.equal(reviewBaseChanged("main", "main", "main"), false);
+  // A review recorded before bases were: only a non-default current base is a change.
+  assert.equal(reviewBaseChanged(null, "main", "main"), false);
+  assert.equal(reviewBaseChanged(null, "feat/parent", "main"), true);
+  // One read that came back without a base must not cost a model review every tick.
+  assert.equal(reviewBaseChanged("feat/parent", null, "main"), false);
 });

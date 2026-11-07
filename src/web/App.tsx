@@ -2795,6 +2795,7 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     backlogTrust,
     onManageForemanTrust: openForemanTrust,
+    stackShipping: settingsStatus?.shipping,
     workflowSummaries,
     selectedId,
     consoleZone,
@@ -4259,6 +4260,7 @@ export function App(): React.JSX.Element {
             onSetAutoBacklog={(next) => foreman.update({ autoBacklog: next })}
             backlogTrust={backlogTrust}
             onManageTrust={openForemanTrust}
+            stackShipping={settingsStatus?.shipping}
             onClose={closeLineDrawer}
             onEditTask={openTaskEditor}
             onOpenSitrep={() => {
@@ -4502,6 +4504,7 @@ export function App(): React.JSX.Element {
                 workflowSummaries={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 harnessesRevision={harnessesRevision}
+                stackingDefault={settingsStatus?.shipping.stacking}
                 pipelinesRevision={
                   settingsStatus?.pipelines.observedRepoKeys
                     ? JSON.stringify({

@@ -13,7 +13,8 @@ test('failed migrated startup renders native recovery guidance', async ({daemon}
   test.skip(process.platform !== 'darwin', 'native Electron recovery dialog');
   test.setTimeout(120_000);
   const fixture = await updateWorkflowApp(daemon);
-  const windows = nativeDialogWindows(fixture.root);
+  // The app's own startup error box, which current macOS draws at the normal window level.
+  const windows = nativeDialogWindows(fixture.root, {appAlert: true});
   const state = realpathSync(daemon.home);
   const receipt = JSON.parse(readFileSync(join(state, 'install-receipt.json'), 'utf8'));
   const candidate = join(fixture.root, 'payload/Agent Mission Control.app');

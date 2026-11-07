@@ -11,6 +11,12 @@ import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { NumberSetting } from "./ForemanBar.tsx";
+import {
+  STACK_DEPTH_LIMITS,
+  STACKING_SHIPPED_DEFAULT,
+  effectiveStacking,
+  type StackingMode,
+} from "@shared/stacking.ts";
 import { ago } from "./InspectorSettingsPanel.tsx";
 import {
   ConsoleCard,
@@ -35,6 +41,16 @@ import {
 // for a sharper reason than next door: an auto-merger's failure mode is not merging the
 // wrong thing, it is merging NOTHING and never saying why, and the per-pull-request
 // reason column is the entire answer to that.
+
+const STACKING_LABEL: Record<StackingMode, string> = {
+  merge: "Wait for merge",
+  stack: "Stack on its branch",
+};
+
+const STACKING_TOOLTIP: Record<StackingMode, string> = {
+  merge: "A dependent task starts once its prerequisite's pull request merges",
+  stack: "A dependent task starts on its prerequisite's open pull request and opens its own against that branch",
+};
 
 const METHOD_LABEL: Record<"squash" | "merge" | "rebase", string> = {
   squash: "Squash and merge",
@@ -135,6 +151,10 @@ export function ShippingSettingsPanel({
   const method = config?.method ?? "squash";
   const allowlist = config?.repoAllowlist ?? [];
   const closeAfterMerge = config?.closeSessionAfterMerge ?? false;
+  // The EFFECTIVE value: an absent key follows the shipped default, and saying so is the
+  // difference between "you chose this" and "this is what you get until you choose".
+  const stacking = config ? effectiveStacking(config) : STACKING_SHIPPED_DEFAULT;
+  const maxStackDepth = config?.maxStackDepth ?? STACK_DEPTH_LIMITS.default;
   const now = Date.now();
   const [filter, setFilter] = useState<string | null>(null);
   const tallies = mergeTallies(inspections);
@@ -366,6 +386,68 @@ export function ShippingSettingsPanel({
               subject="YOLO may merge in"
               onNavigate={onNavigate}
             />
+          </ConsoleCard>
+
+          {/* Stacked pull requests. After the YOLO cards because it changes what YOLO merges
+              (never a pull request whose base is not the default branch), but it is its own
+              switch: stacking writes no code to any default branch, so it needs no Trust
+              column. `stacking` is written only on an explicit pick, so an install that never
+              chose keeps following the shipped default when a release changes it. */}
+          <ConsoleCard title="Stacked pull requests" anchor="shipping/stacking">
+            {!config ? (
+              <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
+            ) : stacking === "stack" ? (
+              <ConsoleState tone="ok">Stack - a dependent starts on its prerequisite's open pull request</ConsoleState>
+            ) : (
+              <ConsoleState tone="off">Wait for merge - a dependent starts once its prerequisite merges</ConsoleState>
+            )}
+            <fieldset className="sc-field sc-seg" data-anchor="shipping/stacking-mode">
+              <legend className="sc-field-label">Same-repository dependencies</legend>
+              <div className="sc-seg-row">
+                {(["merge", "stack"] as const).map((m) => (
+                  <Tooltip label={STACKING_TOOLTIP[m]} key={m}>
+                    <label className={`sc-seg-opt${stacking === m ? " is-on" : ""}`}>
+                      <input
+                        type="radio"
+                        name="shipping-stacking"
+                        checked={stacking === m}
+                        disabled={!config}
+                        onChange={() => void update({ stacking: m })}
+                      />
+                      <span>{STACKING_LABEL[m]}{m === STACKING_SHIPPED_DEFAULT ? " (default)" : ""}</span>
+                    </label>
+                  </Tooltip>
+                ))}
+              </div>
+              <p className="settings-hint">
+                Each dependency can override this from its chip in the dispatch form: Stack, or
+                After merge. A dependent stacks only on its single unmerged prerequisite in the same
+                repository, once that pull request is open, not a draft, and its agent has finished.
+              </p>
+            </fieldset>
+            <div className="sc-field" data-anchor="shipping/stack-depth">
+              <span className="sc-field-label">Maximum stack depth</span>
+              <div className="sc-number">
+                <NumberSetting
+                  value={maxStackDepth}
+                  min={STACK_DEPTH_LIMITS.min}
+                  max={STACK_DEPTH_LIMITS.max}
+                  label="stacked pull requests above one on the default branch"
+                  disabled={!config}
+                  onCommit={(n) => void update({ maxStackDepth: n })}
+                />
+              </div>
+              <p className="settings-hint">A deeper stack waits for its bottom to merge.</p>
+            </div>
+            <p className="settings-hint">
+              It never merges into a branch other than the default branch, never force-pushes, and
+              never stacks across repositories. A stacked pull request opens against its parent's
+              branch and is held until it has been restacked onto the default branch.
+            </p>
+            <p className="settings-hint">
+              Switching to Wait for merge stops new stacks only. Pull requests that are already
+              stacked keep their hold until they are released.
+            </p>
           </ConsoleCard>
 
           {/* Deliberately NOT gated on `autoMerge`, unlike the prerequisites above. This

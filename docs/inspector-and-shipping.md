@@ -316,8 +316,11 @@ Every one of these, on the same read of the pull request:
 
 | Gate | Why |
 |---|---|
-| The GitHub Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
+| The GitHub Inspector reviewed **this** push, against **this** base | a review of the previous head is not a review of what would land, and the same head against another base is a different diff |
 | The GitHub Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
+| The pull request targets the repository's **default branch** (`base-not-default`) | YOLO mode lands work on the default branch and nowhere else, whoever chose the base. A base or default branch GitHub did not report fails closed. Stacked pull requests answer this through the next two gates instead |
+| A [stacked pull request](#stacked-pull-requests) targets the **default branch** (`stacked-base`) | merging a child into its parent's branch would fold it into the parent's pull request and skip its own review. Only a pull request with stack lineage is evaluated |
+| A stacked pull request has been **released** for its current head (`stack-hold`) | a base change alone proves nothing: GitHub retargets a child by itself when the parent's branch is deleted. Only a pull request with stack lineage is evaluated |
 | No active GitHub Inspector-gated workflow owns the PR | YOLO mode cannot merge around incomplete Personas or final-gate handling |
 | No open GitHub Inspector findings | posted or previewed in dry run - a finding is a finding. [Three ways one closes](#how-a-finding-gets-closed) |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
@@ -388,6 +391,136 @@ as an obstruction is how the safety valve ends up turned down to zero. When GitH
 outright - a branch protection rule this app cannot see - its own message is shown there
 verbatim, because that is the only account you get of a rule nothing here can read. The
 queue is drawn as the [same paged table](#dry-run) the GitHub Inspector's is, over the same 50 rows.
+
+### Stacked pull requests
+
+A dependent task can **stack** on its prerequisite's open pull request instead of waiting for
+it to merge. It starts from the prerequisite's head, opens its own pull request against the
+prerequisite's branch, and lands after it. Stacking follows declared
+[dependencies](dispatch-and-backlog.md#stacked-dependencies), never a whole repository, so unrelated
+work is never chained together.
+
+**Settings → Shipping → Stacked pull requests** sets the default for same-repository
+dependencies: *Wait for merge* or *Stack on its branch*. It ships as *Wait for merge*. An
+install that never chose a value follows the shipped default, and only an explicit choice is
+stored. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
+sit above one that targets the default branch. Each dependency can override the default from
+its chip in the dispatch form and the backlog editor: **Stack** or **After merge**.
+
+A dependency stacks only when all of these hold. Otherwise it waits for merge as before.
+
+- Its mode is Stack, set on the chip or inherited from the default.
+- The prerequisite is a task in the same primary repository. Stacking covers the primary
+  repository only; a dependent's secondary repositories are always cut from their default
+  branch, and their pull requests carry no stack lineage.
+- It is the only unmerged same-repository prerequisite, every prerequisite in another
+  repository has merged, and every secondary repository the prerequisite changed has merged.
+  A secondary repository counts as changed unless the daemon has observed it unchanged, so a
+  change with no pull request yet, or one it could not read, keeps the dependent waiting.
+- The stack under the prerequisite is shorter than the depth cap.
+
+The dependent is released to **start** (not completed: the edge is still unsatisfied, and
+*Mark done* and *Unblock dependents* are unchanged) once the prerequisite's current episode
+has an open, non-draft pull request in its primary repository and its agent has finished
+the episode: idle, nothing queued. The primary repository is the one `origin` names when
+`origin` is a GitHub remote, otherwise the checkout's only GitHub remote. A pull request in any
+other remote's repository is never stacked on, and a checkout where neither rule names one
+stacks on nothing, because the child's own pull request would open somewhere else and get no
+stack lineage. The daemon records that readiness on the dependency edge,
+and the backlog card and the Line row read *Stacked on #N*. It clears the readiness when the
+prerequisite starts a new turn, or when the edge stops qualifying, for example when the
+default is switched back to *Wait for merge*. Dispatch reads the parent pull request again
+before it starts: it must still be open, not a draft, on the same branch and episode, and its
+agent still finished. The dispatch then fetches the parent branch at the repository root (from
+`origin`, or from the primary GitHub remote when `origin` is another remote that lacks it) and
+pins the worktree to its current head, but only when that commit is exactly the head GitHub
+reports for the parent pull request. A branch name alone proves nothing: a pull request from a
+fork can share its name with an unrelated branch here. If the parent pushes while that check
+runs, the check is made again on the new head, up to three times, and the dispatch is refused
+rather than started on a superseded commit if the parent is still moving. A refused readiness read is looked at
+again about a minute later, so a draft marked ready on GitHub releases its dependent without
+anything changing locally. A stamp that stands is read again on the same interval, so a parent
+turned back into a draft, closed, or moved out of the primary repository on GitHub withdraws it
+and the dependent reads as waiting again. A read that only failed keeps the stamp, because the
+dispatch checks everything again before it starts anything. If the parent head lacks the merge commit of another
+same-repository prerequisite that already merged, the dependent keeps waiting. That covers a
+standalone-session prerequisite too, when its merged pull request is in a repository this
+checkout's remotes name. Nothing falls
+back to the default branch silently: a stacked task that cannot be pinned is refused with the
+reason. A stacked task is always dispatched into a fresh worktree; it is never assigned to an
+existing agent.
+
+The task contract and the pull-request packets tell the session to open its pull request
+with `--base` set to the expected base and to start the description with "Stacked on #N".
+The expected base is the current parent's branch while that parent is open, and the default
+branch once it has merged or closed. When the pull request is adopted, the daemon records
+its **stack lineage** on the ledger row: the current parent pull request and the commit the
+child was cut at. The lineage is written in the same step as the adoption, before anything can
+inspect the row, so a stacked pull request is never seen without it. A later pull request of
+the same task, repository and work episode (a replacement) inherits that lineage unchanged, while a rescheduled task's next episode starts
+fresh from its new dispatch. The daemon then checks the pull request's base and corrects it
+with GitHub's API if it is wrong. Nothing is ever retargeted to a merged or closed parent's
+branch.
+
+A pull request with lineage is held by the two stacking gates above until a **release
+check** passes for its current head, evaluated on the GitHub Inspector tick from GitHub data
+only:
+
+| Current parent | Released when | Manual action that satisfies it |
+|---|---|---|
+| Merged | the base is the default branch and the parent's merge commit is in the child's history | merge the default branch, which now contains the parent's merge commit, into the child and push |
+| Closed without merging | the base is the default branch and neither the commit the child was cut at nor the parent's last head is in the child's history | cherry-pick only the child's own commits onto a fresh branch cut from the default branch and open a replacement pull request against it. Merging the default branch into the old child does not help |
+| Open | never | the parent has to merge or close first |
+
+The release is recorded against the head it was verified for, and a new head is checked
+again. Anything that cannot be read holds. The release also records the parent state it was
+granted under. One granted under a merged parent is final, because a merge cannot be undone
+and that release verified the merge commit is in the child. One granted under a closed parent
+is checked again on every tick, because a closed pull request can be reopened. A reopened
+parent, a parent that can no longer be read, or a base that is no longer the default branch
+withdraws it. A parent that is reopened and then merges needs its merge commit in the child,
+like any merged parent. The child is held until the check passes again. Lineage belongs to the pull request, so switching
+the setting off or flipping a chip to *After merge* stops **new** stacks only: a pull request
+that is already stacked keeps its hold until it is released. This release does not yet
+retarget, restack or prompt anything on its own; those steps are the person's for now.
+
+**Review while stacked.** The GitHub Inspector reviews the pull request's diff against its
+current base, and the reviewed head records that base. A base that changes under an
+unchanged head (a retarget without a restack) is reviewed again rather than trusted, and a
+review recorded before bases were recorded counts only while the base is the default branch.
+The review also records the base's commit, because a parent rebased or force-pushed under an
+unchanged child keeps both branch names while the diff GitHub shows changes. When the base
+commit moves, GitHub's merge base for the old and new commit is compared: the same merge base
+keeps the review (the parent only moved forward), and a different one, or an old commit GitHub
+no longer knows, means review again. If GitHub cannot report the merge base for the current
+commit, the pull request neither merges nor reuses the review on that sweep. This applies to a
+pull request with stack lineage or a known base other than the default branch.
+Workflow Personas and the CodeRabbit merge base use the same base for a stacked task: the
+pull request's current base, read from GitHub for each review rather than taken from the last
+poll (a pull request adopted moments ago has not been polled yet), or the parent branch before
+a pull request exists. Because the parent keeps moving after dispatch, every review diff first
+fetches that branch at the repository root and checks the fetched commit against what origin
+advertises. The child's head is read from the repository root too (`git worktree list`), the
+merge base the diff starts from is computed there from explicit commit ids, and the diff is
+read from the repository root as well, naming the child's checkout explicitly (`--git-dir`,
+`--work-tree`) and staging its working tree into a temporary index and object directory, so
+the child's own index is never written. Either half can fail, and neither falls back to
+another base or to an ordinary diff:
+
+- **Resolving the base** (reading the pull request's current base, fetching and verifying the
+  branch, reading the child's head, computing the merge base) fails with *stacked base could
+  not be refreshed*, followed by the reason.
+- **Capturing the child's work** fails the review capture with *Could not capture repository
+  diff*, followed by the step that failed. For example, *could not stage the child's working
+  tree* when staging fails, or *could not capture the child's working tree* when the tree
+  cannot be written.
+
+The review capture every workflow shares (status, content tree, review snapshot) still reads
+the session's checkout, read-only, exactly as it does for any other task.
+
+It never merges into a branch other than the default branch, never force-pushes, never
+stacks across repositories, and never runs a git command that changes a worktree's checkout,
+branches or commits. The only GitHub write it makes on its own is a pull request's base.
 
 ### When a task's pull request merges
 

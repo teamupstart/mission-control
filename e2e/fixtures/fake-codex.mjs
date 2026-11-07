@@ -793,7 +793,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/start":
       respond(id, {
         thread: thread({ type: "idle" }),
-        model: MODEL,
+        // The model the thread was started on, as the real app-server answers: the requested
+        // one, or its own default. Answering the default regardless contradicted the rollout's
+        // `turn_context`, and whichever of the two reached the session last decided which
+        // model it showed - a race that read as the daemon dropping a dispatched model.
+        model: params?.model ?? MODEL,
         modelProvider: "openai",
         serviceTier: null,
         cwd: process.cwd(),
@@ -809,7 +813,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const finishResume = () => {
         respond(id, {
           thread: thread({ type: "idle" }),
-          model: MODEL,
+          model: params?.model ?? MODEL,
           modelProvider: "openai",
           serviceTier: null,
           cwd: process.cwd(),

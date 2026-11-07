@@ -1,4 +1,8 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { run } from "./util/exec.ts";
+import { isolatedGitEnvironment } from "./git/worktree-tree.ts";
 import { clipUtf8Bytes, utf8Bytes } from "./util/utf8.ts";
 import type { SessionDiff } from "@shared/types.ts";
 
@@ -493,4 +497,114 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
     ok: true, error: null, base: base ?? null, baseSha, headSha, repoRoot, branch,
     filesChanged, insertions, deletions, patch, truncated,
   };
+}
+
+/** Where a stacked child's review diff is read from, every location explicit. */
+export interface StackedDiffInput {
+  /** The task's main checkout. Every git command runs here (`-C`), never in the child. */
+  repoRoot: string;
+  /** The child's checkout, named as `--work-tree` so its files can be read. */
+  worktree: string;
+  /** The child's HEAD, read from `git worktree list` at the repository root. */
+  head: string;
+  /** Its branch, or null when detached. Display only. */
+  branch: string | null;
+  /** Where the child diverged from its verified parent tip, computed at the repository root. */
+  mergeBase: string;
+  /** The base's display name, e.g. the parent's branch. */
+  label: string;
+}
+
+/**
+ * The review diff of a STACKED child, read without running git inside its worktree.
+ *
+ * The same content `computeSessionDiff` captures - committed work, tracked edits and
+ * untracked files that are not ignored, against the merge base with the parent - but every
+ * command runs from the repository root, with the child's checkout named explicitly through
+ * `--git-dir` and `--work-tree`, and every commit is an explicit id. Working-tree content is
+ * staged into a TEMPORARY index backed by a TEMPORARY object directory (the repository's
+ * store as an alternate), the same isolation `captureWorktreeTree` uses, so the child's own
+ * index and the shared object store are never written. The diff itself is between two
+ * object ids: the merge base and the captured tree.
+ *
+ * Fails with a named error rather than falling back, like an explicit base does there.
+ */
+export async function computeStackedDiff(input: StackedDiffInput): Promise<SessionDiff> {
+  const shortHead = input.head.slice(0, 12);
+  const base0: SessionDiff = {
+    ok: false, error: null, base: input.label, baseSha: input.mergeBase.slice(0, 12), headSha: shortHead,
+    repoRoot: input.worktree, branch: input.branch, filesChanged: 0, insertions: 0, deletions: 0,
+    patch: "", truncated: false,
+  };
+  const gitDir = stackedGitDir(input.worktree);
+  if (!gitDir) return { ...base0, error: `${input.worktree} is not a git checkout` };
+  const objects = await run("git", ["-C", input.repoRoot, "rev-parse", "--path-format=absolute", "--git-path", "objects"], {
+    timeoutMs: 15000,
+  });
+  const objectStore = objects.code === 0 ? objects.stdout.trim() : "";
+  if (!objectStore) return { ...base0, error: "could not locate the repository's object store" };
+  const scratch = mkdtempSync(join(tmpdir(), "mission-stacked-diff-"));
+  try {
+    const temporaryObjects = join(scratch, "objects");
+    mkdirSync(temporaryObjects);
+    const env = isolatedGitEnvironment({
+      GIT_INDEX_FILE: join(scratch, "index"),
+      GIT_OBJECT_DIRECTORY: temporaryObjects,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: objectStore,
+    });
+    const atRoot = (args: string[]) => run(
+      "git",
+      ["-C", input.repoRoot, `--git-dir=${gitDir}`, `--work-tree=${input.worktree}`, ...args],
+      { timeoutMs: 15000, env },
+    );
+    if ((await atRoot(["read-tree", input.head])).code !== 0) return { ...base0, error: "could not read the child's head" };
+    if ((await atRoot(["add", "-A"])).code !== 0) return { ...base0, error: "could not stage the child's working tree" };
+    const written = await atRoot(["write-tree"]);
+    const tree = written.stdout.trim();
+    if (written.code !== 0 || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(tree)) {
+      return { ...base0, error: "could not capture the child's working tree" };
+    }
+    const [numstat, patchRes] = await Promise.all([
+      atRoot(["diff", "--numstat", input.mergeBase, tree]),
+      atRoot(["diff", input.mergeBase, tree]),
+    ]);
+    if (numstat.code !== 0) return { ...base0, error: "could not read the diff stats" };
+    if (patchRes.code !== 0) return { ...base0, error: "could not read the diff" };
+    let filesChanged = 0;
+    let insertions = 0;
+    let deletions = 0;
+    for (const line of numstat.stdout.split("\n")) {
+      const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
+      if (!m) continue;
+      filesChanged++;
+      if (m[1] !== "-") insertions += Number(m[1]);
+      if (m[2] !== "-") deletions += Number(m[2]);
+    }
+    let patch = patchRes.stdout;
+    let truncated = false;
+    if (utf8Bytes(patch) > MAX_PATCH_BYTES) {
+      patch = clipUtf8Bytes(patch, MAX_PATCH_BYTES);
+      truncated = true;
+    }
+    return { ...base0, ok: true, filesChanged, insertions, deletions, patch, truncated };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A checkout's git directory, read from the filesystem rather than by asking git inside it:
+ * a linked worktree's `.git` is a `gitdir: <path>` file, a main checkout's is the directory.
+ */
+function stackedGitDir(worktree: string): string | null {
+  const dotGit = join(worktree, ".git");
+  try {
+    if (statSync(dotGit).isDirectory()) return dotGit;
+    const line = readFileSync(dotGit, "utf8").split("\n")[0] ?? "";
+    if (!line.startsWith("gitdir:")) return null;
+    const path = line.slice("gitdir:".length).trim();
+    return isAbsolute(path) ? path : resolve(worktree, path);
+  } catch {
+    return null;
+  }
 }

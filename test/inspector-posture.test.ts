@@ -101,7 +101,11 @@ test("the operator's config: armed for shipping, unpublished by the Inspector, d
       reviewDecision: null,
       checks: "passing",
       unresolvedThreads: 0,
+      baseRefName: "main",
+      defaultBranch: "main",
     },
+    stack: { lineage: false, releasedForHead: false },
+    reviewedBase: "main",
     // A completed, clean review of exactly this head - which dry run produces.
     reviewedSha: "deadbeef",
     reviewPosture: "dry-run",

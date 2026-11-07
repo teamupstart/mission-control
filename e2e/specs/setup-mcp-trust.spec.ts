@@ -5,9 +5,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 
-for (const [agent, label, directory, filename, initial] of [
-  ["claude", "Claude Code", ".claude", "settings.json", '{"permissions":{"allow":["Read"],"deny":["Bash(rm *)"]}}'],
-  ["codex", "Codex", ".codex", "config.toml", '# preserve\napproval_policy = "on-request"\n[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n'],
+for (const [agent, label, directory, filename, initial, runtimeDir] of [
+  ["claude", "Claude Code", ".claude", "settings.json", '{"permissions":{"allow":["Read"],"deny":["Bash(rm *)"]}}', "projects"],
+  ["codex", "Codex", ".codex", "config.toml", '# preserve\napproval_policy = "on-request"\n[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n', "sessions"],
 ] as const) {
   test(`${label} MCP trust repairs user settings and survives recheck`, async ({ page, daemon }) => {
     const dir = join(daemon.home, directory);
@@ -55,7 +55,13 @@ for (const [agent, label, directory, filename, initial] of [
     writeFileSync(target, initial);
     unlinkSync(path);
     symlinkSync("linked-settings", path);
-    const beforeRepair = readdirSync(dir).sort();
+    // What a refused repair must not touch: the settings file, its link target, and any
+    // backup or temporary sibling it might write. The harness's own runtime directory is not
+    // part of that: the daemon's background probes run the fake agent in this same home, and
+    // it writes its transcripts there (`~/.claude/projects`, `~/.codex/sessions`) whenever
+    // one happens to run, which is what made this comparison fail intermittently.
+    const settingsEntries = () => readdirSync(dir).filter((entry) => entry !== runtimeDir).sort();
+    const beforeRepair = settingsEntries();
     await page.reload();
     await openSetupFamily(page, "extensions");
     await expectRowStatus(page, anchor, "Needs setup");
@@ -63,7 +69,7 @@ for (const [agent, label, directory, filename, initial] of [
     await expect(row).toContainText("cannot update a symlinked settings file");
     expect(readFileSync(target, "utf8")).toBe(initial);
     expect(readlinkSync(path)).toBe("linked-settings");
-    expect(readdirSync(dir).sort()).toEqual(beforeRepair);
+    expect(settingsEntries()).toEqual(beforeRepair);
   });
 }
 

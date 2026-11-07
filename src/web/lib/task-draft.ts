@@ -202,8 +202,12 @@ function dependencyInputKey(dependency: TaskDependencyInput): string {
 
 function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[]): boolean {
   if (a.length !== b.length) return false;
-  const bKeys = new Set(b.map(dependencyInputKey));
-  return a.every((dependency) => bKeys.has(dependencyInputKey(dependency)));
+  // The same edges AND the same Stack / After merge choice on each: flipping a chip's mode
+  // is an edit even though no edge was added or removed.
+  const modeOf = (dependency: TaskDependencyInput): string =>
+    dependency.type === "plan" ? "" : dependency.mode ?? "";
+  const bKeys = new Map(b.map((dependency) => [dependencyInputKey(dependency), modeOf(dependency)]));
+  return a.every((dependency) => bKeys.get(dependencyInputKey(dependency)) === modeOf(dependency));
 }
 
 /**

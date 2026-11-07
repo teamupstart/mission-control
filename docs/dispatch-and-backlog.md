@@ -497,8 +497,9 @@ is incomplete, **Dispatch now** becomes **Schedule after dependencies** and the 
 forced into the backlog. Every task or standalone active session completes only when its
 PR is observed **merged** - and for a task with
 [several repositories attached](#attaching-more-than-one-repository), when *every*
-repository it changed has; merely opening a PR does not release dependents, and an
-ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
+repository it changed has; merely opening a PR does not release dependents (unless the
+dependency [stacks](#stacked-dependencies), which lets it start but still does not complete
+it), and an ordinary **Mark done** does not either. Leaving **Unblock dependents** unchecked keeps
 that merge guard; it does not disable later recovery. Completed prerequisites with unresolved
 edges are still checked for verified merges, including after a restart or session closure.
 An unresolved dependency also retains its earlier work episode's branch when the task moves
@@ -527,7 +528,8 @@ use it only when the prerequisite's work is already in place (see [Resolve a sto
 dependency](#resolve-a-stopped-dependency)). Active sessions without observable hook
 instrumentation are not eligible dependencies because Mission Control cannot distinguish
 their next work episode from an earlier merged PR. The board and Sitrep name what a task is
-waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early.
+waiting for, and neither manual launch, drag-to-assign, nor Foreman can start it early,
+except through a [stacked dependency](#stacked-dependencies).
 Reopen the backlog task to add or remove dependencies; cycles are refused. Recorded merge
 completion remains visible even after the originating session disappears. A prerequisite
 required by a retained exact plan input names that plan and revision in the editor and cannot
@@ -535,6 +537,31 @@ be removed while it is the pin's only matching prerequisite. Change the plan inp
 prerequisite together through the task API to replace the pair. The editor keeps the pin intact.
 A rejected save leaves the draft open; if Dispatch now triggered the save, the error says that
 dispatch was not attempted. A launch refusal after a successful save is reported separately.
+
+#### Stacked dependencies
+
+A same-repository task dependency can **stack**: the dependent starts as soon as its
+prerequisite has an open, non-draft pull request and its agent has finished the episode,
+instead of waiting for the merge. The chip of a same-repository task dependency that has not
+merged yet carries a **Stack** / **After merge** toggle. A prerequisite that has already merged
+(its task is finished, or its pull request merged) has nothing left to stack on, so its chip
+has no toggle, and neither does a dependency on a session with no task or on a task in
+another repository. Until you pick one the toggle shows the mode it inherits, marked *default*,
+from **Settings → Shipping → Stacked pull requests** (which ships as *Wait for merge*).
+Changing the setting later moves every chip you never set.
+
+A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
+until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
+dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
+cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
+prerequisites in one repository, a prerequisite in another repository, or a stack at the
+depth cap. A stacked task is always **dispatched** into a fresh worktree cut from the
+prerequisite pull request's current head, and opens its pull request against that branch;
+drag-to-assign and Foreman never hand it to an existing agent. Session dependencies without
+a task, plan publications and cross-repository dependencies always wait for merge. See
+[Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests) for how the stacked
+pull request is reviewed and released to merge.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the

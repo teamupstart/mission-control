@@ -48,6 +48,13 @@ export async function probeCodeRabbit(): Promise<{ command: string; env: NodeJS.
 
 export async function resolveCodeRabbitComparison(input: {
   repoRoot: string; headSha: string | null; yaml: CodeRabbitConfigSnapshot; command: WorkflowCommandView;
+  /**
+   * Stacked pull requests: the refreshed, verified parent base a stacked task is reviewed
+   * against. When it names one, it is the comparison base - the same base the Persona diff
+   * used - and an operator's explicit baseRef does not override it. Throws when the refresh
+   * failed; that becomes the comparison's error.
+   */
+  stackBase?: () => Promise<{ branch: string; sha: string; repoRoot: string } | null>;
 }): Promise<CodeRabbitComparison> {
   const rule = input.command.overrides.find((r) => r.repoRoot === input.repoRoot)?.review;
   const tuning: CodeRabbitTuning = rule ?? { kind: "coderabbit", baseRef: null, severity: "major" };
@@ -62,6 +69,22 @@ export async function resolveCodeRabbitComparison(input: {
   try {
     if (!input.headSha) throw new Error("No captured committed head. Commit and submit again");
     result.head = await resolveCapturedCommit(input.repoRoot, input.headSha);
+    const stacked = input.stackBase ? await input.stackBase() : null;
+    if (stacked) {
+      // At the task's repository root, from explicit commit ids: both commits are in its
+      // object store (linked worktrees share it), so nothing here runs in the checkout.
+      const atRoot = async (args: string[]) => {
+        const r = await run("git", ["-C", stacked.repoRoot, ...args], { timeoutMs: 5000, maxBuffer: 64 * 1024 });
+        if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("The stacked comparison could not be resolved at the repository root");
+        return r.stdout.trim();
+      };
+      result.baseRef = `refs/remotes/origin/${stacked.branch}`;
+      result.baseTip = stacked.sha;
+      result.mergeBase = await atRoot(["merge-base", "--all", result.baseTip, result.head]);
+      if (!FULL_SHA.test(result.mergeBase)) throw new Error("The stacked comparison has no unique merge base");
+      result.empty = (await atRoot(["diff", "--name-only", result.mergeBase, result.head, "--"])) === "";
+      return result;
+    }
     if (!result.baseRef) {
       // A locally observed remote HEAD is reliable; guessing main/master is not.
       result.baseRef = await git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);

@@ -40,7 +40,8 @@ import {
 // `freezeWorkflowRunIntent` now, and re-exporting the raw derivation beside it would be an
 // invitation to assemble a snapshot by hand again.
 export { workflowIntentFingerprint };
-import { computeSessionDiff } from "../diff.ts";
+import { computeSessionDiff, computeStackedDiff } from "../diff.ts";
+import { resolveStackDiffBase, type StackDiffBase } from "../stacking/diff-base.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
@@ -865,14 +866,46 @@ function standardsDocuments(
   }));
 }
 
-async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
+/**
+ * The base a review diff of this checkout uses: the verified stacked base for a stacked task's
+ * primary repository, or undefined for every other run (the default-branch rule). A refresh
+ * that fails throws, so the capture fails with "stacked base could not be refreshed" instead
+ * of reviewing against a stale parent.
+ */
+async function reviewDiffBase(
+  registry: Registry,
+  binding: WorkflowBinding,
+  session: Session,
+): Promise<StackDiffBase | undefined> {
+  return (await resolveStackDiffBase(
+    registry,
+    session,
+    binding.repoRoot || null,
+    undefined,
+    workflowCheckoutPath(binding, session),
+  )) ?? undefined;
+}
+
+async function readRepositoryWorkEvidence(cwd: string | null, stackBase?: StackDiffBase): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
   statusTruncated: boolean;
   statusFingerprint: string;
 }> {
-  const diff = await computeSessionDiff(cwd);
+  // A stacked child's diff is read from the repository root with its checkout named
+  // explicitly, so no git runs inside the child's worktree (`computeStackedDiff`). Every other
+  // run keeps the default-branch rule, unchanged.
+  const diff = stackBase && cwd
+    ? await computeStackedDiff({
+      repoRoot: stackBase.repoRoot,
+      worktree: cwd,
+      head: stackBase.head,
+      branch: stackBase.headBranch,
+      mergeBase: stackBase.mergeBase,
+      label: stackBase.branch,
+    })
+    : await computeSessionDiff(cwd);
   if (!diff.ok) {
     throw new Error(`Could not capture repository diff: ${diff.error ?? "unknown error"}`);
   }
@@ -899,7 +932,7 @@ async function readRepositoryWorkEvidence(cwd: string | null): Promise<{
  * re-read - so one capture writes at most one review snapshot. The boundary compares the same
  * content tree, which is content-addressed and therefore identical whichever store hashed it.
  */
-async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = false, reviewSnapshot = false): Promise<{
+async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = false, reviewSnapshot = false, stackBase?: StackDiffBase): Promise<{
   diff: Awaited<ReturnType<typeof computeSessionDiff>>;
   allStatus: string[];
   status: string[];
@@ -911,7 +944,7 @@ async function readRepositoryEvidence(cwd: string | null, captureCodeRabbit = fa
   repositoryFingerprint: string;
   coderabbit: ReturnType<typeof captureCodeRabbitConfig> | undefined;
 }> {
-  const work = await readRepositoryWorkEvidence(cwd);
+  const work = await readRepositoryWorkEvidence(cwd, stackBase);
   const { diff, statusFingerprint } = work;
   if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
   const snapshot = reviewSnapshot ? await captureReviewSnapshot(cwd) : null;
@@ -1266,7 +1299,12 @@ export async function readWorkflowContextRaw(
     reviewCommit,
     repositoryFingerprint,
     coderabbit,
-  } = await readRepositoryEvidence(checkout, captureCodeRabbit, graph?.nodes.some(node => node.kind === "check") ?? false);
+  } = await readRepositoryEvidence(
+    checkout,
+    captureCodeRabbit,
+    graph?.nodes.some(node => node.kind === "check") ?? false,
+    await reviewDiffBase(registry, binding, session),
+  );
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
@@ -1395,7 +1433,7 @@ export async function readWorkflowEvidenceProbe(
   }
   const checkout = workflowCheckoutPath(binding, session);
   if (!checkout) throw new Error("The bound session has no working directory");
-  const work = await readRepositoryWorkEvidence(checkout);
+  const work = await readRepositoryWorkEvidence(checkout, await reviewDiffBase(registry, binding, session));
   return {
     headSha: work.diff.headSha,
     workingTreeStatus: work.status,
@@ -1555,7 +1593,12 @@ export async function captureBoundaryChanged(
   const located = sessionMessages(session);
   const size = located?.read.size(located.path) ?? null;
   if ((located?.path ?? null) !== boundary.transcriptPath || size !== boundary.transcriptSize) return true;
-  const repository = await readRepositoryEvidence(workflowCheckoutPath(binding, session), boundary.captureCodeRabbit);
+  const repository = await readRepositoryEvidence(
+    workflowCheckoutPath(binding, session),
+    boundary.captureCodeRabbit,
+    false,
+    await reviewDiffBase(registry, binding, session),
+  );
   return repository.diff.headSha !== boundary.headSha
     || repository.repositoryFingerprint !== boundary.repositoryFingerprint;
 }

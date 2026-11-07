@@ -44,6 +44,16 @@ async function dispatch(page: Page, daemon: DaemonHandle, prompt: string) {
   expect(configured.ok(), await configured.text()).toBe(true);
   // A configured fixture remote is enough for local provenance matching. No GitHub call.
   execFileSync("git", ["remote", "add", "fixture", "https://github.com/test/pi-fixture.git"], { cwd: daemon.repo });
+  // Warm Pi's model catalog before the dashboard reads it. The probe is bounded at five
+  // seconds, and on a loaded host (the full suite's four workers) starting the fake `pi`
+  // can exceed that: the dashboard then shows the built-in choices without the Bedrock row
+  // this test selects, and it does not refetch on its own, so the selection below waited out
+  // the whole test timeout. The daemon caches a successful catalog and probes again after a
+  // failure, so polling its route until the row is listed makes the page read the real list.
+  await expect.poll(async () => {
+    const catalog = await page.request.get(`${daemon.baseURL}/api/harnesses/models`);
+    return catalog.ok() && (await catalog.text()).includes("deepseek.v3.2");
+  }, { timeout: 60_000, message: "Pi's model catalog never listed the Bedrock model" }).toBe(true);
   await page.goto(daemon.baseURL);
   await page.getByRole("button", { name: "Dispatch" }).click();
   const modal = page.getByRole("dialog", { name: "Dispatch an agent" });

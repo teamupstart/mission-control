@@ -1,6 +1,7 @@
 import type { BacklogPlan, BacklogPlanEntry, Task } from "./types.ts";
 import { backlogTasks } from "./session.ts";
 import { taskKindAllowsBacklog } from "./task.ts";
+import { stackStartEdge } from "./stacking.ts";
 
 // The backlog autopilot's predicates, defined once - the same reason
 // `foremanAllowlisted` and `reportBucket` live in src/shared rather than being
@@ -165,6 +166,12 @@ function dependencyState(target: Task): BlockerState {
 
 function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker[] {
   const out: BacklogBlocker[] = [];
+  // Stacked pull requests: the one unmerged same-repository prerequisite whose edge the daemon
+  // stamped ready (open, non-draft pull request; agent finished the episode) does not block
+  // STARTING. Its `satisfiedAt` stays null - completion, Mark done and Unblock dependents are
+  // unchanged - and an unstamped edge, including one stored before stacking existed, blocks
+  // exactly as it always did. See `stackStartEdge`.
+  const stackedOn = task.status === "backlog" ? stackStartEdge(task, byId)?.taskId ?? null : null;
   const planProblem = task.planInputError ?? task.planPolicyError;
   if (planProblem) out.push({ taskId: task.id, title: planProblem, state: "stopped", source: "declared" });
   for (const dependency of task.dependencies) {
@@ -182,6 +189,7 @@ function declaredBlockersIn(task: Task, byId: Map<string, Task>): BacklogBlocker
       });
       continue;
     }
+    if (dependency.taskId === stackedOn) continue;
     const target = byId.get(dependency.taskId);
     out.push({
       taskId: dependency.taskId,

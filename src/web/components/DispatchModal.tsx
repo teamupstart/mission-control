@@ -1,5 +1,6 @@
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
+import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -542,6 +543,7 @@ export function DispatchLayer({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
@@ -580,6 +582,11 @@ export function DispatchLayer({
   harnessesRevision?: number;
   /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
   pipelinesRevision?: string;
+  /**
+   * The effective Stacked pull requests default (`SettingsStatus.shipping.stacking`), which a
+   * same-repository dependency chip shows as the mode it inherits until the operator picks one.
+   */
+  stackingDefault?: StackingMode;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -1013,6 +1020,7 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
       />
     );
   }
@@ -1044,6 +1052,7 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
       />
     );
   }
@@ -1063,6 +1072,7 @@ export function DispatchLayer({
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
+      stackingDefault={stackingDefault}
     />
   );
 }
@@ -1097,6 +1107,7 @@ function DispatchModal({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
 }: {
   /**
    * Which of the form's four jobs this is, carrying that job's inputs and no others.
@@ -1128,6 +1139,7 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
+  stackingDefault?: StackingMode;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   /**
@@ -1390,6 +1402,25 @@ function DispatchModal({
     if (!required?.length) return null;
     return required.map(requirement => `Required by pinned plan ${requirement.title} revision ${requirement.input.revision}.`).join(" ")
       + " Retain this prerequisite to preserve the exact originating work episode or local publication artifact. Changing it requires updating the plan input and dependency together.";
+  }
+  /**
+   * Can this dependency start the task on its open pull request at all? Stacking covers a
+   * same-repository TASK prerequisite that has not merged: a pull request has one base, and
+   * only a task records what it was cut on. The chip's Stack / After merge control and the
+   * wait note both ask this, so neither promises a stack the other would not offer.
+   */
+  function isStackable(dependency: TaskDependencyInput): dependency is Extract<TaskDependencyInput, { type: "task" }> {
+    if (dependency.type !== "task") return false;
+    const target = tasks.find((task) => task.id === dependency.taskId);
+    if (target === undefined || target.repoRoot !== draft.repoRoot.trim()) return false;
+    // Already merged, so the edge is satisfied the moment it is saved and there is no open
+    // parent to start on: a stored edge says so itself, and a prerequisite added now is
+    // judged the way the server will record it - a finished task, or a live session whose
+    // pull request merged (see `TaskManager`'s dependency resolution).
+    const stored = editing?.dependencies.find((edge) => dependencyKey(dependencyInputOf(edge)) === dependencyKey(dependency));
+    if (stored?.satisfiedAt != null) return false;
+    if (target.status === "done") return false;
+    return !sessions.some((session) => session.state !== "exited" && session.task?.id === target.id && session.prState === "merged");
   }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
@@ -3300,7 +3331,7 @@ function DispatchModal({
                 {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
-                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR"}</span>
+                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>
                   </span>
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
@@ -3320,10 +3351,40 @@ function DispatchModal({
                       const key = dependencyKey(dependency);
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
                       const reason = removalReason(key);
+                      const stackable = isStackable(dependency);
+                      const mode = dependency.type === "plan" ? undefined : dependency.mode;
+                      const shown = mode ?? stackingDefault;
                       return (
                         <span key={key} className="dep-entry">
                           <span className="dep-chip">
                             {label}
+                            {stackable && dependency.type === "task" && (
+                              <span className="dep-mode" role="group" aria-label={`When to start after ${label}`}>
+                                {(["stack", "merge"] as const).map((option) => (
+                                  <Tooltip
+                                    key={option}
+                                    label={option === "stack"
+                                      ? "Start as soon as this has an open pull request, and open this task's pull request against its branch"
+                                      : "Start once this task's pull request has merged"}
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
+                                      aria-pressed={shown === option}
+                                      onClick={() =>
+                                        updateDependencies(draft.dependencies.map((candidate) =>
+                                          dependencyKey(candidate) === key && candidate.type === "task"
+                                            ? { ...candidate, mode: option }
+                                            : candidate))
+                                      }
+                                    >
+                                      {option === "stack" ? "Stack" : "After merge"}
+                                    </button>
+                                  </Tooltip>
+                                ))}
+                                {mode === undefined && <span className="dep-mode-default">default</span>}
+                              </span>
+                            )}
                             <Tooltip label={reason ?? "Remove this dependency"}>
                               <button
                                 type="button"
@@ -3383,7 +3444,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : "and dispatches when their PRs merge."}
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner on a Stack dependency once its PR is open and every other dependency has merged." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}

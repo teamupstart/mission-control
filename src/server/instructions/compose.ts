@@ -98,6 +98,33 @@ export function composeStandingInstructions(
 }
 
 /**
+ * Append launch-owned sections - a resident's role, a dispatch Persona - to the repository block.
+ *
+ * The repository block reads first and each section follows in order. Empty sections add
+ * nothing, so a launch with nothing to append returns `base` by identity. When the repository
+ * contributed nothing, the sections still need a channel: the pair's own out-of-band channel,
+ * or a turn-one prefix for a pair without one, read from the harness registry exactly as
+ * `composeStandingInstructions` reads it. `sources` stays the repository provenance, because
+ * the appended sections are not about any checkout.
+ */
+export function appendStandingSections(
+  base: StandingInstructionsDelivery,
+  sections: readonly string[],
+  agent: AgentType,
+  runtime: SessionRuntime,
+): StandingInstructionsDelivery {
+  const appended = sections.map((section) => section.trim()).filter((section) => section.length > 0);
+  if (appended.length === 0) return base;
+  return {
+    text: [base.text, ...appended].filter((part) => part.length > 0).join("\n\n"),
+    mechanism: base.mechanism === "none"
+      ? standingInstructionsChannel(agent, runtime) ?? "prompt-prefix"
+      : base.mechanism,
+    sources: base.sources,
+  };
+}
+
+/**
  * Put a composed block in front of an intent, in the position the repo manifest already
  * occupies and for the same reason.
  *

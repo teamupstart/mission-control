@@ -12,7 +12,7 @@ import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } fro
 
 import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
-import { normalizeLabels } from "@shared/task.ts";
+import { normalizeLabels, taskKindPersonaRefusal } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
 
 /**
@@ -69,6 +69,12 @@ export type DispatchDraft = {
    */
   advisorModel: AdvisorChoice | "";
   /**
+   * The Library Persona the agent launches with, or "" for none. Kept while a kind that
+   * cannot carry one is selected, so switching back restores it, and never sent for such a
+   * kind (`draftPersonaId`).
+   */
+  personaId: string;
+  /**
    * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
@@ -102,6 +108,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   model: "",
   effort: "",
   advisorModel: "",
+  personaId: "",
   workflowId: undefined,
   enabled: true,
   dependencies: [],
@@ -129,6 +136,11 @@ export function parseLabelInput(raw: string): string[] {
  * carries it and there is nothing to restore. Anything dropped now appends to that
  * same tail on save.
  */
+/** The Persona this draft would launch with, or null: none chosen, or a kind that cannot carry one. */
+export function draftPersonaId(draft: Pick<DispatchDraft, "kind" | "personaId">): string | null {
+  return draft.personaId && !taskKindPersonaRefusal(draft.kind) ? draft.personaId : null;
+}
+
 export function draftFromTask(t: Task): DispatchDraft {
   return {
     repoRoot: t.repoRoot,
@@ -150,6 +162,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     model: t.model ?? "",
     effort: t.effort ?? "",
     advisorModel: t.advisorModel ?? "",
+    personaId: t.personaId ?? "",
     workflowId: t.workflowId,
     planStorage: t.kind === "plan" ? t.planPolicy?.storage ?? "repository" : undefined,
     enabled: t.enabled,
@@ -187,6 +200,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.model === b.model &&
     a.effort === b.effort &&
     a.advisorModel === b.advisorModel &&
+    a.personaId === b.personaId &&
     a.workflowId === b.workflowId &&
     a.planStorage === b.planStorage &&
     a.enabled === b.enabled &&
@@ -267,6 +281,10 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   // A pin can only be taken OFF now - the advisor is chosen on Settings -> Harnesses - so the
   // one change a draft can carry is a cleared legacy pin.
   if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
+  // Null takes a Persona back off, which is also what a move to a kind that cannot carry one
+  // sends: the field is disabled there, so the draft's value is not the operator's answer.
+  const personaId = draftPersonaId(draft);
+  if (personaId !== task.personaId) patch.personaId = personaId;
   const becomesPlan = draft.kind === "plan" && task.kind !== "plan";
   if (draft.workflowId !== undefined && (becomesPlan || draft.workflowId !== task.workflowId)) {
     patch.workflowId = draft.workflowId;

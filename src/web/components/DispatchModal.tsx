@@ -66,6 +66,7 @@ import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
+  draftPersonaId,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
@@ -93,6 +94,7 @@ import { DeleteButton } from "./DeleteButton.tsx";
 import { LabelChips, ScheduleSwitch } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
+import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -292,6 +294,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
+    d.personaId === EMPTY_DISPATCH_DRAFT.personaId &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
@@ -568,7 +571,7 @@ export function DispatchLayer({
   opening: DispatchOpening | null;
   tasks?: Task[];
   sessions?: Session[];
-  /** Live Personas, for the Ensemble evaluator-guidance selector. */
+  /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
   personas?: PersonaView[];
   /** Live Workflow summaries, for the optional post-selection handoff placement. */
   workflowSummaries?: WorkflowSummary[];
@@ -1021,6 +1024,7 @@ export function DispatchLayer({
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
         stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1053,6 +1057,7 @@ export function DispatchLayer({
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
         stackingDefault={stackingDefault}
+        personas={personas}
       />
     );
   }
@@ -1073,6 +1078,7 @@ export function DispatchLayer({
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
       stackingDefault={stackingDefault}
+      personas={personas}
     />
   );
 }
@@ -1108,6 +1114,7 @@ function DispatchModal({
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
   stackingDefault = STACKING_SHIPPED_DEFAULT,
+  personas = [],
 }: {
   /**
    * Which of the form's four jobs this is, carrying that job's inputs and no others.
@@ -1140,6 +1147,8 @@ function DispatchModal({
   harnessesRevision?: number;
   pipelinesRevision?: string;
   stackingDefault?: StackingMode;
+  /** Live Personas, for the Advanced fold's Persona choice. */
+  personas?: PersonaView[];
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   /**
@@ -2456,6 +2465,7 @@ function DispatchModal({
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
+          personaId: draftPersonaId(submitted) ?? undefined,
           workflowId: submitted.workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           dependencies: submitted.dependencies,
@@ -3079,9 +3089,16 @@ function DispatchModal({
           )}
         </div>
 
-        {draft.kind === "plan" && (
+        {/* Advanced: settings most tasks leave alone, offered for every kind. The Persona is
+            the one every kind shares; a plan adds where it saves. The tour's fixed dispatcher
+            sends the repository and nothing else, so it offers none of them. */}
+        {!tourDemo && (
           <div className="dispatch-more-wrap">
-            <Tooltip label={advancedOpen ? "Collapse advanced task settings" : "Choose where this task saves its plan"}>
+            <Tooltip label={advancedOpen
+              ? "Collapse advanced task settings"
+              : draft.kind === "plan"
+                ? "Choose this task's Persona and where it saves its plan"
+                : "Choose a Persona for this task's agent"}>
               <button
                 type="button"
                 className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
@@ -3089,12 +3106,24 @@ function DispatchModal({
                 onClick={() => setAdvancedOpen((open) => !open)}
               >
                 <span className="dispatch-more-title">Advanced</span>
-                {!advancedOpen && <span className="dispatch-more-summary">Plan storage: {(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}</span>}
+                {!advancedOpen && (
+                  <span className="dispatch-more-summary">
+                    {dispatchPersonaSummary(personas, draft.kind, draft.personaId)}
+                    {draft.kind === "plan" && ` · Plan storage: ${(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}`}
+                  </span>
+                )}
                 <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
               </button>
             </Tooltip>
             {advancedOpen && (
               <div className={`dispatch-more-body${guidedDim}`}>
+                <DispatchPersonaField
+                  personas={personas}
+                  kind={draft.kind}
+                  personaId={draft.personaId}
+                  onChange={(personaId) => update({ personaId })}
+                />
+                {draft.kind === "plan" && (
                 <label className="field">
                   <span className="field-label">Plan storage</span>
                   <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
@@ -3118,6 +3147,7 @@ function DispatchModal({
                     {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
                   </span>
                 </label>
+                )}
               </div>
             )}
           </div>
@@ -3489,6 +3519,9 @@ function DispatchModal({
           repoRoots={[draft.repoRoot.trim(), ...attachedRepoRoots(draft)].filter(Boolean)}
           agent={draft.agent}
           storedRuntime={defaults?.sessionRuntime?.[draft.agent]}
+          personaId={draftPersonaId(draft)}
+          kind={draft.kind}
+          pipelineRuntime={draft.kind === "pipeline" ? pipelineLaunchRuntime : null}
         />
 
         {/* The refusal, and - when the daemon named one - the screen that clears it. The door

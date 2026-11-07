@@ -58,8 +58,10 @@ import {
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
   taskKindCreator,
+  taskKindPersonaRefusal,
   taskRequeueRefusal,
 } from "@shared/task.ts";
+import { resolveTaskPersona, type PersonaLookup } from "./instructions/persona.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
 import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
@@ -240,6 +242,8 @@ export interface CreateTaskInput {
   model?: string;
   /** Launch with a specific reasoning effort; omitted follows the harness default. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Launch with this Library Persona's guidance as standing instructions; omitted is none. */
+  personaId?: string;
   /**
    * Published Workflow identity to arm when the launched session appears. Omitted follows
    * the machine default; null explicitly means none.
@@ -358,6 +362,9 @@ export class TaskKindBacklogError extends Error {}
 
 /** A launch effort named for a harness that cannot be launched with it. */
 export class TaskEffortUnsupportedError extends Error {}
+
+/** A Persona the task cannot launch with: missing, archived, or on a kind that cannot carry one. */
+export class TaskPersonaError extends Error {}
 
 /**
  * Capability held only by the localhost manual Dispatch route. Requiring the exact symbol
@@ -985,6 +992,8 @@ export class TaskManager {
   ) => boolean = () => false;
   /** The resident launch composer, installed by the daemon once `ResidentManager` exists. */
   private residentLaunch?: NonNullable<TaskDispatcherDeps["residentLaunch"]>;
+  /** The Library's Persona reader, installed by the daemon once `PersonaManager` exists. */
+  private personaLookup?: PersonaLookup;
   private residentMcp?: NonNullable<TaskDispatcherDeps["residentMcp"]>;
   /**
    * Where a completion is announced to the task-source write-back ledger, when the daemon
@@ -1048,6 +1057,8 @@ export class TaskManager {
       },
       residentMcp: (task) => this.residentMcp?.(task) ?? null,
       residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
+      // Late-bound for the same reason: a task naming a Persona is refused without a reader.
+      persona: (id) => this.personaLookup?.(id) ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1486,6 +1497,19 @@ export class TaskManager {
   ): void {
     this.residentLaunch = compose;
     this.residentMcp = mcp;
+  }
+
+  /** Install the Library's Persona reader, which task creation, editing and launch all ask. */
+  registerPersonaLookup(lookup: PersonaLookup): void {
+    this.personaLookup = lookup;
+  }
+
+  /** Why a task of this kind cannot launch with this Persona, or null when it can. */
+  private personaProblem(kind: TaskKind, personaId: string): string | null {
+    const refusal = taskKindPersonaRefusal(kind);
+    if (refusal) return refusal;
+    const resolved = resolveTaskPersona(this.personaLookup, personaId);
+    return resolved.ok ? null : resolved.error;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -2880,6 +2904,11 @@ export class TaskManager {
         `reasoning effort ${input.effort} is not supported by ${agent}`,
       );
     }
+    // Every creator, for the same reason: the row it writes is what the launch will read.
+    if (input.personaId) {
+      const problem = this.personaProblem(input.kind, input.personaId);
+      if (problem) throw new TaskPersonaError(problem);
+    }
     const id = internal?.id ?? randomUUID();
     if (internal) {
       // Two producer-specific identity checks, with the same recovery rule. A scheduled id
@@ -2903,6 +2932,7 @@ export class TaskManager {
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
             existing.advisorModel !== null ||
+            existing.personaId !== null ||
             existing.workflowId !== null
           ) {
             throw new TaskIdCollisionError(
@@ -2933,6 +2963,7 @@ export class TaskManager {
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
             existing.advisorModel !== null ||
+            existing.personaId !== (input.personaId ?? null) ||
             existing.workflowId !== workflowId ||
             existing.scheduleId !== null
           ) {
@@ -3001,6 +3032,9 @@ export class TaskManager {
       // A task no longer pins an advisor: Settings -> Harnesses chooses it per launch model.
       // The column stays for tasks filed before that move, whose pin still applies.
       advisorModel: null,
+      // An id, read again at launch like model and effort: a Persona edited while the task
+      // waits reaches it, and the launch's standing-instruction snapshot pins what was sent.
+      personaId: input.personaId ?? null,
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3312,6 +3346,12 @@ export class TaskManager {
       // through here. Null for every other kind, so nothing else changes.
       const planBlock = planDispatchBlock(t);
       if (planBlock) return { ok: false, error: planBlock, task: t };
+      // The same backstop shape for a Persona archived or deleted while the task waited: the
+      // click reads the refusal here, and the Dispatcher refuses it again for every other door.
+      const personaBlock = t.personaId ? this.personaProblem(t.kind, t.personaId) : null;
+      if (personaBlock) {
+        return { ok: false, error: `${personaBlock}; choose another Persona, or none, under Advanced`, task: t };
+      }
       // Stacked pull requests. A task whose start rests on a readiness stamp is revalidated
       // and pinned to its prerequisite's current head here; every other dispatch records that
       // it is NOT stacked, so a rescheduled task's new episode never inherits an earlier
@@ -3896,6 +3936,20 @@ export class TaskManager {
     if (advisorModel !== null && !supportsAdvisor(agent, advisorModel)) {
       return { ok: false, error: `an advisor override (${advisorModel}) is not supported by ${agent}` };
     }
+    // A move to a kind that cannot carry a Persona drops the one the task held, the way an agent
+    // change drops model and effort. Naming one for such a kind is refused, and so is a newly
+    // named Persona that no longer exists. One already stored is not re-checked on an unrelated
+    // edit: the launch refuses it, and the editor is where the operator takes it off.
+    const kind = patch.kind ?? t.kind;
+    const personaId = patch.personaId === undefined
+      ? (taskKindPersonaRefusal(kind) ? null : t.personaId)
+      : patch.personaId;
+    if (personaId !== null) {
+      const problem = personaId === t.personaId
+        ? taskKindPersonaRefusal(kind)
+        : this.personaProblem(kind, personaId);
+      if (problem) return { ok: false, error: problem };
+    }
     // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
     // rebuild the entries from roots because the status guard above has already refused
     // any patch that is not annotation on a task that left the backlog - so nothing here
@@ -4033,6 +4087,7 @@ export class TaskManager {
       model,
       effort,
       advisorModel,
+      personaId,
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
       workflowId,
@@ -4388,6 +4443,15 @@ export class TaskManager {
       return {
         ok: false,
         error: `${t.title} is stacked on its prerequisite's pull request, so it has to be dispatched into a fresh worktree cut from it`,
+        scope: "task",
+      };
+    }
+    // A Persona is delivered as the launch's standing instructions, and a live process's
+    // system prompt cannot be rewritten - so a task that names one has to be dispatched.
+    if (t.personaId) {
+      return {
+        ok: false,
+        error: `${t.title} launches with a Persona, which is delivered only when an agent starts, so it has to be dispatched`,
         scope: "task",
       };
     }

@@ -219,6 +219,7 @@ const BASE_TASK = {
   model: null,
   effort: null,
   advisorModel: null,
+  personaId: null,
   workflowId: null,
   source: null,
   pipelineRun: null,

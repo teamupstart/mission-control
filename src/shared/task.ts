@@ -273,6 +273,20 @@ export function taskKindLaunchesHarness(kind: TaskKind): kind is HarnessLaunched
   return TASK_KIND_BEHAVIOR[kind].launch === "harness";
 }
 
+/**
+ * Why a task of this kind cannot carry a dispatch Persona, or null when it can.
+ *
+ * Every kind the Dispatch form offers can. A harness-launched kind carries it in its launch's
+ * standing instructions, and a pipeline carries it to its managed Engineer host the same way.
+ * A resident is the one exception: it takes its Persona from its resident profile, and a
+ * second source for the same answer would only disagree with it.
+ */
+export function taskKindPersonaRefusal(kind: TaskKind): string | null {
+  return TASK_KIND_BEHAVIOR[kind].launch === "resident"
+    ? `a ${TASK_KIND_INFO[kind].label} task takes its Persona from its resident profile`
+    : null;
+}
+
 /** Whether the external provider projection, rather than a host session, owns completion. */
 export function providerOwnsTaskCompletion(kind: TaskKind): boolean {
   return TASK_KIND_BEHAVIOR[kind].launch === "pipeline";

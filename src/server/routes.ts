@@ -51,7 +51,7 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import { TASK_KIND_BEHAVIOR, taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
 import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
 import {
   dismissLaunchFailures,
@@ -294,6 +294,7 @@ import {
   ScoutArchiveNotReadyError,
   TaskDependencyError,
   TaskEffortUnsupportedError,
+  TaskPersonaError,
   TaskStatusConflictError,
   type TaskManager,
 } from "./tasks.ts";
@@ -325,7 +326,7 @@ import {
   interruptUnsupportedWhy,
   workQueueBlockedReason,
 } from "@shared/harness-capabilities.ts";
-import { AGENT_TYPES, SESSION_RUNTIMES } from "@shared/types.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS } from "@shared/types.ts";
 import {
   STANDING_INSTRUCTIONS_MAX_KEY_LENGTH,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
@@ -338,6 +339,7 @@ import {
   updateStandingInstructions,
 } from "./instructions/config.ts";
 import { composeStandingInstructions } from "./instructions/compose.ts";
+import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import { attributeTranscript } from "./transcript-attribution.ts";
@@ -639,6 +641,7 @@ import {
   legacyCheckCommands,
 } from "@shared/workflow.ts";
 import type {
+  Persona,
   TestEvidenceAuditAggregate,
   WorkflowConfig,
   WorkflowLaunchBlock,
@@ -4512,6 +4515,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * Composed through the SAME `compose.ts` a launch uses, over the same ordered list, so the
    * preview cannot drift from the delivery. This answers "what WILL a session get"; what a
    * session DID get is the launch snapshot below, whose text and provenance are immutable.
+   *
+   * `personaId`, when the form has chosen one, appends that Persona's section exactly as the
+   * launch will, and is refused for the reason the launch would refuse it. `kind`, when given,
+   * answers for that kind's launch: a Pipeline's Engineer host receives no repository block.
    */
   app.get("/api/instructions/resolved", async (c) => {
     const repoPaths = c.req.queries("repoPath") ?? [];
@@ -4540,9 +4547,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!repoPath) return c.json({ error: `not a git repository: ${raw}` }, 400);
       candidates.push({ repoPath });
     }
-    return c.json(
-      composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime),
-    );
+    const kindParam = c.req.query("kind");
+    const kind = kindParam === undefined ? null : TASK_KINDS.find((k) => k === kindParam);
+    if (kind === undefined) return c.json({ error: `unknown task kind: ${kindParam}` }, 400);
+    const personaId = c.req.query("personaId");
+    let persona: Persona | null = null;
+    if (personaId) {
+      const library = personaManager()?.store;
+      const resolved = resolveTaskPersona(library && ((id) => library.getPersona(id)), personaId);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 409);
+      persona = resolved.persona;
+    }
+    // A provider-launched kind is not this harness launch at all: its Engineer host is sent what
+    // `pipelineHostStanding` says for the runtime the daemon will launch it on - never the
+    // repository block - so the preview asks the same function the dispatcher does.
+    if (kind && TASK_KIND_BEHAVIOR[kind].launch === "pipeline") {
+      return c.json(pipelineHostStanding(persona, agent, getPipelinesConfig().launchRuntime));
+    }
+    const repository = composeStandingInstructions(standingInstructionsConfig(), candidates, agent, runtime);
+    return c.json(persona ? withTaskPersona(repository, persona, agent, runtime) : repository);
   });
 
   /**
@@ -8395,7 +8418,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) {
+      if (error instanceof TaskEffortUnsupportedError || error instanceof TaskPersonaError) {
         return { ok: false, status: 400, body: { error: error.message } };
       }
       throw error;
@@ -8548,6 +8571,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       agent: task.agent,
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
+      personaId: task.personaId ?? undefined,
       workflowId: task.workflowId,
       priority: task.priority,
       labels: task.labels,

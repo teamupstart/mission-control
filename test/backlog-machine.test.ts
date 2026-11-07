@@ -392,6 +392,26 @@ test("a multi-repo task at the head does not block an assignable item behind it"
   assert.equal(a.kind === "assign" ? a.task.id : "", ordinary.id);
 });
 
+test("a task that names a Persona is never offered for assignment, and is dispatched instead", () => {
+  // The same livelock as a multi-repo task: `TaskManager.assign` refuses a Persona task with
+  // `scope: "task"`, because its Persona rides the launch's standing instructions and a live
+  // process cannot take them on. Offered once, it would be offered every tick.
+  const role = mkTask({ personaId: "persona-reviewer" });
+  const ordinary = mkTask();
+  const free = mkSession();
+  const head = decide({ tasks: [role], sessions: [free], plan: mkPlan([[role.id, []]]) });
+  assert.equal(head.kind, "dispatch");
+  assert.equal(head.kind === "dispatch" ? head.task.id : "", role.id);
+
+  const behind = decide({
+    tasks: [role, ordinary],
+    sessions: [free],
+    plan: mkPlan([[role.id, []], [ordinary.id, []]]),
+  });
+  assert.equal(behind.kind, "assign");
+  assert.equal(behind.kind === "assign" ? behind.task.id : "", ordinary.id);
+});
+
 test("assignment still happens AT the ceiling - it consumes no new session", () => {
   const t = mkTask();
   const free = mkSession();

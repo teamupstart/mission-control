@@ -524,6 +524,39 @@ test("reopened after the selected resident has ended, the drawer puts the keyboa
   await expect(band(page, SECOND)).toBeVisible();
 });
 
+for (const width of [1024, 900]) {
+  test(`at ${width}px the Board drill-in stays whole beside the open drawer`, async ({ dashboard: page, daemon }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await launch(daemon);
+    await useDrawer(page, daemon, "board");
+    await page.keyboard.press("Shift+KeyH");
+    const drawer = drawerOf(page);
+    await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
+    await expect(band(page)).toBeVisible();
+    await expect(drawer).toBeVisible();
+
+    // The 330px drawer leaves the Board less than a 320px rail plus a 440px reader. The rail
+    // gives way, and nothing of the reader runs past the Board's edge into its hidden overflow.
+    await expect.poll(() => page.evaluate(() => {
+      const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+      const board = document.querySelector(".board")!;
+      const reader = box(".board-detail > .cdetail");
+      return {
+        overflow: board.scrollWidth - board.clientWidth,
+        readerPastBoard: Math.round(reader.right - box(".board").right),
+        readerPastDrawer: Math.round(reader.right - box(".residents-drawer").left),
+        railWidth: Math.round(box(".board-col.is-rail").width),
+      };
+    })).toMatchObject({ overflow: 0, readerPastBoard: 0, readerPastDrawer: 0 });
+    const reply = page.locator(".board-detail").getByPlaceholder(/^Reply to this session/);
+    await expect(reply).toBeInViewport({ ratio: 1 });
+    const replyBox = await reply.boundingBox();
+    const drawerBox = await drawer.boundingBox();
+    expect(replyBox!.x + replyBox!.width).toBeLessThanOrEqual(drawerBox!.x);
+    await capture(page, `10-drill-in-beside-drawer-${width}`);
+  });
+}
+
 test("the drawer's footer launches a profile, and a profile with no repository launches through Dispatch", async ({ dashboard: page, daemon }) => {
   const WITH_REPO = "Footer launcher";
   const NO_REPO = "Footer gardener";

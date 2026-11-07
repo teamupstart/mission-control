@@ -29468,6 +29468,24 @@ span.line-run-prov {
   width: max(440px, calc(100cqw - var(--board-rail-width)));
   align-self: flex-start;
 }
+/* A Board too narrow for the rail beside a 440px reader - a Residents drawer column takes 330px
+   of the window, so this starts below about 1090px - must not clip the reader: the focused
+   Board hides its horizontal overflow. The rail gives way first, down to 200px, so the reader
+   keeps its 440px; past that the reader takes what is left rather than running off the edge.
+   Redefined on the tracks rather than on `.board`, because a container query cannot style the
+   container it measures; `100cqw` here is still the Board's width. */
+@container (max-width: 759.98px) {
+  .board-col,
+  .board-detail {
+    --board-rail-width: max(200px, calc(100cqw - 440px));
+  }
+  .board:not([data-focus="none"]) .board-detail {
+    min-width: calc(100cqw - var(--board-rail-width));
+  }
+  .board-detail > .cdetail {
+    width: calc(100cqw - var(--board-rail-width));
+  }
+}
 @media (prefers-reduced-motion: no-preference) {
   .board {
     transition: padding 0.34s ease;

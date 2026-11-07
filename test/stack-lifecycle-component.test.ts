@@ -37,7 +37,12 @@ function standing(over: Partial<StackStanding>): StackStanding {
   };
 }
 
-const button = (html: string, name: string) => new RegExp(`<button[^>]*>${name}</button>`).exec(html)?.[0] ?? "";
+/** The rendered <button> with this text. Fails when it is absent, so "not disabled" can never pass vacuously. */
+function button(html: string, name: string): string {
+  const found = new RegExp(`<button[^>]*>${name}</button>`).exec(html)?.[0];
+  assert.ok(found, `the "${name}" button is rendered`);
+  return found;
+}
 
 test("a paneless owner's prompt-typed actions are shown but not pressable; the replacement choice still is", () => {
   const html = renderToStaticMarkup(createElement(StackLifecycle, { prKey: "acme/repo#8", standing: standing({ sessionHasPane: false }) }));

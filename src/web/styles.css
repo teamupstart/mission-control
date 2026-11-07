@@ -38497,6 +38497,8 @@ body.foreman-sidecar-open .modal-backdrop {
 }
 .bl-filter-search:focus-within {
   border-color: var(--working);
+  /* The input drops its own outline, so the field draws the keyboard focus ring instead. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 28%, transparent);
 }
 .bl-filter-search input {
   flex: 1;

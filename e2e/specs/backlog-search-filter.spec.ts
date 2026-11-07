@@ -73,6 +73,8 @@ test("the Board's Backlog column searches and filters by dependencies and autopi
   await column.getByRole("button", { name: "Search the backlog" }).click();
   const search = column.getByRole("textbox", { name: "Search backlog tasks" });
   await expect(search).toBeFocused();
+  // The input has no outline of its own, so the field carries a visible focus ring.
+  await expect(column.locator(".bl-filter-search")).not.toHaveCSS("box-shadow", "none");
   await search.fill("auth");
   await expect(cards).toHaveCount(3);
   await expect(count).toHaveText("3 of 4");

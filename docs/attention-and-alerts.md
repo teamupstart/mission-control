@@ -195,6 +195,15 @@ granted permission yet - that click also unlocks the chime) and **Sound**. **Awa
 mode** sits below them in its own card, because it is not a third channel: it is
 daemon state that survives closing the tab.
 
+Turning **Sound** off keeps desktop notifications visible but silent, including the
+catch-up notification after a disconnect. With Sound on, Mission Control plays its
+chime without a second system sound. If browser audio cannot play, including before
+the first interaction after a reload, an enabled desktop notification supplies the
+system tone instead. Chimes and system tones share the same 1.2-second burst limit;
+later alerts still show desktop notifications but stay silent. Within one batch,
+only the first notification may request a system tone. Rate-limited chimes remain
+quiet; they do not trigger this fallback.
+
 The session detail always states what would actually happen and names only the channels that are
 live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop
 and sound; everything else waits in the digest". With **both channels off it says

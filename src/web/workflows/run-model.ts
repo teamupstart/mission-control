@@ -1272,7 +1272,7 @@ const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   unadopted_pr: "A pull request exists, but GitHub Inspector has not adopted it as one we opened.",
   inspector_disabled: "GitHub Inspector is switched off, so the gate cannot be evaluated.",
   awaiting_fresh_observation: "Waiting for GitHub Inspector's next sweep to observe the pushed head.",
-  working_tree_not_pushed: "The captured working tree has changes that were never committed and pushed.",
+  working_tree_not_pushed: "Required publication content is missing, differs from the PR, or lacks retained artifact evidence. Check the evidence snapshot, then commit and push the required changes and resubmit.",
   head_mismatch: "The pull request's head is not the commit this submission reviewed.",
   review_pending: "GitHub Inspector has the pull request and has not finished reviewing it.",
   clean_review_pending: "Inspector has no open findings and is waiting to confirm its final clean review on GitHub.",

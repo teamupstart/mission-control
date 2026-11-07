@@ -105,6 +105,8 @@ export interface CheckExecutionRequest {
   workingSubpath: string;
   /** The commit the submission captured, or null when the capture recorded none. */
   headSha: string | null;
+  /** Expected publishable content, when captured by the publication policy. */
+  publicationTreeOid?: string | null;
   /** Frozen from the catalog before the attempt starts. */
   timeoutMs?: number;
   coderabbit?: CodeRabbitComparison;
@@ -305,6 +307,7 @@ export interface RunCheckInput {
     cwd: string | null;
     repoRoot: string | null;
     headSha: string | null;
+    publicationTreeOid?: string | null;
 }
 
 export async function runCheck(
@@ -414,6 +417,7 @@ export async function runCheck(
     // global default, which names no repository, runs at the checkout root.
     workingSubpath: resolved.workingSubpath,
     headSha: input.headSha,
+    ...(input.publicationTreeOid ? { publicationTreeOid: input.publicationTreeOid } : {}),
     timeoutMs: effectiveWorkflowCommandTimeoutMs(input.command!),
   });
   if (result.kind === "infrastructure") {

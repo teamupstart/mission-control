@@ -195,6 +195,10 @@ granted permission yet - that click also unlocks the chime) and **Sound**. **Awa
 mode** sits below them in its own card, because it is not a third channel: it is
 daemon state that survives closing the tab.
 
+Turning **Sound** off keeps desktop notifications visible but silent, including the
+catch-up notification after a disconnect. With Sound on, Mission Control plays its
+chime; desktop notifications do not add a second system sound.
+
 The session detail always states what would actually happen and names only the channels that are
 live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop
 and sound; everything else waits in the digest". With **both channels off it says

@@ -1,0 +1,177 @@
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Page } from "@playwright/test";
+import type { Session } from "../../src/shared/types.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { expect, test } from "../fixtures/test.ts";
+
+test.use({ daemonEnv: { MC_E2E_HOLD_FIRST_TURN: "1" } });
+
+type SoundWindow = Window & {
+  soundProbe: {
+    toasts: Array<{ title: string; body?: string; tag?: string; silent?: boolean | null }>;
+    notes: number;
+    stream: EventSource;
+    reconnect: () => Promise<void>;
+  };
+};
+
+async function observeDelivery(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const state = { toasts: [], notes: 0 } as unknown as SoundWindow["soundProbe"];
+    (window as SoundWindow).soundProbe = state;
+    // Capture the OS API boundary without raising real desktop alerts during a test.
+    window.Notification = class {
+      static permission = "granted";
+      static requestPermission = async () => "granted";
+      constructor(title: string, options: NotificationOptions = {}) {
+        state.toasts.push({ title, ...options });
+      }
+      close(): void {}
+    } as unknown as typeof Notification;
+    // Record oscillator playback requests without making sound on the test host.
+    // Stub stop as well: the native method rejects an oscillator we never started.
+    OscillatorNode.prototype.start = function () {
+      state.notes++;
+    };
+    OscillatorNode.prototype.stop = function () {};
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) === "/events") state.stream = this;
+      }
+    };
+    // Deterministically model a lost stream, then forward the REAL daemon's new snapshot
+    // into the existing hook. No session or notification payload is manufactured here.
+    state.reconnect = () => new Promise<void>((resolve, reject) => {
+      const replacement = new NativeEventSource("/events");
+      replacement.onerror = () => { replacement.close(); reject(new Error("reconnect failed")); };
+      replacement.onmessage = (event) => {
+        if (JSON.parse(event.data).type !== "snapshot") return;
+        state.stream.dispatchEvent(new Event("open"));
+        state.stream.dispatchEvent(new MessageEvent("message", { data: event.data }));
+        replacement.close();
+        resolve();
+      };
+    });
+  });
+}
+
+async function hook(daemon: DaemonHandle, session: Session, event: string): Promise<void> {
+  const response = await fetch(`${daemon.baseURL}/hooks/${event}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-harness-token": readFileSync(join(daemon.home, "token"), "utf8").trim(),
+    },
+    body: JSON.stringify({
+      agent: "claude", cwd: session.cwd, sessionId: session.agentSessionId, env: {},
+      message: "Claude needs your permission to use Bash", prompt: "carry on",
+    }),
+  });
+  expect(response.status).toBe(204);
+}
+
+async function savedSound(daemon: DaemonHandle): Promise<boolean> {
+  const response = await fetch(`${daemon.baseURL}/api/ui/config`);
+  expect(response.ok).toBe(true);
+  return (await response.json()).config.alerts.sound;
+}
+
+const delivery = (page: Page) => page.evaluate(() => {
+  const { toasts, notes } = (window as SoundWindow).soundProbe;
+  return { toasts, notes };
+});
+
+for (const mode of ["live", "reconnect"] as const) {
+  test(`Sound off silences ${mode} desktop alerts and survives reload`, async ({ dashboard: page, daemon }) => {
+    await observeDelivery(page);
+    await page.reload();
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    const panel = page.getByRole("dialog", { name: "Alert settings" });
+    const sound = panel.getByRole("switch", { name: "Sound", exact: true });
+    await expect(sound).toHaveAttribute("aria-checked", "true");
+    await panel.getByRole("switch", { name: "Desktop notifications", exact: true }).click();
+    await sound.click();
+    await expect(sound).toHaveAttribute("aria-checked", "false");
+    await expect.poll(() => savedSound(daemon)).toBe(false);
+    await page.reload();
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    await expect(sound).toHaveAttribute("aria-checked", "false");
+    await expect(panel.getByRole("switch", { name: "Desktop notifications", exact: true }))
+      .toHaveAttribute("aria-checked", "true");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("notification-sound");
+      mkdirSync(dir, { recursive: true });
+      await page.mouse.move(0, 0);
+      await panel.screenshot({ path: join(dir, `${mode}-sound-disabled.png`) });
+    }
+    await page.keyboard.press("Escape");
+
+    await page.getByRole("button", { name: "Dispatch", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await expectContentClearsBorder(dialog);
+    await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+    await page.keyboard.press("Escape");
+    await dialog.getByPlaceholder("What should this agent do?").fill("Check notification delivery");
+    await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+    await dialog.getByRole("button", { name: "Dispatch now" }).click();
+    await expect(dialog).toBeHidden();
+    const sessions = async () => (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[];
+    await expect.poll(async () => (await sessions()).find((s) => s.runtime === "sdk")?.agentSessionId).toBeTruthy();
+    const session = (await sessions()).find((s) => s.runtime === "sdk")!;
+    await expect(page.getByRole("navigation", { name: "Sessions", exact: true }).locator(".rail-row")).toHaveCount(1);
+    expect(await delivery(page)).toEqual({ toasts: [], notes: 0 });
+
+    if (mode === "reconnect") {
+      await page.evaluate(() => {
+        const { stream } = (window as SoundWindow).soundProbe;
+        stream.close();
+        stream.dispatchEvent(new Event("error"));
+      });
+      await expect(page.locator(".pulse")).toHaveClass(/is-down/);
+    }
+    await hook(daemon, session, "Notification");
+    if (mode === "reconnect") {
+      await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    }
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(1);
+    const muted = await delivery(page);
+    expect(muted.notes).toBe(0);
+    expect(muted.toasts[0]).toMatchObject({
+      silent: true,
+      tag: mode === "reconnect" ? "reconnect-catchup" : `input:${session.id}`,
+    });
+
+    if (mode === "reconnect") return;
+    // Enabling sound must still produce the app's chime, with no second OS tone.
+    await hook(daemon, session, "UserPromptSubmit");
+    await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    await sound.click();
+    await expect.poll(() => savedSound(daemon)).toBe(true);
+    await expect.poll(async () => (await delivery(page)).notes).toBe(1);
+    await page.keyboard.press("Escape");
+    await hook(daemon, session, "Notification");
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(2);
+    expect((await delivery(page)).toasts[1]?.silent).toBe(true);
+    expect((await delivery(page)).notes).toBe(3);
+
+    // Turning Sound off again takes effect on the mounted dashboard, without a reload.
+    await hook(daemon, session, "UserPromptSubmit");
+    await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+    await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+    await sound.click();
+    await expect.poll(() => savedSound(daemon)).toBe(false);
+    await page.keyboard.press("Escape");
+    // Outlive the 1200ms chime rate gate so it cannot hide an erroneous muted chime.
+    await page.waitForTimeout(1_300);
+    await hook(daemon, session, "Notification");
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(3);
+    expect((await delivery(page)).toasts[2]?.silent).toBe(true);
+    expect((await delivery(page)).notes).toBe(3);
+  });
+}

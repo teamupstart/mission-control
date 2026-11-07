@@ -24,7 +24,9 @@ function notify(
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
   try {
-    const n = new Notification(title, { body, tag });
+    // The settings-gated chime owns sound. Otherwise the OS can play its own tone
+    // even with Sound off, or add a second tone when the chime is enabled.
+    const n = new Notification(title, { body, tag, silent: true });
     n.onclick = () => {
       window.focus();
       // One deep link per toast, the same hash routes the dashboard already owns: a

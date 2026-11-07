@@ -92,8 +92,12 @@ export function BacklogFilterButtons({
 
   // Fixed to the viewport and portalled to the body: both hosts clip their own overflow, and
   // the Line drawer is only three rows tall, so a menu positioned inside either would be cut.
+  const mounted = at !== null;
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setAt(null);
+      return;
+    }
     const place = (): void => {
       const r = trigger.current?.getBoundingClientRect();
       if (!r) return;
@@ -101,7 +105,15 @@ export function BacklogFilterButtons({
       // the window: the Board column's button can sit at the window's left edge.
       const preferred = r.right - MENU_WIDTH >= MENU_MARGIN ? r.right - MENU_WIDTH : r.left;
       const left = Math.min(Math.max(MENU_MARGIN, preferred), window.innerWidth - MENU_WIDTH - MENU_MARGIN);
-      setAt({ top: r.bottom + 6, left });
+      // Below the button where the whole menu fits, otherwise above it, and never past the top.
+      // The height is the rendered menu's, so the first pass (before it exists) places it
+      // below and the pass after it mounts corrects that. A window too short for either is
+      // capped by the menu's own max-height and scrolls inside it.
+      const height = pop.current?.offsetHeight ?? 0;
+      const below = r.bottom + 6;
+      const top =
+        below + height <= window.innerHeight - MENU_MARGIN ? below : Math.max(MENU_MARGIN, r.top - 6 - height);
+      setAt((prev) => (prev && prev.top === top && prev.left === left ? prev : { top, left }));
     };
     place();
     window.addEventListener("resize", place);
@@ -110,7 +122,7 @@ export function BacklogFilterButtons({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open]);
+  }, [open, mounted]);
 
   // Escape closes the menu and only the menu, taken in the capture phase for the reason
   // OpenInMenu gives: the board's drill-in and the Line drawer also listen for it.
@@ -135,9 +147,10 @@ export function BacklogFilterButtons({
     };
   }, [open]);
 
+  // Once, when the menu appears: a later move (scroll, resize) must not pull focus back.
   useEffect(() => {
-    if (open && at) pop.current?.querySelector<HTMLButtonElement>("[role='menuitemcheckbox']")?.focus();
-  }, [open, at]);
+    if (open && mounted) pop.current?.querySelector<HTMLButtonElement>("[role='menuitemcheckbox']")?.focus();
+  }, [open, mounted]);
 
   const row = <T extends string>(
     value: T,

@@ -283,3 +283,56 @@ test("select-all takes only the visible cards, and a bulk delete leaves the hidd
   await expect.poll(() => storedOrder(daemon)).toEqual(["Hidden top", "Hidden bottom"]);
   await expect(bar).toBeHidden();
 });
+
+test("a card hidden by the filter leaves the selection, and does not come back selected", async ({
+  dashboard,
+  daemon,
+}) => {
+  const column = await searchedBoard(dashboard, daemon);
+  const search = column.getByRole("textbox", { name: "Search backlog tasks" });
+  const bar = dashboard.getByRole("toolbar", { name: "Selected backlog tasks" });
+  // Start unfiltered, and pick one card the search will hide and one it will keep.
+  await search.fill("");
+  await expect(column.locator(".bl-card")).toHaveCount(5);
+  await column.getByRole("checkbox", { name: 'Select "Hidden top"' }).click();
+  await column.getByRole("checkbox", { name: 'Select "Match alpha"' }).click();
+  await expect(bar).toContainText("2 selected");
+
+  await search.fill("match");
+  await expect(bar).toContainText("1 selected");
+  await search.fill("");
+  await expect(column.locator(".bl-card")).toHaveCount(5);
+  await expect(bar).toContainText("1 selected");
+  await expect(column.getByRole("checkbox", { name: 'Select "Hidden top"' })).not.toBeChecked();
+  await expect(column.getByRole("checkbox", { name: 'Select "Match alpha"' })).toBeChecked();
+});
+
+test("the filter menu stays inside a window too short to open it below its button", async ({
+  dashboard,
+  daemon,
+}) => {
+  await seed(daemon);
+  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  await dashboard.reload();
+  const column = dashboard.locator("section.board-backlog");
+  const filter = column.getByRole("button", { name: /^Filter the backlog/ });
+  await filter.click();
+  const menu = dashboard.getByRole("menu", { name: "Backlog filters" });
+  await menu.getByRole("menuitemcheckbox", { name: /^Blocked/ }).click();
+  const button = (await filter.boundingBox())!;
+  // Shrink the window until the menu no longer fits below its button. The menu re-places
+  // itself on resize and must stay entirely inside the window.
+  const height = Math.round(button.y + button.height + 120);
+  await dashboard.setViewportSize({ width: 1280, height });
+  await expect
+    .poll(async () => {
+      const box = await menu.boundingBox();
+      return Boolean(box && box.y >= 0 && box.y + box.height <= height);
+    })
+    .toBe(true);
+  // Every row, Clear filters included, is reachable inside it.
+  const clear = menu.getByRole("menuitem", { name: "Clear filters" });
+  await clear.scrollIntoViewIfNeeded();
+  await clear.click();
+  await expect(filter).toHaveAccessibleName("Filter the backlog");
+});

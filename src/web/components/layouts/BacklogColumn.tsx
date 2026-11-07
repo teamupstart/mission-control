@@ -197,6 +197,20 @@ export function BacklogColumn({
   const cardEls = useRef(new Map<string, HTMLElement>());
   const selectedTasks = shown.filter((t) => picked.has(t.id));
   const order = shown.map((t) => t.id);
+  /**
+   * A card the filter hides leaves the selection for good, rather than waiting to reappear
+   * selected when the filter clears: the bar stopped counting it the moment it was hidden, so
+   * the operator has no reason to think it is still picked, and a later bulk action must not
+   * take it. Keyed on the visible ids so it runs only when what is shown changes.
+   */
+  const shownKey = order.join("\n");
+  useLayoutEffect(() => {
+    const visible = new Set(shownKey === "" ? [] : shownKey.split("\n"));
+    setPicked((prev) =>
+      [...prev].every((id) => visible.has(id)) ? prev : new Set([...prev].filter((id) => visible.has(id))),
+    );
+    setAnchor((prev) => (prev !== null && !visible.has(prev) ? null : prev));
+  }, [shownKey]);
 
   const clearSelection = (): void => {
     setPicked(new Set());

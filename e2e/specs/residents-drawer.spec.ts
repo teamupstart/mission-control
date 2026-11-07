@@ -563,6 +563,40 @@ for (const width of [1024, 900]) {
   });
 }
 
+test("asked for from a profile with unsaved edits, the drawer opens only if the operator leaves for Fleet", async ({ dashboard: page, daemon }) => {
+  const profile = await launch(daemon);
+  await useDrawer(page, daemon, "board");
+  const drawer = drawerOf(page);
+  const gate = page.getByRole("dialog", { name: "Leave with unsaved changes" });
+  const dirtyProfile = async (): Promise<void> => {
+    await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+    const instructions = page.getByRole("region", { name: `Resident profile ${NAME}` }).getByLabel("Profile instructions");
+    await instructions.fill("A draft I am not done with.");
+    // Out of the text box, so the drawer's chord is a command rather than typing.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  };
+
+  // Stay: the drawer is not left waiting for the next visit to Fleet.
+  await dirtyProfile();
+  await page.keyboard.press("Shift+KeyH");
+  await expect(gate).toBeVisible();
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/residents/${profile.id}$`));
+  await page.evaluate(() => { window.location.hash = "#/fleet"; });
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet$/);
+  await expect(edgeTab(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
+
+  // Leave: the drawer opens on Fleet with the keyboard on a card, as any other open does.
+  await dirtyProfile();
+  await page.keyboard.press("Shift+KeyH");
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet$/);
+  await expect(drawer).toBeVisible();
+  await expect(headOf(drawer)).toBeFocused();
+});
+
 test("the drawer's footer launches a profile, and a profile with no repository launches through Dispatch", async ({ dashboard: page, daemon }) => {
   const WITH_REPO = "Footer launcher";
   const NO_REPO = "Footer gardener";

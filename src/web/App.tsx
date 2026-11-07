@@ -133,6 +133,7 @@ import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
 import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
 import {
   pageShortcutRoute,
+  parseMissionRoute,
   pipelineRunRoute,
   useWorkflowRoute,
 } from "./workflows/useWorkflowRoute.ts";
@@ -1874,11 +1875,38 @@ export function App(): React.JSX.Element {
    * resident is still live, else the first that needs you - which the drawer decides against the
    * cards it actually has, so a selection whose resident has since ended is never waited on.
    */
+  /** Set while a requested drawer waits on a leave dialog for the move to Fleet. */
+  const residentDrawerAwaitsFleet = useRef(false);
   const showResidentDrawer = useCallback((): void => {
-    setResidentDrawerOpen(true);
-    navigate({ page: "fleet" });
-    focusResidentCard(null);
+    if (navigate({ page: "fleet" })) {
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else {
+      // A dirty draft is holding the move to Fleet behind its leave dialog. The drawer opens
+      // only if the operator leaves; see the effect below.
+      residentDrawerAwaitsFleet.current = true;
+    }
   }, [navigate, focusResidentCard]);
+  /**
+   * The drawer was asked for from a page whose unsaved draft held the move to Fleet. Opening it
+   * then and there would leave it - and a focus request - waiting to spring open on some later
+   * visit to Fleet if the operator chose to stay. So it opens when the route actually becomes
+   * Fleet, and the ask is dropped when the move is cancelled or another destination is held.
+   *
+   * Confirming the dialog sets the address to Fleet at once and the route follows on the next
+   * hashchange; cancelling leaves the address where it was. The address is what tells the two
+   * apart in the render between, when the held route has already cleared either way.
+   */
+  useEffect(() => {
+    if (!residentDrawerAwaitsFleet.current) return;
+    if (route.page === "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else if (pendingRoute ? pendingRoute.page !== "fleet" : parseMissionRoute(window.location.hash).page !== "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+    }
+  }, [route.page, pendingRoute, focusResidentCard]);
   /**
    * How the drawer's selected card answers a resident's question: the attention inbox's own
    * `ReviewCard`, with a one-question ask's options as buttons. A question moved to chat opens the resident's conversation, from the drawer,

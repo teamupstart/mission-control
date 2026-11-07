@@ -174,56 +174,73 @@ Residents page.
 
 In **Drawer** placement the top bar's **Residents** button, **Shift+H**, the ⌘K command **Open
 the Residents drawer or dock**, and the edge tab on the window's right edge all open a 330px
-drawer that slides in from the right over the current page and dims it. Escape or a click outside
-closes it. The edge tab shows ⌂ and the live count, with no number when nothing is running, and
-turns amber while any resident needs you. The top-bar button keeps its name and count.
+drawer as a column on the right of Fleet, so the Board or Console narrows beside it. Nothing is
+dimmed or covered, and the fleet's keys keep working. Opened from another page, it goes to Fleet
+to show it. The keyboard lands on the selected resident's card, or, if that resident has ended,
+on the first that needs you or the first listed. Opened before any resident has arrived, the
+keyboard moves to the first card when it appears, unless you have pressed a key or clicked
+somewhere else in the meantime. **✕**, **Shift+H** or the top-bar button closes it; Escape and a
+click elsewhere do not. The edge tab shows ⌂ and the live
+count, with no number when nothing is running. It lights in the Board's column colors: the
+**Working** color while any resident is working, and the **Needs you** color while any resident
+needs you. When both are true, Needs you takes the tab's edge and the ⌂, and Working stays lit as
+a second edge around it. The colors come from the current skin. The top-bar button keeps its name
+and count.
 
+- **Manage residents.** A row of its own under the drawer's title, above the cards, holds
+  **Manage residents**, which opens the Residents page to author, edit and archive profiles.
 - **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
-  top line holds the chip, the name, a state dot and the resident's **⌥**-number. Under it are
-  tags for the loop's state, iteration and next wake, and any pause or wake reason.
-- **Selected card.** The selected card expands to **Open**, **Run now** and **Pause** or
-  **Resume**, and a **Control** badge when the resident's revision asks for session control.
-  <kbd>↑</kbd>/<kbd>↓</kbd> move the selection and <kbd>Enter</kbd> opens the selected card;
-  a double-click opens a card too.
-- **Answering from the drawer.** Above its actions, the selected card shows what the resident
+  top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
+  Under it are tags for the loop's state, iteration and next wake, and any pause or wake
+  reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
+  **Control** badge when the resident's revision asks for session control.
+- **Working and Needs you.** While a resident is working, its card is edged and lightly tinted
+  in the color of the Board's **Working** column; while it needs you, in the color of **Needs
+  you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
+  the card wears its marker color.
+- **Compressing a card.** Every card starts open. Clicking a resident's title, or
+  <kbd>Space</kbd> on it, compresses the card the way a Board repository group folds: it keeps
+  the title, one line of what the resident is doing, which follows its activity as it changes,
+  and its controls, and drops the loop tags and any question. Clicking the title again opens
+  it. Each card folds on its own, so you can stack more residents in the drawer. A fold lasts
+  while the dashboard is open, through closing, reopening and pinning the drawer, and every
+  card is open again after a reload.
+- **Selection.** <kbd>↑</kbd>/<kbd>↓</kbd> move the selection without opening or compressing
+  any card, and <kbd>Enter</kbd> opens the selected resident; a double-click on a title opens
+  a resident too.
+- **Answering from the drawer.** Above its actions, an open card shows what the resident
   is asking, or else its latest message, clamped to three lines (the line the Console rail
-  prints under its name). A question it asked through `request_input` with one set of options
-  shows each option as a button: one press answers it, beside **Chat about it** and **Dismiss**.
+  prints under its name). Clicking that message opens the resident's conversation, as **Open**
+  does; selecting some of its text does not. A question it asked through `request_input` with
+  one set of options shows each option as a button: one press answers it, beside **Chat about
+  it** and **Dismiss**.
   A question that needs more (several questions, several picks, or an answer of your own) shows
   the same form the attention inbox draws. A menu the session is parked on shows its rows as
   buttons, as the Conversation tab does. Either way the answer goes back the way the inbox sends
   it. The card lists every question the resident has pending; once none is left, the amber
   state and the visitor card clear.
-- **Quick reply.** Under that is a reply box labeled **Reply to** and the resident's name.
-  <kbd>⌘</kbd><kbd>Enter</kbd> or **Send** delivers it exactly as the Conversation tab's reply
-  box does, queued behind a busy turn the same way; plain <kbd>Enter</kbd> starts a new line.
-  The box shares the Conversation's draft, so text typed here is waiting there when you open
-  the resident. <kbd>Escape</kbd> leaves the box for the card, and the next Escape closes a
-  floating drawer. While the box has focus, the arrow keys, <kbd>Enter</kbd> and **⌥N** act on
-  the text, not the drawer. A resident that cannot take a message has no reply box.
+- **No reply box.** A card answers the resident's questions but has no free-form reply box.
+  To write to a resident, open its conversation and use the Conversation tab's reply box.
 - **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
-  same launch behavior the dock has (see below), and **Manage residents** opens the Residents
-  page. The dock and the drawer share one launch state, so closing either while a launch is
-  starting never starts a second resident.
-- **Pin.** **Pin** docks the drawer as a column beside the fleet, so the Board or Console
-  narrows instead of being covered. The pin is stored per machine. **Unpin** or **Shift+H**
-  closes it.
+  same launch behavior the dock has (see below). The dock and the drawer share one launch
+  state, so closing either while a launch is starting never starts a second resident.
+- **Pin.** Open, the drawer lasts until it is closed or the page reloads: a refresh or a
+  restart closes it. **Pin** keeps it open through those too, and changes nothing on screen.
+  The pin is stored per machine. **Unpin** leaves the drawer open until the next reload, and
+  closing a pinned drawer unpins it.
 
-**Escape returns to the drawer.** When you open a resident from the floating drawer, the drawer
-closes as the detail opens, and the Escape that leaves the detail reopens it with that resident
-still selected. On the Board that is the Escape that closes the drill-in; in Console it is the
-Escape that leaves the detail. A pinned drawer stays on screen beside the detail, so Escape
-leaves the detail and moves focus to that resident's card instead. Moving to any other session
-first drops the return. A resident opened by **⌥N** or the palette with the drawer closed leaves
-the usual way.
+**Escape returns to the card.** A resident opened from the drawer opens beside it, as the Board
+drill-in or the Console detail pane, and the drawer stays on screen with that resident selected.
+The Escape that leaves the detail moves focus to that resident's card. A resident opened by
+**⌥N** or the palette with the drawer closed leaves the usual way.
 
 **Visitor card.** While the drawer is closed, a resident that needs you shows a visitor card in
 the Board's **Needs you** column, or among the Console rail's sessions that need you: a dashed
-outline in its marker color with the chip, the name and *Resident · opens in the drawer*.
-Clicking it, or <kbd>Enter</kbd> on it, opens the drawer with that resident selected. The arrow
-keys reach it; the <kbd>⌘</kbd>-numbers skip it, so they don't shift while its ask is open. It
-disappears while the drawer is open or pinned, while that resident's own detail is open, and
-once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
+outline in its marker color with the chip, the name and *Resident · opens its conversation*.
+Clicking it, or <kbd>Enter</kbd> on it, opens that resident's conversation, as **⌥N** does, and
+leaves the drawer closed. The arrow keys reach it; the <kbd>⌘</kbd>-numbers skip it, so they
+don't shift while its ask is open. It disappears while the drawer is open or pinned, while that
+resident's own detail is open, and once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
 landing on the visitor card opens the resident's detail.
 
 ### The Residents dock

@@ -671,8 +671,10 @@ export function RepoGroupHead({
  *
  * `aria-hidden`, because the accessible name and `aria-expanded` on the button already say both
  * what this is and which way it points.
+ *
+ * Exported for the Residents drawer, whose card titles fold the same way a repository frame does.
  */
-function RepoGroupCaret(): React.JSX.Element {
+export function RepoGroupCaret(): React.JSX.Element {
   return (
     <svg className="brh-chevron" viewBox="0 0 12 12" aria-hidden focusable="false">
       <path

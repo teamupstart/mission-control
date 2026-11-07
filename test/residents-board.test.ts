@@ -466,16 +466,16 @@ test("with no resident running, the drawer says so and the edge tab carries no n
   // The footer still offers the profiles.
   assert.match(html, /aria-label="Launch Triage Bot"/);
 
-  const empty = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 0, needsYou: false, onOpen: () => {} }));
+  const empty = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 0, needsYou: false, working: false, onOpen: () => {} }));
   assert.match(empty, /aria-label="Open the Residents drawer - 0 live"/);
   assert.doesNotMatch(empty, /residents-edge-count/);
   assert.doesNotMatch(empty, /needs-you/);
-  const one = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 1, needsYou: true, onOpen: () => {} }));
+  const one = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 1, needsYou: true, working: false, onOpen: () => {} }));
   assert.match(one, /class="residents-edge-count"[^>]*>1</);
   assert.match(one, /class="residents-edge-tab needs-you"/);
 });
 
-// ---- the selected card's body: the ask, the latest message, and the reply box ----
+// ---- an open card's body: the ask or the latest message, then the actions; never a reply box ----
 
 /** A resident's open `request_input` question with two options. */
 function residentAsk(sessionId: string): ReviewItem {
@@ -500,7 +500,7 @@ function cardBodyMarkup(session: Session, reviews: ReviewItem[] = []): string {
   }));
 }
 
-test("with a pending ask, the selected card draws it through the injected ReviewCard and keeps the reply box", () => {
+test("with a pending ask, the card draws it through the injected ReviewCard, above its actions", () => {
   const session = mkSession({ id: "s1", activity: "checking the nightly job" });
   const html = cardBodyMarkup(session, [residentAsk("s1")]);
   assert.match(html, /aria-label="Triage Bot is asking"/);
@@ -508,9 +508,8 @@ test("with a pending ask, the selected card draws it through the injected Review
   // The ask replaces the latest-message line rather than stacking under it.
   assert.doesNotMatch(html, /residents-drawer-latest/);
   assert.doesNotMatch(html, /checking the nightly job/);
-  assert.match(html, /<textarea[^>]*aria-label="Reply to Triage Bot"/);
-  // The card's own actions stay, after the new content.
-  assert.ok(html.indexOf("Reply to Triage Bot") < html.indexOf("residents-drawer-actions"));
+  // The card's own actions stay, after the question.
+  assert.ok(html.indexOf("stub-review-card") < html.indexOf("residents-drawer-actions"));
 });
 
 test("a menu the resident is parked on is drawn as the Conversation draws it, its rows as buttons", () => {
@@ -525,22 +524,14 @@ test("a menu the resident is parked on is drawn as the Conversation draws it, it
   assert.doesNotMatch(html, /residents-drawer-latest/);
 });
 
-test("with nothing asked, the selected card shows the latest message and a reply box", () => {
+test("with nothing asked, the card shows the latest message and no reply box", () => {
   const html = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job" }));
   assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot">checking the nightly job<\/p>/);
   assert.doesNotMatch(html, /is asking/);
-  assert.match(html, /<textarea[^>]*aria-label="Reply to Triage Bot"[^>]*placeholder="Reply to Triage Bot…"/);
-  // The send chord is printed on the button; the keycap stays out of its accessible name.
-  assert.match(html, />Send <kbd class="residents-drawer-reply-key" aria-hidden="true">⌘⏎<\/kbd><\/button>/);
-});
-
-test("a resident that cannot be messaged gets no reply box, and its actions remain", () => {
-  // A terminal session with no pane: `canMessage` says no, as it does to the Conversation's box.
-  const html = cardBodyMarkup(mkSession({ id: "s1", terminals: [], activity: "checking the nightly job" }));
-  assert.doesNotMatch(html, /Reply to Triage Bot/);
+  // A free-form reply belongs to the Conversation, which the card opens.
   assert.doesNotMatch(html, /<textarea/);
-  assert.match(html, /checking the nightly job/);
-  assert.match(html, /residents-drawer-actions/);
+  assert.doesNotMatch(html, /Reply to Triage Bot/);
+  assert.doesNotMatch(html, />Send\b/);
 });
 
 test("with no activity line, the latest message falls back to the session's goal", () => {
@@ -559,8 +550,168 @@ test("with neither an activity line nor a goal, the card draws no empty latest-m
     const html = cardBodyMarkup(mkSession({ id: "s1", activity: null, goal }));
     assert.doesNotMatch(html, /residents-drawer-latest/);
     assert.doesNotMatch(html, /Latest from/);
-    // The reply box and the actions are still drawn.
-    assert.match(html, /aria-label="Reply to Triage Bot"/);
+    // The actions are still drawn.
     assert.match(html, /residents-drawer-actions/);
+  }
+});
+
+// ---- compressing a card: a click on its title folds it to the status line and controls ----
+
+const { toggleResidentCardCollapsed } = await import("../src/web/residents/card-fold.ts");
+const { stateDisplay } = await import("../src/web/lib/format.ts");
+
+/** Two live residents, both with a session that can take a message and an activity line. */
+function twoResidents(): { runs: ResidentRunSummary[]; sessions: Session[] } {
+  return {
+    runs: [summary({ taskId: "t1", createdAt: 1 }), summary({ taskId: "t2", createdAt: 2 })],
+    sessions: [
+      mkSession({ id: "s1", activity: "reading the nightly log", task: mkTaskSummary({ id: "t1", kind: "resident" }) }),
+      mkSession({ id: "s2", activity: "editing the release notes", task: mkTaskSummary({ id: "t2", kind: "resident" }) }),
+    ],
+  };
+}
+
+/** The `<li>` for one session's card, cut out of the drawer's markup. */
+function cardMarkup(html: string, sessionId: string): string {
+  const start = html.indexOf(`data-resident-card="${sessionId}"`);
+  assert.ok(start >= 0, `card ${sessionId} is drawn`);
+  const end = html.indexOf("</li>", start);
+  return html.slice(start, end);
+}
+
+test("every card starts open, whether or not it is selected, with its title as the fold", () => {
+  const { runs, sessions } = twoResidents();
+  const html = drawerMarkup(runs, sessions);
+  for (const id of ["s1", "s2"]) {
+    const card = cardMarkup(html, id);
+    assert.match(card, /class="residents-drawer-card-head" aria-expanded="true"/);
+    assert.match(card, /class="brh-chevron"/);
+    assert.match(card, /aria-label="Resident loop status"/);
+    assert.doesNotMatch(card, /<textarea/);
+    assert.match(card, /residents-drawer-actions/);
+  }
+  // Nothing is selected in this rendering, so no title claims the selection.
+  assert.doesNotMatch(html, /aria-current/);
+});
+
+test("a compressed card keeps its live status line and controls and drops its loop tags", () => {
+  const { runs, sessions } = twoResidents();
+  toggleResidentCardCollapsed("s1");
+  let folded = true;
+  try {
+    const html = drawerMarkup(runs, sessions);
+    const compressed = cardMarkup(html, "s1");
+    assert.match(html, /class="residents-drawer-card is-collapsed[^"]*"[^>]*data-resident-card="s1"/);
+    assert.match(compressed, /class="residents-drawer-card-head" aria-expanded="false"/);
+    assert.match(compressed, /<p class="residents-drawer-latest is-compressed" aria-label="Latest from Triage Bot">reading the nightly log<\/p>/);
+    assert.match(compressed, /residents-drawer-actions/);
+    assert.match(compressed, /aria-label="Open Triage Bot"/);
+    assert.doesNotMatch(compressed, /Resident loop status/);
+    // The other card folds on its own and is still open.
+    const open = cardMarkup(html, "s2");
+    assert.match(open, /aria-expanded="true"/);
+    assert.match(open, /aria-label="Resident loop status"/);
+
+    // A second click opens it again.
+    toggleResidentCardCollapsed("s1");
+    folded = false;
+    assert.match(cardMarkup(drawerMarkup(runs, sessions), "s1"), /aria-expanded="true"/);
+  } finally {
+    // The fold store is module state shared by every test in this file.
+    if (folded) toggleResidentCardCollapsed("s1");
+  }
+});
+
+test("compressed, a pending ask waits for the card to open, and no activity falls back to the state", () => {
+  const asking = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session: mkSession({ id: "s1", activity: "checking the nightly job" }),
+    name: "Triage Bot",
+    compressed: true,
+    reviews: [residentAsk("s1")],
+    renderReview: (review: ReviewItem) => createElement("section", { className: "stub-review-card" }, review.title),
+    children: createElement("div", { className: "residents-drawer-actions" }, "actions"),
+  }));
+  assert.doesNotMatch(asking, /stub-review-card/);
+  assert.doesNotMatch(asking, /is asking/);
+  assert.match(asking, />checking the nightly job<\/p>/);
+  assert.match(asking, /residents-drawer-actions/);
+
+  const quiet = mkSession({ id: "s1", activity: null, goal: null });
+  const html = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session: quiet,
+    name: "Triage Bot",
+    compressed: true,
+    reviews: [],
+    renderReview: () => null,
+    children: null,
+  }));
+  assert.match(html, new RegExp(`aria-label="Latest from Triage Bot">${stateDisplay(quiet).label}</p>`));
+});
+
+test("an open card's latest message is a way into the conversation; a compressed status line is not", () => {
+  const session = mkSession({ id: "s1", activity: "checking the nightly job" });
+  const open = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session, name: "Triage Bot", onOpen: () => {}, reviews: [], renderReview: () => null, children: null,
+  }));
+  assert.match(open, /<p class="residents-drawer-latest is-openable" aria-label="Latest from Triage Bot"[^>]*>checking the nightly job<\/p>/);
+  assert.match(open, /class="tt-desc">Open Triage Bot&#x27;s conversation</);
+
+  const compressed = renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session, name: "Triage Bot", compressed: true, onOpen: () => {}, reviews: [], renderReview: () => null, children: null,
+  }));
+  assert.doesNotMatch(compressed, /is-openable/);
+  assert.doesNotMatch(compressed, /Open Triage Bot&#x27;s conversation/);
+});
+
+test("Manage residents is drawn under the title, before the cards and the profiles", () => {
+  const { runs, sessions } = twoResidents();
+  const html = drawerMarkup(runs, sessions);
+  const manage = html.indexOf(">Manage residents ");
+  assert.ok(manage > html.indexOf("residents-drawer-head"));
+  assert.ok(manage < html.indexOf('aria-label="Live residents"'));
+  assert.ok(manage < html.indexOf("residents-drawer-foot"));
+  assert.equal(html.split(">Manage residents ").length, 2, "drawn once");
+});
+
+test("a card carries the Board column it sits in: working, needs you, or neither", () => {
+  const runs = [summary({ taskId: "t1", createdAt: 1 }), summary({ taskId: "t2", createdAt: 2 }), summary({ taskId: "t3", createdAt: 3 })];
+  const sessions = [
+    mkSession({ id: "s1", state: "working", task: mkTaskSummary({ id: "t1", kind: "resident" }) }),
+    mkSession({ id: "s2", pendingReviews: 1, task: mkTaskSummary({ id: "t2", kind: "resident" }) }),
+    mkSession({ id: "s3", state: "idle", task: mkTaskSummary({ id: "t3", kind: "resident" }) }),
+  ];
+  const html = drawerMarkup(runs, sessions);
+  const classOf = (id: string): string => html.match(new RegExp(`<li class="([^"]*)"[^>]*data-resident-card="${id}"`))![1]!;
+  assert.match(classOf("s1"), /\bis-working\b/);
+  assert.doesNotMatch(classOf("s1"), /\bneeds-you\b/);
+  assert.match(classOf("s2"), /\bneeds-you\b/);
+  assert.doesNotMatch(classOf("s2"), /\bis-working\b/);
+  assert.doesNotMatch(classOf("s3"), /\bis-working\b|\bneeds-you\b/);
+});
+
+test("the edge tab lights for working, for needs you, and for both at once", () => {
+  const tab = (needsYou: boolean, working: boolean): string =>
+    renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 2, needsYou, working, onOpen: () => {} }));
+  assert.match(tab(false, false), /class="residents-edge-tab"/);
+  assert.match(tab(false, true), /class="residents-edge-tab is-working"/);
+  assert.match(tab(false, true), /aria-label="Open the Residents drawer - 2 live, a resident is working"/);
+  assert.match(tab(true, false), /class="residents-edge-tab needs-you"/);
+  assert.match(tab(true, true), /class="residents-edge-tab needs-you is-working"/);
+  assert.match(tab(true, true), /aria-label="Open the Residents drawer - 2 live, a resident needs you, a resident is working"/);
+});
+
+test("a visitor card says it opens the resident's conversation, on the Board and in the rail", async () => {
+  const { ResidentVisitorCard } = await import("../src/web/residents/ResidentVisitorCard.tsx");
+  const { residentSessionMark } = await import("../src/web/residents/marker.ts");
+  const mark = residentSessionMark(summary({ taskId: "t1" }), profile());
+  const session = mkSession({ id: "s1", pendingReviews: 1, task: mkTaskSummary({ id: "t1", kind: "resident" }) });
+  for (const variant of ["tile", "rail"] as const) {
+    const html = renderToStaticMarkup(createElement(ResidentVisitorCard, {
+      session, mark, variant, selected: false, onOpen: () => {},
+    }));
+    assert.match(html, /aria-label="Triage Bot needs you - resident, opens its conversation"/);
+    assert.match(html, />Resident · opens its conversation</);
+    assert.match(html, /Open Triage Bot&#x27;s conversation; it needs you/);
+    assert.doesNotMatch(html, /drawer/i);
   }
 });

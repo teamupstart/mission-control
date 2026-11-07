@@ -1,17 +1,13 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { canMessage } from "@shared/pane.ts";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
-import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { PaneDialogPrompt } from "../components/PaneDialogPrompt.tsx";
+import { RepoGroupCaret } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
-import { api } from "../lib/api.ts";
-import { useComposerActivity } from "../lib/composer-activity.ts";
-import { clearDraft, draftRevision, readDraft, writeDraft } from "../lib/drafts.ts";
 import { stateDisplay } from "../lib/format.ts";
-import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
+import { toggleResidentCardCollapsed, useResidentCardsCollapsed } from "./card-fold.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
@@ -67,14 +63,20 @@ export function residentShortcutLabel(n: number): string {
 export interface ResidentsDrawerProps {
   entries: readonly ResidentDrawerEntry[];
   profiles: readonly ResidentProfile[];
-  /** Pinned as a column beside the fleet, rather than floating over the page. */
+  /**
+   * Pinned: stored, so the drawer is still open after a reload or a restart. Unpinned, it is
+   * the same column, open for this page load only. Only the Pin button reads this.
+   */
   pinned: boolean;
-  /** The selected resident's session id: its card is expanded. */
+  /**
+   * The selected resident's session id: the card the arrow keys stand on and Enter opens. Whether
+   * a card is open or compressed is its own fold (`card-fold.ts`), not this.
+   */
   selectedId: string | null;
   onSelect: (sessionId: string) => void;
   /** Open a resident's full detail, from this drawer. */
   onOpen: (sessionId: string) => void;
-  /** Close the floating drawer. */
+  /** Close the drawer, pinned or not. */
   onClose: () => void;
   onPinnedChange: (pinned: boolean) => void;
   launcher: ResidentLaunches;
@@ -83,10 +85,12 @@ export interface ResidentsDrawerProps {
   /** Open `#/residents`. */
   onManage: () => void;
   /**
-   * A changed value moves focus onto that resident's card: the pinned drawer's answer to
-   * Escape out of a detail opened from it.
+   * A changed value moves focus onto that resident's card: how the drawer takes the keyboard
+   * when it is opened, and the answer to Escape out of a detail opened from it. A null
+   * `sessionId` means the selected card, or the first that needs you, whenever one exists; so
+   * does one naming a resident that is no longer listed.
    */
-  focusRequest?: { sessionId: string; nonce: number } | null;
+  focusRequest?: { sessionId: string | null; nonce: number } | null;
   /** The request above has been applied; App clears it so a remount does not replay it. */
   onFocusRequestHandled?: () => void;
   /** Every pending review; the selected card answers the ones its resident raised. */
@@ -100,17 +104,17 @@ export interface ResidentsDrawerProps {
 }
 
 /**
- * The Residents drawer: every live resident as a card in its marker color, the selected one
- * expanded, and the profiles with Launch underneath.
+ * The Residents drawer: every live resident as a card in its marker color, each open or
+ * compressed by a click on its title, and the profiles with Launch underneath.
  *
- * Floating, it is a right-aligned `<Overlay>` like Sitrep, so the page behind it dims, Escape
- * and a click outside close it, and the fleet's keys stand down while it is up. Pinned, the
- * same content is a non-modal column beside the fleet, so the Board narrows instead of being
- * covered and its keys stay live.
+ * Always a non-modal column beside the fleet, so the Board or Console narrows instead of being
+ * covered or dimmed, and the fleet's keys stay live. Pinned or not, it looks and behaves the same;
+ * the pin only decides whether it is still open after a reload.
  */
 export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element {
   const { entries, pinned, selectedId } = props;
   const { bindings } = useKeybindings();
+  const collapsed = useResidentCardsCollapsed();
   const rootRef = useRef<HTMLElement | null>(null);
 
   /** The card's head button, when it is mounted and can take focus. */
@@ -122,58 +126,51 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   };
   const focusCard = (sessionId: string): void => cardHead(sessionId)?.focus({ preventScroll: false });
 
-  // Floating: the keyboard goes inside as the drawer opens, onto the selected card, so the arrow
-  // keys and Enter act on it at once. A pinned drawer never takes focus on its own.
-  //
-  // Held until it lands rather than tried once on mount: the drawer can open before its cards'
-  // sessions have arrived, when their heads are still disabled, and focusing nothing then left the
-  // keyboard on the page behind it. Any key or press inside the drawer settles it, so a late
-  // session never pulls focus away from where someone already is.
-  const focusPending = useRef(!pinned);
-  useEffect(() => {
-    focusPending.current = !pinned;
-  }, [pinned]);
-  useEffect(() => {
-    if (!focusPending.current) return;
-    const live = selectedId !== null && entries.some((entry) => entry.session?.id === selectedId);
-    const target = live ? selectedId : defaultResidentSelection(entries);
-    if (target) {
-      const head = cardHead(target);
-      if (!head) return;
-      head.focus({ preventScroll: false });
-      focusPending.current = false;
-      return;
-    }
-    // Nothing to select yet. With no resident listed at all, the first control takes it.
-    if (entries.length > 0) return;
-    rootRef.current?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
-    focusPending.current = false;
-  });
-  const settleFocus = (): void => {
-    focusPending.current = false;
-  };
-
-  // A focus request is consumed, not compared: one already set when the drawer mounts (App
-  // navigated to Fleet to show the pinned drawer) is applied, and once its card can take focus App
-  // clears it, so a later remount never replays it.
+  // The drawer never takes focus on its own: it sits beside a live fleet. App asks for it as the
+  // drawer is opened, and on the Escape out of a detail opened from it. A request is consumed,
+  // not compared: one already set when the drawer mounts (App navigated to Fleet to show it) is
+  // applied, and held until a card can take focus - the drawer can open before any resident has
+  // arrived, or before the named one's session has started - when App clears it, so a later
+  // remount never replays it.
   const { focusRequest, onFocusRequestHandled } = props;
   useEffect(() => {
     if (!focusRequest) return;
-    const head = cardHead(focusRequest.sessionId);
+    // Only a listed resident is worth waiting for: one whose run has ended has no card to come,
+    // so a request naming it - or a selection left on it - falls back to a live card instead.
+    const listed = (id: string | null): id is string => id !== null && entries.some((entry) => entry.session?.id === id);
+    const target = listed(focusRequest.sessionId)
+      ? focusRequest.sessionId
+      : listed(selectedId) ? selectedId : defaultResidentSelection(entries);
+    if (!target) return;
+    const head = cardHead(target);
     if (!head) return;
     head.focus({ preventScroll: false });
     onFocusRequestHandled?.();
   });
+  // A request still waiting is dropped the moment the operator does anything else - any key or
+  // press, inside the drawer or out on the fleet beside it - so a card that arrives late never
+  // pulls the keyboard away from where someone already is.
+  const handledRef = useRef(onFocusRequestHandled);
+  handledRef.current = onFocusRequestHandled;
+  useEffect(() => {
+    if (!focusRequest) return;
+    const drop = (): void => handledRef.current?.();
+    document.addEventListener("keydown", drop, true);
+    document.addEventListener("pointerdown", drop, true);
+    return () => {
+      document.removeEventListener("keydown", drop, true);
+      document.removeEventListener("pointerdown", drop, true);
+    };
+  }, [focusRequest]);
 
   const openable = entries.filter((entry): entry is ResidentDrawerEntry & { session: Session } => entry.session !== null);
 
   /**
    * The arrow keys walk the cards and Enter opens the selected one. On the drawer element, so
-   * both placements answer only while the keyboard is inside it, and `preventDefault` tells
-   * App's global handler the press is taken - the pinned drawer sits beside a live fleet.
+   * they answer only while the keyboard is inside it, and `preventDefault` tells App's global
+   * handler the press is taken - the drawer sits beside a live fleet.
    */
   function onKeyDown(e: React.KeyboardEvent<HTMLElement>): void {
-    settleFocus();
     if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
     if (isTypingTarget(e.target)) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -200,16 +197,24 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
   }
 
   const live = entries.length;
-  const body = (
-    <>
+  const closeChord = formatChord(bindings.residentsDock);
+  return (
+    <aside
+      ref={(el) => {
+        rootRef.current = el;
+      }}
+      className="residents-drawer"
+      aria-label="Residents"
+      onKeyDown={onKeyDown}
+    >
       <header className="residents-drawer-head">
         <h2>
           Residents <span className="residents-drawer-count">· {live} live</span>
         </h2>
-        <kbd aria-hidden>{formatChord(bindings.residentsDock)}</kbd>
+        <kbd aria-hidden>{closeChord}</kbd>
         <Tooltip label={pinned
-          ? "Unpin the drawer: it closes, and opens over the page next time"
-          : "Pin the drawer as a column beside the fleet, so the Board narrows instead of being covered"}
+          ? "Unpin the drawer: it stays open now, and is closed after a reload or restart"
+          : "Pin the drawer, so it is still open after a reload or restart"}
         >
           <button
             type="button"
@@ -220,14 +225,21 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
             {pinned ? "Unpin" : "Pin"}
           </button>
         </Tooltip>
-        {!pinned && (
-          <Tooltip label="Close the drawer (Escape)">
-            <button type="button" className="icon-btn" aria-label="Close" onClick={props.onClose}>
-              ✕
-            </button>
-          </Tooltip>
-        )}
+        <Tooltip label={`Close the drawer (${closeChord})`}>
+          <button type="button" className="icon-btn" aria-label="Close" onClick={props.onClose}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
+      {/* A row of its own under the title, before the cards: at the foot of the drawer, under
+          every card and profile, it was too easy to miss. */}
+      <div className="residents-drawer-bar">
+        <Tooltip label="Author, edit and archive resident profiles on the Residents page">
+          <button type="button" className="btn residents-drawer-manage" onClick={props.onManage}>
+            Manage residents <span aria-hidden>→</span>
+          </button>
+        </Tooltip>
+      </div>
       <div className="residents-drawer-body">
         {entries.length === 0 ? (
           <p className="residents-drawer-empty">No residents are running. Launch one from a profile below.</p>
@@ -238,6 +250,7 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
                 key={entry.run.id}
                 entry={entry}
                 selected={entry.session !== null && entry.session.id === selectedId}
+                collapsed={entry.session !== null && collapsed.has(entry.session.id)}
                 onSelect={props.onSelect}
                 onOpen={props.onOpen}
                 reviews={props.reviews}
@@ -256,72 +269,27 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
             profiles={props.profiles}
             launches={props.launcher.launches}
             onLaunch={(profile) => void props.launcher.launch(profile).then((answer) => {
-              if (answer !== "needs-repository") return;
-              if (!pinned) props.onClose();
-              props.onOpenLaunch(profile.id);
+              if (answer === "needs-repository") props.onOpenLaunch(profile.id);
             })}
           />
         )}
-        <Tooltip label="Author, edit and archive resident profiles on the Residents page">
-          <button
-            type="button"
-            className="btn btn-ghost residents-pop-manage"
-            onClick={() => {
-              if (!pinned) props.onClose();
-              props.onManage();
-            }}
-          >
-            Manage residents <span aria-hidden>→</span>
-          </button>
-        </Tooltip>
       </footer>
-    </>
-  );
-
-  if (pinned) {
-    return (
-      <aside
-        ref={(el) => {
-          rootRef.current = el;
-        }}
-        className="residents-drawer residents-drawer-pinned"
-        aria-label="Residents"
-        onKeyDown={onKeyDown}
-        onPointerDown={settleFocus}
-      >
-        {body}
-      </aside>
-    );
-  }
-  return (
-    <Overlay
-      id={OVERLAY_IDS.residentsDrawer}
-      onClose={props.onClose}
-      as="aside"
-      className="residents-drawer"
-      role="dialog"
-      ariaLabel="Residents"
-      surfaceRef={(el) => {
-        rootRef.current = el;
-      }}
-    >
-      {/* The key handler sits on a wrapper inside the panel: `<Overlay>` owns the panel's own
-          props, and React key events bubble here from every control in the drawer. */}
-      <div className="residents-drawer-frame" onKeyDown={onKeyDown} onPointerDown={settleFocus}>
-        {body}
-      </div>
-    </Overlay>
+    </aside>
   );
 }
 
 /**
- * One live resident. The head line is the card's button: a click or Enter on it selects the
- * card, and Enter on the selected card opens it. The selected card expands into
- * `ResidentDrawerCardBody`.
+ * One live resident. The head line is the card's title and its button: a click (or Space)
+ * selects the card and folds it, open to compressed and back, the way a Board repository frame
+ * folds; Enter or a double-click opens the resident. Open, the card carries its loop facts and
+ * `ResidentDrawerCardBody` in full. Compressed, it keeps the live status line and the controls
+ * and drops the rest - the question and the loop tags - so more residents fit.
  */
-function ResidentDrawerCard({ entry, selected, onSelect, onOpen, reviews, renderReview }: {
+function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, reviews, renderReview }: {
   entry: ResidentDrawerEntry;
   selected: boolean;
+  /** Compressed by a click on its title. Never true for a card whose session has not started. */
+  collapsed: boolean;
   onSelect: (sessionId: string) => void;
   onOpen: (sessionId: string) => void;
   reviews: readonly ReviewItem[];
@@ -330,20 +298,31 @@ function ResidentDrawerCard({ entry, selected, onSelect, onOpen, reviews, render
   const { mark, session, run, shortcut } = entry;
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
   const needsYou = state.tone === "attention";
+  // The tone the Board files this session under, so a working resident's card is edged in the
+  // Working column's color and one that needs you in the Needs you column's, in every theme.
+  const working = state.tone === "working";
   return (
     <li
-      className={`residents-drawer-card${selected ? " is-selected" : ""}${needsYou ? " needs-you" : ""}`}
+      className={`residents-drawer-card${selected ? " is-selected" : ""}${collapsed ? " is-collapsed" : ""}${working ? " is-working" : ""}${needsYou ? " needs-you" : ""}`}
       style={residentAccentStyle(mark.colorId)}
       data-resident-card={session?.id}
     >
-      <Tooltip label={session ? `Select ${mark.name}; Enter or a double-click opens its conversation` : `${mark.name} is still starting`}>
+      <Tooltip label={session
+        ? `${collapsed ? "Expand" : "Compress"} ${mark.name}; Enter or a double-click opens its conversation`
+        : `${mark.name} is still starting`}
+      >
         <button
           type="button"
           className="residents-drawer-card-head"
-          aria-expanded={session ? selected : undefined}
+          aria-expanded={session ? !collapsed : undefined}
+          aria-current={selected ? "true" : undefined}
           aria-label={`${mark.name}, ${state.label}`}
           disabled={!session}
-          onClick={() => session && onSelect(session.id)}
+          onClick={() => {
+            if (!session) return;
+            onSelect(session.id);
+            toggleResidentCardCollapsed(session.id);
+          }}
           onDoubleClick={() => session && onOpen(session.id)}
         >
           <ResidentChip mark={mark} tooltip={false} />
@@ -354,13 +333,16 @@ function ResidentDrawerCard({ entry, selected, onSelect, onOpen, reviews, render
             aria-hidden
           />
           {shortcut !== null && <kbd className="residents-drawer-key" aria-hidden>{residentShortcutLabel(shortcut)}</kbd>}
+          {session && <RepoGroupCaret />}
         </button>
       </Tooltip>
-      <ResidentLoopStatusLine loop={run} session={session} tags />
-      {selected && session && (
+      {!collapsed && <ResidentLoopStatusLine loop={run} session={session} tags />}
+      {session && (
         <ResidentDrawerCardBody
           session={session}
           name={mark.name}
+          compressed={collapsed}
+          onOpen={() => onOpen(session.id)}
           reviews={reviews.filter((review) => review.sessionId === session.id && review.status === "pending")}
           renderReview={renderReview}
         >
@@ -388,18 +370,28 @@ function ResidentDrawerCard({ entry, selected, onSelect, onOpen, reviews, render
 }
 
 /**
- * The selected card's expanded region: what the resident is asking or last said, a reply box,
- * and the card's actions (`children`) under them.
+ * A card's region under its title: what the resident is asking or last said, and the card's
+ * actions (`children`) under it. There is no reply box: a free-form reply is written in the
+ * resident's Conversation, which a click on the latest message opens.
  *
- * Nothing here is a second answering or sending mechanism. A pending review is drawn through
- * the app's `ReviewCard` (`renderReview`), exactly as the attention inbox draws it; a menu the
- * session is parked on is drawn through `PaneDialogPrompt`, the component the Conversation tab
- * leads with; and the reply goes through `api.injectPrompt`, the Conversation reply box's own
- * call, with its draft and its composer-activity lease.
+ * `compressed` keeps only the live status line - one line of what the resident is doing, which
+ * follows its activity as it changes - and the actions. The question waits for the card to be
+ * opened again.
+ *
+ * Nothing here is a second answering mechanism. A pending review is drawn through the app's
+ * `ReviewCard` (`renderReview`), exactly as the attention inbox draws it, and a menu the session
+ * is parked on is drawn through `PaneDialogPrompt`, the component the Conversation tab leads with.
  */
-export function ResidentDrawerCardBody({ session, name, reviews, renderReview, children }: {
+export function ResidentDrawerCardBody({ session, name, compressed = false, onOpen, reviews, renderReview, children }: {
   session: Session;
   name: string;
+  /** The card is compressed: the status line and the actions only. */
+  compressed?: boolean;
+  /**
+   * Open the resident's conversation: a click on an open card's latest message, which is the
+   * text the Conversation continues. The keyboard's way there is Enter on the card's title.
+   */
+  onOpen?: () => void;
   /** This resident's pending reviews, oldest first. */
   reviews: readonly ReviewItem[];
   renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
@@ -408,6 +400,16 @@ export function ResidentDrawerCardBody({ session, name, reviews, renderReview, c
   const dialog = activePaneDialog(session);
   // The line the Console rail prints under a session's name: the last thing it reported.
   const latest = session.activity ?? session.goal?.text ?? null;
+  if (compressed) {
+    return (
+      <div className="residents-drawer-card-body is-compressed">
+        <p className="residents-drawer-latest is-compressed" aria-label={`Latest from ${name}`}>
+          {latest ?? stateDisplay(session).label}
+        </p>
+        {children}
+      </div>
+    );
+  }
   return (
     <div className="residents-drawer-card-body">
       {reviews.length > 0 ? (
@@ -419,123 +421,49 @@ export function ResidentDrawerCardBody({ session, name, reviews, renderReview, c
           <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />
         </div>
       ) : latest ? (
-        <p className="residents-drawer-latest" aria-label={`Latest from ${name}`}>{latest}</p>
+        onOpen ? (
+          <Tooltip label={`Open ${name}'s conversation`}>
+            <p
+              className="residents-drawer-latest is-openable"
+              aria-label={`Latest from ${name}`}
+              onClick={(e) => {
+                // A drag that selected some of the text is reading, not opening.
+                const selection = window.getSelection();
+                if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return;
+                onOpen();
+              }}
+            >
+              {latest}
+            </p>
+          </Tooltip>
+        ) : (
+          <p className="residents-drawer-latest" aria-label={`Latest from ${name}`}>{latest}</p>
+        )
       ) : null}
-      {canMessage(session) && <ResidentDrawerReply session={session} name={name} />}
       {children}
     </div>
   );
 }
 
 /**
- * The selected card's reply box. `⌘⏎` sends, Escape leaves the box without closing the drawer,
- * and plain Enter starts a new line, so a reply is never sent by the key that opens a card.
- *
- * Uncontrolled and backed by the session's `reply` draft, the same draft the Conversation
- * tab's reply box keeps: text typed here is waiting there when the resident is opened.
- */
-function ResidentDrawerReply({ session, name }: { session: Session; name: string }): React.JSX.Element {
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [sending, setSending] = useState(false);
-  const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
-  const composerActivity = useComposerActivity(session.id);
-
-  async function send(): Promise<void> {
-    // The box stays editable while a send is in flight, and the Conversation's box writes the
-    // same draft, so remember what was sent and the draft's stamp at that moment.
-    const submitted = inputRef.current?.value ?? "";
-    const revisionAtSubmit = draftRevision(session.id, "reply");
-    const text = submitted.trim();
-    if (sending || !text) return;
-    setSending(true);
-    setFlash(null);
-    const r = await api.injectPrompt(session.id, text);
-    setSending(false);
-    if (!r.ok) {
-      setFlash({ text: r.error ?? "send failed", ok: false });
-      return;
-    }
-    // Clear only what was sent. Any write to the draft while the send was in flight - in this
-    // box or the Conversation's, even one that re-typed the same words - is the next reply,
-    // and it stays where it was written.
-    // The text check covers a draft the Conversation's box had already rewritten before this
-    // send began, with a pinned drawer open beside it.
-    if (draftRevision(session.id, "reply") === revisionAtSubmit) {
-      if (readDraft(session.id, "reply") === submitted) clearDraft(session.id, "reply");
-      if (inputRef.current?.value === submitted) inputRef.current.value = "";
-    }
-    // The Conversation's own wording, except where it points at a key only that box has.
-    const confirmation = r.delivery === "pending"
-      ? "Queued. Open the conversation to edit it."
-      : sdkDeliveryConfirmation(r.delivery);
-    setFlash({ text: confirmation ?? "Sent.", ok: true });
-  }
-
-  return (
-    <div className="residents-drawer-reply">
-      <textarea
-        ref={inputRef}
-        className="residents-drawer-reply-input"
-        aria-label={`Reply to ${name}`}
-        placeholder={`Reply to ${name}…`}
-        rows={1}
-        defaultValue={readDraft(session.id, "reply")}
-        onFocus={composerActivity.onFocus}
-        onBlur={composerActivity.onBlur}
-        onChange={(e) => {
-          writeDraft(session.id, "reply", e.currentTarget.value);
-          composerActivity.onInput();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
-            // Owned here: the floating drawer's overlay would otherwise press its default button.
-            e.preventDefault();
-            void send();
-          } else if (e.key === "Escape") {
-            // Out of the box and back onto this card's head, so the arrow keys walk the cards
-            // again. Stopped here, or the floating drawer's overlay would close on the same press.
-            e.preventDefault();
-            e.stopPropagation();
-            const head = e.currentTarget
-              .closest("[data-resident-card]")
-              ?.querySelector<HTMLButtonElement>(".residents-drawer-card-head");
-            if (head) head.focus();
-            else e.currentTarget.blur();
-          }
-        }}
-      />
-      <Tooltip label={`Send this reply to ${name} (⌘⏎)`}>
-        <button
-          type="button"
-          className="btn btn-send residents-drawer-reply-send"
-          disabled={sending}
-          onClick={() => void send()}
-        >
-          Send <kbd className="residents-drawer-reply-key" aria-hidden>⌘⏎</kbd>
-        </button>
-      </Tooltip>
-      {flash && (
-        <p className={`residents-drawer-reply-flash${flash.ok ? "" : " is-error"}`} role="status">{flash.text}</p>
-      )}
-    </div>
-  );
-}
-
-/**
  * The tab on the window's right edge while the drawer is closed: ⌂ and the live count, with no
- * number at zero, amber while any resident needs you.
+ * number at zero. It lights in the colors of the Board columns its residents sit in: Working's
+ * while any resident works, Needs you's while any needs you, and both at once when both are true
+ * - Needs you on the tab's own edge and glyph, which it outranks, and Working as a ring outside.
  */
-export function ResidentsEdgeTab({ live, needsYou, onOpen }: {
+export function ResidentsEdgeTab({ live, needsYou, working, onOpen }: {
   live: number;
   needsYou: boolean;
+  /** Any live resident is working. */
+  working: boolean;
   onOpen: () => void;
 }): React.JSX.Element {
-  const label = `Open the Residents drawer - ${live} live${needsYou ? ", a resident needs you" : ""}`;
+  const label = `Open the Residents drawer - ${live} live${needsYou ? ", a resident needs you" : ""}${working ? ", a resident is working" : ""}`;
   return (
     <Tooltip label={label}>
       <button
         type="button"
-        className={`residents-edge-tab${needsYou ? " needs-you" : ""}`}
+        className={`residents-edge-tab${needsYou ? " needs-you" : ""}${working ? " is-working" : ""}`}
         aria-label={label}
         onClick={onOpen}
       >

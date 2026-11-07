@@ -12610,33 +12610,18 @@ select:not([multiple]) option:focus-visible {
   overflow: auto;
   padding: 10px 18px 40px;
 }
-/* ---- Residents drawer (right slide-over, or a pinned column) ----
-   The floating drawer is the Sitrep's slide-over shape at 330px; pinned, the same content is a
-   column beside the fleet, so the Board or Console narrows instead of being covered. */
-.modal-backdrop:has(.residents-drawer) {
-  justify-content: flex-end;
-  align-items: stretch;
-  padding: 0;
-}
+/* ---- Residents drawer ----
+   A 330px column beside the Board or Console, pinned or not: the fleet narrows rather than being
+   covered or dimmed. */
 .residents-drawer {
+  flex: none;
   width: min(330px, 100%);
-  height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  box-shadow: -24px 0 64px color-mix(in srgb, var(--shadow-ink) calc(128 / 255 * 100%), transparent);
   font-size: 12.5px;
-}
-/* The key handler's wrapper inside the floating panel: transparent to the column layout. */
-.residents-drawer-frame {
-  display: contents;
-}
-.residents-drawer-pinned {
-  flex: none;
-  height: auto;
-  min-height: 0;
-  box-shadow: none;
 }
 .residents-pinned-row {
   flex: 1;
@@ -12673,6 +12658,24 @@ select:not([multiple]) option:focus-visible {
   padding: 2px 9px;
   font-size: 11.5px;
 }
+/* The second row at the top: Manage residents, where it is seen before the cards. */
+.residents-drawer-bar {
+  flex: none;
+  display: flex;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.residents-drawer-manage {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 560;
+  border-radius: 7px;
+}
 .residents-drawer-body {
   flex: 1;
   min-height: 0;
@@ -12708,8 +12711,23 @@ select:not([multiple]) option:focus-visible {
   border-left-color: var(--resident);
   background: color-mix(in oklab, var(--resident) 10%, var(--panel));
 }
-.residents-drawer-card.needs-you:not(.is-selected) {
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--attention) 45%, transparent);
+/* Working and Needs you: the card is edged and tinted in the color of the Board column the
+   session sits in (`--working`, `--attention`), which every skin sets for itself. After the
+   selected rule, so the state's color wins; the selection then shows as a heavier tint and a
+   doubled edge in the same color. */
+.residents-drawer-card.is-working {
+  --card-tone: var(--working);
+}
+.residents-drawer-card.needs-you {
+  --card-tone: var(--attention);
+}
+.residents-drawer-card:is(.is-working, .needs-you) {
+  border-color: var(--card-tone);
+  background: color-mix(in oklab, var(--card-tone) 7%, var(--panel));
+}
+.residents-drawer-card:is(.is-working, .needs-you).is-selected {
+  background: color-mix(in oklab, var(--card-tone) 12%, var(--panel));
+  box-shadow: 0 0 0 1px var(--card-tone);
 }
 .residents-drawer-card-head {
   display: flex;
@@ -12754,6 +12772,14 @@ select:not([multiple]) option:focus-visible {
   font-size: 10.5px;
   color: var(--muted);
 }
+/* The fold caret, the Board repository head's own (`.brh-chevron`), turned by the button's
+   `aria-expanded`. The name already takes the free width, so it needs no auto margin here. */
+.residents-drawer-card-head .brh-chevron {
+  margin-left: 0;
+}
+.residents-drawer-card-head:hover:not(:disabled) .brh-chevron {
+  color: var(--muted);
+}
 .residents-drawer-card-body {
   display: flex;
   flex-direction: column;
@@ -12792,6 +12818,27 @@ select:not([multiple]) option:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+}
+/* An open card's latest message is a way into the conversation it continues. */
+.residents-drawer-latest.is-openable {
+  cursor: pointer;
+  border-radius: 6px;
+  margin-inline: -4px;
+  padding-inline: 4px;
+}
+.residents-drawer-latest.is-openable:hover {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--resident) 8%, transparent);
+}
+/* Compressed: one line of what the resident is doing, then its controls. */
+.residents-drawer-card-body.is-compressed {
+  gap: 5px;
+  padding-top: 5px;
+}
+.residents-drawer-latest.is-compressed {
+  display: block;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 /* The open question, drawn by `ReviewCard` or `PaneDialogPrompt` at the card's width. They are
    sized for a modal and the Conversation; inside a 330px card they take less air. */
@@ -12855,52 +12902,6 @@ select:not([multiple]) option:focus-visible {
   padding: 2px 8px;
   font-size: 11.5px;
 }
-/* The reply box: one line until it is given more, `⌘⏎` sends. */
-.residents-drawer-reply {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 4px 6px;
-}
-.residents-drawer-reply-input {
-  flex: 1 1 0;
-  min-width: 0;
-  max-height: 120px;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 5px 8px;
-  outline: none;
-  resize: vertical;
-  field-sizing: content;
-}
-.residents-drawer-reply-input:focus {
-  border-color: color-mix(in oklab, var(--resident) 55%, var(--border));
-}
-.residents-drawer-reply-send {
-  flex: none;
-  padding: 3px 9px;
-  font-size: 11.5px;
-  border-radius: 7px;
-}
-.residents-drawer-reply-key {
-  margin-left: 3px;
-  font-size: 10.5px;
-  opacity: 0.75;
-}
-.residents-drawer-reply-flash {
-  flex-basis: 100%;
-  margin: 0;
-  font-size: 11px;
-  color: var(--muted);
-}
-.residents-drawer-reply-flash.is-error {
-  color: var(--danger);
-}
 .residents-drawer-foot {
   flex: none;
   display: flex;
@@ -12920,8 +12921,8 @@ select:not([multiple]) option:focus-visible {
   text-transform: uppercase;
   color: var(--muted);
 }
-/* The drawer's handle on the window's right edge while it is closed. Amber while a resident
-   needs you, the same `--attention` the Needs you column wears. */
+/* The drawer's handle on the window's right edge while it is closed. It lights in the colors of
+   the Board columns its residents sit in, `--working` and `--attention`, which every skin sets. */
 .residents-edge-tab {
   /* A floating layer: in the desktop shell it must take its own clicks back from the title
      bar's drag region (see test/desktop-drag-region.test.ts). */
@@ -12954,13 +12955,31 @@ select:not([multiple]) option:focus-visible {
   font-size: 10.5px;
   font-weight: 640;
 }
+.residents-edge-tab:is(.is-working, .needs-you) {
+  color: var(--tab-tone);
+  border-color: var(--tab-tone);
+  background: color-mix(in oklab, var(--tab-tone) 14%, var(--panel-2));
+  box-shadow: 0 0 10px color-mix(in oklab, var(--tab-tone) 45%, transparent), var(--shadow);
+}
+.residents-edge-tab.is-working {
+  --tab-tone: var(--working);
+}
+/* Needs you outranks Working: it takes the tab's own edge and glyph. */
 .residents-edge-tab.needs-you {
-  color: var(--attention);
-  border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
-  background: color-mix(in oklab, var(--attention) 14%, var(--panel-2));
+  --tab-tone: var(--attention);
+}
+/* Both at once: Working stays on as a second edge, a ring just outside the first. */
+.residents-edge-tab.needs-you.is-working {
+  box-shadow:
+    0 0 0 2px var(--working),
+    0 0 12px color-mix(in oklab, var(--attention) 45%, transparent),
+    var(--shadow);
+}
+.residents-edge-tab:is(.is-working, .needs-you) > [aria-hidden]:first-child {
+  text-shadow: 0 0 6px color-mix(in oklab, var(--tab-tone) 70%, transparent);
 }
 /* A resident that needs you, standing in Needs you while the drawer is closed: a dashed
-   outline in its marker color. A doorway to the drawer, not a session card. */
+   outline in its marker color. A doorway to the resident's conversation, not a session card. */
 .resident-visitor-tile {
   position: relative;
   display: flex;
@@ -29491,6 +29510,15 @@ span.line-run-prov {
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--tone-color, var(--muted));
+}
+/* The review chord beside "Needs you". The Keycap renders nothing while keycaps are off, so
+   the wrapper is empty then and takes no room. */
+.board-col-key {
+  display: inline-flex;
+  align-items: center;
+}
+.board-col-key:empty {
+  display: none;
 }
 .board-col-n {
   margin-left: auto;

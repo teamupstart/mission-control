@@ -30,6 +30,14 @@ import { BacklogTaskNotice, DeadBlockerButton, ScheduleSwitch } from "../session
 import { Tooltip } from "../Tooltip.tsx";
 import { LineDrawer, LineDrawerEmpty } from "./LineDrawer.tsx";
 import { NextUpPlanner } from "./NextUpPlanner.tsx";
+import {
+  BacklogFilterButtons,
+  BacklogFilterEmpty,
+  BacklogFilterStrip,
+  HighlightedTitle,
+  useBacklogFilter,
+} from "../BacklogFilterControls.tsx";
+import { backlogFacetCounts, matchesBacklogFilter } from "../../lib/backlog-filter.ts";
 
 /**
  * BACKLOG - the queue in the order the operator arranged, and the moves that change it.
@@ -162,6 +170,7 @@ function BacklogRow({
   onComplete,
   notice,
   onManageTrust,
+  highlight = "",
 }: {
   row: Row;
   /**
@@ -181,6 +190,8 @@ function BacklogRow({
   onComplete: (deadId: string) => void;
   notice: BacklogTaskNoticeView | null;
   onManageTrust?: () => void;
+  /** The drawer's search text, marked in the title. */
+  highlight?: string;
 }): React.JSX.Element {
   const { task, band, blockers, deadBlockers, stackedOn, stackWait } = row;
   const nextUp = planner !== null;
@@ -207,7 +218,7 @@ function BacklogRow({
             is - triage almost always means rereading the thing before deciding about it. */}
         <Tooltip label={task.intent || `Open "${task.title}" for editing`}>
           <button type="button" className="line-bl-title" onClick={onEdit}>
-            {task.title}
+            <HighlightedTitle text={task.title} query={highlight} />
           </button>
         </Tooltip>
         <span className="line-bl-meta">
@@ -375,7 +386,18 @@ export function BacklogDrawer({
     return { rows: partition(tasks, backlogPlan, built, stackShipping), index: built };
   }, [tasks, backlogPlan, stackShipping]);
   const ready = rows.filter((r) => r.band === "ready");
-  const held = rows.filter((r) => r.band !== "ready");
+  /**
+   * Search and filters hide rows and nothing else. `ready` above stays the whole band, so the
+   * next-up mark still sits on the row autopilot takes next, or on no row if that one is
+   * hidden, never on whichever ready row happens to be first through the filter.
+   */
+  const filtering = useBacklogFilter();
+  const subjects = rows.map((r) => ({ task: r.task, blocked: r.blockers.length > 0 }));
+  const shownRows = filtering.active
+    ? rows.filter((r) => matchesBacklogFilter({ task: r.task, blocked: r.blockers.length > 0 }, filtering.filter))
+    : rows;
+  const shownReady = shownRows.filter((r) => r.band === "ready");
+  const held = shownRows.filter((r) => r.band !== "ready");
 
   /**
    * The planner's read of the head of the queue, or null when nothing is ready.
@@ -454,18 +476,35 @@ export function BacklogDrawer({
             onManageTrust();
           }
         : undefined,
+      highlight: filtering.filter.query,
     };
   };
 
   return (
     <LineDrawer
       stage="backlog"
-      count={bandCount(rows)}
+      count={filtering.active ? `${shownRows.length} of ${rows.length} shown` : bandCount(rows)}
       // The strip's own amber rule, to the word: a backlog with items in it and none of them
       // ready is a queue that capacity will never clear, which is the one backlog state that
       // needs a person.
       attention={rows.length > 0 && ready.length === 0 ? "nothing ready" : ""}
-      notice={error ? <p className="line-drawer-alert" role="alert">{error}</p> : null}
+      actions={
+        rows.length > 0 ? (
+          <BacklogFilterButtons state={filtering} counts={backlogFacetCounts(subjects, filtering.filter)} />
+        ) : null
+      }
+      notice={
+        <>
+          {error && <p className="line-drawer-alert" role="alert">{error}</p>}
+          {rows.length > 0 && <BacklogFilterStrip state={filtering} />}
+          <BacklogFilterEmpty
+            className="line-bl-hidden"
+            hidden={rows.length - shownRows.length}
+            shown={shownRows.length}
+            onClear={filtering.clear}
+          />
+        </>
+      }
       onClose={onClose}
       footer={(
         <>
@@ -538,9 +577,9 @@ export function BacklogDrawer({
         // that cost the body nothing: the header counts them, every row wears its own state
         // as a mark, and each list is NAMED for a reader who cannot see either.
         <>
-          {ready.length > 0 && (
+          {shownReady.length > 0 && (
             <ul className="line-drawer-rows" aria-label="Ready, in the order autopilot would take them">
-              {ready.map((row) => <BacklogRow key={row.task.id} {...rowProps(row)} />)}
+              {shownReady.map((row) => <BacklogRow key={row.task.id} {...rowProps(row)} />)}
             </ul>
           )}
           {held.length > 0 && (

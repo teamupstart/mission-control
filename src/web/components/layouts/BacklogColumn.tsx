@@ -34,6 +34,15 @@ import {
 } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
 import { LaunchFailureNotice } from "../LaunchFailures.tsx";
+import {
+  BacklogFilterButtons,
+  BacklogFilterEmpty,
+  BacklogFilterStrip,
+  HighlightedTitle,
+  backlogShownCount,
+  useBacklogFilter,
+} from "../BacklogFilterControls.tsx";
+import { backlogFacetCounts, matchesBacklogFilter } from "../../lib/backlog-filter.ts";
 
 /**
  * The backlog as a board column you dispatch OUT of by dragging.
@@ -152,6 +161,18 @@ export function BacklogColumn({
   stackShipping?: StackShipping;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
+  const index = backlogIndex(allTasks, plan);
+  /**
+   * Search and filters only HIDE cards (see lib/backlog-filter.ts). Everything below that
+   * draws, selects, or anchors a move reads `shown`, so a hidden card can be neither aimed at
+   * nor edited by accident; the header still counts the whole backlog.
+   */
+  const filtering = useBacklogFilter();
+  const subjects = tasks.map((task) => ({ task, blocked: blockersIn(task, index).length > 0 }));
+  const shown = filtering.active
+    ? subjects.filter((s) => matchesBacklogFilter(s, filtering.filter)).map((s) => s.task)
+    : tasks;
+  const facetCounts = backlogFacetCounts(subjects, filtering.filter);
   /**
    * The selection, by id. Read through `selectedTasks` below, never directly: a selected card
    * that dispatches or is deleted leaves the column, and a selection that still counted it
@@ -174,8 +195,8 @@ export function BacklogColumn({
   const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const cardEls = useRef(new Map<string, HTMLElement>());
-  const selectedTasks = tasks.filter((t) => picked.has(t.id));
-  const order = tasks.map((t) => t.id);
+  const selectedTasks = shown.filter((t) => picked.has(t.id));
+  const order = shown.map((t) => t.id);
 
   const clearSelection = (): void => {
     setPicked(new Set());
@@ -203,7 +224,9 @@ export function BacklogColumn({
    * selection. With a modifier held the marquee adds to the selection instead of replacing it.
    */
   const startMarquee = (e: React.PointerEvent<HTMLDivElement>): void => {
-    if (e.button !== 0 || (e.target as Element).closest(".bl-card")) return;
+    // A control in the body (the filter's "Clear") keeps its own click: capturing the pointer
+    // here would swallow it.
+    if (e.button !== 0 || (e.target as Element).closest(".bl-card, button")) return;
     const el = body.current;
     if (!el) return;
     // A press on the column's own scrollbar is a scroll, not a marquee. `clientWidth` stops
@@ -263,7 +286,6 @@ export function BacklogColumn({
     }
     clearSelection();
   }
-  const index = backlogIndex(allTasks, plan);
   /**
    * The card in the air, by id, or null when nothing is being dragged.
    *
@@ -281,7 +303,7 @@ export function BacklogColumn({
    * every pixel of travel across a target that has one.
    */
   const [overGap, setOverGap] = useState<number | null>(null);
-  const liftedIndex = lifted === null ? -1 : tasks.findIndex((t) => t.id === lifted);
+  const liftedIndex = lifted === null ? -1 : shown.findIndex((t) => t.id === lifted);
   /**
    * The same fact, but only while the card is still HERE to be moved.
    *
@@ -308,9 +330,16 @@ export function BacklogColumn({
    * dashboard can change what "first" means between this render and this drop.
    */
   const gapTarget = (i: number): ReorderTask => {
-    if (i === 0) return { position: "top" };
-    const anchor = tasks[i];
-    return anchor ? { position: "before", anchorTaskId: anchor.id } : { position: "bottom" };
+    // Filtered, the ends of the column are the ends of what is SHOWN, so they anchor on the
+    // first and last visible cards rather than jumping past the hidden ones.
+    const first = shown[0];
+    const last = shown[shown.length - 1];
+    if (i === 0) {
+      return filtering.active && first ? { position: "before", anchorTaskId: first.id } : { position: "top" };
+    }
+    const anchor = shown[i];
+    if (anchor) return { position: "before", anchorTaskId: anchor.id };
+    return filtering.active && last ? { position: "after", anchorTaskId: last.id } : { position: "bottom" };
   };
 
   /**
@@ -328,7 +357,7 @@ export function BacklogColumn({
   const dropInGap = async (e: React.DragEvent, i: number): Promise<void> => {
     const id = e.dataTransfer.getData("application/x-mission-task");
     if (!id) return;
-    const from = tasks.findIndex((t) => t.id === id);
+    const from = shown.findIndex((t) => t.id === id);
     if (from >= 0 && (i === from || i === from + 1)) return;
     const r = await api.reorderTask(id, gapTarget(i));
     if (!r.ok) onAssignError(r.error ?? "could not move that");
@@ -392,13 +421,14 @@ export function BacklogColumn({
       onKeyDown={(e) => {
         const target = e.target as HTMLElement;
         // The bulk edit renders inside this section, so its keys bubble here too. Escape
-        // there closes the dialog and must leave the selection it was opened over alone.
+        // there closes the dialog and must leave the selection it was opened over alone. The
+        // backlog search field is an input too, so Cmd/Ctrl-A there selects its text.
         if (target.closest("input, select, textarea, [role='dialog']")) return;
         if (e.key === "Escape" && selectedTasks.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           clearSelection();
-        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && tasks.length > 0) {
+        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && shown.length > 0) {
           e.preventDefault();
           setPicked(new Set(order));
         }
@@ -412,8 +442,13 @@ export function BacklogColumn({
         {width && onWidthChange && (
           <ColumnWidthControl width={width} label="Backlog" onChange={onWidthChange} />
         )}
-        <span className="board-col-n">{tasks.length}</span>
+        <span className="board-col-n">
+          {backlogShownCount(shown.length, tasks.length, filtering.active)}
+        </span>
+        {/* Last, so on a column too narrow for one line they are what wraps, never the count. */}
+        {tasks.length > 0 && <BacklogFilterButtons state={filtering} counts={facetCounts} />}
       </header>
+      {tasks.length > 0 && <BacklogFilterStrip state={filtering} />}
       <div
         className="board-col-body"
         ref={body}
@@ -438,7 +473,7 @@ export function BacklogColumn({
             Nothing queued
           </p>
         ) : (
-          tasks.map((t, i) => (
+          shown.map((t, i) => (
             <Fragment key={t.id}>
               {/* Above every card, and one more below the last: N cards, N+1 places to
                   put one. Zero-height and inert until something is in the air, because a
@@ -460,8 +495,8 @@ export function BacklogColumn({
                 // as their anchor. Read off the rendered list rather than off the raw
                 // backlog, so "move above the card above me" means the card the operator can
                 // actually see - the same place a drag would land it.
-                above={tasks[i - 1] ?? null}
-                below={tasks[i + 1] ?? null}
+                above={shown[i - 1] ?? null}
+                below={shown[i + 1] ?? null}
                 selected={picked.has(t.id)}
                 onSelect={(mode) => selectCard(t.id, mode)}
                 cardRef={(el) => {
@@ -475,17 +510,23 @@ export function BacklogColumn({
                 scheduleNameById={scheduleNameById}
                 notice={backlogTaskNotice(t, backlogTrust)}
                 onManageTrust={onManageTrust}
+                highlight={filtering.filter.query}
               />
-              {i === tasks.length - 1 && (
+              {i === shown.length - 1 && (
                 <div
-                  className={`bl-gap${overGap === tasks.length ? " is-over" : ""}`}
+                  className={`bl-gap${overGap === shown.length ? " is-over" : ""}`}
                   aria-hidden
-                  {...gapProps(tasks.length)}
+                  {...gapProps(shown.length)}
                 />
               )}
             </Fragment>
           ))
         )}
+        <BacklogFilterEmpty
+          hidden={tasks.length - shown.length}
+          shown={shown.length}
+          onClear={filtering.clear}
+        />
         {marquee && <div className="bl-marquee" aria-hidden style={marquee} />}
       </div>
       {selectedTasks.length > 0 && (
@@ -663,6 +704,7 @@ function BacklogCard({
   cardRef,
   stacking,
   stackShipping,
+  highlight = "",
 }: {
   task: Task;
   blockers: BacklogBlocker[];
@@ -698,6 +740,8 @@ function BacklogCard({
   onSelect: (mode: "toggle" | "range") => void;
   /** The column measures each card for its marquee. */
   cardRef: (el: HTMLElement | null) => void;
+  /** The column's search text, marked in the title so a person can see why a card matched. */
+  highlight?: string;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   /** The move-control group, so focus can be put back on it after a move redraws it. */
@@ -922,7 +966,7 @@ function BacklogCard({
             if (!(e.shiftKey || e.metaKey || e.ctrlKey)) onEdit();
           }}
         >
-          {task.title}
+          <HighlightedTitle text={task.title} query={highlight} />
         </button>
       </Tooltip>
       <span className="bl-marks">

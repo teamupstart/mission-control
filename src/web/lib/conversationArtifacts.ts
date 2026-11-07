@@ -1,3 +1,7 @@
+import {
+  BROWSER_IMAGE_MEDIA_TYPES,
+  browserImageMediaTypeForPath,
+} from "@shared/browser-images.ts";
 import type { SessionFileDocument } from "@shared/types.ts";
 import { matchCheckoutPaths, splitPathLocation } from "./workspaceLinks.ts";
 
@@ -5,6 +9,15 @@ export interface ConversationArtifact {
   /** Checkout-relative path, exactly as the session file API takes it. */
   path: string;
 }
+
+/**
+ * What a presented artifact renders as: a sandboxed page or a plain image.
+ *
+ * Derived from the path rather than stored on the artifact, so the extension stays the one
+ * answer and the image half reads the same shared registry the daemon classifies with - a
+ * card can never expect an image the file reader would hand back as binary.
+ */
+export type ConversationArtifactKind = "html" | "image";
 
 export type ArtifactPreviewResult =
   | { kind: "ready"; document: SessionFileDocument }
@@ -18,6 +31,16 @@ export type ArtifactPreviewResult =
 const MAX_ARTIFACTS_PER_TURN = 3;
 const SHORT_LABEL = /^[A-Za-z][A-Za-z ]{0,31}:\s*$/;
 const HTML_EXTENSION = /\.html?$/i;
+/** A cheap pre-filter: a turn naming no previewable extension cannot present an artifact. */
+const ARTIFACT_EXTENSION_HINT = new RegExp(
+  `\\.(?:html?|${Object.keys(BROWSER_IMAGE_MEDIA_TYPES).join("|")})\\b`,
+  "i",
+);
+
+export function artifactKind(path: string): ConversationArtifactKind | null {
+  if (HTML_EXTENSION.test(path)) return "html";
+  return browserImageMediaTypeForPath(path) === null ? null : "image";
+}
 
 function lineBounds(text: string, start: number, end: number): [number, number] {
   const before = text.lastIndexOf("\n", start - 1);
@@ -62,17 +85,18 @@ function markdownDestinations(text: string, paths: ReadonlySet<string>): Artifac
 }
 
 /**
- * Find the real checkout HTML files one turn deliberately presents as artifacts.
+ * Find the real checkout HTML pages and browser images one turn deliberately presents as
+ * artifacts.
  *
  * Checkout membership supplies the path grammar and existence boundary. The extra
  * presentation check keeps incidental prose such as "edited src/web/index.html" as an
- * ordinary link instead of turning every HTML mention into a large preview.
+ * ordinary link instead of turning every HTML or image mention into a large preview.
  */
 export function conversationArtifacts(
   text: string,
   paths: ReadonlySet<string>,
 ): ConversationArtifact[] {
-  if (paths.size === 0 || !text.toLowerCase().includes(".htm")) return [];
+  if (paths.size === 0 || !ARTIFACT_EXTENSION_HINT.test(text)) return [];
 
   const candidates: ArtifactCandidate[] = [
     ...matchCheckoutPaths(text, paths).map((token) => ({
@@ -87,7 +111,7 @@ export function conversationArtifacts(
   const seen = new Set<string>();
   const artifacts: ConversationArtifact[] = [];
   for (const token of candidates) {
-    if (!HTML_EXTENSION.test(token.path)) continue;
+    if (artifactKind(token.path) === null) continue;
     if (
       !isOwnLinePresentation(text, token.start, token.end)
       && !token.markdownDestination
@@ -139,6 +163,17 @@ export function classifyArtifactPreview(
       explanation: "This file is over the 5 MiB preview cap. Open it in Files to inspect it there.",
       size: file.size,
     };
+  }
+  // Before the UTF-8 test: a raster image has no text by design, and that is not a refusal.
+  if (file.kind === "image") {
+    return file.image
+      ? { kind: "ready", document: file }
+      : {
+          kind: "refusal",
+          title: "Image preview unavailable.",
+          explanation: "The daemon read this file but returned no displayable image. Open it in Files to inspect its details.",
+          size: file.size,
+        };
   }
   if (file.text === null || file.kind === "binary") {
     return {

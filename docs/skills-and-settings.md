@@ -171,6 +171,17 @@ a human saying the plan is right, so there is nothing to enforce it against and 
 hands the procedure over instead. That is the whole reason the two planning rows above are a
 launch requirement and this one is not.
 
+The **Mockups** row applies when someone asks to see what something could look like:
+mock-ups, mockups, wireframes, UI sketches, or design comps. The session writes each one as a
+file in its own checkout, under `docs/mockups/<slug>/` or beside the repository plan it belongs
+to and never under an ignored path, as a self-contained HTML page or a browser image. It then
+names each checkout-relative path on its own line, such as
+`Mockup: docs/mockups/settings-panel/two-column.html`. The conversation links that path to the
+Files tab and previews the page or image inline at the foot of the turn, as
+[Message formatting](ui.md#message-formatting) describes. Mock-ups stay untracked unless the
+person asks for them to be committed. The contract lives in
+[`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).
+
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
 into its pane when it next goes quiet. Codex declares no reload command, because it

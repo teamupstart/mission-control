@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, markdownPropsEqual } from "../src/web/components/Markdown.tsx";
 import { FILES_DIAGRAM_RENDERERS } from "../src/web/components/markdownDiagramRegistry.tsx";
 import { rehypeWorkspacePaths } from "../src/web/lib/rehypeWorkspacePaths.ts";
-import { LatestFileRequests } from "../src/web/lib/sessionFiles.ts";
+import { LatestFileRequests, shouldWarmWorkspacePaths } from "../src/web/lib/sessionFiles.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
 
 // What is at stake: an agent names a file the way it reads in a terminal - in backticks or
@@ -164,8 +164,43 @@ test("the shared Console and Board transcript receives the file store", () => {
 
 test("the panel asks for the listing and hands it to the renderer", () => {
   const panel = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
-  assert.match(panel, /useWorkspacePaths\(files, sessionId, Boolean\(session\.cwd && onOpenFile\)\)/);
+  assert.match(
+    panel,
+    /useWorkspacePaths\(\s*files,\s*sessionId,\s*Boolean\(session\.cwd && onOpenFile\),\s*session\.state === "working",?\s*\)/,
+  );
   assert.match(panel, /<Markdown breaks onLinkClick=\{onOpenFile\} filePaths=\{filePaths\}>/);
+});
+
+test("a transcript re-lists its checkout when a turn ends, and not on every frame", () => {
+  // A listing taken only when the conversation mounted predates every file the agent writes
+  // while the operator watches, so the turn presenting a fresh mock-up or report rendered its
+  // path as dead text and drew no preview until something remounted the conversation.
+  const first = { sessionId: "s1", working: false };
+  assert.equal(shouldWarmWorkspacePaths(null, first), true, "the first render lists");
+  assert.equal(
+    shouldWarmWorkspacePaths({ sessionId: "s1", working: true }, first),
+    true,
+    "a finished turn lists again, after the files it names exist",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths(first, { sessionId: "s1", working: true }),
+    false,
+    "starting a turn has written nothing yet",
+  );
+  assert.equal(shouldWarmWorkspacePaths(first, first), false, "an idle re-render is free");
+  assert.equal(
+    shouldWarmWorkspacePaths(
+      { sessionId: "s1", working: true },
+      { sessionId: "s1", working: true },
+    ),
+    false,
+    "a streaming turn's frames do not each pay for a listing",
+  );
+  assert.equal(
+    shouldWarmWorkspacePaths(first, { sessionId: "s2", working: true }),
+    true,
+    "another session's transcript lists its own checkout, even mid-turn",
+  );
 });
 
 test("the link probe and the path index share one request; the Files tab publishes into it", () => {

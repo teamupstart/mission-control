@@ -398,8 +398,14 @@ export function TranscriptPanel({
   const sendChord = formatChord(bindings.send);
   const expandChord = bindings.composerEditor;
   // Only a session with a checkout and a handler that can open one has any use for the
-  // listing; without both, a path in the prose stays the text the agent typed.
-  const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
+  // listing; without both, a path in the prose stays the text the agent typed. The working
+  // flag re-lists as each turn ends, so a file written while you watch links in that turn.
+  const filePaths = useWorkspacePaths(
+    files,
+    sessionId,
+    Boolean(session.cwd && onOpenFile),
+    session.state === "working",
+  );
   // ConsoleDetail builds `onOpenFile` as a fresh closure every render, and `Markdown` is
   // memoized on its props, including
   // this one, because it must be: a skipped render leaves the rendered anchors calling

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
+import { artifactKind, conversationArtifacts } from "../src/web/lib/conversationArtifacts.ts";
 
 // The catalog reader. Its frontmatter parser is deliberately narrow - the files are
 // authored in this repo and reviewed with it - so what matters is that anything it
@@ -277,6 +278,54 @@ test("the shipped html-report skill names the path contract the Files tab actual
   assert.match(text, /\.\.\/\.\.\/\.\.\/src\/server\/registry\.ts/);
   // And it must not teach a link form the resolver refuses.
   assert.doesNotMatch(text, /Report: \/|Report: file:/);
+});
+
+test("the shipped mockups skill teaches exactly the presentation the conversation previews", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "mockups");
+  assert.ok(skill, "mockups should be in the catalog");
+  assert.equal(skill.name, "mockups");
+  assert.equal(skill.category, "design");
+  assert.equal(skill.enforcement, "triggered");
+  // The description is the whole trigger, so it carries each spelling people type.
+  for (const phrase of [/mock-ups/, /mockups/, /mock ups/, /wireframes/]) {
+    assert.match(skill.description, phrase);
+  }
+
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /docs\/mockups\/<slug>\//);
+  assert.match(text, /git check-ignore -q/);
+  assert.match(text, /\*\*No JavaScript\.\*\*/);
+  assert.doesNotMatch(text, /Mockup: \/|Mockup: file:|Mockup: ~/);
+
+  // The example block is what an agent copies, so it must be what `conversationArtifacts`
+  // actually previews - not a shape that merely looks right in the skill.
+  const example = text.match(/```\n(Mockup: [^\n]+\n)+```/)?.[0];
+  assert.ok(example, "the skill shows its presentation lines in a fenced example");
+  const lines = example.split("\n").filter((line) => line.startsWith("Mockup: "));
+  const presented = lines.map((line) => line.slice("Mockup: ".length));
+  assert.ok(presented.some((path) => artifactKind(path) === "html"), "an HTML example");
+  assert.ok(presented.some((path) => artifactKind(path) === "image"), "an image example");
+  const listing = new Set(presented);
+  assert.deepEqual(
+    conversationArtifacts(`Both are ready.\n${lines.join("\n")}`, listing).map(({ path }) => path),
+    presented,
+  );
+  const [page] = presented as [string];
+  const linked = text.match(/`\[Two-column layout\]\(([^)]+)\)`/)?.[1];
+  assert.equal(linked, page, "the Markdown-link example names the same file");
+  assert.deepEqual(
+    conversationArtifacts(`- [Two-column layout](${page})`, listing).map(({ path }) => path),
+    [page],
+    "a Markdown link qualifies inside a list, as the skill says",
+  );
+  // And each form the skill says disqualifies a line really does.
+  for (const line of [`Option 2: ${page}`, `- Mockup: ${page}`, `1. ${page}`, `Mockup: \`${page}\``, `Mockup: **${page}**`]) {
+    assert.deepEqual(conversationArtifacts(line, listing), [], line);
+  }
+  assert.deepEqual(
+    conversationArtifacts(`Variant B: ${page}`, listing).map(({ path }) => path),
+    [page],
+  );
 });
 
 test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {

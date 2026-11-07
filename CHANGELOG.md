@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.2.0](https://github.com/teamupstart/mission-control/compare/v2.1.0...v2.2.0) (2026-11-07)
+
+
+### Features
+
+* **foreman:** accept a paused goal's objective as is ([#1383](https://github.com/teamupstart/mission-control/issues/1383)) ([1edbe9d](https://github.com/teamupstart/mission-control/commit/1edbe9d5204ff04b204653ca45c56bcb5340a7fc))
+* **residents:** move residents into a slide-out drawer by default ([#1390](https://github.com/teamupstart/mission-control/issues/1390)) ([19632f0](https://github.com/teamupstart/mission-control/commit/19632f01bc258cedce39dccb31033183b8414cc3))
+* **shipping:** stack a dependent pull request on its parent's open branch ([#1366](https://github.com/teamupstart/mission-control/issues/1366)) ([97a47b5](https://github.com/teamupstart/mission-control/commit/97a47b58b7d844ca19abfdec65566a11e7e7fac9))
+* **workflows:** surface a stalled Foreman-complete binding on the bind chip and dialog ([#1387](https://github.com/teamupstart/mission-control/issues/1387)) ([5b0d513](https://github.com/teamupstart/mission-control/commit/5b0d51314a385118a2f62e2b27ccd4d90bcc6494))
+
+
+### Bug Fixes
+
+* **alerts:** honor muted desktop notification sound ([#1386](https://github.com/teamupstart/mission-control/issues/1386)) ([a49a7a0](https://github.com/teamupstart/mission-control/commit/a49a7a05a8bccad9e23b4fcde8308c3aa4ebc777))
+* **daemon:** end open streams and long-polls so quitting no longer waits ~30s ([#1378](https://github.com/teamupstart/mission-control/issues/1378)) ([b9cdad7](https://github.com/teamupstart/mission-control/commit/b9cdad724cf04957fb7665c056746dbf917ad572))
+* **goal:** open one Goal revision per human SDK follow-up ([#1385](https://github.com/teamupstart/mission-control/issues/1385)) ([53c797f](https://github.com/teamupstart/mission-control/commit/53c797ff9b0aae8790e19501c030957309574193))
+* **goal:** resolve a rejected amendment as steering instead of latching ([#1381](https://github.com/teamupstart/mission-control/issues/1381)) ([a4ca96a](https://github.com/teamupstart/mission-control/commit/a4ca96ab660d4b90915fc8890dc3b157a2d40599))
+* **inspector:** evaluate replies on author-resolved threads ([#1389](https://github.com/teamupstart/mission-control/issues/1389)) ([41526e7](https://github.com/teamupstart/mission-control/commit/41526e7124ceeafaaeace1fdd69dcd5d95c038b1))
+* **workflows:** run CodeRabbit when .coderabbit.yaml or .coderabbit.config.ts exists ([#1375](https://github.com/teamupstart/mission-control/issues/1375)) ([20f420e](https://github.com/teamupstart/mission-control/commit/20f420eb4a8024b1c53d8b5953f16139b5891ec8))
+
 ## [2.1.0](https://github.com/teamupstart/mission-control/compare/v2.0.1...v2.1.0) (2026-11-06)
 
 

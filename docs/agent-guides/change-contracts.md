@@ -1156,6 +1156,15 @@ A session appears in three components:
 
 Add layout-visible props through `SessionViewProps`. Shared leaves belong in `session-bits.tsx`. A new session signal must cover detail chips, tile flags, and rail marks.
 
+Fleet membership for residents has one owner. `residentPlacement` (`src/web/lib/resident-placement.ts`)
+decides which residents are excluded from the fleet and which are visitor cards, from the
+`residentPlacement` UI preference, the drawer's open or pinned state and the open detail. App
+applies it in the `fleet` memo before `orderSessions`, so the Board columns, both rails, the arrow
+keys and the ⌘-numbers inherit it; no view branches on placement. An open resident is read
+through App's `detailSession` lookup (passed as `SessionViewProps.detailSession`) and is never
+added to a fleet list. The dock and the Residents drawer share one launch state,
+`src/web/residents/useResidentLaunches.ts`.
+
 Compose surfaces:
 
 | Surface | Draft kind | Images |

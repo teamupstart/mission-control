@@ -383,3 +383,92 @@ test("the Residents button names its live count and opens nothing until pressed"
   assert.match(html, /class="residents-count">2</);
   assert.doesNotMatch(html, /role="dialog"/);
 });
+
+test("in Drawer placement the Residents button keeps its name and opens the drawer, never the dock", () => {
+  const html = renderToStaticMarkup(createElement(ResidentsDock, {
+    runs: [summary({ taskId: "t1" })],
+    profiles: [profile()],
+    sessions: [],
+    // Even asked to start open, the dock's popover is not drawn behind a drawer.
+    defaultOpen: true,
+    onToggleDrawer: () => {},
+    drawerOpen: true,
+    onOpenSession: () => {},
+    onOpenLaunch: () => {},
+    onManage: () => {},
+  }));
+  assert.match(html, /class="ghost-btn residents-btn on"/);
+  assert.match(html, /aria-label="Residents - 1 live"/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.doesNotMatch(html, /role="dialog"/);
+});
+
+// ---- the Residents drawer: ⌥-number boundary and the empty state ----
+
+const { ResidentsDrawer, ResidentsEdgeTab, residentDrawerEntries } = await import("../src/web/residents/ResidentsDrawer.tsx");
+const { residentShortcutIndex } = await import("../src/web/lib/keybindings.ts");
+const { useResidentLaunches } = await import("../src/web/residents/useResidentLaunches.ts");
+
+/** Ten live residents, oldest launch first, each with its own session. */
+function tenResidents(): { runs: ResidentRunSummary[]; sessions: Session[] } {
+  const runs: ResidentRunSummary[] = [];
+  const sessions: Session[] = [];
+  for (let n = 1; n <= 10; n += 1) {
+    runs.push(summary({ taskId: `t${n}`, createdAt: n }));
+    sessions.push(mkSession({ id: `s${n}`, task: mkTaskSummary({ id: `t${n}`, kind: "resident" }) }));
+  }
+  return { runs, sessions };
+}
+
+/** The drawer, pinned so it renders without an overlay host, with a stub launcher. */
+function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[]): string {
+  const launcher: ReturnType<typeof useResidentLaunches> = { launches: {}, launch: async () => {} };
+  return renderToStaticMarkup(createElement(ResidentsDrawer, {
+    entries: residentDrawerEntries(runs, [profile()], sessions),
+    profiles: [profile()],
+    pinned: true,
+    selectedId: null,
+    onSelect: () => {},
+    onOpen: () => {},
+    onClose: () => {},
+    onPinnedChange: () => {},
+    launcher,
+    onOpenLaunch: () => {},
+    onManage: () => {},
+  }));
+}
+
+test("resident nine is ⌥9 and resident ten has no shortcut, in the order ⌥N opens", () => {
+  const { runs, sessions } = tenResidents();
+  const entries = residentDrawerEntries(runs, [profile()], sessions);
+  assert.deepEqual(entries.map((entry) => entry.shortcut), [1, 2, 3, 4, 5, 6, 7, 8, 9, null]);
+  // ⌥9 is index 8, which is the ninth resident - the one printing ⌥9 - and no key reaches the tenth.
+  const key = (code: string) => residentShortcutIndex({ code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false });
+  assert.equal(entries[key("Digit9")!]!.session!.id, "s9");
+  assert.equal(entries[key("Digit1")!]!.session!.id, "s1");
+  assert.equal(key("Digit0"), null);
+
+  // The drawer prints nine keycaps, ⌥1 … ⌥9, and nothing on the tenth card.
+  const html = drawerMarkup(runs, sessions);
+  const keycaps = [...html.matchAll(/class="residents-drawer-key"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  assert.deepEqual(keycaps, ["⌥1", "⌥2", "⌥3", "⌥4", "⌥5", "⌥6", "⌥7", "⌥8", "⌥9"]);
+  assert.equal((html.match(/data-resident-card=/g) ?? []).length, 10);
+  assert.doesNotMatch(html, /⌥10/);
+});
+
+test("with no resident running, the drawer says so and the edge tab carries no number", () => {
+  const html = drawerMarkup([], []);
+  assert.match(html, /No residents are running\. Launch one from a profile below\./);
+  assert.match(html, /Residents <span class="residents-drawer-count">· 0 live<\/span>/);
+  assert.doesNotMatch(html, /data-resident-card=/);
+  // The footer still offers the profiles.
+  assert.match(html, /aria-label="Launch Triage Bot"/);
+
+  const empty = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 0, needsYou: false, onOpen: () => {} }));
+  assert.match(empty, /aria-label="Open the Residents drawer - 0 live"/);
+  assert.doesNotMatch(empty, /residents-edge-count/);
+  assert.doesNotMatch(empty, /needs-you/);
+  const one = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 1, needsYou: true, onOpen: () => {} }));
+  assert.match(one, /class="residents-edge-count"[^>]*>1</);
+  assert.match(one, /class="residents-edge-tab needs-you"/);
+});

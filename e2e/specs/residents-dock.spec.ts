@@ -285,9 +285,9 @@ test("the dock opens from its chord and from the palette, lists profiles, and a 
 
   await dashboard.keyboard.press("Meta+K");
   const palette = dashboard.getByRole("dialog").filter({ has: dashboard.getByRole("combobox") }).first();
-  await dashboard.keyboard.type("Residents dock");
+  await dashboard.keyboard.type("Residents drawer or dock");
   // The command row, not the shortcut row of the same name, which opens its binding instead.
-  await dashboard.getByRole("option", { name: "Open the Residents dock, command" }).click();
+  await dashboard.getByRole("option", { name: "Open the Residents drawer or dock, command" }).click();
   await expect(palette).toBeHidden();
   await expect(dock).toBeVisible();
 

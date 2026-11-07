@@ -18,6 +18,7 @@ import { useUiConfig } from "../../lib/uiConfig.ts";
 import { PendingList } from "../PendingDispatch.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
+import { ResidentVisitorCard } from "../../residents/ResidentVisitorCard.tsx";
 import {
   blockedMembersIn,
   EnsembleRailGroup,
@@ -48,7 +49,11 @@ export function ConsoleView(props: SessionViewProps & {
   onBackToBoard?: () => void;
 }): React.JSX.Element {
   const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
-  const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
+  // App's one detail lookup, which can name a resident the Drawer placement keeps out of
+  // `sessions`: it opens here while no rail row names it.
+  const active = props.detailSession !== undefined
+    ? props.detailSession
+    : props.sessions.find((s) => s.id === props.selectedId) ?? null;
   // The one fleet ordering, so the rail's rows come out in the order the arrow keys walk and
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
   // only here - the contract is that `orderSessions` returns them all, because App's board
@@ -87,6 +92,18 @@ export function ConsoleView(props: SessionViewProps & {
   const zone = active ? props.consoleZone : "rail";
 
   const railRow = (s: Session): React.JSX.Element => {
+    const visitorMark = props.residentVisitors?.has(s.id) ? props.residentBySession?.get(s.id) : undefined;
+    if (visitorMark) {
+      return <ResidentVisitorCard
+        key={s.id}
+        session={s}
+        mark={visitorMark}
+        variant="rail"
+        selected={s.id === props.selectedId}
+        registerEl={props.registerEl}
+        onOpenDrawer={(id) => props.onOpenResidentDrawer?.(id)}
+      />;
+    }
     const commission = pipelineCommissionForSession(props, s);
     const commissionRun = commission?.linkedRun
       ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ResidentDrawerInertNote } from "./ResidentPlacementPanel.tsx";
 
 import {
   DISPLAY_CHOICES,
@@ -162,6 +163,7 @@ function GroupCustomizer({
               <span className="settings-toggle-text">
                 <span className="settings-toggle-label">{item.label}</span>
                 <span className="settings-toggle-desc">{item.description}</span>
+                {item.id === "residentMarker" && <ResidentDrawerInertNote what="The marker on Board cards and rail rows" />}
               </span>
             </label>
           );

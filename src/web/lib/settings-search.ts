@@ -181,6 +181,17 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "resident-placement",
+    label: "Where residents live",
+    description:
+      "Keep residents in a drawer on the right edge, or on the Board and Console with every other session.",
+    category: "display",
+    anchor: "display/residents",
+    keywords: ["resident", "residents", "drawer", "dock", "board", "console", "rail", "placement", "long-running"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",

@@ -190,6 +190,7 @@ function stores(over: Partial<PaletteStores> = {}): PaletteStores {
     sessionActions: [],
     schedules: [],
     sessionNames: new Map(),
+    residents: [],
     settingsBindings: new Map(),
     ...over,
   };
@@ -709,4 +710,21 @@ test("tab cycles through the kinds present and back out to everything", () => {
   // A filter whose kind has been typed away narrows to what is left rather than silently
   // widening back to everything under the operator.
   assert.equal(nextPaletteKind(kinds, "ensemble"), "workflow");
+});
+
+test("a live resident is found by name or label and opens its detail", () => {
+  const rows = paletteRows(stores({
+    residents: [
+      { sessionId: "s-res", name: "Fleet Triage", label: "OPS", state: "needs input", attention: true },
+    ],
+  }));
+  const row = find(rows, "resident:s-res");
+  assert.equal(row.kind, "resident");
+  assert.equal(paletteKindGroup(row.kind), "jump");
+  assert.equal(row.title, "Fleet Triage");
+  assert.equal(row.detail, "OPS · needs input");
+  assert.equal(row.attention, true);
+  assert.ok(row.keywords.includes("OPS"));
+  assert.deepEqual(row.target, { kind: "open-resident", sessionId: "s-res" });
+  assert.match(paletteRowHint(row), /resident's conversation/);
 });

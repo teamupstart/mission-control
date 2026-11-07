@@ -43,10 +43,12 @@ a review is evidence, and it follows the repository's evidence rules instead.
    mkdir -p docs/mockups && { [ -e docs/mockups/.gitignore ] || printf '*\n' > docs/mockups/.gitignore; }
    ```
 
-   That one file ignores the whole directory, itself included. Nothing in it shows in
-   `git status`, `git add -A` stages none of it, and a workflow's review snapshot leaves it
-   out, so a "commit everything that was reviewed" step cannot carry a mock-up into a pull
-   request. Mission Control still lists the HTML pages and images in `docs/mockups/` in
+   When the marker is the one this command wrote, it ignores the whole directory, itself
+   included: nothing in it shows in `git status`, `git add -A` stages none of it, and a
+   workflow's review snapshot leaves it out, so a "commit everything that was reviewed" step
+   cannot carry a mock-up into a pull request. A repository's own `docs/mockups/.gitignore`
+   is left as it is and may not ignore anything, so the marker alone proves nothing; step 3's
+   check does. Mission Control still lists the HTML pages and images in `docs/mockups/` in
    Files, links their paths and previews them. It is the one ignored directory it does that
    for, and only for those formats, so a mock-up anywhere else that git ignores, or in
    another format, renders as dead text.

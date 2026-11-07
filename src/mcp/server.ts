@@ -411,6 +411,7 @@ function taskConfiguration(task: Task) {
     model: task.model,
     effort: task.effort,
     advisorModel: task.advisorModel,
+    personaId: task.personaId,
     workflowId: task.workflowId,
     planPolicy: task.planPolicy,
     enabled: task.enabled,

@@ -257,6 +257,9 @@ function freeAgentFor(
   // `TaskManager.assign` refuses it with `scope: "task"` and only the dispatch branch can
   // start it.
   if (stackStartEdge(task, new Map(tasks.map((candidate) => [candidate.id, candidate])))) return null;
+  // And for a task that names a Persona: it rides the launch's standing instructions, which a
+  // live process cannot take on, so `TaskManager.assign` refuses it and only dispatch starts it.
+  if (task.personaId) return null;
   for (const s of sessions) {
     if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a

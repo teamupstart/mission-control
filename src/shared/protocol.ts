@@ -15,6 +15,7 @@ import {
   taskKindAllowsBacklog,
   taskKindBacklogRefusal,
   taskKindCreator,
+  taskKindPersonaRefusal,
 } from "./task.ts";
 import { LaunchResidentSchema, ResidentProfileRevisionRequestSchema } from "./residents.ts";
 import type { HarnessLaunchedTaskKind } from "./task.ts";
@@ -197,6 +198,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** A Library Persona id, as a task names it. The same bound a resident profile's pin has. */
+const TaskPersonaIdSchema = z.string().trim().min(1).max(200);
 /** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
 const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -1122,6 +1125,12 @@ export const DispatchSchema = z
     // (`HarnessesConfig.advisor`), not something a task pins. An `advisorModel` sent by an
     // older client is stripped like any other unknown key.
     /**
+     * The Library Persona whose guidance this task's agent launches with. Omitted launches
+     * with none. Whether the id names a live Persona is a question only the daemon can answer,
+     * so `TaskManager.create` asks it; this schema only refuses a kind that cannot carry one.
+     */
+    personaId: TaskPersonaIdSchema.optional(),
+    /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
      * and the machine default for other kinds.
@@ -1156,6 +1165,10 @@ export const DispatchSchema = z
         message: RESIDENT_TASK_REFUSAL,
       });
       return;
+    }
+    const personaRefusal = o.personaId === undefined ? null : taskKindPersonaRefusal(o.kind);
+    if (personaRefusal) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["personaId"], message: personaRefusal });
     }
     if (taskKindAllowsBacklog(o.kind)) return;
     if (o.backlog) {
@@ -1373,11 +1386,11 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `workflowId`, `dependencies` and
- * `enabled` are PROVISIONING fields -
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model`, `effort`, `personaId`, `workflowId`,
+ * `dependencies` and `enabled` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and terminal home at dispatch and
  * cannot be rewritten afterwards, while model and effort are baked into the launched
- * command line, while dependencies and enabled decide whether a launch is allowed - so a
+ * command line and the Persona into its standing instructions, while dependencies and enabled decide whether a launch is allowed - so a
  * patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
@@ -1386,7 +1399,7 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
+ * `model`, `effort` and `personaId` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
@@ -1425,6 +1438,8 @@ const UpdateTaskFieldsSchema = z
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
     advisorModel: z.null().optional(),
+    /** A Persona to launch with, or `null` to take the task's Persona back off. */
+    personaId: TaskPersonaIdSchema.nullable().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
     planStorage: TaskPlanStorageSchema,
     dependencies: TaskDependenciesSchema.optional(),
@@ -1450,6 +1465,8 @@ export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   intent: true,
   planInputs: true,
   advisorModel: true,
+  // Dispatch-form only for now: an agent has no tool that lists the Personas it could name.
+  personaId: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -1470,6 +1487,7 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
   planInputs: true,
+  personaId: true,
 }).extend({
   repository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),

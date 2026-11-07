@@ -9,7 +9,8 @@ generated HTML plan files** opts new plans into publishing HTML alongside Markdo
 The checkbox remains configurable when skill installation is off, but is disabled in local mode without losing its saved value.
 
 The Dispatch and backlog editor offer **Plan storage** for plan tasks in **Advanced**,
-between model selection and **After work**. Advanced starts collapsed and retains the choice
+between model selection and **After work**, below the task's
+[Persona](dispatch-and-backlog.md#a-persona-for-the-task). Advanced starts collapsed and retains the choice
 when collapsed again. The choices are: **Use global
 default** (showing its current value), **Local plan store**, or **Repository**. Creation
 resolves the choice once and pins it on the task. Reopening the editor shows that pin,

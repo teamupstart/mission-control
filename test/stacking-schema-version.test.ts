@@ -64,7 +64,7 @@ test("a version-19 database gets a recovery point before the stacking columns ar
 });
 
 test("a version-20 database gains the stack lifecycle columns and claim table, readable with no backfill", () => {
-  assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 21);
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 21);
   const backupRoot = join(home, "backups", "database");
   const before = existsSync(backupRoot) ? readdirSync(backupRoot).filter((name) => name.startsWith("pre-migration-")).length : 0;
   const db = openDb();

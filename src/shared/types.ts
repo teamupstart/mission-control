@@ -2231,6 +2231,17 @@ export interface Task {
    */
   advisorModel: AdvisorChoice | null;
   /**
+   * The Library Persona whose guidance this task's agent launches with, or null for none.
+   *
+   * An id, not a snapshot: like `model` and `effort`, a backlogged task reads the Persona as
+   * it stands when it LAUNCHES, and the launch records the composed text in the session's
+   * standing-instruction snapshot, which is what a resume replays. Every kind Dispatch offers
+   * may carry one: a harness-launched kind in its launch's standing instructions, a pipeline on
+   * its managed Engineer host's own channel (a Terminal host refuses it). A resident never does,
+   * because it takes its Persona from its resident profile (`taskKindPersonaRefusal`).
+   */
+  personaId: string | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until

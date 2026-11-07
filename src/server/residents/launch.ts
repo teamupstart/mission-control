@@ -1,8 +1,9 @@
-import { capabilitiesFor, standingInstructionsChannel } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
 import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { appendStandingSections } from "../instructions/compose.ts";
 import { ensureResidentState, residentStateDir } from "./state.ts";
 import { residentMcpLaunchForRun } from "./mcp-launch.ts";
 
@@ -110,21 +111,11 @@ export function composeResidentLaunch(
   const contributions = contributors.map((contributor) => contributor.contribute(context));
   const residentMcp = contributions.find((contribution) => contribution.residentMcp)?.residentMcp ?? null;
   const residentCompaction = contributions.find((part) => part.residentCompaction)?.residentCompaction;
-  const sections = contributions
-    .map((part) => part.standingInstructions?.trim() ?? "")
-    .filter((text) => text.length > 0);
-  if (sections.length === 0) return { standing: repository, residentMcp, residentCompaction };
-  const text = [repository.text, ...sections].filter((part) => part.length > 0).join("\n\n");
+  const sections = contributions.map((part) => part.standingInstructions ?? "");
   return {
     residentMcp,
     residentCompaction,
-    standing: {
-      text,
-      mechanism: repository.mechanism === "none"
-        ? standingInstructionsChannel(context.agent, context.runtime) ?? "prompt-prefix"
-        : repository.mechanism,
-      sources: repository.sources,
-    },
+    standing: appendStandingSections(repository, sections, context.agent, context.runtime),
   };
 }
 

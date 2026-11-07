@@ -548,11 +548,19 @@ export const fetchResolvedStandingInstructions = (
   agent: AgentType,
   runtime: SessionRuntime,
   signal?: AbortSignal,
+  launch: {
+    /** The dispatch Persona the form has chosen, appended the way the launch appends it. */
+    personaId?: string | null;
+    /** The task kind, whose launch owner decides what is sent - a Pipeline host gets no rules. */
+    kind?: TaskKind;
+  } = {},
 ) => {
   const q = new URLSearchParams();
   for (const path of repoPaths) q.append("repoPath", path);
   q.set("agent", agent);
   q.set("runtime", runtime);
+  if (launch.personaId) q.set("personaId", launch.personaId);
+  if (launch.kind) q.set("kind", launch.kind);
   return fetchJsonWithSignal<StandingInstructionsDelivery>(`/api/instructions/resolved?${q}`, signal);
 };
 
@@ -1583,6 +1591,8 @@ export interface DispatchInput {
   model?: string;
   /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
   effort?: import("@shared/types.ts").ThinkingLevel;
+  /** Library Persona the agent launches with; omitted launches with none. */
+  personaId?: string;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
   planStorage?: "repository" | "local" | null;

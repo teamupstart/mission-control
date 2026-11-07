@@ -208,7 +208,9 @@ let db: DatabaseSync | undefined;
 //     (`inspector_prs.stack_state`), the operator's *Wait for a replacement* choice
 //     (`stack_await_replacement_at`), and the catch-up / restack prompt claims
 //     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 21;
+// 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
+//     task that launches with no Persona, which is what every older task did.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 22;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -396,6 +398,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       effort        TEXT,
       -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
       advisor_model TEXT,
+      -- Library Persona whose guidance the launch carries as standing instructions. NULL is none.
+      persona_id    TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -4149,6 +4153,9 @@ function migrate(d: DatabaseSync): void {
   // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
   // Claude settings, which is exactly what every task dispatched before it existed did.
   addColumn(d, "tasks", "advisor_model", "TEXT");
+  // `persona_id`: the Library Persona a task launches with. NULL launches with none, which is
+  // exactly what every task filed before a dispatch could name a Persona did.
+  addColumn(d, "tasks", "persona_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -5644,6 +5651,7 @@ interface TaskRow {
   model: string | null;
   effort: string | null;
   advisor_model: string | null;
+  persona_id: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -6020,6 +6028,7 @@ function rowToTask(
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
+    personaId: r.persona_id || null,
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -6097,7 +6106,7 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
-         model, effort, advisor_model,
+         model, effort, advisor_model, persona_id,
          workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
@@ -6106,13 +6115,14 @@ export function upsertTask(t: Task): string[] {
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
+         persona_id=excluded.persona_id,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
@@ -6154,6 +6164,7 @@ export function upsertTask(t: Task): string[] {
       t.model,
       t.effort,
       t.advisorModel,
+      t.personaId,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,

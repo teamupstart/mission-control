@@ -61,8 +61,9 @@ Conductor's background build daemon keeps its own tmux supervision.
 
 Conductor owns worktree creation and every downstream agent, model, and effort choice in both
 modes. Agent, Model, Effort, attached repositories, After work, and the generic runtime picker
-therefore remain unavailable for Pipeline. Pipeline tasks also stay out of Foreman's backlog
-autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
+therefore remain unavailable for Pipeline. A [Persona](#a-persona-for-the-task) chosen under
+**Advanced** stays available, because it reaches the managed Engineer host Mission Control
+starts. Pipeline tasks also stay out of Foreman's backlog autopilot. The SDK host is the task's current session, so Focus, questions, cancellation, and
 restart recovery use the ordinary managed-session paths. A Terminal task instead records its
 home and no session id.
 
@@ -140,6 +141,58 @@ Two dispatches never run it: editing a task already in the backlog, whose answer
 already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not
 offered in either - it appears exactly where flipping it would do something, so it is never a
 control that saves a preference and visibly does nothing. Settings is its durable home.
+
+## A Persona for the task
+
+Every kind the Dispatch form offers has an **Advanced** fold between the crew row and **After
+work**. It starts collapsed, and its summary names the task's Persona (and, for a plan, its
+[plan storage](managed-plans.md)). Opening it offers **Persona**: **No Persona**, which is the
+default for every kind, or any live Persona from the [Library](workflows.md). Built-in Personas
+are offered too; one shadowed by a Persona of your own with the same name is not.
+
+The Persona's guidance is delivered when the agent launches, as part of the session's [standing
+instructions](skills-and-settings.md): a `## Persona: <name>` section, followed by the Persona's
+Markdown, appended after any repository standing instructions. The Markdown is kept as written
+except that blank lines before it and whitespace after it are dropped, since the heading and
+separators stand in for them; everything else, including the indentation of a code block it opens
+with, reaches the agent unchanged. It rides the same channel those do for the harness and runtime
+the task launches on - a system prompt append on Claude, developer instructions on Codex in the
+Agent SDK, and the head of turn one on a pair with no channel of its own - so the agent reads it
+once. It reads it before your request, except in the managed Pipeline host's fallback described
+below. When no repository rules apply, the Persona section is the whole block. The form's
+**Standing instructions will be sent** note previews the composed text, Persona included, and the
+session's **See standing instructions** chip shows what the launch actually sent; a resume replays
+that record.
+
+The task stores the Persona's id, not a copy of its text. Like the model and effort, a backlogged
+task reads the Persona as it stands when it launches, so an edit made while the task waits reaches
+it. A Persona archived or deleted while the task waits refuses the dispatch with the reason. The
+reason stays on the task's backlog card and backlog autopilot passes the task over, so it cannot
+hold up the work behind it; reopen the task and choose another Persona or **No Persona**, which
+clears the reason and returns the task to autopilot. Saving a task with an archived Persona it
+already carries is allowed, so an unrelated edit is never blocked by it.
+
+A Persona is only delivered at launch, so a task that names one cannot be
+[handed to an agent that is already running](#hand-a-shelved-task-to-an-agent-thats-already-running):
+the drag is refused and backlog autopilot dispatches it into a fresh session instead.
+
+**Pipeline** carries a Persona to its managed Agent SDK Engineer host, on that session's own
+channel. Turn one still opens with the Engineer skill invocation, so if the channel turns out to
+be unusable the Persona section is placed at the end of turn one, after the complete Engineer
+prompt - the invocation, your request, the plan discovery and the launch context - rather than in
+front of it, where it would stop the skill from running. The Persona is never written into any
+idea Mission Control hands Conductor. Only the Engineer host receives it: the agents Conductor
+starts later are Conductor's to configure. The Terminal host is Conductor's own CLI, whose only
+input is its idea (your request and the plan discovery Mission Control adds to it), so it has no
+channel for a Persona: a pipeline task with one refuses to launch there, saying to switch
+**Settings → Conductor → Launch runtime** to Managed Agent SDK or choose **No Persona**.
+Repository standing instructions are not part of a Pipeline launch, so for a Pipeline task the
+**Standing instructions will be sent** note previews the Persona alone for the managed host, and
+nothing for the Terminal host.
+
+A [resident](residents.md) takes its Persona from its profile and never from this field. MCP
+`create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
+`personaId`.
 
 ## Attaching more than one repository
 

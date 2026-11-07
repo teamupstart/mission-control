@@ -43,13 +43,22 @@ import {
   TASK_KIND_BEHAVIOR,
   taskKindAllowsBacklog,
   taskKindForcedRuntime,
+  taskKindPersonaRefusal,
 } from "@shared/task.ts";
+import type { Persona } from "@shared/workflow.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
+import {
+  personaLaunchRefusal,
+  pipelineHostStanding,
+  resolveTaskPersona,
+  withTaskPersona,
+  type PersonaLookup,
+} from "./instructions/persona.ts";
 import { standingInstructionsForLaunch } from "./instructions/resolve.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import { injectPrompt } from "./actions.ts";
@@ -352,6 +361,11 @@ export class Dispatcher {
        */
       residentProfileId?: (task: Task) => string | null;
       /**
+       * The Library's Persona reader, for a task that names a dispatch Persona. A task naming
+       * one is refused when the reader is absent, rather than launched without its role.
+       */
+      persona?: PersonaLookup;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -418,6 +432,8 @@ export class Dispatcher {
     try {
       const inputProblem = taskPlanInputProblem(task) ?? (task.kind === "plan" && task.planPolicy?.storage === "local" ? localWorkflowProblem(task.workflowId) : null);
       if (inputProblem) throw new Error(inputProblem);
+      // Before provisioning, so a Persona archived while the task waited costs no worktree.
+      this.launchPersona(task);
       // Resolve and reserve before provisioning or binding any publication workflow.
       reserveTaskPlans(task);
       if (task.kind === "pipeline") {
@@ -653,7 +669,7 @@ export class Dispatcher {
       const resident = TASK_KIND_BEHAVIOR[task.kind].launch === "resident";
       const standing = resident
         ? this.residentStanding(task, repositoryStanding, runtime)
-        : repositoryStanding;
+        : this.personaStanding(task, repositoryStanding, runtime);
       const residentMcp = resident ? this.deps.residentMcp?.(task) ?? null : null;
       // EXACTLY ONE delivery. A pair with an out-of-band channel carries the block there and
       // is NOT also prefixed; a pair without one is prefixed and sends nothing out of band.
@@ -1154,6 +1170,10 @@ export class Dispatcher {
     }
     const discovery = await taskPlanDiscovery(task);
     const pipelineIntent = `${task.intent}\n\n${discovery}`;
+    // The managed host takes a dispatch Persona on its own channel below, and the Persona is kept
+    // out of the idea: Engineer specifies whatever the idea says, so a Persona inside it would
+    // become part of the work rather than instructions for the host.
+    const persona = this.launchPersona(task);
     let engineerRunId: string | null = null;
     let engineerCommissionId: string | null = null;
     let engineerLifecycle: PipelineEngineerLifecycle | null = null;
@@ -1519,6 +1539,13 @@ export class Dispatcher {
           `slug before continuing. No call is needed when Engineer creates the reserved run. ` +
           `After Engineer creates or enters its authoring worktree, call report_pipeline_workspace ` +
           `with that absolute path before editing files there.]`;
+      // A dispatch Persona reaches the Engineer host on its own out-of-band channel, exactly as
+      // it reaches an ordinary SDK dispatch. The host's turn one opens with the skill
+      // invocation, so a pair that has to carry the section in prose carries it AFTER the
+      // invocation rather than in front of it, where it would stop the skill from running.
+      const personaStanding = pipelineHostStanding(persona, task.agent, "agent-sdk");
+      const personaInTurn = personaStanding.mechanism === "prompt-prefix";
+      const hostPrompt = personaInTurn ? `${engineerPrompt}\n\n${personaStanding.text}` : engineerPrompt;
       if ("provider" in launch) {
         while (true) {
           const cancellation = this.registry.claimPipelineEngineerHostLaunch(taskId);
@@ -1558,18 +1585,26 @@ export class Dispatcher {
           agent: task.agent,
           name: task.title.trim() || launch.cwd,
           cwd: launch.cwd,
-          prompt: engineerPrompt,
+          prompt: hostPrompt,
           acceptedGoalPrompt: task.intent,
           // A pipeline task on this arm launches a directly streamable agent conversation, so
           // it has the same launch turn to present as an ordinary embedded dispatch. The
           // terminal arm below launches the Conductor host instead - not an agent conversation,
           // no transcript turn, nothing to classify.
-          launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
+          launchPresentation: { prompt: hostPrompt, displayText: task.intent },
           model: null,
           effort: null,
           advisorModel: null,
           permissionMode: dispatchPermissionMode(task.agent),
           mcp,
+          ...(personaStanding.text
+            ? {
+              standingInstructions: {
+                delivery: personaStanding,
+                fallbackPrompt: personaInTurn ? "" : `${engineerPrompt}\n\n${personaStanding.text}`,
+              },
+            }
+            : {}),
           extraDirs: [],
           taskId,
           gitBranch: null,
@@ -1626,6 +1661,14 @@ export class Dispatcher {
     if (task.agent !== "claude") {
       throw new Error(
         "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
+      );
+    }
+    // The Terminal host is Conductor's own CLI, whose only input is the idea Engineer specifies.
+    // It has no channel for host instructions, so a Persona is refused here rather than dropped
+    // or written into the work being specified.
+    if (persona) {
+      throw new Error(
+        "a Terminal Pipeline host cannot receive a Persona; switch Settings → Conductor → Launch runtime to Managed Agent SDK, or choose No Persona under Advanced",
       );
     }
 
@@ -1754,6 +1797,32 @@ export class Dispatcher {
     } finally {
       this.registry.endPipelineEngineerReservation(taskId);
     }
+  }
+
+  /**
+   * The standing instructions with this task's dispatch Persona appended, or `repository`
+   * unchanged when it names none. Read NOW, like the model and effort: a backlogged task gets
+   * the Persona as it reads at launch, and the session's snapshot pins what was sent. A Persona
+   * archived or deleted while the task waited refuses the launch instead of dropping the role.
+   */
+  private personaStanding(
+    task: Task,
+    repository: StandingInstructionsDelivery,
+    runtime: SessionRuntime,
+  ): StandingInstructionsDelivery {
+    const persona = this.launchPersona(task);
+    return persona ? withTaskPersona(repository, persona, task.agent, runtime) : repository;
+  }
+
+  /** The Persona this task launches with, or null for none. Throws why it cannot launch with it. */
+  private launchPersona(task: Task): Persona | null {
+    if (!task.personaId) return null;
+    const refusal = taskKindPersonaRefusal(task.kind);
+    const resolved = refusal
+      ? { ok: false as const, error: refusal }
+      : resolveTaskPersona(this.deps.persona, task.personaId);
+    if (!resolved.ok) throw new Error(personaLaunchRefusal(resolved.error));
+    return resolved.persona;
   }
 
   /** The resident composer's standing instructions for this task, or a refusal. */

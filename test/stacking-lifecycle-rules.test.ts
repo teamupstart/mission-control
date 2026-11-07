@@ -226,3 +226,18 @@ test("stacking is on by default: no stored value stacks, an explicit Wait for me
   const edgeWaits = stackEligibility(afterMerge, [parent, afterMerge], { maxStackDepth: 3 });
   assert.equal(edgeWaits.ok === false && edgeWaits.code, "after-merge");
 });
+
+test("labels name the repository's real default branch, and main only when it is unknown", () => {
+  assert.equal(stackActionLabel("move-onto-main", 7, "trunk"), "Move onto trunk");
+  assert.equal(stackActionLabel("reopen-against-main", 7, "trunk"), "Reopen against trunk");
+  assert.equal(stackActionLabel("move-onto-main", 7), "Move onto main", "unknown: the conventional name");
+  const trunk = obs({ parentState: "MERGED", parentMergeCommitSha: MERGE, baseRefName: "trunk", defaultBranch: "trunk" });
+  const restacking = stackLifecycleLabel({ state: "restack-needed", parentNumber: 7, brokenReason: null, retargetError: null,
+    prompt: { kind: "restack", tip: MERGE, status: "sent" } }, trunk);
+  assert.deepEqual(restacking, { label: "Restacking onto trunk", inProgress: true });
+  assert.equal(stackLifecycleLabel({ state: "parent-merged-needs-retarget", parentNumber: 7, brokenReason: null, retargetError: null, prompt: null },
+    obs({ ...trunk, baseRefName: "feat/parent" })).label, "Restacking onto trunk");
+  // The prompt it sends targets the same branch.
+  assert.match(buildStackPrompt("move-onto-main", { prNumber: 8, prUrl: "u", headRefName: "feat/child", parentNumber: 7,
+    parentUrl: "p", parentHeadRefName: "feat/parent", defaultBranch: "trunk" }), /gh pr create --base trunk/);
+});

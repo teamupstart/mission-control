@@ -77,3 +77,11 @@ test("a prompt delivered to a session that has gone offers the manual send to th
   assert.match(html, /went to a session that has gone/);
   assert.doesNotMatch(button(html, "Send restack prompt"), /disabled=""/, "the operator can send it");
 });
+
+test("the recovery buttons name the repository's own default branch", () => {
+  const s = standing({});
+  const html = renderToStaticMarkup(createElement(StackLifecycle, { prKey: "acme/repo#8",
+    standing: { ...s, facts: { ...s.facts, defaultBranch: "trunk" } } }));
+  assert.ok(button(html, "Move onto trunk"));
+  assert.doesNotMatch(html, /Move onto main/);
+});

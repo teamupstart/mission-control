@@ -598,9 +598,10 @@ const PROMPT_NAME: Record<StackPromptKind, { needed: string; prompt: string }> =
  */
 export function stackLifecycleLabel(
   s: Pick<StackStanding, "state" | "parentNumber" | "brokenReason" | "retargetError" | "prompt">,
-  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> | null,
+  o: Pick<StackObservation, "parentState" | "parentTaskStopped"> & Partial<Pick<StackObservation, "defaultBranch">> | null,
 ): { label: string | null; inProgress: boolean } {
   const parent = s.parentNumber === null ? "its parent" : `#${s.parentNumber}`;
+  const onto = `Restacking onto ${o?.defaultBranch || "main"}`;
   if (s.state === "released") return { label: null, inProgress: false };
   if (s.state === "broken") {
     if (s.brokenReason === "child-closed") {
@@ -640,12 +641,12 @@ export function stackLifecycleLabel(
       case "pending":
       case "sent":
         return s.prompt.kind === "restack"
-          ? { label: "Restacking onto main", inProgress: true }
+          ? { label: onto, inProgress: true }
           : { label: `Catching up with ${parent}`, inProgress: false };
     }
   }
   if (s.state === "restack-needed" || s.state === "parent-merged-needs-retarget") {
-    return { label: "Restacking onto main", inProgress: true };
+    return { label: onto, inProgress: true };
   }
   return { label: `Stacked on ${parent} (waiting for it to merge)`, inProgress: false };
 }
@@ -656,14 +657,19 @@ export const STACK_SEND_LABEL: Record<StackPromptKind, string> = {
   restack: "Send restack prompt",
 };
 
-/** The button text for each broken-stack action; the parent's number names a restart. */
-export function stackActionLabel(action: StackActionKind, parentNumber: number | null): string {
+/**
+ * The button text for each broken-stack action: the parent's number names a restart, and the
+ * repository's own default branch names where a child is moved or reopened (`main` only when
+ * it is not known), so the button never names a branch the prompt does not target.
+ */
+export function stackActionLabel(action: StackActionKind, parentNumber: number | null, defaultBranch: string | null = null): string {
   const parent = parentNumber === null ? "the parent" : `#${parentNumber}`;
+  const base = defaultBranch || "main";
   switch (action) {
     case "move-onto-main":
-      return "Move onto main";
+      return `Move onto ${base}`;
     case "reopen-against-main":
-      return "Reopen against main";
+      return `Reopen against ${base}`;
     case "reopen-on-parent":
       return `Reopen on ${parent}'s branch`;
     case "await-replacement":

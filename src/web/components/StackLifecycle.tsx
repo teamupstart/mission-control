@@ -149,7 +149,7 @@ export function StackLifecycle({
                 void run(send, action === "await-replacement" ? "Waiting for a replacement" : restart ? "Done" : "Sent");
               }}
             >
-              {stackActionLabel(action, standing.parentNumber)}{sent ? " (sent)" : ""}
+              {stackActionLabel(action, standing.parentNumber, standing.facts?.defaultBranch ?? null)}{sent ? " (sent)" : ""}
             </button>
           </Tooltip>
         );

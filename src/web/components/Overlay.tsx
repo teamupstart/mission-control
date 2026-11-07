@@ -88,9 +88,6 @@ export const OVERLAY_IDS = {
   // Report bug on a dispatch that did not start. A confirm over the board, so the fleet's
   // `k` and `r` must not reach the session behind it while it is up.
   launchFailureReport: "launch-failure-report",
-  // The floating Residents drawer. Its own id because its toggle chord (`⇧H`) and the `⌥N`
-  // jumps act while it is the only thing open, which `onlyOpen` can only tell by name.
-  residentsDrawer: "residents-drawer",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

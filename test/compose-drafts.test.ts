@@ -187,30 +187,3 @@ test("a fresh card's boxes are empty, not haunted by the last card's draft", () 
   );
   assert.ok(!html.includes("NOT FOR THIS CARD"), html);
 });
-
-// ---- the draft's change stamp: what a late send consults before clearing ----
-
-test("every write or clear moves a draft's stamp, even to the same text, and only that draft's", async () => {
-  const { draftRevision, writeDraft, clearDraft, dropSessionDrafts } = await import("../src/web/lib/drafts.ts");
-  assert.equal(draftRevision("s1", "reply"), 0);
-  writeDraft("s1", "reply", "yes");
-  const sent = draftRevision("s1", "reply");
-  assert.ok(sent > 0);
-  // Re-typing the same words is still a change: a late send must not take it for its own.
-  writeDraft("s1", "reply", "");
-  writeDraft("s1", "reply", "yes");
-  assert.ok(draftRevision("s1", "reply") > sent);
-  // Another box or session moves its own stamp only.
-  const before = draftRevision("s1", "reply");
-  writeDraft("s1", "send", "other");
-  writeDraft("s2", "reply", "other");
-  assert.equal(draftRevision("s1", "reply"), before);
-  clearDraft("s1", "reply");
-  assert.ok(draftRevision("s1", "reply") > before);
-  // A departed session's stamps are forgotten, and the clock never hands an old stamp out again.
-  const last = draftRevision("s1", "reply");
-  dropSessionDrafts("s1");
-  assert.equal(draftRevision("s1", "reply"), 0);
-  writeDraft("s1", "reply", "again");
-  assert.ok(draftRevision("s1", "reply") > last);
-});

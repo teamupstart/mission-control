@@ -133,6 +133,7 @@ import { WorkflowRuns } from "./workflows/WorkflowRuns.tsx";
 import { EnsembleRuns } from "./workflows/EnsembleRuns.tsx";
 import {
   pageShortcutRoute,
+  parseMissionRoute,
   pipelineRunRoute,
   useWorkflowRoute,
 } from "./workflows/useWorkflowRoute.ts";
@@ -533,19 +534,15 @@ export function App(): React.JSX.Element {
   const [residentsDockRequest, setResidentsDockRequest] = useState(0);
   const openResidentsDock = useCallback(() => setResidentsDockRequest((n) => n + 1), []);
   // Where residents live (Settings → Display → Residents), and the Residents drawer's state.
-  // `residentDrawerOpen` is the floating drawer only; the pinned one is a stored preference.
+  // One drawer, one column beside the fleet, open by either of two facts: `residentDrawerOpen`,
+  // for this page load only, or the stored pin, which outlives a reload and a restart.
   const { residentPlacement, residentDrawerPinned } = useUiConfig();
   const residentsInDrawer = residentPlacement === "drawer";
   const [residentDrawerOpen, setResidentDrawerOpen] = useState(false);
   /** The drawer's selected resident, by session id: its card is the expanded one. */
   const [residentDrawerSelected, setResidentDrawerSelected] = useState<string | null>(null);
-  /**
-   * The resident whose detail was opened from the FLOATING drawer, so the Escape that leaves
-   * that detail reopens the drawer on it. Cleared as soon as the open detail is anything else.
-   */
-  const [residentReturnTo, setResidentReturnTo] = useState<string | null>(null);
-  /** A one-shot request to focus a card in the pinned drawer. */
-  const [residentCardFocus, setResidentCardFocus] = useState<{ sessionId: string; nonce: number } | null>(null);
+  /** A one-shot request to focus a card in the drawer. */
+  const [residentCardFocus, setResidentCardFocus] = useState<{ sessionId: string | null; nonce: number } | null>(null);
   const residentDrawerShown = residentsInDrawer && (residentDrawerOpen || residentDrawerPinned);
   // The one launch state behind the dock and the drawer, so a launch outlives either closing.
   const residentLauncher = useResidentLaunches();
@@ -558,7 +555,7 @@ export function App(): React.JSX.Element {
     /** The top-bar button, `⇧H` and the palette command: the drawer, or the dock. */
     openSurface: (): void => {},
     toggleSurface: (): void => {},
-    openDetail: (_sessionId: string, _fromDrawer: boolean): void => {},
+    openDetail: (_sessionId: string): void => {},
   });
   const [launcherFocusError, setLauncherFocusError] = useState<string | null>(null);
   const launcherFocusErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1725,7 +1722,7 @@ export function App(): React.JSX.Element {
           residentActionsRef.current.openSurface();
           return;
         case "open-resident":
-          residentActionsRef.current.openDetail(target.sessionId, false);
+          residentActionsRef.current.openDetail(target.sessionId);
           return;
         default: {
           // Exhaustiveness: a new target kind fails to compile here rather than silently
@@ -1857,29 +1854,62 @@ export function App(): React.JSX.Element {
   );
   /**
    * Open a resident's full detail: the Board drill-in on the Board, the detail pane in Console,
-   * through `openSessionOnFleet`, in both placements. The floating drawer closes as the detail
-   * opens and is remembered as the place Escape returns to; a pinned drawer stays on screen
-   * with the resident still selected, so it needs no return.
+   * through `openSessionOnFleet`, in both placements. An open drawer stays on screen beside the
+   * detail with the resident still selected.
    */
   const openResidentDetail = useCallback(
-    (sessionId: string, fromDrawer: boolean): void => {
-      const floating = residentsInDrawer && !residentDrawerPinned;
-      setResidentDrawerOpen(false);
-      setResidentDrawerSelected(sessionId);
-      setResidentReturnTo(fromDrawer && floating ? sessionId : null);
-      openSessionOnFleet(sessionId);
-    },
-    [openSessionOnFleet, residentsInDrawer, residentDrawerPinned],
-  );
-  /** Open the drawer on one resident, selected and expanded: a visitor card's click and Enter. */
-  const openResidentDrawerOn = useCallback(
     (sessionId: string): void => {
       setResidentDrawerSelected(sessionId);
-      if (residentDrawerPinned) setResidentCardFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
-      else setResidentDrawerOpen(true);
+      openSessionOnFleet(sessionId);
     },
-    [residentDrawerPinned],
+    [openSessionOnFleet],
   );
+  /**
+   * Put the keyboard on one resident's card once the drawer can show it, or, with `null`, on
+   * whichever card the drawer selects once it has one: opened before any resident has arrived,
+   * the request waits for the first card rather than being dropped.
+   */
+  const focusResidentCard = useCallback((sessionId: string | null): void => {
+    setResidentCardFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+  /**
+   * Open the drawer, or bring it forward: the column lives on Fleet, so opening it from another
+   * page goes there to show it. The keyboard goes onto the selected resident's card while that
+   * resident is still live, else the first that needs you - which the drawer decides against the
+   * cards it actually has, so a selection whose resident has since ended is never waited on.
+   */
+  /** Set while a requested drawer waits on a leave dialog for the move to Fleet. */
+  const residentDrawerAwaitsFleet = useRef(false);
+  const showResidentDrawer = useCallback((): void => {
+    if (navigate({ page: "fleet" })) {
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else {
+      // A dirty draft is holding the move to Fleet behind its leave dialog. The drawer opens
+      // only if the operator leaves; see the effect below.
+      residentDrawerAwaitsFleet.current = true;
+    }
+  }, [navigate, focusResidentCard]);
+  /**
+   * The drawer was asked for from a page whose unsaved draft held the move to Fleet. Opening it
+   * then and there would leave it - and a focus request - waiting to spring open on some later
+   * visit to Fleet if the operator chose to stay. So it opens when the route actually becomes
+   * Fleet, and the ask is dropped when the move is cancelled or another destination is held.
+   *
+   * Confirming the dialog sets the address to Fleet at once and the route follows on the next
+   * hashchange; cancelling leaves the address where it was. The address is what tells the two
+   * apart in the render between, when the held route has already cleared either way.
+   */
+  useEffect(() => {
+    if (!residentDrawerAwaitsFleet.current) return;
+    if (route.page === "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+      setResidentDrawerOpen(true);
+      focusResidentCard(null);
+    } else if (pendingRoute ? pendingRoute.page !== "fleet" : parseMissionRoute(window.location.hash).page !== "fleet") {
+      residentDrawerAwaitsFleet.current = false;
+    }
+  }, [route.page, pendingRoute, focusResidentCard]);
   /**
    * How the drawer's selected card answers a resident's question: the attention inbox's own
    * `ReviewCard`, with a one-question ask's options as buttons. A question moved to chat opens the resident's conversation, from the drawer,
@@ -1892,47 +1922,45 @@ export function App(): React.JSX.Element {
         note={session.note}
         quickAnswers
         onMovedToChat={(sessionId) => {
-          openResidentDetail(sessionId, true);
+          openResidentDetail(sessionId);
           requestComposerFocus(sessionId);
         }}
       />
     ),
     [openResidentDetail],
   );
-  /** `⇧H` and the top-bar button in Drawer placement. Pinned, it unpins - which closes it. */
-  const toggleResidentDrawer = useCallback((): void => {
-    if (residentDrawerPinned) {
-      void updateUiConfig({ residentDrawerPinned: false });
-      return;
-    }
-    setResidentDrawerOpen((open) => !open);
-  }, [residentDrawerPinned]);
-  const setResidentDrawerPinned = useCallback((pinned: boolean): void => {
+  /** Close the drawer, pinned or not: a pinned drawer closed is no longer pinned. */
+  const closeResidentDrawer = useCallback((): void => {
     setResidentDrawerOpen(false);
-    // The pinned column lives on Fleet, so pinning from another page goes there to keep the
-    // drawer on screen rather than making it vanish.
+    if (residentDrawerPinned) void updateUiConfig({ residentDrawerPinned: false });
+  }, [residentDrawerPinned]);
+  /** `⇧H` and the top-bar button in Drawer placement. */
+  const toggleResidentDrawer = useCallback((): void => {
+    if (residentDrawerShown && route.page === "fleet") closeResidentDrawer();
+    else showResidentDrawer();
+  }, [residentDrawerShown, route.page, closeResidentDrawer, showResidentDrawer]);
+  /**
+   * Pin or unpin. Either way the drawer stays open now; the pin only decides whether it is
+   * still open after a reload or a restart.
+   */
+  const setResidentDrawerPinned = useCallback((pinned: boolean): void => {
+    setResidentDrawerOpen(true);
     if (pinned) navigate({ page: "fleet" });
     void updateUiConfig({ residentDrawerPinned: pinned });
   }, [navigate]);
   residentActionsRef.current = {
     openSurface: () => {
       if (!residentsInDrawer) openResidentsDock();
-      else if (!residentDrawerPinned) setResidentDrawerOpen(true);
-      else {
-        // Pinned, the drawer is a column on the fleet: go there and put the keyboard on it.
-        navigate({ page: "fleet" });
-        const sessionId = residentDrawerSelected ?? defaultResidentSelection(residentEntries);
-        if (sessionId) setResidentCardFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
-      }
+      else showResidentDrawer();
     },
     toggleSurface: () => (residentsInDrawer ? toggleResidentDrawer() : openResidentsDock()),
-    openDetail: (sessionId, fromDrawer) => openResidentDetail(sessionId, fromDrawer),
+    openDetail: (sessionId) => openResidentDetail(sessionId),
   };
-  // Leaving the drawer placement puts the floating drawer away and drops its return.
+  // Leaving the drawer placement puts the drawer away for this page load. A stored pin is left
+  // as it is, so switching back brings a pinned drawer back with it.
   useEffect(() => {
     if (residentsInDrawer) return;
     setResidentDrawerOpen(false);
-    setResidentReturnTo(null);
   }, [residentsInDrawer]);
   // The failure a Report bug press is confirming, or null.
   const [reportingLaunchFailure, setReportingLaunchFailure] = useState<Task | null>(null);
@@ -2421,7 +2449,7 @@ export function App(): React.JSX.Element {
     entries: residentEntries,
     openResident,
     visitors: placement.visitors,
-    openDrawerOn: openResidentDrawerOn,
+    openDetail: openResidentDetail,
     leftDetail: (_sessionId: string): void => {},
     leaveConsoleDetail: (_sessionId: string): void => {},
   });
@@ -2429,18 +2457,13 @@ export function App(): React.JSX.Element {
     entries: residentEntries,
     openResident,
     visitors: placement.visitors,
-    openDrawerOn: openResidentDrawerOn,
-    // The Escape that left a resident's detail. Opened from the floating drawer, it reopens the
-    // drawer on that resident; with the drawer pinned, it moves focus to the resident's card.
+    openDetail: openResidentDetail,
+    // The Escape that left a resident's detail. With the drawer on screen beside it, the
+    // keyboard goes back to that resident's card.
     leftDetail: (sessionId) => {
-      if (!residentsInDrawer) return;
+      if (!residentDrawerShown) return;
       setResidentDrawerSelected(sessionId);
-      if (residentDrawerPinned) {
-        setResidentCardFocus((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
-      } else if (residentReturnTo === sessionId) {
-        setResidentReturnTo(null);
-        setResidentDrawerOpen(true);
-      }
+      focusResidentCard(sessionId);
     },
     // Console: an open resident has no rail row to hand the keyboard back to, so the Escape that
     // would peel the reader leaves the detail instead.
@@ -2702,13 +2725,6 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     void window.missionDesktop?.setCardJumpKeys?.(cardShortcutsOn);
   }, [cardShortcutsOn]);
-
-  // The floating drawer's return is for one resident's detail. Anything else opening - another
-  // session, the detail closing by any route but the Escape that consumes it, the resident
-  // leaving - drops it, so a later Escape never reopens the drawer for a stale resident.
-  useEffect(() => {
-    if (residentReturnTo && (detailId !== residentReturnTo || !openResident)) setResidentReturnTo(null);
-  }, [detailId, residentReturnTo, openResident]);
 
   // A tab request is an instruction for the detail currently on screen, not a saved tab
   // preference. Leaving that detail consumes it so returning to the session later starts
@@ -3054,7 +3070,7 @@ export function App(): React.JSX.Element {
     detailId,
     detailSession,
     residentVisitors: placement.visitors,
-    onOpenResidentDrawer: openResidentDrawerOn,
+    onOpenResident: openResidentDetail,
     onOpenReviews: setReviewSessionId,
     onOpenFiles: setFilesSessionId,
     onOpenFile: openSessionFile,
@@ -3383,27 +3399,22 @@ export function App(): React.JSX.Element {
         return;
       }
       // The dock lives in the top bar on every page, so its chord works from every page too.
-      // In Drawer placement it toggles the drawer, so it also answers while the floating drawer
-      // is the one thing open - which is how it closes it.
-      if (
-        chord === bindings.residentsDock && !typing && !renamingId
-        && overlaysRef.current.onlyOpen(OVERLAY_IDS.residentsDrawer)
-      ) {
+      // In Drawer placement it toggles the drawer, which is a column rather than an overlay.
+      if (chord === bindings.residentsDock && !typing && !renamingId && !overlaysRef.current.anyOpen) {
         e.preventDefault();
         residentActionsRef.current.toggleSurface();
         return;
       }
       // ⌥1 … ⌥9 open live resident N's detail, from any page and in both placements, in the
       // order the drawer and the dock list them. Matched on the physical key (macOS turns
-      // Option+digit into a symbol), ignored while typing, and live over the floating drawer -
-      // an open from there is an open from the drawer, so Escape returns to it.
+      // Option+digit into a symbol) and ignored while typing.
       const residentIndex = residentShortcutIndex(e);
       if (residentIndex !== null) {
-        if (typing || renamingId || !overlaysRef.current.onlyOpen(OVERLAY_IDS.residentsDrawer)) return;
+        if (typing || renamingId || overlaysRef.current.anyOpen) return;
         const residentSession = residentKeysRef.current.entries[residentIndex]?.session;
         if (!residentSession) return;
         e.preventDefault();
-        residentActionsRef.current.openDetail(residentSession.id, overlaysRef.current.anyOpen);
+        residentActionsRef.current.openDetail(residentSession.id);
         return;
       }
 
@@ -3679,10 +3690,10 @@ export function App(): React.JSX.Element {
           // eaten by the key it merely shares.
           if (chord !== "Enter") break;
           if (!selectedId) break;
-          // A visitor card opens the drawer on its resident, never a drill-in.
+          // A visitor card opens its resident's conversation, as its click does.
           if (residentKeysRef.current.visitors.has(selectedId)) {
             e.preventDefault();
-            residentKeysRef.current.openDrawerOn(selectedId);
+            residentKeysRef.current.openDetail(selectedId);
             return;
           }
           if (layout === "board" && !boardOpen) {
@@ -4584,20 +4595,20 @@ export function App(): React.JSX.Element {
           const layoutView = layoutHasContent
             ? layout === "console" ? <ConsoleView {...viewProps} /> : <BoardView {...viewProps} />
             : null;
-          // Pinned, the drawer is a column beside the layout, so the Board or Console narrows
+          // Open, the drawer is a column beside the layout, so the Board or Console narrows
           // instead of being covered. Otherwise the layout is exactly as it always was.
-          if (!(residentsInDrawer && residentDrawerPinned)) return layoutView;
+          if (!residentDrawerShown) return layoutView;
           return (
             <div className="residents-pinned-row">
               {layoutView ?? <div className="residents-pinned-spacer" />}
               <ResidentsDrawer
                 entries={residentEntries}
                 profiles={residentProfiles}
-                pinned
+                pinned={residentDrawerPinned}
                 selectedId={residentDrawerSelected}
                 onSelect={setResidentDrawerSelected}
-                onOpen={(id) => openResidentDetail(id, true)}
-                onClose={() => setResidentDrawerPinned(false)}
+                onOpen={openResidentDetail}
+                onClose={closeResidentDrawer}
                 onPinnedChange={setResidentDrawerPinned}
                 launcher={residentLauncher}
                 onOpenLaunch={openResidentLaunch}
@@ -4615,7 +4626,8 @@ export function App(): React.JSX.Element {
           <ResidentsEdgeTab
             live={residentEntries.length}
             needsYou={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "attention")}
-            onOpen={() => setResidentDrawerOpen(true)}
+            working={residentEntries.some((entry) => entry.session && stateDisplay(entry.session).tone === "working")}
+            onOpen={() => showResidentDrawer()}
           />
         )}
 
@@ -4745,24 +4757,6 @@ export function App(): React.JSX.Element {
           )}
           overlays={(
             <>
-              {/* The floating Residents drawer, over whichever page is showing. */}
-              {residentsInDrawer && residentDrawerOpen && !residentDrawerPinned && (
-                <ResidentsDrawer
-                  entries={residentEntries}
-                  profiles={residentProfiles}
-                  pinned={false}
-                  selectedId={residentDrawerSelected}
-                  onSelect={setResidentDrawerSelected}
-                  onOpen={(id) => openResidentDetail(id, true)}
-                  onClose={() => setResidentDrawerOpen(false)}
-                  onPinnedChange={setResidentDrawerPinned}
-                  launcher={residentLauncher}
-                  onOpenLaunch={openResidentLaunch}
-                  onManage={() => navigate({ page: "residents" })}
-                  reviews={pendingReviews}
-                  renderReview={renderResidentReview}
-                />
-              )}
               {/* In the slot every page shares: Restart on new profile offers it from the
                   Residents page and the dock as well as the fleet. */}
               {completeSession && (

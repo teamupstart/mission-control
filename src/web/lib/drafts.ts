@@ -36,27 +36,6 @@ const drafts = new Map<string, string>();
 
 const keyOf = (sessionId: string, kind: DraftKind): string => `${sessionId}:${kind}`;
 
-/**
- * Every change to a draft, from any box, as a stamp off one clock that only moves forward.
- *
- * Two boxes share the `reply` draft - the Conversation's and the Residents drawer's - and a
- * send that finishes late must not clear text the person wrote in the meantime, in either of
- * them, even when it repeats the words that were sent. Comparing text cannot see that; this
- * can. One global clock rather than a counter per key, so a forgotten key can never come
- * back at a stamp a pending send still holds.
- */
-const revisions = new Map<string, number>();
-let clock = 0;
-const touch = (key: string): void => {
-  clock += 1;
-  revisions.set(key, clock);
-};
-
-/** This draft's last-change stamp; unchanged between two reads means nobody wrote to it. */
-export function draftRevision(sessionId: string, kind: DraftKind): number {
-  return revisions.get(keyOf(sessionId, kind)) ?? 0;
-}
-
 /** The text left in this box, or "" when there is none. */
 export function readDraft(sessionId: string, kind: DraftKind): string {
   return drafts.get(keyOf(sessionId, kind)) ?? "";
@@ -68,7 +47,6 @@ export function readDraft(sessionId: string, kind: DraftKind): string {
  * should survive to be re-hydrated.
  */
 export function writeDraft(sessionId: string, kind: DraftKind, text: string): void {
-  touch(keyOf(sessionId, kind));
   if (text) drafts.set(keyOf(sessionId, kind), text);
   else drafts.delete(keyOf(sessionId, kind));
 }
@@ -81,7 +59,6 @@ export function writeDraft(sessionId: string, kind: DraftKind, text: string): vo
  * a human deleting anything.
  */
 export function clearDraft(sessionId: string, kind: DraftKind): void {
-  touch(keyOf(sessionId, kind));
   drafts.delete(keyOf(sessionId, kind));
 }
 
@@ -127,16 +104,11 @@ export function dropSessionDrafts(sessionId: string): void {
   for (const k of [...drafts.keys()]) {
     if (k.slice(0, k.lastIndexOf(":")) === sessionId) drafts.delete(k);
   }
-  // Its stamps go too. The clock does not rewind, so no later stamp can repeat one of these.
-  for (const k of [...revisions.keys()]) {
-    if (k.slice(0, k.lastIndexOf(":")) === sessionId) revisions.delete(k);
-  }
 }
 
 /** Test seam: forget everything. Never called by the app. */
 export function resetDrafts(): void {
   drafts.clear();
-  revisions.clear();
 }
 
 /**

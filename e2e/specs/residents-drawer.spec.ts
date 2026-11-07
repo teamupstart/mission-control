@@ -98,7 +98,12 @@ async function useDrawer(page: Page, daemon: DaemonHandle, layout: "board" | "co
   await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
 }
 
-const drawerOf = (page: Page): Locator => page.getByRole("dialog", { name: "Residents", exact: true });
+/** The drawer: a column beside the fleet, pinned or not, never a dialog over the page. */
+const drawerOf = (page: Page): Locator => page.getByRole("complementary", { name: "Residents", exact: true });
+const closeDrawer = async (page: Page): Promise<void> => {
+  await drawerOf(page).getByRole("button", { name: "Close", exact: true }).click();
+  await expect(drawerOf(page)).toHaveCount(0);
+};
 const cardOf = (scope: Locator, name = NAME): Locator =>
   scope.getByRole("listitem").filter({ has: scope.page().getByRole("button", { name: new RegExp(`^${name}, `) }) });
 const headOf = (scope: Locator, name = NAME): Locator => scope.getByRole("button", { name: new RegExp(`^${name}, `) });
@@ -126,60 +131,77 @@ test("a new installation keeps residents in the drawer, off the Board", async ({
   await capture(page, "01-default-drawer");
 });
 
-test("the drawer opens three ways, closes two ways, and opens the resident as the Board drill-in", async ({ dashboard: page, daemon }) => {
+test("the drawer opens three ways as a column beside the Board, dims nothing, and stays beside the drill-in", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon, "board");
   await expectOffFleet(page);
+  const boardWidth = async (): Promise<number> => (await page.locator(".board").boundingBox())!.width;
+  const before = await boardWidth();
 
   await page.getByRole("button", { name: "Residents - 1 live", exact: true }).click();
   const drawer = drawerOf(page);
   await expect(drawer).toBeVisible();
+  // Unpinned, it looks just as it does pinned: the Board narrows beside it, and nothing is
+  // dimmed or covered.
+  await expect(drawer.getByRole("button", { name: "Pin", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(boardWidth).toBeLessThan(before - 200);
+  await expect(page.locator(".modal-backdrop")).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expectContentClearsBorder(drawer);
   const card = cardOf(drawer);
   await expect(card).toHaveCount(1);
   expect(await card.evaluate((el) => (el as HTMLElement).style.getPropertyValue("--resident"))).toMatch(/^var\(--resident-/);
   await expect(card).toContainText("⌥1");
+  await expect(headOf(drawer)).toBeFocused();
   await capture(page, "02-drawer-open");
+
+  // A column, not an overlay: Escape and a click on the Board leave it where it is.
   await page.keyboard.press("Escape");
-  await expect(drawer).toBeHidden();
+  await page.mouse.click(40, 400);
+  await expect(drawer).toBeVisible();
+  await closeDrawer(page);
+  await expect.poll(boardWidth).toBe(before);
 
   await page.keyboard.press("Shift+KeyH");
   await expect(drawer).toBeVisible();
-  await page.mouse.click(40, 400);
-  await expect(drawer).toBeHidden();
+  await expect(headOf(drawer)).toBeFocused();
+  await page.keyboard.press("Shift+KeyH");
+  await expect(drawer).toHaveCount(0);
 
   await edgeTab(page).click();
   await expect(drawer).toBeVisible();
+  await expect(edgeTab(page)).toHaveCount(0);
   await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
   await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
-  await expect(drawer).toBeHidden();
   await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
+  await expect(drawer).toBeVisible();
   await expectOffFleet(page);
   await capture(page, "03-board-drill-in");
 
-  await page.keyboard.press("Escape");
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
+  // Escape leaves the detail and puts the keyboard back on the resident's card.
+  await page.locator("body").press("Escape");
   await expect(band(page)).toBeHidden();
-
-  await headOf(drawer).focus();
+  await expect(headOf(drawer)).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(drawer).toBeHidden();
   await expect(band(page)).toBeVisible();
-  await page.keyboard.press("Escape");
+  await page.locator("body").press("Escape");
+  await expect(band(page)).toBeHidden();
   await expect(drawer).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(drawer).toBeHidden();
+
+  // Open is for this page load only: a reload closes an unpinned drawer.
+  await page.reload();
+  await expect(edgeTab(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
 
   await page.keyboard.press("Alt+Digit1");
   await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
   await expectOffFleet(page);
   await page.keyboard.press("Escape");
   await expect(band(page)).toBeHidden();
-  await expect(drawer).toBeHidden();
+  await expect(drawer).toHaveCount(0);
 });
 
-test("in Console a resident opens in the detail pane, and selecting a fleet session drops the return", async ({ dashboard: page, daemon }) => {
+test("in Console the drawer is a column beside the rail, and a resident opens in the detail pane beside it", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   // A fleet session to move to: dispatched straight over the API, opted out of Workflows.
   await request(daemon, "/api/tasks", {
@@ -192,73 +214,86 @@ test("in Console a resident opens in the detail pane, and selecting a fleet sess
 
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
+  await expect(drawer).toBeVisible();
+  await expect(page.locator(".modal-backdrop")).toHaveCount(0);
   await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
-  await expect(drawer).toBeHidden();
   await expect(page.locator(".console-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
+  await expect(drawer).toBeVisible();
   await expect(page.locator(".board")).toHaveCount(0);
   await expectOffFleet(page);
   await capture(page, "04-console-detail");
 
-  await page.keyboard.press("Escape");
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
-
-  await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
-  await expect(band(page)).toBeVisible();
+  // A fleet session opens beside it as any other would, and the drawer stays.
   await rail.getByRole("button", { name: /Fleet neighbour/ }).click();
   await expect(band(page)).toBeHidden();
-  await page.locator("body").press("Escape");
-  await page.keyboard.press("Escape");
-  await expect(drawer).toBeHidden();
+  await expect(drawer).toBeVisible();
+  await closeDrawer(page);
 
   await page.keyboard.press("Alt+Digit1");
   await expect(page.locator(".console-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
   await expectOffFleet(page);
 });
 
-test("Pin docks the drawer beside the Board, survives a reload, and Escape returns to its card", async ({ dashboard: page, daemon }) => {
+test("Pin keeps the drawer open through a reload, and Unpin leaves it open until the next one", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon, "board");
-  const boardWidth = async (): Promise<number> => (await page.locator(".board").boundingBox())!.width;
-  const before = await boardWidth();
+  const storedPin = async (): Promise<boolean> => (await request<{ config: { residentDrawerPinned: boolean } }>(
+    daemon, "/api/ui/config", undefined, "GET")).config.residentDrawerPinned;
 
   await page.keyboard.press("Shift+KeyH");
-  await drawerOf(page).getByRole("button", { name: "Pin" }).click();
-  const pinned = page.getByRole("complementary", { name: "Residents", exact: true });
-  await expect(pinned).toBeVisible();
-  await expect(drawerOf(page)).toHaveCount(0);
+  const drawer = drawerOf(page);
+  await expect(drawer).toBeVisible();
+  const box = await drawer.boundingBox();
+  await drawer.getByRole("button", { name: "Pin", exact: true }).click();
+  // Pinning changes nothing on screen: the same column, the same place.
+  await expect(drawer.getByRole("button", { name: "Unpin", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(await drawer.boundingBox()).toEqual(box);
   await expect(edgeTab(page)).toHaveCount(0);
-  await expect.poll(boardWidth).toBeLessThan(before - 200);
+  await expect.poll(storedPin).toBe(true);
   await capture(page, "05-pinned");
 
   await page.reload();
-  await expect(pinned).toBeVisible();
-  await expect.poll(async () => (await request<{ config: { residentDrawerPinned: boolean } }>(
-    daemon, "/api/ui/config", undefined, "GET")).config.residentDrawerPinned).toBe(true);
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("button", { name: "Unpin", exact: true })).toBeVisible();
+  // Restored by a reload, it does not take the keyboard on its own.
+  await expect(headOf(drawer)).not.toBeFocused();
 
-  await pinned.getByRole("button", { name: `Open ${NAME}` }).click();
+  await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
   await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
-  await expect(pinned).toBeVisible();
+  await expect(drawer).toBeVisible();
   await expectOffFleet(page);
   await page.locator("body").press("Escape");
   await expect(band(page)).toBeHidden();
-  await expect(headOf(pinned)).toBeFocused();
-  await expect(drawerOf(page)).toHaveCount(0);
+  await expect(headOf(drawer)).toBeFocused();
 
-  await pinned.getByRole("button", { name: "Unpin" }).click();
-  await expect(pinned).toHaveCount(0);
+  await drawer.getByRole("button", { name: "Unpin", exact: true }).click();
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("button", { name: "Pin", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(storedPin).toBe(false);
+  await page.reload();
   await expect(edgeTab(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
+
+  // Closing a pinned drawer unpins it too, so it stays closed after a reload.
+  await page.keyboard.press("Shift+KeyH");
+  await drawer.getByRole("button", { name: "Pin", exact: true }).click();
+  await expect.poll(storedPin).toBe(true);
+  await closeDrawer(page);
+  await expect.poll(storedPin).toBe(false);
+  await page.reload();
+  await expect(edgeTab(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
 });
 
-test("a resident that needs you is a visitor card only while the drawer is closed", async ({ dashboard: page, daemon }) => {
+test("a resident that needs you is a visitor card while the drawer is closed, and a click opens its conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon, "board");
   const reviewId = await askResident(daemon);
 
   const needsYou = page.locator(".board-col.tone-attention");
-  const visitor = needsYou.getByRole("button", { name: `${NAME} needs you - resident, opens in the drawer` });
+  const visitor = needsYou.getByRole("button", { name: `${NAME} needs you - resident, opens its conversation` });
   await expect(visitor).toBeVisible();
-  await expect(needsYou).toContainText("Resident · opens in the drawer");
+  await expect(needsYou).toContainText("Resident · opens its conversation");
   await expect(edgeTab(page)).toHaveClass(/needs-you/);
   // The Need you count still includes the resident.
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toBeVisible();
@@ -268,13 +303,19 @@ test("a resident that needs you is a visitor card only while the drawer is close
   const drawer = drawerOf(page);
   await expect(drawer).toBeVisible();
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  await page.keyboard.press("Shift+KeyH");
   await expect(visitor).toBeVisible();
 
+  // The tile is the click target: its conversation opens, and the drawer stays closed.
   await page.locator(".resident-visitor").click();
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
+  await expect(band(page)).toBeVisible();
+  await expect(page.locator(".board-detail").getByRole("tab", { name: "Conversation", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator(".resident-visitor")).toHaveCount(0);
+  await capture(page, "06b-visitor-opens-conversation");
   await page.keyboard.press("Escape");
+  await expect(band(page)).toBeHidden();
+  await expect(visitor).toBeVisible();
 
   await page.keyboard.press("Alt+Digit1");
   await expect(band(page)).toBeVisible();
@@ -344,50 +385,56 @@ test("the arrow keys move the drawer's selection and Enter opens the selected re
   await launch(daemon, SECOND);
   await useDrawer(page, daemon, "board");
 
+  // Both residents have reached the dashboard before the drawer opens, so both cards are there
+  // to walk from the first press.
+  await expect(page.getByRole("button", { name: "Residents - 2 live", exact: true })).toBeVisible();
   await page.keyboard.press("Shift+KeyH");
   const drawer = drawerOf(page);
   await expect(cardOf(drawer, FIRST)).toBeVisible();
   await expect(cardOf(drawer, SECOND)).toBeVisible();
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "true");
+  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-current", "true");
   await expect(headOf(drawer, FIRST)).toBeFocused();
   await expect(cardOf(drawer, FIRST)).toContainText("⌥1");
   await expect(cardOf(drawer, SECOND)).toContainText("⌥2");
+  // The selection is not the fold: both cards are open, and moving the selection keeps them so.
+  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "true");
 
   // The selection stops at the ends; it does not wrap.
   await page.keyboard.press("ArrowUp");
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "true");
-  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "false");
+  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-current", "true");
+  await expect(headOf(drawer, SECOND)).not.toHaveAttribute("aria-current");
   await expect(headOf(drawer, FIRST)).toBeFocused();
 
   await page.keyboard.press("ArrowDown");
-  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "true");
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "false");
+  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-current", "true");
+  await expect(headOf(drawer, FIRST)).not.toHaveAttribute("aria-current");
   await expect(headOf(drawer, SECOND)).toBeFocused();
   await page.keyboard.press("ArrowDown");
-  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "true");
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "false");
+  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-current", "true");
+  await expect(headOf(drawer, FIRST)).not.toHaveAttribute("aria-current");
   await expect(headOf(drawer, SECOND)).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(drawer).toBeHidden();
-  await expect(band(page, SECOND)).toBeVisible();
-  await expectOffFleet(page, SECOND);
-
-  await page.keyboard.press("Escape");
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "true");
-  await page.keyboard.press("ArrowUp");
   await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "true");
   await page.keyboard.press("Enter");
-  await expect(drawer).toBeHidden();
+  await expect(band(page, SECOND)).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await expectOffFleet(page, SECOND);
+
+  await page.locator("body").press("Escape");
+  await expect(band(page, SECOND)).toBeHidden();
+  await expect(headOf(drawer, SECOND)).toBeFocused();
+  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-current", "true");
+  await page.keyboard.press("ArrowUp");
+  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-current", "true");
+  await page.keyboard.press("Enter");
   await expect(band(page, FIRST)).toBeVisible();
   await expectOffFleet(page, FIRST);
 });
 
-test("Enter on a visitor card opens the drawer on its resident", async ({ dashboard: page, daemon }) => {
+test("Enter on a visitor card opens its resident's conversation, not the drawer", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon, "board");
   await askResident(daemon);
-  const visitorOpen = page.getByRole("button", { name: `${NAME} needs you - resident, opens in the drawer` });
+  const visitorOpen = page.getByRole("button", { name: `${NAME} needs you - resident, opens its conversation` });
   await expect(visitorOpen).toBeVisible();
   const drawer = drawerOf(page);
 
@@ -395,19 +442,159 @@ test("Enter on a visitor card opens the drawer on its resident", async ({ dashbo
   await page.keyboard.press("ArrowDown");
   await expect(visitorOpen).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
+  await expect(band(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(drawer).toBeHidden();
+  await expect(band(page)).toBeHidden();
   await expect(visitorOpen).toBeVisible();
 
   // With the cursor on the visitor but the keyboard nowhere in particular, App's own Enter arm
-  // opens the drawer rather than a drill-in.
+  // opens the same conversation.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("Enter");
+  await expect(band(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
+});
+
+test("opened before any resident has arrived, the drawer puts the keyboard on the first card once it does", async ({ dashboard: page, daemon }) => {
+  await useDrawer(page, daemon, "board");
+  await expect(page.getByRole("button", { name: "Residents - 0 live", exact: true })).toBeVisible();
+
+  await page.keyboard.press("Shift+KeyH");
+  const drawer = drawerOf(page);
+  await expect(drawer).toContainText("No residents are running. Launch one from a profile below.");
+
+  // The resident arrives while the drawer is open and nobody has touched anything since.
+  await launch(daemon);
+  await expect(cardOf(drawer)).toBeVisible({ timeout: 60_000 });
+  await expect(headOf(drawer)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(band(page)).toBeVisible();
+});
+
+test("a click elsewhere while the drawer waits for its first resident keeps the keyboard where it went", async ({ dashboard: page, daemon }) => {
+  await useDrawer(page, daemon, "board");
+  await expect(page.getByRole("button", { name: "Residents - 0 live", exact: true })).toBeVisible();
+
+  await page.keyboard.press("Shift+KeyH");
+  const drawer = drawerOf(page);
+  await expect(drawer).toContainText("No residents are running. Launch one from a profile below.");
+  // The operator moves on to the page beside it before any resident arrives. (With no session
+  // anywhere the Board has nothing to draw, so this is its empty state.)
+  await page.mouse.click(40, 400);
+
+  await launch(daemon);
+  await expect(cardOf(drawer)).toBeVisible({ timeout: 60_000 });
+  await expect(headOf(drawer)).toBeEnabled();
+  // Given every chance to land, it never pulls the keyboard into the drawer.
+  await page.waitForTimeout(500);
+  await expect(headOf(drawer)).not.toBeFocused();
+  expect(await drawer.evaluate((el) => el.contains(document.activeElement))).toBe(false);
+});
+
+test("reopened after the selected resident has ended, the drawer puts the keyboard on a live card", async ({ dashboard: page, daemon }) => {
+  const FIRST = "Alpha keeper";
+  const SECOND = "Bravo keeper";
+  await launch(daemon, FIRST);
+  await launch(daemon, SECOND);
+  await useDrawer(page, daemon, "board");
+  await expect(page.getByRole("button", { name: "Residents - 2 live", exact: true })).toBeVisible();
+
+  // Alpha is selected, and the drawer is closed with that selection left on it.
+  await page.keyboard.press("Shift+KeyH");
+  const drawer = drawerOf(page);
+  await expect(headOf(drawer, FIRST)).toBeFocused();
+  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-current", "true");
+  const firstId = await cardOf(drawer, FIRST).getAttribute("data-resident-card");
+  await page.keyboard.press("Shift+KeyH");
+  await expect(drawer).toHaveCount(0);
+
+  // Alpha's run ends while the drawer is closed; Bravo is still live.
+  const sessions = await request<Array<{ id: string; task?: { id: string } }>>(daemon, "/api/sessions", undefined, "GET");
+  const firstTask = sessions.find((s) => s.id === firstId)?.task?.id;
+  expect(firstTask, "the selected resident's session carries its task").toBeTruthy();
+  await request(daemon, `/api/tasks/${firstTask}/complete`, { outcome: "Stood down" });
+  await expect(page.getByRole("button", { name: "Residents - 1 live", exact: true })).toBeVisible({ timeout: 60_000 });
+
+  await page.keyboard.press("Shift+KeyH");
+  await expect(cardOf(drawer, FIRST)).toHaveCount(0);
+  await expect(headOf(drawer, SECOND)).toBeFocused();
+  await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-current", "true");
+  await page.keyboard.press("Enter");
+  await expect(band(page, SECOND)).toBeVisible();
+});
+
+for (const width of [1024, 900]) {
+  test(`at ${width}px the Board drill-in stays whole beside the open drawer`, async ({ dashboard: page, daemon }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await launch(daemon);
+    await useDrawer(page, daemon, "board");
+    await page.keyboard.press("Shift+KeyH");
+    const drawer = drawerOf(page);
+    await drawer.getByRole("button", { name: `Open ${NAME}` }).click();
+    await expect(band(page)).toBeVisible();
+    await expect(drawer).toBeVisible();
+
+    // The 330px drawer leaves the Board less than a 320px rail plus a 440px reader. The rail
+    // gives way, and nothing of the reader runs past the Board's edge into its hidden overflow.
+    await expect.poll(() => page.evaluate(() => {
+      const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+      const board = document.querySelector(".board")!;
+      const reader = box(".board-detail > .cdetail");
+      return {
+        overflow: board.scrollWidth - board.clientWidth,
+        readerPastBoard: Math.round(reader.right - box(".board").right),
+        readerPastDrawer: Math.round(reader.right - box(".residents-drawer").left),
+        railWidth: Math.round(box(".board-col.is-rail").width),
+      };
+    })).toMatchObject({ overflow: 0, readerPastBoard: 0, readerPastDrawer: 0 });
+    // The reply box sits whole across the reader's width, short of the drawer. Horizontal only:
+    // how much height the composer gets is the window's height and the top bar's wrapping (on
+    // Linux's wider fonts the top bar takes two rows at 900px), which the drawer does not change.
+    const reply = page.locator(".board-detail").getByPlaceholder(/^Reply to this session/);
+    await expect(reply).toBeVisible();
+    const replyBox = (await reply.boundingBox())!;
+    const readerBox = (await page.locator(".board-detail > .cdetail").boundingBox())!;
+    const drawerBox = (await drawer.boundingBox())!;
+    expect(replyBox.x).toBeGreaterThanOrEqual(readerBox.x);
+    expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(readerBox.x + readerBox.width);
+    expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(drawerBox.x);
+    await capture(page, `10-drill-in-beside-drawer-${width}`);
+  });
+}
+
+test("asked for from a profile with unsaved edits, the drawer opens only if the operator leaves for Fleet", async ({ dashboard: page, daemon }) => {
+  const profile = await launch(daemon);
+  await useDrawer(page, daemon, "board");
+  const drawer = drawerOf(page);
+  const gate = page.getByRole("dialog", { name: "Leave with unsaved changes" });
+  const dirtyProfile = async (): Promise<void> => {
+    await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+    const instructions = page.getByRole("region", { name: `Resident profile ${NAME}` }).getByLabel("Profile instructions");
+    await instructions.fill("A draft I am not done with.");
+    // Out of the text box, so the drawer's chord is a command rather than typing.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  };
+
+  // Stay: the drawer is not left waiting for the next visit to Fleet.
+  await dirtyProfile();
+  await page.keyboard.press("Shift+KeyH");
+  await expect(gate).toBeVisible();
+  await gate.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/residents/${profile.id}$`));
+  await page.evaluate(() => { window.location.hash = "#/fleet"; });
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet$/);
+  await expect(edgeTab(page)).toBeVisible();
+  await expect(drawer).toHaveCount(0);
+
+  // Leave: the drawer opens on Fleet with the keyboard on a card, as any other open does.
+  await dirtyProfile();
+  await page.keyboard.press("Shift+KeyH");
+  await gate.getByRole("button", { name: "Discard and leave" }).click();
+  await expect(page).toHaveURL(/#\/fleet$/);
   await expect(drawer).toBeVisible();
-  await expect(headOf(drawer)).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toHaveCount(0);
+  await expect(headOf(drawer)).toBeFocused();
 });
 
 test("the drawer's footer launches a profile, and a profile with no repository launches through Dispatch", async ({ dashboard: page, daemon }) => {
@@ -437,11 +624,47 @@ test("the drawer's footer launches a profile, and a profile with no repository l
   await capture(page, "08-footer-launched");
 
   await row(NO_REPO).getByRole("button", { name: `Launch ${NO_REPO}` }).click();
-  await expect(drawer).toBeHidden();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog.getByRole("radio", { name: "Resident" })).toHaveAttribute("aria-checked", "true");
   await expect(dialog.getByRole("radio", { name: new RegExp(NO_REPO) })).toHaveAttribute("aria-checked", "true");
   await expect(dialog.getByRole("combobox", { name: "Repository" })).toHaveValue("");
+});
+
+test("Manage residents sits on its own row at the top, above the cards, and opens the Residents page", async ({ dashboard: page, daemon }) => {
+  const FIRST = "Alpha keeper";
+  const SECOND = "Bravo keeper";
+  await launch(daemon, FIRST);
+  await launch(daemon, SECOND);
+  await useDrawer(page, daemon, "board");
+
+  // Both residents have reached the dashboard before the drawer opens, so the layout measured
+  // below is the one with both cards in it.
+  await expect(page.getByRole("button", { name: "Residents - 2 live", exact: true })).toBeVisible();
+  await page.keyboard.press("Shift+KeyH");
+  const drawer = drawerOf(page);
+  await expect(cardOf(drawer, SECOND)).toBeVisible();
+  const manage = drawer.getByRole("button", { name: "Manage residents" });
+  await expect(manage).toHaveCount(1);
+  // The new row does not take the keyboard: opening the drawer still lands on the selected card.
+  await expect(headOf(drawer, FIRST)).toBeFocused();
+  await expect(manage).toBeInViewport();
+  // Under the title, before the first card, and no longer in the footer under the profiles.
+  const title = await drawer.getByRole("heading", { level: 2 }).boundingBox();
+  const button = await manage.boundingBox();
+  const firstCard = await cardOf(drawer, FIRST).boundingBox();
+  expect(title && button && firstCard).toBeTruthy();
+  expect(button!.y).toBeGreaterThan(title!.y + title!.height);
+  // Close under the title, as one band with it: no more than a few pixels of air between them.
+  expect(button!.y - (title!.y + title!.height)).toBeLessThanOrEqual(12);
+  expect(button!.y + button!.height).toBeLessThanOrEqual(firstCard!.y);
+  await expect(drawer.locator(".residents-drawer-foot").getByRole("button", { name: "Manage residents" })).toHaveCount(0);
+  await expectContentClearsBorder(drawer);
+  await capture(page, "09-manage-at-top");
+
+  // The drawer is a column on Fleet, so it is not drawn over the Residents page.
+  await manage.click();
+  await expect(drawer).toHaveCount(0);
+  await expect(page).toHaveURL(`${daemon.baseURL}/#/residents`);
 });
 
 test("the Keyboard panel refuses ⌥1 as macOS delivers it, and drops a binding stored as its symbol", async ({ dashboard: page, daemon }) => {
@@ -473,23 +696,26 @@ test("the Keyboard panel refuses ⌥1 as macOS delivers it, and drops a binding 
   ).toBeVisible();
 });
 
-test("pinning from another page lands on Fleet, and the palette there focuses the pinned drawer's card", async ({ dashboard: page, daemon }) => {
+test("opening or pinning from another page lands on Fleet with the keyboard on a card", async ({ dashboard: page, daemon }) => {
   await launch(daemon);
   await useDrawer(page, daemon, "board");
-  const pinned = page.getByRole("complementary", { name: "Residents", exact: true });
+  const drawer = drawerOf(page);
+  await expect(page.getByRole("button", { name: "Residents - 1 live", exact: true })).toBeVisible();
 
   await page.goto(`${daemon.baseURL}/#/settings/display`);
   await page.keyboard.press("Shift+KeyH");
-  await drawerOf(page).getByRole("button", { name: "Pin" }).click();
   await expect(page).toHaveURL(/#\/fleet/);
-  await expect(pinned).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await expect(headOf(drawer)).toBeFocused();
+  await drawer.getByRole("button", { name: "Pin", exact: true }).click();
+  await expect(drawer.getByRole("button", { name: "Unpin", exact: true })).toBeVisible();
 
-  // The pinned drawer mounts on Fleet with the palette's focus request already set.
+  // The drawer mounts on Fleet with the palette's focus request already set.
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  await expect(pinned).toHaveCount(0);
+  await expect(drawer).toHaveCount(0);
   await page.keyboard.press("Meta+K");
   await page.keyboard.type("Residents drawer or dock");
   await page.getByRole("option", { name: "Open the Residents drawer or dock, command" }).click();
   await expect(page).toHaveURL(/#\/fleet/);
-  await expect(headOf(pinned)).toBeFocused();
+  await expect(headOf(drawer)).toBeFocused();
 });

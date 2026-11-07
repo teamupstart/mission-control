@@ -101,7 +101,7 @@ export function ConsoleView(props: SessionViewProps & {
         variant="rail"
         selected={s.id === props.selectedId}
         registerEl={props.registerEl}
-        onOpenDrawer={(id) => props.onOpenResidentDrawer?.(id)}
+        onOpen={(id) => props.onOpenResident?.(id)}
       />;
     }
     const commission = pipelineCommissionForSession(props, s);

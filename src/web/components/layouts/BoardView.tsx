@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Keycap } from "../Keycap.tsx";
+import { reviewShortcutTarget } from "../../lib/review-shortcut.ts";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { provisioningTasks } from "@shared/session.ts";
 import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
@@ -253,7 +255,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       variant={variant}
       selected={s.id === props.selectedId}
       registerEl={props.registerEl}
-      onOpenDrawer={(id) => props.onOpenResidentDrawer?.(id)}
+      onOpen={(id) => props.onOpenResident?.(id)}
     />;
   };
 
@@ -487,6 +489,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 )}
                 <span className="board-swatch" aria-hidden />
                 <h2>{g.label}</h2>
+                {/* The review chord's keycap, on Needs you while pressing it would open a queue:
+                    `e` goes to the first session asking without a card being picked first. The
+                    same rule the chord itself follows, so the keycap is never on a column the
+                    key would leave alone. */}
+                {g.tone === "attention" && reviewShortcutTarget(g.sessions, null) && (
+                  <span className="board-col-key"><Keycap action="review" /></span>
+                )}
                 {/* BEFORE the count, not after it. The count carries `margin-left: auto`
                     and sat flush against the head's right edge; a control placed after it
                     reserves its 22px even while transparent, so every column's count

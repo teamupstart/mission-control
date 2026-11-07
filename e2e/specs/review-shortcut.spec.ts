@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 
 /**
  * The review queue has a chord, and the badge that opens it says so.
@@ -209,4 +210,59 @@ test("e is left to the browser on a fleet with nothing waiting", async ({ dashbo
   // No queue exists, so no queue opens - and the chord is left unclaimed rather than
   // swallowed, which is what keeps a bare letter usable by the page underneath it.
   await expect(dashboard.getByRole("dialog", { name: "Review request" })).toHaveCount(0);
+});
+
+/** Store UI preferences the way the dashboard does, daemon and local mirror, then reload. */
+async function setUi(page: Page, daemon: DaemonHandle, next: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(next),
+  });
+  expect(res.ok).toBe(true);
+  await page.evaluate((patch) => {
+    const raw = JSON.parse(window.localStorage.getItem("mission-control.ui") ?? "{}") as Record<string, unknown>;
+    window.localStorage.setItem("mission-control.ui", JSON.stringify({ ...raw, ...patch }));
+  }, next);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+}
+
+test("the Board's Needs you column prints e while a review waits, and e opens it with no card picked", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, 1);
+  const [session] = await checkouts(daemon, 1);
+  await setUi(dashboard, daemon, { layout: "board", keybindingHints: true });
+
+  const needsYou = dashboard.locator(".board-col.tone-attention");
+  const heading = needsYou.locator(".board-col-head");
+  // Nothing waiting: the column is the all-clear, and no key is offered.
+  await expect(heading.locator("kbd.kb-hint")).toHaveCount(0);
+
+  await ask(daemon, session.cwd);
+  await expect(heading.getByRole("heading", { name: "needs you" })).toBeVisible();
+  // Beside the column's name, the same lowercase glyph the badge prints.
+  const keycap = heading.locator("kbd.kb-hint");
+  await expect(keycap).toHaveText("e");
+  const name = await heading.getByRole("heading", { name: "needs you" }).boundingBox();
+  const key = await keycap.boundingBox();
+  expect(name && key).toBeTruthy();
+  expect(key!.x).toBeGreaterThan(name!.x + name!.width - 1);
+  expect(Math.abs((key!.y + key!.height / 2) - (name!.y + name!.height / 2))).toBeLessThan(6);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("review-shortcut");
+    mkdirSync(dir, { recursive: true });
+    await dashboard.mouse.move(0, 0);
+    await needsYou.screenshot({ path: `${dir}needs-you-keycap.png` });
+  }
+
+  // Pressing it, with no card selected, opens the queue.
+  await dashboard.keyboard.press("e");
+  const modal = dashboard.getByRole("dialog", { name: "Review request" });
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("Which caching strategy should the transcript reader use?");
+  await dashboard.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  // With keycaps turned off, the column prints none.
+  await setUi(dashboard, daemon, { keybindingHints: false });
+  await expect(heading.getByRole("heading", { name: "needs you" })).toBeVisible();
+  await expect(heading.locator("kbd.kb-hint")).toHaveCount(0);
 });

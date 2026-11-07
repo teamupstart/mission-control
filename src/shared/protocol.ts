@@ -5029,6 +5029,17 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  */
 export const InjectPromptSchema = z.object({
   codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
+  /**
+   * A Stacked pull requests prompt or broken-stack action, by identity only (see
+   * `StackPromptRequest`). The daemon replaces `text` with the prompt it builds from the pull
+   * request row, claims a catch-up or restack before typing it, and refuses anything the
+   * child no longer needs.
+   */
+  stack: z.object({
+    prKey: z.string().min(1).max(512),
+    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    tip: z.string().min(1).max(128).nullable(),
+  }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -5047,6 +5058,12 @@ export const InjectPromptSchema = z.object({
   origin: PromptOriginSchema,
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
+
+/** *Wait for a replacement* on a broken stack: let a replacement parent take the child over. */
+export const StackAwaitReplacementSchema = z.object({
+  prKey: z.string().min(1).max(512),
+  wait: z.boolean(),
+});
 
 /** Transient browser presence used only to keep Foreman clear of a human draft. */
 export const ComposerActivitySchema = z.object({

@@ -2052,6 +2052,18 @@ export const api = {
    */
   resolveInspectorFindings: (prKey: string) =>
     post<ActionResult & ResolveFindingsResult>(`/api/inspector/resolve-findings`, { prKey }),
+  /**
+   * Stacked pull requests: send a catch-up or restack prompt, or a broken-stack action, to the
+   * child's owning session. Through the same inject route and guards Foreman's follow-up uses;
+   * the daemon builds the text, so `text` here is only a placeholder the route replaces.
+   */
+  sendStackPrompt: (sessionId: string, stack: import("@shared/stacking.ts").StackPromptRequest) =>
+    post(`/api/sessions/${encodeURIComponent(sessionId)}/inject`, {
+      text: `Stacked pull request: ${stack.kind}`, buffer: false, origin: "human", stack,
+    }),
+  /** *Wait for a replacement* on a broken stack, or withdraw it. */
+  stackAwaitReplacement: (prKey: string, wait: boolean) =>
+    post(`/api/inspector/stack/await-replacement`, { prKey, wait }),
 
   // --- LLM (which provider does the app's own offline work, and on which model) ---
   setLlmConfig: (cfg: LlmConfigPatch) => put(`/api/llm/config`, cfg),

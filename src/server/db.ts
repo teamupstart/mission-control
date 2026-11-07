@@ -152,6 +152,7 @@ import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
+import { parseStackObservation, type StackObservation } from "@shared/stacking.ts";
 import {
   isRetentionCandidate,
   isRetentionRetryable,
@@ -203,7 +204,11 @@ let db: DatabaseSync | undefined;
 //     `stack_base_branch`, `stack_base_sha`, `stack_pr_url`) and a pull request's base,
 //     review base and stack lineage on `inspector_prs`. All nullable with no backfill: NULL is
 //     unstacked, and a row with no recorded base counts only on the default branch.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 20;
+// 21: Stacked pull requests lifecycle: a child's last stack observation
+//     (`inspector_prs.stack_state`), the operator's *Wait for a replacement* choice
+//     (`stack_await_replacement_at`), and the catch-up / restack prompt claims
+//     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 21;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -2084,6 +2089,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       stack_released_basis TEXT,         -- merged | closed: the parent state the release was granted under
       stack_lineage_history TEXT,
       stack_note         TEXT,
+      stack_state        TEXT,           -- JSON StackObservation: the last lifecycle observation
+      stack_await_replacement_at INTEGER, -- the operator chose Wait for a replacement
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -4291,6 +4298,27 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "inspector_prs", "stack_released_basis", "TEXT");
   addColumn(d, "inspector_prs", "stack_lineage_history", "TEXT");
   addColumn(d, "inspector_prs", "stack_note", "TEXT");
+  // Stacked pull requests lifecycle (schema 21). Nullable with no default: a row stacked
+  // before this has no observation yet and reads as `current` until the first tick, and no
+  // operator has chosen to wait for a replacement parent.
+  addColumn(d, "inspector_prs", "stack_state", "TEXT");
+  addColumn(d, "inspector_prs", "stack_await_replacement_at", "INTEGER");
+  // One row per (pull request, prompt kind, condition tip): the claim taken BEFORE a catch-up
+  // or restack prompt is typed, exactly as CodeRabbit's receipts are. `outcome` is
+  // `uncertain` from the claim until delivery is confirmed (`delivered`); a confirmed
+  // non-delivery deletes the row. Never re-armed by a restart, a push or a setting toggle:
+  // only a new tip is a new key. A new table, so it is created here beside its upgrade path.
+  d.exec(`CREATE TABLE IF NOT EXISTS stack_prompt_claims (
+    pr_key     TEXT NOT NULL,
+    kind       TEXT NOT NULL,      -- catch-up | restack | a recovery action kind
+    tip        TEXT NOT NULL,      -- parent head (catch-up), parent merge commit (restack), or the stack state an action was offered in
+    claim_id   TEXT NOT NULL,
+    outcome    TEXT NOT NULL,      -- uncertain | delivered
+    session_id TEXT,
+    claimed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (pr_key, kind, tip)
+  )`);
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -14113,6 +14141,8 @@ interface InspectorPrRow {
   stack_released_basis?: string | null;
   stack_lineage_history?: string | null;
   stack_note?: string | null;
+  stack_state?: string | null;
+  stack_await_replacement_at?: number | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -14146,6 +14176,8 @@ function rowToStackLineage(r: InspectorPrRow): StackLineage | null {
     releasedBasis: r.stack_released_basis === "merged" || r.stack_released_basis === "closed" ? r.stack_released_basis : null,
     history: parseLineageHistory(r.stack_lineage_history),
     note: r.stack_note ?? null,
+    observation: parseStackObservation(r.stack_state),
+    awaitReplacementAt: r.stack_await_replacement_at ?? null,
   };
 }
 
@@ -14425,6 +14457,166 @@ export function revokeInspectorPrStack(key: string, now: number): boolean {
     )
     .run(now, key);
   return Number(result.changes) > 0;
+}
+
+/** Record the stack lifecycle's latest observation of a child row. */
+export function recordStackObservation(key: string, observation: StackObservation, now: number): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET stack_state = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(JSON.stringify(observation), now, key);
+}
+
+/** The operator's *Wait for a replacement* choice for one child row; null withdraws it. */
+export function setStackAwaitReplacement(key: string, at: number | null, now: number): boolean {
+  const result = openDb()
+    .prepare(`UPDATE inspector_prs SET stack_await_replacement_at = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(at, now, key);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * The replacement-parent transition: the ONLY writer that changes `stack_parent_pr_url`.
+ *
+ * Writes the open child's own row and nothing else, in one statement guarded on the parent it
+ * is replacing, so it is idempotent: run again with the same replacement it finds the parent
+ * already swapped and changes nothing. Appends `{from, to, at}` to the lineage history, makes
+ * the replacement the current parent and clears the release, which was verified against the
+ * old parent. `stack_base_sha` - the commit the child was cut at - is never touched. The
+ * operator's wait choice is spent by the swap.
+ */
+export function transitionStackParent(key: string, from: string, to: string, now: number, childHeadSha: string | null = null): boolean {
+  return stackAtomically(() => {
+    const row = openDb()
+      .prepare(
+        `SELECT stack_parent_pr_url, stack_lineage_history, state, stack_await_replacement_at, stack_released_head_sha
+           FROM inspector_prs WHERE key = ?`,
+      )
+      .get(key) as {
+        stack_parent_pr_url: string | null;
+        stack_lineage_history: string | null;
+        state: string;
+        stack_await_replacement_at: number | null;
+        stack_released_head_sha: string | null;
+      } | undefined;
+    if (!row || row.stack_parent_pr_url !== from || from === to) return false;
+    // Re-checked HERE, in the transaction that writes, not only where the caller decided: the
+    // replacement's read is awaited in between, and in that gap the operator can withdraw the
+    // choice, the child can close, or the release check can release this very head. Any of
+    // those makes the swap wrong.
+    if (row.state !== "open" || row.stack_await_replacement_at === null) return false;
+    if (childHeadSha && row.stack_released_head_sha === childHeadSha) return false;
+    const history = [...parseLineageHistory(row.stack_lineage_history), { from, to, at: now }];
+    const result = openDb()
+      .prepare(
+        `UPDATE inspector_prs
+            SET stack_parent_pr_url = ?, stack_lineage_history = ?,
+                stack_released_head_sha = NULL, stack_released_basis = NULL,
+                stack_await_replacement_at = NULL, updated_at = ?
+          WHERE key = ? AND stack_parent_pr_url = ? AND state = 'open' AND stack_await_replacement_at IS NOT NULL`,
+      )
+      .run(to, JSON.stringify(history), now, key, from);
+    return Number(result.changes) > 0;
+  });
+}
+
+/** `inTransaction`, or the caller's own transaction when one is already open. */
+function stackAtomically<T>(fn: () => T): T {
+  return openDb().isTransaction ? fn() : inTransaction(fn);
+}
+
+/**
+ * One page of the stacked children the ledger retired as closed (not merged): the rows whose
+ * recovery action still depends on a parent that can move. Ordered by key and resumed after
+ * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
+ * would starve the oldest rows, since observing a row makes it recent again.
+ */
+export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
+          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        ORDER BY key ASC LIMIT ?`,
+    )
+    .all(afterKey, limit) as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
+/** One catch-up or restack prompt claim. */
+export interface StackPromptClaim {
+  prKey: string;
+  /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
+  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
+  tip: string;
+  claimId: string;
+  outcome: "uncertain" | "delivered";
+  sessionId: string | null;
+  claimedAt: number;
+}
+
+export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind"], tip: string): StackPromptClaim | null {
+  const row = openDb()
+    .prepare(`SELECT * FROM stack_prompt_claims WHERE pr_key = ? AND kind = ? AND tip = ?`)
+    .get(prKey, kind, tip) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    prKey: String(row.pr_key),
+    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+      .find((kind) => kind === row.kind) ?? "catch-up",
+    tip: String(row.tip),
+    claimId: String(row.claim_id),
+    outcome: row.outcome === "delivered" ? "delivered" : "uncertain",
+    sessionId: typeof row.session_id === "string" ? row.session_id : null,
+    claimedAt: Number(row.claimed_at),
+  };
+}
+
+/**
+ * Claim one prompt before it is typed. Null when it is already claimed - delivered, or
+ * uncertain - so nothing is ever sent twice for the same condition. `rearm` is the operator's
+ * explicit re-arm: it finishes an UNCERTAIN claim, or a DELIVERED one whose session is no longer
+ * the one sending (it exited before acting, and the task was resumed), and claims afresh for
+ * `sessionId`. A prompt delivered to the very session asking again is never re-sent.
+ */
+export function claimStackPrompt(
+  prKey: string,
+  kind: StackPromptClaim["kind"],
+  tip: string,
+  sessionId: string | null,
+  now: number,
+  rearm = false,
+): string | null {
+  return stackAtomically(() => {
+    const existing = readStackPromptClaim(prKey, kind, tip);
+    const rearmable = existing !== null && rearm
+      && (existing.outcome === "uncertain" || (existing.sessionId !== null && existing.sessionId !== sessionId));
+    if (existing && !rearmable) return null;
+    if (existing) {
+      openDb().prepare(`DELETE FROM stack_prompt_claims WHERE pr_key = ? AND kind = ? AND tip = ? AND claim_id = ?`)
+        .run(prKey, kind, tip, existing.claimId);
+    }
+    const claimId = randomUUID();
+    openDb()
+      .prepare(
+        `INSERT INTO stack_prompt_claims (pr_key, kind, tip, claim_id, outcome, session_id, claimed_at, updated_at)
+         VALUES (?, ?, ?, ?, 'uncertain', ?, ?, ?)`,
+      )
+      .run(prKey, kind, tip, claimId, sessionId, now, now);
+    return claimId;
+  });
+}
+
+/**
+ * Settle a claim by its id: `delivered` confirms it, `refused` - a delivery the transport
+ * POSITIVELY reported as not having landed - releases it so the prompt can be sent again.
+ * Anything else leaves it uncertain.
+ */
+export function finishStackPrompt(claimId: string, outcome: "delivered" | "refused", now: number): void {
+  if (outcome === "refused") {
+    openDb().prepare(`DELETE FROM stack_prompt_claims WHERE claim_id = ? AND outcome = 'uncertain'`).run(claimId);
+    return;
+  }
+  openDb().prepare(`UPDATE stack_prompt_claims SET outcome = 'delivered', updated_at = ? WHERE claim_id = ?`).run(now, claimId);
 }
 
 /** One line about the last stacked-base correction, shown in the merge queue. */

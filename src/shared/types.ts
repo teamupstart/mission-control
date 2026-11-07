@@ -2947,6 +2947,13 @@ export interface StackLineage {
   history: StackLineageChange[];
   /** One line about the last base correction, for the merge queue. */
   note: string | null;
+  /**
+   * What the Inspector tick last observed about the child and its current parent, from which
+   * the lifecycle state is derived (`deriveStackState`). Null until the first observation.
+   */
+  observation?: import("./stacking.ts").StackObservation | null;
+  /** When the operator chose *Wait for a replacement*; null when they have not. */
+  awaitReplacementAt?: number | null;
 }
 
 export interface StackLineageChange {
@@ -2992,6 +2999,8 @@ export interface InspectorComment {
  */
 export interface InspectorSummary {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /** Stacked pull requests: the lifecycle standing of a pull request with stack lineage. */
+  stack?: import("./stacking.ts").StackStanding | null;
   prKey: string;
   url: string;
   mode: InspectorMode;
@@ -3047,6 +3056,11 @@ export interface RetroSummary {
 /** A ledger row plus its finding tallies - what the settings panel lists. */
 export interface InspectorInspection extends InspectorPr {
   codeRabbit?: import("./code-rabbit.ts").CodeRabbitSummary;
+  /**
+   * Stacked pull requests: the lifecycle standing of a row with lineage, computed on read. A
+   * separate field from `mergeBlock`, which keeps holding only gate values.
+   */
+  stackStanding?: import("./stacking.ts").StackStanding | null;
   openFindings: number;
   postedOpenFindings: number;
   resolvedFindings: number;

@@ -307,6 +307,10 @@ import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import { refreshScoutPromptTitle } from "./scouts/prompt-journal.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
+import { getForemanConfig } from "./foreman/config.ts";
+import { stackStandingFor } from "./stacking/delivery.ts";
+import type { StackStanding } from "@shared/stacking.ts";
+import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
@@ -9147,6 +9151,9 @@ export class Registry extends EventEmitter {
     const owner = session && episodeKey ? { noteKey: noteKeyFor(session), episodeKey } : undefined;
     return {
       codeRabbit: codeRabbitSummary(row.key, owner),
+      // Stacked pull requests: the lifecycle standing Foreman's follow-up reads to deliver a
+      // catch-up or restack prompt, and the card reads to say why the child is held.
+      stack: row.stack ? this.stackStanding(row) : null,
       prKey: row.key,
       url: row.url,
       mode: getInspectorConfig().mode,
@@ -9159,6 +9166,16 @@ export class Registry extends EventEmitter {
       observedHeadSha: row.observedHeadSha,
       cleanReviewHeadSha: row.cleanReviewHeadSha ?? null,
     };
+  }
+
+  /** One stacked row's lifecycle standing; null when it cannot be computed. */
+  private stackStanding(row: StackRow): StackStanding | null {
+    try {
+      return stackStandingFor(row, this.liveSessions(), getForemanConfig());
+    } catch (error) {
+      console.error("[registry] could not compute a stack standing:", row.key, error);
+      return null;
+    }
   }
 
   /**

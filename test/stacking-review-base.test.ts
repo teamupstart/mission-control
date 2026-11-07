@@ -105,6 +105,7 @@ const unused = async (): Promise<never> => {
 const seam: StackGitHub = {
   prRefs: unused,
   isAncestor: unused,
+  compare: unused,
   branchSha: unused,
   repositories: unused,
   primaryRepository: unused,

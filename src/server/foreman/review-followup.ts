@@ -5,6 +5,7 @@ import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
 import { settledIdle } from "@shared/session.ts";
+import { buildStackPrompt, type StackPromptRequest } from "@shared/stacking.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
 // OPEN pull request, it has parked, and the PR now carries feedback nobody is acting on
@@ -42,6 +43,12 @@ export interface ReviewFollowupConfig {
   codeRabbitAutoResolve?: boolean;
   /** Relay failing CI episodes from `ForemanConfig.trackCiFailures`. */
   trackCiFailures: boolean;
+  /**
+   * Deliver Stacked pull requests' catch-up and restack prompts. Not a separate Foreman
+   * setting: a stacked child is held until it is restacked, and these prompts are what
+   * restacks it, so an invited live Foreman always delivers them.
+   */
+  stackPrompts?: boolean;
   /** How long a session must sit idle before its work counts as settled. */
   settleMs: number;
 }
@@ -101,7 +108,16 @@ export type ReviewFollowupDecision =
   /** Not a candidate. `why` is for the tests/log - every skip is explicable. */
   | { kind: "skip"; why: string }
   /** Type the follow-up. Carries the mark to stamp on delivery and the exact payload. */
-  | { kind: "nudge"; codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup; prKey: string; mark: FollowupMark; reason: string; payload: string };
+  | {
+      kind: "nudge";
+      codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup;
+      /** A Stacked pull requests prompt. Delivered alone, and claimed by the daemon. */
+      stack?: StackPromptRequest;
+      prKey: string;
+      mark: FollowupMark;
+      reason: string;
+      payload: string;
+    };
 
 /**
  * What we have already relayed to a session about ONE pull request, so we neither nag an
@@ -203,6 +219,8 @@ interface Feedback {
   /** The PR's CI rollup is failing (as opposed to pending or passing). */
   ciFailing: boolean;
   codeRabbit?: boolean;
+  /** A stack catch-up or restack prompt is pending for this pull request. */
+  stack?: boolean;
 }
 
 /** Terminal runs have released their session; every other durable state still owns it. */
@@ -218,6 +236,7 @@ function feedbackState(pr: FollowupPr, cfg: ReviewFollowupConfig, now: number): 
   return { findings, ciFailing: cfg.trackCiFailures && pr.checks === "failing",
     codeRabbit: !!cfg.codeRabbitAutoResolve && cr?.status === "complete" && cr.pending > 0
       && !!cr.observationId && (cr.freshUntil ?? 0) >= now,
+    stack: !!cfg.stackPrompts && pr.inspector?.stack?.prompt?.status === "pending",
   };
 }
 
@@ -234,28 +253,14 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
 
   // 1. The trigger is off. First because it is the cheapest and because an off trigger
   //    must reach no branch that decides to type.
-  if (!cfg.trackReviewComments && !cfg.trackCiFailures && !cfg.codeRabbitAutoResolve) {
+  if (!cfg.trackReviewComments && !cfg.trackCiFailures && !cfg.codeRabbitAutoResolve && !cfg.stackPrompts) {
     return skip("PR follow-through is off");
   }
 
-  // 2. Only a session Foreman was invited into, and only one it can actually drive, and
-  //    only a live one.
-  //
-  //    The invite comes FIRST of the three, above even the capability check, because it is
-  //    the refusal that matters most here and the one a reader needs to see reported
-  //    plainly: this path is the one that typed "create a PR" into personal Claude chats,
-  //    and it did so because it iterated every session with an open PR. A hand-started
-  //    session with a PR on its branch is capable, hooked, live, and still none of
-  //    Foreman's business.
-  if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
-  // No `workQueue` capability means no hooks and no reliable state to read; an exited
-  // session has nothing left to type into.
-  // `workQueue` is the reliable-idle/drivable proxy for this automation.
-  if (!capabilitiesFor(s.agent).workQueue) {
-    return skip(`${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`);
-  }
-  if (s.state === "exited") return skip("the session exited");
-  if (!s.hooksSeen) return skip("the session is not hook-instrumented");
+  // 2. Only a session Foreman was invited into, can drive, and that is live
+  //    (`followupInviteBlocker`).
+  const invite = followupInviteBlocker(s);
+  if (invite) return skip(invite);
 
   // 3. There has to be an OPEN pull request to speak about. A merged one is done; a
   //    closed-unmerged one is dropped like no PR at all (see `Session.prUrl`). WHICH one is
@@ -264,40 +269,35 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
   //    session in the log: nothing here to follow through on.
   if (!pr) return skip("no open pull request");
 
-  // 4. Something needs a human. An unanswered question or an input wait means the agent
-  //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
-  if (bucket === "needs-you") return skip("the session needs a human");
-  if (s.state === "awaiting_input") return skip("the session is waiting on input");
-
-  // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
-  //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary
-  //    already on the session - a row exists for any session Foreman ever touched.
-  if ((s.queue?.openCount ?? 0) > 0) {
-    return skip("this checkout has a work queue - the drain trigger owns it");
-  }
-
-  // 6. A non-terminal workflow run owns its bound session and checkout. It may be
-  //    reviewing, delivering repair guidance, waiting for the session to act, or driving
-  //    PR/Inspector gates. A separate Foreman nudge must never type across that ownership.
-  if (workflowOwnsSession) {
-    return skip("an active workflow owns this session");
-  }
+  // 4-6. Not held by a human, a work queue or an active workflow (`followupOwnershipBlocker`).
+  const gates: FollowupSessionInput = { session: s, bucket, mayActLive, workflowOwnsSession, now, settleMs: cfg.settleMs };
+  const owned = followupOwnershipBlocker(gates);
+  if (owned) return skip(owned);
 
   // 7. Is there anything to act on? Open posted findings, or a red CI. Nothing here is
   //    the overwhelmingly common state of an open PR and it is not a fault - say nothing.
   const fb = feedbackState(pr, cfg, now);
-  if (!fb.findings && !fb.ciFailing && !fb.codeRabbit) return skip("no enabled review comments or failing CI");
+  if (!fb.findings && !fb.ciFailing && !fb.codeRabbit && !fb.stack) return skip("no enabled review comments or failing CI");
 
-  // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
-  //    this from interrupting an agent already working the fixes: once it acts on a nudge
-  //    it is no longer idle, so it is not re-selected until it parks again.
-  if (!settledIdle(s, now, cfg.settleMs)) return skip("still working");
-  if (!hasPane(s)) return skip("no pane to type into");
+  // 8-9. Settled idle, with a pane, and cleared to type live (`followupDeliveryBlocker`).
+  const delivery = followupDeliveryBlocker(gates);
+  if (delivery) return skip(delivery);
 
-  // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
-  //    on an allowlisted repo. Dry-run means dry-run: no card to fall back to here, so it
-  //    simply holds.
-  if (!mayActLive) return skip("dry-run or off-allowlist - won't type");
+  // A stack prompt goes first and alone. Merging the parent in is what the rest of the
+  // feedback should be judged against, and the daemon's claim - keyed to the parent tip that
+  // made it necessary - is what dedups it, so no mark is consulted or advanced for it.
+  if (fb.stack) {
+    const standing = pr.inspector!.stack!;
+    const prompt = standing.prompt!;
+    return {
+      kind: "nudge",
+      stack: { prKey: pr.prKey, kind: prompt.kind, tip: prompt.tip },
+      prKey: pr.prKey,
+      mark: mark && mark.prKey === pr.prKey ? mark : { prKey: pr.prKey, findingsRound: null, ciNudged: false },
+      reason: prompt.kind === "restack" ? "stacked parent merged - restack onto the default branch" : "stacked parent has new commits - catch up",
+      payload: buildStackPrompt(prompt.kind, standing.facts),
+    };
+  }
 
   // Is anything here NEW since we last nudged? The two sources are judged on their own
   // clocks (see `FollowupMark`): findings by the Inspector round, CI by whether the
@@ -326,6 +326,110 @@ export function decideReviewFollowup(input: ReviewFollowupInput): ReviewFollowup
     reason: describe(pr, fb),
     payload: buildPayload(pr, fb),
   };
+}
+
+/**
+ * What a Foreman follow-up needs from the SESSION, whatever it is about to type: invited,
+ * drivable and live (`followupInviteBlocker`), not held by a human, a work queue or a workflow
+ * (`followupOwnershipBlocker`), and settled idle with a pane, cleared to act live
+ * (`followupDeliveryBlocker`). Null when it may type.
+ *
+ * ONE rule, shared by `decideReviewFollowup` (which interleaves these with its pull request and
+ * feedback checks, in the order its skip reasons are read) and by every daemon-side recheck of a
+ * follow-up Foreman selected, so the worker can never choose a delivery the daemon then refuses
+ * on a rule only one of them knew.
+ */
+export interface FollowupSessionInput {
+  session: Session;
+  bucket: ReportBucket;
+  mayActLive: boolean;
+  workflowOwnsSession: boolean;
+  now: number;
+  settleMs: number;
+}
+
+export function followupSessionBlocker(input: FollowupSessionInput): string | null {
+  return followupInviteBlocker(input.session) ?? followupOwnershipBlocker(input) ?? followupDeliveryBlocker(input);
+}
+
+/**
+ * The STABLE half of `followupSessionBlocker`: what will keep refusing however long the operator
+ * waits - not invited, an agent Foreman cannot drive, not hook-instrumented, no pane, or not
+ * cleared to act live here. The transient half (busy, a human or a queue holding it, an active
+ * workflow, not settled yet) clears by itself and is judged only at delivery time. A caller that
+ * must say whether Foreman WILL deliver something, rather than whether it may now, reads this.
+ */
+export function followupStableBlocker(session: Session, mayActLive: boolean): string | null {
+  return followupInviteBlocker(session) ?? followupChannelBlocker(session, mayActLive);
+}
+
+/** How long a session must sit idle before Foreman types into it. One value for every reader. */
+export function foremanSettleMs(): number {
+  return Number(process.env.FOREMAN_QUEUE_SETTLE_MS || 10_000);
+}
+
+function followupInviteBlocker(s: Session): string | null {
+  // Only a session Foreman was invited into, and only one it can actually drive, and only a
+  // live one.
+  //
+  // The invite comes FIRST of the three, above even the capability check, because it is the
+  // refusal that matters most here and the one a reader needs to see reported plainly: this
+  // path is the one that typed "create a PR" into personal Claude chats, and it did so because
+  // it iterated every session with an open PR. A hand-started session with a PR on its branch
+  // is capable, hooked, live, and still none of Foreman's business.
+  if (s.foremanInvite === null) return "Foreman is not invited into this session";
+  // No `workQueue` capability means no hooks and no reliable state to read; an exited
+  // session has nothing left to type into.
+  // `workQueue` is the reliable-idle/drivable proxy for this automation.
+  if (!capabilitiesFor(s.agent).workQueue) {
+    return `${AGENT_IDENTITY[s.agent].label} sessions can't be followed up`;
+  }
+  if (s.state === "exited") return "the session exited";
+  if (!s.hooksSeen) return "the session is not hook-instrumented";
+
+  return null;
+}
+
+function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession }: FollowupSessionInput): string | null {
+  // 4. Something needs a human. An unanswered question or an input wait means the agent
+  //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
+  if (bucket === "needs-you") return "the session needs a human";
+  if (s.state === "awaiting_input") return "the session is waiting on input";
+
+  // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
+  //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary
+  //    already on the session - a row exists for any session Foreman ever touched.
+  if ((s.queue?.openCount ?? 0) > 0) {
+    return "this checkout has a work queue - the drain trigger owns it";
+  }
+
+  // 6. A non-terminal workflow run owns its bound session and checkout. It may be
+  //    reviewing, delivering repair guidance, waiting for the session to act, or driving
+  //    PR/Inspector gates. A separate Foreman nudge must never type across that ownership.
+  if (workflowOwnsSession) {
+    return "an active workflow owns this session";
+  }
+
+  return null;
+}
+
+function followupDeliveryBlocker({ session: s, now, settleMs, mayActLive }: FollowupSessionInput): string | null {
+  // 8. Only a settled-idle session with a delivery channel. The idle gate is what keeps
+  //    this from interrupting an agent already working the fixes: once it acts on a nudge
+  //    it is no longer idle, so it is not re-selected until it parks again.
+  if (!settledIdle(s, now, settleMs)) return "still working";
+  return followupChannelBlocker(s, mayActLive);
+}
+
+function followupChannelBlocker(s: Session, mayActLive: boolean): string | null {
+  if (!hasPane(s)) return "no pane to type into";
+
+  // 9. Typing is a live act, so it needs the same clearance a queue send does - live mode
+  //    on an allowlisted repo. Dry-run means dry-run: no card to fall back to here, so it
+  //    simply holds.
+  if (!mayActLive) return "dry-run or off-allowlist - won't type";
+
+  return null;
 }
 
 function skip(why: string): ReviewFollowupDecision {

@@ -152,6 +152,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["PUT", "/api/sessions/:id/note", "foreman.note", "foreman"],
   ["PUT", "/api/inspector/config", "inspector.configure", "inspector"],
   ["POST", "/api/inspector/resolve-findings", "inspector.resolve", "inspector"],
+  ["POST", "/api/inspector/stack/await-replacement", "inspector.stack_await_replacement", "inspector"],
   ["PUT", "/api/shipping/config", "shipping.configure", "inspector"],
   ["PATCH", "/api/archives/:archiveKey", "archive.edit", "archives"],
   ["POST", "/api/archives/:archiveKey/artifacts/:artifactId/open", "archive.external_open", "archives"],

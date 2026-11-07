@@ -51,6 +51,9 @@ export type MergeBucket = "merged" | "soaking" | "blocked" | "waiting" | "closed
 export function mergeBucket(row: InspectorInspection): MergeBucket {
   if (row.mergedAt !== null) return "merged";
   if (row.state === "closed") return "closed";
+  // A stacked child with something to say is held by its stack, whatever its gate value:
+  // `blocked`, except a restack under way, which clears itself and belongs with `waiting`.
+  if (row.stackStanding?.label) return row.stackStanding.inProgress ? "waiting" : "blocked";
   if (!row.mergeBlock) return "waiting";
   return row.mergeBlock === "soaking" ? "soaking" : "blocked";
 }

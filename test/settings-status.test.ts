@@ -112,7 +112,7 @@ function ghSource(id: string): TaskSourceInstance {
 
 const ALL_OFF: SettingsStatus = {
   inspector: { enabled: false, mode: "dry-run" },
-  shipping: { autoMerge: false, stacking: "merge", maxStackDepth: 3 },
+  shipping: { autoMerge: false, stacking: "stack", maxStackDepth: 3 },
   taskSources: { failing: 0 },
   // No engine at this test's configured binary path and nothing configured, which is what an
   // ordinary installation looks like and the state in which the Conductor rail row does not exist.

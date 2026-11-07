@@ -33,6 +33,7 @@ import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { TaskKindMark } from "../TaskKindMark.tsx";
 import { Tooltip } from "../Tooltip.tsx";
+import { StackLifecycle } from "../StackLifecycle.tsx";
 import { WorkflowLadderPanel } from "../../workflows/WorkflowLadder.tsx";
 import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
@@ -503,6 +504,11 @@ export function SessionTile({
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}
         <InspectorTileFlag session={session} />
+        {/* Stacked pull requests: why this child is held and what moves it - the same
+            component, label and actions as its merge-queue row. */}
+        {session.inspector?.stack?.label && (
+          <StackLifecycle prKey={session.inspector.prKey} standing={session.inspector.stack} />
+        )}
         {/* A generated task's recurring-mission origin, in the tile's flag vocabulary.
             The DECISION and the tooltip are shared (`ScheduleOriginTileFlag`) with the
             card chip and rail glyph, so the four surfaces can't drift. */}

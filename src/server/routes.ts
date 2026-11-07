@@ -14,7 +14,11 @@ import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@s
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
-import { claimCodeRabbit, finishCodeRabbit } from "./db.ts";
+import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
+import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import type { PrRefs } from "./inspector/github.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
+import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
@@ -901,6 +905,20 @@ interface ForemanWriteRefusal {
  * they are shared with the dashboard and are bookkeeping downstream of a typing act these
  * gates already refused, so widening their schemas would buy nothing.
  */
+/**
+ * One row's stack standing, or null when it cannot be computed. It reads the database, and one
+ * bad row must not turn a whole merge-queue listing into a 500 - the same fallback the
+ * Registry's own copy uses.
+ */
+function safeStackStanding(...args: Parameters<typeof stackStandingFor>): ReturnType<typeof stackStandingFor> {
+  try {
+    return stackStandingFor(...args);
+  } catch (error) {
+    console.error("[routes] could not compute a stack standing:", args[0].key, error);
+    return null;
+  }
+}
+
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
@@ -5842,6 +5860,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // is what stops the worker charging an attempt for a human reading their scrollback.
   // Both ride along on the ActionResult itself, so neither can be forgotten here.
   const codeRabbitSending = new Set<string>();
+  const stackSending = new Set<string>();
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -5862,7 +5881,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
-    if (origin === "human" && parsed.data.buffer && pendingTurns) {
+    // A stack prompt is never buffered: its claim settles on THIS delivery's outcome.
+    if (origin === "human" && parsed.data.buffer && pendingTurns && !parsed.data.stack) {
       const result = pendingTurns.submit(session.id, parsed.data.text);
       // Retained for the delivery seam, exactly as /send does: the row reaches the agent later,
       // through `onTurnDelivered`, and without this that `send` is recorded with no actor.
@@ -5899,6 +5919,60 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return null;
       } catch { return "CodeRabbit delivery prerequisites are unavailable"; }
     };
+    // Stacked pull requests: the catch-up and restack prompts and the broken-stack actions,
+    // on the same rails as the CodeRabbit follow-up above - the text is rebuilt from the row,
+    // every guard is re-run inside the transport, a prompt is claimed before it is typed and
+    // the claim settles only on a known outcome. Foreman sends a prompt automatically; the
+    // operator's button sends one manually (re-arming an uncertain claim) or sends an action.
+    const stackRequest = parsed.data.stack;
+    const stackOrigin = origin === "foreman" ? "foreman" : origin === "human" ? "human" : null;
+    let stackClaim: string | null = null;
+    // The parent as read just before delivery, for a recovery action. The guard below runs
+    // inside the transport's write lock and cannot read GitHub (it is synchronous, and every
+    // sender shares it), so it checks the ledger's latest observation against this read instead.
+    let stackParentRead: PrRefs | null = null;
+    const stackGuard = (): string | null => {
+      if (!stackRequest) return null;
+      try {
+        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+          const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
+          if (changed) return changed;
+        }
+        if (!stackOrigin) return "Stack prompts are sent by Foreman or the operator";
+        const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin,
+          getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
+        if (candidate.error !== undefined) return candidate.error;
+        if (candidate.session.runtime !== session.runtime || paneToken(candidate.session) !== paneToken(session)) return "Stack prompt delivery channel changed";
+        const refusal = foremanWriteRefusal(composerActivity, candidate.session, origin);
+        if (refusal) return refusal.error;
+        const queue = queues.get(session.id);
+        if (queue?.items.some((item) => !codeRabbitTerminalItem(item.state))) return "Queued work owns this session";
+        const runs = (workflowManager()?.runs() ?? []).filter((run) => run.noteKey === noteKeyFor(session) || run.sessionId === session.id);
+        if (activeWorkflowOwnsSession(runs)) return "An active workflow owns this session";
+        return null;
+      } catch { return "Stack prompt delivery prerequisites are unavailable"; }
+    };
+    if (stackRequest) {
+      if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
+      // A recovery action was chosen from the parent's last observed state; read it again
+      // before typing, so a parent that merged or closed since never gets a stale instruction.
+      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
+        if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
+        stackParentRead = recheck.parent;
+      }
+      const blocked = stackGuard();
+      if (blocked) return c.json({ error: blocked, pasted: false }, 409);
+      const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin!,
+        getInspectorPr(stackRequest.prKey), getForemanConfig());
+      if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
+      if (stackSending.has(stackRequest.prKey)) return c.json({ error: "A stack prompt is already being delivered", pasted: false }, 409);
+      // Every prompt and recovery action is claimed before it is typed. The operator's send is
+      // the explicit re-arm of an uncertain claim; Foreman's never is.
+      stackClaim = claimStackPrompt(stackRequest.prKey, candidate.claim.kind, candidate.claim.tip, session.id, Date.now(), origin === "human");
+      if (!stackClaim) return c.json({ error: "That stack prompt was already claimed", pasted: false }, 409);
+      text = candidate.payload;
+    }
     if (request) {
       const blocked = codeRabbitGuard();
       if (blocked) return c.json({ error: blocked, pasted: false }, 409);
@@ -5939,15 +6013,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // All reservations above are synchronous. Acquire only when the transport's finally
     // can release it, so a reservation failure cannot strand this conversation's lock.
     if (claim) codeRabbitSending.add(claim.noteKey);
+    if (stackRequest) stackSending.add(stackRequest.prKey);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
       text,
       undefined,
-      () => codeRabbitGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? stackGuard() ?? registry.promptResourceBlockerForSession(session.id),
       origin,
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
-      .finally(() => { if (claim) codeRabbitSending.delete(claim.noteKey); });
+      .finally(() => {
+        if (claim) codeRabbitSending.delete(claim.noteKey);
+        if (stackRequest) stackSending.delete(stackRequest.prKey);
+      });
+    if (stackRequest) {
+      try {
+        // Delivered confirms; a POSITIVE non-delivery releases; anything else stays uncertain
+        // and is never retried automatically - the merge queue says so and offers the send.
+        if (stackClaim && (r.ok || r.pasted === false)) finishStackPrompt(stackClaim, r.ok ? "delivered" : "refused", Date.now());
+        registry.refreshInspections();
+      } catch (error) {
+        console.warn(`[mission-control] stack prompt bookkeeping failed for ${stackRequest.prKey}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     if (request && claim) {
       try {
         if (r.ok || r.pasted === false) finishCodeRabbit(request.prKey, claim.id, r.ok ? "delivered" : "refused");
@@ -6886,6 +6974,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const config = setForemanConfig(parsed.data);
+    // Stacked pull requests: every cached stack standing says whether Foreman will send its
+    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
+    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
+    // merge queue hides the manual send it now needs.
+    registry.refreshInspections();
     if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
     return c.json(config);
   });
@@ -7169,7 +7262,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // a second endpoint over one ledger is a second thing to keep honest.
   app.get("/api/inspector/prs", (c) => {
     const raw = c.req.query("adoptedSince");
-    if (raw === undefined) return c.json(loadInspectorInspections(50).map((row) => ({ ...row, codeRabbit: codeRabbitStanding(registry, row.key) })));
+    if (raw === undefined) {
+      const sessions = registry.liveSessions();
+      const foreman = getForemanConfig();
+      return c.json(loadInspectorInspections(50).map((row) => ({
+        ...row,
+        codeRabbit: codeRabbitStanding(registry, row.key),
+        stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
+      })));
+    }
     // Two guards, each doing work the other cannot.
     //
     // The SHAPE is matched as text before anything is coerced, because `Number()` is far too
@@ -7208,6 +7309,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * was nothing open". The status code is what makes the panel's error line say something
    * true when a pull request closes between its poll and the operator's click.
    */
+  // Stacked pull requests: the operator's *Wait for a replacement* on a child whose parent
+  // closed without merging. It only records the choice; the Inspector tick runs the
+  // replacement-parent transition once the parent task opens a replacement in the same work
+  // episode. Offered, and accepted, only while the child is open and that is its state.
+  app.post("/api/inspector/stack/await-replacement", async (c) => {
+    const parsed = await parseBody(c, StackAwaitReplacementSchema);
+    if (!parsed.ok) return parsed.res;
+    const pr = getInspectorPr(parsed.data.prKey);
+    if (!pr?.stack) return c.json({ error: "no stacked pull request with that key" }, 404);
+    if (parsed.data.wait) {
+      const standing = safeStackStanding(pr, registry.liveSessions(), getForemanConfig());
+      if (pr.state !== "open" || !standing?.actions.includes("await-replacement")) {
+        return c.json({ error: "waiting for a replacement is offered only for an open child whose parent closed" }, 409);
+      }
+    }
+    setStackAwaitReplacement(pr.key, parsed.data.wait ? Date.now() : null, Date.now());
+    registry.refreshInspections();
+    return c.json({ ok: true });
+  });
+
   app.post("/api/inspector/resolve-findings", async (c) => {
     const parsed = await parseBody(c, ResolveFindingsSchema);
     if (!parsed.ok) return parsed.res;

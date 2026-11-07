@@ -266,7 +266,7 @@ these stays in this browser, and which of them acts publicly under your account.
 
 | Group | Reach | Categories |
 |-------|-------|-----------|
-| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar), **Keyboard**, **Dispatch** |
+| **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card, top bar; its **Skin** picker reaches this machine, see below), **Keyboard**, **Dispatch** |
 | **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
@@ -274,6 +274,10 @@ these stays in this browser, and which of them acts publicly under your account.
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+Display's **Skin** is the exception in the other group: it sits under *This screen*, but the
+choice is the machine's, not one browser's. It is stored once in `app_config.ui.skin`, every
+browser profile and the desktop window open in it, and the daemon also records the skin's
+background in the state home so the desktop window's first frame matches it.
 
 **Cost** and **Telemetry** sit next to each other because they are the pair people confuse, and
 reading them side by side is what separates them. Cost configures Claude Code reporting its usage
@@ -290,6 +294,12 @@ In the desktop app, **Application updates** also offers **Check for updates** an
 default-off **Alpha updates** preference, which follows the latest `main` commit while
 including stable release news. Its badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
+
+Display's **Appearance** panel holds the **Skin** picker, a row of preview tiles for Default
+(today's dark look), the light **Daylight** and **Paper** skins, and the dark **Blueprint**
+and **Neon Dusk** skins. A tile applies the moment it is picked,
+repainting the page behind the settings and persisting per machine in `app_config.ui.skin`,
+which settings backup carries with the rest of Display. See [Skins](ui.md#skins).
 
 Display's **Layout** panel also carries **Group by repository**, which ships checked: it
 collects each fleet column's cards under a coloured heading naming the repository their session

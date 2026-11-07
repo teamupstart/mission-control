@@ -39,7 +39,7 @@ import { reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, inputQuestionProblem, McpTaskConfigurationSchema, McpUpdateTaskSchema, McpDeleteTaskSchema, McpListTasksSchema, McpGetTaskSchema, type McpTaskSnapshot, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
@@ -319,7 +319,9 @@ server.registerTool(
       "Show a plan in the Mission Control dashboard with one or more decision points the " +
       "human can resolve by selecting options and clicking Submit, or dismiss without an " +
       "answer when the decision set is stale. BLOCK until they submit or dismiss. Returns " +
-      "their selections or an explicit dismissal so you can proceed appropriately. Use this " +
+      "their selections or an explicit dismissal so you can proceed appropriately. The human " +
+      "may move any decision to chat instead of choosing; the result then names it and says " +
+      "how to discuss it, and you must not decide or re-ask it. Use this " +
       "instead of asking open-ended questions whenever the plan's open choices can be " +
       "expressed as options.",
     inputSchema: {
@@ -408,11 +410,14 @@ function taskConfiguration(task: Task) {
     agent: task.agent,
     model: task.model,
     effort: task.effort,
+    advisorModel: task.advisorModel,
     workflowId: task.workflowId,
+    planPolicy: task.planPolicy,
     enabled: task.enabled,
     priority: task.priority,
     labels: task.labels,
     dependencies: task.dependencies,
+    planInputs: task.planInputs,
   };
 }
 
@@ -425,8 +430,9 @@ server.registerTool(
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
-      "labels, and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
-      "model/effort follows launch-time defaults. Null workflowId opts out of an after-work workflow. " +
+      "labels, planStorage (plan tasks only), and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
+      "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +
       "task ids or depend on the calling session to create durable dependency edges; unfinished " +
       "task/session prerequisites wait for their pull requests to merge. Exact local plan-only " +
@@ -555,6 +561,75 @@ server.registerTool(
   },
 );
 
+/** Saved task facts only: never resolve another session's private state. */
+function taskReadResult(task: McpTaskSnapshot, includeIntent: boolean) {
+  const { intent, ...configuration } = taskConfiguration(task);
+  return {
+    ...configuration,
+    ...(includeIntent ? { intent } : {}),
+    sessionId: task.sessionId,
+    outcomeUrl: task.outcomeUrl,
+    prUrl: task.prUrl,
+    repoPrs: task.repoPrs,
+    outcome: task.outcome,
+    error: task.error,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    dispatchedAt: task.dispatchedAt,
+    completedAt: task.completedAt,
+  };
+}
+
+server.registerTool(
+  "list_tasks",
+  {
+    title: "List saved tasks (read-only)",
+    description: "Read-only: list saved Mission Control tasks in any status, without launching, modifying or reordering anything. " +
+      "Uses the same daemon-token access as create_task and update_task; no Control other sessions opt-in is required. " +
+      "Returns {tasks, nextCursor}, newest createdAt first with task id as a descending tie-breaker. " +
+      "Omit filters to read all tasks; combine filters with AND. Intent is omitted unless includeIntent is true. " +
+      "Each task includes saved configuration, plan inputs, linked sessionId, prUrl and per-repository repoPrs. " +
+      "Pass nextCursor as cursor with unchanged filters to continue. This is a live listing, not a frozen snapshot.",
+    inputSchema: McpListTasksSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (query) => {
+    try {
+      const res = await http("/mcp/tasks/list", "POST", query);
+      if (!res.ok) return textResult(`Could not list tasks (${res.status}): ${await res.text()}`, true);
+      const page = await res.json() as { tasks: McpTaskSnapshot[]; nextCursor: string | null };
+      return textResult(JSON.stringify({
+        tasks: page.tasks.map((task) => taskReadResult(task, query.includeIntent)),
+        nextCursor: page.nextCursor,
+      }, null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "get_task",
+  {
+    title: "Read a saved task (read-only)",
+    description: "Read-only: get a task's full saved configuration, including intent and plan inputs, by taskId in any status. " +
+      "Includes linked sessionId, prUrl and per-repository repoPrs. " +
+      "Uses the same daemon-token access as update_task, without a Control other sessions opt-in. " +
+      "Never launches, modifies or reorders work and does not read session-private state.",
+    inputSchema: McpGetTaskSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ taskId }) => {
+    try {
+      const res = await http("/mcp/tasks/get", "POST", { taskId });
+      if (!res.ok) return textResult(`Could not get task (${res.status}): ${await res.text()}`, true);
+      return textResult(JSON.stringify(taskReadResult(await res.json() as McpTaskSnapshot, true), null, 2));
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 server.registerTool(
   "update_task",
   {
@@ -563,7 +638,8 @@ server.registerTool(
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
       "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, " +
-      "repository, and additionalRepositories. Null model/effort clears the override; changing " +
+      "repository, and additionalRepositories. Null model/effort clears the override; advisorModel accepts " +
+      "only null, which clears an advisor pin saved before the advisor moved to Settings -> Harnesses; changing " +
       "agent clears omitted model/effort overrides. Null workflowId opts out of the workflow; " +
       "null priority clears it. Arrays replace the saved set; [] clears it. Dependencies use " +
       "{type: 'task', taskId} or {type: 'session', sessionId}. Repository selectors accept an " +
@@ -635,7 +711,9 @@ server.registerTool(
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
       "they resolve it. Without `options`, they answer in free text or dismiss without an " +
       "answer. With `options`, they can submit clickable choices or dismiss without choosing; " +
-      "the tool returns their answer, selections, or an explicit dismissal. " +
+      "the tool returns their answer, selections, or an explicit dismissal. They may also " +
+      "choose to chat about it instead; the result then says so and how to proceed, and you " +
+      "must not decide or re-ask the question yourself. " +
       "Pass `options` whenever the answer is a choice between discrete alternatives. Omit " +
       "`options` only for open-ended asks.",
     inputSchema: {
@@ -664,6 +742,17 @@ server.registerTool(
     },
   },
   async ({ question, options, multiSelect, allowOther }, extra) => {
+    // Refused before any review exists: a card the human cannot answer would leave this call,
+    // and the session, waiting on something nobody can resolve. The daemon's schema enforces
+    // the same rule; checking here first lets the agent read why instead of a transport error.
+    const problem = inputQuestionProblem(question, options);
+    if (problem) {
+      return textResult(
+        `Not asked: ${problem}. Nothing was shown to the human and nothing is waiting on them. ` +
+          "Fix the question and call request_input again.",
+        true,
+      );
+    }
     try {
       // Option ids are positional and generated here rather than asked of the agent. The
       // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a

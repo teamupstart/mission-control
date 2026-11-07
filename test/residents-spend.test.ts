@@ -73,3 +73,21 @@ test("unpriced model validation never silently disables a configured spend cap",
     assert.equal(residentSpendProblem({ ...settings, loop: { ...settings.loop, spendCapUsd: null } }), null);
   }
 });
+
+test("GPT-6.1 Sol can retain the default resident spend cap", () => {
+  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Agent Wrangler" }, execution: { agent: "codex", model: "gpt-6.1-sol" } });
+  assert.equal(settings.loop.spendCapUsd, 20);
+  assert.equal(residentSpendProblem(settings), null);
+});
+
+test("all published Claude spend models accept caps without substituting estimated rates", async () => {
+  const { CLAUDE_REPORTED_SPEND_MODELS } = await import("../src/shared/resident-spend.ts");
+  const { claudeRunner } = await import("../src/server/llm/claude.ts");
+  for (const model of CLAUDE_REPORTED_SPEND_MODELS) {
+    const settings = ResidentProfileRevisionSchema.parse({ identity: { name: model }, execution: { agent: "claude", model } });
+    assert.equal(residentSpendProblem(settings), null, model);
+    assert.deepEqual(claudeRunner.price({ modelId: model, reportedCostUsd: 0.37, input: 1000, output: 1000, cacheRead: 1000, cacheWrite: 1000, reasoningOutput: 0 }), {
+      costUsd: 0.37, basis: "reported", pricingVersion: "",
+    });
+  }
+});

@@ -3,6 +3,7 @@
 export const UPDATE_HELPER_FILES = [
   "dist/native/state-lock.node",
   "scripts/apply-update.mjs",
+  "scripts/update-diagnostic.mjs",
   "scripts/update-helper-runtime.mjs",
   "scripts/update-helper-files.mjs",
   "scripts/install-binary.mjs",
@@ -15,6 +16,8 @@ export const UPDATE_HELPER_FILES = [
   "src/shared/install-receipt.mjs",
   "src/shared/harness-runtime.mjs",
   "scripts/mac-app-lifecycle.mjs",
+  "scripts/update-process-owners.mjs",
+  "scripts/darwin-process-identity.mjs",
   "scripts/app-bundle-swap.mjs",
   "scripts/update-lock.mjs",
   "scripts/install-migration.mjs",

@@ -11,14 +11,12 @@ export function OrganizationTelemetryNotice({
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
   if (notice === null) return null;
-  return <VisibleNotice key={notice.label} notice={notice} onDismiss={onDismiss} />;
+  return <VisibleNotice key={notice.label} onDismiss={onDismiss} />;
 }
 
 function VisibleNotice({
-  notice,
   onDismiss,
 }: {
-  notice: NonNullable<TelemetrySettingsSummary["organizationNotice"]>;
   onDismiss: () => Promise<string | null>;
 }): React.JSX.Element | null {
   const [dismissing, setDismissing] = useState(false);
@@ -42,15 +40,13 @@ function VisibleNotice({
   if (acknowledged) return null;
 
   return (
-    <section className="app-banner app-banner-organization" role="status" aria-label={`${notice.label} telemetry notice`}>
+    <section className="app-banner app-banner-organization" role="status" aria-label="Organization telemetry notice">
       <div className="app-banner-copy">
-        <strong>Mission Control usage telemetry is on for this {notice.label}-managed Mac.</strong>
+        <strong>Mission Control usage telemetry is enabled by your organization.</strong>
         <p>
-          Because this Mac is enrolled in {notice.label}'s device management, Mission Control
-          sends a minimized set of its own activity metrics and traces through
-          {` ${notice.label}'s telemetry gateway to ${notice.label}'s Datadog. ${notice.label} manages this setting. `}
-          Prompts, code, file paths, terminal output and names are
-          excluded. The gateway also copies metrics to a second destination managed by its owners.
+          Mission Control sends a minimized set of its own activity metrics and traces to
+          your organization's configured telemetry collector. Prompts, code, file paths,
+          terminal output and names are excluded.
         </p>
         {error && <p className="settings-error" role="alert">{error}</p>}
       </div>

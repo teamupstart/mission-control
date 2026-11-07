@@ -130,6 +130,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
     "mission:update-repair-migration",
     "mission:update-cancel",
     "mission:update-defer",
+    "mission:update-dismiss-outcome",
   ];
   // The pushed channels, which are `on`/`send` rather than `invoke`/`handle` because main is
   // the side asking: it pushes a snapshot nobody requested, and a dialog it is waiting on an
@@ -160,6 +161,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         /mission:update-repair-migration[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents \? updateController\.retryMigrationRepair\(true\)/.test(updateHandlers) &&
         /mission:update-cancel[\s\S]{0,160}updateController\.cancel\(\)/.test(updateHandlers) &&
         /mission:update-defer[\s\S]{0,160}updateController\.defer\(\)/.test(updateHandlers) &&
+        /mission:update-dismiss-outcome[\s\S]{0,160}event.sender === getMainWindow\(\)\?\.webContents && updateController\.dismissOutcome\(outcome\)/.test(updateHandlers) &&
         !updateHandlers.includes("updateController?."),
       mainSubscribesOnce:
         (main.match(/updater(?:\?|!)?\.subscribe\(/g) ?? []).length === 1,
@@ -190,7 +192,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
-          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,onState,onDialog,receivedDialog,answerDialog" &&
+          "getState,check,setAlpha,apply,install,keepSystem,repairMigration,cancel,defer,dismissOutcome,onState,onDialog,receivedDialog,answerDialog" &&
         [
           ["getState", "mission:update-get-state"],
           ["check", "mission:update-check"],
@@ -201,12 +203,14 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
           ["repairMigration", "mission:update-repair-migration"],
           ["cancel", "mission:update-cancel"],
           ["defer", "mission:update-defer"],
+          ["dismissOutcome", "mission:update-dismiss-outcome"],
         ].every(([method, channel]) =>
           new RegExp(`${method}:\\s*[^\\n]+${channel}`).test(updatePreload),
         ) &&
         Array.from(updatePreload.matchAll(/["'](mission:update-[^"']+)["']/g), ([, channel]) => channel)
           .every((channel) => [...channels, ...pushChannels].includes(channel!)) &&
         channels.every((channel) => (updatePreload.match(new RegExp(channel, "g")) ?? []).length === 1) &&
+        /dismissOutcome: \(outcome: UpdateApplyOutcome\): Promise<boolean> => ipcRenderer\.invoke\("mission:update-dismiss-outcome", outcome\)/.test(updatePreload) &&
         (updatePreload.match(/mission:update-state/g) ?? []).length === 2 &&
         // Subscribing to the questions IS the announcement that this renderer can draw them,
         // and the order is load-bearing: main re-offers whatever is unanswered on that
@@ -221,7 +225,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadLeaksNoDiagnostics:
         !/\b(?:path|url|stderr|stack|rawError)\b/i.test(updatePreload),
       declarationsMirrorGroupedContract:
-        /import\s+type\s+\{\s*UpdateSnapshot\s*\}/.test(declarations) &&
+        /import\s+type\s+\{\s*UpdateApplyOutcome,\s*UpdateSnapshot\s*\}/.test(declarations) &&
         // Optional, like `setCardJumpKeys`: an older preload beside this bundle is what a
         // partly-applied desktop update looks like, and the `?` is what makes the compiler
         // refuse the unguarded call that would throw out of a mount effect.
@@ -229,6 +233,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         /answerDialog\?\(/.test(declarations) &&
         /keepSystem\?\(\)\s*:\s*Promise<boolean>/.test(declarations) &&
         /repairMigration\?\(\)\s*:\s*Promise<void>/.test(declarations) &&
+        /dismissOutcome\?\(outcome:\s*UpdateApplyOutcome\)\s*:\s*Promise<boolean>/.test(declarations) &&
         /updates\s*:\s*\{[\s\S]*getState\(\)\s*:\s*Promise<UpdateSnapshot>[\s\S]*check\(\)\s*:\s*Promise<UpdateSnapshot>[\s\S]*apply\(\)\s*:\s*Promise<boolean>[\s\S]*install\(\)\s*:\s*Promise<boolean>[\s\S]*cancel\(\)\s*:\s*Promise<void>[\s\S]*defer\(\)\s*:\s*Promise<void>[\s\S]*onState\(.*UpdateSnapshot.*\)\s*:\s*\(\)\s*=>\s*void[\s\S]*\}/.test(
           declarations,
         ),

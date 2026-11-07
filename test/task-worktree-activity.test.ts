@@ -208,8 +208,10 @@ test("a real git read suspended past its budget still answers, instead of report
   const dir = mkRepo("suspended-read");
   const head = git(dir, "rev-parse", "HEAD").trim();
   // Warm the executable locator first: a process's first lookup spawns a login-shell PATH probe,
-  // and the suspension below must land on git's spawn, not that one.
-  assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 300)).code, 0);
+  // and the suspension below must land on git's spawn, not that one. That probe plus git is not
+  // what this test bounds, and under the full suite's parallel load it can outlast the 300ms
+  // budget measured below, so the warm-up gets room enough never to be the thing that times out.
+  assert.equal((await gitStream(dir, ["rev-parse", "HEAD"], () => {}, 30_000)).code, 0);
 
   // Suspend INSIDE git's spawn: the child exists, the read's budget is already armed, and no
   // output can have been processed, because nothing returns to the event loop until spawn does.

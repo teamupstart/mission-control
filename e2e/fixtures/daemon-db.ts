@@ -50,7 +50,7 @@ const BUSY_TIMEOUT_MS = 5_000;
  * callback would have its handle closed out from under it the moment it first suspended,
  * so returning a thenable is refused rather than left to fail later as a use-after-close.
  */
-export function withDaemonDb<T>(daemon: DaemonHandle, use: (db: DatabaseSync) => T): T {
+export function withDaemonDb<T>(daemon: Pick<DaemonHandle, "home">, use: (db: DatabaseSync) => T): T {
   const db = new DatabaseSync(join(daemon.home, "harness.db"));
   try {
     db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);

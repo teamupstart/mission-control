@@ -1,10 +1,12 @@
-import { test, after } from "node:test";
+import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
+import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import { resolvedSessionIntent } from "../src/shared/goal.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
@@ -30,6 +32,14 @@ const modeFile = join(bin, "mode");
  */
 const runLog = join(bin, "runs");
 const RUN_DELIM = "##MISSION-RUN-END##";
+/**
+ * An amendment that passes every preservation rule and fills the 4,000-character storage bound
+ * by itself, so restoring an omitted attachment line would overflow it. Letters and spaces only,
+ * so it needs no escaping inside the fake's single-quoted reply.
+ */
+const LONG_AMENDMENT = `Ship the Goal feature end to end. Also ${"keep the drawer fast ".repeat(200)}`
+  .slice(0, 4000)
+  .trimEnd();
 const fake = join(bin, "claude.sh");
 writeFileSync(
   fake,
@@ -54,6 +64,19 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   blank)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"   \\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
   amend)  printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\\",\\"goal\\":\\"Ship the Goal feature and expose intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
   shrink) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Only expose current intent in the Foreman drawer\\",\\"goal\\":\\"Expose current intent in the Foreman drawer\\",\\"focus\\":\\"Add the intent section to the drawer\\",\\"reason\\":\\"The instruction adds a required surface to the existing outcome.\\"}\\n\`\`\`"}' ;;
+  # An opening objective with an attachment line under it. \`amend\` then restates the objective
+  # without that line. The inner JSON carries an escaped newline, hence the doubled escape.
+  initial-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # The same attachment as a macOS screenshot path, which has a space in it.
+  initial-spaced-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end\\\\n/Users/me/Desktop/Screen Shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # Keeps the prefix and an additive connector, then retracts: only the retracting-word rule
+  # can reject it.
+  retract) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end. Also drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
+  # A path inside a sentence is part of that sentence, so it stays in the comparison.
+  initial-inline-path) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"Ship the Goal feature end to end, see /tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  # An objective that is nothing but an attachment line compares as empty.
+  initial-path-only) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"initial\\",\\"objective\\":\\"/tmp/uploads/shot.png\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Ship the Goal feature\\",\\"reason\\":\\"This is the first substantive instruction.\\"}\\n\`\`\`"}' ;;
+  amend-long) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"${LONG_AMENDMENT}\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Keep the drawer fast\\",\\"reason\\":\\"The instruction adds a requirement to the existing outcome.\\"}\\n\`\`\`"}' ;;
   negate) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"amend\\",\\"objective\\":\\"Ship the Goal feature end to end, but drop its existing test requirement\\",\\"goal\\":\\"Ship the Goal feature without its existing test requirement\\",\\"focus\\":\\"Drop the existing test requirement\\",\\"reason\\":\\"The instruction changes the existing acceptance criteria.\\"}\\n\`\`\`"}' ;;
   rapid)
     case "$request" in
@@ -88,6 +111,12 @@ const setMode = (
     | "amend"
     | "shrink"
     | "negate"
+    | "initial-path"
+    | "initial-spaced-path"
+    | "retract"
+    | "initial-inline-path"
+    | "initial-path-only"
+    | "amend-long"
     | "rapid"
     | "replace"
     | "model-unclear",
@@ -123,7 +152,8 @@ const FLOOR_MS = 300;
 process.env.MISSION_GOAL_REFRESH_MS = String(FLOOR_MS);
 
 const { openDb } = await import("../src/server/db.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
+const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
 const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
 
 openDb();
@@ -277,37 +307,77 @@ test("an amendment updates the objective shown on the card and advances its vers
   }
 });
 
-test("a schema-valid amendment that drops the current objective fails closed", async () => {
-  const { r, s, env } = withSession("r18", "%48");
+/**
+ * Drive one rejected amendment and assert it resolved as steering: the contract, its card
+ * text and its version stand, the queue moved on, the rationale carries the stable marker,
+ * and exactly one log line names the session, revision and broken rule - never the text.
+ */
+async function assertRejectedAmendmentSteers(
+  t: TestContext,
+  opts: {
+    id: string;
+    pane: string;
+    mode: "shrink" | "negate" | "retract" | "amend" | "amend-long";
+    /** The fake reply that establishes the opening objective. */
+    initialMode?: "good" | "initial-path" | "initial-inline-path" | "initial-path-only";
+    instruction: string;
+    rule: string;
+  },
+): Promise<void> {
+  const { r, s, env } = withSession(opts.id, opts.pane);
+  setMode(opts.initialMode ?? "good");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
   const stop = startGoalRefiner(r);
-  const amendment = "also expose the current intent in the Foreman drawer, but keep the larger goal";
   try {
     await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
     const prior = r.getGoal(s.id)!;
-    setMode("shrink");
-    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: amendment }));
+    assert.equal(prior.objectiveVersion, 1, "precondition: the opening objective is version 1");
+    const logged: string[] = [];
+    const errors = t.mock.method(console, "error", (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    setMode(opts.mode);
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: opts.instruction }));
 
     await until(
-      () =>
-        r.getGoal(s.id)?.relationship === "unclear" &&
-        r.getGoal(s.id)?.rationale?.includes("did not explicitly preserve") === true,
-      "the shrinking amendment to be rejected",
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the rejected amendment to resolve as steering",
       FLOOR_MS + RUN_TIMEOUT_MS,
     );
-    // Cross another complete debounce window. A rejected contract stays parked instead of
-    // consuming model calls or resolving itself on the next poll.
+    // Cross another complete debounce window: a resolved revision spends no further calls.
     await new Promise((resolve) => setTimeout(resolve, FLOOR_MS + 50));
+    errors.mock.restore();
 
     const goal = r.getGoal(s.id)!;
     assert.equal(goal.objective, prior.objective, "the larger completion contract was replaced");
-    assert.equal(goal.text, prior.text, "the card adopted the model's smaller objective");
-    assert.equal(goal.objectiveVersion, 1, "a rejected amendment advanced the objective version");
-    assert.equal(goal.resolvedPromptRevision, 1, "a rejected amendment was marked resolved");
+    assert.equal(goal.text, prior.text, "the card adopted the model's proposed objective");
+    assert.equal(goal.objectiveVersion, prior.objectiveVersion, "a rejected amendment advanced the objective version");
     assert.equal(goal.promptRevision, 2);
-    assert.equal(goal.relationship, "unclear");
-    assert.deepEqual(goal.pendingPrompts, [{ revision: 2, prompt: amendment }]);
-    assert.equal(runsAsking(amendment), 1, "the rejected amendment retried without new context");
+    assert.equal(goal.resolvedPromptRevision, 2, "the rejected amendment latched the queue head");
+    assert.equal(goal.relationship, "steer");
+    assert.deepEqual(goal.pendingPrompts, []);
+    assert.match(goal.rationale ?? "", /^Treated as steering: the proposed amendment did not retain the current objective\. /);
+    assert.equal(runsAsking(opts.instruction), 1, "the rejected amendment spent more than one model call");
+    // The gate Foreman's prompted wrap-up checks at step 8 before it can claim the bound
+    // Workflow. A latched head made this null forever.
+    assert.deepEqual(resolvedSessionIntent(goal), {
+      objective: prior.objective,
+      objectiveVersion: prior.objectiveVersion,
+      promptRevision: 2,
+      episodeKey: `intent:${prior.objectiveVersion}:2`,
+    }, "Foreman still reads this session's intent as unresolved");
+    assert.deepEqual(
+      r.getGoalSteering(s.id, 2).map((note) => [note.revision, note.instruction, note.rationale]),
+      [[2, opts.instruction, goal.rationale]],
+      "the steering row was not recorded at the resolved revision",
+    );
+
+    const rejection = logged.filter((line) => line.includes("did not preserve the objective"));
+    assert.equal(rejection.length, 1, `expected one rejection log line, saw: ${JSON.stringify(logged)}`);
+    assert.equal(
+      rejection[0],
+      `[goal] ${s.id}: amendment at revision 2 did not preserve the objective (${opts.rule}); treated as steering`,
+    );
     assert.equal(
       r.snapshot().sessions.find((x) => x.id === s.id)?.goal?.text,
       prior.text,
@@ -317,29 +387,114 @@ test("a schema-valid amendment that drops the current objective fails closed", a
     stop();
     setMode("good");
   }
+}
+
+test("a schema-valid amendment that drops the current objective resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r18",
+    pane: "%48",
+    mode: "shrink",
+    instruction: "also expose the current intent in the Foreman drawer, but keep the larger goal",
+    rule: "not-a-prefix",
+  });
 });
 
-test("an amendment cannot preserve by prefix and then retract a requirement", async () => {
-  const { r, s, env } = withSession("r19", "%49");
-  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+test("an amendment that keeps the prefix but adds no additive connector resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r19",
+    pane: "%49",
+    mode: "negate",
+    instruction: "drop the existing test requirement",
+    rule: "no-additive-connector",
+  });
+});
+
+test("an amendment that adds with a connector and then retracts a requirement resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r31",
+    pane: "%61",
+    mode: "retract",
+    instruction: "also drop the existing test requirement",
+    rule: "retracting-word",
+  });
+});
+
+test("a path inside a sentence stays in the comparison, so dropping it resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r32",
+    pane: "%62",
+    initialMode: "initial-inline-path",
+    mode: "amend",
+    instruction: "also show its intent in the Foreman drawer",
+    rule: "not-a-prefix",
+  });
+});
+
+test("an amendment to an objective that is only a path line resolves as steering", async (t) => {
+  await assertRejectedAmendmentSteers(t, {
+    id: "r33",
+    pane: "%63",
+    initialMode: "initial-path-only",
+    mode: "amend",
+    instruction: "also surface its intent in the Foreman drawer",
+    rule: "no-current-objective",
+  });
+});
+
+test("an amendment with no room left to keep an omitted attachment line resolves as steering", async (t) => {
+  // Appending the line would push the stored contract past the bound, and clamping it would
+  // elide the middle of a text whose head is the objective the check just validated.
+  assert.equal(LONG_AMENDMENT.length > 4000 - "\n/tmp/uploads/shot.png".length, true,
+    "precondition: the proposal leaves no room for the attachment line");
+  await assertRejectedAmendmentSteers(t, {
+    id: "r34",
+    pane: "%64",
+    initialMode: "initial-path",
+    mode: "amend-long",
+    instruction: "also keep the drawer fast",
+    rule: "attachments-exceed-limit",
+  });
+});
+
+for (const attachment of [
+  { id: "r30", pane: "%60", mode: "initial-path", path: "/tmp/uploads/shot.png", ask: "also show its intent in the Foreman drawer" },
+  { id: "r35", pane: "%65", mode: "initial-spaced-path", path: "/Users/me/Desktop/Screen Shot.png", ask: "also put its intent in the Foreman drawer" },
+] as const) test(`an amendment that omits an attachment line is accepted and keeps the line (${attachment.path})`, async () => {
+  const { r, s, env } = withSession(attachment.id, attachment.pane);
+  setMode(attachment.mode);
+  r.applyHook(
+    evt({ event: "UserPromptSubmit", env, prompt: `ship the Goal feature\n${attachment.path}` }),
+  );
   const stop = startGoalRefiner(r);
   try {
     await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
-    const prior = r.getGoal(s.id)!;
-    setMode("negate");
-    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "drop the existing test requirement" }));
+    assert.equal(r.getGoal(s.id)?.objective, `Ship the Goal feature end to end\n${attachment.path}`);
+
+    setMode("amend");
+    r.applyHook(
+      evt({ event: "UserPromptSubmit", env, prompt: attachment.ask }),
+    );
     await until(
-      () => r.getGoal(s.id)?.relationship === "unclear",
-      "the retracting amendment to be rejected",
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the amendment that dropped the path line",
       FLOOR_MS + RUN_TIMEOUT_MS,
     );
+
     const goal = r.getGoal(s.id)!;
-    assert.equal(goal.objective, prior.objective);
-    assert.equal(goal.objectiveVersion, prior.objectiveVersion);
-    assert.equal(goal.resolvedPromptRevision, prior.resolvedPromptRevision);
-    assert.deepEqual(goal.pendingPrompts, [
-      { revision: 2, prompt: "drop the existing test requirement" },
-    ]);
+    assert.equal(goal.relationship, "amend", "the comparison still counted the attachment line");
+    assert.equal(goal.objectiveVersion, 2);
+    assert.equal(
+      goal.objective,
+      `Ship the Goal feature end to end. Also expose its intent in the Foreman drawer\n${attachment.path}`,
+      "the accepted amendment dropped the attachment from the durable contract",
+    );
+
+    // And the contract a run freezes after that amendment still names the attachment.
+    const binding = { id: `${attachment.id}-binding`, sessionId: s.id, noteKey: noteKeyFor(s) } as WorkflowBinding;
+    const frozen = readWorkflowIntentSnapshot(r, binding);
+    assert.ok(frozen, "a bound live conversation must produce a snapshot");
+    assert.equal(frozen.rawGoal, goal.objective);
+    assert.ok(frozen.rawGoal.endsWith(`\n${attachment.path}`), "the frozen contract lost the attachment");
   } finally {
     stop();
     setMode("good");

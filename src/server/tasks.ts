@@ -1,4 +1,5 @@
-import { newPlanPolicy, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
+import { taskDefaultWorkflowId } from "@shared/task.ts";
+import { newPlanPolicy, taskPlanStorageLocked, planRevisionRecord, readPlanRevision, reserveTaskPlans, PlanStoreError } from "./plans/store.ts";
 import { publicationReceipt, validatePlanInputs, validatePlanInputDependencies, taskPlanInputProblem, taskPlanDiscovery } from "./plans/inputs.ts";
 import { localWorkflowProblem, localPlanRecoveryPending } from "./plans/publication.ts";
 import type { ManagedPlanPolicy, TaskPlanInput } from "@shared/managed-plans.ts";
@@ -45,7 +46,7 @@ import {
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { bulkTaskPatch } from "@shared/task-bulk.ts";
-import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor, supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
@@ -138,6 +139,8 @@ import {
 import { withTaskKindContract } from "./task-contract.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
 import { TASK_KIND_BEHAVIOR } from "@shared/task.ts";
+import { newLaunchFailure, type TaskLaunchFailure } from "@shared/launch-failure.ts";
+import { residentRunForTask } from "./residents/store.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { cancelPipelineCommission } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
@@ -190,6 +193,9 @@ import {
   type PendingTurnResetBoundary,
 } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { StackReadiness, UNSTACKED } from "./stacking/readiness.ts";
+import { defaultStackGitHub, type StackGitHub } from "./stacking/github.ts";
+import { stackStartEdge, withoutStackStamp } from "@shared/stacking.ts";
 import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -242,6 +248,7 @@ export interface CreateTaskInput {
   /** Prerequisites selected from current backlog tasks or live sessions. */
   dependencies?: TaskDependencyInput[];
   planInputs?: TaskPlanInput[];
+  planStorage?: "repository" | "local" | null;
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -689,6 +696,21 @@ export interface TaskArchiveGate {
 const DISABLED_REFUSAL =
   "task is disabled - Foreman will not schedule it (launch it yourself to override)";
 
+/**
+ * Give a resolved edge the operator's stack/after-merge choice. An absent `mode` means
+ * inherit the Shipping default, so it is removed rather than stored. Changing the mode drops
+ * the readiness stamp: a stamp records a decision made under the old mode, and the daemon
+ * re-derives it on its next pass.
+ */
+function withEdgeMode<T extends Exclude<TaskDependency, { type: "plan" }>>(
+  edge: T,
+  mode: "merge" | "stack" | undefined,
+): T {
+  if ((edge.mode ?? undefined) === mode) return edge;
+  const { mode: _previous, ...rest } = withoutStackStamp(edge);
+  return { ...rest, ...(mode ? { mode } : {}) } as T;
+}
+
 /** True when this call must be refused because the task is parked and nobody claimed an override. */
 function refusedAsDisabled(task: Task, overrideDisabled: boolean | undefined): boolean {
   // Scoped to `backlog`: `enabled` gates SCHEDULING, and the retry path for a cleanly
@@ -970,6 +992,13 @@ export class TaskManager {
    * behaviour: nothing is owed and nothing is written.
    */
   private writeback?: WritebackEnqueuer;
+  /**
+   * Stacked pull requests: the readiness stamp on dependency edges and the revalidation a
+   * stacked dispatch runs before it pins its prerequisite's head. See `stacking/readiness.ts`.
+   * Its GitHub and git seam is replaceable for tests through `useStackGitHub`.
+   */
+  private stackReadiness: StackReadiness;
+  private readonly stackDispatching = new Set<string>();
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -1000,6 +1029,7 @@ export class TaskManager {
   ) {
     this.worktrees = worktrees ?? new WorktreeManager();
     this.legacyWorktrees = legacyWorktrees ?? new LegacyTreehouseService();
+    this.stackReadiness = new StackReadiness(registry, getShippingConfig, defaultStackGitHub);
     this.dispatcher = new Dispatcher(registry, undefined, {
       supervisor,
       workflowEvidenceEnabled: (task) => this.workflowEvidenceEnabledForTask(task),
@@ -1017,6 +1047,7 @@ export class TaskManager {
         return this.residentLaunch(task, repository, runtime);
       },
       residentMcp: (task) => this.residentMcp?.(task) ?? null,
+      residentProfileId: (task) => residentRunForTask(task.id)?.run.profileId ?? null,
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
@@ -1080,7 +1111,13 @@ export class TaskManager {
     // the operator closed, an agent that exited by itself. Registry emits `session_remove`
     // only from its eviction timer, which is the durable answer - a session marked exited
     // by one sweep and rediscovered by the next never reaches it.
+    // Stack readiness follows the same two signals every other "has the prerequisite
+    // finished" question here does: a session changing state, and a task (a dependent or its
+    // prerequisite) being edited. One coalesced pass per burst.
     this.subscriptions.push(registry.subscribe((e) => {
+      if (e.type === "session_upsert" || e.type === "task_upsert" || e.type === "session_remove") {
+        this.stackReadiness.schedule();
+      }
       if (e.type === "session_remove") {
         // Before `agentWentAway`, so a task whose work landed reads as done rather than
         // as a failure with a merged pull request sitting in its record. Registry deletes
@@ -1436,6 +1473,12 @@ export class TaskManager {
     this.writeback = enqueuer;
   }
 
+  /** A launch-failure record for a dispatch this manager settles outside the dispatcher. */
+  private launchFailureFor(t: Task, sessionKept = false): TaskLaunchFailure {
+    const resident = TASK_KIND_BEHAVIOR[t.kind].launch === "resident";
+    return newLaunchFailure(t, Date.now(), resident ? residentRunForTask(t.id)?.run.profileId ?? null : null, sessionKept);
+  }
+
   /** Install the resident launch composer after `ResidentManager` exists. */
   registerResidentLaunch(
     compose: NonNullable<TaskDispatcherDeps["residentLaunch"]>,
@@ -1736,6 +1779,7 @@ export class TaskManager {
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     this.stopMissionSessionClosures();
+    this.stackReadiness.stop();
     for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
     this.stopping = this.settleWorktreeReturns();
     return this.stopping;
@@ -2060,12 +2104,19 @@ export class TaskManager {
   private mergeQuorumFor(t: Task): QuorumVerdict {
     const primary = primaryRepoPrForTask(t.id);
     const task = { ...t, extraRepos: taskReposFor(t.id) };
+    const changes = [taskWorkEpisodeForTask(t.id), ...historicalTaskWorkEpisodeBindingsForTask(t.id)]
+      .flatMap(binding => binding?.repoChanges ?? []);
     return taskMergeQuorum(task, (ref) => {
       const entry = ref.role === "primary" ? null : task.extraRepos[ref.position - 1];
       return {
         prUrl: entry ? entry.prUrl : primary.prUrl,
         mergedAt: entry ? entry.mergedAt : primary.mergedAt,
         headSha: this.registry.worktreeHead(ref.worktreePath),
+        retainedChange: ref.worktreePath === null
+          ? changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "changed") ? "changed"
+            : changes.some(v => v.repoRoot === ref.repoRoot && v.verdict === "unknown") ? "unknown"
+              : changes.some(v => v.repoRoot === ref.repoRoot) ? "unchanged" : "unknown"
+          : undefined,
       };
     });
   }
@@ -2158,8 +2209,8 @@ export class TaskManager {
    * edge: terminal rows are eventually pruned, so a completion recorded only in this task's
    * row stops being readable and every dependent silently re-blocks.
    *
-   * Idempotent, and it must stay that way - it runs from four signals. A `done` task is
-   * never revisited, and a merge already recorded costs one indexed read per task.
+   * Done sources with unresolved dependents are revisited for edge repair only. Their
+   * outcome, completion time, writeback and cleanup obligations are never replayed.
    */
   reconcileMergedTasks(): void {
     // Completing re-enters here: `complete` upserts, which resyncs the bound session, which
@@ -2169,6 +2220,10 @@ export class TaskManager {
     if (this.reconcilingMergedTasks) return;
     this.reconcilingMergedTasks = true;
     try {
+      for (const source of this.registry.completedDependencySources()) {
+        const outcome = this.mergeOutcomeFor(source);
+        if (outcome) this.satisfyDeclaredEdgesTo(source.id, Date.now(), outcome.url, true);
+      }
       for (const { id } of this.registry.listTasks()) {
         // Re-read rather than trusting the snapshot: a completion mid-loop can settle
         // another row through that same re-entrancy, and can evict a terminal one entirely.
@@ -2477,6 +2532,8 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
+      // The provider run this dispatch exists to create never appeared: it did not start.
+      launchFailure: this.launchFailureFor(t),
       error: `the managed Agent SDK host ended before Conductor created pipeline run${expected}`,
       sessionId: null,
       updatedAt: Date.now(),
@@ -2527,6 +2584,20 @@ export class TaskManager {
   /** A durable lookup for provenance workflows whose completed source may be off the board. */
   getDurable(id: string): Task | undefined {
     return getDurableTask(id);
+  }
+
+  /**
+   * Re-derive every stack readiness stamp now. The Shipping config route calls this after a
+   * save, so a dependent that would now wait for merge stops reading as ready at once.
+   */
+  reconcileStackReadiness(): void {
+    this.stackReadiness.reconcile();
+  }
+
+  /** Replace the GitHub and git seam stacking reads through. For tests. */
+  useStackGitHub(github: StackGitHub): void {
+    this.stackReadiness.stop();
+    this.stackReadiness = new StackReadiness(this.registry, getShippingConfig, github);
   }
 
   /** Explicit blockers are enforced on every path that can start a task. */
@@ -2589,7 +2660,7 @@ export class TaskManager {
       } else if (input.type === "session") {
         const kept = existing.get(`session:${input.sessionId}`);
         if (kept?.type === "session") {
-          dependency = kept;
+          dependency = withEdgeMode(kept, input.mode);
           const key = `session:${dependency.sessionId}`;
           if (!seen.has(key)) resolved.push(dependency);
           seen.add(key);
@@ -2644,7 +2715,8 @@ export class TaskManager {
           };
         }
       } else {
-        const target = this.registry.getTask(input.taskId);
+        const target = this.registry.getTask(input.taskId) ??
+          (existing.has(`task:${input.taskId}`) ? getDurableTask(input.taskId) : undefined);
         if (!target) {
           const kept = existing.get(`task:${input.taskId}`);
           if (!kept) throw new TaskDependencyError("dependency task is no longer available");
@@ -2656,6 +2728,16 @@ export class TaskManager {
           const previousEdge = existing.get(`task:${target.id}`);
           const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
+          const merged = target.status === "done" ? this.mergeOutcomeFor(target) : null;
+          const mergeCandidate: TaskDependency = previousEdge ?? {
+            type: "task", taskId: target.id, title: target.title,
+            sessionId: binding?.sessionId ?? null, episodeId: binding?.episodeId ?? null,
+            agentSessionId: binding?.agentSessionId ?? null, branch: binding?.branch ?? null,
+            prUrl: null, selectedAt, satisfiedAt: null,
+          };
+          const mergedUrl = merged && (previousEdge || binding)
+            ? this.mergeUrlForDependency(mergeCandidate, merged.url)
+            : null;
           const eligible = target.status === "backlog" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -2671,16 +2753,19 @@ export class TaskManager {
             episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
             agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
             branch: previousEdge?.branch ?? binding?.branch ?? null,
-            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
+            prUrl: previousEdge?.satisfiedAt != null
+              ? previousEdge.prUrl
+              : mergedUrl ?? previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
-              observedPr && activeSession?.prState === "merged"
+              previousEdge?.satisfiedAt ?? (mergedUrl || (target.status !== "done" && observedPr && activeSession?.prState === "merged")
                 ? Date.now()
-                : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
+                : null),
           };
         }
       }
 
+      if (input.type !== "plan" && dependency.type !== "plan") dependency = withEdgeMode(dependency, input.mode);
       const key = dependencyInputKey(dependency);
       if (dependency.type === "task" && dependency.taskId === taskId) {
         throw new TaskDependencyError("a task cannot depend on itself");
@@ -2718,8 +2803,9 @@ export class TaskManager {
   }
 
   /** Resolve once so pre-creation route checks and the persisted task use the same pair. */
-  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId">): TaskCreationPolicy {
-    const planPolicy = input.kind === "plan" ? newPlanPolicy() : null;
+  prepareCreationPolicy(input: Pick<CreateTaskInput, "kind" | "workflowId" | "planStorage">): TaskCreationPolicy {
+    if (input.planStorage !== undefined && input.kind !== "plan") throw new PlanStoreError("Plan storage is only available for plan tasks");
+    const planPolicy = input.kind === "plan" ? newPlanPolicy(input.planStorage) : null;
     return { planPolicy, workflowId: resolveTaskWorkflowId(input.workflowId, input.kind, planPolicy?.storage) };
   }
 
@@ -2816,6 +2902,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== null ||
             existing.workflowId !== null
           ) {
             throw new TaskIdCollisionError(
@@ -2845,6 +2932,7 @@ export class TaskManager {
             existing.agent !== agent ||
             existing.model !== (input.model ?? null) ||
             existing.effort !== (input.effort ?? null) ||
+            existing.advisorModel !== null ||
             existing.workflowId !== workflowId ||
             existing.scheduleId !== null
           ) {
@@ -2910,6 +2998,9 @@ export class TaskManager {
       // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
+      // A task no longer pins an advisor: Settings -> Harnesses chooses it per launch model.
+      // The column stays for tasks filed before that move, whose pin still applies.
+      advisorModel: null,
       // The binding is intentionally deferred: a fresh task has no session or durable
       // conversation key yet. WorkflowManager watches the task/session join and pins the
       // selected workflow's current immutable version there.
@@ -3221,6 +3312,85 @@ export class TaskManager {
       // through here. Null for every other kind, so nothing else changes.
       const planBlock = planDispatchBlock(t);
       if (planBlock) return { ok: false, error: planBlock, task: t };
+      // Stacked pull requests. A task whose start rests on a readiness stamp is revalidated
+      // and pinned to its prerequisite's current head here; every other dispatch records that
+      // it is NOT stacked, so a rescheduled task's new episode never inherits an earlier
+      // episode's parent. The revalidation awaits GitHub, so a second dispatch of the same
+      // task arriving meanwhile is refused rather than racing it.
+      if (this.stackDispatching.has(id)) {
+        return { ok: false, error: "task is already being dispatched", task: t };
+      }
+      this.stackDispatching.add(id);
+      let launch: DispatchOptions = options;
+      try {
+        const stackEdgeOf = (task: Task) =>
+          stackStartEdge(task, new Map(this.registry.listTasks().map((candidate) => [candidate.id, candidate])));
+        // Bounded: a parent pushing on every attempt is refused after the last one, never
+        // looped on forever, and the next dispatch tries again.
+        const MAX_PLANS = 3;
+        let planned = t;
+        for (let attempt = 1; ; attempt += 1) {
+          // The stamp this plan starts from. Readiness may rewrite it while GitHub answers -
+          // to a new head when the parent pushes - and a plan made against the old one would
+          // launch the child without the parent's latest work.
+          const before = stackEdgeOf(planned);
+          const stacked = await this.stackReadiness.planStackedDispatch(planned);
+          if (stacked && !stacked.ok) {
+            return { ok: false, error: stacked.error, task: this.registry.getTask(id) ?? t };
+          }
+          if (stacked?.ok && options.baseSha) {
+            return { ok: false, error: "a stacked task starts from its prerequisite's head and cannot take another pinned base", task: t };
+          }
+          const current = this.registry.getTask(id);
+          if (!current || current.status !== t.status || this.dependencyBlockers(current).length > 0) {
+            return { ok: false, error: "task changed while it was being dispatched", task: current ?? t };
+          }
+          // The plan was made on the task as it stood before GitHub answered. An edit meanwhile
+          // can remove or replace the stacked dependency - or stamp one - and still leave the
+          // task with no blockers, so the plan's parent is checked against the task NOW: the
+          // stamped edge it starts on must be the very edge the plan pinned, and an unstacked
+          // plan must still have none. Otherwise the task would be pinned to, and record as its
+          // lineage, a parent it no longer depends on (or start on the default branch while a
+          // stack is pending).
+          const nowEdge = stackEdgeOf(current);
+          const samePlan = stacked?.ok
+            ? nowEdge !== null &&
+              nowEdge.taskId === stacked.fields.stackParentTaskId &&
+              nowEdge.stackPrUrl === stacked.fields.stackPrUrl &&
+              nowEdge.stackBaseBranch === stacked.fields.stackBaseBranch
+            : nowEdge === null;
+          if (!samePlan) {
+            return { ok: false, error: "task changed while it was being dispatched", task: current };
+          }
+          // Same parent, pull request and branch, but the stamp moved to another head while
+          // this plan was made: the parent pushed, and the plan may pin the commit before it.
+          // Check the parent's head again rather than launch on a superseded one.
+          if (stacked?.ok && nowEdge!.stackBaseSha !== before?.stackBaseSha) {
+            if (attempt >= MAX_PLANS) {
+              return {
+                ok: false,
+                error: `${nowEdge!.title} kept moving while this task was being dispatched; it will be tried again`,
+                task: current,
+              };
+            }
+            planned = current;
+            continue;
+          }
+          const fields = stacked?.ok ? stacked.fields : UNSTACKED;
+          if (
+            (current.stackParentTaskId ?? null) !== fields.stackParentTaskId ||
+            (current.stackBaseBranch ?? null) !== fields.stackBaseBranch ||
+            (current.stackBaseSha ?? null) !== fields.stackBaseSha ||
+            (current.stackPrUrl ?? null) !== fields.stackPrUrl
+          ) {
+            this.registry.upsertTask({ ...current, ...fields, updatedAt: Date.now() });
+          }
+          if (stacked?.ok) launch = { ...options, baseSha: stacked.baseSha };
+          break;
+        }
+      } finally {
+        this.stackDispatching.delete(id);
+      }
       // Forwarded whole: `TaskDispatchOptions` describes the launch, and the Dispatcher is
       // the layer that acts on it - including `defaultModel`, which it ranks between the
       // task's own pin and the Harnesses panel default (see `Dispatcher.dispatch`).
@@ -3232,7 +3402,7 @@ export class TaskManager {
       // again. The launch-only value now travels with the launch, and an unpinned task stays
       // unpinned; the model a session actually ran on is recorded on the SESSION, which is
       // where it belongs and where the card reads it from.
-      void this.dispatcher.dispatch(id, options);
+      void this.dispatcher.dispatch(id, launch);
     }
     return { ok: true, task: this.registry.getTask(id) ?? t };
   }
@@ -3717,6 +3887,15 @@ export class TaskManager {
     if (effort !== null && !supportsEffort(agent, effort)) {
       return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
     }
+    // A pin from before the advisor moved to Settings -> Harnesses can only be cleared here,
+    // never set (the patch schema accepts only null). Reset with the model and effort on an
+    // agent change: a pin chosen for Claude means nothing to a harness with no advisor.
+    const advisorModel = patch.advisorModel === undefined
+      ? (agentChanged ? null : t.advisorModel)
+      : patch.advisorModel;
+    if (advisorModel !== null && !supportsAdvisor(agent, advisorModel)) {
+      return { ok: false, error: `an advisor override (${advisorModel}) is not supported by ${agent}` };
+    }
     // The repo set is replaced wholesale when named, and left alone otherwise. Safe to
     // rebuild the entries from roots because the status guard above has already refused
     // any patch that is not annotation on a task that left the backlog - so nothing here
@@ -3781,15 +3960,34 @@ export class TaskManager {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }
-    const planPolicy = patch.kind === "plan" && t.kind !== "plan" ? newPlanPolicy() : t.planPolicy;
+    const becomesPlan = patch.kind === "plan" && t.kind !== "plan";
+    let planPolicy = t.planPolicy;
+    let workflowId = patch.workflowId === undefined ? t.workflowId : patch.workflowId;
     try {
+      if (patch.planStorage !== undefined && (patch.kind ?? t.kind) !== "plan") {
+        throw new PlanStoreError("Plan storage is only available for plan tasks");
+      }
+      if (patch.planStorage !== undefined || becomesPlan) {
+        if (t.planPolicyError) throw new PlanStoreError(t.planPolicyError);
+        const requested = newPlanPolicy(patch.planStorage);
+        // Storage edits preserve the task's HTML preference; only new policies read it anew.
+        planPolicy = { ...requested, commitPlanHtml: t.planPolicy?.commitPlanHtml ?? requested.commitPlanHtml };
+        if (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")) {
+          if (await taskPlanStorageLocked(t)) throw new PlanStoreError("Plan storage is locked after planning starts; existing plans cannot be moved");
+        }
+        if (patch.workflowId === undefined && (becomesPlan
+          || (planPolicy.storage !== (t.planPolicy?.storage ?? "repository")
+            && t.workflowId === taskDefaultWorkflowId("plan", null, t.planPolicy?.storage ?? "repository")))) {
+          workflowId = taskDefaultWorkflowId("plan", null, planPolicy.storage);
+        }
+      }
       const roots = [patch.repoRoot ?? t.repoRoot, ...(patch.extraRepoRoots ?? t.extraRepos.map((r) => r.repoRoot))];
       validatePlanInputs(patch.planInputs ?? t.planInputs ?? [], roots);
       for (const edge of patch.dependencies ?? t.dependencies) {
         if (edge.type === "plan") validatePlanInputs([{ repoKey: edge.repoKey, planId: edge.planId, revision: edge.revision, files: ["plan.md"] }], roots);
       }
       if (planPolicy?.storage === "local" && (patch.kind ?? t.kind) === "plan") {
-        const problem = localWorkflowProblem(patch.workflowId === undefined ? t.workflowId : patch.workflowId);
+        const problem = localWorkflowProblem(workflowId);
         if (problem) return { ok: false, error: problem };
       }
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
@@ -3834,9 +4032,10 @@ export class TaskManager {
       // the caller clearing it, which is a value the row can hold and cannot use `??`.
       model,
       effort,
+      advisorModel,
       // Like model and effort, this is provisioning intent: it can change while shelved
       // and is frozen once the session that will carry the binding has launched.
-      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+      workflowId,
       updatedAt: Date.now(),
     };
     return { ok: true, task: next, base: t };
@@ -4179,6 +4378,16 @@ export class TaskManager {
       return {
         ok: false,
         error: `task is waiting on ${dependencyBlockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
+    }
+    // A task starting on its prerequisite's open pull request has to be CUT from that
+    // pull request's head, which only a fresh worktree can be. An existing session is
+    // standing on whatever it last checked out. Dispatch it instead.
+    if (stackStartEdge(t, new Map(this.registry.listTasks().map((task) => [task.id, task])))) {
+      return {
+        ok: false,
+        error: `${t.title} is stacked on its prerequisite's pull request, so it has to be dispatched into a fresh worktree cut from it`,
         scope: "task",
       };
     }
@@ -5231,7 +5440,8 @@ export class TaskManager {
     } catch (err) {
       console.error("[writeback] enqueue on completion failed:", id, err);
     }
-    if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
+    const merged = this.mergeOutcomeFor(updated);
+    if (input.satisfyDependents || merged) this.satisfyDeclaredEdgesTo(id, now, merged?.url, !input.satisfyDependents);
     if (taskHasWorktrees(updated) && !closeSessionId && this.completedInitialSessionSweep) {
       this.enqueueFinishedWorktreeReturn(updated, "complete");
       this.scheduleMissionSessionClosureSweep();
@@ -5285,7 +5495,36 @@ export class TaskManager {
    * by construction operator-started work with no task to complete - nothing this call
    * could be about.
    */
-  private satisfyDeclaredEdgesTo(taskId: string, at: number): void {
+  private mergeUrlForDependency(dependency: TaskDependency, fallback: string): string | null {
+    if (dependency.type !== "task" || dependency.episodeId === null) return fallback;
+    const bindings = [taskWorkEpisodeForTask(dependency.taskId), ...historicalTaskWorkEpisodeBindingsForTask(dependency.taskId)];
+    const bound = bindings.find((binding) => binding?.episodeId === dependency.episodeId &&
+      binding.sessionId === dependency.sessionId);
+    // A retained, unmerged episode cannot borrow another episode's delivery. Legacy or
+    // stale provenance without a surviving binding still uses the task's durable outcome.
+    if (!bound) return fallback;
+    const source = this.registry.getTask(dependency.taskId) ?? getDurableTask(dependency.taskId);
+    if (source && source.extraRepos.length > 0) {
+      const secondary = workEpisodeRepoPrsForTask(dependency.taskId).filter(row =>
+        row.episodeId === bound.episodeId && row.sessionId === bound.sessionId);
+      const quorum = taskMergeQuorum(source, ref => {
+        const row = secondary.find(row => row.repoRoot === ref.repoRoot);
+        return {
+          prUrl: ref.role === "primary" ? bound.prUrl : row?.prUrl ?? null,
+          mergedAt: ref.role === "primary" ? bound.mergedAt : row?.mergedAt ?? null,
+          retainedChange: bound.repoChanges?.find(v => v.repoRoot === ref.repoRoot)?.verdict ?? "unknown",
+        };
+      });
+      if (!quorum.satisfied) return null;
+    }
+    if (bound.mergedAt !== null && bound.prUrl) return bound.prUrl;
+    // The primary can be unchanged. Once the task quorum passes, a merged secondary
+    // belonging to this same episode is delivery evidence for its dependent as well.
+    return workEpisodeRepoPrsForTask(dependency.taskId).find((row) =>
+      row.episodeId === bound.episodeId && row.sessionId === bound.sessionId && row.mergedAt !== null)?.prUrl ?? null;
+  }
+
+  private satisfyDeclaredEdgesTo(taskId: string, at: number, prUrl?: string, verifyEpisode = false): void {
     for (const task of this.registry.listTasks()) {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
@@ -5296,8 +5535,10 @@ export class TaskManager {
         ) {
           return dependency;
         }
+        const verifiedUrl = verifyEpisode && prUrl ? this.mergeUrlForDependency(dependency, prUrl) : prUrl;
+        if (verifiedUrl === null) return dependency;
         changed = true;
-        return { ...dependency, satisfiedAt: at };
+        return { ...dependency, satisfiedAt: at, prUrl: verifiedUrl ?? dependency.prUrl };
       });
       if (changed) {
         this.registry.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, at) });
@@ -5450,7 +5691,7 @@ export class TaskManager {
     return { ok: true, task: moved };
   }
 
-  async reschedule(id: string): Promise<Ok> {
+  async reschedule(id: string, options: { enabled?: boolean } = {}): Promise<Ok> {
     if (this.reschedulingTasks.has(id)) {
       return { ok: false, error: "task is being rescheduled" };
     }
@@ -5483,7 +5724,7 @@ export class TaskManager {
       return await this.withCleanupReservation<Ok>(
         id,
         { ok: false, error: "this task's resources are being cleaned up - try again in a moment" },
-        () => this.rescheduleReserved(id, t),
+        () => this.rescheduleReserved(id, t, options.enabled ?? true),
       );
     } finally {
       this.reschedulingTasks.delete(id);
@@ -5491,7 +5732,7 @@ export class TaskManager {
   }
 
   /** `reschedule`'s body, once cleanup and submission admission are reserved. */
-  private async rescheduleReserved(id: string, t: Task): Promise<Ok> {
+  private async rescheduleReserved(id: string, t: Task, enabled: boolean): Promise<Ok> {
     try {
       await this.quiesceLaunchedAgentBeforeCapture(this.registry.getTask(id) ?? t);
     } catch (error) {
@@ -5539,7 +5780,9 @@ export class TaskManager {
     this.registry.upsertTask({
       ...cur,
       status: "backlog",
-      enabled: true,
+      // Publish the scheduling permission with the backlog transition, never afterward:
+      // Foreman must not see a runnable row while Return to backlog is parking it.
+      enabled,
       // A re-entering task KEEPS the rank it already has, so a recovered dispatch
       // reappears where it was rather than at the bottom of a queue it never left. A task
       // that never had one - dispatched straight out, never a backlog row - is appended,
@@ -5556,6 +5799,8 @@ export class TaskManager {
       outcome: null,
       outcomeUrl: null,
       error: null,
+      // Re-filed on purpose: a launch failure it carried was answered by this.
+      launchFailure: null,
       dispatchedAt: null,
       completedAt: null,
       updatedAt: Date.now(),
@@ -5569,8 +5814,8 @@ export class TaskManager {
    * The operator's "run this later" answer, reachable from the task's own session. The
    * parts already exist and are composed here rather than copied: a live task is cancelled
    * first (agent stopped, archives settled, checkout reclaimed), and then `reschedule`
-   * re-files the stopped row at the rank it had. A task that already stopped skips straight
-   * to the second step.
+   * re-files the stopped row at the rank it had, with autopilot disabled so it stays put.
+   * A task that already stopped skips straight to the second step.
    *
    * `taskRequeueRefusal` is checked BEFORE the cancel, because a cancel that would be
    * followed by a refused re-file leaves the operator with a stopped task they never asked
@@ -5586,7 +5831,7 @@ export class TaskManager {
       const cancelled = await this.cancel(id);
       if (!cancelled.ok) return cancelled;
     }
-    return this.reschedule(id);
+    return this.reschedule(id, { enabled: false });
   }
 
   /**
@@ -6156,6 +6401,9 @@ export class TaskManager {
           : taskKindCreator(current.kind) === "resident-launch"
             ? INTERRUPTED_RESIDENT_BEFORE_PROVISION_ERROR
             : INTERRUPTED_CHAT_BEFORE_PROVISION_ERROR,
+        // A dispatch the restart interrupted before anything was provisioned never started:
+        // drawn where its placeholder was, or on its Backlog card when it went back there.
+        launchFailure: this.launchFailureFor(current),
         dispatchedAt: null,
         updatedAt: Date.now(),
       });
@@ -6234,6 +6482,9 @@ export class TaskManager {
         this.registry.upsertTask({
           ...t,
           status: "failed",
+          // Its home survived the restart (or its session is being resumed): kept, like the
+          // dispatcher's own kept branch, so it is opened or cancelled rather than retried.
+          launchFailure: this.launchFailureFor(t, true),
           error:
             embedded === true
               ? "dispatch interrupted by a restart - its session is being resumed; Cancel it if you don't want it"
@@ -6287,6 +6538,9 @@ export class TaskManager {
         : t.status === "dispatching"
           ? "dispatch interrupted by a restart - re-dispatch"
           : "the agent's session did not survive a restart";
+    // A dispatch the restart interrupted never reached its session: a launch failure, drawn
+    // where its placeholder was. A session that ran and died with the daemon is not one.
+    const interrupted = t.status === "dispatching" ? { launchFailure: this.launchFailureFor(t) } : {};
 
     if (taskHasWorktrees(t)) {
       // The agent died WITH the daemon, and this used to be where its checkout was removed on
@@ -6311,6 +6565,7 @@ export class TaskManager {
       const now = Date.now();
       const settled: Task = {
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: settledError,
         // The one resource fact restart is entitled to clear, and only because the existing
@@ -6341,6 +6596,7 @@ export class TaskManager {
     if (!archived.ok) {
       this.registry.upsertTask({
         ...t,
+        ...interrupted,
         status: settledStatus,
         error: t.status === "done" || t.status === "cancelled" ? t.error : archived.error ?? null,
         sessionId: null,
@@ -6359,6 +6615,7 @@ export class TaskManager {
         // Whatever came back is released even though the teardown failed overall; the rest
         // keeps its record so it stays reclaimable. See `releasedTaskResources`.
         ...releasedTaskResources(t, reclaimedFrom(error)),
+        ...interrupted,
         status: settledStatus,
         error:
           t.status === "done" || t.status === "cancelled"
@@ -6371,6 +6628,7 @@ export class TaskManager {
     }
     this.registry.upsertTask({
       ...t,
+      ...interrupted,
       status: settledStatus,
       error: settledError,
       ...releasedTaskResources(t, null),

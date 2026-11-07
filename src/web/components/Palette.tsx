@@ -250,6 +250,7 @@ export function Palette({
                       id={optionId(index)}
                       role="option"
                       aria-selected={isActive}
+                      data-dialog-default={isActive ? "true" : undefined}
                       aria-label={
                         row.switchOn === undefined
                           ? `${row.title}, ${info.label}`

@@ -133,6 +133,8 @@ if (args[0] === "api" && args[1] === "user") {
         pullRequest: {
           state: "OPEN",
           headRefOid: state.headSha,
+          baseRefName: "main",
+          repository: { defaultBranchRef: { name: "main" } },
           isDraft: false,
           title: "Inspector diff sharing",
           body: "Exercise the once-per-tick diff fetch.",
@@ -218,8 +220,13 @@ function registryStub(): Registry {
   } as unknown as Registry;
 }
 
+/**
+ * Poll until `predicate` holds. The bound exists only to turn a real hang into a readable
+ * failure: a healthy run returns on the first tick that satisfies it, so a generous bound costs
+ * nothing, while ten seconds was routinely exceeded under the full suite's concurrency.
+ */
 async function waitFor(description: string, predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -274,7 +281,7 @@ after(() => {
   rmSync(temp, { recursive: true, force: true });
 });
 
-test("a tick that replies AND reviews fetches the diff once; steady state fetches none", async () => {
+test("a tick that replies AND reviews fetches the diff once; steady state fetches none", async (t) => {
   writeGithubState({
     headSha: "head-1",
     threadBody: priorMarker,
@@ -293,7 +300,10 @@ test("a tick that replies AND reviews fetches the diff once; steady state fetche
   const key = adopt(7);
   seedThreadRow(key);
 
+  // Stopped on every exit path. A failed wait used to skip the `stop()` below and leave this
+  // worker polling into the next test, where its extra diff fetch read as a second failure.
   const stop = startInspector(registryStub());
+  t.after(stop);
   await waitFor(
     "the combined reply-and-review tick to finish the head",
     () => getInspectorPr(key)?.headSha === "head-1",
@@ -322,7 +332,7 @@ test("a tick that replies AND reviews fetches the diff once; steady state fetche
   assert.equal(readGithubState().diffCalls, 1, "a steady-state tick must fetch zero diffs");
 });
 
-test("a tooLarge shared fetch still parks push-fixable while the reply carries on", async () => {
+test("a tooLarge shared fetch still parks push-fixable while the reply carries on", async (t) => {
   writeGithubState({
     headSha: "head-big",
     threadBody: priorMarker,
@@ -342,6 +352,7 @@ test("a tooLarge shared fetch still parks push-fixable while the reply carries o
   seedThreadRow(key);
 
   const stop = startInspector(registryStub());
+  t.after(stop);
   await waitFor(
     "the failing review to book its backoff",
     () => getInspectorPr(key)?.lastFailKind === "push-fixable",

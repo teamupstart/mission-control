@@ -118,7 +118,7 @@ export class ReviewManager {
   private continuationText(review: ReviewItem): string {
     const result = reviewToolResult(review);
     return (
-      `Mission Control review ${review.id} was answered after its MCP wait ended. ` +
+      `Mission Control review ${review.id} was ${review.status === "dismissed" ? "dismissed" : "answered"} after its MCP wait ended. ` +
       `Treat this as the result of your earlier review tool call:\n\n${result.text}`
     );
   }
@@ -365,9 +365,10 @@ export class ReviewManager {
   /**
    * Resolve immediately if already decided; otherwise wait up to `timeoutMs`.
    * On timeout returns the still-pending item so the caller can long-poll again.
-   * Returns null if the id is unknown.
+   * Returns null if the id is unknown. `signal` ends the wait early the same way a timeout does,
+   * which is how the daemon's shutdown answers a long-poll instead of cutting it.
    */
-  wait(id: string, timeoutMs: number): Promise<ReviewItem | null> {
+  wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<ReviewItem | null> {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
@@ -376,19 +377,19 @@ export class ReviewManager {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
 
-      const waiter: Waiter = (r) => {
+      const finish = (r: ReviewItem | null): void => {
         clearTimeout(timer);
         set!.delete(waiter);
+        signal?.removeEventListener("abort", early);
         resolve(r);
       };
-      const timer = unref(
-        setTimeout(() => {
-          set!.delete(waiter);
-          resolve(this.registry.getReview(id) ?? null);
-        }, timeoutMs),
-      );
+      const waiter: Waiter = (r) => finish(r);
+      const early = (): void => finish(this.registry.getReview(id) ?? null);
+      const timer = unref(setTimeout(early, timeoutMs));
 
       set.add(waiter);
+      if (signal?.aborted) early();
+      else signal?.addEventListener("abort", early, { once: true });
     });
   }
 

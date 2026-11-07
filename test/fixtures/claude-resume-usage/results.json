@@ -1,0 +1,50 @@
+[
+  {
+    "type": "result",
+    "subtype": "success",
+    "uuid": "fixture-result-1",
+    "session_id": "00000000-0000-4000-8000-000000001356",
+    "total_cost_usd": 0.0201,
+    "modelUsage": {
+      "claude-sonnet-4-6": {
+        "inputTokens": 150,
+        "outputTokens": 100,
+        "cacheReadInputTokens": 3000,
+        "cacheCreationInputTokens": 3400,
+        "costUSD": 0.0201
+      }
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "uuid": "fixture-result-2",
+    "session_id": "00000000-0000-4000-8000-000000001356",
+    "total_cost_usd": 0.02616,
+    "modelUsage": {
+      "claude-sonnet-4-6": {
+        "inputTokens": 170,
+        "outputTokens": 180,
+        "cacheReadInputTokens": 9000,
+        "cacheCreationInputTokens": 3900,
+        "costUSD": 0.02616
+      }
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "uuid": "fixture-result-3",
+    "session_id": "00000000-0000-4000-8000-000000001356",
+    "total_cost_usd": 0.03405,
+    "modelUsage": {
+      "claude-sonnet-4-6": {
+        "inputTokens": 200,
+        "outputTokens": 280,
+        "cacheReadInputTokens": 18500,
+        "cacheCreationInputTokens": 4700,
+        "costUSD": 0.03405
+      }
+    }
+  }
+]

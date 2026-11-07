@@ -42,7 +42,7 @@ import {
   runNextMove,
   runNoMoveReason,
 } from "../src/web/workflows/run-actions.ts";
-import { runPosture, runRefusedSentence } from "../src/web/workflows/run-model.ts";
+import { runParkedSentence, runPosture, runRefusedSentence } from "../src/web/workflows/run-model.ts";
 
 interface Shape {
   status: WorkflowRunStatus;
@@ -1006,6 +1006,27 @@ test("posture: an in-flight repair packet is not your move either", () => {
     resumption: { reason: "packet_undelivered", round: 2, resumesItself: true },
   }));
   assert.equal(posture?.tone, "auto");
+});
+
+test("posture: sibling holds name PR handoffs and Inspector feedback instead of a repair round", () => {
+  for (const [kind, condition] of [
+    ["pr_handoff", "waiting for the session to prepare its pull request"],
+    ["inspector_feedback", "waiting for the session to address Inspector feedback"],
+    ["persona_feedback", "waiting for its repair round"],
+  ] as const) {
+    const detail = detailFor({ status: "waiting_for_session", live: true });
+    detail.deliveryHold = {
+      runId: "sibling-run", deliveryId: "sibling-packet", repoRoot: "/repos/second-repo",
+      kind, state: "delivered",
+    };
+    const sentence = `Queued behind second-repo (run sibling-run), ${condition}.`
+      + " This packet will be delivered when that run releases the conversation.";
+    assert.equal(runParkedSentence(detail), sentence, kind);
+    assert.deepEqual(runPosture(detail), { tone: "auto", headline: "No action needed", sentence });
+
+    detail.deliveryHold.state = "sending";
+    assert.match(runParkedSentence(detail)!, /sending its packet/, kind);
+  }
 });
 
 test("posture: a self-resuming park with no ledger entry yet reads as the observer's", () => {

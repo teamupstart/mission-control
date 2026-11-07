@@ -1,3 +1,5 @@
+import type { SdkUsage } from "./harness/types.ts";
+import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
 import type { CodeRabbitFinding, CodeRabbitSummary } from "@shared/code-rabbit.ts";
@@ -22,7 +24,7 @@ import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
-import { supportsEffort } from "@shared/harness-capabilities.ts";
+import { supportsAdvisor, supportsEffort } from "@shared/harness-capabilities.ts";
 import type { LaunchTurnMarker } from "./launch-presentation.ts";
 import {
   STANDING_INSTRUCTIONS_MECHANISMS,
@@ -85,7 +87,10 @@ import type {
   Task,
   TaskAutomaticCleanup,
   TaskPriority,
+  TaskResidentRestart,
   TaskRepoEntry,
+  StackEdgeFields,
+  StackLineage,
   TaskStatus,
   TrackedGap,
   WorkItem,
@@ -98,6 +103,7 @@ import {
   PROMPTED_COMPLETION_OUTCOMES,
   TASK_KINDS,
 } from "@shared/types.ts";
+import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -144,6 +150,7 @@ import { readCheapAction, readDivergence, readSkipReason } from "@shared/foreman
 import { askPreviewForWire } from "@shared/foreman-ask.ts";
 import type { CheapAction, Divergence, SkipReason } from "@shared/foreman.ts";
 import { normalizeLabels } from "@shared/task.ts";
+import { parseLaunchFailure } from "@shared/launch-failure.ts";
 import { TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT } from "@shared/types.ts";
 import {
   isRetentionCandidate,
@@ -185,7 +192,18 @@ let db: DatabaseSync | undefined;
 // 12: bind resident wake attribution to its recorded conversation and native turn.
 // 13: retain a resident SDK session's measured native compaction limit across resumes.
 // 14: resident MCP secrets, per-run MCP snapshots and the run's snapshot marker.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 14;
+// 15: a task's launch-failure record (`tasks.launch_failure`) and a Report bug session's
+//     marker (`tasks.launch_report_for`), with no historical backfill.
+// 16: task work-episode ownership end times and retained branch commits.
+// 17: retain per-repository episode change evidence across checkout teardown.
+// 18: a task's advisor pin (`tasks.advisor_model`) and the SDK driver row's copy of it
+//     (`sdk_sessions.advisor_model`), nullable with no backfill: NULL inherits.
+// 19: durable driver usage checkpoints, result receipts, and legacy replay flags.
+// 20: Stacked pull requests: a task's stack pin (`tasks.stack_parent_task_id`,
+//     `stack_base_branch`, `stack_base_sha`, `stack_pr_url`) and a pull request's base,
+//     review base and stack lineage on `inspector_prs`. All nullable with no backfill: NULL is
+//     unstacked, and a row with no recorded base counts only on the default branch.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 20;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -371,6 +389,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       enabled       INTEGER NOT NULL DEFAULT 1,
       model         TEXT,
       effort        TEXT,
+      -- Advisor override (opus | sonnet | off). NULL inherits the operator's Claude settings.
+      advisor_model TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -398,6 +418,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- that iterates task_repos alone therefore cannot see the primary and must read this.
       -- Nullable: every task dispatched before this column existed genuinely has no baseline.
       base_sha      TEXT,
+      -- Stacked pull requests: what the CURRENT episode's primary repository was cut on.
+      -- Written at every dispatch (NULL for an unstacked one). See Task.stackParentTaskId.
+      stack_parent_task_id TEXT,
+      stack_base_branch    TEXT,
+      stack_base_sha       TEXT,
+      stack_pr_url         TEXT,
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
       home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
@@ -416,6 +442,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       outcome       TEXT,
       outcome_url   TEXT,
       error         TEXT,
+      -- JSON TaskLaunchFailure (@shared/launch-failure.ts): this attempt failed before its
+      -- session started. NULL on every other task, including one whose session ran and was
+      -- later lost - the dispatcher writes it at the failure and nothing infers it later.
+      launch_failure TEXT,
+      -- A Report bug session: the failed task it was started to report. NULL on every other.
+      launch_report_for TEXT,
       created_at    INTEGER NOT NULL,
       updated_at    INTEGER NOT NULL,
       dispatched_at INTEGER,
@@ -505,6 +537,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
@@ -520,9 +554,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      work_head_sha    TEXT,
+      repo_changes     TEXT,
       merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL,
+      ended_at         INTEGER,
       PRIMARY KEY (task_id, episode_id)
     );
     CREATE INDEX IF NOT EXISTS idx_historical_task_work_episode_session
@@ -1816,6 +1853,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- column, so an existing database would fail to open on a CREATE naming it. See the
     -- addColumn beside it.
 
+    -- Conversation checkpoints survive driver replacement and ledger retention. The ledger
+    -- rows and checkpoint advance in one transaction, never in the adapter's event pump.
+    CREATE TABLE IF NOT EXISTS driver_usage_snapshots (
+      note_key TEXT PRIMARY KEY,
+      snapshot_json TEXT NOT NULL,
+      baseline_gap_turn_id TEXT,
+      unpriced_baseline_models_json TEXT NOT NULL DEFAULT '[]',
+      updated_at INTEGER NOT NULL
+    );
+
     -- Durable byte cursors for harness-owned append-only usage sources. The event rows
     -- and cursor move in one transaction, so a crash can replay but cannot skip usage.
     CREATE TABLE IF NOT EXISTS usage_sources (
@@ -1883,6 +1930,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       task_id           TEXT,
       model             TEXT,
       effort            TEXT,
+      advisor_model     TEXT,
       permission_mode   TEXT,
       status            TEXT NOT NULL,
       -- Independent of lifecycle status: a suspended driver may owe a continuation turn.
@@ -2021,6 +2069,21 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       observed_at        INTEGER,
       head_ref_name      TEXT,           -- the branch the PR is opened FROM
       title              TEXT,           -- as of the last poll; NULL until one happens
+      base_ref_name      TEXT,           -- the branch the PR targets, as of the last poll
+      reviewed_base_ref  TEXT,           -- the base head_sha's review was made against
+      reviewed_base_sha  TEXT,           -- that base's tip, for the merge-base check
+      merge_commit_sha   TEXT,           -- GitHub's merge commit once it merged
+      -- Stack lineage (Stacked pull requests). Written once at adoption for a stacked
+      -- task's primary repository; stack_parent_pr_url NULL = no lineage. See StackLineage.
+      stack_task_id      TEXT,
+      stack_episode      TEXT,
+      stack_adopted_at   INTEGER,
+      stack_parent_pr_url TEXT,
+      stack_base_sha     TEXT,
+      stack_released_head_sha TEXT,
+      stack_released_basis TEXT,         -- merged | closed: the parent state the release was granted under
+      stack_lineage_history TEXT,
+      stack_note         TEXT,
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -3406,6 +3469,9 @@ function migrate(d: DatabaseSync): void {
   // A completed event stream is not child-exit proof. Older rows have no captured lifetime.
   addColumn(d, "sdk_sessions", "recovery_process_json", "TEXT");
   addColumn(d, "sdk_sessions", "resident_compaction_token_limit", "INTEGER");
+  // The task's advisor pin, kept on the driver row so a relaunch renders the same flag
+  // layer the first launch did. NULL inherits, which is what every older row did.
+  addColumn(d, "sdk_sessions", "advisor_model", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2
@@ -3793,6 +3859,12 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
   addColumn(d, "session_work_episodes", "prompted_at", "INTEGER");
   addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
+  // Unknown historical end times stay null: a reused branch is not ownership evidence.
+  addColumn(d, "historical_task_work_episode_bindings", "ended_at", "INTEGER");
+  addColumn(d, "task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "work_head_sha", "TEXT");
+  addColumn(d, "task_work_episode_bindings", "repo_changes", "TEXT");
+  addColumn(d, "historical_task_work_episode_bindings", "repo_changes", "TEXT");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -3857,6 +3929,40 @@ function migrate(d: DatabaseSync): void {
       WHERE writer = '' AND cost_basis IN ('api-equivalent', 'unpriced');
     UPDATE usage_ledger SET writer = 'otel' WHERE writer = '';
   `);
+  // One-time uncertainty flag, not a guessed repair: pre-checkpoint Claude driver rows
+  // may include resumed conversation history. Prices remain the provider's reported prices.
+  if (addColumn(d, "usage_ledger", "accounting_issue", "TEXT NOT NULL DEFAULT ''")) {
+    d.exec(`UPDATE usage_ledger SET accounting_issue = 'possible_resume_replay'
+      WHERE agent = 'claude' AND writer = 'driver' AND spend_kind = 'session'`);
+  }
+  // Receipts have no retention deadline: a conversation may resume after its economic
+  // rows have aged out. Create and seed atomically so an interrupted upgrade cannot leave
+  // an empty receipt table that appears migrated on the next startup.
+  if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'driver_usage_receipts'").get()) {
+    d.exec("BEGIN IMMEDIATE;");
+    try {
+      d.exec(`
+        CREATE TABLE IF NOT EXISTS driver_usage_receipts (
+          note_key TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          PRIMARY KEY(note_key, turn_id)
+        ) WITHOUT ROWID;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, window_end_ns FROM usage_ledger
+          WHERE writer = 'driver' AND spend_kind = 'session';
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, json_extract(snapshot_json, '$.turnId') FROM driver_usage_snapshots
+          WHERE json_extract(snapshot_json, '$.turnId') IS NOT NULL;
+        INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+          SELECT note_key, baseline_gap_turn_id FROM driver_usage_snapshots
+          WHERE baseline_gap_turn_id IS NOT NULL;
+      `);
+      d.exec("COMMIT;");
+    } catch (err) {
+      try { d.exec("ROLLBACK;"); } catch {}
+      throw err;
+    }
+  }
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
@@ -4033,6 +4139,9 @@ function migrate(d: DatabaseSync): void {
   // `effort`: the per-task reasoning override. NULL follows the launch-time harness
   // default, which is also the truthful value for every task created before it existed.
   addColumn(d, "tasks", "effort", "TEXT");
+  // `advisor_model`: the per-task advisor override. NULL inherits the operator's own
+  // Claude settings, which is exactly what every task dispatched before it existed did.
+  addColumn(d, "tasks", "advisor_model", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -4069,6 +4178,18 @@ function migrate(d: DatabaseSync): void {
   // TABLE is covered by the CREATE TABLE IF NOT EXISTS block, which runs on every open.
   addColumn(d, "tasks", "base_sha", "TEXT");
   addColumn(d, "tasks", "worktree_lease_id", "TEXT");
+  // Stacked pull requests. Nullable with no default: an existing row was never stacked, and
+  // NULL is exactly that reading. Every dispatch writes all four, so a rescheduled task's next
+  // episode records its own parent or none.
+  addColumn(d, "tasks", "stack_parent_task_id", "TEXT");
+  addColumn(d, "tasks", "stack_base_branch", "TEXT");
+  addColumn(d, "tasks", "stack_base_sha", "TEXT");
+  addColumn(d, "tasks", "stack_pr_url", "TEXT");
+  // A dispatch that failed before its session started. NULL on an upgraded row is the honest
+  // reading: nothing recorded whether its failure, if any, was a launch failure, and drawing
+  // every historical failed task as a fresh "did not start" would bury the board.
+  addColumn(d, "tasks", "launch_failure", "TEXT");
+  addColumn(d, "tasks", "launch_report_for", "TEXT");
   addColumn(d, "task_repos", "worktree_lease_id", "TEXT");
 
   // `home_name`: the terminal home a dispatched agent lives in, renamed from the
@@ -4154,6 +4275,22 @@ function migrate(d: DatabaseSync): void {
   // if one is ever wanted it belongs here, beside the ALTER, never in the CREATE block.
   addColumn(d, "inspector_prs", "title", "TEXT");
   addColumn(d, "inspector_prs", "code_rabbit_state", "TEXT");
+  // Stacked pull requests. All nullable with no default. A row written before these existed
+  // has no recorded base (its review counts only while the base is the default branch), no
+  // merge commit, and no stack lineage - so neither stacking gate ever evaluates it.
+  addColumn(d, "inspector_prs", "base_ref_name", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_ref", "TEXT");
+  addColumn(d, "inspector_prs", "reviewed_base_sha", "TEXT");
+  addColumn(d, "inspector_prs", "merge_commit_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_task_id", "TEXT");
+  addColumn(d, "inspector_prs", "stack_episode", "TEXT");
+  addColumn(d, "inspector_prs", "stack_adopted_at", "INTEGER");
+  addColumn(d, "inspector_prs", "stack_parent_pr_url", "TEXT");
+  addColumn(d, "inspector_prs", "stack_base_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_head_sha", "TEXT");
+  addColumn(d, "inspector_prs", "stack_released_basis", "TEXT");
+  addColumn(d, "inspector_prs", "stack_lineage_history", "TEXT");
+  addColumn(d, "inspector_prs", "stack_note", "TEXT");
   // Finding bodies were historically posted and then discarded locally. Persist only
   // the already-scrubbed planner output; NULL truthfully identifies legacy rows.
   addColumn(d, "inspector_comments", "body", "TEXT");
@@ -5478,6 +5615,7 @@ interface TaskRow {
   backlog_rank: unknown;
   model: string | null;
   effort: string | null;
+  advisor_model: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -5492,6 +5630,10 @@ interface TaskRow {
   provider: string | null;
   worktree_lease_id: string | null;
   base_sha: string | null;
+  stack_parent_task_id?: string | null;
+  stack_base_branch?: string | null;
+  stack_base_sha?: string | null;
+  stack_pr_url?: string | null;
   home_name: string | null;
   home_backend: string | null;
   terminal_resource_id: string | null;
@@ -5504,6 +5646,8 @@ interface TaskRow {
   outcome: string | null;
   outcome_url: string | null;
   error: string | null;
+  launch_failure: string | null;
+  launch_report_for: string | null;
   created_at: number;
   updated_at: number;
   dispatched_at: number | null;
@@ -5647,7 +5791,8 @@ function rowsToTasks(rows: TaskRow[]): Task[] {
   // every browser gets on connect. The map is almost always empty - only a task whose
   // automatic cleanup is mid-retry has a row that projects to anything.
   const cleanup = taskAutomaticCleanupSummaries(rows.map((r) => r.id));
-  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null));
+  const restarts = taskResidentRestartSummaries(rows.map((r) => r.id));
+  return rows.map((r) => rowToTask(r, byTask.get(r.id) ?? [], cleanup.get(r.id) ?? null, restarts.get(r.id) ?? null));
 }
 
 const TerminalLaunchSchema = z.object({ resourceId: z.string().min(1), sessionId: z.string().min(1) });
@@ -5672,6 +5817,31 @@ function parseLabels(raw: string | null): string[] {
   }
 }
 
+/**
+ * The stacked-pull-request fields of one stored edge. Every one is optional: an edge written
+ * before stacking existed has none, and reads as "inherit, unstamped" - the fields absent,
+ * the same shape as an edge created in memory. An unknown `mode` is dropped to "inherit"
+ * rather than failing the whole row.
+ */
+function parseStackEdgeFields(row: Record<string, unknown>): StackEdgeFields {
+  const out: StackEdgeFields = {};
+  if (row.mode === "merge" || row.mode === "stack") out.mode = row.mode;
+  // A stamp is all four facts or none: half a stamp could not have been written by the
+  // daemon, and reading it as stamped would release a dependent on a guess.
+  if (
+    typeof row.stackReadyAt === "number" &&
+    typeof row.stackBaseBranch === "string" && row.stackBaseBranch &&
+    typeof row.stackBaseSha === "string" && row.stackBaseSha &&
+    typeof row.stackPrUrl === "string" && row.stackPrUrl
+  ) {
+    out.stackReadyAt = row.stackReadyAt;
+    out.stackBaseBranch = row.stackBaseBranch;
+    out.stackBaseSha = row.stackBaseSha;
+    out.stackPrUrl = row.stackPrUrl;
+  }
+  return out;
+}
+
 /** Read dependency JSON defensively: one stale row must not take down the backlog. */
 function parseTaskDependencies(raw: string | null): Task["dependencies"] {
   if (!raw) return [];
@@ -5685,6 +5855,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
       const row = value as Record<string, unknown>;
       const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
       const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
+      const stack = parseStackEdgeFields(row);
       if (row.type === "plan") {
         const identity = PlanIdentitySchema.parse({ repoKey: row.repoKey, planId: row.planId, revision: row.revision });
         out.push({ ...identity, type: "plan", title: typeof row.title === "string" ? row.title : "Plan publication",
@@ -5705,6 +5876,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -5725,6 +5897,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
             selectedAt,
             satisfiedAt,
+            ...stack,
           });
         }
         seen.add(key);
@@ -5756,6 +5929,16 @@ function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
 }
 
 /**
+ * The same rule for the advisor pin: a value this harness no longer offers reads back as
+ * Inherit rather than reaching a launch.
+ */
+function parseAdvisor(agent: Task["agent"], raw: string | null): Task["advisorModel"] {
+  return raw && supportsAdvisor(agent, raw as NonNullable<Task["advisorModel"]>)
+    ? (raw as Task["advisorModel"])
+    : null;
+}
+
+/**
  * `extraRepos` is a REQUIRED argument with no default, which is what keeps
  * `rows.map(rowToTask)` from compiling: `map` would pass the index there, and the
  * resulting type error is the whole point - see `rowsToTasks`.
@@ -5764,6 +5947,7 @@ function rowToTask(
   r: TaskRow,
   extraRepos: TaskRepoEntry[],
   automaticCleanup: TaskAutomaticCleanup | null = null,
+  residentRestart: TaskResidentRestart | null = null,
 ): Task {
   return {
     id: r.id,
@@ -5807,6 +5991,7 @@ function rowToTask(
     backlogRank: Number.isSafeInteger(r.backlog_rank) ? (r.backlog_rank as number) : null,
     model: r.model,
     effort: parseEffort(r.agent as Task["agent"], r.effort),
+    advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -5827,6 +6012,10 @@ function rowToTask(
     provider: r.provider as WorktreeProvider | null,
     worktreeLeaseId: r.worktree_lease_id,
     baseSha: r.base_sha,
+    stackParentTaskId: r.stack_parent_task_id ?? null,
+    stackBaseBranch: r.stack_base_branch ?? null,
+    stackBaseSha: r.stack_base_sha ?? null,
+    stackPrUrl: r.stack_pr_url ?? null,
     extraRepos,
     homeName: r.home_name,
     homeBackend: r.home_backend,
@@ -5840,7 +6029,10 @@ function rowToTask(
     outcome: r.outcome,
     outcomeUrl: r.outcome_url,
     error: r.error,
+    launchFailure: parseLaunchFailure(r.launch_failure),
+    launchReportFor: r.launch_report_for,
     automaticCleanup,
+    residentRestart,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     dispatchedAt: r.dispatched_at,
@@ -5877,22 +6069,22 @@ export function upsertTask(t: Task): string[] {
     d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, enabled, backlog_rank,
-         model, effort,
+         model, effort, advisor_model,
          workflow_id, source_id, external_id, source_url, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
-         base_sha,
+         base_sha, stack_parent_task_id, stack_base_branch, stack_base_sha, stack_pr_url,
          home_name, home_backend, terminal_resource_id, terminal_launch, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
-         status, outcome, outcome_url, error,
+         status, outcome, outcome_url, error, launch_failure, launch_report_for,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
-         model=excluded.model, effort=excluded.effort,
+         model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
@@ -5906,6 +6098,9 @@ export function upsertTask(t: Task): string[] {
          worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
          base_sha=excluded.base_sha, home_name=excluded.home_name,
+         stack_parent_task_id=excluded.stack_parent_task_id,
+         stack_base_branch=excluded.stack_base_branch,
+         stack_base_sha=excluded.stack_base_sha, stack_pr_url=excluded.stack_pr_url,
          home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          terminal_launch=excluded.terminal_launch,
@@ -5913,7 +6108,9 @@ export function upsertTask(t: Task): string[] {
          schedule_occurrence_id=excluded.schedule_occurrence_id,
          scheduled_for=excluded.scheduled_for,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
-         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         error=excluded.error, launch_failure=excluded.launch_failure,
+         launch_report_for=excluded.launch_report_for,
+         updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
@@ -5928,16 +6125,21 @@ export function upsertTask(t: Task): string[] {
       t.backlogRank,
       t.model,
       t.effort,
+      t.advisorModel,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.workspaceKind ?? null, t.pipelineRun?.provider ?? null, t.pipelineRun?.slug ?? null,
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
+      t.stackParentTaskId ?? null, t.stackBaseBranch ?? null, t.stackBaseSha ?? null, t.stackPrUrl ?? null,
       t.homeName, t.homeBackend ?? null, t.terminalResourceId,
       t.terminalLaunch ? JSON.stringify(t.terminalLaunch) : null, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
-      t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.status, t.outcome, t.outcomeUrl, t.error,
+      t.launchFailure ? JSON.stringify(t.launchFailure) : null,
+      t.launchReportFor ?? null,
+      t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
       t.pipelineCommissionId !== undefined ? 1 : 0,
     );
@@ -5985,7 +6187,12 @@ export function getTask(id: string): Task | undefined {
     | TaskRow
     | undefined;
   if (!r) return undefined;
-  return rowToTask(r, taskReposFor(r.id), taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null);
+  return rowToTask(
+    r,
+    taskReposFor(r.id),
+    taskAutomaticCleanupSummaries([r.id]).get(r.id) ?? null,
+    taskResidentRestartSummaries([r.id]).get(r.id) ?? null,
+  );
 }
 
 export function taskIdForSession(sessionId: string): string | null {
@@ -6021,6 +6228,9 @@ export interface TaskWorkEpisodeBinding {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  /** Branch commit observed while this task still owned the active episode. */
+  workHeadSha?: string | null;
+  repoChanges?: Array<{ repoRoot: string; verdict: "changed" | "unchanged" | "unknown"; final?: boolean }> | null;
   mergedAt: number | null;
   boundAt: number;
   updatedAt: number;
@@ -6079,6 +6289,8 @@ type TaskWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  work_head_sha: string | null;
+  repo_changes: string | null;
   merged_at: number | null;
   bound_at: number;
   updated_at: number;
@@ -6101,6 +6313,14 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
   };
 }
 
+function parseRepoChanges(raw: string | null): TaskWorkEpisodeBinding["repoChanges"] {
+  const parsed = parseJsonArray<unknown>(raw);
+  if (!parsed || !parsed.every((v) => v && typeof v === "object" && "repoRoot" in v &&
+    typeof v.repoRoot === "string" && "verdict" in v &&
+    (v.verdict === "changed" || v.verdict === "unchanged" || v.verdict === "unknown"))) return null;
+  return parsed as NonNullable<TaskWorkEpisodeBinding["repoChanges"]>;
+}
+
 function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding {
   return {
     taskId: row.task_id,
@@ -6110,6 +6330,8 @@ function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    workHeadSha: row.work_head_sha,
+    repoChanges: parseRepoChanges(row.repo_changes),
     mergedAt: row.merged_at,
     boundAt: row.bound_at,
     updatedAt: row.updated_at,
@@ -6380,31 +6602,32 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     // - and the pr_url / merged_at that are the only durable proof its work landed - would
     // be lost. `mergedPrFor` reads current AND historical bindings precisely so that a merge
     // on a rolled-past episode still completes the task; that read is inert unless the old
-    // binding is preserved here. Only a row that actually changes episode and carries a PR
-    // is worth keeping - a PR-less binding is no completion evidence, and
-    // `cleanupDependencyProvenance` prunes it anyway. (#167 archived here too, then dropped
-    // it when dependency provenance moved onto the edges; durable completion is the new
-    // reader that needs it back.) COALESCE keeps a merge already recorded on the historical
-    // row rather than letting a re-archival clear it.
+    // binding is preserved here. A branch without an observed PR also needs archival:
+    // unresolved dependencies may still need to discover that episode's PR after completion.
+    // Registry cleanup keeps only branch evidence those edges reference. COALESCE keeps
+    // a merge already recorded on the historical row rather than letting a re-archival clear it.
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
-       WHERE task_id = ? AND episode_id <> ? AND pr_url IS NOT NULL
+       WHERE task_id = ? AND episode_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.taskId, binding.episodeId);
-    // And archive any OTHER task's PR-carrying binding that the cross-task DELETE below is
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.taskId, binding.episodeId);
+    // And archive any OTHER task's PR- or branch-carrying binding that the cross-task DELETE below is
     // about to drop. A session rebound from task A to task B removes A's current binding
     // here; if A's PR had merged while A was still active, losing that row leaves A with
     // neither a current nor a historical merge, so a later departure fails it. This is the
@@ -6413,21 +6636,24 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO historical_task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          merged_at, bound_at, updated_at)
+          merged_at, bound_at, updated_at, ended_at, work_head_sha, repo_changes)
        SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-              merged_at, bound_at, updated_at
+              merged_at, bound_at, updated_at, ?, work_head_sha, repo_changes
        FROM task_work_episode_bindings
-       WHERE session_id = ? AND task_id <> ? AND pr_url IS NOT NULL
+       WHERE session_id = ? AND task_id <> ? AND (pr_url IS NOT NULL OR branch IS NOT NULL)
        ON CONFLICT(task_id, episode_id) DO UPDATE SET
          session_id       = excluded.session_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         work_head_sha    = excluded.work_head_sha,
+         repo_changes     = excluded.repo_changes,
          merged_at        = COALESCE(excluded.merged_at, historical_task_work_episode_bindings.merged_at),
          bound_at         = excluded.bound_at,
-         updated_at       = excluded.updated_at`,
-    ).run(binding.sessionId, binding.taskId);
+         updated_at       = excluded.updated_at,
+         ended_at         = COALESCE(historical_task_work_episode_bindings.ended_at, excluded.ended_at)`,
+    ).run(binding.boundAt, binding.sessionId, binding.taskId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);
@@ -6443,6 +6669,16 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         repo_changes     = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.repo_changes ELSE NULL END,
+         work_head_sha    = CASE WHEN task_work_episode_bindings.episode_id = excluded.episode_id
+           AND task_work_episode_bindings.session_id = excluded.session_id
+           AND task_work_episode_bindings.agent_session_id = excluded.agent_session_id
+           AND task_work_episode_bindings.branch IS excluded.branch
+           THEN task_work_episode_bindings.work_head_sha ELSE NULL END,
          merged_at        = excluded.merged_at,
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at`,
@@ -6465,6 +6701,52 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
   }
 }
 
+/** Persist only a still-active, unchanged binding; late poll results cannot rewrite history. */
+/** Release only an unmerged link whose completed task and episode still own it. */
+export function clearClosedCompletedPr(binding: TaskWorkEpisodeBinding, url: string): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    let changed = 0;
+    for (const table of ["task_work_episode_bindings", "historical_task_work_episode_bindings"]) {
+      changed += Number(d.prepare(`UPDATE ${table} SET pr_url = NULL, pr_head_sha = NULL
+        WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+          AND branch IS ? AND pr_url = ? AND merged_at IS NULL
+          AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'done')`)
+        .run(binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch, url, binding.taskId).changes);
+    }
+    if (changed > 0) d.prepare(`UPDATE session_work_episodes SET pr_url = NULL, pr_head_sha = NULL
+      WHERE session_id = ? AND episode_id = ? AND agent_session_id = ? AND branch IS ?
+        AND pr_url = ? AND merged_at IS NULL`)
+      .run(binding.sessionId, binding.episodeId, binding.agentSessionId, binding.branch, url);
+    if (ownsTransaction) d.exec("COMMIT");
+    return changed > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function recordTaskRepoChanges(binding: TaskWorkEpisodeBinding, changes: NonNullable<TaskWorkEpisodeBinding["repoChanges"]>, final = false): boolean {
+  // A poll begun before teardown must not overwrite the quiescent final snapshot.
+  const current = taskWorkEpisodeForTask(binding.taskId);
+  if (!final && current?.repoChanges?.some(v => v.final)) return false;
+  const result = openDb().prepare(`UPDATE task_work_episode_bindings SET repo_changes = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ? AND branch IS ?`)
+    .run(JSON.stringify(changes.map(v => ({ ...v, final }))), binding.taskId, binding.episodeId, binding.sessionId, binding.agentSessionId, binding.branch);
+  return Number(result.changes) > 0;
+}
+
+export function recordTaskWorkEpisodeHead(binding: TaskWorkEpisodeBinding, headSha: string): void {
+  openDb().prepare(`UPDATE task_work_episode_bindings SET work_head_sha = ?
+    WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+      AND branch IS ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ?
+        AND status NOT IN ('done', 'cancelled', 'backlog'))`)
+    .run(headSha, binding.taskId, binding.episodeId, binding.sessionId,
+      binding.agentSessionId, binding.branch, binding.taskId);
+}
+
 export function taskWorkEpisodeForSession(sessionId: string): TaskWorkEpisodeBinding | null {
   const row = openDb()
     .prepare(
@@ -6483,23 +6765,23 @@ export function taskWorkEpisodeForTask(taskId: string): TaskWorkEpisodeBinding |
   return row ? taskWorkEpisodeFromRow(row) : null;
 }
 
-export function historicalTaskWorkEpisodeBindings(): TaskWorkEpisodeBinding[] {
+export function historicalTaskWorkEpisodeBindings(): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(`SELECT * FROM historical_task_work_episode_bindings ORDER BY updated_at DESC`)
-    .all() as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all() as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 export function historicalTaskWorkEpisodeBindingsForTask(
   taskId: string,
-): TaskWorkEpisodeBinding[] {
+): Array<TaskWorkEpisodeBinding & { endedAt: number | null }> {
   const rows = openDb()
     .prepare(
       `SELECT * FROM historical_task_work_episode_bindings
        WHERE task_id = ? ORDER BY bound_at DESC`,
     )
-    .all(taskId) as unknown as TaskWorkEpisodeRow[];
-  return rows.map(taskWorkEpisodeFromRow);
+    .all(taskId) as unknown as Array<TaskWorkEpisodeRow & { ended_at: number | null }>;
+  return rows.map((row) => ({ ...taskWorkEpisodeFromRow(row), endedAt: row.ended_at }));
 }
 
 /** The retro task already reserved for this source episode, when one exists. */
@@ -6590,6 +6872,23 @@ export function deleteHistoricalTaskWorkEpisodeBinding(
        WHERE task_id = ? AND episode_id = ?`,
     )
     .run(taskId, episodeId);
+}
+
+/** Associate a newly discovered PR only with the exact retained historical task episode. */
+export function updateHistoricalTaskWorkEpisodePr(
+  binding: TaskWorkEpisodeBinding,
+  prUrl: string,
+  prHeadSha: string,
+  now: number,
+): boolean {
+  const result = openDb().prepare(
+    `UPDATE historical_task_work_episode_bindings
+     SET pr_url = ?, pr_head_sha = ?, updated_at = MAX(updated_at, ?)
+     WHERE task_id = ? AND episode_id = ? AND session_id = ? AND agent_session_id = ?
+       AND branch = ? AND pr_url IS NULL`,
+  ).run(prUrl, prHeadSha, now, binding.taskId, binding.episodeId, binding.sessionId,
+    binding.agentSessionId, binding.branch);
+  return Number(result.changes) === 1;
 }
 
 export function updateWorkEpisodePr(
@@ -8009,6 +8308,39 @@ export function clearTaskSessionClosure(taskId: string): void {
 export function retireTaskSessionClosure(taskId: string, sessionId: string, at: number): void {
   openDb().prepare(`UPDATE task_session_closures SET retired_at = COALESCE(retired_at, ?)
     WHERE task_id = ? AND session_id = ?`).run(at, taskId, sessionId);
+}
+
+/**
+ * Each still-open resident task whose run Restart on new profile ended, with the replacement
+ * that restart's request id names. See `TaskResidentRestart`.
+ *
+ * Selected from the ended runs themselves rather than `IN (...)` over the caller's ids, for the
+ * reason `taskAutomaticCleanupSummaries` gives: `listTasks` passes every task ever filed. Only
+ * open tasks join, so the rows are the replaced sessions nobody has completed yet - normally none.
+ * The replacement's request id is built in SQL from the shared helper's prefix, bound as a
+ * parameter, so the two spellings cannot drift apart.
+ */
+export function taskResidentRestartSummaries(
+  taskIds: readonly string[],
+): Map<string, TaskResidentRestart> {
+  const out = new Map<string, TaskResidentRestart>();
+  if (taskIds.length === 0) return out;
+  const wanted = new Set(taskIds);
+  const rows = openDb().prepare(
+    `SELECT old.task_id AS task_id, rep.task_id AS replacement_task_id, rep.profile_revision AS revision
+       FROM resident_runs old
+       JOIN tasks t ON t.id = old.task_id AND t.status NOT IN ('done', 'cancelled', 'failed')
+       LEFT JOIN resident_runs rep ON rep.launch_request_id = (? || old.id)
+      WHERE old.ended_at IS NOT NULL AND old.pause_reason = ?
+      ORDER BY old.created_at`,
+  ).all(residentRestartRequestId(""), RESIDENT_RESTART_PAUSE_REASON) as Array<{
+    task_id: string; replacement_task_id: string | null; revision: number | null;
+  }>;
+  for (const row of rows) {
+    if (!wanted.has(row.task_id)) continue;
+    out.set(row.task_id, { replacementTaskId: row.replacement_task_id, revision: row.revision });
+  }
+  return out;
 }
 
 /**
@@ -10518,6 +10850,37 @@ export function upsertSessionGoalWithSteering(g: SessionGoal, note: WorkflowStee
   }
 }
 
+/**
+ * Commit a goal and several steering records together: a person accepting the objective as
+ * is resolves every pending revision at once. Same transaction and conflict rule as the
+ * single-note writer, which stays the refiner's path; this one never replaces it.
+ */
+export function upsertSessionGoalWithSteeringNotes(g: SessionGoal, notes: WorkflowSteeringNote[]): void {
+  const parsed = notes.map((note) => WorkflowSteeringNoteSchema.parse(note));
+  if (
+    g.relationship !== "steer" ||
+    parsed.length === 0 ||
+    parsed.some((note) => note.revision > g.resolvedPromptRevision)
+  ) {
+    throw new Error("Steering must belong to the resolved goal revision");
+  }
+  const db = openDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    upsertSessionGoal(g);
+    const insert = db.prepare(`INSERT INTO session_goal_steering
+      (note_key, revision, instruction, relationship, rationale, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(note_key, revision) DO NOTHING`);
+    for (const note of parsed) {
+      insert.run(g.noteKey, note.revision, note.instruction, note.relationship, note.rationale, note.timestamp);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** Select newest revisions first, then return the retained suffix in conversation order. */
 export function readSessionGoalSteering(noteKey: string, resolvedRevision: number): WorkflowSteeringNote[] {
   const rows = openDb().prepare(`SELECT revision, instruction, relationship, rationale, timestamp
@@ -11513,6 +11876,7 @@ export function recordDriverSessionUsage(input: {
   agent: string;
   turnId: string;
   ts: number;
+  snapshot?: { usage: SdkUsage; resumed: boolean };
   models: readonly {
     modelId: string;
     input: number;
@@ -11522,8 +11886,8 @@ export function recordDriverSessionUsage(input: {
     cacheWrite: number;
     reportedCostUsd: number | null;
   }[];
-}): void {
-  if (input.models.length === 0) return;
+}): readonly import("@shared/llm-spend.ts").LlmSpendModelUsage[] {
+  if (input.models.length === 0) return [];
   const d = openDb();
   const insert = d.prepare(
     `INSERT INTO usage_ledger
@@ -11535,7 +11899,47 @@ export function recordDriverSessionUsage(input: {
   );
   try {
     d.exec("BEGIN IMMEDIATE;");
-    for (const m of input.models) {
+    // Claim the result before interpreting lower counters as a reset. Unlike economic
+    // rows, receipts survive retention, including baseline-only results with no ledger row.
+    // This claim rolls back with the snapshot/ledger write if any part fails.
+    const receipt = d.prepare(`INSERT OR IGNORE INTO driver_usage_receipts (note_key, turn_id)
+      VALUES (?, ?)`).run(input.noteKey, input.turnId);
+    if (receipt.changes === 0) {
+      d.exec("COMMIT;");
+      return [];
+    }
+    const previousRow = d.prepare("SELECT snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json FROM driver_usage_snapshots WHERE note_key = ?")
+      .get(input.noteKey) as { snapshot_json: string; baseline_gap_turn_id: string | null; unpriced_baseline_models_json: string } | undefined;
+    const previous = previousRow ? JSON.parse(previousRow.snapshot_json) as SdkUsage : null;
+    // A legacy/imported resume has no trustworthy starting point. Its ledger may
+    // already be inflated, so summing those rows would merely hide the next few turns.
+    // Establish a baseline once, retaining an explicit gap rather than booking history.
+    const baselineOnly = !!input.snapshot?.resumed && previous === null;
+    let models = baselineOnly ? [] : input.snapshot
+      ? cumulativeUsageDelta(input.snapshot.usage, previous).models ?? []
+      : input.models;
+    let unpricedBaselineModels: string[] = baselineOnly
+      ? (input.snapshot?.usage.models ?? []).filter(m => m.reportedCostUsd === null).map(m => m.modelId)
+      : previousRow ? JSON.parse(previousRow.unpriced_baseline_models_json) : [];
+    if (input.snapshot && previous && unpricedBaselineModels.length) {
+      const current = input.snapshot.usage;
+      const priorModels = new Map(previous.models?.map(m => [m.modelId, m]));
+      // A proven reset retires the legacy cost uncertainty even if this result is still
+      // unpriced. Use the same reset predicates as the cumulative delta/baseline logic.
+      unpricedBaselineModels = cumulativeUsageReset(current, previous) ? []
+        : unpricedBaselineModels.filter(id => {
+          const prior = priorModels.get(id);
+          const model = current.models?.find(m => m.modelId === id);
+          return !prior || !model || !cumulativeModelUsageReset(model, prior);
+        });
+    }
+    if (unpricedBaselineModels.length) {
+      // If the initial legacy snapshot had no price, the first later price is also
+      // a baseline, not new spend. Preserve token deltas while marking price unknown.
+      models = models.map(m => unpricedBaselineModels.includes(m.modelId)
+        ? { ...m, reportedCostUsd: null } : m);
+    }
+    for (const m of models) {
       insert.run(
         input.noteKey,
         input.sessionId,
@@ -11553,7 +11957,23 @@ export function recordDriverSessionUsage(input: {
         m.cacheWrite,
       );
     }
+    if (input.snapshot) {
+      const baseline = cumulativeUsageBaseline(input.snapshot.usage, previous);
+      d.prepare(`INSERT INTO driver_usage_snapshots
+        (note_key, snapshot_json, baseline_gap_turn_id, unpriced_baseline_models_json, updated_at)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT(note_key) DO UPDATE SET
+        snapshot_json = excluded.snapshot_json,
+        unpriced_baseline_models_json = excluded.unpriced_baseline_models_json,
+        updated_at = excluded.updated_at`)
+        .run(input.noteKey, JSON.stringify(baseline), baselineOnly ? input.turnId : null,
+          JSON.stringify(unpricedBaselineModels.filter(id =>
+            !baseline.models?.some(m => m.modelId === id && m.reportedCostUsd !== null))), input.ts);
+    }
     d.exec("COMMIT;");
+    if (baselineOnly) {
+      console.warn(`[usage] ${input.noteKey}: resumed without a usage checkpoint; result ${input.turnId} establishes the baseline only (transition usage unknown)`);
+    }
+    return models;
   } catch (err) {
     try { d.exec("ROLLBACK;"); } catch {}
     throw err;
@@ -13680,8 +14100,53 @@ interface InspectorPrRow {
   observed_at: number | null;
   head_ref_name: string | null;
   title: string | null;
+  base_ref_name?: string | null;
+  reviewed_base_ref?: string | null;
+  reviewed_base_sha?: string | null;
+  merge_commit_sha?: string | null;
+  stack_task_id?: string | null;
+  stack_episode?: string | null;
+  stack_adopted_at?: number | null;
+  stack_parent_pr_url?: string | null;
+  stack_base_sha?: string | null;
+  stack_released_head_sha?: string | null;
+  stack_released_basis?: string | null;
+  stack_lineage_history?: string | null;
+  stack_note?: string | null;
   adopted_at: number;
   updated_at: number;
+}
+
+/** A lineage history blob read defensively: a malformed one reads as empty, never throws. */
+function parseLineageHistory(raw: string | null | undefined): StackLineage["history"] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const row = entry as Record<string, unknown> | null;
+      return row && typeof row.from === "string" && typeof row.to === "string" && typeof row.at === "number"
+        ? [{ from: row.from, to: row.to, at: row.at }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function rowToStackLineage(r: InspectorPrRow): StackLineage | null {
+  if (!r.stack_parent_pr_url || !r.stack_task_id) return null;
+  return {
+    taskId: r.stack_task_id,
+    episode: r.stack_episode ?? null,
+    adoptedAt: r.stack_adopted_at ?? r.adopted_at,
+    parentPrUrl: r.stack_parent_pr_url,
+    baseSha: r.stack_base_sha ?? null,
+    releasedHeadSha: r.stack_released_head_sha ?? null,
+    releasedBasis: r.stack_released_basis === "merged" || r.stack_released_basis === "closed" ? r.stack_released_basis : null,
+    history: parseLineageHistory(r.stack_lineage_history),
+    note: r.stack_note ?? null,
+  };
 }
 
 function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
@@ -13714,6 +14179,11 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     observedAt: r.observed_at,
     headRefName: r.head_ref_name,
     title: r.title,
+    baseRefName: r.base_ref_name ?? null,
+    reviewedBaseRef: r.reviewed_base_ref ?? null,
+    reviewedBaseSha: r.reviewed_base_sha ?? null,
+    mergeCommitSha: r.merge_commit_sha ?? null,
+    stack: rowToStackLineage(r),
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -13808,6 +14278,12 @@ export function updateInspectorPr(
     headRefName?: string | null;
     /** Re-recorded every tick, so a retitled pull request stops being stale. */
     title?: string | null;
+    baseRefName?: string | null;
+    /** Written beside `headSha` by a completed review. */
+    reviewedBaseRef?: string | null;
+    /** Written beside `reviewedBaseRef`; advanced when GitHub confirms the same merge base. */
+    reviewedBaseSha?: string | null;
+    mergeCommitSha?: string | null;
   },
   now: number,
 ): void {
@@ -13823,7 +14299,7 @@ export function updateInspectorPr(
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?,
               observed_head_sha = ?, observed_state = ?, observed_at = ?, head_ref_name = ?,
-              title = ?,
+              title = ?, base_ref_name = ?, reviewed_base_ref = ?, reviewed_base_sha = ?, merge_commit_sha = ?,
               updated_at = ?
         WHERE key = ?`,
     )
@@ -13847,9 +14323,115 @@ export function updateInspectorPr(
       next.observedAt,
       next.headRefName,
       next.title,
+      next.baseRefName ?? null,
+      next.reviewedBaseRef ?? null,
+      next.reviewedBaseSha ?? null,
+      next.mergeCommitSha ?? null,
       now,
       key,
     );
+}
+
+/**
+ * Write a pull request row's stack lineage, once.
+ *
+ * Guarded in SQL on the lineage still being absent, so a repeated adoption signal, a restart
+ * or a second writer can never rewrite what the row is built on. The current parent changes
+ * only through the replacement-parent transition, which is not this function.
+ */
+export function recordInspectorPrLineage(key: string, lineage: Omit<StackLineage, "releasedHeadSha" | "releasedBasis" | "note">): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET stack_task_id = ?, stack_episode = ?, stack_adopted_at = ?,
+              stack_parent_pr_url = ?, stack_base_sha = ?, stack_lineage_history = ?,
+              stack_released_head_sha = NULL, stack_released_basis = NULL
+        WHERE key = ? AND stack_parent_pr_url IS NULL`,
+    )
+    .run(
+      lineage.taskId,
+      lineage.episode,
+      lineage.adoptedAt,
+      lineage.parentPrUrl,
+      lineage.baseSha,
+      lineage.history.length > 0 ? JSON.stringify(lineage.history) : null,
+      key,
+    );
+  return Number(result.changes) > 0;
+}
+
+/**
+ * The lineage a later child pull request of the same task inherits: the most recently
+ * adopted earlier row for this task, repository and work episode. Highest `stack_adopted_at`
+ * wins, and the higher rowid breaks a tie. Never crosses an episode, so a rescheduled task's
+ * first pull request is seeded from its new dispatch instead.
+ */
+export function latestStackLineage(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey: string,
+): StackLineage | null {
+  return latestStackedPr(taskId, owner, repo, episode, exceptKey)?.stack ?? null;
+}
+
+/** The row `latestStackLineage` reads, whole: its current base is what a review diffs against. */
+export function latestStackedPr(
+  taskId: string,
+  owner: string,
+  repo: string,
+  episode: string | null,
+  exceptKey = "",
+): InspectorPr | null {
+  const row = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE stack_task_id = ? AND lower(owner) = lower(?) AND lower(repo) = lower(?)
+          AND stack_episode IS ? AND stack_parent_pr_url IS NOT NULL AND key <> ?
+        ORDER BY stack_adopted_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(taskId, owner, repo, episode, exceptKey) as InspectorPrRow | undefined;
+  return row ? rowToInspectorPr(row) : null;
+}
+
+/**
+ * Record that the stack release check passed for exactly this child head, and under which
+ * parent state (`basis`). Rewritten when either changes: a release first granted under a
+ * closed parent that later merged is re-recorded as merged once that ancestry is verified.
+ */
+export function releaseInspectorPrStack(key: string, headSha: string, basis: "merged" | "closed", now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = ?, stack_released_basis = ?, updated_at = ?
+        WHERE key = ? AND stack_parent_pr_url IS NOT NULL
+          AND (stack_released_head_sha IS NULL OR stack_released_head_sha <> ?
+               OR stack_released_basis IS NULL OR stack_released_basis <> ?)`,
+    )
+    .run(headSha, basis, now, key, headSha, basis);
+  return Number(result.changes) > 0;
+}
+
+/**
+ * Withdraw a stack release that no longer holds (its parent was reopened, or can no longer be
+ * confirmed). The next release check has to pass again before the row may merge.
+ */
+export function revokeInspectorPrStack(key: string, now: number): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE inspector_prs SET stack_released_head_sha = NULL, stack_released_basis = NULL, updated_at = ?
+        WHERE key = ? AND stack_released_head_sha IS NOT NULL`,
+    )
+    .run(now, key);
+  return Number(result.changes) > 0;
+}
+
+/** One line about the last stacked-base correction, shown in the merge queue. */
+export function noteInspectorPrStack(key: string, note: string | null, now: number): void {
+  openDb()
+    .prepare(`UPDATE inspector_prs SET stack_note = ?, updated_at = ? WHERE key = ? AND stack_parent_pr_url IS NOT NULL`)
+    .run(note, now, key);
 }
 
 export function getInspectorPr(key: string): InspectorPr | null {
@@ -15400,7 +15982,7 @@ export function codeRabbitSummary(prKey: string, owner?: { noteKey: string; epis
     delivery: uncertain ? "Delivery uncertain; manual messaging remains available"
       : !fresh ? "Waiting for a complete fresh observation"
       : record?.state !== "OPEN" || record.draft ? "PR is closed or draft"
-      : !threads.length ? "No unresolved CodeRabbit threads"
+      : !threads.length ? "No unresolved CodeRabbit findings"
       : !owner ? "Waiting for an eligible owning session"
       : pending ? "Waiting for an eligible session" : "Feedback delivered",
   };

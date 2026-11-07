@@ -3,6 +3,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * The everything-palette, driven the way an operator drives it: one chord, a few letters, and
@@ -207,6 +208,28 @@ test("enter on a shelf asset lands on its Library card", async ({ dashboard, dae
     .toBe(`#/library/personas/${personaId}`);
   await expect(dashboard.locator("section.persona-fields").getByLabel("Name"))
     .toHaveValue("Zephyr reviewer");
+});
+
+test("Cmd+Enter opens the active Palette choice instead of the first or focused choice", async ({ dashboard, daemon }) => {
+  const { personaId } = await seedAssets(daemon);
+  await open(dashboard);
+  await expectContentClearsBorder(palette(dashboard));
+  await search(dashboard, "zephyr", /Zephyr workflow, workflow/);
+  const first = dashboard.getByRole("option", { name: /Zephyr workflow, workflow/ });
+  const second = dashboard.getByRole("option", { name: /Zephyr reviewer, persona/ });
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await dashboard.keyboard.press("ArrowDown");
+  await expect(second).toHaveAttribute("aria-selected", "true");
+  // Bypass the search input's own Enter handler so this exercises Overlay's default
+  // option lookup. Focusing the first row must not replace the active second row.
+  await first.focus();
+  await expect(first).toHaveAttribute("aria-selected", "false");
+  await shoot(dashboard, "cmd-enter-second-choice-ready");
+  await dashboard.keyboard.press("Meta+Enter");
+  await expect(palette(dashboard)).toBeHidden();
+  await expect.poll(() => dashboard.evaluate(() => location.hash)).toBe(`#/library/personas/${personaId}`);
+  await expect(dashboard.locator("section.persona-fields").getByLabel("Name")).toHaveValue("Zephyr reviewer");
+  await shoot(dashboard, "cmd-enter-second-choice-opened");
 });
 
 test("a setting row lands on its panel with the control lit up", async ({ dashboard, daemon }) => {

@@ -7,6 +7,7 @@ import {
 } from "../src/shared/task-source.ts";
 import {
   candidateFrom,
+  githubIssues,
   externalIdFor,
   ghIssueCreateArgs,
   ghIssueListArgs,
@@ -188,6 +189,12 @@ test("a non-zero gh exit is an error, never an empty success", () => {
   assert.match(r.error!, /gh issue list failed: gh: not authenticated/);
 });
 
+test("a gh run refused because the checkout is gone names the checkout, not gh", () => {
+  const r = sweepResultFrom({ stdout: "", stderr: "gh could not start because its working directory /gone does not exist", code: 1, missingCwd: "/gone" }, cfg(), ctx);
+  assert.deepEqual(r.items, []);
+  assert.match(r.error!, /files tasks against \/gone, which no longer exists/);
+});
+
 test("gh output that is not JSON, or not a list, is an error too", () => {
   assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx).error!, /not JSON/);
   assert.match(
@@ -366,5 +373,22 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
     assert.equal(r.ref, null);
+  }
+});
+
+// The preflight's own branch, through the real `run`: a gh that resolves, started in a
+// checkout that is gone. Node refuses that spawn with ENOENT, which this branch used to
+// read as "gh is not installed" or "not authenticated" - neither of which is the fix.
+test("preflight under a vanished checkout names the checkout, never gh", async () => {
+  const before = process.env.MISSION_GH_BIN;
+  process.env.MISSION_GH_BIN = process.execPath;
+  try {
+    const gone = `/definitely/not/here/${process.pid}-gh-checkout`;
+    const said = await githubIssues.preflight({ ...cfg(), repo: "acme/demo" }, { ...ctx, repoRoot: gone });
+    assert.match(said ?? "", new RegExp(`files tasks against ${gone}, which no longer exists`));
+    assert.doesNotMatch(said ?? "", /not installed|not authenticated|gh auth login/);
+  } finally {
+    if (before === undefined) delete process.env.MISSION_GH_BIN;
+    else process.env.MISSION_GH_BIN = before;
   }
 });

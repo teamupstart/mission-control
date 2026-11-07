@@ -32,6 +32,12 @@ export function pauseResident(id: string, reason: string): void {
   openDb().prepare(`UPDATE resident_runs SET loop_state = 'paused', pause_reason = ?, next_wake_at = NULL,
     ${CLEAR_REQUEST} WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'`).run(reason, id);
 }
+/** Upgrade only the obsolete automatic pause; explicit and guardrail pauses remain durable. */
+export function releaseResidentReviewPause(id: string): boolean {
+  return !!openDb().prepare(`UPDATE resident_runs SET loop_state = 'working', pause_reason = NULL,
+    consumed_generation = NULL WHERE id = ? AND ended_at IS NULL AND launch_state = 'launched'
+    AND loop_state = 'paused' AND pause_reason = 'needs-you'`).run(id).changes;
+}
 export function resumeResident(id: string, working: boolean, generation: number | null, at: number): void {
   const run = liveRun(id);
   openDb().prepare(`UPDATE resident_runs SET loop_state = ?, pause_reason = NULL, wake_reason = NULL, next_wake_at = ?,
@@ -49,8 +55,8 @@ export function completeResidentCompaction(id: string, generation: number | null
   openDb().prepare("UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ? WHERE id = ?")
     .run(generation ?? run.consumedGeneration, id);
 }
-export function humanResidentTurn(id: string): void {
-  openDb().prepare(`UPDATE resident_runs SET next_wake_at = NULL, wake_reason = NULL, ${CLEAR_REQUEST},
+export function humanResidentTurn(id: string, preservePacing = false): void {
+  openDb().prepare(`UPDATE resident_runs SET next_wake_at = NULL, wake_reason = NULL, ${preservePacing ? "" : `${CLEAR_REQUEST},`}
     loop_state = CASE WHEN loop_state = 'paused' THEN 'paused' ELSE 'working' END
     WHERE id = ? AND ended_at IS NULL`).run(id);
 }
@@ -58,12 +64,15 @@ export function completeResidentGeneration(id: string, generation: number, at: n
   return inResidentTransaction(() => {
     const run = liveRun(id);
     if (run.loopState === "paused" || run.loopState === "compacting" || claimedIteration(id) ||
-        generation <= (run.consumedGeneration ?? -1)) return false;
+        generation < (run.consumedGeneration ?? -1)) return false;
     const request = openDb().prepare(`SELECT wake_request_delay_s AS delay, wake_request_reason AS reason,
       wake_request_generation AS generation FROM resident_runs WHERE id = ?`).get(id) as {
       delay: number | null; reason: string | null; generation: number | null;
     };
-    const applies = request.generation !== null && request.generation > (run.consumedGeneration ?? -1) && request.generation <= generation;
+    // A hold can accept pacing after this generation already completed. Consume that
+    // request once on release, while repeated completion events remain inert.
+    const applies = request.generation !== null && request.generation >= (run.consumedGeneration ?? -1) && request.generation <= generation;
+    if (generation === run.consumedGeneration && !applies) return false;
     openDb().prepare(`UPDATE resident_runs SET loop_state = 'waiting', consumed_generation = ?,
       next_wake_at = ?, wake_reason = ?, ${CLEAR_REQUEST} WHERE id = ?`).run(
       generation, at + (applies ? request.delay! : run.settings.loop.delaySeconds) * 1000,
@@ -71,22 +80,22 @@ export function completeResidentGeneration(id: string, generation: number, at: n
     return true;
   });
 }
-export function paceResident(id: string, request: ResidentPacingRequest, generation: number, at: number): ResidentPacingReceipt {
+export function paceResident(id: string, request: ResidentPacingRequest, generation: number, at: number, held = false): ResidentPacingReceipt {
   return inResidentTransaction(() => {
     const run = liveRun(id);
     const prior = openDb().prepare("SELECT receipt FROM resident_pacing_calls WHERE run_id = ? AND call_id = ?")
       .get(id, request.callId) as { receipt: string } | undefined;
     if (prior) return JSON.parse(prior.receipt) as ResidentPacingReceipt;
-    if (run.loopState === "paused") throw new ResidentLoopRefusal(run.pauseReason ?? "This resident is paused.");
+    if (run.loopState === "paused") throw new ResidentLoopRefusal(`This resident is paused. Recorded pause reason: ${run.pauseReason ?? "unspecified reason"}. Use Resume or Run now in the resident controls after resolving any guardrail.`);
     const settings = run.settings.loop;
     const delay = Math.min(settings.maxDelaySeconds, Math.max(settings.minDelaySeconds, request.delaySeconds));
-    const pending = run.loopState !== "waiting" || !!claimedIteration(id) || generation > (run.consumedGeneration ?? -1);
+    const pending = held || run.loopState !== "waiting" || !!claimedIteration(id) || generation > (run.consumedGeneration ?? -1);
     const receipt: ResidentPacingReceipt = { callId: request.callId, delaySeconds: delay, pending, nextWakeAt: pending ? null : at + delay * 1000 };
     if (pending) {
       openDb().prepare(`UPDATE resident_runs SET wake_request_delay_s = ?, wake_request_reason = ?,
-        wake_request_generation = ? WHERE id = ?`).run(delay, request.reason, Math.max(generation, (run.consumedGeneration ?? -1) + 1), id);
+        wake_request_generation = ? WHERE id = ?`).run(delay, request.reason, Math.max(generation, (run.consumedGeneration ?? -1) + (held ? 0 : 1)), id);
     } else {
-      openDb().prepare("UPDATE resident_runs SET next_wake_at = ?, wake_reason = ? WHERE id = ?").run(receipt.nextWakeAt, request.reason, id);
+      openDb().prepare(`UPDATE resident_runs SET next_wake_at = ?, wake_reason = ?, ${CLEAR_REQUEST} WHERE id = ?`).run(receipt.nextWakeAt, request.reason, id);
     }
     openDb().prepare("INSERT INTO resident_pacing_calls VALUES (?, ?, ?, ?)").run(id, request.callId, JSON.stringify(receipt), at);
     return receipt;

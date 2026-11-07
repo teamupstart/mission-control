@@ -65,12 +65,20 @@ export type ResidentMcpResolution =
   | { ok: true; servers: ResidentMcpResolvedServer[] | null }
   | { ok: false; error: string };
 
+/**
+ * A global server as a launch snapshots it. Its whole definition is private, so it starts through
+ * the scoped launcher - except a remote server the harness may hold a login for, which only the
+ * harness's own transport can present. That one has nothing private to carry but its URL, and is
+ * handed to the harness as configured; `strictMcpConfig` still pins the set. It keeps
+ * `launcher: true`, so a reader that predates `harnessLogin` starts it through the launcher.
+ */
 function resolvedGlobal(definition: GlobalMcpDefinition): ResidentMcpResolvedServer {
   return {
     source: "global",
     name: definition.summary.name,
     transport: definition.transport!,
     launcher: true,
+    ...(definition.harnessLogin ? { harnessLogin: true as const } : {}),
     options: definition.options,
     secrets: definition.secrets,
   };
@@ -263,15 +271,30 @@ function issueCredential(runId: string, server: StoredMcpSnapshotServer, startId
 /** Stands in for a credential in a preview: a path no file is ever written to. */
 const UNISSUED_CREDENTIAL = "unissued";
 
+/**
+ * Runtime flags every scoped launcher starts with, ahead of its script.
+ *
+ * `--use-system-ca` adds the operating system's certificate store to the roots an HTTP or SSE
+ * bridge verifies a remote server against. The launcher runs with only its runtime's
+ * environment, and a daemon started from the Finder imports only `PATH` from the login shell, so
+ * an operator's `NODE_EXTRA_CA_CERTS` never reaches it. Behind a TLS-inspecting proxy the
+ * certificate every remote server presents is signed by a root that lives in the system store
+ * and nowhere in Node's bundled set, and without this every request fails with
+ * `SELF_SIGNED_CERT_IN_CHAIN`. A startup flag rather than `tls.setDefaultCACertificates`, which
+ * only Node 24.5 and later have: `engines` admits every Node 24, and so does Electron's node
+ * mode. Verification is never relaxed; any `NODE_EXTRA_CA_CERTS` that does arrive still applies.
+ */
+export const RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS: readonly string[] = ["--use-system-ca"];
+
 /** One entry; `startId` null renders a preview whose launcher entries carry no credential. */
 function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: string | null): ResidentMcpEntry {
   const { name, options, transport } = server;
   // A redacted definition renders as a launcher entry, whose redemption refuses it.
-  if (!server.launcher && transport.type !== "redacted") {
+  if ((server.harnessLogin === true || !server.launcher) && transport.type !== "redacted") {
     if (transport.type === "stdio") {
       return { name, options, shape: "stdio", command: transport.command, args: [...transport.args], env: { ...transport.env } };
     }
-    return { name, options, shape: "http", url: transport.url, headers: { ...transport.headers } };
+    return { name, options, shape: "http", transport: transport.type, url: transport.url, headers: { ...transport.headers } };
   }
   const runtime = resolveMissionMcpRuntime();
   return {
@@ -280,6 +303,7 @@ function entryFor(runId: string, server: StoredMcpSnapshotServer, startId: strin
     shape: "launcher",
     command: runtime.command,
     args: [
+      ...RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS,
       residentMcpLauncherPath(),
       "--run", runId,
       "--server", name,

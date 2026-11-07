@@ -1,3 +1,4 @@
+import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
   DeleteResidentMcpServerSchema,
@@ -34,7 +35,7 @@ import {
   standingBundleAnswer,
   STANDING_FOLLOW_UP_NOTE,
 } from "./plans/publication.ts";
-import { validatePlanInputs } from "./plans/inputs.ts";
+import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
 import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
@@ -46,8 +47,17 @@ import { isActiveTask } from "@shared/task-status.ts";
 import { primaryActionTelemetry } from "./telemetry/primary-actions.ts";
 import { retainTurnOperation } from "./telemetry/experience.ts";
 import { workflowActionTelemetry } from "./telemetry/workflow-actions.ts";
-import { taskHasRepository, isShippingTaskKind } from "@shared/task.ts";
-import { ForemanHealthReportSchema } from "@shared/foreman-health.ts";
+import { taskHasRepository, isShippingTaskKind, taskKindAllowsBacklog, taskKindCreator } from "@shared/task.ts";
+import { launchFailureGroupKey, launchFailureOutcome, launchWorkKey } from "@shared/launch-failure.ts";
+import {
+  dismissLaunchFailures,
+  launchFailureGroupFor,
+  launchFailureReportBrief,
+  launchFailureReportTitle,
+  markLaunchFailureReport,
+  recordLaunchFailureReport,
+} from "./launch-failures.ts";
+import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -77,6 +87,9 @@ import {
   DetachReviewWaitSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
+  DismissLaunchFailuresSchema,
+  ReportLaunchFailureSchema,
+  RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
   PipelineRetrySchema,
   PipelineSettlementSchema,
@@ -98,6 +111,7 @@ import {
   ForemanPlannerRetryClaimSchema,
   ForemanPlannerRetrySchema,
   HarnessesConfigPatchSchema,
+  HarnessAdvisorEnvironmentsSchema,
   HarnessModelCatalogQuerySchema,
   HarnessModelCatalogsSchema,
   TerminalsConfigPatchSchema,
@@ -111,6 +125,8 @@ import {
   type McpCreateTaskV3,
   McpUpdateTaskSchema,
   McpDeleteTaskSchema,
+  McpListTasksSchema,
+  McpGetTaskSchema,
   type UpdateTask,
   McpAdoptPipelineRunSchema,
   McpReportPipelineWorkspaceSchema,
@@ -265,6 +281,7 @@ import type {
   ReviewActor,
   Session,
   SkillsView,
+  Task,
   WorkItem,
 } from "@shared/types.ts";
 import { ReviewResolutionError, type ReviewManager } from "./reviews.ts";
@@ -278,6 +295,7 @@ import {
 } from "./tasks.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
+import { openEndedRequests } from "./http-shutdown.ts";
 import type { KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
@@ -328,6 +346,7 @@ import {
   getForemanConfig,
   recordForemanPlannerHealth,
   recordForemanHealth,
+  dismissForemanHealthIssues,
   releaseForemanLease,
   requestForemanPlannerRetry,
   setForemanConfig,
@@ -436,6 +455,7 @@ import {
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
 import { startSetupService } from "./setup/service.ts";
+import { locateExecutable } from "./executables/locator.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -4020,6 +4040,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
+  app.get("/api/tasks/:id/plan-dependencies", (c) => {
+    const task = tasks.get(c.req.param("id"));
+    return task ? c.json(taskPlanDependencyRequirements(task)) : c.json({ error: "no such task" }, 404);
+  });
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
 
@@ -4842,7 +4866,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId });
+      creationPolicy = tasks.prepareCreationPolicy({ kind, workflowId: data.workflowId, planStorage: data.planStorage });
     } catch (error) {
       if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
       throw error;
@@ -4877,7 +4901,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(task);
     } catch (error) {
       if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError) {
+        return c.json({ error: error.message }, 400);
+      }
       throw error;
     }
   }
@@ -4907,6 +4933,38 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, McpCreateTaskV3Schema);
     if (!parsed.ok) return parsed.res;
     return createMcpTask(c, parsed.data, true, true);
+  });
+
+  // Same token authority as task creation/update. These read durable task facts only,
+  // never private session state, so session-control capability is intentionally not used.
+  app.post("/mcp/tasks/list", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpListTasksSchema);
+    if (!parsed.ok) return parsed.res;
+    const query = parsed.data;
+    if (query.repository !== undefined) {
+      const selected = await resolveTaskRepositorySelector(query.repository);
+      if (!selected.ok) return c.json({ error: selected.error }, selected.status);
+      const resolved = await resolveTaskRepoRoot(selected.path);
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+      query.repository = resolved.repoRoot;
+    }
+    try {
+      return c.json(readTaskPage(query));
+    } catch (error) {
+      if (error instanceof InvalidTaskCursorError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/mcp/tasks/get", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpGetTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = tasks.getDurable(parsed.data.taskId);
+    return task ? c.json(taskReadSnapshot(task)) : c.json({ error: "no such task" }, 404);
   });
 
   app.post("/mcp/tasks/:id/update", async (c) => {
@@ -4961,7 +5019,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   app.get("/mcp/reviews/:id/wait", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS);
+    // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
+    const ended = new AbortController();
+    const release = openEndedRequests.add(() => ended.abort());
+    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
   });
@@ -6760,6 +6821,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(goal);
   });
 
+  // A person's exit from a paused goal: every pending instruction becomes steering and the
+  // current objective is confirmed as the completion contract, unchanged and at the same
+  // version. Foreman judges completion on its next tick. No body; idempotent on a goal that
+  // is already resolved. The answer is the full record, so the drawer can render it at once.
+  app.post("/api/sessions/:id/goal/accept", (c) => {
+    const result = registry.acceptGoalObjective(c.req.param("id"));
+    if (!result) return c.json({ error: "no goal for this session" }, 404);
+    if (!result.accepted) {
+      return c.json({ error: "this session has no objective to accept yet" }, 409);
+    }
+    return c.json(result.goal);
+  });
+
   // Re-attach an orphaned queue onto this live session. Always an explicit click:
   // a different agent at the same cwd may be doing something else entirely.
   app.post("/api/sessions/:id/queue/reattach", async (c) => {
@@ -6823,6 +6897,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "that worker does not hold the Foreman lease" }, 409);
     }
     return c.json({ ok: true });
+  });
+  // The operator's acknowledgement. Filters the projection only; the worker's report is kept.
+  app.post("/api/foreman/health/dismiss", async (c) => {
+    const parsed = await parseBody(c, ForemanHealthDismissSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ dismissed: dismissForemanHealthIssues(parsed.data.issues) });
   });
   // The worker owns this circuit. These routes only project its bounded report and carry
   // an operator's retry signal across the daemon/worker process boundary.
@@ -7207,6 +7287,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ShippingConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const next = setShippingConfig(parsed.data);
+    // The Stacked pull requests default decides which readiness stamps still stand, so a
+    // dependent that would now wait for merge stops reading as ready at once.
+    tasks.reconcileStackReadiness();
     // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
     publishSettingsStatus(registry);
     return c.json(next);
@@ -7214,6 +7297,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  // What each harness's own settings say about its advisor, so the panel can tell the
+  // operator whether a dispatched session will consult one. Read-only and read fresh: the
+  // operator edits those files outside Mission Control.
+  app.get("/api/harnesses/advisor", (c) => {
+    const view = Object.fromEntries(
+      AGENT_TYPES.map((agent) => [agent, harnessFor(agent).advisorEnvironment?.() ?? null]),
+    );
+    return c.json(HarnessAdvisorEnvironmentsSchema.parse(view));
+  });
   app.get("/api/harnesses/models", async (c) => {
     if (!modelCatalogs) return c.json({ error: "Harness model catalog service unavailable" }, 503);
     const query = HarnessModelCatalogQuerySchema.safeParse(c.req.query());
@@ -8094,6 +8186,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         setupInstallDeps?.listProviderInstallers ?? pipelineInstallerCandidates,
       prepareProviderInstaller:
         setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
+      resolveExecutable:
+        setupInstallDeps?.resolveExecutable ?? (async (id) => (await locateExecutable(id))?.path ?? null),
       launchTerminal: terminalLauncher,
     });
     return c.json(result.body, result.status as ContentfulStatusCode);
@@ -8115,23 +8209,29 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---
-  app.post("/api/tasks", async (c) => {
-    const parsed = await parseBody(c, DispatchSchema);
-    if (!parsed.ok) return parsed.res;
+  /**
+   * File one task from a dispatch input, through every check the dispatch form meets: the
+   * repositories, the creation policy, the Workflow and plan-skill blocks, and `create`'s own
+   * refusals. The one path a route takes to file a task, so a report session or a retried chat
+   * cannot become a task the form would have refused.
+   */
+  async function createTaskFromDispatch(
+    data: TypeOf<typeof DispatchSchema>,
+  ): Promise<{ ok: true; task: Task } | { ok: false; status: 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
     const prepared = await prepareTaskRepositories({
-      primary: parsed.data.repoRoot,
-      extras: parsed.data.extraRepoRoots,
-      kind: parsed.data.kind,
-      agent: parsed.data.agent,
+      primary: data.repoRoot,
+      extras: data.extraRepoRoots,
+      kind: data.kind,
+      agent: data.agent,
       shortNameSelectors: "none",
     });
-    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
+    if (!prepared.ok) return { ok: false, status: prepared.status, body: { error: prepared.error } };
     const { repoRoot, extraRepoRoots, agent } = prepared;
     let creationPolicy;
     try {
-      creationPolicy = tasks.prepareCreationPolicy(parsed.data);
+      creationPolicy = tasks.prepareCreationPolicy(data);
     } catch (error) {
-      if (error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof PlanStoreError) return { ok: false, status: 409, body: { error: error.message } };
       throw error;
     }
     const { workflowId } = creationPolicy;
@@ -8143,40 +8243,205 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // running the same resolution and hoping the config did not move between them.
     if (workflowId) {
       const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = parsed.data.backlog
+      if (!manager) return { ok: false, status: 503, body: { error: "Workflow manager unavailable" } };
+      const blocked = data.backlog
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
+      if (blocked) return { ok: false, status: 409, body: workflowLaunchRefusal(blocked) };
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
     // dispatch that could not invoke them is refused before the task exists - the operator
     // reads the reason on the form they are still standing in, and there is no card to clean
     // up. Only when it would DISPATCH: backlogging is not dispatching, the toggle can be
     // flipped before the task launches, and `TaskManager.dispatch` asks again at that moment.
-    if (!parsed.data.backlog) {
-      const planBlock = planDispatchBlock({ ...parsed.data, agent });
-      if (planBlock) return c.json({ error: planBlock }, 409);
+    if (!data.backlog) {
+      const planBlock = planDispatchBlock({ ...data, agent });
+      if (planBlock) return { ok: false, status: 409, body: { error: planBlock } };
     }
-    let task;
     try {
-      task = tasks.create(
-        { ...parsed.data, agent, repoRoot, extraRepoRoots, workflowId },
-        undefined,
-        MANUAL_DISPATCH_TASK_CREATE,
-        creationPolicy,
-      );
+      return {
+        ok: true,
+        task: tasks.create(
+          { ...data, agent, repoRoot, extraRepoRoots, workflowId },
+          undefined,
+          MANUAL_DISPATCH_TASK_CREATE,
+          creationPolicy,
+        ),
+      };
     } catch (error) {
-      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) return c.json({ error: error.message }, 409);
+      if (error instanceof TaskDependencyError || error instanceof PlanStoreError) {
+        return { ok: false, status: 409, body: { error: error.message } };
+      }
       // The pair only `TaskManager.create` can judge: an effort chosen with no agent named,
       // against the harness the kind turned out to resolve to. A refusal, not a 500.
-      if (error instanceof TaskEffortUnsupportedError) return c.json({ error: error.message }, 400);
+      if (error instanceof TaskEffortUnsupportedError) {
+        return { ok: false, status: 400, body: { error: error.message } };
+      }
       throw error;
     }
-    return c.json(task);
+  }
+
+  app.post("/api/tasks", async (c) => {
+    const parsed = await parseBody(c, DispatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const created = await createTaskFromDispatch(parsed.data);
+    return created.ok ? c.json(created.task) : c.json(created.body, created.status);
   });
 
-  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents, tasks });
+  /** Why an existing task's armed Workflow refuses its dispatch, or null when nothing does. */
+  function taskWorkflowDispatchRefusal(
+    task: Task | undefined,
+  ): { status: 409 | 503; body: Record<string, unknown> } | null {
+    if (!task?.workflowId) return null;
+    const manager = workflowManager();
+    if (!manager) return { status: 503, body: { error: "Workflow manager unavailable" } };
+    const blocked = manager.dispatchWorkflowBlock(task.workflowId, task.agent, task.repoRoot);
+    return blocked ? { status: 409, body: workflowLaunchRefusal(blocked) } : null;
+  }
+
+  // ---- launch failures: a dispatch that never started (@shared/launch-failure.ts) ----
+
+  app.post("/api/launch-failures/dismiss", async (c) => {
+    const parsed = await parseBody(c, DismissLaunchFailuresSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
+  });
+
+  // Start the session that catalogs one failure and drafts its public bug report. The brief
+  // is built here from the task, never sent by the browser; publication stays behind the
+  // human review `report_product_issue` already requires.
+  /**
+   * Report creations in flight, by failure group. "One reason, one report" is a read of the
+   * group followed by an await on task creation and only then a write of the report id, so two
+   * presses for the same reason could both read "no report yet" and both start a session. The
+   * second press for a group waits on the first's creation instead, and is answered with the
+   * session it started.
+   */
+  const reportsInFlight = new Map<string, Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }>>();
+
+  async function startLaunchFailureReport(
+    task: Task,
+    repoRoot: string,
+  ): Promise<{ status: 200 | 400 | 404 | 409 | 503; body: Record<string, unknown> }> {
+    const group = launchFailureGroupFor(registry.listTasks(), task);
+    // One report per reason: a live report session for this group is the answer.
+    const reportId = group.map((t) => t.launchFailure!.reportTaskId).find((id) => id !== null) ?? null;
+    const existing = reportId ? registry.getTask(reportId) : undefined;
+    if (existing && isActiveTask(existing.status)) return { status: 200, body: { ok: true, task: existing, existing: true } };
+    const input = DispatchSchema.safeParse({
+      repoRoot,
+      intent: launchFailureReportBrief(task, group),
+      title: launchFailureReportTitle(task),
+      kind: "chat",
+      agent: "claude",
+      workflowId: null,
+    });
+    if (!input.success) return { status: 400, body: { error: input.error.issues[0]?.message ?? "invalid report" } };
+    const created = await createTaskFromDispatch(input.data);
+    if (!created.ok) return { status: created.status, body: created.body };
+    // The session's own identity, on the session: what keeps a report that fails to start from
+    // offering a Report bug of its own, whatever later happens to the failure it reports.
+    const report = markLaunchFailureReport(registry, created.task.id, task.id, Date.now()) ?? created.task;
+    recordLaunchFailureReport(registry, launchFailureGroupFor(registry.listTasks(), task), report.id, Date.now());
+    return { status: 200, body: { ok: true, task: report, existing: false } };
+  }
+
+  app.post("/api/launch-failures/report", async (c) => {
+    const parsed = await parseBody(c, ReportLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to report" }, 404);
+    const key = launchFailureGroupKey(task);
+    const inFlight = reportsInFlight.get(key);
+    if (inFlight) {
+      const first = await inFlight;
+      return first.status === 200
+        ? c.json({ ...first.body, existing: true })
+        : c.json(first.body, first.status);
+    }
+    const work = startLaunchFailureReport(task, parsed.data.repoRoot);
+    reportsInFlight.set(key, work);
+    try {
+      const outcome = await work;
+      return c.json(outcome.body, outcome.status);
+    } finally {
+      reportsInFlight.delete(key);
+    }
+  });
+
+  /**
+   * Chat retries in flight, by work key. A chat is retried by filing a new task, and the failure
+   * it answers stays open until that task starts - so without this, a second press while the
+   * first replacement is still being filed or still starting would file a second one.
+   */
+  const retriesInFlight = new Set<string>();
+
+  // Try a failed launch again. A backlog kind retries as the same task; a chat, which has no
+  // backlog to come back through, is filed again as a new task with the same settings - and
+  // when that one starts, the dispatcher dismisses this failure as answered.
+  app.post("/api/launch-failures/retry", async (c) => {
+    const parsed = await parseBody(c, RetryLaunchFailureSchema);
+    if (!parsed.ok) return parsed.res;
+    const task = registry.getTask(parsed.data.taskId);
+    if (!task?.launchFailure) return c.json({ error: "that task has no launch failure to retry" }, 404);
+    if (launchFailureOutcome(task) !== "not-started") {
+      return c.json({ error: "only a launch that failed with no session can be retried here" }, 409);
+    }
+    if (taskKindCreator(task.kind) === "resident-launch") {
+      return c.json({ error: "launch this resident again from its profile" }, 409);
+    }
+    if (taskKindAllowsBacklog(task.kind)) {
+      const refused = taskWorkflowDispatchRefusal(task);
+      if (refused) return c.json(refused.body, refused.status);
+      // A failure that kept a worktree cannot be dispatched over it; re-file it first, which
+      // reclaims that tree, then dispatch the clean row.
+      if (task.worktreePath) {
+        const filed = await tasks.reschedule(task.id);
+        if (!filed.ok) return c.json({ error: filed.error }, 409);
+      }
+      const r = await tasks.dispatch(task.id, { overrideDisabled: true });
+      return r.ok ? c.json({ ok: true, task: r.task }) : c.json({ error: r.error }, 409);
+    }
+    const workKey = launchWorkKey(task);
+    const starting = registry.listTasks().some((other) =>
+      other.id !== task.id && isActiveTask(other.status) && launchWorkKey(other) === workKey);
+    if (starting || retriesInFlight.has(workKey)) {
+      return c.json({ error: "a retry of this is already starting" }, 409);
+    }
+    retriesInFlight.add(workKey);
+    try {
+      return await fileChatRetry(c, task);
+    } finally {
+      retriesInFlight.delete(workKey);
+    }
+  });
+
+  /** File a failed chat again as a new task with the same settings, keeping a report's identity. */
+  async function fileChatRetry(c: Context, task: Task): Promise<Response> {
+    const input = DispatchSchema.safeParse({
+      repoRoot: task.repoRoot,
+      extraRepoRoots: task.extraRepos.map((extra) => extra.repoRoot),
+      intent: task.intent,
+      title: task.title,
+      kind: task.kind,
+      agent: task.agent,
+      model: task.model ?? undefined,
+      effort: task.effort ?? undefined,
+      workflowId: task.workflowId,
+      priority: task.priority,
+      labels: task.labels,
+    });
+    if (!input.success) return c.json({ error: input.error.issues[0]?.message ?? "this task cannot be filed again" }, 400);
+    const created = await createTaskFromDispatch(input.data);
+    if (!created.ok) return c.json(created.body, created.status);
+    // A report session filed again is still a report session.
+    const filed = task.launchReportFor
+      ? markLaunchFailureReport(registry, created.task.id, task.launchReportFor, Date.now()) ?? created.task
+      : created.task;
+    return c.json({ ok: true, task: filed });
+  }
+
+  if (residents && residentLoop) registerResidentLoopRoutes(app, { registry, loop: residentLoop, residents });
   app.get("/api/residents/skills", (c) => c.json(residentSkillIndex()));
   app.put("/api/residents/skill-sources", async (c) => {
     const parsed = await parseBody(c, UpdateResidentSkillSourcesSchema);
@@ -8312,9 +8577,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // The ONE resident launch route. Idempotent on the body's `requestId`: 200 launched,
   // 202 still starting (replay the same request to read the outcome), 409 for a failed launch
-  // (with its recorded reason) or a request id reused for a different launch.
+  // (with its recorded reason) or a request id reused for a different launch. A body with
+  // `answerWhen: "accepted"` is answered once the run's task exists, so Dispatch closes as
+  // quickly as a task dispatch; its still-starting run answers 202.
   //
-  // It is also the one place a desktop Launch click can be consumed for session control. A
+  // Like the resident restart route, it lets the manager consume a desktop launch click. A
   // tool, an agent or a foreign origin still launches, but never consumes a click: its run
   // starts without control, exactly as a launch from the standalone browser does.
   app.post("/api/residents/profiles/:id/launch", async (c) => {
@@ -8572,17 +8839,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, DispatchBacklogTaskSchema);
     if (!parsed.ok) return parsed.res;
     const id = c.req.param("id");
-    const task = tasks.get(id);
-    if (task?.workflowId) {
-      const manager = workflowManager();
-      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-      const blocked = manager.dispatchWorkflowBlock(
-        task.workflowId,
-        task.agent,
-        task.repoRoot,
-      );
-      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
-    }
+    const refused = taskWorkflowDispatchRefusal(tasks.get(id));
+    if (refused) return c.json(refused.body, refused.status);
     const r = await tasks.dispatch(id, parsed.data);
     if (!r.ok) {
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);

@@ -1,0 +1,104 @@
+/* Paper: warm cream and ink with serif headings, tuned for long reading.
+
+   Token overrides only, no decoration rules. The serif reaches headings, card titles and the
+   Line's stage names through `--font-display` and `--font-label`, which change the family and
+   nothing else, so every size, weight and line height stays where `styles.css` declares it.
+   Like Daylight, every value a skin does not restate falls through to `:root`, so each token
+   here is one whose dark Default value would paint wrong on cream. The state tones are deep
+   enough to clear 4.5:1 on the lightest surface (`test/skins.test.ts` measures it).
+
+   The swatches in `src/shared/skins.ts` must equal the values here. */
+
+:root[data-skin="paper"] {
+  color-scheme: light;
+
+  /* Surfaces, lines and the text ramp: cream stock and a brown-black ink. */
+  --bg: #f2ebde;
+  --bg-2: #ebe2d1;
+  --panel: #fbf7ef;
+  --panel-2: #f5eee1;
+  --border: #d6c9b2;
+  --border-soft: #e4d9c6;
+  --border-strong: #c2b294;
+  --fg: #2a2318;
+  --fg-strong: #120d06;
+  --muted: #5a4e3c;
+  --dim: #6c5f4a;
+
+  /* Session states and the tones that ride on them, in muted inks rather than screen hues. */
+  --working: #2c5c99;
+  --idle: #3a7334;
+  --attention: #9a5300;
+  --danger: #ad2a1f;
+  --exited: #7d7262;
+  --neutral: #6e6352;
+  --select: #3a7334;
+  --find: #c9971f;
+  --purple: #74468a;
+  --delegated: #a3306a;
+  --syntax-type: #9c4a22;
+  --pr-open: #2f6f2a;
+
+  /* Resident markers: the same eight hues, deepened to read as chip text on cream. */
+  --resident-cyan: #0a6a72;
+  --resident-violet: #6a42b0;
+  --resident-amber: #7a5000;
+  --resident-rose: #a82a5b;
+  --resident-lime: #426c0a;
+  --resident-blue: #0a54aa;
+  --resident-orange: #9a4200;
+  --resident-teal: #0a6a5a;
+
+  --radius: 6px;
+  --shadow: 0 1px 2px rgba(60, 42, 18, 0.08), 0 8px 24px rgba(60, 42, 18, 0.1);
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-label: var(--font-display);
+
+  /* Inks. A translucent sepia softens every shadow and scrim at once, as Daylight's slate does. */
+  --shadow-ink: rgba(60, 42, 18, 0.32);
+  --scrim-ink: rgba(42, 33, 20, 0.55);
+  --highlight-ink: #fffdf8;
+
+  /* Text on solid fills. Every fill here is a deep ink, so cream-white reads on all of them. */
+  --on-accent: #ffffff;
+  --on-attention: #ffffff;
+  --on-wait: #ffffff;
+  --on-find: #1f1600;
+  --on-select: #ffffff;
+  --working-deep: #1b3d6a;
+  --attention-deep: #573000;
+
+  /* The failure family, stepped around this skin's brick red. */
+  --danger-soft: #9a2619;
+  --danger-muted: #ad2a1f;
+  --danger-text: #a1271c;
+  --danger-bright: #b8301f;
+  --danger-fill: #ad2a1f;
+  --danger-fill-hover: #8e2016;
+  --approve-fill: #3a7334;
+  --approve-fill-hover: #2f6029;
+  --diff-del: #ad2a1f;
+  --diff-del-count: #a1271c;
+
+  --wf-action: #74468a;
+  --wf-success: #2f6f2a;
+
+  /* The app backdrop's two glows: a faint warmth rather than dark pools. */
+  --backdrop-glow-right: #f7f0e3;
+  --backdrop-glow-left: #efe4d0;
+  --panel-deep: #f8f2e6;
+
+  /* The dropdown chevron, restated in this skin's --muted (#5a4e3c). */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%235a4e3c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  /* The workflow canvas, in the same sepia family. */
+  --canvas-dot: #c4b59a;
+  --canvas-edge: #9c8d74;
+  --canvas-edge-selected: #4a3f2e;
+  --canvas-chip: #fbf7ef;
+  --canvas-handle: #4a3f2e;
+  --canvas-selection: #2c5c99;
+  --canvas-minimap-mask: rgba(235, 226, 209, 0.6);
+  --canvas-minimap-node: #6c5f4a;
+  --canvas-minimap-fail: #ad2a1f;
+}

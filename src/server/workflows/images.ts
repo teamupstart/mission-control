@@ -352,7 +352,7 @@ export async function stageAgentWorkflowEvidence(input: {
           source = input.store.evidenceInheritanceSource(source)?.source ?? null;
         }
       }
-      const checkoutRoot = binding.repoRoot || binding.sessionCwd || "";
+      const checkoutRoot = binding.sessionCwd || "";
       return [{
         checkoutRoot: checkoutRoot ? canonicalWorktreePath(checkoutRoot) : "",
         criteriaCaptured: criteria !== undefined,

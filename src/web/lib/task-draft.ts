@@ -10,7 +10,7 @@ import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } fro
 // never meant to touch it. The API takes a patch for exactly this reason: an omitted key
 // means "leave it alone" (see `UpdateTaskSchema`).
 
-import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
+import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
@@ -63,10 +63,17 @@ export type DispatchDraft = {
   /** Effort override, or "" to follow the configured default for `agent`. */
   effort: ThinkingLevel | "";
   /**
+   * An advisor pin the task was saved with before the advisor moved to Settings -> Harnesses,
+   * or "". Never chosen on the form: it is seeded from the task, and the form's "Use Settings"
+   * action sets it back to "", which an update sends as `null`. A new dispatch never sends it.
+   */
+  advisorModel: AdvisorChoice | "";
+  /**
    * After-work Workflow choice. Undefined follows the machine dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
   workflowId: string | null | undefined;
+  planStorage?: "repository" | "local" | null;
   /** Whether Foreman's backlog autopilot may schedule the shelved task. */
   enabled: boolean;
   /** Selected prerequisite ids; the daemon resolves them to durable dependency edges. */
@@ -94,6 +101,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   labels: "",
   model: "",
   effort: "",
+  advisorModel: "",
   workflowId: undefined,
   enabled: true,
   dependencies: [],
@@ -141,7 +149,9 @@ export function draftFromTask(t: Task): DispatchDraft {
     // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
+    advisorModel: t.advisorModel ?? "",
     workflowId: t.workflowId,
+    planStorage: t.kind === "plan" ? t.planPolicy?.storage ?? "repository" : undefined,
     enabled: t.enabled,
     dependencies: t.dependencies.map(dependencyInputOf),
     attachments: [],
@@ -176,7 +186,9 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.labels === b.labels &&
     a.model === b.model &&
     a.effort === b.effort &&
+    a.advisorModel === b.advisorModel &&
     a.workflowId === b.workflowId &&
+    a.planStorage === b.planStorage &&
     a.enabled === b.enabled &&
     dependencyInputsEqual(a.dependencies, b.dependencies) &&
     a.attachments.length === b.attachments.length &&
@@ -190,8 +202,12 @@ function dependencyInputKey(dependency: TaskDependencyInput): string {
 
 function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[]): boolean {
   if (a.length !== b.length) return false;
-  const bKeys = new Set(b.map(dependencyInputKey));
-  return a.every((dependency) => bKeys.has(dependencyInputKey(dependency)));
+  // The same edges AND the same Stack / After merge choice on each: flipping a chip's mode
+  // is an edit even though no edge was added or removed.
+  const modeOf = (dependency: TaskDependencyInput): string =>
+    dependency.type === "plan" ? "" : dependency.mode ?? "";
+  const bKeys = new Map(b.map((dependency) => [dependencyInputKey(dependency), modeOf(dependency)]));
+  return a.every((dependency) => bKeys.get(dependencyInputKey(dependency)) === modeOf(dependency));
 }
 
 /**
@@ -248,8 +264,19 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   if (model !== task.model) patch.model = model;
   const effort = draft.effort || null;
   if (effort !== task.effort) patch.effort = effort;
-  if (draft.workflowId !== undefined && draft.workflowId !== task.workflowId) {
+  // A pin can only be taken OFF now - the advisor is chosen on Settings -> Harnesses - so the
+  // one change a draft can carry is a cleared legacy pin.
+  if (task.advisorModel !== null && !draft.advisorModel) patch.advisorModel = null;
+  const becomesPlan = draft.kind === "plan" && task.kind !== "plan";
+  if (draft.workflowId !== undefined && (becomesPlan || draft.workflowId !== task.workflowId)) {
     patch.workflowId = draft.workflowId;
+  }
+  if (
+    draft.kind === "plan"
+    && draft.planStorage !== undefined
+    && (task.kind !== "plan" || draft.planStorage !== (task.planPolicy?.storage ?? "repository"))
+  ) {
+    patch.planStorage = draft.planStorage;
   }
   if (draft.enabled !== task.enabled) patch.enabled = draft.enabled;
   const storedDependencies: TaskDependencyInput[] = task.dependencies.map(dependencyInputOf);

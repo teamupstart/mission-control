@@ -1,20 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { copyFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   inspectAppLaunch, parseAppProcesses, parseLaunchServices, waitForBundleExit,
   prepareAppLaunch, verifyAppLaunch, launchConflictMessage,
   stopAttemptLaunch, jobLaunchesBundle, realMacAppOps, assertSafeAppLaunch,
-  inspectAppLaunches, assertSafeAppLaunches,
-  COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, type MacAppOps,
+  inspectAppLaunches, assertSafeAppLaunches, parseGuiJobs,
+  COMMAND_TIMEOUT_MS, LAUNCH_TIMEOUT_MS, LAUNCH_INSPECTION_TIMEOUT_MS, BUNDLE_HOLDERS_NAMED, type MacAppOps,
 } from "../scripts/mac-app-lifecycle.mjs";
+import { CHECK_SUPERVISOR_MARKER } from "../src/shared/owned-runtime.mjs";
+import { sanitizeDiagnostic } from "../scripts/update-diagnostic.mjs";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+// `realMacAppOps().processArguments` reads through the shipped state-lock addon.
+const stateLockAddon = ensureNativeStateLockAddon();
 
 const bundle = "/Users/test/Applications/Mission Control.app";
 const binary = `${bundle}/Contents/MacOS/Mission Control`;
 const registration = (pid = 42, type = "Foreground") => `1) "Mission Control" ASN:0x0-0x123:\n    bundleID="com.mission-control.app"\n    bundle path="${bundle}"\n    executable path="${binary}"\n    pid = ${pid} type="${type}"\n    checkin time = today\n`;
+/**
+ * A `launchctl dumpstate` in the real shape (tab-indented service blocks after the domain's own
+ * summary), holding exactly the GUI jobs `launchctl print` would have answered for.
+ */
+function dumpOf(jobs: Map<string, string>, uid = 501) {
+  const block = (name: string, text: string) =>
+    `${name} = {\n${text.split("\n").filter((line, index, all) => line || index < all.length - 1).map((line) => `\t${line}`).join("\n")}\n}\n\n`;
+  const listing = [...jobs.keys()].map((label) => `\t\t       0      - \t${label}`).join("\n");
+  return `system = {\n\ttype = system\n\tservice count = 1\n}\n\nsystem/com.apple.fixture = {\n\tprogram = /usr/libexec/fixture\n}\n\n`
+    + block(`gui/${uid}`, `type = login\nservice count = ${jobs.size}\n\nservices = {\n${listing}${listing ? "\n" : ""}}\n`)
+    + [...jobs].map(([label, text]) => block(`gui/${uid}/${label}`, text)).join("")
+    + `pid/1 = {\n\ttype = pid\n}\n`;
+}
+
 function fixture() {
   let now = 0;
   const calls: string[] = [];
@@ -23,17 +46,25 @@ function fixture() {
     ["apps", registration()],
     ["ps", `42 1 S ${binary}\n43 42 S ${bundle}/Contents/Frameworks/Helper.app/Contents/MacOS/Helper\n`],
   ]);
+  // The dump is built from the same `print` fixtures, so a test describes each job once and the
+  // primary path and the per-label fallback answer about identical jobs.
+  const state = {dump: true};
+  const guiJobs = () => new Map([...outputs].flatMap(([key, text]) => {
+    const label = /^print gui\/501\/(.+)$/.exec(key)?.[1];
+    return label ? [[label, text] as const] : [];
+  }));
   const ops: MacAppOps = {
     uid: 501, now: () => now, sleep: async (ms) => { now += ms; },
     run: async (command, args) => {
       calls.push(`${command} ${args.join(" ")}`);
+      if (args[0] === "dumpstate") return state.dump ? {code: 0, stdout: dumpOf(guiJobs())} : {code: 1, stdout: ""};
       const key = command.endsWith("lsappinfo") ? "apps" : command.endsWith("ps") ? "ps" : args[0] === "list" ? "list" : args.join(" ");
       return {code: 0, stdout: outputs.get(key) ?? ""};
     },
     identity: () => "start-42", kill: () => { throw new Error("must not kill"); },
     readAck: () => ({identity: "start-42", nonce: "a".repeat(32), pid: 42, bundle}),
   };
-  return {ops, outputs, calls};
+  return {ops, outputs, calls, state};
 }
 
 test("reads actual macOS process and LaunchServices field shapes including spaced paths", () => {
@@ -155,12 +186,80 @@ test("quit barrier waits for all bundle executables, including orphan utilities"
   await waitForBundleExit(bundle, f.ops, 1000);
 });
 
+test("quit barrier refuses a partial process snapshot even when parsed rows are outside the bundle", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `1 0 S /sbin/launchd\ninvalid-pid 1 S ${binary}\n`);
+  await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), /incomplete process snapshot/);
+});
+
+test("a bundle-exit timeout names each blocking pid and its cause without printing a command line", async () => {
+  const f = fixture();
+  const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  f.outputs.set("ps", `42 1 S ${binary}\n43 1 S ${helper}\n44 42 S ${helper}\n`);
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && args.includes("args=")) {
+      const pid = args[args.indexOf("-p") + 1];
+      if (pid === "43") return {code: 0, stdout: `${helper} -e // ${CHECK_SUPERVISOR_MARKER}\nsecret-token=abc npm test\n`};
+      if (pid === "44") return {code: 1, stdout: ""};
+    }
+    return run(command, args, timeout);
+  };
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.match(error.message, /pid 42 \(the Mission Control app is still running\)/);
+  assert.match(error.message, /pid 43 \(a workflow check whose parent already exited is still running\)/);
+  assert.match(error.message, /pid 44 \(Mission Control Helper is still running\)/, "an unreadable command line still names the executable");
+  assert.doesNotMatch(error.message, /secret-token|npm test|\/Users\//);
+});
+
+test("many blocking processes are summarized so every named pid and the advice survive the outcome's redaction bound", async () => {
+  const f = fixture();
+  const helper = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  const pids = [99991, 99992, 99993, 99994, 99995, 99996];
+  f.outputs.set("ps", pids.map((pid) => `${pid} 1 S ${helper}`).join("\n") + "\n");
+  let inFlight = 0;
+  let peak = 0;
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && args.includes("args=")) {
+      inFlight += 1; peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight -= 1;
+      return {code: 0, stdout: `${helper} --type=renderer\n`};
+    }
+    return run(command, args, timeout);
+  };
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.equal(BUNDLE_HOLDERS_NAMED, 3);
+  for (const pid of pids.slice(0, 3)) assert.match(error.message, new RegExp(`pid ${pid} \\(Mission Control Helper whose parent already exited is still running\\)`));
+  for (const pid of pids.slice(3)) assert.doesNotMatch(error.message, new RegExp(String(pid)));
+  assert.match(error.message, /; and 3 more; work ownership could not be verified\. Mission Control will reopen the previous build automatically\.$/);
+  // The rollback outcome redacts and bounds its cause at 500 characters; nothing may be cut.
+  assert.equal(sanitizeDiagnostic(error.message), error.message);
+  assert.equal(peak, 3, "holders were described one after another, so each added a command timeout");
+});
+
+test("a failed process probe is reported as itself, never blamed on an earlier tick's processes", async () => {
+  const f = fixture();
+  let reads = 0;
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => {
+    if (command === "/bin/ps" && !args.includes("args=") && ++reads > 1) return {code: 1, stdout: ""};
+    return run(command, args, timeout);
+  };
+  await assert.rejects(waitForBundleExit(bundle, f.ops, 1000), (error: Error) =>
+    /Could not inspect macOS launch state/.test(error.message) && !/pid 43/.test(error.message));
+});
+
 test("a slow probe gets the rest of its caller's deadline, not a fixed two-second slice", async () => {
   // The regression: every probe was capped at 2s, and a probe that runs out of time rejects
   // rather than retrying, so one slow `ps` or `launchctl print` on a busy Mac failed an update
   // (and then its recovery) long before the caller's own deadline.
   const f = fixture();
   f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  f.outputs.set("print gui/501/com.example.one", "type = Submitted\nprogram = /bin/true\n");
   const budgets = new Map<string, number[]>();
   const run = f.ops.run;
   f.ops.run = async (command, args, timeout) => {
@@ -168,11 +267,18 @@ test("a slow probe gets the rest of its caller's deadline, not a fixed two-secon
     budgets.set(name, [...(budgets.get(name) ?? []), timeout ?? -1]);
     return run(command, args, timeout);
   };
-  await inspectAppLaunch(bundle, f.ops, 15_000);
-  // The fake clock does not advance during a probe, so each one is offered the whole budget.
-  assert.deepEqual(budgets.get("lsappinfo"), [15_000]);
-  assert.deepEqual(budgets.get("ps"), [15_000]);
-  assert.deepEqual(budgets.get("launchctl"), [15_000, 15_000], "list, then print for the one label");
+  for (const [dump, launchctl, note] of [
+    [true, [15_000, 15_000], "one dumpstate, then a print of the run's last job"],
+    [false, [15_000, 15_000, 15_000], "dumpstate, then the fallback's list and one print"],
+  ] as const) {
+    budgets.clear();
+    f.state.dump = dump;
+    await inspectAppLaunch(bundle, f.ops, 15_000);
+    // The fake clock does not advance during a probe, so each one is offered the whole budget.
+    assert.deepEqual(budgets.get("lsappinfo"), [15_000]);
+    assert.deepEqual(budgets.get("ps"), [15_000]);
+    assert.deepEqual(budgets.get("launchctl"), launchctl, note);
+  }
 
   budgets.clear();
   f.outputs.set("ps", "1 0 S /sbin/launchd\n");
@@ -191,6 +297,7 @@ test("the launch-conflict preflight takes its caller's deadline, not a fixed ins
   // `assertSafeAppLaunch` took no timeout at all.
   const f = fixture();
   f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.example.one\n");
+  f.outputs.set("print gui/501/com.example.one", "type = Submitted\nprogram = /bin/true\n");
   const budgets: number[] = [];
   const run = f.ops.run;
   f.ops.run = async (command, args, timeout) => {
@@ -199,7 +306,13 @@ test("the launch-conflict preflight takes its caller's deadline, not a fixed ins
   };
   await assertSafeAppLaunch(bundle, f.ops, 120_000);
   assert.deepEqual(budgets, [120_000, 120_000, 120_000, 120_000],
-    "lsappinfo, ps, launchctl list and launchctl print each get the caller's deadline");
+    "lsappinfo, ps, launchctl dumpstate and the last job's print each get the caller's deadline");
+  budgets.length = 0;
+  f.state.dump = false;
+  await assertSafeAppLaunch(bundle, f.ops, 120_000);
+  assert.deepEqual(budgets, [120_000, 120_000, 120_000, 120_000, 120_000],
+    "and so do the fallback's launchctl list and launchctl print");
+  f.state.dump = true;
 
   // A caller with no deadline of its own still gets a bound, and it is the named one.
   budgets.length = 0;
@@ -222,16 +335,197 @@ test("one launchd sweep answers for several bundles, exactly as one sweep per bu
   f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
   f.outputs.set("print gui/501/com.example.quiet", "type = Submitted\nprogram = /bin/true\n");
 
-  const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
-  f.calls.length = 0;
-  const together = await inspectAppLaunches([bundle, other], f.ops);
+  for (const dump of [true, false]) {
+    f.state.dump = dump;
+    const separately = [await inspectAppLaunch(bundle, f.ops), await inspectAppLaunch(other, f.ops)];
+    f.calls.length = 0;
+    const together = await inspectAppLaunches([bundle, other], f.ops);
 
-  assert.deepEqual(together, separately, "the same answer for every bundle as a sweep of its own");
-  assert.deepEqual(together[0]?.jobs, [respawner], "the respawn job is still found for its bundle");
-  assert.deepEqual(together[1]?.jobs, [], "and is not misattributed to the other bundle");
-  assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "ONE sweep");
-  assert.equal(f.calls.filter((call) => call.startsWith("/bin/launchctl print")).length, 2,
-    "one print per label, not one per label per bundle");
+    assert.deepEqual(together, separately, "the same answer for every bundle as a sweep of its own");
+    assert.deepEqual(together[0]?.jobs, [respawner], "the respawn job is still found for its bundle");
+    assert.deepEqual(together[1]?.jobs, [], "and is not misattributed to the other bundle");
+    assert.equal(f.calls.filter((call) => call === "/bin/launchctl dumpstate").length, 1, "ONE sweep");
+    if (dump) {
+      assert.ok(!f.calls.includes("/bin/launchctl list"), "the dump replaces the job list");
+      assert.deepEqual(f.calls.filter((call) => call.startsWith("/bin/launchctl print")), ["/bin/launchctl print gui/501/com.example.quiet"],
+        "and one print, of the run's last job only");
+    } else {
+      assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "ONE fallback sweep");
+      assert.equal(f.calls.filter((call) => call.startsWith("/bin/launchctl print")).length, 2,
+        "one print per label, not one per label per bundle");
+    }
+  }
+});
+
+test("one dumpstate reads every GUI job in the shape launchctl print gives it", () => {
+  const spaced = "com.example.Google Chrome H.14142";
+  const jobs = parseGuiJobs(dumpOf(new Map([
+    ["com.example.one", `type = Submitted\nprogram = ${binary}\n`],
+    [spaced, "type = Submitted\nprogram = /bin/true\n"],
+  ])), 501);
+  assert.deepEqual([...(jobs?.keys() ?? [])], ["com.example.one", spaced]);
+  assert.ok(jobLaunchesBundle(jobs!.get("com.example.one")!, bundle), "a dumped block is what jobLaunchesBundle reads");
+  assert.ok(!jobLaunchesBundle(jobs!.get(spaced)!, bundle));
+  assert.equal(parseGuiJobs(dumpOf(new Map()), 501)?.size, 0, "an empty GUI domain is a complete answer");
+  assert.equal(parseGuiJobs(dumpOf(new Map([["com.example.one", "program = /bin/true\n"]]), 502), 501), null,
+    "another user's GUI domain is not this one");
+});
+
+test("a job block runs to the next header, so an argument's own closing brace cannot truncate it", () => {
+  // launchctl prints an argument's embedded newline verbatim, so a `}` can land at column 0 in
+  // the middle of a job. Ending the block there would hand the rest of the job to nobody.
+  const label = "com.fixture.brace-launcher";
+  const dump = dumpOf(new Map([[label, "type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\nx\n"], ["com.example.after", "program = /bin/true\n"]]))
+    .replace("\t-c\n\tx\n", `\t-c\n\tf() {\n}\n\texec "${binary}"\n`);
+  const jobs = parseGuiJobs(dump, 501);
+  assert.ok(jobs?.get(label)?.includes(`exec "${binary}"`), "the text after the brace stays with its job");
+  assert.ok(!jobs?.get(label)?.includes("com.example.after"), "and the next job's block is its own");
+});
+
+test("an argument that prints a header-shaped line sends the sweep to per-job prints, which still find the launch", async (t) => {
+  // An embedded newline followed by `fixture = {` would end the job's block there and hand the
+  // `exec` after it to a section nobody reads - while the GUI count and listing still match.
+  const label = "com.fixture.header-launcher";
+  // Only the forged header sits at column 0: the source's first line is an argv entry launchd
+  // indents, and the lines after the header keep a tab so they pass as section contents.
+  const source = (header: string) => `sleep 1\n${header}\n\texec "${binary}"`;
+  // `pid/1/...` names a service beneath a domain the dump really prints (and does not count).
+  for (const header of ["fixture = {", "config = {", "pid/1/com.example.forged = {", "pid/99999/com.example.forged = {",
+    "system/com.example.forged = {", "user/501/com.example.forged = {"]) {
+    await t.test(header, async () => {
+      const f = fixture();
+      f.outputs.set("apps", "");
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+      const printed = `type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\n${source(header)}\n}\n`;
+      f.outputs.set(`print gui/501/${label}`, printed);
+      // launchctl prints the embedded newline verbatim, so the forged header lands at column 0.
+      const dump = dumpOf(new Map([[label, printed]])).replace(`\n\t${header}\n`, `\n${header}\n`);
+      assert.ok(dump.includes(`\n${header}\n\t\texec "${binary}"\n`), "the fixture prints the forged header at column 0");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return {code: 0, stdout: dump};
+      };
+      assert.equal(parseGuiJobs(dump, 501), null, "the dump is refused, not read with the job cut short");
+      const result = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(result.jobs, [label], "the per-job print reports the conflict");
+      assert.match(launchConflictMessage(result, 501)!, /launchctl bootout 'gui\/501\/com\.fixture\.header-launcher'/);
+      assert.ok(f.calls.includes(`/bin/launchctl print gui/501/${label}`), "through the fallback");
+    });
+  }
+});
+
+test("a forged domain header cannot hide a launch in any GUI job, the last one included", async (t) => {
+  // A domain header is the one forgery a service-count rule cannot see. Inside any GUI job but
+  // the run's last it interrupts the run, so the dump is refused; after the last job it reads like
+  // the next domain, so that job alone is re-read with `launchctl print`.
+  const label = "com.fixture.domain-launcher";
+  const forged = "pid/99999 = {";
+  const source = `sleep 1\n${forged}\n\texec "${binary}"`;
+  const printed = `type = Submitted\nprogram = /bin/sh\narguments = {\n/bin/sh\n-c\n${source}\n}\n`;
+  for (const position of ["last", "not last"] as const) {
+    await t.test(position, async () => {
+      const f = fixture();
+      f.outputs.set("apps", "");
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+      const others = position === "last" ? [] : ["com.example.after"];
+      f.outputs.set("list", `PID\tStatus\tLabel\n${[label, ...others].map((name) => `-\t0\t${name}`).join("\n")}\n`);
+      f.outputs.set(`print gui/501/${label}`, printed);
+      for (const other of others) f.outputs.set(`print gui/501/${other}`, "type = Submitted\nprogram = /bin/true\n");
+      const dump = dumpOf(new Map([[label, printed], ...others.map((other) => [other, "type = Submitted\nprogram = /bin/true\n"] as const)]))
+        .replace(`\n\t${forged}\n`, `\n${forged}\n`);
+      assert.ok(dump.includes(`\n${forged}\n\t\texec "${binary}"\n`), "the fixture prints the forged header at column 0");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return {code: 0, stdout: dump};
+      };
+      const parsed = parseGuiJobs(dump, 501);
+      if (position === "last") {
+        assert.ok(parsed, "a forged domain after the run's last job is indistinguishable in the dump");
+        assert.ok(!parsed.get(label)!.includes("exec"), "and the dump's block for that job really is cut short");
+      } else assert.equal(parsed, null, "inside the run it interrupts the run and the dump is refused");
+      const result = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(result.jobs, [label], "the launch is reported either way");
+      assert.ok(f.calls.includes(`/bin/launchctl print gui/501/${label}`), "from that job's own print");
+      assert.equal(f.calls.includes("/bin/launchctl list"), position !== "last",
+        position === "last" ? "while the dump still answers for every other job" : "through the per-job fallback");
+    });
+  }
+});
+
+test("a dump that does not match its own service listing is refused, never read in part", async (t) => {
+  const jobs = new Map([["com.example.one", "program = /bin/true\n"], ["com.example.two", "program = /bin/true\n"]]);
+  const complete = dumpOf(jobs);
+  assert.ok(parseGuiJobs(complete, 501));
+  for (const [name, dump] of [
+    ["a listed job with no block", complete.replace(/^gui\/501\/com\.example\.two = \{\n[\s\S]*?^\}\n/m, "")],
+    ["a block that was never listed", complete.replace("pid/1 = {", "gui/501/com.example.forged = {\n\tprogram = /bin/true\n}\n\npid/1 = {")],
+    ["a duplicated block", complete.replace("pid/1 = {", "gui/501/com.example.one = {\n\tprogram = /bin/true\n}\n\npid/1 = {")],
+    ["a service count that disagrees", complete.replace("service count = 2", "service count = 3")],
+    ["no service count", complete.replace("\tservice count = 2\n", "")],
+    ["no service listing", complete.replace(/\tservices = \{\n[\s\S]*?\t\}\n/, "")],
+    ["a listing line with no label", complete.replace("\t\t       0      - \tcom.example.two", "\t\tgarbage")],
+    ["no GUI domain at all", "system = {\n}\n"],
+    ["nothing", ""],
+    ["an unindented line that is not a header", complete.replace("\tprogram = /bin/true\n", "\tprogram = /bin/true\nconfig = {\n")],
+    ["a service in a counted domain beyond its count", complete.replace("pid/1 = {", "system/com.example.forged = {\n}\n\npid/1 = {")],
+    ["a service whose domain was never printed", complete.replace("pid/1 = {", "user/501/com.example.forged = {\n}\n\npid/1 = {")],
+  ] as const) {
+    await t.test(name, () => assert.equal(parseGuiJobs(dump, 501), null));
+  }
+});
+
+test("an unreadable or incomplete dump falls back to printing each job, which still finds respawners", async (t) => {
+  for (const [name, answer] of [
+    ["dumpstate exits non-zero", async () => ({code: 1, stdout: ""})],
+    ["dumpstate rejects", async () => { throw new Error("macOS launch state was larger than this inspection reads (launchctl)."); }],
+    ["dumpstate is incomplete", async () => ({code: 0, stdout: "system = {\n}\n"})],
+  ] as const) {
+    await t.test(name, async () => {
+      const f = fixture();
+      const label = "com.example.respawner";
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${label}\n`);
+      f.outputs.set(`print gui/501/${label}`, `type = Submitted\nprogram = ${binary}\n`);
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        if (args[0] !== "dumpstate") return run(command, args, timeout);
+        f.calls.push(`${command} ${args.join(" ")}`);
+        return answer();
+      };
+      assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).jobs, [label]);
+      assert.deepEqual(f.calls.slice(2), ["/bin/launchctl dumpstate", "/bin/launchctl list", `/bin/launchctl print gui/501/${label}`]);
+    });
+  }
+});
+
+test("a dump that spends the whole deadline refuses rather than starting the fallback", async () => {
+  const f = fixture();
+  const run = f.ops.run;
+  let now = 0;
+  f.ops.now = () => now;
+  f.ops.run = async (command, args, timeout) => {
+    if (args[0] === "dumpstate") { now += timeout ?? 0; throw new Error("Could not inspect macOS launch state within the time limit (launchctl)."); }
+    return run(command, args, timeout);
+  };
+  await assert.rejects(inspectAppLaunch(bundle, f.ops, 10_000), /before the time limit/);
+  assert.ok(!f.calls.includes("/bin/launchctl list"));
+});
+
+test("this Mac's own launchctl dumpstate proves itself complete", {skip: process.platform !== "darwin"}, () => {
+  // The fixture's dump is modeled on a real one; this pins that the real one still parses, so a
+  // macOS that changed the format shows up here rather than as every sweep quietly falling back.
+  // A login item starting or exiting mid-dump could make one read disagree with itself; that is
+  // the refusal working, not a format change, so only a mismatch on every one of three reads fails.
+  let jobs: ReturnType<typeof parseGuiJobs> = null;
+  for (let attempt = 0; attempt < 3 && !jobs; attempt++) {
+    jobs = parseGuiJobs(execFileSync("/bin/launchctl", ["dumpstate"], {encoding: "utf8", maxBuffer: 128 * 1024 * 1024}), process.getuid!());
+  }
+  assert.ok(jobs, "the GUI domain's job blocks match its service count and listing on at least one of three reads");
+  assert.ok(jobs.size > 0);
 });
 
 test("several bundles refuse on the first conflict in order, from one sweep", async () => {
@@ -257,7 +551,7 @@ test("several bundles refuse on the first conflict in order, from one sweep", as
       assert.doesNotMatch(message, withheld, "and the later bundle's is not folded into it");
       return true;
     });
-    assert.equal(f.calls.filter((call) => call === "/bin/launchctl list").length, 1, "one sweep for both");
+    assert.equal(f.calls.filter((call) => call === "/bin/launchctl dumpstate").length, 1, "one sweep for both");
   }
 
   // A clean first bundle does not mask a later one's conflict.
@@ -310,6 +604,19 @@ test("a real command with no caller deadline is not killed at the old two-second
   assert.deepEqual(result, {code: 0, stdout: "done\n"});
   // Still a bound: a caller's own budget is honored and a hung command is refused.
   await assert.rejects(realMacAppOps().run("/bin/sh", ["-c", "sleep 5"], 200), /within the time limit/);
+});
+
+test("a real command reads output past the old 8MB cap, and refuses past its own with a named error", async () => {
+  // `launchctl dumpstate` is 6.5MB on a developer Mac and grows with its job count; the old 8MB
+  // cap would have made a larger host's dump fail as a "time limit" it never hit.
+  const nineMegabytes = 9 * 1024 * 1024;
+  const read = await realMacAppOps().run("/bin/sh", ["-c", `head -c ${nineMegabytes} /dev/zero | tr '\\0' x`]);
+  assert.equal(read.code, 0);
+  assert.equal(read.stdout.length, nineMegabytes);
+  await assert.rejects(
+    realMacAppOps().run("/bin/sh", ["-c", `head -c ${129 * 1024 * 1024} /dev/zero | tr '\\0' x`]),
+    {message: "macOS launch state was larger than this inspection reads (sh)."},
+  );
 });
 
 test("lsregister gets the whole launch budget, not the former five-second cap", async () => {
@@ -732,10 +1039,46 @@ test("unreadable host inventory fails closed without echoing command output", as
   await assert.rejects(inspectAppLaunch(bundle, f.ops), /Could not inspect/);
 });
 
+test("on the dump path, the last job's own print skips a vanished job and refuses any other failure", async (t) => {
+  // The dump path re-reads the run's last GUI job with `launchctl print`; that read keeps the
+  // fallback's rules - 113 is a job that left mid-read, anything else refuses - and neither
+  // outcome discards or re-sweeps what the dump already answered for the other jobs.
+  for (const code of [113, 1]) {
+    await t.test(`launchctl print exit ${code}`, async () => {
+      const f = fixture();
+      const respawner = "com.example.respawner";
+      const last = "com.fixture.vanishing";
+      f.outputs.set("list", `PID\tStatus\tLabel\n-\t0\t${respawner}\n-\t0\t${last}\n`);
+      f.outputs.set(`print gui/501/${respawner}`, `type = Submitted\nprogram = ${binary}\n`);
+      f.outputs.set(`print gui/501/${last}`, "type = Submitted\nprogram = /bin/true\n");
+      const run = f.ops.run;
+      f.ops.run = async (command, args, timeout) => {
+        const result = await run(command, args, timeout);
+        return args[0] === "print" ? {code, stdout: "private-fixture-secret"} : result;
+      };
+      assert.deepEqual([...parseGuiJobs(dumpOf(new Map([[respawner, ""], [last, ""]])), 501)!.keys()].at(-1), last,
+        "the fixture's last job in dump order is the one re-printed");
+      if (code === 113) {
+        assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [respawner], unregistered: []},
+          "the vanished job is skipped, and the dump's own answer for the other job stands");
+      } else {
+        await assert.rejects(inspectAppLaunch(bundle, f.ops), {
+          message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
+        });
+      }
+      assert.deepEqual(f.calls, [
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=", "/bin/launchctl dumpstate",
+        `/bin/launchctl print gui/501/${last}`,
+      ], "one print, of the last job only, and no fallback sweep");
+    });
+  }
+});
+
 test("preflight skips a vanished GUI job but refuses other launchctl print failures", async (t) => {
   for (const code of [113, 1]) {
     await t.test(`launchctl print exit ${code}`, async () => {
       const f = fixture();
+      f.state.dump = false;
       f.outputs.set("list", "PID\tStatus\tLabel\n-\t0\tcom.fixture.unreadable\n");
       const run = f.ops.run;
       f.ops.run = async (command, args, timeout) => {
@@ -747,7 +1090,7 @@ test("preflight skips a vanished GUI job but refuses other launchctl print failu
         message: "Could not inspect a GUI launchd job. Check launchctl before retrying.",
       });
       assert.deepEqual(f.calls, [
-        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=",
+        "/usr/bin/lsappinfo list", "/bin/ps -axww -o pid=,ppid=,stat=,comm=", "/bin/launchctl dumpstate",
         "/bin/launchctl list", "/bin/launchctl print gui/501/com.fixture.unreadable",
       ]);
     });
@@ -841,7 +1184,7 @@ test("retry cleanup escalates after its bounded TERM wait only for the same proc
         }
       };
       if (reused) {
-        await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /bundle processes did not exit: 42/);
+        await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /bundle processes did not exit: pid 42 \(the Mission Control app is still running\)/);
         assert.deepEqual(signals, [{pid: 42, signal: "SIGTERM", at: 0}]);
         assert.equal(f.ops.now(), 10_000);
       } else {
@@ -851,4 +1194,327 @@ test("retry cleanup escalates after its bounded TERM wait only for the same proc
       assert.equal(identityChecks.at(-1), 5000);
     });
   }
+});
+
+test('bundle-exit diagnostics identify the executable and parent without exposing argv', async () => {
+  const bundle = '/fixture/Mission Control.app';
+  const executable = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+  const ops = {
+    now: () => 0, sleep: async () => {},
+    run: async () => ({code: 0, stdout: `39896 1 S ${executable}\n`}),
+  } as unknown as MacAppOps;
+  const waiting: string[] = [];
+  await assert.rejects(waitForBundleExit(bundle, ops, 0, (message) => waiting.push(message)), (error: Error) => {
+    assert.match(error.message, /39896/);
+    assert.match(error.message, /Mission Control Helper whose parent already exited/);
+    const message = waiting[0];
+    assert.ok(message);
+    assert.ok(message.includes(executable));
+    assert.match(message, /39896.*parent 1/);
+    return true;
+  });
+});
+
+
+type ArgumentRecord = {argv: string[]; env: string[]} | null;
+/**
+ * Answers `ops.processArguments` from per-pid kernel records, entry by entry as the addon
+ * returns them: a pid absent from the table has exited, and a null record is unreadable.
+ * Returns the pids read, in order.
+ */
+function argumentRecords(f: ReturnType<typeof fixture>, processes: Map<number, ArgumentRecord>) {
+  const reads: number[] = [];
+  f.ops.processArguments = (pid) => {
+    reads.push(pid);
+    return processes.has(pid) ? processes.get(pid)! : undefined;
+  };
+  return reads;
+}
+/** Answers the bundle-exit and retry paths' own one-pid `ps -o args=` reads from the same table. */
+function argsReads(f: ReturnType<typeof fixture>, processes: Map<number, ArgumentRecord>) {
+  const run = f.ops.run;
+  f.ops.run = async (command, args, timeout) => command === "/bin/ps" && args.includes("args=")
+    ? {code: 0, stdout: `${processes.get(Number(args[args.indexOf("-p") + 1]))?.argv.join(" ") ?? ""}\n`}
+    : run(command, args, timeout);
+}
+
+const mcpServer = `${bundle}/Contents/Resources/app/dist/mcp/server.mjs`;
+const hookScript = `${bundle}/Contents/Resources/app/dist/satellites/hook.mjs`;
+const helperBinary = `${bundle}/Contents/Frameworks/Mission Control Helper.app/Contents/MacOS/Mission Control Helper`;
+/** The `ps` snapshot when a terminal `claude` (pid 24941) runs our MCP server and a hook on the main binary. */
+const terminalSatellites = `42 1 S ${binary}\n24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25190 24941 S ${binary}\n`;
+const satelliteRecords = () => new Map<number, ArgumentRecord>([
+  [42, {argv: [binary], env: ["HOME=/Users/test"]}],
+  [25186, {argv: [binary, mcpServer], env: ["HOME=/Users/test", "MISSION_TOKEN=secret-bearer", "ELECTRON_RUN_AS_NODE=1"]}],
+  [25190, {argv: [binary, hookScript, "PreToolUse"], env: ["ELECTRON_RUN_AS_NODE=1", "HOME=/Users/test"]}],
+]);
+
+test("an MCP server or hook a terminal session runs on the main binary as Node is not a launch conflict", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  argumentRecords(f, satelliteRecords());
+  // The reported refusal named pid 25186, the MCP server, as an unregistered Foreground instance.
+  assert.deepEqual(await inspectAppLaunch(bundle, f.ops), {jobs: [], unregistered: []});
+  await assertSafeAppLaunch(bundle, f.ops);
+});
+
+test("a second GUI instance LaunchServices has not registered is still refused beside Node-mode satellites", async (t) => {
+  for (const [name, argv, env] of [
+    ["a plain second instance", [binary], ["HOME=/Users/test"]],
+    ["an instance whose arguments merely name the flag", [binary, "ELECTRON_RUN_AS_NODE=1"], ["HOME=/Users/test"]],
+    ["an instance whose arguments name a satellite script", [binary, mcpServer], ["HOME=/Users/test"]],
+    ["an instance whose flag is empty", [binary], ["ELECTRON_RUN_AS_NODE=", "HOME=/Users/test"]],
+    // `ps -E` prints this exactly like a real flag: "... NOTE=x ELECTRON_RUN_AS_NODE=1 HOME=...".
+    ["an instance with another variable whose value contains the flag", [binary], ["NOTE=x ELECTRON_RUN_AS_NODE=1", "HOME=/Users/test"]],
+    ["an instance whose variable name merely starts with the flag", [binary], ["ELECTRON_RUN_AS_NODE_EXTRA=1"]],
+    // Electron reads the flag with getenv, which answers with the first entry of that name.
+    ["an instance whose first flag entry is empty", [binary], ["ELECTRON_RUN_AS_NODE=", "ELECTRON_RUN_AS_NODE=1"]],
+  ] as const) {
+    await t.test(name, async () => {
+      const f = fixture();
+      f.outputs.set("ps", `${terminalSatellites}77 1 S ${binary}\n`);
+      argumentRecords(f, new Map([...satelliteRecords(), [77, {argv: [...argv], env: [...env]}]]));
+      const conflicts = await inspectAppLaunch(bundle, f.ops);
+      assert.deepEqual(conflicts, {jobs: [], unregistered: [77]});
+      assert.equal(launchConflictMessage(conflicts, 501), "Mission Control process 77 is not registered as a Foreground app in LaunchServices. Quit that instance after removing any respawn job, then open Mission Control from Finder or the Dock.\nNo launchd job was removed. Retry the update after resolving this launch conflict.");
+      await assert.rejects(assertSafeAppLaunch(bundle, f.ops), /process 77 is not registered as a Foreground app/);
+    });
+  }
+});
+
+test("a Node-mode process that LaunchServices registered in any role is still treated as an app", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  f.outputs.set("apps", registration() + registration(25186, "BackgroundOnly").replace("1)", "2)"));
+  const reads = argumentRecords(f, satelliteRecords());
+  assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186]);
+  assert.ok(!reads.includes(25186), "a registered process's arguments are never read");
+});
+
+test("an unreadable argument record fails closed", async (t) => {
+  await t.test("the kernel will not describe the process", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    argumentRecords(f, new Map([...satelliteRecords(), [25186, null]]));
+    assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186]);
+  });
+  await t.test("the read fails outright", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    f.ops.processArguments = () => { throw new Error("the kernel returned a truncated argument record"); };
+    await assert.rejects(inspectAppLaunch(bundle, f.ops), /truncated argument record/);
+  });
+  await t.test("ops that cannot read arguments at all", async () => {
+    const f = fixture();
+    f.outputs.set("ps", terminalSatellites);
+    delete f.ops.processArguments;
+    assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, [25186, 25190]);
+  });
+});
+
+test("a hook that exits between the snapshot and its argument read is not a conflict", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  const records = satelliteRecords();
+  records.delete(25190);
+  argumentRecords(f, records);
+  assert.deepEqual((await inspectAppLaunch(bundle, f.ops)).unregistered, []);
+});
+
+test("arguments are read once per pid per inspection, only for unregistered main processes, and spawn nothing", async () => {
+  const f = fixture();
+  f.outputs.set("ps", terminalSatellites);
+  const reads = argumentRecords(f, satelliteRecords());
+  await inspectAppLaunches([bundle, bundle], f.ops);
+  assert.deepEqual(reads, [25186, 25190], "one read per candidate, shared by every bundle");
+  assert.ok(!f.calls.some((call) => call.includes(" -p ")), "no per-process ps probe");
+  const clean = fixture();
+  const none = argumentRecords(clean, satelliteRecords());
+  await inspectAppLaunch(bundle, clean.ops);
+  assert.deepEqual(none, [], "a Mac running only the registered app pays no extra read");
+});
+
+test("the bundle swap does not wait on a terminal session's Node-mode satellites, on either binary", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25187 24941 S ${helperBinary}\n25190 24941 S ${binary}\n`);
+  const records = satelliteRecords();
+  records.set(25187, {argv: [helperBinary, mcpServer], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  argumentRecords(f, records);
+  const waiting: string[] = [];
+  await waitForBundleExit(bundle, f.ops, 1000, (message) => waiting.push(message));
+  assert.deepEqual(waiting, [], "nothing was waited on");
+});
+
+test("an owned Node-mode satellite is still waited on and signalled through its ownership record", async () => {
+  // A dispatched session's own MCP server: Mission Control owns it, so the operator exemption
+  // does not apply and it is cleaned up exactly like any other owned work.
+  const f = fixture();
+  let running = `25186 24941 S ${binary}\n`;
+  f.outputs.set("ps", running);
+  argumentRecords(f, satelliteRecords());
+  const owners = [{pid: 25186, fingerprint: createHash("sha256").update("start-42").digest("hex"), group: false, work: "Mission Control session s-1"}];
+  const signals: string[] = [];
+  f.ops.kill = (pid, signal) => {
+    signals.push(`${pid}:${signal}`);
+    running = "";
+    f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+  };
+  const waiting: string[] = [];
+  await waitForBundleExit(bundle, f.ops, 30_000, (message) => waiting.push(message), owners);
+  assert.match(waiting[0] ?? "", /25186 .*Mission Control session s-1/, "the owned satellite was waited on");
+  assert.deepEqual(signals, ["25186:SIGTERM"], "and stopped through its ownership record");
+  assert.equal(running, "");
+});
+
+test("the bundle swap still waits on Node-mode work it cannot vouch for, and names it as Node, not as the app", async () => {
+  const f = fixture();
+  f.outputs.set("ps", `24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n25188 24941 S ${binary}\n25189 1 S ${helperBinary}\n25191 24941 S ${binary}\n`);
+  const records = satelliteRecords();
+  records.set(25188, {argv: [binary, "/Users/test/tools/other-script.mjs"], env: ["ELECTRON_RUN_AS_NODE=1", "TOKEN=secret"]});
+  records.set(25189, {argv: [helperBinary, "-e", `// ${CHECK_SUPERVISOR_MARKER}`], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  // A satellite path that is only a later argument is data to another script, not the satellite.
+  records.set(25191, {argv: [binary, "/Users/test/tools/wrap.mjs", mcpServer], env: ["ELECTRON_RUN_AS_NODE=1"]});
+  argumentRecords(f, records);
+  argsReads(f, records);
+  const error = await waitForBundleExit(bundle, f.ops, 1000).then(() => null, (reason: Error) => reason);
+  assert.ok(error);
+  assert.doesNotMatch(error.message, /25186/, "the MCP server is not waited on");
+  assert.match(error.message, /pid 25188 \(a script claude runs on Mission Control's bundled Node is still running\)/);
+  assert.match(error.message, /pid 25189 \(a workflow check whose parent already exited is still running\)/);
+  assert.match(error.message, /pid 25191 \(a script claude runs on Mission Control's bundled Node is still running\)/);
+  assert.doesNotMatch(error.message, /the Mission Control app is still running|other-script|wrap\.mjs|server\.mjs|secret|\/Users\//);
+});
+
+test("a retried launch is not blocked by a terminal session's MCP server on the main binary", async () => {
+  const f = fixture();
+  const nonce = "a".repeat(32);
+  let running = `42 1 S ${binary}\n24941 24900 S /opt/homebrew/bin/claude\n25186 24941 S ${binary}\n`;
+  f.outputs.set("ps", running);
+  const records = satelliteRecords();
+  records.set(42, {argv: [binary, "--mission-update-launch", nonce], env: ["HOME=/Users/test"]});
+  argumentRecords(f, records);
+  argsReads(f, records);
+  const signals: number[] = [];
+  f.ops.kill = (pid) => {
+    signals.push(pid);
+    running = running.replace(`42 1 S ${binary}\n`, "");
+    f.outputs.set("ps", running);
+  };
+  await stopAttemptLaunch(bundle, nonce, f.ops);
+  assert.deepEqual(signals, [42], "only this attempt's launch was signalled; the MCP server was left alone");
+});
+
+test("retry cleanup skips a main process that exited after the snapshot, but not one it cannot read", async (t) => {
+  const nonce = "a".repeat(32);
+  const setup = (gone: ArgumentRecord | undefined) => {
+    const f = fixture();
+    let running = `42 1 S ${binary}\n77 1 S ${binary}\n`;
+    f.outputs.set("ps", running);
+    const records = new Map<number, ArgumentRecord>([[42, {argv: [binary, "--mission-update-launch", nonce], env: []}]]);
+    if (gone !== undefined) records.set(77, gone);
+    argumentRecords(f, records);
+    const run = f.ops.run;
+    // `ps -p 77` finds nothing once 77 has exited, which `read` reports as an inspection failure.
+    f.ops.run = async (command, args, timeout) => command === "/bin/ps" && args.includes("args=")
+      ? (args.includes("77") ? {code: 1, stdout: ""} : {code: 0, stdout: `${binary} --mission-update-launch ${nonce}\n`})
+      : run(command, args, timeout);
+    const signals: number[] = [];
+    f.ops.kill = (pid) => {
+      signals.push(pid);
+      running = "";
+      f.outputs.set("ps", "1 0 S /sbin/launchd\n");
+    };
+    return {f, signals};
+  };
+  await t.test("exited: the kernel no longer has its record", async () => {
+    const {f, signals} = setup(undefined);
+    await stopAttemptLaunch(bundle, nonce, f.ops);
+    assert.deepEqual(signals, [42], "the retry proceeds and signals only this attempt's launch");
+  });
+  await t.test("alive but unreadable: still refused, nothing signalled", async () => {
+    const {f, signals} = setup(null);
+    await assert.rejects(stopAttemptLaunch(bundle, nonce, f.ops), /Could not inspect macOS launch state/);
+    assert.deepEqual(signals, []);
+  });
+});
+
+test("on this Mac, the real kernel record tells a Node-mode satellite from unregistered instances of the same binary", {skip: process.platform !== "darwin"}, async (t) => {
+  // A disposable bundle whose main binary is this Node: it runs a script whether or not the flag
+  // is set, which is exactly what makes the environment, not the arguments, the only evidence.
+  const root = await mkdtemp(join(tmpdir(), "mission-node-mode-"));
+  const app = join(root, "Mission Control.app");
+  const executable = join(app, "Contents", "MacOS", "Mission Control");
+  const server = join(app, "Contents", "Resources", "app", "dist", "mcp", "server.mjs");
+  await mkdir(join(app, "Contents", "MacOS"), {recursive: true});
+  await mkdir(join(app, "Contents", "Resources", "app", "dist", "mcp"), {recursive: true});
+  // Give the fixture its own executable inode and preserve Node's relative library lookup.
+  // Homebrew Node 26 loads ../lib/libnode.*.dylib; relocating only its executable aborts
+  // before the script runs, leaving ps to report a zombie rather than a live bundle path.
+  await copyFile(process.execPath, executable);
+  await symlink(join(dirname(process.execPath), "..", "lib"), join(app, "Contents", "lib"), "dir");
+  await writeFile(server, 'process.stdout.write("ready\\n"); setInterval(() => {}, 1000);\n');
+  const start = (env: NodeJS.ProcessEnv) => spawn(executable, [server], {env, stdio: ["ignore", "pipe", "ignore"]});
+  const base = {...process.env};
+  delete base.ELECTRON_RUN_AS_NODE;
+  const satellite = start({...base, ELECTRON_RUN_AS_NODE: "1"});
+  const instance = start(base);
+  // What `ps -E` prints exactly like a real flag. The kernel record keeps it inside NOTE.
+  const disguised = start({...base, NOTE: "x ELECTRON_RUN_AS_NODE=1"});
+  t.after(async () => {
+    satellite.kill("SIGKILL");
+    instance.kill("SIGKILL");
+    disguised.kill("SIGKILL");
+    await rm(root, {recursive: true, force: true});
+  });
+  // A pid in ps alone can still be a child that failed during exec. Inspect only after
+  // every fixture reaches the script, and fail promptly if the relocated runtime cannot start.
+  await Promise.all([instance, satellite, disguised].map((child) => new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => reject(new Error(`fixture runtime exited before ready: ${code ?? signal}`)));
+    child.stdout!.once("data", () => resolve());
+  })));
+  const ops = realMacAppOps();
+  const running = async () => parseAppProcesses((await ops.run("/bin/ps", ["-axww", "-o", "pid=,ppid=,stat=,comm="])).stdout).map((row) => row.pid);
+  for (let tries = 0; ; tries++) {
+    const pids = await running();
+    if ([instance, satellite, disguised].every((child) => pids.includes(child.pid!))) break;
+    assert.ok(tries < 100, "every fixture process started");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual((await inspectAppLaunch(app, ops)).unregistered.sort(), [instance.pid, disguised.pid].sort(),
+    "both instances without a real flag are refused, the disguised one included");
+  for (const child of [instance, disguised]) {
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill("SIGKILL");
+    await exited;
+  }
+  assert.deepEqual(await inspectAppLaunch(app, ops), {jobs: [], unregistered: []});
+  await waitForBundleExit(app, ops, 2000);
+  assert.equal(satellite.exitCode, null, "the satellite was neither waited on nor signalled");
+});
+
+test("the state-lock addon reads a process's argv and environment as separate entries", async (t) => {
+  const binding = createRequire(import.meta.url)(stateLockAddon) as {processArguments(pid: number): {argv: string[]; env: string[]} | null | undefined};
+  assert.throws(() => binding.processArguments(0), TypeError);
+  if (process.platform !== "darwin") {
+    assert.throws(() => binding.processArguments(process.pid), {code: "ENOTSUP"});
+    return;
+  }
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)", "two words"], {env: {NOTE: "x ELECTRON_RUN_AS_NODE=1", EMPTY: ""}, stdio: "ignore"});
+  t.after(() => child.kill("SIGKILL"));
+  await new Promise((resolve) => child.once("spawn", resolve));
+  const record = binding.processArguments(child.pid!);
+  assert.ok(record, "the running child has a readable kernel argument record");
+  assert.deepEqual(record.argv, [process.execPath, "-e", "setTimeout(() => {}, 10000)", "two words"]);
+  // KERN_PROCARGS2's string area can include Apple's startup metadata after the supplied
+  // environment (kern_exec.c's exec_add_apple_strings). It provides argc, not an env count,
+  // so assert our exact entries without assuming nothing follows them in the kernel record.
+  assert.deepEqual(record.env.slice(0, 2), ["NOTE=x ELECTRON_RUN_AS_NODE=1", "EMPTY="]);
+  assert.equal(record.env.find((entry) => entry.startsWith("ELECTRON_RUN_AS_NODE=")), undefined,
+    "flag-looking text inside NOTE must not become a standalone environment entry");
+  assert.equal(binding.processArguments(1), null, "launchd exists but is not described to this user");
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGKILL");
+  await exited;
+  assert.equal(binding.processArguments(child.pid!), undefined, "a reaped pid reads as gone");
 });

@@ -728,7 +728,13 @@ through every rule here.
   non-empty `repo_root` reviews a secondary repository of the session's task, and its
   `session_cwd`/`session_repo_root` hold that repository's worktree and root - which is what
   scopes evidence capture, check execution, the capture root and the gate's adoption match
-  without any of them knowing why.
+  without any of them knowing why. Scoped evidence and coverage use `session_cwd`, never
+  the canonical repository identity in `repo_root`, for criterion recipients, reservations,
+  generation tracking, carry-forward and retirement. Filesystem realpath normalization does
+  not map a canonical Git checkout to a linked worktree. Automatic evidence preparation
+  validates conversation identity against the primary binding and a secondary checkout against
+  the owning task's current persisted repository assignment. A detached, released or reassigned
+  worktree cannot admit a repair merely because its old binding remains active.
 - **`activeBindingForNote` means the session's OWN binding** and must keep meaning it: the
   create conflict check, dispatch arming, the Foreman claim and reattach all ask that question.
   `activeBindingsForNote` sees the siblings.
@@ -1019,6 +1025,30 @@ wrong page with no error anywhere.
 `PipelineRunView`'s header takes an `actions` slot that renders nothing today. It is the
 place the engine's control verbs go; filling it must not restructure the header around it.
 
+## Who may change a Goal's objective
+
+A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
+`Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
+from the first substantive instruction, and only while the Goal has no objective yet. After that,
+only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
+relationship. `steer` and `unclear` never change them, and no other writer does.
+`openingPrompt` is write-once.
+
+`POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
+paused Goal, and it CONFIRMS the objective rather than rewriting it. It resolves every pending
+revision as steering through `upsertSessionGoalWithSteeringNotes`, one row per revision with the
+rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
+`resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
+`source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
+`resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
+contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
+action, if one is ever wanted, is a separate route with its own review, not a body on this one.
+
+Steering rows always carry `relationship: "steer"` at or below the Goal's resolved revision. The
+refiner writes one through `upsertSessionGoalWithSteering` and the accept route writes several
+through the list writer; neither replaces the other.
+
 ## Prompted completion: one generation, one reason, one write
 
 A completed prompted work-cycle generation is consumed by exactly one compare-and-set, and that
@@ -1113,6 +1143,11 @@ Hook event vocabularies have one owner per harness. Launch-scoped Codex hooks an
 
 The two layouts are `console` and `board`. `App.tsx` owns session state; layouts arrange it.
 
+The optional `boardSidebarAllSessions` UI preference reuses `ConsoleView` for the Board's
+open detail, with a back control. Board still owns selection and dismissal; its overview and
+backlog remain unchanged. While that rail is open, vertical keyboard navigation uses the
+Console ordering across state groups. The setting is offered only with Board selected.
+
 A session appears in three components:
 
 - `layouts/ConsoleDetail.tsx`
@@ -1139,6 +1174,8 @@ Route every server-side reset through `resetSession` in `src/server/reset.ts`; i
 ## Overlays and shortcuts
 
 Register overlays in `OVERLAY_IDS` and render through `OverlayHost`. Use `overlays.anyOpen` and `overlays.onlyOpen`; do not maintain a second list. The overlay owns Escape.
+
+A backdrop click dismisses an overlay only when both the press and the release land on the backdrop. `<Overlay>` applies this to every overlay, so a text selection that starts inside a panel and ends outside it never closes the panel. Do not add a per-modal opt-out or hand-roll a backdrop `onClick`.
 
 Keyboard shortcuts are registered through `ActionId` and `ACTIONS`, dispatched in `App.tsx`, surfaced in the command bar, documented in README, and tested.
 
@@ -1235,11 +1272,13 @@ These rules hold across phases:
 4. **Persona and instructions are standing instructions**, appended after repository standing
    instructions by the composer at the dispatcher's one resident call site, recorded in
    `session_standing_instructions` and replayed on resume.
-5. **Session control comes only from the desktop Launch click.** `launchResident()` arms it, the
-   launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
+5. **Session control comes only from desktop Launch or Restart on new profile clicks.**
+   `launchResident()` arms it, the launch route's `ResidentManager.launch` consumes it, and the Registry's existing grant is
    applied and recorded in the four `control_*` columns of `resident_runs`. No later phase may
-   create a resident grant through any other path, including Restart on new profile, which is a
-   new launch and needs its own click. The rule is stated in
+   create a resident grant through any other path. Restart on new profile is a new launch:
+   its desktop click arms the same capability for the replacement request and displayed new
+   revision, and its route uses the same caller check and manager consumption. It never copies
+   the old run's grant. The rule is stated in
    [security](../security.md#resident-launch-grants).
 
 6. **A run's MCP servers come only from its snapshot.** The launch resolves the effective set once
@@ -1257,6 +1296,18 @@ These rules hold across phases:
    argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
+7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`
+   document compiled in by `npm run residents`, plus its other settings in `BUILTIN_RESIDENTS`
+   (`src/server/residents/builtin-residents.ts`). Its id is `builtin:<slug>`, durable and
+   append-only. `reconcileBuiltinResidentProfiles` runs at daemon start before the Registry loads,
+   inserts a missing built-in, and gives a changed one a NEW revision, so rule 2 holds across
+   upgrades. Unlike built-in Personas, a built-in resident is stored, because a run joins
+   `resident_profile_revisions` for its pinned revision. The store refuses every edit and archive of
+   a `builtin:` id. It reserves a built-in's name for create and rename. It leaves built-ins out of
+   the live-profile bound, settings snapshots and restores. A built-in's `normalized_name` is a
+   sentinel, so an operator profile that already held the name keeps it, and both are listed.
+   Every surface that offers profiles as choices names a built-in through
+   `residentProfileChoiceName`, so the two stay distinguishable. Nothing hides a built-in.
 
 Repo-less residents use the existing workspace section and resident creation capability.
 `tasks.workspace_kind = resident-workspace` is interpreted only by `taskHasRepository`; null
@@ -1329,7 +1380,56 @@ The `@shared` alias must agree across TypeScript, Vite, and esbuild. Never enabl
 
 `src/web/styles.css` is a single tokenized, sectioned stylesheet. Add rules to the matching section. When removing or renaming a class, search for its CSS in the same change.
 
+Chrome colours are supplied through tokens. Each token is declared on the leading `:root` block with its default value, and every rule below that block paints through `var(--...)` or a `color-mix()` of tokens. Tokens are named for roles, so distinct roles may share a default value (`--on-accent`, `--fg-strong` and `--highlight-ink` are all `#fff` today) and a skin can still separate them. That is what lets a skin repaint the app by overriding tokens. Apart from the exceptions below, a hex, `rgb()`, `hsl()`, named colour or system colour (`Canvas`, `CanvasText`) anywhere after `:root` fails `test/style-literals.test.ts`. That includes any letter case (`RGB(...)`), a CSS escape (`\72 ed`), and a colour inside a data URI's SVG, whether the URI sits in `url()` or bare in `image-set()`, is percent-encoded or base64, spells the colour with an XML character reference (`&#x72;ed`), or nests another data URI. A raster data URI is reported too, since its colours are baked into pixels no token reaches. Reuse a token when its role matches, otherwise add a role token named for what it does (`--on-accent`, `--danger-soft`), never for its hue, even if its default equals an existing token's. A translucent shade of an existing role is a `color-mix()` of that role's token with `transparent`, not a new token. A token carries a translucent value of its own only when the translucency is the role itself and there is no opaque role to derive it from. `--canvas-minimap-mask` is that case: it is React Flow's 60% veil over the part of the workflow canvas outside the viewport. The older `--shadow` token is another. The guard's exceptions are narrow and listed in the test's `ALLOWED` array, each with its reason. Two kinds exist today, and neither is chrome. The first is the white canvas behind operator-authored HTML (`.managed-plan-reader iframe`, `.html-preview` and `.artifact-preview`), which is written against a browser's white default and must not follow a skin. The second is `#000` in a `mask-image` gradient (`.conversation-header-preview .detail-tabs` and `.rm-occurrence-list`), where a mask reads only alpha and its colour never reaches the screen. An entry matches one selector, property and literal, and the test fails when an entry stops matching, so the list cannot outlive what it excuses. Separately, a colour word is not a colour in a property that holds only names (an animation, font, grid area, counter or transition, for example) or inside quoted text that is not a data URI. Do not add skin colours to the allowlist. React Flow's canvas colours are routed through `--canvas-*` tokens on `.workflow-canvas`, and its minimap colours its nodes by class rather than through `nodeColor`, whose inline `fill` no stylesheet can repaint.
+
 Harness colors come from `AGENT_IDENTITY` through `--agent-accent`; never name an agent in CSS.
+
+### Adding a skin
+
+A skin is CSS only, and it is added in four places:
+
+1. **Register it** by appending an entry to `SKINS` in `src/shared/skins.ts`: a kebab-case
+   `id`, `label`, one-line `description`, `colorScheme` (`dark` or `light`) and the six
+   `swatches` the picker's thumbnail draws. Ids are persisted in `app_config.ui.skin` and are
+   append-only: never rename, reorder or remove one. A stored id a build does not know reads
+   as Default, while a write of one is refused.
+2. **Write one file**, `src/web/skins/<id>.css`, containing `:root[data-skin="<id>"] { ... }`
+   and nothing that is not scoped under that selector. Restate `color-scheme` for a light
+   skin and at least `--bg`, `--bg-2`, `--panel`, `--panel-2`, `--border`, `--border-soft`,
+   `--fg`, `--muted`, `--dim`, `--working`, `--idle`, `--attention`, `--danger`, `--exited`,
+   `--purple`, `--radius` and `--shadow`, plus every role token whose Default value would
+   paint wrong on your background (inks, text on solid fills, the failure family, the
+   canvas, the `--select-chevron` data URI). Add an `@import` for it to
+   `src/web/skins/index.css` in registry order. Default has no file: it is `:root`.
+3. **Pass `test/skins.test.ts`.** Against `--bg`, `--panel` and `--panel-2`, `--fg`, `--muted`,
+   `--dim`, `--working`, `--idle`, `--attention`, `--danger` and `--held` must clear 4.5:1 and
+   `--exited` 3:1, and the swatches must equal the file's values. Fix the skin, never the
+   thresholds. `test/line-strip-electron.test.ts` measures the Line strip under every
+   registered skin with no new case, so a skin may change colours, fonts and corners but
+   never padding, borders, font size or line height. A skin changes a face through
+   `--font-display` (headings, card titles, tile names) and `--font-label` (the Line's stage
+   names), never by restating a font rule.
+   Any rule beside the token block is decoration, and `test/skin-decoration.test.ts` holds
+   it to paint: backgrounds, `box-shadow`, `text-shadow`, `text-transform`, `color` and
+   `border-color`. Nothing that sizes a box, and no `filter`, `backdrop-filter`,
+   `transition` or animation. A glow restates the shadow it replaces, rings included.
+4. **Extend `e2e/specs/settings-skins.spec.ts`** to pick the new skin by its radio name and
+   assert its background and persistence. A skin that changes a face or adds decoration also
+   joins `DECORATED_SKINS` there, which holds the top bar, the Line and the Dispatch button to
+   Default's measured geometry.
+
+`src/web/lib/skin.ts` is the only code in the dashboard that writes `<html data-skin>` and the
+document's `color-scheme`, and no component branches on the skin id. The daemon serves the
+dashboard document with the stored skin already on `<html>`, plus a `<meta name="mission-skin">`
+seed (`src/server/dashboard-document.ts`). The preference store takes that seed over its local
+cache, so a profile with no cache paints the stored skin from its first frame, and `lib/skin.ts`
+keeps the served attribute instead of replacing it. The desktop window's launch colour
+lives in `window-background.json` in the state home (`src/server/window-background.ts`), and the
+daemon is its only writer: `syncWindowBackground` records the stored skin's swatch on every skin
+write, after a settings restore and at startup, so a skin chosen in a browser still decides the
+next desktop launch. The shell's bridge handler only repaints the live window; it never persists,
+because a page that loaded before a change elsewhere would write a stale colour. `createWindow`
+and the shell's startup page both paint from the file.
 
 In Electron, the top bar is a drag region. New floating interactive layers need the desktop `no-drag` rule.
 

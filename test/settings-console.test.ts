@@ -243,6 +243,7 @@ function shippingHtml(): string {
       method: "squash",
       repoAllowlist: ["/repo"],
       closeSessionAfterMerge: false,
+    maxStackDepth: 3,
     },
     inspections: [row()],
     update: async () => true,

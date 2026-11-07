@@ -1,0 +1,103 @@
+/* Daylight: a clean, neutral light skin for bright rooms and daytime work.
+
+   Token overrides only, no decoration. Every value a skin does not restate falls through to
+   `:root` in `styles.css`, so a token named here is one Default's dark value would paint
+   wrong on a light background. The state tones are darkened so each still clears 4.5:1 on
+   white (`test/skins.test.ts` measures it), and every shadow is cast in a translucent ink so
+   the dark-theme strengths soften to 6-10% without restating a single rule.
+
+   The swatches in `src/shared/skins.ts` must equal the values here. */
+
+:root[data-skin="daylight"] {
+  color-scheme: light;
+
+  /* Surfaces, lines and the text ramp. */
+  --bg: #f5f7fa;
+  --bg-2: #edf0f4;
+  --panel: #ffffff;
+  --panel-2: #f0f3f7;
+  --border: #d3d9e1;
+  --border-soft: #e3e7ed;
+  --border-strong: #bcc5d0;
+  --fg: #141a22;
+  --fg-strong: #000000;
+  --muted: #4a5564;
+  --dim: #5b6676;
+
+  /* Session states and the tones that ride on them. */
+  --working: #0b63ce;
+  --idle: #0f7f56;
+  --attention: #9e5400;
+  --danger: #cf222e;
+  --exited: #6e7781;
+  --neutral: #6a7380;
+  --select: #0f7f56;
+  --find: #d4a72c;
+  --purple: #7c4dd6;
+  --delegated: #b8317f;
+  --syntax-type: #b4532a;
+  --pr-open: #1a7f37;
+
+  /* Resident markers: the same eight hues, deepened to read as chip text on white. */
+  --resident-cyan: #0b7c85;
+  --resident-violet: #7d4fd0;
+  --resident-amber: #8a5a00;
+  --resident-rose: #c0306a;
+  --resident-lime: #4a7a0c;
+  --resident-blue: #0a5fc4;
+  --resident-orange: #b04a00;
+  --resident-teal: #0b7a68;
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.1);
+
+  /* Inks. Shadows and scrims mix these with `transparent` at dark-theme strengths, so a
+     translucent ink is what lightens all of them at once. */
+  --shadow-ink: rgba(15, 23, 42, 0.32);
+  --scrim-ink: rgba(28, 36, 48, 0.6);
+  --highlight-ink: #ffffff;
+
+  /* Text on solid fills. The amber, green and blue fills are dark here, so white reads. */
+  --on-accent: #ffffff;
+  --on-attention: #ffffff;
+  --on-wait: #ffffff;
+  --on-find: #1f1600;
+  --on-select: #ffffff;
+  --working-deep: #083f85;
+  --attention-deep: #5c3100;
+
+  /* The failure family, re-stepped darker so error text clears contrast on white. */
+  --danger-soft: #b42318;
+  --danger-muted: #cf222e;
+  --danger-text: #b91c27;
+  --danger-bright: #d1242f;
+  --danger-fill: #cf222e;
+  --danger-fill-hover: #a40e26;
+  --approve-fill: #1f883d;
+  --approve-fill-hover: #1a7f37;
+  --diff-del: #cf222e;
+  --diff-del-count: #b91c27;
+
+  --wf-action: #7c4dd6;
+  --wf-success: #1a7f37;
+
+  /* The app backdrop's two glows: barely-there tints instead of dark pools. */
+  --backdrop-glow-right: #e7eef8;
+  --backdrop-glow-left: #efeaf7;
+  --panel-deep: #f7f9fb;
+
+  /* The dropdown chevron, restated in this skin's --muted (#4a5564). */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%234a5564' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  /* The workflow canvas. React Flow's own light defaults already suit a light page; the
+     minimap's nodes are deepened so they read against the light mask. */
+  --canvas-dot: #b6bec9;
+  --canvas-edge: #8c96a3;
+  --canvas-edge-selected: #3b4552;
+  --canvas-chip: #ffffff;
+  --canvas-handle: #3b4552;
+  --canvas-selection: #0b63ce;
+  --canvas-minimap-mask: rgba(225, 230, 237, 0.6);
+  --canvas-minimap-node: #5b6676;
+  --canvas-minimap-fail: #cf222e;
+}

@@ -667,6 +667,9 @@ test("Foreman recovers one settled pre-PR ship turn, records it, and stops at th
   daemon,
 }) => {
   test.setTimeout(180_000);
+  // The compact header may legitimately shed its PR chip at rung 7. This case owns
+  // recovery and its recorded PR boundary, so give those readouts room to stay visible.
+  await dashboard.setViewportSize({ width: 1600, height: 1000 });
   await dispatch(dashboard, daemon, {
     task: "Implement the retry path and leave shipping to Mission Control",
     kind: "ship",

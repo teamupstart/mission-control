@@ -5,7 +5,7 @@
 // app version). contextIsolation keeps this the only channel into the renderer.
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { UpdateSnapshot } from "../shared/update.ts";
+import type { UpdateApplyOutcome, UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
 import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "../shared/session-control-authorization.ts";
 
@@ -26,6 +26,13 @@ let sessionControlAuthorizationClaimed = false;
 let trustedClick: MouseEvent | null = null;
 window.addEventListener("click", (event) => {
   trustedClick = event;
+}, true);
+// Feedback also accepts the dialog's default-action chord, but only during that exact
+// trusted dispatch. Session-control grants below retain their click-only rule.
+let trustedReportShortcut: KeyboardEvent | null = null;
+window.addEventListener("keydown", (event) => {
+  trustedReportShortcut = event.key === "Enter" && (event.metaKey || event.ctrlKey)
+    && !event.repeat && !event.isComposing ? event : null;
 }, true);
 
 contextBridge.exposeInMainWorld("missionDesktop", {
@@ -49,11 +56,13 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     capability: string,
     input: ProductIssueAuthorizationInput,
   ): boolean => {
+    const clickInProgress = trustedClick?.isTrusted === true && trustedClick.eventPhase !== Event.NONE;
+    const shortcutInProgress = trustedReportShortcut?.isTrusted === true
+      && trustedReportShortcut.eventPhase !== Event.NONE;
     if (
       !productIssueAuthorizationClaimed ||
       capability !== productIssueAuthorizationCapability ||
-      trustedClick?.isTrusted !== true ||
-      trustedClick.eventPhase === Event.NONE
+      (!clickInProgress && !shortcutInProgress)
     ) return false;
     return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
   },
@@ -84,6 +93,7 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     repairMigration: (): Promise<void> => ipcRenderer.invoke("mission:update-repair-migration"),
     cancel: (): Promise<void> => ipcRenderer.invoke("mission:update-cancel"),
     defer: (): Promise<void> => ipcRenderer.invoke("mission:update-defer"),
+    dismissOutcome: (outcome: UpdateApplyOutcome): Promise<boolean> => ipcRenderer.invoke("mission:update-dismiss-outcome", outcome),
     onState: (cb: (snapshot: UpdateSnapshot) => void): (() => void) => {
       const listener = (_event: unknown, snapshot: UpdateSnapshot): void => cb(snapshot);
       ipcRenderer.on("mission:update-state", listener);
@@ -110,6 +120,10 @@ contextBridge.exposeInMainWorld("missionDesktop", {
   // the preference and not the card count.
   setCardJumpKeys: (claimed: boolean): Promise<void> =>
     ipcRenderer.invoke("mission:card-jump-keys", claimed),
+  // The applied skin's `--bg` as `#rrggbb`, so the window behind the page matches it. Main
+  // validates the colour and only repaints; see `server/window-background.ts`.
+  setWindowBackground: (color: string): Promise<void> =>
+    ipcRenderer.invoke("mission:set-window-background", color),
   // Main pushes this when the native "Settings…" item (⌘,) is chosen. Returns an
   // unsubscribe so the renderer can detach on unmount.
   onOpenSettings: (cb: () => void): (() => void) => {

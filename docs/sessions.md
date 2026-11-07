@@ -437,6 +437,10 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 - if a Claude SDK session reports that it is no longer logged in, authenticate Claude from
   any terminal. Its next Mission Control message replaces the stale SDK subprocess, resumes
   the same Claude conversation, and delivers that message with the credentials now on disk.
+  A resident's next scheduled wake does the same. If Claude reports the failure but never
+  closes its turn, Mission Control closes it after 30 seconds so the session returns to idle
+  and that next message or wake can reach it. If the stale subprocess then ignores its input
+  closing, it is stopped after 10 seconds instead of holding up the recovery.
   `/login` is not an interactive command in the embedded composer. If authentication fails
   before Claude reports a conversation id, there is nothing safe to resume; the session exits
   as unresumable so the operator can start a new conversation;
@@ -1553,7 +1557,8 @@ objective, not a copy of the newest prompt or the step the agent happens to be w
 **Console detail draws it in the same place** - under the session's name, with the other
 facts that change rarely - rather than in a band above the transcript. There it takes one
 line and ellipses, and hovering gives you the whole sentence along with whatever the Goal's
-state has to add ("being refined", "automatic wrap-up is paused"). A harness that can never
+state has to add ("being refined", "automatic wrap-up is paused"). Both paused states end by
+naming their exit, **Accept objective as is** in the Foreman drawer. A harness that can never
 carry a Goal still says so there, in the same slot.
 
 The first substantive instruction establishes an immediate provisional objective with no
@@ -1609,6 +1614,22 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Every follow-up to an Agent SDK session is counted once, too.** A message you send
+afterwards, directly or from the pending-turn outbox, has the same two doors: the driver
+acknowledges it, and the agent's prompt hook reports the same text back. Each delivered turn
+is captured by exactly one of them. Mission Control notes the text just before the driver
+takes it, and whichever door arrives first opens the revision while the other is skipped. A
+door that fails to record the turn leaves it for the other, so a failed write is not a lost
+instruction. Without this rule every follow-up was classified twice, the second time against
+a conversation that had already moved on.
+
+A retype is its own send, so it is still heard: sending the same words again opens a revision
+of its own. The note lasts for the turn the message belongs to. A message accepted while the
+agent is mid-turn waits behind that turn, so its note outlives the running turn and ends with
+its own. Once its turn is next, the note also lapses after two minutes, for a conversation
+that never finishes a turn. A daemon restart between a delivery and its echo forgets the note
+and lets one duplicate through.
+
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
@@ -1642,22 +1663,56 @@ Each reconciliation records one of five relationships:
   objective;
 - **amend** extends the existing completion contract;
 - **replace** supersedes the old outcome; and
-- **unclear** keeps the existing objective while completion remains ambiguous.
+- **unclear** keeps the existing objective while completion remains ambiguous. An unclear
+  instruction is never dropped when a newer one arrives. If the newer one arrives after the
+  verdict, the unclear instruction goes back into the queue ahead of it and is reconsidered
+  with it. If it is judged unclear while a newer instruction is already waiting, it is kept as
+  steering ("Kept as steering: …"), and only the latest instruction can pause wrap-up.
 
 No command or special vocabulary is required. The model infers the relationship from the
 instruction and conversation. An amendment is accepted only when its proposed contract
-explicitly retains the existing objective as its prefix; a narrower amendment stays
-unresolved. An effective amendment or replacement updates the Goal and advances its objective
-version, while steering changes only the latest focus.
+explicitly retains the existing objective as its prefix. A line that is nothing but an
+absolute file path, such as a screenshot you attached (spaces included, as in
+`/Users/you/Desktop/Screen Shot.png`), is ignored by that comparison, and an accepted
+amendment keeps every such line of the objective it extends, so the attachment stays
+in the contract a run reviews against. An amendment too long to keep those lines within the
+stored objective's length limit is not shortened to fit. Like any amendment that fails the
+check, it is treated as steering: the objective and its version stay as they were, the drawer
+shows the relationship as **steering** with a rationale that starts "Treated as steering:",
+the instruction reaches the next Workflow run as steering context, and the daemon log records
+which rule failed without quoting the objective. The classifier is also told that a reply
+picking one of the options a session offered is steering. That is guidance to the model, not
+a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
+amendment is accepted; if it fails the check, it is treated as steering as above. An effective
+amendment or replacement updates the Goal and advances its objective version, while steering
+changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
 out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
-Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
-the last durable objective stays visible and the unresolved instruction remains ahead of later
+Mission Control. If the provider is missing, logged out, slow, or returns a reply that does
+not validate, the last durable objective stays visible and the unresolved instruction remains ahead of later
 ones. Prompted automatic wrap-up stays paused until every instruction has a resolved,
 unambiguous relationship. The same fail-closed rule covers migrated state whose missing prompt
 text cannot be recovered.
+
+**Accept objective as is** is the way out of that pause. While the Goal is reconciling or
+`unclear`, the Foreman drawer (opened from **Foreman intent** in the console header) offers it
+under the relationship, and the Goal line's hover names it. Pressing it records every pending
+instruction as steering, oldest first, with the rationale "Accepted by you: the current
+objective is the completion contract." An instruction whose text was lost before it could be
+stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
+its own instruction the same way. The relationship becomes **steer**, the latest revision
+counts as resolved, and Foreman judges completion against the objective on its next tick,
+which can claim a bound Workflow. A run frozen afterwards carries those instructions as
+steering. It confirms the contract and never rewrites it: the objective, its version, the
+card sentence and the opening request are left exactly as they were. Growing or replacing
+the objective stays the reconciler's job, through the next **amend** or **replace**. A
+session with no objective yet has nothing to accept, so the drawer shows no button; its
+next instruction becomes the objective. Pressing it again once the Goal has settled changes
+nothing. If the request fails, the drawer shows why under the button and the pause stays as it
+was, so it can be pressed again. The route behind the control, and what it may and may not write, are specified in
+[Who may change a Goal's objective](agent-guides/change-contracts.md#who-may-change-a-goals-objective).
 
 What it deliberately isn't:
 
@@ -2090,7 +2145,8 @@ The MCP tools are:
   dismisses that decision set without an answer. Every decision also has an optional note
   box, so the human can pick an option and send instructions with it; a note returns to the
   agent as a `Note:` line under that decision, and never answers a decision on its own. Pass
-  an empty `decisions` list to show a plan for approval with no open choices
+  an empty `decisions` list to show a plan for approval with no open choices. Any decision
+  can be [moved to chat](#chat-about-it) instead of answered
 - `request_review(title, diff)` - show a diff and **block** for approve, changes, or dismissal
 - `create_task(title, intent, ...)` - add a task to the backlog without launching it,
   returning its id, saved configuration, and canonical repository set so later tasks can carry
@@ -2112,6 +2168,23 @@ The MCP tools are:
   use versioned creation routes, so an older daemon returns 404 and creates nothing instead of
   ignoring the new fields. This validation proves local Git identity only: ordinary push and pull-request operations
   remain where Git and the repository host enforce write authority.
+- `list_tasks(...)` - **read-only** discovery of saved tasks, including running and finished
+  work. Filter by `status` (`backlog`, `dispatching`, `running`, `done`, `cancelled`, `failed`),
+  `kind`, `repository` (primary or attached), `labels` (all supplied labels, exact matches),
+  `priority` (`null` means unset), `enabled`, or `dependsOnTaskId` (direct prerequisite).
+  Repository selectors accept an absolute checkout path or unique directory name; worktrees
+  resolve to their owning repository. Omitted filters read all tasks. Returns `{tasks, nextCursor}`
+  in descending creation-time order with descending task ID breaking ties. `limit` defaults to
+  50, with a maximum of 100. Pass `nextCursor` as `cursor` with unchanged filters to continue.
+  Pages are live rather than a frozen snapshot; newly inserted tasks before the cursor appear
+  on a fresh listing. Intent is omitted unless `includeIntent: true` is supplied.
+- `get_task(taskId)` - **read-only** access to full saved configuration, including intent and
+  plan inputs, regardless of status or whether the task remains on the live board. Both read
+  tools return saved dependencies, linked `sessionId`, `prUrl`, per-repository
+  `repoPrs`, saved `outcomeUrl`, outcome/error and timestamps. Pull request references come from
+  durable work-episode bindings, so running work can report a PR before completion. See
+  [MCP task-read access](security.md#mcp-task-reads) for the security contract.
+  Neither tool launches, modifies, or reorders work.
 - `update_task(taskId, ...)` - edit a task still in the backlog, using the same configuration
   fields and repository selectors as creation, plus `title` and `intent`. Only supplied fields
   change. Null `model` or `effort` restores inheritance; changing `agent` clears either override
@@ -2128,7 +2201,12 @@ The MCP tools are:
 - `request_input(question, options?)` - ask a question and **block** for an answer or dismissal.
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
-  can be dismissed without sending an answer
+  can be dismissed without sending an answer, or [moved to chat](#chat-about-it). An ask its
+  card could not carry is refused
+  before anything is shown: an empty question, an option with an empty label, or two options
+  with the same label (compared ignoring case and surrounding spaces), since the answer
+  comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
+  nothing waits on the human
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
@@ -2258,6 +2336,27 @@ the first is evidence of your intent.
 
 Registering it by hand as above covers sessions **you** start. Sessions the dashboard
 dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+#### Chat about it
+
+Every question with options, on a `request_plan_decisions` card or an option-carrying
+`request_input` card, has a **Chat about it** row below the agent's options. An open-ended
+`request_input`, which has no options, has a **Chat about it** button beside **Send answer**
+instead. Use it when you need more context before choosing. A moved question
+counts as answered, so you can still pick options for the others; Submit then reads
+**Submit & chat (N)**, and a form with several questions also offers **Chat about all**. Picking
+the row clears that question's options, and picking an option takes it back out of chat. A note
+typed beside a moved question, or text already in an open-ended answer box, goes along as what
+is unclear.
+
+Submitting resolves the review as answered, so the agent unblocks with one tool result: the
+real answers, `→ Chat about it` under each moved question, and an instruction not to decide the
+moved questions or ask them again, to act on the other answers only where they stand alone, and
+to explain each moved question in its next message before ending its turn. The dialog closes
+and the cursor lands in the session's message box. The conversation's record of the answer
+marks each moved question **Moved to chat** rather than **No option chosen**. The structured
+answer carries `chat: true` on each moved decision. A product-issue confirmation moved to chat
+publishes nothing and returns `outcome=cancelled reason=chat published=false`.
 
 ### The ask channel
 

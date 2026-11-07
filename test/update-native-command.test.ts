@@ -37,8 +37,12 @@ test("the app menu and tray expose the same native update command seam", () => {
     updaterStart < backgroundReady,
     "native update commands must remain available even when daemon startup fails",
   );
-  assert.match(index, /app\.on\("before-quit", stopShell\)/);
+  // Structural only: the drain's ordering is proven behaviorally in electron-daemon-policy and
+  // quit-drain-electron. What source can say cheaply is that the shipped handler is installed,
+  // that nothing races it, and that shell cleanup never fires an unawaited background stop.
+  assert.match(index, /holdQuitUntilDrained\(app,/);
+  assert.doesNotMatch(index, /app\.on\("before-quit"/, "a second before-quit handler would race the drain");
   const stopShell = index.match(/function stopShell\(\): void \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(stopShell, "ordinary quit and failed migration share shell cleanup");
-  assert.match(stopShell, /backgroundStart\?\.stop\(\)/);
+  assert.doesNotMatch(stopShell, /backgroundStart\?\.stop\(\)/);
 });

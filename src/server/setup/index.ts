@@ -1,3 +1,4 @@
+import { mcpTrustStatus } from "./mcp-trust.ts";
 import { codeRabbitReadiness, CODERABBIT_MANAGED_ENV } from "../workflows/coderabbit.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
 import { readToken } from "../../shared/harness-runtime.mjs";
@@ -25,7 +26,11 @@ import {
 } from "@shared/setup-catalog.ts";
 import type { TerminalBackendId } from "@shared/terminal.ts";
 
-import { ghBin } from "../config.ts";
+import { acliBin, ghBin } from "../config.ts";
+import { JiraConfigSchema } from "@shared/task-source.ts";
+import { getTaskSourcesConfig } from "../task-sources/config.ts";
+import { firstLine, siteHost } from "../task-sources/jira.ts";
+import { ACLI_TIMEOUT_MS, acliActiveSite, acliFault, writeDiagnostic } from "../task-sources/jira-acli.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
 import { resolveAgentBin } from "../harness/index.ts";
 import { installedPluginsRead, claudePluginsDir } from "../plugins/installed-plugins.ts";
@@ -304,6 +309,66 @@ async function cmuxStatus(deps: SetupDeps): Promise<SetupProbeResult> {
   return { status: { state: "needs-setup", why: control.error, evidence: installed.evidence } };
 }
 
+/**
+ * Signed in, and to the site the configured sources read.
+ *
+ * The same `acli jira auth status` reading the sweep's site gate makes, through the same
+ * parser, so this row cannot call a machine ready that every sweep then refuses. The site is
+ * the evidence and the email never is: acli prints the account address beside it.
+ */
+async function acliAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const installed = await present(acliBin(), deps, "acli");
+  if (installed.state !== "satisfied") {
+    return { state: "needs-setup", why: "Install the Atlassian CLI first, press Re-check, then sign in.", evidence: null };
+  }
+  // The sweep's own budget for this command. A shorter one would report "did not answer" on
+  // a busy machine where every sweep's site gate still succeeds.
+  const result = await deps.runCommand(installed.evidence, ["jira", "auth", "status"], undefined, ACLI_TIMEOUT_MS);
+  if (result.outcomeUnknown) {
+    return { state: "unknown", why: "acli did not answer `acli jira auth status` in time.", evidence: null };
+  }
+  if (result.code !== 0) {
+    const said = writeDiagnostic(firstLine(result.stderr || result.stdout)) || null;
+    return {
+      state: "needs-setup",
+      why: acliFault(result) === "unauthenticated"
+        ? "The Atlassian CLI is installed but not signed in to Jira."
+        : "The Atlassian CLI could not report a Jira sign-in. Sign in again to repair it.",
+      evidence: said,
+    };
+  }
+  const active = acliActiveSite(result);
+  if (!active) {
+    return {
+      state: "unknown",
+      why: "acli answered, but Mission Control could not tell which Jira site it is signed in to. Run `acli jira auth status` to check.",
+      evidence: null,
+    };
+  }
+  const elsewhere = (deps.acliSourceSites?.() ?? []).filter((site) => site !== active);
+  if (elsewhere.length > 0) {
+    return {
+      state: "needs-setup",
+      why: `acli is signed in to ${active}, but ${elsewhere.length === 1 ? "a Jira source reads" : "Jira sources read"} ${elsewhere.join(", ")}. Run \`acli jira auth switch --site ${elsewhere[0]}\`, or sign in to that site.`,
+      evidence: `Signed in to ${active}`,
+    };
+  }
+  return { state: "satisfied", evidence: `Signed in to ${active}` };
+}
+
+/** Every Jira site an acli source reads, whether or not that source is paused right now. */
+function configuredAcliSites(): string[] {
+  const sites = new Set<string>();
+  for (const source of getTaskSourcesConfig().sources) {
+    if (source.kind !== "jira") continue;
+    const parsed = JiraConfigSchema.safeParse(source.config ?? {});
+    if (!parsed.success || parsed.data.queryVia !== "acli") continue;
+    const host = siteHost(parsed.data.site);
+    if (host) sites.add(host);
+  }
+  return [...sites].sort();
+}
+
 async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
   const status = await present("coderabbit", deps, "coderabbit");
   if (status.state !== "satisfied") return status;
@@ -314,6 +379,8 @@ async function codeRabbitStatus(deps: SetupDeps): Promise<SetupStatus> {
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
+  "claude-mcp-trust": async (deps) => deps.mcpTrust?.("claude") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
+  "codex-mcp-trust": async (deps) => deps.mcpTrust?.("codex") ?? { state: "unknown", why: "MCP trust check unavailable.", evidence: null },
   "coderabbit-cli": codeRabbitStatus,
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
@@ -330,6 +397,11 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
   "node-runtime": nodeRuntimeStatus,
+  // Installed, answered from the filesystem alone. No `--version` run: every acli subprocess
+  // is one an operator's audit of "what did it ask Jira" has to account for, and the sign-in
+  // row already runs the one command whose answer matters.
+  "acli-cli": (deps) => present(acliBin(), deps, "acli"),
+  "acli-auth": acliAuthStatus,
 };
 
 function reasonOf(error: unknown): string {
@@ -370,6 +442,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    mcpTrust: mcpTrustStatus,
     runtime: servingRuntime,
     canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
@@ -388,9 +461,10 @@ export function defaultSetupDeps(): SetupDeps {
     herdrServer: () => herdrServerProbe(),
     cmuxControl: () => cmuxControlProbe(),
     ghBin,
+    acliSourceSites: configuredAcliSites,
     resolveBinPath,
-    runCommand: async (bin, argv, managedEnv) => {
-      if (!managedEnv) return run(bin, argv, { timeoutMs: 5000 });
+    runCommand: async (bin, argv, managedEnv, timeoutMs) => {
+      if (!managedEnv) return run(bin, argv, { timeoutMs: timeoutMs ?? 5000 });
       const env = { ...scrubCheckEnv(process.env, readToken()), ...managedEnv };
       try { return await run(bin, argv, { env, timeoutMs: 7000, maxBuffer: 64 * 1024 }); }
       finally { cleanupAgentSubprocessEnv(env); }

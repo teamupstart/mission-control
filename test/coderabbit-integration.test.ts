@@ -12,7 +12,8 @@ import { withProcessEnv } from "./helpers/process-env.ts";
 const home=mkdtempSync(join(tmpdir(),"mc-cr-integration-"));process.env.MISSION_HOME=home;
 after(()=>rmSync(home,{recursive:true,force:true}));
 const { runCheck }=await import("../src/server/workflows/checks.ts");
-const { codeRabbitReadiness, resolveCodeRabbitComparison }=await import("../src/server/workflows/coderabbit.ts");
+const { codeRabbitReadiness, resolveCodeRabbitComparison, codeRabbitChangedPaths }=await import("../src/server/workflows/coderabbit.ts");
+const { CODERABBIT_OPERATOR_ACTION }=await import("../src/server/workflows/coderabbit-result.ts");
 const { parseCodeRabbitConfig }=await import("../src/server/workflows/coderabbit-config.ts");
 const { WorkflowCommandArtifactService }=await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowCommandManager }=await import("../src/server/workflows/commands.ts");
@@ -78,7 +79,7 @@ test("eight long finding titles still produce a schema-valid outcome for Persona
 test("skipped and blocked review summaries without a Command view use shared CodeRabbit defaults", async () => {
  for (const state of ["skipped", "blocked"] as const) {
   const i = input(); i.command = null;
-  if (state === "skipped") i.coderabbit!.yaml = parseCodeRabbitConfig(Buffer.from(""));
+  if (state === "skipped") i.coderabbit!.yaml = parseCodeRabbitConfig(Buffer.from("reviews: {auto_review: {enabled: false}}"));
   else i.policy.checksEnabled = false;
   const r = await runCheck(i, { codeRabbitProbe: async () => { throw new Error("must not probe"); },
    execute: async () => { throw new Error("must not execute"); } });
@@ -94,8 +95,8 @@ test("skipped and blocked review summaries without a Command view use shared Cod
   }
  }
 });
-test("missing/false/invalid YAML skip with warning before trust/budget/probe/execute; invalid exposes error",async()=>{
- for(const source of ["","reviews: {auto_review: {enabled: false}}","reviews: ["]) {
+test("opt-out/invalid YAML skip with warning before trust/budget/probe/execute; invalid exposes error",async()=>{
+ for(const source of ["reviews: {auto_review: {enabled: false}}","reviews: ["]) {
   const i=input();i.coderabbit!.yaml=parseCodeRabbitConfig(Buffer.from(source));i.policy.checksEnabled=false;i.reserveRun=()=>{throw new Error("must not reserve");};
   const r=await runCheck(i,{codeRabbitProbe:async()=>{throw new Error("must not probe");},execute:async()=>{throw new Error("must not execute");}});
   assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"skipped");assert.ok(r.outcome.warning);if(source.endsWith("["))assert.ok(r.outcome.diagnosticError);}
@@ -108,14 +109,28 @@ test("exhausted allowance skips before missing runtime/trust/tool, regardless of
 for(const [name,change] of [
  ["missing tool",(i:RunCheckInput,d:CheckRunDeps)=>{d.codeRabbitProbe=async()=>({error:"CLI absent"});}],
  ["trust denied",(i:RunCheckInput)=>{i.policy.checksEnabled=false;}],
- ["dirty content",(i:RunCheckInput)=>{i.coderabbit!.dirty=true;}],
- ["uncommitted YAML",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};}],
  ["ambiguous base",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>({...comparison,error:"ambiguous base"});}],
  ["corrupt frozen comparison",(i:RunCheckInput)=>{i.coderabbit!.comparison=async()=>{throw new Error("corrupt comparison metadata");};}],
- ["incomplete review",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"exited",exitCode:1,output:"",truncatedBytes:0,review:{...summary,status:"incomplete"}});}],
+ ["vendor action required",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"exited",exitCode:1,output:"",truncatedBytes:0,review:{...summary,status:"incomplete",diagnostic:CODERABBIT_OPERATOR_ACTION}});}],
  ["timeout or cancellation",(_i:RunCheckInput,d:CheckRunDeps)=>{d.execute=async()=>({kind:"infrastructure",reason:"timeout"});}],
 ] as const) test(`${name} blocks with visible error/Setup action, never a repair verdict`,async()=>{
  const i=input(),d=deps();change(i,d);const r=await runCheck(i,d);assert.equal(r.kind,"action_required");if(r.kind==="action_required"){assert.equal(r.setup,true);assert.match(r.reason,/Error:.*Settings > Setup/);}
+});
+for(const [name,change,remedy] of [
+ ["dirty content without a review snapshot",(i:RunCheckInput)=>{i.coderabbit!.dirty=true;},/without a review snapshot\. Submit again so Mission Control captures one\.$/],
+ ["config.ts absent from the reviewed commit",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,source:".coderabbit.config.ts",committed:false};},/The captured \.coderabbit\.config\.ts is not the one in the reviewed commit\. Make sure \.coderabbit\.config\.ts is not ignored, then submit again\.$/],
+ ["YAML absent from the reviewed commit",(i:RunCheckInput)=>{i.coderabbit!.yaml={...enabled,committed:false};},/not the one in the reviewed commit\. Make sure \.coderabbit\.yaml is not ignored, then submit again\.$/],
+] as const) test(`${name} blocks before any probe with its own remedy, never Setup`,async()=>{
+ const i=input(),d=deps();change(i);d.codeRabbitProbe=async()=>{throw new Error("must not probe");};d.execute=async()=>{throw new Error("must not execute");};
+ const r=await runCheck(i,d);assert.equal(r.kind,"action_required");
+ if(r.kind==="action_required"){assert.equal(r.setup,undefined);assert.doesNotMatch(r.reason,/Settings > Setup/);assert.match(r.reason,remedy);}
+});
+test("a review that ran but returned an unusable result points at its output, not Setup",async()=>{
+ for(const review of [{...summary,status:"incomplete" as const,diagnostic:"Invalid CodeRabbit completion/gate"},{...summary,status:"incomplete" as const,diagnostic:"CodeRabbit review coverage disagrees with the pinned comparison"}]){
+  const d=deps();d.execute=async()=>({kind:"exited",exitCode:0,output:"",truncatedBytes:0,review});
+  const r=await runCheck(input(),d);assert.equal(r.kind,"action_required");
+  if(r.kind==="action_required"){assert.equal(r.setup,undefined);assert.doesNotMatch(r.reason,/Settings > Setup/);assert.match(r.reason,/^Error: .*Inspect this attempt's retained CodeRabbit output\.$/);}
+ }
 });
 test("prelaunch failures release allowance, completed findings fail and keep all artifacts",async()=>{
  const i=input();let releases=0;i.reserveRun=()=>({granted:true,spent:9,release:()=>{releases++;}});
@@ -143,6 +158,20 @@ test("observed default base and full head resolve in correct repo; retries freez
   f.git("update-ref","refs/remotes/origin/main",c.head!);assert.equal(c.baseTip,f.base);
   const refreshed=await resolveCodeRabbitComparison({repoRoot:f.root,headSha:c.head,yaml:enabled,command});assert.equal(refreshed.empty,true);
  }
+});
+test("changed paths come from git: renames and deletions are allowed, only head paths are required",async()=>{
+ const f=repo("changed-paths");
+ // `file` is modified by the fixture. Add, rename and delete beyond it, with names git would quote.
+ writeFileSync(join(f.root,"keep me.txt"),"kept\n");writeFileSync(join(f.root,"to-delete"),"gone soon\n");writeFileSync(join(f.root,"old-name.ts"),"export const renamed = 1;\n");
+ f.git("add",".");f.git("commit","-qm","more base");const mergeBase=f.git("rev-parse","HEAD");
+ f.git("mv","old-name.ts","new-name.ts");f.git("rm","-q","to-delete");writeFileSync(join(f.root,"caf\u00e9\nline.md"),"unicode and newline\n");writeFileSync(join(f.root,"keep me.txt"),"edited\n");
+ f.git("add",".");f.git("commit","-qm","rename delete add");const head=f.git("rev-parse","HEAD");
+ const paths=await codeRabbitChangedPaths(f.root,mergeBase,head);
+ assert.deepEqual([...paths.required].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts"]);
+ assert.deepEqual([...paths.allowed].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts","old-name.ts","to-delete"]);
+ assert.deepEqual(await codeRabbitChangedPaths(f.root,head,head),{required:[],allowed:[]});
+ await assert.rejects(codeRabbitChangedPaths(f.root,"main",head),/not pinned to full commits/);
+ await assert.rejects(codeRabbitChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
 });
 test("missing origin/HEAD requires explicit base tuning and resolves its tip and merge-base",async()=>{
  const f=repo("explicit-base"),head=f.git("rev-parse","HEAD");

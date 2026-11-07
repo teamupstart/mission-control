@@ -128,6 +128,7 @@ const harnessesFields = {
   sessionRuntime: "setting",
   terminalBackend: "setting",
   kindDefaults: "setting",
+  advisor: "setting",
 } satisfies Record<keyof HarnessesConfig, AppConfigValueClass>;
 
 const terminalsFields = {
@@ -239,6 +240,8 @@ const shippingFields = {
   method: "setting",
   repoAllowlist: "setting",
   closeSessionAfterMerge: "setting",
+  stacking: "setting",
+  maxStackDepth: "setting",
 } satisfies Record<keyof ShippingConfig, AppConfigValueClass>;
 
 const pipelinesFields = {
@@ -252,6 +255,7 @@ const uiFields = {
   layout: "setting",
   conversationView: "setting",
   lineDensity: "setting",
+  skin: "setting",
   taskKindHeader: "setting",
   taskKindCard: "setting",
   keybindings: "setting",
@@ -266,6 +270,7 @@ const uiFields = {
   hiddenDisplayItemsSeed: "setting",
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
+  boardSidebarAllSessions: "setting",
   collapsedBoardColumns: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",

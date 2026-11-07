@@ -93,6 +93,11 @@ Tours start at their first stop and do not save progress or resume. See the
 
 ## The board
 
+With Board selected, **Settings > Display > Layout > Board view settings** offers
+**Show all sessions in sidebar**. Enable it to switch between sessions grouped by state
+without returning to the board. Backlog tasks remain on the overview; the default sidebar
+continues to show only the selected session's state group.
+
 The board turns a directory full of agent sessions into an operational view. One column per state
 answers what is working, what is idle, and what needs a decision. Cards group by repository and can
 show the agent's goal, current activity, workflow progress, branch, model, cost, and remaining
@@ -103,6 +108,8 @@ large Codex logs do not substitute an older model from the start of the conversa
 
 Keyboard navigation, fleet search, one-key Sitrep, desktop alerts, Away mode, and macOS keep-awake
 support make the board useful whether you are watching closely or returning after hours away.
+**Settings > Display > Appearance** repaints the whole dashboard in another
+[skin](docs/ui.md#skins) - Daylight, Paper, Blueprint or Neon Dusk - the moment you pick it.
 
 Read more in [The Line and fleet UI](docs/ui.md) and
 [Attention, alerts, and Away mode](docs/attention-and-alerts.md).
@@ -155,6 +162,16 @@ Terminal-backed harnesses can stay on Automatic selection or pin dispatches to t
 WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
 Ghostty dispatches retain their verified pane UUID across daemon restarts and inventory failures.
 External Ghostty sessions without a proven pane association remain visible with input disabled.
+
+A dispatch that fails before its session starts stays where it was dispatched, as a **Did not
+start** tile with the full reason, or as a note on its Backlog card when it went back there. The
+top bar counts open failures. Every failure offers **Dismiss**, and every failure except a
+report session's own offers **Report bug**, which starts a session that catalogs the failure and
+drafts a public bug report for you to review and submit.
+The way back in depends on the failure: a dispatch that kept nothing offers **Retry**, a resident
+offers **Launch again**, a task back in the Backlog is dispatched from there, and a failure that
+kept its session offers **Open** when the task is bound to that session. See
+[when a dispatch does not start](docs/dispatch-and-backlog.md#when-a-dispatch-does-not-start).
 
 Mission Control supports five kinds of work:
 
@@ -242,7 +259,8 @@ hold individual items, express dependencies, or let backlog autopilot schedule e
 the concurrency you allow.
 
 Task sources pull from GitHub issues and Jira without starting agents behind your back. Imported
-work arrives parked by default for triage. Enable **Keep imported backlog tasks updated** on a source
+work arrives parked by default for triage. Jira sources can select **Atlassian CLI (acli)** to
+read through acli's own OAuth login, without Jira environment variables. Enable **Keep imported backlog tasks updated** on a source
 to refresh unstarted tasks on each sweep, preserving local edits and showing conflicts for review.
 Recurring missions and agent-created follow-up tasks feed
 the same queue, so planned work, discovered work, and scheduled work share one lifecycle.
@@ -423,7 +441,8 @@ repository:
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
-  You can still check for updates manually at any time.
+  You can still check for updates manually at any time. Updating drains owned background
+  work; interrupted workflow checks retain a shutdown reason, and the app reopens automatically.
   Fresh installs use `~/Applications`. Eligible legacy system installations move there when
   accepting an update from an enabled build; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
@@ -442,6 +461,9 @@ repository:
 
 Either way, **Settings → Setup** is where Mission Control reports what this machine can already do
 and what is still missing. The [setup guide](docs/setup-guide.html) reads that panel row by row.
+Under **Agent extensions**, the Claude Code and Codex Mission Control MCP trust rows allow
+Mission Control tools by default in each agent, including auto mode. See the
+[MCP trust settings](docs/configuration.md#mission-control-mcp-trust).
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:

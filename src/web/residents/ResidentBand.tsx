@@ -3,7 +3,7 @@ import type { Session } from "@shared/types.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
-import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentMarkTitle, type ResidentReplacement, type ResidentSessionMark } from "./marker.ts";
 
 /**
  * The Console header's resident band: which resident this session is, which Persona it plays,
@@ -48,7 +48,7 @@ export function ResidentBand({
           </span>
         </Tooltip>
       )}
-      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} />}
+      {mark.loop && <ResidentLoopStatusLine loop={mark.loop} session={session} />}
       <span className="resident-band-spacer" />
       <ResidentLoopControls mark={mark} />
       {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
@@ -58,6 +58,77 @@ export function ResidentBand({
         <Tooltip label={`Open ${mark.name} on the Residents page`}>
           <button type="button" className="btn btn-ghost resident-band-action" onClick={() => onOpenProfile(mark.profileId)}>
             Profile
+          </button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
+/** What a replaced session's band says, for each place its replacement can be. */
+export function residentReplacementSentence(replacement: ResidentReplacement): string {
+  const revision = replacement.revision === null ? "a new profile revision" : `revision ${replacement.revision}`;
+  const after = "This session no longer wakes.";
+  switch (replacement.state) {
+    case "live":
+      return `Restarted on ${revision} in a new session. ${after}`;
+    case "starting":
+      return `Restarting on ${revision} in a new session. ${after}`;
+    case "stopped":
+      return `Restarted on ${revision}, but that session is no longer running. ${after}`;
+    case "not-started":
+      return `Restart ended this run, but the new session did not start. ${after}`;
+  }
+}
+
+/**
+ * The band a replaced resident session wears after Restart on new profile. Its run has ended, so
+ * it no longer wakes, but Restart deliberately leaves its task open: the operator may still want
+ * to read or finish this conversation, and is offered Complete here rather than having it closed
+ * for them - until the task is done, even if the replacement has since ended or never started.
+ * Open new session waits, disabled, while the replacement is starting, and stands down once there
+ * is no replacement left to open.
+ */
+export function ResidentReplacedBand({
+  replacement,
+  onOpenSession,
+  onComplete,
+}: {
+  replacement: ResidentReplacement;
+  onOpenSession: (sessionId: string) => void;
+  /** Absent when the session can no longer be completed from here. */
+  onComplete?: () => void;
+}): React.JSX.Element {
+  const replacementId = replacement.sessionId;
+  return (
+    <div
+      className="resident-band resident-band-replaced"
+      style={replacement.colorId ? residentAccentStyle(replacement.colorId) : undefined}
+      role="group"
+      aria-label={`Replaced resident ${replacement.name}`}
+    >
+      <span className="resident-band-word">Resident</span>
+      <span className="resident-band-name">{replacement.name}</span>
+      <span className="resident-band-replaced-note" role="status">
+        {residentReplacementSentence(replacement)}
+      </span>
+      <span className="resident-band-spacer" />
+      {(replacement.state === "live" || replacement.state === "starting") && (
+        <Tooltip label={replacementId ? `Open the session now running revision ${replacement.revision}` : "The new session is still starting"}>
+          <button
+            type="button"
+            className="btn btn-ghost resident-band-action"
+            disabled={!replacementId}
+            onClick={() => replacementId && onOpenSession(replacementId)}
+          >
+            Open new session
+          </button>
+        </Tooltip>
+      )}
+      {onComplete && (
+        <Tooltip label="Record an outcome for this replaced session's task and close it">
+          <button type="button" className="btn btn-primary resident-band-action" onClick={onComplete}>
+            Complete & close
           </button>
         </Tooltip>
       )}

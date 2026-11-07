@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +14,8 @@ import {
   turnInput,
   userInputQuestions,
 } from "../src/server/harness/codex/sdk.ts";
-import { readFrames, spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
+import { defaultCodexSdkDeps, readFrames, spawnAppServer } from "../src/server/harness/codex/sdk-deps.ts";
+import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { SdkEvent, SdkSessionHandle } from "../src/server/harness/types.ts";
@@ -1736,6 +1739,61 @@ test("the MCP descriptor becomes launch-scoped config, all three keys or none", 
   await handle.stop();
 });
 
+test("an SDK launch passes no otel config, so a managed Codex policy keeps routing telemetry", async () => {
+  for (const mcp of [null, { serverName: "mission-control", command: "/usr/bin/node", args: ["/d/mcp.mjs"], env: {} }]) {
+    const server = new FakeServer(defaultReplies());
+    let args: readonly string[] = [];
+    const spec = codexSdkSpec({
+      connect: async (a) => {
+        args = a;
+        return server;
+      },
+    });
+    const handle = await spec.launch({
+      cwd: "/work/repo",
+      stateHome: "/tmp/mission-sdk-state",
+      prompt: "",
+      model: null,
+      effort: null,
+      permissionMode: null,
+      mcp,
+      extraDirs: ["/work/other"],
+      standingInstructions: "",
+      standingInstructionsPrompt: "",
+      resume: null,
+    });
+    // Config overrides beat managed config.toml regardless of the option spelling.
+    const overrides = args.flatMap((arg, i) => {
+      if (arg === "-c" || arg === "--config") return [args[i + 1] ?? ""];
+      if (arg.startsWith("--config=")) return [arg.slice("--config=".length)];
+      if (arg.startsWith("-c")) return [arg.slice(2)];
+      return [];
+    });
+    assert.deepEqual(overrides.filter((value) => /^\s*otel\b/.test(value)), []);
+    await handle.stop();
+  }
+});
+
+test("the shipped app-server wrapper adds no config after the launch argument check", async (t) => {
+  t.mock.method(executableLocator, "resolve", async () => ({
+    id: "codex" as const, path: "/fake/bin/codex", source: "inherited-path" as const,
+    sourceDetail: "test fixture", generation: 1, refreshedAt: new Date(0).toISOString(), env: {},
+  }));
+  const stopped = new Error("stop at spawn, without executing an agent");
+  let argv: readonly string[] | undefined;
+  const spawn = t.mock.method(childProcess, "spawn", (_executable: string, args: readonly string[]) => {
+    argv = args;
+    throw stopped;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawn.mock.restore(); syncBuiltinESMExports(); });
+
+  const args = ["-c", 'mcp_servers.mission-control.command="/usr/bin/node"'];
+  await assert.rejects(() => defaultCodexSdkDeps.connect(args, "/work/repo", "/tmp/mission-sdk-state"),
+    (error) => error === stopped);
+  assert.deepEqual(argv, ["app-server", ...args]);
+});
+
 // ---- the pure projections, on their own ------------------------------------------------
 
 test("an approval prompt leads with the reason and shows what is being run", () => {
@@ -1919,4 +1977,92 @@ test("an image rides as a local path, and the text follows it", () => {
     { type: "localImage", path: "/state/up/1.png" },
     { type: "text", text: "what is wrong here?", text_elements: [] },
   ]);
+});
+
+test("a turn Codex failed at capacity reports the failure on turn_done; other endings do not", async () => {
+  const server = new FakeServer(defaultReplies());
+  const { handle, events, drained } = await launch(server);
+  await settle();
+  const capacity = "Selected model is at capacity. Please try a different model.";
+
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-1" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-1", status: "failed", error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // A failure Codex will retry itself, then an interrupted turn: neither owes a retry here.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-2" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-2",
+    willRetry: true,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-2", status: "interrupted", error: null } });
+  // The backstop path: the `error` frame alone carries the failure when the turn closes idle.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-3" } });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "active", activeFlags: [] } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-3",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("thread/status/changed", { threadId: THREAD.id, status: { type: "idle" } });
+  // A turn that failed for another reason owes no retry: only capacity is retried.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-4" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-4", status: "failed", error: { message: "Your access token could not be refreshed.", codexErrorInfo: "unauthorized", additionalDetails: null } },
+  });
+  // An earlier capacity notice does not outlive a final error that says something else...
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-5" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-5",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-5", status: "failed", error: { message: "Bad request.", codexErrorInfo: "badRequest", additionalDetails: null } },
+  });
+  // A failure with no message is not capacity unless Codex's own code says so.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-7" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-7", status: "failed", error: { message: "", codexErrorInfo: "internalServerError", additionalDetails: null } },
+  });
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-8" } });
+  server.notify("turn/completed", {
+    threadId: THREAD.id,
+    turn: { id: "turn-8", status: "failed", error: { message: "", codexErrorInfo: "serverOverloaded", additionalDetails: null } },
+  });
+  // ...but fills in for a failed turn that completed without a final error.
+  server.notify("turn/started", { threadId: THREAD.id, turn: { id: "turn-6" } });
+  server.notify("error", {
+    threadId: THREAD.id,
+    turnId: "turn-6",
+    willRetry: false,
+    error: { message: capacity, codexErrorInfo: "serverOverloaded", additionalDetails: null },
+  });
+  server.notify("turn/completed", { threadId: THREAD.id, turn: { id: "turn-6", status: "failed", error: null } });
+  await settle();
+
+  const done = events.filter((e) => e.kind === "turn_done");
+  assert.deepEqual(
+    done.map((e) => e.kind === "turn_done" ? e.failure ?? null : null),
+    [
+      { kind: "capacity", message: capacity },
+      null,
+      { kind: "capacity", message: capacity },
+      null,
+      null,
+      null,
+      { kind: "capacity", message: "Selected model is at capacity." },
+      { kind: "capacity", message: capacity },
+    ],
+  );
+  await handle.stop();
+  await drained;
 });

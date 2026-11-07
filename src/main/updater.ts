@@ -99,6 +99,8 @@ export interface InstallSnapshot {
 }
 
 export interface HelperHandoff {
+  processNames?: Record<number, string>;
+  userDataDirectory?: string;
   node?: string;
   descriptor?: StagedInstallDescriptor;
   receipt?: InstallReceipt;
@@ -170,7 +172,7 @@ export interface UpdaterPort {
   repairMigration?(confirmLogin?: boolean): Promise<void>;
   requestQuit(): void;
   readOutcome(): UpdateApplyOutcome | null | Promise<UpdateApplyOutcome | null>;
-  clearOutcome(expected: UpdateApplyOutcome): void;
+  clearOutcome(expected: UpdateApplyOutcome): boolean;
   now(): number;
   random(): number;
   log(line: string): void;
@@ -418,7 +420,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
   const plan = args.migration ?? (supportsTransaction ? prepareInPlaceInstall({descriptor, stateDirectory: args.stateDirectory}) : null);
   if (plan) retainBinaryHandoff(descriptor, args.stateDirectory, plan.nonce);
   await spawnBundledUpdateHelper({runtimeBundle: args.appPath, candidateBundle: args.stagedBundle, helperSource: args.helperSource, stateDirectory: args.stateDirectory,
-    parentPid: args.parentPid, logPath: args.logPath, env: args.env,
+    parentPid: args.parentPid, logPath: args.logPath, env: args.env, processNames: args.processNames, userDataDirectory: args.userDataDirectory,
     handoff: plan ? {plan, port: PORT, inventory: args.migrationInventory} : undefined, argv: [
       ...(receipt.sourceClone ? ["--source-clone", receipt.sourceClone] : []),
       "--target-tag", args.targetTag, "--app-path", args.appPath,
@@ -481,6 +483,9 @@ export class UpdateController {
   private alpha: boolean;
   private snoozedUntil: UpdatePreferences["snoozedUntil"];
   private snapshot: UpdateSnapshot;
+  // Keep the original marker for compare-and-clear, including an interrupted attempt
+  // projected to a failure notice. This owns the result across asynchronous checks.
+  private pendingOutcome: { stored: UpdateApplyOutcome; notice: UpdateApplyOutcome } | null = null;
   private receipt: InstallReceipt | null = null;
   private checkPromise: Promise<UpdateSnapshot> | null = null;
   private applyPromise: Promise<boolean> | null = null;
@@ -530,9 +535,27 @@ export class UpdateController {
     const status = this.port.migrationStatus?.();
     const migration = status?.status === "repair-required" || (status?.status === "complete" && ["idle", "disabled"].includes(snapshot.phase))
       ? status : snapshot.migration?.status === "offered" ? snapshot.migration : undefined;
-    this.snapshot = { ...snapshot, migration, alpha: this.alpha };
+    this.snapshot = { ...snapshot, lastOutcome: this.pendingOutcome?.notice ?? null, migration, alpha: this.alpha };
     for (const listener of this.listeners) listener(this.snapshot);
     return this.snapshot;
+  }
+
+  /** Both the dialog and banner acknowledge only the result the operator saw. */
+  dismissOutcome(expected: UpdateApplyOutcome): boolean {
+    const pending = this.pendingOutcome;
+    if (!pending || !expected || typeof expected !== "object") return false;
+    const notice = pending.notice;
+    if (notice.result !== expected.result || notice.targetVersion !== expected.targetVersion ||
+      notice.recordedAt !== expected.recordedAt ||
+      (notice.result === "failure" && expected.result === "failure" && notice.message !== expected.message)) return false;
+    try { if (!this.port.clearOutcome(pending.stored)) return false; }
+    catch (error) {
+      this.port.log(`could not retire update outcome: ${String(error)}`);
+      return false;
+    }
+    this.pendingOutcome = null;
+    this.publish(this.snapshot);
+    return true;
   }
 
   /** A channel change cannot retarget a check, consent dialog, or preparation already in flight. */
@@ -581,6 +604,7 @@ export class UpdateController {
         message: "The previous update did not finish. Check the update log before retrying.",
       };
     }
+    this.pendingOutcome = storedOutcome && lastOutcome ? { stored: storedOutcome, notice: lastOutcome } : null;
     const disable = (reason: string) => this.publish({ phase: "disabled", reason, lastOutcome });
     if (this.port.arch !== "arm64") disable("Updates require an Apple silicon Mac.");
     else {
@@ -597,17 +621,13 @@ export class UpdateController {
     if (lastOutcome) {
       try {
         const notice = lastOutcome;
-        const clear = () => {
-          try { this.port.clearOutcome(storedOutcome!); }
-          catch (error) { this.port.log(`could not retire update outcome: ${String(error)}`); }
-        };
         await this.port.dialogs.outcome(notice, {
           delivered: () => {
             // Delivery proves only that the renderer ran once. It may hang before
             // an answer, so preserve the notice across relaunch until acknowledged.
             this.port.log("update outcome delivered; awaiting operator acknowledgment");
           },
-          acknowledged: clear,
+          acknowledged: () => { this.dismissOutcome(notice); },
         });
       } catch (error) {
         this.port.log(`could not show the previous update outcome: ${String(error)}`);
@@ -1261,6 +1281,8 @@ export class UpdateController {
 }
 
 export function createDefaultUpdaterPort(options: {
+  processNames?: () => Record<number, string>;
+  userDataDirectory?: string;
   packaged: boolean;
   currentVersion: () => string;
   currentCommit: () => string | null;
@@ -1306,7 +1328,7 @@ export function createDefaultUpdaterPort(options: {
     stateDirectory: () => options.stateDirectory,
     launchPreflight: (bundle) => assertSafeAppLaunch(bundle),
     handoff: (args) =>
-      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
+      spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath, processNames: options.processNames?.(), userDataDirectory: options.userDataDirectory }),
     stage: async (request) => {
       const gh = await locateExecutable("gh");
       if (!gh) throw new UpdateError("GitHub CLI (gh) is not installed. Install gh, then check again.", true, "gh-missing");

@@ -308,6 +308,78 @@ cancelled. Check for such a job after any later environment change.
 then started without approval and published `alpha-5d9ede07d199fc47949c2b9659dd03d502181890`,
 retiring the three older alphas. Later `main` commits have signed and published on their own.
 
+## Tag CI cancelled by a retired runner (2026-11-06 UTC)
+
+No stable release has had assets. On 2026-11-06, `gh api repos/teamupstart/mission-control/releases`
+listed zero assets on every stable release from v1.14.0 to v2.0.1, so `scripts/install.sh`
+printed "No stable release has a ready binary yet" and installed an alpha instead.
+
+Tag CI for [v2.0.0](https://github.com/teamupstart/mission-control/actions/runs/42117770598) and
+[v2.0.1](https://github.com/teamupstart/mission-control/actions/runs/42155236071) passed 87 jobs
+and cancelled one. `ci.yml`'s `package (macOS arm64)` ran only on tag pushes and dispatches,
+pinned to `macos-14`. GitHub retired that image on 2026-11-02, so the job was cancelled about a
+second after it was queued: "The configuration 'macos-14-arm64-us-default' is not supported". One
+cancelled job makes the whole run conclude `cancelled`. `distribution.yml`'s `input` job requires a
+`success` conclusion, and `scripts/distribution-input.mjs` also requires a successful push run on
+the exact tag ref, so neither release was signed. `main` CI never ran the job, which is why alphas
+kept publishing.
+
+The `package` job now runs only on `workflow_dispatch`, on `macos-15`, the same image as the
+signing producer. No push run, on a tag or on `main`, contains a macOS job, so a tag run gates
+exactly what a `main` run gates. The tag version check moved to a tag-only step on the Linux
+`gates` job, so a version mismatch still fails tag CI before anything is signed. The CI
+concurrency group now includes the event, so a manual dispatch on a tag cannot cancel that tag's
+push run. `test/distribution-workflow.test.ts` pins all three. A developer dmg built on a tag push
+was redundant once distribution published the signed DMG to the release itself.
+
+The other historical stable failures do not apply to a new tag:
+
+- **Environment rejection (v1.27.0, v1.27.2).** Those runs were waiting for the required reviewer
+  when it was removed on 2026-10-29 (see above), and GitHub failed them. On 2026-11-06
+  `desktop-distribution` has a single protection rule, the branch policy allowing `main` and tag
+  pattern `v*`. A `workflow_run` job deploys with `github.ref` set to the default branch, whatever
+  ref triggered it. All 91 recorded deployments to the environment carry ref `main`, including the
+  v1.27.1 stable run, so a stable deployment satisfies the same rule alpha deployments pass every day.
+- **Empty retention (v1.27.1).** This was not a layout mismatch. The producer failed and exited
+  zero, as recorded under packaging failure diagnostics, and the retention step was the first to
+  notice. Both defects were fixed in #1220. A layout mismatch between `main`'s workflow and a tag's
+  source would need the output directory to move between tagging and distribution. Release Please
+  tags the head of `main`, so the two revisions match in practice. The producer, publisher and
+  retention step now all name `DISTRIBUTION_OUTPUT` from `scripts/distribution-contract.mjs`, and
+  a test keeps the workflow paths on it.
+
+**v2.0.0 and v2.0.1 cannot be backfilled.** Re-running their tag CI runs each tag's own `ci.yml`,
+which still pins `macos-14`, so the run concludes `cancelled` again. A `workflow_dispatch` of
+`distribution.yml` on either tag fails `distribution-input.mjs` for lack of a successful push run
+on that ref. Do not move or re-create a published tag to work around this. The first stable binary
+comes from the next release cut after this fix merges: merge any `fix:` commit and then the
+release pull request Release Please opens for it. Its tag CI then runs only Linux jobs, and
+distribution signs, notarizes and publishes the DMG, ZIP and ready manifest. Confirm the release's
+assets, then confirm `scripts/install.sh` selects the stable release instead of an alpha.
+
+## Choosing the release version
+
+Release Please computes the next version from the Conventional Commit subjects merged since the
+last tag, and keeps one open release pull request (`chore(main): release X.Y.Z`) up to date as
+`main` moves. To release a major version, land a commit on `main` that Release Please reads as
+breaking. The release pull request is then rewritten for the new version; merging it creates the
+tag and GitHub Release.
+
+- **Mark the subject with `!`.** A squash-merged pull request titled
+  `docs(release)!: <description>` is a breaking commit of any type, and bumps the major version.
+  The description appears under "BREAKING CHANGES" in the generated changelog, so write it for
+  readers of the release notes. The `release-compatible title` check accepts the `!`.
+- **A `BREAKING CHANGE:` or `Release-As:` footer is not reliable here.** The repository squashes
+  with the commit message set to blank, so a footer in the pull request body is dropped and the
+  squash commit carries only the title. Do not rely on a footer unless that setting is changed
+  deliberately.
+
+After the breaking commit merges, wait for `release.yml` to finish and check that the release pull
+request title and `package.json` show the intended version before merging it. Never edit
+`CHANGELOG.md` or the manifest by hand. Merging the release pull request tags `vX.Y.Z`, which
+starts CI and then the signed distribution run described below; the installer and updater offer
+the stable release only once that run has published its manifest.
+
 ## Ownership and prerequisites
 
 Release Please still owns stable versions, tags, changelogs and GitHub Releases.
@@ -555,7 +627,8 @@ than putting publishing inside cancellation-enabled CI. It waits for successful 
 push CI and preserves the old developer DMG artifact. The new producer pins the supported
 arm64 `macos-15` image: GitHub is [retiring macOS 14 on 2026-11-02](https://github.com/actions/runner-images/issues/13518).
 Both existing native addons and the Electron payload declare a macOS 12.0 minimum; this
-phase does not change their deployment targets or the older developer CI job.
+phase does not change their deployment targets or the older developer CI job. That job later
+moved to `macos-15` and stopped running on tag pushes; see the 2026-11-06 entry above.
 At the operator's request, alpha retirement keeps only the latest complete build while
 preserving immutable exact-commit identities and explicit expiration of old offers. Stable
 recovery assets remain retained. C1, receipts, install transactions, Setup and updater behavior

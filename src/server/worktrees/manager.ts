@@ -261,6 +261,7 @@ export function worktreeSweepIntervalMs(raw = envVar("WORKTREE_SWEEP_MS")): numb
  * The daemon's single allocator authority for native pooled worktrees. Database state changes
  * are short and synchronous. Pool reservation locks cover only candidate CAS/allocation, while
  * per-slot locks and durable intent states isolate Git/process work to the exact slot.
+ * New Git registrations serialize per repository because their metadata directory is shared.
  */
 export class WorktreeManager {
   readonly store: WorktreeStore;
@@ -679,7 +680,10 @@ export class WorktreeManager {
         }
 
         const mutation = created
-          ? await this.deps.git.add(identity, reservation.path, input.baseSha)
+          // Git can enumerate another add's registration before its commondir is written.
+          // Serialize only creation, separately from the short pool reservation lock.
+          ? await this.withLock(`git-add:${identity.gitCommonDirectory}`, () =>
+              this.deps.git.add(identity, reservation.path, input.baseSha))
           : await this.deps.git.reset(reservation.path, input.baseSha);
         if (!mutation.ok) {
           this.quarantine(

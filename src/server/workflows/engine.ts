@@ -116,7 +116,16 @@ function providerRetryDelayMs(failures: number): number {
  */
 export const CHECK_CLEANUP_UNRESOLVED_PHASE = WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE;
 
+import type { StackDiffBase } from "../stacking/diff-base.ts";
+import type { WorkflowBinding } from "@shared/workflow.ts";
+
 export interface WorkflowEngineOptions {
+  /**
+   * Stacked pull requests: the verified base a stacked task's review compares against, for
+   * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
+   * be refreshed, which the comparison reports as its error rather than using a stale ref.
+   */
+  stackDiffBase?: (binding: WorkflowBinding) => Promise<StackDiffBase | null>;
   /**
    * The daemon's shared review budget. Injected from `src/server/index.ts` so Persona
    * attempts and context compaction cannot each spend a private ceiling of their own.
@@ -253,6 +262,18 @@ function upstreamNodeIds(
     }
   }
   return upstream;
+}
+
+/**
+ * The commit a submission's Commands and CodeRabbit are pinned to: an observed pull-request
+ * head first, then the capture's review snapshot (which carries uncommitted work), then the
+ * captured HEAD for a snapshot written before review snapshots existed.
+ */
+export function reviewedCommit(
+  prHeadSha: string | null,
+  evidence: { headSha: string | null; reviewCommit?: string | null },
+): string | null {
+  return prHeadSha ?? evidence.reviewCommit ?? evidence.headSha;
 }
 
 /** Completed same-submission Check outcomes frozen for one newly-runnable Persona attempt. */
@@ -413,7 +434,9 @@ export class WorkflowEngine {
   private readonly unresolvedCheckLease: NonNullable<WorkflowEngineOptions["unresolvedCheckLease"]>;
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
+  private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
   private stopped = true;
+  private checkShutdown = new AbortController();
   private pumping = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
@@ -440,17 +463,20 @@ export class WorkflowEngine {
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
+    this.stackDiffBase = options.stackDiffBase ?? (async () => null);
   }
 
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.checkShutdown = new AbortController();
     this.recover();
     this.wake();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.checkShutdown.abort();
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.wakeTimer = null;
     // Cancel live check groups BEFORE awaiting the attempts that own them. A check attempt is
@@ -606,7 +632,7 @@ export class WorkflowEngine {
                   target.id,
                   this.store.listAttempts(submission.id),
                   currentReceipts,
-                  submission.prHeadSha ?? captured.data.evidence.headSha,
+                  reviewedCommit(submission.prHeadSha, captured.data.evidence),
                 )
               : [];
             let reviewInput: WorkflowNodeAttempt["reviewInput"];
@@ -1371,13 +1397,14 @@ export class WorkflowEngine {
       nodeId: node.id,
     };
     const baseDeps = this.checkDeps(attemptRef);
-    const deps = !checkLimitHeld && baseDeps.execute
-      ? {
-          ...baseDeps,
-          execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) =>
-            this.checkLimit(() => baseDeps.execute!(request)),
-        }
-      : baseDeps;
+    const signal = this.checkShutdown.signal;
+    const deps = baseDeps.execute ? {
+      ...baseDeps,
+      execute: (request: Parameters<NonNullable<CheckRunDeps["execute"]>>[0]) => {
+        const execute = () => baseDeps.execute!({...request, signal});
+        return checkLimitHeld ? execute() : this.checkLimit(execute);
+      },
+    } : baseDeps;
 
     let result: Awaited<ReturnType<typeof runCheck>>;
     try {
@@ -1385,7 +1412,7 @@ export class WorkflowEngine {
         slot: node.slot,
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
-          dirty: context.data.evidence.workingTreeDirty,
+          dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
           retryAt: this.store.listAttempts(submission.id)
             .map((attempt) => {
               const output = attempt.output;
@@ -1395,8 +1422,9 @@ export class WorkflowEngine {
             }).reduce((a, b) => Math.max(a, b), 0),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({
-              repoRoot: binding.sessionRepoRoot!, headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+              repoRoot: binding.sessionRepoRoot!, headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
               yaml: context.data.evidence.coderabbit!, command: commandView!,
+              stackBase: () => this.stackDiffBase(binding),
             })),
         } : undefined,
         command: commandView,
@@ -1428,7 +1456,7 @@ export class WorkflowEngine {
         },
         cwd: binding.sessionCwd,
         repoRoot: binding.sessionRepoRoot,
-        headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+        headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
         publicationTreeOid: context.data.evidence.publication
           ? workflowPublicationTree(context.data.evidence) : null,
         // Bound to THIS attempt: the execution runtime keys its pooled lease and its
@@ -1491,7 +1519,7 @@ export class WorkflowEngine {
       slot: node.slot,
       status: checkOutcome.status,
       exitCode: checkOutcome.exitCode,
-      headSha: submission.prHeadSha ?? context.data.evidence.headSha,
+      headSha: reviewedCommit(submission.prHeadSha, context.data.evidence),
       outputBytes: Buffer.byteLength(checkOutcome.output),
       omittedBytes: checkOutcome.truncatedBytes,
     }, this.now());

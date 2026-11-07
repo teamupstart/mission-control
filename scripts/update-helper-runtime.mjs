@@ -12,6 +12,7 @@ import { BUNDLE_COPY_ARGUMENTS } from './app-bundle-swap.mjs';
 import { resolveOwnedRuntime } from '../src/shared/owned-runtime.mjs';
 import { stagedBundleRevision } from '../src/shared/staged-bundle.mjs';
 import { boundedMigrationWait } from './migration-runtime.mjs';
+import { captureUpdateProcessOwners } from './update-process-owners.mjs';
 
 export function cleanupHelperSnapshots(stateDirectory, {isLive = claimIsLive} = {}) {
   const root = join(stateDirectory, 'update-runtimes');
@@ -52,7 +53,7 @@ export function cleanupHelperSnapshots(stateDirectory, {isLive = claimIsLive} = 
   }
 }
 
-export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, stateDirectory, parentPid, logPath, argv, handoff, candidateBundle, recovery = false, env = process.env}) {
+export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, stateDirectory, parentPid, logPath, argv, handoff, candidateBundle, recovery = false, env = process.env, processNames, userDataDirectory}) {
   stateDirectory = realpathSync(stateDirectory);
   const runtimePath = realpathSync(runtimeBundle);
   if (stateDirectory === runtimePath || stateDirectory.startsWith(`${runtimePath}/`)) throw new Error('The runtime snapshot store must be outside its source app');
@@ -64,8 +65,9 @@ export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, sta
   const directory = join(store, `attempt-${nonce}`);
   let child;
   let childIdentity;
+  let processOwners = [];
   // Release before child claims: the helper must independently acquire ownership before ack.
-  await withMigrationLock(stateDirectory, () => {
+  await withMigrationLock(stateDirectory, async () => {
     cleanupHelperSnapshots(stateDirectory);
     const runtime = inspectBundle(runtimeBundle);
     const candidateBytes = handoff?.plan.descriptor?.bytes ?? (candidateBundle ? inspectBundle(candidateBundle).bytes : handoff?.plan.stagedBundle ? inspectBundle(handoff.plan.stagedBundle).bytes : 0);
@@ -86,7 +88,12 @@ export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, sta
         mkdirSync(dirname(join(directory, file)), {recursive: true});
         copyFileSync(join(root, file), join(directory, file));
       }
-      if (handoff) atomicMigrationJson(join(directory, 'migration-plan.json'), {...handoff, parent});
+      processOwners = await captureUpdateProcessOwners({stateDirectory, parent, processNames, bundle: runtimePath, userDataDirectory});
+      // Ownership must outlive the desktop even when the candidate predates migration
+      // transactions. Both helper modes carry the same frozen, verified snapshot.
+      atomicMigrationJson(join(directory, 'owner.json'), {protocol: 1, nonce, transactionNonce,
+        path: realpathSync(directory), parent, processOwners, helper: null});
+      if (handoff) atomicMigrationJson(join(directory, 'migration-plan.json'), {...handoff, parent, processOwners});
     } catch (error) {
       // This lock holder created the directory and has not spawned a helper.
       // Reclaim partial copies before releasing the lock so the same attempt can retry.
@@ -113,7 +120,7 @@ export async function spawnBundledUpdateHelper({runtimeBundle, helperSource, sta
       childIdentity = processIdentity(child.pid);
       return childIdentity !== null;
     }, 'The detached helper process could not be identified', {timeout: 10_000});
-    atomicMigrationJson(join(directory, 'owner.json'), {protocol: 1, nonce, transactionNonce, path: realpathSync(directory), parent,
+    atomicMigrationJson(join(directory, 'owner.json'), {protocol: 1, nonce, transactionNonce, path: realpathSync(directory), parent, processOwners,
       helper: {pid: child.pid, identity: childIdentity}});
     await boundedMigrationWait(() => {
       if (!processIsAlive(child.pid) || processIdentity(child.pid) !== childIdentity) throw new Error('The detached helper exited before startup acknowledgement');

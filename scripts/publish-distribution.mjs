@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { distributionManifest, distributionNames, localDistributionAssets, assertBuildMetadata } from './distribution-contract.mjs';
+import { DISTRIBUTION_OUTPUT, distributionManifest, distributionNames, localDistributionAssets, assertBuildMetadata } from './distribution-contract.mjs';
 import { binaryPublisherPolicy, BINARY_MANIFEST_NAME, MAX_BINARY_MANIFEST_BYTES } from '../src/shared/binary-publisher-policy.mjs';
 import { githubDistributionTransport } from './distribution-github.mjs';
 import { validateBinaryManifest } from '../src/shared/binary-distribution.mjs';
@@ -153,7 +153,7 @@ export async function qualifiedDistribution(directory, policy) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const policy = binaryPublisherPolicy();
-    const directory = resolve(process.argv[2] ?? 'release/distribution');
+    const directory = resolve(process.argv[2] ?? DISTRIBUTION_OUTPUT);
     const qualified = await qualifiedDistribution(directory, policy);
     const result = await publishDistribution({...qualified, transport: githubDistributionTransport()});
     console.log(JSON.stringify(result));

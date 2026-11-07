@@ -200,6 +200,22 @@ export interface PrSnapshot {
    * lets downstream stages run.
    */
   headRefName: string;
+  /**
+   * The branch the pull request targets, the repository's default branch, and the merge
+   * commit once it merged. Read for stacked pull requests: the merge gate's base checks, the
+   * base-aware review record, and the stack release check. Empty strings / null mean GitHub
+   * did not report one, which every reader treats as unknown. Optional only so hand-built
+   * fixtures stay valid; `fetchPr` always fills them.
+   */
+  baseRefName?: string;
+  /**
+   * The base branch's tip as GitHub reports it for this pull request. Stacked reviews record
+   * it, because a parent rebased under an unchanged child head changes the pull request's
+   * diff without changing either branch name.
+   */
+  baseSha?: string;
+  defaultBranch?: string;
+  mergeCommitSha?: string | null;
   title: string;
   body: string;
   isDraft: boolean;
@@ -208,6 +224,8 @@ export interface PrSnapshot {
   threads: ThreadSnapshot[];
   /** Pagination state for the first review-thread page. */
   threadsPageInfo?: ThreadPageInfo;
+  /** Requested only for enabled CodeRabbit follow-up, in the shared PR read. */
+  issueComments?: IssueCommentPage;
   /** Latest top-level reviews, used to recover an interrupted clean-review post. */
   reviews: ReviewSnapshot[];
   reviewsPageInfo: ReviewPageInfo;
@@ -272,10 +290,25 @@ export interface ThreadPage {
   pageInfo: ThreadPageInfo;
 }
 
-const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+const IssueCommentSchema = z.object({
+  id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+  author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+});
+export type IssueCommentSnapshot = z.infer<typeof IssueCommentSchema>;
+export interface IssueCommentPage {
+  comments: IssueCommentSnapshot[];
+  pageInfo: ThreadPageInfo;
+  error?: string | null;
+  responseBytes?: number;
+}
+const ISSUE_COMMENT_FIELDS = `nodes{ id url body updatedAt author{ __typename login } }
+  pageInfo{ hasNextPage endCursor }`;
+
+const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
+      baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:100){
         nodes{
@@ -286,6 +319,7 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
         }
         pageInfo{ hasNextPage endCursor }
       }
+      ${includeCodeRabbitComments ? `comments(first:100){ ${ISSUE_COMMENT_FIELDS} }` : ""}
       reviews(last:100){
         nodes{ body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
@@ -316,6 +350,12 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
   }
 }`;
 
+const ISSUE_COMMENT_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    comments(first:100,after:$after){ ${ISSUE_COMMENT_FIELDS} }
+  } }
+}`;
+
 /**
  * One read per PR per tick: state, head sha, every review thread, and everything the
  * auto-merge gate weighs (CI rollup, mergeability, review decision, when it was opened).
@@ -333,6 +373,7 @@ export async function fetchPr(
   owner: string,
   repo: string,
   number: number,
+  includeCodeRabbitComments = false,
 ): Promise<GhResult<PrSnapshot>> {
   const res = await run(
     ghBin(),
@@ -340,7 +381,7 @@ export async function fetchPr(
       "api",
       "graphql",
       "-f",
-      `query=${PR_QUERY}`,
+      `query=${PR_QUERY(includeCodeRabbitComments)}`,
       "-F",
       `owner=${owner}`,
       "-F",
@@ -362,7 +403,9 @@ export async function fetchPr(
     }
     const pr = json.data?.repository?.pullRequest;
     if (!pr) return { ok: false, error: "no such pull request" };
-    return { ok: true, value: { ...toSnapshot(pr), responseBytes: utf8Bytes(res.stdout) } };
+    return { ok: true, value: { ...toSnapshot(pr),
+      ...(includeCodeRabbitComments ? { issueComments: issueCommentPage(pr.comments) } : {}),
+      responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh output: ${String(err)}` };
   }
@@ -404,6 +447,7 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
     state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+    ...refFields(pr),
     title: typeof pr.title === "string" ? pr.title : "",
     body: typeof pr.body === "string" ? pr.body : "",
     isDraft: pr.isDraft === true,
@@ -431,12 +475,178 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   };
 }
 
+/** The base, default branch and merge commit of one GraphQL pull request node. */
+function refFields(
+  pr: Record<string, unknown>,
+): { baseRefName: string; baseSha: string; defaultBranch: string; mergeCommitSha: string | null } {
+  const mergeCommit = (pr.mergeCommit as { oid?: unknown } | null | undefined)?.oid;
+  const defaultBranch = (
+    (pr.repository as { defaultBranchRef?: { name?: unknown } | null } | null | undefined)?.defaultBranchRef
+  )?.name;
+  return {
+    baseRefName: typeof pr.baseRefName === "string" ? pr.baseRefName : "",
+    baseSha: typeof pr.baseRefOid === "string" ? pr.baseRefOid : "",
+    defaultBranch: typeof defaultBranch === "string" ? defaultBranch : "",
+    mergeCommitSha: typeof mergeCommit === "string" && mergeCommit ? mergeCommit : null,
+  };
+}
+
+/**
+ * The few facts about a pull request that stacking needs, without its threads or reviews.
+ *
+ * Read for a pull request the Inspector does not otherwise poll this instant: a stacked
+ * dispatch revalidating its parent, the release check reading the current parent, and base
+ * correction on adoption. One small GraphQL call each.
+ */
+export interface PrRefs {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headSha: string;
+  headRefName: string;
+  baseRefName: string;
+  /** The base branch's tip. Optional only so hand-built fixtures stay valid. */
+  baseSha?: string;
+  defaultBranch: string;
+  mergeCommitSha: string | null;
+}
+
+const PR_REFS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      state isDraft headRefOid headRefName baseRefName baseRefOid mergeCommit{ oid }
+      repository{ defaultBranchRef{ name } }
+    }
+  }
+}`;
+
+export async function fetchPrRefs(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GhResult<PrRefs>> {
+  const res = await run(
+    ghBin(),
+    ["api", "graphql", "-f", `query=${PR_REFS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${repo}`, "-F", `number=${number}`],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api graphql (pull request refs)", res);
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { repository?: { pullRequest?: Record<string, unknown> | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    const state = pr.state;
+    if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") {
+      return { ok: false, error: "the pull request state was not reported" };
+    }
+    if (typeof pr.headRefOid !== "string" || !pr.headRefOid || typeof pr.isDraft !== "boolean") {
+      return { ok: false, error: "the pull request head was not reported" };
+    }
+    return {
+      ok: true,
+      value: {
+        state,
+        isDraft: pr.isDraft,
+        headSha: pr.headRefOid,
+        headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "",
+        ...refFields(pr),
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh output: ${String(err)}` };
+  }
+}
+
+/**
+ * Is `ancestor` in `head`'s history? GitHub's compare API answers from the remote, so no
+ * git runs in any worktree: `ahead` or `identical` means yes, `behind` or `diverged` means
+ * no, and anything else (a failed call, a commit GitHub does not know) is unknown.
+ */
+export async function isAncestor(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  ancestor: string,
+  head: string,
+): Promise<GhResult<boolean>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${ancestor}...${head}`, "--jq", ".status"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare)", res);
+  const status = res.stdout.trim();
+  if (status === "ahead" || status === "identical") return { ok: true, value: true };
+  if (status === "behind" || status === "diverged") return { ok: true, value: false };
+  return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
+ * The merge base of two commits, per GitHub's compare API: the commit a pull request from
+ * `head` onto `base` is diffed from. A read; no git runs in any worktree. An unknown commit
+ * or an answer that is not a commit id is a failure, never a guess.
+ */
+export async function mergeBase(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<GhResult<string>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", ".merge_base_commit.sha"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare merge base)", res);
+  const sha = res.stdout.trim();
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+    return { ok: false, error: `compare reported no merge base ("${sha.slice(0, 40)}")` };
+  }
+  return { ok: true, value: sha };
+}
+
+/**
+ * Change the branch a pull request targets. Metadata only: it writes no commit and moves no
+ * branch, so it is the one GitHub write stacking makes on its own. REST, in the same `gh api`
+ * style as `mergePr`.
+ */
+export async function retargetPr(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  base: string,
+): Promise<GhResult<void>> {
+  const res = await run(
+    ghBin(),
+    ["api", "--method", "PATCH", `repos/${owner}/${repo}/pulls/${number}`, "--input", "-"],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, input: JSON.stringify({ base }) },
+  );
+  if (res.code !== 0) return fail("gh api (retarget pull request)", res);
+  return { ok: true };
+}
+
 function threadPageInfo(raw: unknown): ThreadPageInfo {
   const pageInfo = (raw as { pageInfo?: Record<string, unknown> } | null)?.pageInfo;
   return {
     hasNextPage: pageInfo?.hasNextPage === true,
     endCursor: typeof pageInfo?.endCursor === "string" ? pageInfo.endCursor : null,
   };
+}
+
+function issueCommentPage(raw: unknown): IssueCommentPage {
+  const parsed = z.object({
+    nodes: z.array(IssueCommentSchema),
+    pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
+  }).safeParse(raw);
+  return parsed.success
+    ? { comments: parsed.data.nodes, pageInfo: parsed.data.pageInfo }
+    : { comments: [], pageInfo: { hasNextPage: false, endCursor: null }, error: "Incomplete issue-comment connection or identity" };
 }
 
 const ThreadConnectionSchema = z.object({
@@ -572,6 +782,26 @@ export async function fetchThreadPage(
     return { ok: true, value: { ...threadPage(pr.reviewThreads), responseBytes: utf8Bytes(res.stdout) } };
   } catch (err) {
     return { ok: false, error: `could not parse gh review-thread output: ${String(err)}` };
+  }
+}
+
+export async function fetchIssueCommentPage(
+  cwd: string | null, owner: string, repo: string, number: number, after: string,
+  timeoutMs = GH_TIMEOUT_MS,
+): Promise<GhResult<IssueCommentPage>> {
+  const res = await run(ghBin(), [
+    "api", "graphql", "-f", `query=${ISSUE_COMMENT_PAGE_QUERY}`, "-F", `owner=${owner}`,
+    "-F", `name=${repo}`, "-F", `number=${number}`, "-F", `after=${after}`,
+  ], { cwd: cwd ?? undefined, timeoutMs: Math.min(timeoutMs, GH_TIMEOUT_MS), maxBuffer: 8 * 1024 * 1024 });
+  if (res.code !== 0 || res.overflowed) return fail("gh api graphql (issue comments)", res);
+  try {
+    const json = JSON.parse(res.stdout);
+    if (json.errors?.length) return { ok: false, error: "graphql: could not read issue comments" };
+    const pr = json.data?.repository?.pullRequest;
+    if (!pr) return { ok: false, error: "no such pull request" };
+    return { ok: true, value: { ...issueCommentPage(pr.comments), responseBytes: utf8Bytes(res.stdout) } };
+  } catch {
+    return { ok: false, error: "could not parse gh issue-comment output" };
   }
 }
 

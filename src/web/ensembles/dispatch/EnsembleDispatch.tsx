@@ -181,6 +181,7 @@ export function EnsembleLaunchControls({
       <Tooltip label="Preview the exact launch plan, budget, and workflow before committing">
         <button
           type="button"
+          data-dialog-default
           className="btn btn-primary"
           disabled={launch.previewing || !launch.hasCompose || launch.uploading}
           onClick={() => void launch.review()}
@@ -196,6 +197,7 @@ export function EnsembleLaunchControls({
       <Tooltip label="Launch the reviewed plan (idempotent on this request)">
         <button
           type="button"
+          data-dialog-default
           className="btn btn-primary"
           disabled={!launch.canLaunch}
           onClick={() => void launch.launchNow()}

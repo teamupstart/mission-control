@@ -11,6 +11,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <signal.h>
+#include <sys/sysctl.h>
+#endif
+
 #include <chrono>
 #include <cstring>
 #include <new>
@@ -574,6 +579,78 @@ napi_value RemovePlanDirectory(napi_env env, napi_callback_info info) {
   return promise;
 }
 
+// One process's argv and environment from the kernel's own record (KERN_PROCARGS2), which is
+// what `ps` reads. `ps -E` then joins the entries with unescaped spaces, so a value containing
+// " NAME=1" cannot be told from a real NAME entry there; here every entry stays its own string.
+// Returns {argv, env} arrays, undefined when the process no longer exists, and null when it
+// exists but its arguments cannot be read (another user's process, a zombie). Never logs.
+napi_value ProcessArguments(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  int32_t pid;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, argv[0], &pid) != napi_ok || pid < 1) {
+    return ThrowTypeError(env, "processArguments requires one positive process id");
+  }
+#if defined(__APPLE__)
+  int argmax_mib[2] = {CTL_KERN, KERN_ARGMAX};
+  int argmax = 0;
+  size_t argmax_size = sizeof(argmax);
+  if (sysctl(argmax_mib, 2, &argmax, &argmax_size, nullptr, 0) != 0 || argmax <= 0) {
+    return ThrowSystemError(env, "EPROCARGS", "could not read the kernel argument limit");
+  }
+  std::vector<char> buffer(static_cast<size_t>(argmax));
+  int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
+  size_t size = buffer.size();
+  if (sysctl(mib, 3, buffer.data(), &size, nullptr, 0) != 0) {
+    // The kernel answers EINVAL for a vanished pid and for one it will not describe; only
+    // kill(0) tells them apart. A live process whose arguments are unreadable is null.
+    if (kill(pid, 0) != 0 && errno == ESRCH) return Undefined(env);
+    napi_value null_value;
+    napi_get_null(env, &null_value);
+    return null_value;
+  }
+  if (size < sizeof(int)) return ThrowSystemError(env, "EPROCARGS", "the kernel returned a truncated argument record");
+  int count;
+  std::memcpy(&count, buffer.data(), sizeof(int));
+  const char* cursor = buffer.data() + sizeof(int);
+  const char* end = buffer.data() + size;
+  // The executable path, then NUL padding, then argc argument strings, then the environment.
+  while (cursor < end && *cursor) cursor++;
+  while (cursor < end && !*cursor) cursor++;
+  napi_value result, argv_array, env_array;
+  if (napi_create_object(env, &result) != napi_ok || napi_create_array(env, &argv_array) != napi_ok ||
+      napi_create_array(env, &env_array) != napi_ok) {
+    return ThrowSystemError(env, "ENOMEM", "could not allocate the argument record");
+  }
+  uint32_t argv_length = 0, env_length = 0;
+  while (cursor < end) {
+    const char* entry = cursor;
+    while (cursor < end && *cursor) cursor++;
+    if (cursor == end) break;  // An unterminated tail is not a complete entry.
+    const size_t length = static_cast<size_t>(cursor - entry);
+    cursor++;
+    const bool in_argv = argv_length < static_cast<uint32_t>(count);
+    if (!in_argv && length == 0) break;  // The environment ends at its first empty string.
+    napi_value value;
+    if (napi_create_string_utf8(env, entry, length, &value) != napi_ok ||
+        napi_set_element(env, in_argv ? argv_array : env_array, in_argv ? argv_length++ : env_length++, value) != napi_ok) {
+      return ThrowSystemError(env, "ENOMEM", "could not allocate the argument record");
+    }
+  }
+  if (argv_length != static_cast<uint32_t>(count)) {
+    return ThrowSystemError(env, "EPROCARGS", "the kernel returned a truncated argument record");
+  }
+  if (napi_set_named_property(env, result, "argv", argv_array) != napi_ok ||
+      napi_set_named_property(env, result, "env", env_array) != napi_ok) {
+    return ThrowSystemError(env, "ENOMEM", "could not allocate the argument record");
+  }
+  return result;
+#else
+  return ThrowSystemError(env, "ENOTSUP", "processArguments is only available on macOS");
+#endif
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
@@ -590,6 +667,7 @@ NAPI_MODULE_INIT() {
       {"readPlanDirectory", nullptr, ReadPlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectoryEntries", nullptr, ReadPlanDirectoryEntries, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"removePlanDirectory", nullptr, RemovePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"processArguments", nullptr, ProcessArguments, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     napi_throw_error(env, nullptr, "could not initialize native state lock addon");

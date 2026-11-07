@@ -37,6 +37,12 @@ noun:
 | Actions | What can a run tell the session to do? | [Session action](workflows.md#session-actions) cards - required skill and what proves completion |
 | Ensembles | Not sure of the best approach? | Strategy launchers (Best of N, Panel vote, Consensus) that open Dispatch already in Ensemble mode on that strategy |
 
+The top-bar filter narrows cards across all six shelves as you type. It matches names,
+descriptions, tags, and the facts printed on cards, ignoring case and surrounding spaces.
+Fixed cards such as Foreman and Task sources, ensemble launchers, and New cards follow the
+same filter. Shelves stay in place and show **No matching cards.** when nothing matches.
+Clear the filter with its clear button or Escape to restore every card.
+
 The four authoring surfaces mount one level deeper at bookmarkable hashes:
 
 | Hash | Surface |
@@ -360,9 +366,8 @@ from the Line: clicking ⚑ **Shipped** opens the [Shipped drawer](ui.md#the-sta
 fleet, and its **Ship log →** header action lands here.
 
 The built-in `coderabbit` Command uses typed repository-root tuning in the existing Commands
-editor. YAML owns enablement: `.coderabbit.yaml` must explicitly contain boolean
-`reviews.auto_review.enabled: true`; no override is required. Tuning changes base ref/severity,
-not enablement, and removing it restores defaults. The editor previews the committed-review
+editor. Either a root `.coderabbit.yaml` or `.coderabbit.config.ts` enables it, unless the yaml
+turns it off with `reviews.auto_review.enabled: false`. The editor previews the committed-review
 argv and shows derived policies: enabled unavailability blocks; exhausted allowance warns and
 skips. The initial allowance is ten executions shared across nodes per workflow run. See
 [local CodeRabbit Command](workflows.md#local-coderabbit-command) for scope and retained findings.

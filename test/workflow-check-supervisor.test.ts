@@ -795,6 +795,47 @@ test("a surviving descendant whose LEADER is gone is never signalled", async () 
   assert.equal(checkGroupAnswers(pid), true, "and nothing was signalled");
 });
 
+test("a leaderless group that is still dying is proven empty, not reported unknown", async () => {
+  // Shutdown's shape: the whole group was just signalled, the leader has already gone, and a
+  // descendant is still on its way out. Nothing may be signalled (the identity is
+  // unreadable), but the probe can still watch the group empty and say so.
+  //
+  // The descendant's exit is the test's to give, never a timer's: it waits on a release file,
+  // so it is provably still in the group when the leaderless state is asserted and when
+  // `terminateCheckGroup` makes its first probe, and it leaves only once that probe has
+  // answered "still there". A fixed lifetime could run out first on a busy runner.
+  const release = join(workspace(), "release");
+  const leader = spawn(
+    NODE,
+    [
+      "-e",
+      "require('node:child_process').spawn('sh', ['-c', " +
+        `${JSON.stringify(`while [ ! -e '${release}' ]; do sleep 0.02; done`)}], { stdio: 'ignore' });` +
+        "setTimeout(() => process.exit(0), 100);",
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  const pid = leader.pid!;
+  raw.push(pid);
+  try {
+    const identity = await waitForStartIdentity(pid);
+    assert.notEqual(identity, null);
+    await new Promise<void>((r) => leader.once("exit", () => r()));
+    for (let i = 0; i < 60 && processStartIdentity(pid) !== null; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(processStartIdentity(pid), null, "the leader is gone");
+    assert.equal(checkGroupAnswers(pid), true, "and its descendant has not exited yet");
+    // The first probe runs before `terminateCheckGroup` yields, so it sees the descendant;
+    // only then is the descendant let go, inside the settle window.
+    const verdict = terminateCheckGroup(pid, identity!, { graceMs: 20, confirmMs: 5_000, pollMs: 10 });
+    writeFileSync(release, "");
+    assert.equal(await verdict, "empty");
+  } finally {
+    writeFileSync(release, "");
+  }
+});
+
 test("nothing stays registered for the exit hook once a check is finished", async () => {
   const dir = workspace();
   const { registry } = recordingRegistry();

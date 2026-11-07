@@ -25,7 +25,7 @@ const { openDb, closeDb, loadActiveTasks } = await import("../src/server/db.ts")
 const { savePlan, planContext, readPlanFile, reserveTaskPlans } = await import("../src/server/plans/store.ts");
 const { planAuthority } = await import("../src/server/plans/authority.ts");
 const { freezeLocalPlanSubmission, verifyLocalPlanEvidence, localWorkflowProblem, localPlanAuthorityContext } = await import("../src/server/plans/publication.ts");
-const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery } = await import("../src/server/plans/inputs.ts");
+const { publicationReceipt, taskPlanInputProblem, taskPlanDiscovery, taskPlanDependencyRequirements } = await import("../src/server/plans/inputs.ts");
 const { applySkillsConfig } = await import("../src/server/skills/config.ts");
 const managers: InstanceType<typeof WorkflowManager>[] = [];
 afterEach(async () => { for (const m of managers.splice(0)) await m.stop(); });
@@ -649,4 +649,129 @@ test("local defaults are pinned before dispatch; incompatible explicit workflows
   const newBinding = f.workflows.store.insertBinding({ id: randomUUID(), workflowVersionId: binding.workflowVersionId, noteKey: binding.noteKey, sessionId: f.id, sessionAgent: "claude", sessionName: f.id, sessionCwd: f.repo, sessionRepoRoot: f.repo, triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 1, now: Date.now() });
   assert.throws(() => freezeLocalPlanSubmission(f.registry, f.workflows, newBinding, submission), /explicit human approval/);
   assert.equal(publicationReceipt(f.input), null);
+});
+
+
+test("dependency editor guidance retains exact merged origins and names every pinned revision", async () => {
+  const f = await fixture(false, "ship");
+  const next = await savePlan(f.authority, { repoSlot: "repo-01", requestId: randomUUID(), planId: f.input.planId, slug: "local-plan", expectedRevision: 1, files: f.files });
+  const inputs = [1, next.manifest.revision].map(revision => ({ ...f.input, revision, files: ["plan.md"] }));
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Editor guidance", intent: "Keep exact pins", backlog: true, workflowId: null,
+    planInputs: inputs, dependencies: [{ type: "task", taskId: f.task.id }] });
+  const merged = { ...dependent, dependencies: dependent.dependencies.map(edge => ({ ...edge, satisfiedAt: 10 })) };
+  assert.deepEqual(taskPlanDependencyRequirements(merged), {
+    requirements: inputs.map(input => ({ input, title: "local-plan", dependencyKeys: [`task:${f.task.id}`] })), error: null,
+  });
+  const refused = await f.tasks.update(dependent.id, { dependencies: [] });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /local-plan.*revision 1.*originating.*episode/);
+  const wrongEpisode = { ...merged, dependencies: merged.dependencies.map(edge => edge.type === "plan" ? edge : ({ ...edge, episodeId: "different-episode" })) };
+  assert.match(taskPlanDependencyRequirements(wrongEpisode).error!, /revision 1/);
+  assert.deepEqual(taskPlanDependencyRequirements({ ...merged, planInputs: [], planInputError: "Corrupt inputs" }), { requirements: [], error: "Corrupt inputs" });
+});
+
+test("dependency guidance follows bare session origins and exact artifact alternatives", async () => {
+  const f = await fixture(false, "ship");
+  // A taskless writer is a supported origin, independent of source-session liveness.
+  openDb().prepare("UPDATE managed_plan_revisions SET task_id = NULL WHERE plan_id = ?").run(f.input.planId);
+  const input = { ...f.input, files: ["plan.md"] };
+  const sessionEdge = { type: "session" as const, sessionId: f.id, title: "Prior planning session", episodeId: f.authority.episodeId,
+    agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: 2 };
+  const artifactEdge = { ...f.input, type: "plan" as const, title: "Exact artifact", episodeId: null, sessionId: null,
+    agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null };
+  const task = mkTask({ planInputs: [input], dependencies: [sessionEdge, artifactEdge] });
+  assert.deepEqual(taskPlanDependencyRequirements(task).requirements[0]?.dependencyKeys,
+    [`session:${f.id}`, `plan:${input.repoKey}:${input.planId}:1`]);
+  assert.equal(taskPlanDependencyRequirements({ ...task, dependencies: [{ ...sessionEdge, episodeId: "wrong" }] }).requirements.length, 0);
+});
+
+test("published local inputs no longer require their origin edge for editor removal", async () => {
+  const f = await fixture();
+  const dependent = f.tasks.create({ kind: "ship", repoRoot: f.repo, title: "Published input", intent: "Read local plan", backlog: true, workflowId: null,
+    planInputs: [{ ...f.input, files: ["plan.md"] }], dependencies: [{ type: "plan", ...f.input }] });
+  assert.equal(taskPlanDependencyRequirements(dependent).requirements.length, 1);
+  await f.review();
+  const published = await f.post("/mcp/plans/publish", { repoSlot: "repo-01", planId: f.input.planId, revision: 1 });
+  assert.equal(published.status, 200, await published.clone().text());
+  assert.deepEqual(taskPlanDependencyRequirements(f.tasks.get(dependent.id)!), { requirements: [], error: null });
+  assert.equal((await f.tasks.update(dependent.id, { dependencies: [] })).ok, true);
+});
+
+test("per-task plan storage overrides pin policy, follow compatible defaults, and retain the artifact lock", async () => {
+  const f = await fixture();
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: true });
+  const response = await f.post("/api/tasks", { repoRoot: f.repo, title: "Local override", intent: "Plan locally", kind: "plan", backlog: true, planStorage: "local" });
+  assert.equal(response.status, 200, await response.clone().text());
+  const task = await response.json() as ReturnType<typeof mkTask>;
+  assert.equal(task.planPolicy?.storage, "local");
+  assert.equal(task.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  const edited = await f.tasks.update(task.id, { planStorage: "repository" });
+  assert.equal(edited.ok, true, edited.error);
+  assert.equal(edited.task?.workflowId, PLAN_VALIDATION_WORKFLOW_ID);
+  assert.equal(edited.task?.planPolicy?.commitPlanHtml, true);
+  applySkillsConfig({ planStorage: "local", commitPlanHtml: false });
+  assert.equal(f.tasks.get(task.id)?.planPolicy?.storage, "repository");
+  assert.equal((await f.tasks.update(task.id, { title: "Unrelated edit" })).task?.planPolicy?.storage, "repository");
+  const reset = await f.tasks.update(task.id, { planStorage: null });
+  assert.equal(reset.ok, true, reset.error);
+  assert.equal(reset.task?.planPolicy?.storage, "local");
+  assert.equal(reset.task?.planPolicy?.commitPlanHtml, true);
+  assert.equal(reset.task?.workflowId, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+  const incompatible = await f.tasks.update(task.id, { planStorage: "local", workflowId: PLAN_VALIDATION_WORKFLOW_ID });
+  assert.equal(incompatible.ok, false);
+  assert.equal((await f.tasks.update(task.id, { workflowId: null, planStorage: "repository" })).task?.workflowId, null);
+  assert.equal((await f.tasks.update(task.id, { planStorage: "local" })).task?.workflowId, null);
+  reserveTaskPlans(f.tasks.get(task.id)!);
+  const locked = await f.tasks.update(task.id, { planStorage: "repository" });
+  assert.equal(locked.ok, false);
+  assert.match(locked.error!, /storage is locked/);
+  f.registry.upsertTask({ ...f.task, status: "backlog", sessionId: null });
+  const artifactLocked = await f.tasks.update(f.task.id, { planStorage: "repository" });
+  assert.equal(artifactLocked.ok, false);
+  assert.match(artifactLocked.error!, /storage is locked/);
+  f.registry.upsertTask({ ...f.tasks.get(task.id)!, status: "running" });
+  assert.equal((await f.tasks.update(task.id, { planStorage: "local" })).ok, false);
+  const invalid = await f.post("/api/tasks", { repoRoot: f.repo, title: "Not a plan", intent: "Ship code", kind: "ship", backlog: true, planStorage: "local" });
+  assert.equal(invalid.status, 409);
+  applySkillsConfig({ planStorage: "repository", commitPlanHtml: false });
+});
+
+for (const committed of [false, true]) test(`legacy plan artifacts lock storage without managed records (committed: ${committed})`, async () => {
+  const f = await fixture();
+  mkdirSync(join(f.repo, "docs/plans/unrelated"), { recursive: true });
+  writeFileSync(join(f.repo, "docs/plans/unrelated/plan.md"), "# Existing unrelated plan\n");
+  git(f.repo, "add", "docs/plans");
+  git(f.repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "existing plan");
+  git(f.repo, "checkout", "-qb", "legacy-plan");
+  const task = f.tasks.create({ kind: "plan", repoRoot: f.repo, title: "Legacy planning task", intent: "Legacy planning task", backlog: true, planStorage: "repository" });
+  f.registry.upsertTask({ ...task, planPolicy: null, worktreePath: f.repo });
+  const unrelated = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(unrelated.ok, true, "an unrelated baseline plan must not lock this task");
+  f.registry.upsertTask({ ...f.tasks.get(task.id)!, planPolicy: null, workflowId: PLAN_VALIDATION_WORKFLOW_ID });
+  mkdirSync(join(f.repo, "docs/plans/legacy"), { recursive: true });
+  writeFileSync(join(f.repo, "docs/plans/legacy/plan.md"), "# Legacy task artifact\n");
+  if (committed) {
+    git(f.repo, "add", "docs/plans/legacy");
+    git(f.repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "legacy plan");
+  }
+  const before = f.tasks.get(task.id);
+  const savedBefore = loadActiveTasks().find((saved) => saved.id === task.id);
+  const refused = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /storage is locked/);
+  assert.deepEqual(f.tasks.get(task.id), before);
+  assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
+});
+
+test("storage edits fail closed when a prior task checkout cannot be inspected", async () => {
+  const f = await fixture();
+  const task = f.tasks.create({ kind: "plan", repoRoot: f.repo, title: "Unavailable legacy checkout", intent: "Unavailable legacy checkout", backlog: true, planStorage: "repository" });
+  f.registry.upsertTask({ ...task, worktreePath: join(f.repo, "missing-checkout") });
+  const before = f.tasks.get(task.id);
+  const savedBefore = loadActiveTasks().find((saved) => saved.id === task.id);
+  const refused = await f.tasks.update(task.id, { planStorage: "local" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /Cannot verify existing plan artifacts/);
+  assert.deepEqual(f.tasks.get(task.id), before);
+  assert.deepEqual(loadActiveTasks().find((saved) => saved.id === task.id), savedBefore);
 });

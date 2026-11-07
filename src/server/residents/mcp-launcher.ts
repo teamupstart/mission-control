@@ -10,6 +10,9 @@
 //    only, handing it this process's stdin and stdout; for an HTTP server, acts as a stdio
 //    bridge that adds the secret headers and query values itself.
 //
+// Its entry starts the runtime with `RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS` (`mcp-launch.ts`), so
+// the bridge also trusts the operating system's certificate store.
+//
 // A missing, spent or expired ticket starts nothing. Nothing here logs a ticket, a definition
 // or a value. Deliberately standalone: no import reaches the daemon's server graph.
 
@@ -141,6 +144,17 @@ export async function fetchOnOrigin(
   throw new Error("the MCP server redirected too many times");
 }
 
+/**
+ * Why a forwarded request failed, for the harness's MCP log. Node's message for every transport
+ * failure is the same two words, "fetch failed"; the cause's code is what says a certificate was
+ * refused rather than a host being unreachable. Never the request, which carries the headers.
+ */
+export function bridgeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  return typeof cause?.code === "string" ? `${message} (${cause.code})` : message;
+}
+
 async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { transport: "http" | "sse" }>): Promise<void> {
   const [{ StdioServerTransport }, { StreamableHTTPClientTransport }, { SSEClientTransport }] = await Promise.all([
     import("@modelcontextprotocol/sdk/server/stdio.js"),
@@ -183,7 +197,7 @@ async function runBridge(definition: Extract<ResidentMcpLauncherDefinition, { tr
       void local.send({
         jsonrpc: "2.0",
         id: request.id,
-        error: { code: -32000, message: `the MCP server did not answer: ${error instanceof Error ? error.message : String(error)}` },
+        error: { code: -32000, message: `the MCP server did not answer: ${bridgeFailure(error)}` },
       }).catch(() => {});
     });
   };

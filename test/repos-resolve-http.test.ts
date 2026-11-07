@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath, URL } from "node:url";
 import { buildApp } from "../src/server/routes.ts";
+import { mainRepoRoot } from "../src/server/util/git.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
@@ -31,9 +32,11 @@ test("resolves a real repo path to a canonical git root", async () => {
   const repoDir = fileURLToPath(new URL("..", import.meta.url));
   const res = await resolve(repoDir);
   assert.equal(res.status, 200);
-  const body = (await res.json()) as { repoRoot: string };
+  const body = (await res.json()) as { repoRoot: string; path: string };
   assert.equal(typeof body.repoRoot, "string");
   assert.ok(body.repoRoot.length > 0, "a resolved root should be a non-empty path");
+  assert.equal(body.repoRoot, mainRepoRoot(repoDir));
+  assert.equal(body.path, body.repoRoot, "an entry at the root stays repo-wide");
 });
 
 test("rejects a path that isn't a git repository", async () => {
@@ -67,10 +70,10 @@ test("a subdirectory resolves to the repository AND back to itself", async () =>
   const res = await resolve(subDir);
   assert.equal(res.status, 200);
   const body = (await res.json()) as { repoRoot: string; path: string };
-  // The repository is the same one the root resolves to...
-  const rootRes = await resolve(repoDir);
-  const rootBody = (await rootRes.json()) as { repoRoot: string; path: string };
-  assert.equal(body.repoRoot, rootBody.repoRoot);
+  // Compare with the owner read from Git metadata, not a second HTTP request whose
+  // failed Git discovery could supply an error body as this case's expected value.
+  // The root request and its canonical path are covered independently above.
+  assert.equal(body.repoRoot, mainRepoRoot(repoDir));
   // ...and the path is the subdirectory, expressed AGAINST that repository rather than
   // against whichever tree the caller stood in. That distinction is what this assertion is
   // really for: this suite often runs from a linked worktree under `~/.treehouse/`, where a
@@ -81,6 +84,4 @@ test("a subdirectory resolves to the repository AND back to itself", async () =>
     body.path.startsWith(`${body.repoRoot}/`),
     `${body.path} should sit inside ${body.repoRoot}`,
   );
-  // The root's own canonical path is the root, so an entry typed there stays repo-wide.
-  assert.equal(rootBody.path, rootBody.repoRoot);
 });

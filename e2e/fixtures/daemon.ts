@@ -414,6 +414,11 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // `~/.claude/projects/<mangled cwd>/<session id>.jsonl`, so without this the fake
     // agent would write conversations into the operator's real ~/.claude.
     HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    // Keep Claude's global MCP catalog at the fixture's ~/.claude.json. An explicit
+    // config directory relocates that file too, so clear any inherited override.
+    CLAUDE_CONFIG_DIR: undefined,
+    CLAUDE_SETTINGS_PATH: join(home, ".claude", "settings.json"),
     MISSION_HOME: home,
     MISSION_PORT: String(port),
     MISSION_WORKSPACE_DIRS: workspace,
@@ -489,6 +494,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // every run that reaches the write path. `jiraBin()` is the single seam every `jira`
     // subprocess resolves through, so this one variable covers the sweep and both verbs.
     MISSION_JIRA_BIN: bins.jira,
+    // All acli reads and writes stay inside the fixture, regardless of the host's OAuth login.
+    MISSION_ACLI_BIN: bins.acli,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR

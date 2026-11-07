@@ -41,6 +41,7 @@ export interface FakeAgents {
     keepAwake: string;
     gh: string;
     jira: string;
+    acli: string;
   };
 }
 
@@ -107,7 +108,19 @@ export function writeCodexCatalogMode(home: string, mode: FakeCodexCatalogMode):
  */
 export interface FakePullRequest {
   headRefName?: string;
+  /** The branch it targets. Defaults to `main`, the fixture repository's default branch. */
+  baseRefName?: string;
+  /**
+   * The base branch's tip, which a review records so a rebased parent under an unchanged
+   * head is reviewed again. Defaults to one fixed commit: the base never moves unless a
+   * spec says so.
+   */
+  baseRefOid?: string;
+  isDraft?: boolean;
+  /** The merge commit once merged, for the stack release check. */
+  mergeCommit?: string | null;
   reviewThreads?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+  issueComments?: { nodes: unknown[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
   reviewError?: boolean;
   /** Absolute path of the worktree whose `gh pr list` should report this pull request. */
   cwd: string;
@@ -123,6 +136,15 @@ export interface FakePullRequest {
 /** Where a spec scripts `FAKE_GH`'s pull requests for one daemon. */
 export function ghPullRequestsPath(home: string): string {
   return join(home, "gh-prs.json");
+}
+
+/**
+ * Script GitHub's compare API: `"<ancestor>...<head>"` to the `status` it reports (`ahead`,
+ * `identical`, `behind`, `diverged`). An unscripted pair fails the call, which the stack
+ * release check reads as unknown and holds on.
+ */
+export function writeGhCompare(home: string, statuses: Record<string, string>): void {
+  writeFileSync(join(home, "gh-prs-compare.json"), JSON.stringify(statuses, null, 2));
 }
 
 /** Script what `gh` reports, for this daemon, from now on. Re-read by the fake per call. */
@@ -688,10 +710,45 @@ if (argv[0] === "--version") {
   if (pr?.reviewError) process.stdout.write(JSON.stringify({ errors: [{ message: "scripted provider unavailable" }] }));
   else process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
     state: pr.state, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    repository: { defaultBranchRef: { name: "main" } },
     isDraft: false, title: "CodeRabbit fixture PR", body: "", createdAt: pr.createdAt,
     reviewThreads: pr.reviewThreads ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    comments: pr.issueComments ?? { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
   } : null } } }));
+} else if (command.startsWith("api graphql") && argv.some((a) => a.includes("mergeCommit"))) {
+  // The small pull-request refs read Stacked pull requests makes (state, draft, head, base,
+  // merge commit). Answered by number from ANY checkout: the daemon asks from the
+  // prerequisite's repository root, not from the worktree that opened the pull request.
+  const numberArg = argv.find((a) => a.startsWith("number="));
+  const pr = scriptedPrs().find((p) => String(p.number) === numberArg?.slice(7));
+  process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: pr ? {
+    state: pr.state, isDraft: pr.isDraft === true, headRefOid: pr.headRefOid, headRefName: pr.headRefName ?? "fix",
+    baseRefName: pr.baseRefName ?? "main", baseRefOid: pr.baseRefOid ?? "ba5e".repeat(10),
+    mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
+    repository: { defaultBranchRef: { name: "main" } },
+  } : null } } }));
+} else if (argv[0] === "api" && (argv[1] || "").includes("/compare/")) {
+  let statuses = {};
+  try { statuses = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_PRS.slice(0, -".json".length) + "-compare.json", "utf8")); } catch {}
+  const pair = (argv[1] || "").split("/compare/")[1];
+  if (statuses[pair]) process.stdout.write(statuses[pair] + "\\n");
+  else { process.stderr.write("HTTP 404: No common ancestor (fake)\\n"); process.exitCode = 1; }
+} else if (argv[0] === "api" && argv[1] === "user") {
+  // The Inspector's identity check (\`gh api user --jq .login\`): a fixed bot login, so a
+  // spec that arms the Inspector reaches its merge gate instead of abstaining.
+  process.stdout.write("mission-e2e-bot\\n");
+} else if (argv[0] === "api" && argv[1] === "--method" && argv[2] === "PATCH" && (argv[3] || "").split("/").at(-2) === "pulls") {
+  // A pull request base edit. The body is recorded beside the argv so a spec can read WHICH
+  // base the daemon asked for; nothing is published.
+  if (dir) {
+    let input = "";
+    try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
+    writeFileSync(join(dir, \`gh-patch-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
+  }
+  process.stdout.write("{}\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];
   const found = scriptedPrs().find((pr) => pr.url === url);
@@ -756,6 +813,75 @@ if (command.startsWith("issue list")) {
 }
 `;
 
+/** Read-only acli contract. Mutable canned state lets specs model a profile switch. */
+const FAKE_ACLI = `#!/usr/bin/env node
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`acli-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2));
+}
+const file = dir && join(dir, "fake-acli-state.json");
+const state = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+const command = argv.slice(0, 3).join(" ");
+if (argv[0] === "--version") {
+  process.stdout.write("acli version 0.0.0 (fake)\\n");
+} else if (state.unauthorized) {
+  process.stderr.write("✗ Error: unauthorized: use 'acli jira auth login' to authenticate\\n");
+  process.exitCode = 1;
+} else if (command === "jira auth status") {
+  process.stdout.write(\`✓ Authenticated\\n  Site: \${state.site || "example.atlassian.net"}\\n  Email: operator@example.invalid\\n  Authentication Type: oauth\\n\`);
+} else if (command === "jira workitem search") {
+  if (state.searchError) {
+    process.stderr.write("✗ Error: " + state.searchError + "\\n");
+    process.exitCode = 1;
+  } else {
+    const limit = Number(argv[argv.indexOf("--limit") + 1]);
+    process.stdout.write(JSON.stringify((state.issues || []).slice(0, limit)) + "\\n");
+    if (file && state.afterSearchSite) {
+      writeFileSync(file, JSON.stringify({ ...state, site: state.afterSearchSite }));
+    }
+  }
+} else if (command === "jira workitem view") {
+  if (state.viewError || (state.transitioned && state.confirmError)) {
+    process.stderr.write("✗ Error: cannot read issue (fake)\\n");
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(JSON.stringify({
+      key: argv[3], self: state.self || "https://jira-prod-us-0-0.prod.atl-paas.net/rest/api/3/issue/1",
+      fields: { status: { name: state.status || "In Review" } }, transitions: state.transitions ?? null,
+    }) + "\\n");
+  }
+} else if (command === "jira workitem comment" || command === "jira workitem transition") {
+  const transition = command.endsWith("transition");
+  const mode = transition ? state.transition : state.comment;
+  if (mode === "no-answer") {
+    process.kill(process.pid, "SIGKILL");
+  } else if (mode === "refused") {
+    process.stderr.write("✗ Error: " + (state.reason || "Not allowed from this status (fake)") + "\\n");
+    process.exitCode = 1;
+  } else {
+    const key = argv[argv.indexOf("--key") + 1];
+    const result = mode === "json-failure" ? [{ key, success: false, error: state.reason || "Workflow refused (fake)" }]
+      : mode === "unrecognized" ? { message: "Operation processed (fake)" }
+      : { key, success: true, ...(state.writeSelf ? { self: state.writeSelf } : {}) };
+    process.stdout.write(JSON.stringify(state.writeEnvelope ? { [state.writeEnvelope]: result } : result) + "\\n");
+    if (file) writeFileSync(file, JSON.stringify({ ...state,
+      ...(transition ? { transitioned: true,
+        status: mode === "json-failure" || mode === "unchanged" ? state.status || "In Review" : argv[argv.indexOf("--status") + 1],
+      } : {}),
+      ...(state.afterWriteSite ? { site: state.afterWriteSite } : {}),
+    }));
+  }
+} else {
+  process.stderr.write("fake acli refuses unsupported commands\\n");
+  process.exitCode = 1;
+}
+`;
+
 /**
  * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
  * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
@@ -801,7 +927,7 @@ setInterval(() => {
 `;
 
 /**
- * Write the three fakes into `home` and return their paths.
+ * Write the recording fakes into `home` and return their paths.
  *
  * The claude fake is COPIED to an extension-less path rather than symlinked or run in
  * place, because the vendored Agent SDK spawns `node <path>` for anything ending in
@@ -853,5 +979,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(jira, FAKE_JIRA);
   chmodSync(jira, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
+  const acli = join(binDir, "fake-acli");
+  writeFileSync(acli, FAKE_ACLI);
+  chmodSync(acli, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira, acli } };
 }

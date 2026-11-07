@@ -22,6 +22,7 @@ const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts
 const mcpStore = await import("../src/server/residents/mcp-store.ts");
 const catalog = await import("../src/server/residents/mcp-catalog.ts");
 const launch = await import("../src/server/residents/mcp-launch.ts");
+const sharedMcp = await import("../src/shared/resident-mcp.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { ResidentManager } = await import("../src/server/residents/manager.ts");
@@ -473,6 +474,120 @@ test("secrets under one field name stay bound to their own (source, name)", asyn
   assert.ok(!refused.ok && /no value for its secret K/.test(refused.error));
 });
 
+// A remote server Claude Code signs in to itself. Its stored OAuth login is keyed by the name and
+// by `sha256(JSON.stringify({ type, url, headers: headers || {} }))`, measured on Claude Code
+// 2.1.317, so only an entry with that name, type, URL as written and empty headers finds it.
+const LOGIN_SERVERS = {
+  login: { type: "http", url: "https://mcp.example.com" },
+  "login-sse": { type: "sse", url: "https://events.example.com/sse", timeout: 9000 },
+  headed: { type: "http", url: "https://mcp.example.com/headed", headers: { "X-Api-Key": SECRET } },
+  queried: { type: "http", url: `https://mcp.example.com/q?key=${SECRET}` },
+  userinfo: { type: "http", url: "https://user:pw@mcp.example.com/u" },
+  // A login travels only over https or plain http to this machine, and a fragment is never copied.
+  plaintext: { type: "http", url: "http://mcp.example.com/plain" },
+  "plaintext-sse": { type: "sse", url: "http://events.example.com/plainsse" },
+  fragment: { type: "http", url: `https://mcp.example.com/f#access_token=${SECRET}` },
+  loopback: { type: "http", url: "http://127.0.0.1:8123/mcp" },
+  // A server that authenticates by URL: the path is the credential, so the URL is never exposed.
+  "path-key": { type: "sse", url: `https://actions.example.com/mcp/${SECRET}/sse` },
+  "path-uuid": { type: "http", url: "https://mcp.example.com/server/3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d/mcp" },
+  local: { command: "local-mcp" },
+};
+
+test("only a Claude remote server with no header, query, fragment or key-shaped path, over https or loopback http, may use Claude Code's own login, with its URL as written", () => {
+  const read = globalsOf("claude", LOGIN_SERVERS);
+  const byName = new Map(read.servers.map((server) => [server.summary.name, server]));
+  assert.deepEqual(
+    read.servers.map((server) => [server.summary.name, server.harnessLogin]),
+    [["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false], ["plaintext", false], ["plaintext-sse", false], ["fragment", false], ["loopback", true], ["path-key", false], ["path-uuid", false], ["local", false]],
+  );
+  const loopback = byName.get("loopback")!.transport;
+  assert.ok(loopback?.type === "http" && loopback.url === "http://127.0.0.1:8123/mcp", "plain http to this machine may carry the login");
+  // On the launcher, the fragment is dropped: it never reaches a stored or rendered URL.
+  const fragment = byName.get("fragment")!.transport;
+  assert.ok(fragment?.type === "http" && fragment.url === "https://mcp.example.com/f" && !JSON.stringify(fragment).includes(SECRET));
+  // Not `https://mcp.example.com/`, which keys a different, empty login.
+  assert.deepEqual(byName.get("login")!.transport, { type: "http", url: "https://mcp.example.com", headers: {}, secretHeaders: [], secretQuery: [] });
+  assert.equal(byName.get("login")!.secrets.size, 0);
+  assert.deepEqual(byName.get("login-sse")!.transport, { type: "sse", url: "https://events.example.com/sse", headers: {}, secretHeaders: [], secretQuery: [] });
+  // A server with a private part keeps its normalized, query-less URL for the launcher.
+  const queried = byName.get("queried")!.transport;
+  assert.ok(queried?.type === "http" && queried.url === "https://mcp.example.com/q" && !queried.url.includes(SECRET));
+  // Unavailable is never a login server, and Codex never offers one.
+  assert.equal(globalsOf("claude", { helper: { type: "http", url: "https://x", headersHelper: "h" } }).servers[0]!.harnessLogin, false);
+  assert.ok(globalsOf("codex", { remote: { url: "https://mcp.example.com" } }).servers.every((server) => !server.harnessLogin));
+});
+
+test("a URL whose path is shaped like a key is a credential; ordinary MCP endpoint paths are not", () => {
+  const { credentialShapedPath } = sharedMcp;
+  for (const url of [
+    "https://mcp.vercel.com", "https://mcp.linear.app/sse", "https://mcp.atlassian.com/v1/sse", "https://mcp.notion.com/mcp",
+    "https://api.githubcopilot.com/mcp/", "https://gmailmcp.googleapis.com/mcp/v1", "https://mcp.example.com/api/mcp-server",
+  ]) assert.equal(credentialShapedPath(new URL(url)), false, url);
+  for (const url of [
+    `https://actions.example.com/mcp/${SECRET}/sse`, "https://h.example.com/mcp/ghp_abc/sse", "https://h.example.com/xoxb-1-2/mcp",
+    "https://mcp.example.com/server/3f2b8c1e-9a4d-4e7b-8c21-5d6f7a8b9c0d/mcp", "https://h.example.com/u/a1B2c3D4e5F6g7H8i9/mcp",
+    `https://h.example.com/${"x".repeat(32)}`, "https://h.example.com/%E0%A4%A/mcp",
+    // A credential-named assignment, however short its value and with no digit in it.
+    "https://h.example.com/token=shortsecret/mcp", "https://h.example.com/mcp/API_KEY:abc", "https://h.example.com/mcp;access_token=abc/sse",
+    // Behind an encoded separator, which decodes inside one segment.
+    "https://h.example.com/foo:bar%2Ftoken=abc/mcp", "https://h.example.com/x%2Fsk-abc/mcp", "https://h.example.com/a%3Bapi_key=abc",
+  ]) assert.equal(credentialShapedPath(new URL(url)), true, url);
+  // An assignment whose name is not a credential's is not, by itself, a key.
+  assert.equal(credentialShapedPath(new URL("https://h.example.com/mcp;version=2/sse")), false);
+});
+
+test("an inherited or selected Claude login server goes to Claude directly; every other global server keeps the launcher", async () => {
+  const globals = globalsOf("claude", LOGIN_SERVERS);
+  // [name, goes to Claude directly]. Every global row keeps `launcher: true`; `harnessLogin` marks the direct ones.
+  const expected = [
+    ["login", true], ["login-sse", true], ["headed", false], ["queried", false], ["userinfo", false],
+    ["plaintext", false], ["plaintext-sse", false], ["fragment", false], ["loopback", true], ["path-key", false], ["path-uuid", false], ["local", false],
+  ];
+  const direct = (server: Resolved) => [server.name, server.harnessLogin === true];
+  const inherited = await resolve(profile(), globals);
+  assert.ok(inherited.ok && inherited.servers);
+  assert.deepEqual(inherited.servers.map(direct), expected);
+  assert.ok(inherited.servers.every((server) => server.launcher), "every global row keeps launcher: true");
+  const selected = await resolve(profile({
+    inheritDefaults: false,
+    selected: Object.keys(LOGIN_SERVERS).map((name) => ({ source: "global", agent: "claude", name })),
+  }), globals);
+  assert.ok(selected.ok && selected.servers);
+  assert.deepEqual(selected.servers.map(direct), expected, "selected behaves as inherited");
+  assert.deepEqual(
+    inherited.servers.map(({ secrets: _secrets, ...server }) => server),
+    selected.servers.map(({ secrets: _secrets, ...server }) => server),
+  );
+
+  // Through the snapshot to the entries: the login servers as configured, every other one a launcher.
+  const runId = crypto.randomUUID();
+  seedRun(runId, inherited.servers);
+  const entries = launch.residentMcpLaunchForRun(runId)!.forStart();
+  assert.deepEqual(entries[0], { name: "login", options: {}, shape: "http", transport: "http", url: "https://mcp.example.com", headers: {} });
+  assert.deepEqual(entries[1], { name: "login-sse", options: { claude: { timeoutMs: 9000 } }, shape: "http", transport: "sse", url: "https://events.example.com/sse", headers: {} });
+  assert.deepEqual(entries.slice(2).map((entry) => [entry.name, entry.shape]), [
+    ["headed", "launcher"], ["queried", "launcher"], ["userinfo", "launcher"], ["plaintext", "launcher"], ["plaintext-sse", "launcher"], ["fragment", "launcher"],
+    ["loopback", "http"], ["path-key", "launcher"], ["path-uuid", "launcher"], ["local", "launcher"],
+  ]);
+  const rendered = JSON.stringify(entries);
+  assert.ok(
+    !rendered.includes(SECRET) && !rendered.includes("/headed") && !rendered.includes("/plain") && !rendered.includes("/plainsse") && !rendered.includes("/f#") && !rendered.includes("3f2b8c1e") && !rendered.includes("local-mcp"),
+    "a launcher server's definition stays daemon-private: no plain-http login URL, no fragment",
+  );
+  assert.deepEqual(JSON.stringify(launch.residentMcpLaunchForRun(runId)!.preview().slice(0, 2)), JSON.stringify(entries.slice(0, 2)), "the preview renders them the same");
+
+  // Rollback safety: the stored row still says `launcher: true`, so a reader that predates
+  // `harnessLogin` - which decides on `launcher` alone - starts it through the launcher, as before
+  // this change, and never renders the SSE server as HTTP. Without the field, this reader does too.
+  const row = JSON.parse((openDb().prepare("SELECT definition_json FROM resident_run_mcp_servers WHERE run_id = ? AND name = 'login-sse'").get(runId) as { definition_json: string }).definition_json);
+  assert.equal(row.launcher, true);
+  assert.equal(row.harnessLogin, true);
+  const { harnessLogin: _field, ...older } = row;
+  openDb().prepare("UPDATE resident_run_mcp_servers SET definition_json = ? WHERE run_id = ? AND name = 'login-sse'").run(JSON.stringify(older), runId);
+  assert.equal(launch.residentMcpLaunchForRun(runId)!.preview()[1]!.shape, "launcher");
+});
+
 // ---- the snapshot, the entries and the tickets ----
 
 function seedRun(runId: string, servers: Resolved[]): void {
@@ -481,6 +596,15 @@ function seedRun(runId: string, servers: Resolved[]): void {
        launch_state, persona_snapshot, created_at) VALUES (?, 'p', 1, ?, ?, '{}', 'launched', '{}', 1)`,
   ).run(runId, `task-${runId}`, `req-${runId}`);
   mcpStore.writeRunMcpSnapshot(runId, servers, 1);
+}
+
+/**
+ * A launcher entry's argv for the test runtime: the entry's own runtime flags, then the launcher
+ * from source through tsx in place of the built bundle, then the entry's script arguments.
+ */
+function launcherArgv(entry: { args: string[] }): string[] {
+  const flags = launch.RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS.length;
+  return [...entry.args.slice(0, flags), "--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(flags + 1)];
 }
 
 const GLOBAL_SERVER: Resolved = {
@@ -510,8 +634,11 @@ test("entries carry no secret: global and secret-bearing servers are launcher en
   for (const entry of [entries[0]!, entries[2]!]) {
     assert.equal(entry.shape, "launcher");
     if (entry.shape !== "launcher") continue;
-    assert.deepEqual(entry.args.filter((_, at) => at % 2 === 1), ["--run", "--server", "--credential"], "only identifiers ride the arguments");
-    assert.deepEqual(entry.args.slice(1, 5), ["--run", runId, "--server", entry.name]);
+    const flags = launch.RESIDENT_MCP_LAUNCHER_RUNTIME_FLAGS;
+    assert.deepEqual(entry.args.slice(0, flags.length), ["--use-system-ca"], "the runtime trusts the system certificate store, ahead of the script");
+    const script = entry.args.slice(flags.length);
+    assert.deepEqual(script.filter((_, at) => at % 2 === 1), ["--run", "--server", "--credential"], "only identifiers ride the arguments");
+    assert.deepEqual(script.slice(1, 5), ["--run", runId, "--server", entry.name]);
   }
   const rendered = JSON.stringify(entries);
   assert.ok(!rendered.includes(SECRET), "no secret value in any entry");
@@ -626,6 +753,29 @@ test("a recovery point redacts a global server's private definition, and a run r
   const ticket = (JSON.parse(readFileSync(entries[0]!.shape === "launcher" ? entries[0]!.args.at(-1)! : "", "utf8")) as { ticket: string }).ticket;
   const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "private-global" });
   assert.ok(!redeemed.ok && redeemed.status === 409 && /launch the resident again/.test(redeemed.error));
+});
+
+test("a recovery point redacts a Claude login server's definition too, and a run restored from it still refuses that server", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const resolved = await resolve(profile(), globalsOf("claude", { login: LOGIN_SERVERS.login }));
+  assert.ok(resolved.ok && resolved.servers?.[0]?.harnessLogin === true);
+  const runId = crypto.randomUUID();
+  seedRun(runId, resolved.servers);
+  const copy = join(home, `redact-login-${Date.now()}.sqlite3`);
+  openDb().prepare("VACUUM INTO ?").run(copy);
+  scrubWriteOnlySecrets(copy);
+  assert.ok(!readFileSync(copy).includes("mcp.example.com"), "the URL does not survive, free pages included");
+  const restored = new DatabaseSync(copy);
+  const row = restored.prepare("SELECT definition_json FROM resident_run_mcp_servers WHERE run_id = ?").get(runId) as { definition_json: string };
+  restored.close();
+  assert.deepEqual(JSON.parse(row.definition_json).transport, { type: "redacted" });
+  openDb().prepare("UPDATE resident_run_mcp_servers SET definition_json = ? WHERE run_id = ?").run(row.definition_json, runId);
+  // Never an http entry without a URL: the launcher entry is refused on redemption.
+  const [entry] = launch.residentMcpLaunchForRun(runId)!.forStart();
+  assert.equal(entry!.shape, "launcher");
+  const ticket = (JSON.parse(readFileSync(entry!.shape === "launcher" ? entry!.args.at(-1)! : "", "utf8")) as { ticket: string }).ticket;
+  const redeemed = launch.redeemResidentMcpTicket({ ticket, runId, server: "login" });
+  assert.ok(!redeemed.ok && redeemed.status === 409 && /restored from a backup; launch the resident again/.test(redeemed.error));
 });
 
 // ---- through the manager ----
@@ -839,7 +989,7 @@ test("a Claude global SSE server starts through the scoped launcher with its own
   writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
   try {
     const answer = await new Promise<{ id: number; result?: { serverInfo?: { name: string } } }>((resolveAnswer, reject) => {
-      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+      const child = spawn(process.execPath, launcherArgv(entry), {
         env: { PATH: process.env.PATH },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -871,6 +1021,123 @@ test("a Claude global SSE server starts through the scoped launcher with its own
     open.stream?.end();
     sse.closeAllConnections();
     sse.close();
+    daemon.close();
+  }
+});
+
+// ---- the bridge behind a TLS-inspecting proxy ----
+
+test("a failed forward names its cause's code, which is what tells a refused certificate from an unreachable host", async () => {
+  const { bridgeFailure } = await import("../src/server/residents/mcp-launcher.ts");
+  const refused = Object.assign(new TypeError("fetch failed"), { cause: { code: "SELF_SIGNED_CERT_IN_CHAIN" } });
+  assert.equal(bridgeFailure(refused), "fetch failed (SELF_SIGNED_CERT_IN_CHAIN)");
+  assert.equal(bridgeFailure(new Error("plain")), "plain");
+});
+
+test("a Claude global HTTPS server behind a private root connects through the scoped launcher only when that root is trusted", async (t) => {
+  const { execFileSync, spawn } = await import("node:child_process");
+  const { createServer } = await import("node:https");
+  const { createServer: createHttpServer } = await import("node:http");
+  // A server certificate whose root is in no bundled set, exactly like one a TLS-inspecting
+  // proxy presents for every host.
+  const certs = mkdtempSync(join(home, "proxy-root-"));
+  const key = join(certs, "key.pem");
+  const cert = join(certs, "root.pem");
+  try {
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1",
+      "-subj", "/CN=mission-proxy-root", "-addext", "subjectAltName=IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:true"], { stdio: "ignore" });
+  } catch (error) {
+    // Only a missing binary skips. Any other failure - an unsupported flag, a version
+    // difference - is a broken fixture, and would otherwise silently drop the one test that
+    // proves the launcher trusts the system store.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    t.skip("openssl is not installed, so no fixture root can be minted");
+    return;
+  }
+  const header = `https-header-${crypto.randomUUID()}`;
+  const seen: unknown[] = [];
+  const remote = createServer({ key: readFileSync(key), cert: readFileSync(cert) }, async (req, res) => {
+    seen.push(req.headers["authorization"]);
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const msg = JSON.parse(raw || "{}") as { id?: number; params?: { protocolVersion?: string } };
+    if (msg.id === undefined) { res.writeHead(202).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      jsonrpc: "2.0", id: msg.id,
+      result: { protocolVersion: msg.params?.protocolVersion ?? "2025-03-26", capabilities: {}, serverInfo: { name: "https-fixture", version: "1" } },
+    }));
+  });
+  const listen = (server: import("node:http").Server) => new Promise<number>((done) => server.listen(0, "127.0.0.1", () => done((server.address() as { port: number }).port)));
+  const remotePort = await listen(remote);
+  const daemon = createHttpServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const redeemed = launch.redeemResidentMcpTicket(JSON.parse(raw));
+    res.writeHead(redeemed.ok ? 200 : redeemed.status, { "content-type": "application/json" })
+      .end(JSON.stringify(redeemed.ok ? { definition: redeemed.definition } : { error: redeemed.error }));
+  });
+  const daemonPort = await listen(daemon);
+  // The global server exactly as Claude Code's configuration holds it.
+  const dir = mkdtempSync(join(home, "claude-https-"));
+  writeFileSync(join(dir, ".claude.json"), JSON.stringify({ mcpServers: {
+    room: { type: "http", url: `https://127.0.0.1:${remotePort}/api/mcp`, headers: { Authorization: header } },
+  } }));
+  const read = catalog.readClaudeGlobalMcp(join(dir, ".claude.json"), {});
+  const resolved = await resolve(profile(), read);
+  assert.ok(resolved.ok && resolved.servers);
+  const runId = crypto.randomUUID();
+  seedRun(runId, resolved.servers);
+  /** One `initialize` through a freshly started launcher, with only the environment given. */
+  const initialize = async (env: NodeJS.ProcessEnv) => {
+    const entry = launch.residentMcpLaunchForRun(runId)!.forStart()[0]!;
+    assert.equal(entry.shape, "launcher");
+    if (entry.shape !== "launcher") throw new Error("not a launcher entry");
+    const credential = entry.args.at(-1)!;
+    const file = JSON.parse(readFileSync(credential, "utf8")) as { redeemUrl: string };
+    writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
+    return new Promise<{ id: number; result?: { serverInfo?: { name: string } }; error?: { message: string } }>((answer, reject) => {
+      const child = spawn(process.execPath, launcherArgv(entry), {
+        env, stdio: ["pipe", "pipe", "pipe"],
+      });
+      let out = "";
+      let errText = "";
+      const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`no answer: ${errText}`)); }, 15_000);
+      child.stderr.on("data", (chunk) => { errText += chunk; });
+      child.stdout.on("data", (chunk) => {
+        out += chunk;
+        if (!out.includes("\n")) return;
+        clearTimeout(timer);
+        child.kill("SIGTERM");
+        answer(JSON.parse(out.split("\n")[0]!));
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "1" } } })}\n`);
+    });
+  };
+  try {
+    // The daemon's own environment, as a Finder-launched app has it: no shell rc file ran.
+    const untrusted = await initialize({ PATH: process.env.PATH });
+    assert.equal(untrusted.result, undefined, "a root nothing trusts is refused, never waved through");
+    assert.match(untrusted.error?.message ?? "", /\((SELF_SIGNED_CERT_IN_CHAIN|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE)\)$/, "and the refusal names the certificate");
+    // The fix itself: the root is in the system store only, and no `NODE_EXTRA_CA_CERTS` reached
+    // the launcher, exactly as for a daemon started from the Finder behind a TLS-inspecting proxy.
+    // Linux reads the system store from OpenSSL's files, which `SSL_CERT_FILE` names, so the
+    // fixture root can be placed there and nowhere else. Without the entry's `--use-system-ca`
+    // this is refused on every Node 24. macOS reads the keychain, which a test cannot seed.
+    if (process.platform === "linux") {
+      const viaSystem = await initialize({ PATH: process.env.PATH, SSL_CERT_FILE: cert });
+      assert.equal(viaSystem.error, undefined, `a root the system store trusts is trusted: ${viaSystem.error?.message}`);
+      assert.equal(viaSystem.result?.serverInfo?.name, "https-fixture", "initialization succeeded with the system store's root alone");
+    } else {
+      t.diagnostic(`the system-store case needs a store a test can seed; ${process.platform} reads the OS keychain`);
+    }
+    // Trusting the system store keeps any `NODE_EXTRA_CA_CERTS` that did arrive.
+    const trusted = await initialize({ PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: cert });
+    assert.equal(trusted.id, 7);
+    assert.equal(trusted.result?.serverInfo?.name, "https-fixture", "initialization succeeded over the HTTPS bridge");
+    assert.ok(seen.length > 0 && seen.every((value) => value === header), "every request carried the server's header");
+  } finally {
+    remote.closeAllConnections();
+    remote.close();
     daemon.close();
   }
 });
@@ -929,7 +1196,7 @@ test("Claude's internal relaunch mints fresh launcher credentials, and the serve
       writeFileSync(credential, JSON.stringify({ ...file, redeemUrl: `http://127.0.0.1:${daemonPort}/api/residents/mcp/redeem` }));
     }
     return new Promise<{ code: number | null; stderr: string }>((resolveStart) => {
-      const child = spawn(process.execPath, ["--import", "tsx", join(process.cwd(), "src/server/residents/mcp-launcher.ts"), ...entry.args.slice(1)], {
+      const child = spawn(process.execPath, launcherArgv(entry), {
         env: { PATH: process.env.PATH, ...entry.env },
         stdio: ["ignore", "ignore", "pipe"],
       });

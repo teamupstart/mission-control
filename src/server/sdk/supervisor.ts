@@ -2,12 +2,14 @@ import { residentNativeCompactionForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
+import { darwinCheckIdentity } from "../../../scripts/darwin-process-identity.mjs";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV } from "@shared/harness-runtime.mjs";
 import { sessionScoutCredentialLocator } from "../scouts/submission-auth.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   RestoringSession,
@@ -26,18 +28,29 @@ import {
   verifyMissionMcpTools,
   type MissionMcpDescriptor,
 } from "../mission-mcp.ts";
-import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
+import { noteKeyFor, SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import {
+  CAPACITY_CONTINUATION_PROMPT,
+  capacityRetryActivity,
+  capacityRetryPlan,
+} from "./capacity-retry.ts";
 import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
+  confirmHumanEcho,
   confirmReservedInjection,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  rekeyHumanEchoes,
+  releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  type HumanEchoTicket,
 } from "../injections.ts";
-import { getStandingInstructions, getTask as getDurableTask, taskSessionClosureForSession } from "../db.ts";
+import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
-import { noteSessionRestoring, observeSessionRestore } from "../telemetry/index.ts";
+import { noteSessionRestoring, observeSessionRestore, sessionTraceContext } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -164,12 +177,32 @@ export class SdkSupervisor {
   private stateHomes = new Map<string, string>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
-  /** Accepted launch-window prompts held until the driver reports their native Goal key. */
-  private pendingLaunchGoalPrompts = new Map<string, string[]>();
+  /**
+   * Accepted launch-window prompts held until the driver reports their native Goal key, each
+   * with its follow-up's expected-echo ticket (none for the launch prompt itself).
+   */
+  private pendingLaunchGoalPrompts = new Map<string, Array<{ prompt: string; ticket: HumanEchoTicket | null }>>();
   /** Native key for the original launch generation; absence means a clear discarded it. */
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
   private stopPromises = new Map<string, Promise<void>>();
+  /** Consecutive capacity failures per session; any turn that ends without one clears it. */
+  private capacityAttempts = new Map<string, number>();
+  /**
+   * A capacity retry waiting for its backoff to elapse.
+   *
+   * While one is present the failed turn has NOT been reported complete: the card stays
+   * working, the durable row keeps `turn_in_progress` so a restart continues the work, and
+   * nothing waiting on the turn (a workflow review, Foreman's completion check) is released
+   * with half-done work. `token` lets a fired timer tell whether it is still the current one;
+   * `attempt` and `reason` let a control that set the retry aside and then failed re-arm it.
+   */
+  private capacityRetries = new Map<string, {
+    token: object;
+    timer: ReturnType<typeof setTimeout>;
+    attempt: number;
+    reason: string;
+  }>();
   /** Exact readable live rows captured once before HTTP starts serving. */
   private preparedRestoreRows: SdkSessionRow[] | null = null;
   /** One serial startup pass, retained so shutdown can join its ownership boundary. */
@@ -226,6 +259,17 @@ export class SdkSupervisor {
         continue;
       }
       if (!sdkSessionIsLive(row) || transferForSource(row.id) || transferRetiredSource(row.id)) continue;
+      const launchTask = row.taskId ? getDurableTask(row.taskId) : null;
+      if (launchTask?.status === "cancelled" && launchTask.sessionId !== row.id && !taskIdForSession(row.id)
+        && !this.registry.outcomePrecedesSessionWork(launchTask, row.id)) {
+        // task_id is launch provenance, not current ownership. Reuse by another task
+        // wins over that history, as does a retained pointer or a newer work episode
+        // (Reset & clear cancels the old task while keeping the replacement agent).
+        // A detached cancellation with no owner must not launch or receive continuation.
+        setSdkSessionTurnInProgress(row.id, false);
+        this.registerAndEvict(row, "cancelled task no longer owns this session", "exited");
+        continue;
+      }
       const closure = taskSessionClosureForSession(row.id);
       const completedTask = closure ? getDurableTask(closure.taskId) : null;
       if (completedTask?.status === "done" && completedTask.sessionId === row.id) {
@@ -349,6 +393,11 @@ export class SdkSupervisor {
     launchPresentation?: LaunchPresentationInput;
     model: string | null;
     effort: ThinkingLevel | null;
+    /**
+     * The task's advisor pin. Optional so every existing caller is unchanged; omitted or
+     * null inherits the operator's Claude settings, as every launch before it did.
+     */
+    advisorModel?: AdvisorChoice | null;
     permissionMode: PermissionMode | null;
     mcp: MissionMcpDescriptor | null;
     /** A resident run's pinned MCP set; absent for every other launch. */
@@ -416,6 +465,7 @@ export class SdkSupervisor {
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
+        advisorModel: input.advisorModel,
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
         residentMcp: input.residentMcp ?? null,
@@ -428,6 +478,10 @@ export class SdkSupervisor {
         // prompt. Empty unless there is an out-of-band delivery to fall back FROM.
         standingInstructionsPrompt: outOfBandStanding ? input.standingInstructions!.fallbackPrompt : "",
         resume: null,
+        // Decided here, before the card exists, because the agent reads it once at launch.
+        // `mission.session.started` is captured under the same derived ids when this id is
+        // first published, so the agent's spans join that span's trace.
+        traceContext: sessionTraceContext(id),
       });
     } catch (error) {
       cleanupDisposableAgentStateHome(stateHome);
@@ -464,6 +518,7 @@ export class SdkSupervisor {
           taskId: input.taskId,
           model: input.model,
           effort: input.effort,
+          advisorModel: input.advisorModel,
           // The driver accepted turn one before `adopt` can persist anything. Recording it
           // here closes the startup window before the detached event pump catches up.
           turnInProgress: input.prompt.length > 0,
@@ -526,6 +581,7 @@ export class SdkSupervisor {
       taskId: string | null;
       model: string | null;
       effort: ThinkingLevel | null;
+      advisorModel?: AdvisorChoice | null;
       /** Carried on a RESUME, so the row keeps the identity it is being picked up from. */
       agentSessionId?: string | null;
       /** Carried on a resume; adopting a fresh handle must not forgive unfinished work. */
@@ -576,6 +632,7 @@ export class SdkSupervisor {
       taskId: durable.taskId,
       model: durable.model,
       effort: durable.effort,
+      advisorModel: durable.advisorModel,
       permissionMode: registration.permissionMode ?? null,
       status: "starting",
       turnInProgress: durable.turnInProgress,
@@ -593,7 +650,7 @@ export class SdkSupervisor {
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
     );
     if (input.acceptedInitialPrompt?.trim()) {
-      this.pendingLaunchGoalPrompts.set(registration.id, [input.acceptedInitialPrompt]);
+      this.pendingLaunchGoalPrompts.set(registration.id, [{ prompt: input.acceptedInitialPrompt, ticket: null }]);
       this.launchGoalNoteKeys.set(registration.id, null);
     }
     const pump = this.pump(registration.id, handle);
@@ -657,9 +714,27 @@ export class SdkSupervisor {
       setSdkSessionTurnInProgress(id, true);
       this.unfinishedTurns.set(id, unfinished + 1);
       this.acceptingTurns.add(id);
+      let humanEcho: HumanEchoTicket | null = null;
       try {
+        // A human follow-up has a second door: the agent's prompt hook reports the same text
+        // back, possibly before `handle.send` resolves. Registered here, inside the serialized
+        // boundary, so the work cycle it is stamped with is the one the driver sees. A
+        // follow-up sent in the launch window (`noteKey === id`) is registered too, under the
+        // key its echo will carry. The launch prompt itself never comes through here and keeps
+        // `isSeededLaunchEcho`.
+        const echoKey = acceptedGoal ? this.followUpEchoKey(id, acceptedGoal) : null;
+        if (acceptedGoal && echoKey !== null) {
+          humanEcho = expectHumanEcho(id, acceptedGoal.prompt, {
+            noteKey: echoKey,
+            cycle: this.registry.getSession(id)?.workCycle,
+          });
+        }
         const disposition = await handle.send(turn);
-        if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
+        // A delivered turn resumes the work, so a retry waiting on the same session would
+        // only repeat it. Cancelled only once the driver took the turn: a refused send must
+        // leave the retry in place, or nothing would ever finish the failed turn.
+        this.cancelCapacityRetry(id);
+        if (acceptedGoal) this.captureAcknowledgedGoal(id, acceptedGoal, humanEcho, disposition);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
           // for. Release this send's pessimistic reservation, while conservatively keeping
@@ -671,6 +746,8 @@ export class SdkSupervisor {
         }
         return disposition;
       } catch (err) {
+        // The driver rejected the turn, so no echo is coming for it either.
+        if (humanEcho) releaseHumanEcho(humanEcho);
         // The driver rejected the turn, so it will not produce a completion for the slot we
         // reserved. Retire exactly that slot; any older accepted turn remains recoverable.
         const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
@@ -705,6 +782,7 @@ export class SdkSupervisor {
       this.acceptingTurns.add(id);
       try {
         const disposition = await handle.sendIfIdle(turn);
+        if (disposition === "started") this.cancelCapacityRetry(id);
         if (disposition === null) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
           this.unfinishedTurns.set(id, remaining);
@@ -836,7 +914,21 @@ export class SdkSupervisor {
   clearContext(id: string): Promise<boolean> {
     return this.serialize(id, async (handle) => {
       if (!handle.clearContext) return false;
-      await handle.clearContext();
+      // A retry would continue the conversation being wiped, so it is set aside for the
+      // clear. The failed turn is NOT reported finished yet: a completion cannot be taken
+      // back, and a refused clear leaves that conversation live with its work unfinished.
+      const held = this.takeCapacityRetry(id);
+      const session = held ? this.registry.getSession(id) : undefined;
+      const oldConversation = session ? noteKeyFor(session) : undefined;
+      try {
+        await handle.clearContext();
+      } catch (err) {
+        if (held) this.rearmCapacityRetry(id, handle, held);
+        throw err;
+      }
+      // Recorded against the conversation the turn belonged to: the cleared binding may
+      // already have moved the card to its replacement.
+      if (held) this.settleCapacityRetry(id, oldConversation);
       return true;
     });
   }
@@ -891,8 +983,19 @@ export class SdkSupervisor {
     const handle = this.handles.get(id);
     if (!handle) return null;
     const running = (this.unfinishedTurns.get(id) ?? 0) > 0;
-    await handle.interrupt();
-    return running ? "interrupted" : "idle";
+    // A waiting capacity retry IS the session's unfinished work, and the card says working
+    // because of it. Stopping it is what the operator asked for; the driver itself is idle,
+    // so the failed turn is reported finished here or nothing ever would.
+    const held = this.takeCapacityRetry(id);
+    try {
+      await handle.interrupt();
+    } catch (err) {
+      // Nothing was stopped, so the retry still owns the unfinished turn.
+      if (held) this.rearmCapacityRetry(id, handle, held);
+      throw err;
+    }
+    if (held) this.settleCapacityRetry(id);
+    return running || held ? "interrupted" : "idle";
   }
 
   /** Queue-preserving interruption for an outbox claim, serialized with other input. */
@@ -951,6 +1054,7 @@ export class SdkSupervisor {
     const handle = this.handles.get(id);
     if (!handle) return Promise.resolve();
     this.stopping.add(id);
+    const heldRetry = this.takeCapacityRetry(id);
     const stopping = (async () => {
       await handle.stop();
       await this.pumps.get(id)?.catch(() => {});
@@ -965,7 +1069,10 @@ export class SdkSupervisor {
         this.stopPromises.delete(id);
         // A rejected stop left this same handle live. Make it reachable again; an
         // interactive join restores the card presentation in its own catch handler.
-        if (this.handles.get(id) === handle) this.stopping.delete(id);
+        if (this.handles.get(id) !== handle) return;
+        this.stopping.delete(id);
+        // Nothing settled the turn the retry was holding, so the live session needs it back.
+        if (heldRetry) this.rearmCapacityRetry(id, handle, heldRetry);
       },
     );
     return stopping;
@@ -1077,8 +1184,50 @@ export class SdkSupervisor {
     }
   }
 
-  /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
-  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
+  /**
+   * The acknowledging door for a human turn: capture it unless the prompt hook already did.
+   *
+   * The entry is marked captured only once this door's capture returned a goal. A refused
+   * prompt or a failed write leaves it confirmed, so a later echo still records the turn.
+   */
+  private captureAcknowledgedGoal(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    humanEcho: HumanEchoTicket | null,
+    disposition: SdkSendDisposition,
+  ): void {
+    if (!humanEcho) {
+      this.captureGoalBestEffort(id, accepted);
+      return;
+    }
+    if (confirmHumanEcho(humanEcho, { queued: disposition === "steered" }).captured) return;
+    if (this.captureGoalBestEffort(id, accepted, humanEcho)) markHumanEchoCaptured(humanEcho);
+  }
+
+  /**
+   * The conversation key a follow-up's prompt-hook echo will carry, or null when nothing will
+   * record the follow-up.
+   *
+   * A launch-window follow-up names the session id, which no hook reports. Once the launch
+   * generation has bound, that is its native key. Before it, the entry waits under the
+   * session id and the bind re-keys it. A clear discarded the generation, so its follow-ups
+   * are never recorded and need no expectation.
+   */
+  private followUpEchoKey(id: string, accepted: AcceptedGoalPrompt): string | null {
+    if (accepted.noteKey !== id) return accepted.noteKey;
+    if (!this.launchGoalNoteKeys.has(id)) return null;
+    return this.launchGoalNoteKeys.get(id) ?? id;
+  }
+
+  /**
+   * Goal persistence cannot turn an acknowledged driver send into a retryable failure.
+   * Answers whether a goal was recorded now; a launch-window prompt held for the bind is not.
+   */
+  private captureGoalBestEffort(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    ticket: HumanEchoTicket | null = null,
+  ): boolean {
     try {
       if (accepted.noteKey === id) {
         // A direct injection can be acknowledged on either side of the first `bound` event.
@@ -1086,23 +1235,23 @@ export class SdkSupervisor {
         // native key rather than the now-stale synthetic key. A clear deletes that generation
         // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
         // leaking into the replacement conversation.
-        if (!this.launchGoalNoteKeys.has(id)) return;
+        if (!this.launchGoalNoteKeys.has(id)) return false;
         const launchNoteKey = this.launchGoalNoteKeys.get(id);
         if (launchNoteKey === null || launchNoteKey === undefined) {
           const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
-          pending.push(accepted.prompt);
+          pending.push({ prompt: accepted.prompt, ticket });
           this.pendingLaunchGoalPrompts.set(id, pending);
-        } else {
-          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+          return false;
         }
-        return;
+        return this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey) !== null;
       }
-      this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
+      return this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey) !== null;
     } catch (err) {
       console.error(
         `[sdk] could not capture accepted Goal prompt for ${id}:`,
         err instanceof Error ? err.message : String(err),
       );
+      return false;
     }
   }
 
@@ -1227,6 +1376,9 @@ export class SdkSupervisor {
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,
+        // From the row, not the task: the relaunch renders the flag layer the first launch
+        // did, even if somebody has since edited the task's pin.
+        advisorModel: row.advisorModel,
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
@@ -1263,6 +1415,9 @@ export class SdkSupervisor {
         // and nothing is repeated.
         standingInstructionsPrompt: resumeStanding,
         resume: row.agentSessionId,
+        // The same session id derives the same parent, so the restored process continues the
+        // trace its first launch started rather than opening a second one.
+        traceContext: sessionTraceContext(row.id),
       });
       // A signal can arrive while a provider handshake is in flight. The handle is now ours,
       // but no real Registry session has been published yet, so stop and clean it at this
@@ -1296,6 +1451,7 @@ export class SdkSupervisor {
           taskId: row.taskId,
           model: row.model,
           effort: row.effort,
+          advisorModel: row.advisorModel,
           agentSessionId: row.agentSessionId,
           turnInProgress: row.turnInProgress,
           acceptedTurns: 0,
@@ -1439,9 +1595,13 @@ export class SdkSupervisor {
       if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return;
       try {
         const snapshot = await (this.deps.processSnapshot ?? listProcessesSnapshot)();
-        const process = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
-        if (!snapshot.unknownReason && process && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
-          recordSdkSessionProcess(id, { pid, startMs: process.startMs });
+        const child = snapshot.processes.find((p) => p.pid === pid && p.startMs > 0);
+        if (!snapshot.unknownReason && child && this.handles.get(id) === handle && handle.recoveryProcessId === pid) {
+          // Capture while this driver is owned. Fingerprinting a later lookup would
+          // bless a replacement PID; retaining raw argv could disclose credentials.
+          const darwinIdentity = process.platform === 'darwin'
+            ? darwinCheckIdentity(`${child.startRaw} ${child.command}`) : null;
+          recordSdkSessionProcess(id, { pid, startMs: child.startMs, ...(darwinIdentity ? {darwinIdentity} : {}) });
         }
       } catch { /* Missing inventory leaves the lifetime unknown, never a guessed exit. */ }
     };
@@ -1466,18 +1626,33 @@ export class SdkSupervisor {
           }
           this.recordTurnInProgress(id, true);
         }
+        let retryPending: string | null = null;
+        let holdWorkCycle = false;
         if (evt.kind === "turn_done" && !this.shuttingDown) {
           const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 0) - 1);
           this.unfinishedTurns.set(id, remaining);
-          this.recordTurnInProgress(id, remaining > 0);
+          // An accepted turn still waiting will run anyway and is the retry; only a session
+          // with nothing left to run needs one scheduled.
+          if (evt.failure?.kind === "capacity" && remaining === 0) {
+            retryPending = this.scheduleCapacityRetry(id, handle, evt.failure.message);
+          } else if (evt.failure?.kind === "capacity") {
+            // The queued turn is the retry, and the work is still unfinished until it ends.
+            holdWorkCycle = true;
+          } else if (!evt.failure) {
+            this.capacityAttempts.delete(id);
+          }
+          this.recordTurnInProgress(id, remaining > 0 || retryPending !== null);
           deferIdle = remaining > 0;
         }
+        // The driver is idle while a retry waits, but the work is not done. No current driver
+        // reports idle after a turn ends; this keeps one that does from releasing it early.
+        const heldIdle = evt.kind === "state" && evt.state === "idle" && this.capacityRetries.has(id);
         // Written when we LEARN it, not only when the stream closes: a driver reports its
         // exit and then ends, and a daemon that died between the two must not come back to a
         // row claiming this session is still running and resumable.
         if (evt.kind === "exited") setSdkSessionStatus(id, this.endStatus());
-        if (!this.shuttingDown) {
-          this.registry.applyDriverEvent(id, evt, { deferIdle });
+        if (!this.shuttingDown && !heldIdle) {
+          this.registry.applyDriverEvent(id, evt, { deferIdle, retryPending, holdWorkCycle });
           if (evt.kind === "bound") {
             // A clear replaces the conversation that accepted these launch-window prompts.
             // Never replay its objective under the replacement's native key.
@@ -1485,11 +1660,17 @@ export class SdkSupervisor {
             else if (this.launchGoalNoteKeys.get(id) === null) {
               this.launchGoalNoteKeys.set(id, evt.agentSessionId);
             }
+            // Launch-window follow-ups were expected under the session id; their echoes carry
+            // the native key from here on. A clear means nothing will record them.
+            rekeyHumanEchoes(id, id, evt.cleared ? null : evt.agentSessionId);
             const prompts = evt.cleared
               ? []
               : (this.pendingLaunchGoalPrompts.get(id) ?? []);
-            for (const prompt of prompts) {
-              this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+            for (const { prompt, ticket } of prompts) {
+              // The hook door may have reached a held follow-up first.
+              if (ticket && confirmHumanEcho(ticket).captured) continue;
+              const captured = this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+              if (captured && ticket) markHumanEchoCaptured(ticket);
             }
             this.pendingLaunchGoalPrompts.delete(id);
           }
@@ -1504,6 +1685,8 @@ export class SdkSupervisor {
       this.handles.delete(id);
       this.sends.delete(id);
       this.pumps.delete(id);
+      this.cancelCapacityRetry(id);
+      this.capacityAttempts.delete(id);
       this.unfinishedTurns.delete(id);
       this.acceptingTurns.delete(id);
       this.pendingLaunchGoalPrompts.delete(id);
@@ -1529,6 +1712,105 @@ export class SdkSupervisor {
           console.error(`[sdk] final eviction for ${id} failed:`, err);
         }
       }
+    }
+  }
+
+  /**
+   * Arrange the next capacity retry, and return the card's activity while it waits.
+   *
+   * Null when the attempts are spent: the turn is then reported complete like any other, so
+   * a model that stays down cannot hold a session busy for ever.
+   */
+  private scheduleCapacityRetry(id: string, handle: SdkSessionHandle, reason: string): string | null {
+    this.cancelCapacityRetry(id);
+    const attempt = (this.capacityAttempts.get(id) ?? 0) + 1;
+    const plan = capacityRetryPlan(attempt);
+    if (!plan) {
+      this.capacityAttempts.delete(id);
+      console.warn(`[sdk] ${id}: model still at capacity after ${attempt - 1} retries; giving up (${reason})`);
+      return null;
+    }
+    this.capacityAttempts.set(id, attempt);
+    const token = {};
+    const timer = setTimeout(() => void this.fireCapacityRetry(id, handle, token), plan.delayMs);
+    timer.unref?.();
+    this.capacityRetries.set(id, { token, timer, attempt, reason });
+    console.warn(
+      `[sdk] ${id}: model at capacity (${reason}); retrying in ${plan.delayMs / 1000}s ` +
+        `(attempt ${plan.attempt} of ${plan.maxAttempts})`,
+    );
+    return capacityRetryActivity(plan);
+  }
+
+  /** Send the continuation, through the same idle-only boundary every automated turn uses. */
+  private async fireCapacityRetry(id: string, handle: SdkSessionHandle, token: object): Promise<void> {
+    if (this.capacityRetries.get(id)?.token !== token) return;
+    this.capacityRetries.delete(id);
+    if (this.handles.get(id) !== handle || this.shuttingDown) return;
+    // Harness-authored, like the restart continuation: the agent's prompt echo must not be
+    // captured as the operator's Goal or read back to a workflow as their words.
+    reserveInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+    const busy = new Error("the driver was already running a turn");
+    try {
+      const started = await this.sendWhenIdle(id, { text: CAPACITY_CONTINUATION_PROMPT });
+      if (started !== "started") throw busy;
+    } catch (err) {
+      // Both ways in are positive evidence nothing was delivered: `sendWhenIdle` rejects only
+      // when its guard or the driver refused the turn, and null is the driver declining an
+      // idle-only turn because one was already running.
+      releaseInjection(id, CAPACITY_CONTINUATION_PROMPT);
+      // That already-running turn continues the work and its own completion settles the
+      // card, so there is nothing left to retry.
+      if (err === busy) return;
+      console.error(
+        `[sdk] capacity retry for ${id} could not be delivered:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      if (this.handles.get(id) === handle) this.settleCapacityRetry(id);
+      return;
+    }
+    confirmReservedInjection(id, CAPACITY_CONTINUATION_PROMPT, "harness");
+  }
+
+  /** Drop a waiting retry, returning what a failed control needs to re-arm it. */
+  private takeCapacityRetry(id: string): { attempt: number; reason: string } | null {
+    const pending = this.capacityRetries.get(id);
+    if (!pending) return null;
+    clearTimeout(pending.timer);
+    this.capacityRetries.delete(id);
+    return { attempt: pending.attempt, reason: pending.reason };
+  }
+
+  /** Drop a waiting retry. True when there was one. */
+  private cancelCapacityRetry(id: string): boolean {
+    return this.takeCapacityRetry(id) !== null;
+  }
+
+  /**
+   * Put back a retry a control set aside before it failed, at the same attempt, with the
+   * wait starting over. Only for a retry nothing has settled: the card is still working.
+   */
+  private rearmCapacityRetry(
+    id: string,
+    handle: SdkSessionHandle,
+    held: { attempt: number; reason: string },
+  ): string | null {
+    if (this.handles.get(id) !== handle || this.shuttingDown) return null;
+    this.capacityAttempts.set(id, held.attempt - 1);
+    return this.scheduleCapacityRetry(id, handle, held.reason);
+  }
+
+
+  /**
+   * Report the turn a cancelled retry was holding open as finished after all, against
+   * `workCycleKey` when the conversation it belonged to may no longer be the card's.
+   */
+  private settleCapacityRetry(id: string, workCycleKey?: string): void {
+    this.capacityAttempts.delete(id);
+    const remaining = this.unfinishedTurns.get(id) ?? 0;
+    this.recordTurnInProgress(id, remaining > 0);
+    if (!this.shuttingDown && remaining === 0) {
+      this.registry.applyDriverEvent(id, { kind: "turn_done", usage: null }, { workCycleKey });
     }
   }
 

@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "jira",
+    "auth",
+    "status"
+  ],
+  "code": 0,
+  "stdout": "✓ Authenticated\n  Site: example.atlassian.net\n  Email: operator@example.invalid\n  Authentication Type: oauth\n",
+  "stderr": ""
+}

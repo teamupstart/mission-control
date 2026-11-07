@@ -27,6 +27,7 @@ import {
   TaskPipelineRunTileFlag,
 } from "../session-bits.tsx";
 import { EffortPicker } from "../EffortPicker.tsx";
+import { LaunchFailureNotice } from "../LaunchFailures.tsx";
 import { Keycap } from "../Keycap.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
@@ -397,11 +398,15 @@ export function SessionTile({
         {jump && <Keycap chord={jump} />}
       </span>
 
-      {resident?.loop && <span className="resident-card-loop" onClick={(event) => event.stopPropagation()}>
-        <ResidentLoopStatusLine loop={resident.loop} />
-        <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
-          {() => <ResidentLoopControls mark={resident} menu />}
-        </SessionToolbarMenu>
+      {/* The menu's popover is portalled, and React still bubbles a portal's clicks through
+          this tree, so without the stop every menu action would also open the session. */}
+      {resident?.loop && <span className="resident-card-loop">
+        <ResidentLoopStatusLine loop={resident.loop} session={session} />
+        <span className="resident-card-loop-menu" onClick={(event) => event.stopPropagation()}>
+          <SessionToolbarMenu label="Resident controls" title="Resident controls" icon={<span aria-hidden>⋯</span>}>
+            {() => <ResidentLoopControls mark={resident} menu />}
+          </SessionToolbarMenu>
+        </span>
       </span>}
 
       {shown("goal") && session.goal?.text && (
@@ -552,6 +557,10 @@ export function SessionTile({
           {shown("cost") && <CostChip cost={session.cost} />}
         </span>
       )}
+
+      {/* A launch that failed after this session was created: the session stays, and this is
+          the one place its card can say why. Draws nothing for every other session. */}
+      <LaunchFailureNotice sessionId={session.id} />
 
       {foot && (
         <span className="tile-foot">

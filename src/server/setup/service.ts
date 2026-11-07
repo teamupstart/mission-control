@@ -1,6 +1,8 @@
+import { enableMcpTrust } from "./mcp-trust.ts";
 import {
   SETUP_SERVICE_INFO,
   type SetupServiceId,
+  type SetupServicePrerequisite,
 } from "@shared/setup-catalog.ts";
 
 import { cmuxAppStart } from "../terminal/cmux.ts";
@@ -36,11 +38,17 @@ export interface SetupServiceResult {
   outcome: SetupServiceOutcome;
   label: string;
   detail: string;
+  /** A different named repair this start needs first; see `SETUP_SERVICE_PREREQUISITES`. */
+  prerequisite?: SetupServicePrerequisite;
 }
 
-export type SetupServiceStarters = Record<SetupServiceId, () => Promise<TerminalResult>>;
+export type SetupServiceStartResult = TerminalResult & { prerequisite?: SetupServicePrerequisite };
+
+export type SetupServiceStarters = Record<SetupServiceId, () => Promise<SetupServiceStartResult>>;
 
 export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = {
+  "claude-mcp-trust": async () => enableMcpTrust("claude"),
+  "codex-mcp-trust": async () => enableMcpTrust("codex"),
   "herdr-server": () => herdrServerStart(),
   "cmux-app": () => cmuxAppStart(),
   "cmux-socket-control": async () => {
@@ -72,7 +80,7 @@ export async function startSetupService(
         service,
         outcome: "started",
         label,
-        // The service's own sentence, because only two of the three start a process and a
+        // The service's own sentence, because configuration repairs start no process and a
         // sentence built around the label claimed all of them did.
         detail: started,
       },
@@ -90,6 +98,7 @@ export async function startSetupService(
       outcome: unknown ? "unknown" : "refused",
       label,
       detail: result.error ?? refused,
+      ...(result.prerequisite ? { prerequisite: result.prerequisite } : {}),
     },
   };
 }

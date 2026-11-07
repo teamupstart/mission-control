@@ -47,17 +47,19 @@ every egress guard the read path applies applies here unchanged.
 Product reports are public GitHub issues, not private support messages. The agent tool is defined
 for use only after the user explicitly requests a report, shows the daemon-derived public content in an
 `input` review, and calls the mutation route only after a human selects **Submit public issue**.
-Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
+Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
+nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control through a capability claimed once as the authorization module loads and retained only in
-that module's closure, outside the React hot-refresh boundary. The owned control requires a
-trusted native click before it uses the capability with the current preview's request id and
-draft identity. Synthetic clicks, implicit form submits,
+publicly** press or Cmd+Enter / Ctrl+Enter. The context-isolated Electron preload captures the
+trusted input event through a capability claimed once as the authorization module loads and
+retained only in that module's closure, outside the React hot-refresh boundary. The dialog requires a
+trusted native input event before it uses the capability with the current preview's request id and
+draft identity. Synthetic clicks and key events, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
-dashboard web contents, with the preload requiring a trusted click still in dispatch.
+dashboard web contents, with the preload requiring a trusted click or non-repeating,
+non-composing Cmd+Enter / Ctrl+Enter still in dispatch.
 A held press remains valid even if Chromium's transient user activation expires before release;
 synthetic clicks and calls after dispatch ends remain refused. It shows no
 second dialog. The daemon then asks
@@ -66,7 +68,7 @@ port. An authorization is short-lived and single-use, so another loopback proces
 call the confirmation route but cannot produce the private reply that mints a grant.
 
 The daemon keeps preview and mutation separate internally. Previewing never returns a publish
-token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+token. After the shell authorizes the Report action, the daemon mints a grant pinned to one report
 opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
 labels, source, environment and body at submission prevents a configuration change between
 preview and publication from sending content the form did not show. The request id and submission
@@ -136,7 +138,12 @@ there is no signing and no trust badge.
 What that does not cover is the content itself. Mission Control does not encrypt the scout
 library, an archive can hold whatever the investigation touched, and a synchronised folder
 takes its contents wherever it goes. Deletion is explicit and local.
+## MCP task reads
 
+The read-only backlog MCP tools `list_tasks` and `get_task` use the same daemon-token
+boundary as task creation and editing. They read saved task configuration and durable pull
+request references, including completed tasks. They do not expose session transcripts or
+private session state and do not require the session-control grant below.
 
 ## Delegated session control
 
@@ -149,7 +156,7 @@ resident profile whose pinned revision turns **Control other sessions** on (see
 surface and session-control tools cannot create one. Resetting or replacing that identity
 revokes it.
 
-The MCP read/action endpoints require both the machine token and the existing signed
+The delegated session-control MCP read/action endpoints require both the machine token and the existing signed
 Registry session credential. A public session id, working directory, task credential, or
 machine token alone cannot select a controller. The daemon checks the current grant and
 live credential binding on every request, then translates a closed set of typed operations
@@ -175,19 +182,23 @@ to that daemon. Stop the standalone daemon and reopen the app to use the menu.
 ### Resident launch grants
 
 A resident profile's **Control other sessions** setting is off by default and grants nothing on
-its own. It lets one thing give a resident run the grant above: the operator's **Launch** click
-in the desktop app.
+its own. It lets the operator's **Launch** or **Restart on new profile** click in the desktop
+app give a resident run the grant above. Restart authorizes the replacement launch, never
+copies the old run's grant.
 
 - **The click.** Inside the click, before the launch request is sent, the dashboard arms a
   single-use authorization bound to that launch's request id, the profile id and the profile
   revision. It uses the same private preload capability and trusted-click check as the session
   menu, through its own channel registered with `serveDashboardClick`. It expires after 15
   seconds and is cleared when the daemon is replaced.
-- **The consumption.** Only the resident launch route asks the shell for it, over the private
+- **The consumption.** The resident launch and profile-restart routes ask the shell for it through
+  `ResidentManager.launch`, over the private
   utility-process channel. It asks once, for the request that reserved the run, when the run's
   pinned revision turns control on, and for the revision the run pinned. A request carrying the
   machine token, a signed agent credential, an agent actor header or a non-loopback origin never
   consumes a click. A replay is answered from the run row and asks for nothing.
+  The ordinary launch route rejects the reserved `resident-restart:` request-id namespace before
+  reserving a run or consuming a click, so it cannot claim a pending restart authorization.
 - **The grant.** The daemon records on the run (`resident_runs`) when the click was consumed. It
   then applies the existing Registry grant to the run's session once that session has a full
   identity bound to the run's task, and records the conversation, working directory and work
@@ -207,8 +218,9 @@ in the desktop app.
   record, so a restart cannot restore it.
 
 A launch from the standalone browser, from a desktop app that adopted a standalone daemon, or
-from any caller other than that click starts without control. Dispatch, the Residents dock and
-the Console band say so, and the session's menu stays the only way to grant control afterwards.
+from any caller other than that click starts without control. Dispatch says so before a launch
+from the standalone browser, the Residents dock and the Console band say so after any launch, and
+the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
 are available without the grant; cross-session access requires **Control other sessions** on
@@ -249,8 +261,9 @@ that run's starts, and removed when the run ends.
 **No secret on a command line, in a configuration file or in the agent's environment.** Each
 harness's MCP configuration is passed as process arguments (Claude Code's `--mcp-config`) or
 written to a file (the Codex overlay's `config.toml`), and whatever enters the agent's
-environment is inherited by every shell and tool it runs. So a global server, and a custom server
-with any secret, is rendered as an entry for Mission's scoped launcher, whose arguments name only
+environment is inherited by every shell and tool it runs. So a usable global server (except the Claude
+Code remote server described after this list), and a custom server with any secret, is rendered
+as an entry for Mission's scoped launcher, whose arguments name only
 the run, the server's name and a credential file:
 
 - For each process start the daemon writes one credential file per launcher entry in the run's
@@ -263,18 +276,38 @@ the run, the server's name and a credential file:
 - A stdio server is started with its values in its own environment only. For an HTTP server the
   launcher is a stdio bridge that adds the headers and query values to every request itself,
   an SSE server's message endpoint included, only to the configured origin: a redirect within it is
-  followed, one to another origin is refused.
+  followed, one to another origin is refused. The bridge verifies the server's certificate against
+  Node's own roots, any `NODE_EXTRA_CA_CERTS` it inherited, and the operating system's certificate
+  store, so a server reached through a TLS-inspecting proxy whose root the machine already trusts
+  connects even though the operator's shell configuration never reaches the daemon. Verification
+  is never turned off.
 - Secret headers and query values travel only over `https`, or over plain `http` to this machine's
   loopback. A custom server that would send them elsewhere in the clear is refused at save, a
   global one is unavailable to residents, and the launcher refuses either before any request.
 - A missing, spent or expired ticket, or a run that has ended, starts nothing.
 
+One kind of global server is handed to the harness itself instead: a Claude Code remote (`http`
+or `sse`) server with no header and no URL query, user name, password or fragment, whose URL is
+`https` or plain `http` to this machine's loopback and whose path has no segment shaped like a key
+(`credentialShapedPath`). A login is a credential, so one on plain `http` to another host stays on
+the launcher, which presents none; a fragment, which the launcher drops, can carry a token, so a
+URL with one is never copied as written; and a key-shaped path means the URL itself is the
+credential, so that server keeps its URL private behind the launcher too. It holds no value to
+protect, and it may be one Claude Code signs in to with OAuth, a login only Claude Code's own
+transport can present. Claude Code keys that stored login by the server's name and a hash of its
+type, URL and headers as configured, so the entry carries exactly those, with an empty header
+table. The trade-off is that this server's URL, and only its URL, appears in the agent's
+launch-scoped MCP configuration (`--mcp-config`) instead of staying private to the launcher. The
+login itself never passes through Mission Control: Claude Code reads it from its own credential
+store. `strictMcpConfig` pins the set exactly as for every other server.
+
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
 the agent itself inherits, so a global server that uses one is not available to residents: its
-value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or one whose
-authentication the harness holds (an OAuth login). Claude Code's configuration does not mark such a
-server, so it cannot connect through the launcher, and the start is refused, naming it. A custom server's argument in a credential
+value would already be readable by the agent's shells. So is a global server with a credential-shaped argument, or a Codex
+server whose OAuth login Codex holds. A Claude Code server behind an OAuth login is handed to
+Claude Code itself, as above; when Claude Code has no usable login for it, the start is refused,
+naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
 

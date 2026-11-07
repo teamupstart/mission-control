@@ -12,7 +12,7 @@ import { inspectMigrationIntegrations, repairMigrationIntegrations } from "./mig
 // hides-on-close and keeps a menu-bar presence so alerts fire with no window
 // open. The daemon and UI are reused unchanged.
 
-import { app, dialog, ipcMain, session, shell } from "electron";
+import { app, dialog, ipcMain, Notification, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -21,9 +21,14 @@ import { stateDir, PORT } from "@shared/harness-runtime.mjs";
 import { startDaemon } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
 import {
+  BACKGROUND_DRAIN_TIMEOUT_MS,
+  drainBackgroundStart,
   ownElectronBackgroundStart,
   type BackgroundStartOwnership,
 } from "./daemon-policy.ts";
+import { announceStartupNotice } from "./startup-notice.ts";
+import { showStartupNoticeWindow } from "./startup-notice-window.ts";
+import { holdQuitUntilDrained } from "./quit-drain.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
@@ -32,6 +37,7 @@ import { installIntegrations, removeIntegrations, migrationIntegrationPorts } fr
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
+import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -100,7 +106,7 @@ function readInstallState(): { identity: InstallIdentity; receipt: InstallReceip
 let runtimeReady = false;
 let migratedStartup = false;
 let requireFreshDaemon = false;
-const startupGate = () => runningBundle
+const startupGate = (): ReturnType<typeof migrationStartupGate> => runningBundle
   ? migrationStartupGate({stateDirectory: existsSync(stateDir()) ? realpathSync(stateDir()) : stateDir(), runningBundle,
       nonce: process.argv.includes("--mission-migration") ? process.argv[process.argv.indexOf("--mission-migration") + 1] : undefined, port: PORT})
   : Promise.resolve({proceed: true, committed: false, fresh: false});
@@ -253,6 +259,8 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair(true) : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
+  ipcMain.handle("mission:update-dismiss-outcome", (event, outcome) =>
+    event.sender === getMainWindow()?.webContents && updateController.dismissOutcome(outcome));
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
   // pushes an announcement and an answer rather than invoking for a result. Both are
   // refused from any sender but the dashboard's own contents, the way the product-issue
@@ -277,6 +285,9 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:card-jump-keys", (_e, claimed: boolean) => {
     setRendererOwnsNumberRow(claimed === true);
   });
+  // The skin's background, reported by `src/web/lib/skin.ts` whenever a skin is applied, and
+  // repainted behind the page. The next launch's colour is the daemon's, from the stored skin.
+  registerWindowBackgroundIpc(ipcMain, getMainWindow);
 }
 
 app.on("second-instance", () => { if (runtimeReady) showWindow(paths.preload); });
@@ -301,9 +312,20 @@ function stopShell(): void {
   stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
-  backgroundStart?.stop();
 }
-app.on("before-quit", stopShell);
+
+/**
+ * Stop the daemon and Foreman and wait, bounded, for them to finish their own shutdown - which is
+ * where workflow checks are torn down. `holdQuitUntilDrained` (`quit-drain.ts`) says why every
+ * quit must wait for it.
+ */
+function drainBackground(): Promise<void> {
+  return drainBackgroundStart(backgroundStart, BACKGROUND_DRAIN_TIMEOUT_MS).then((result) => {
+    if (result === "timed-out") logMain(`background processes did not exit within ${BACKGROUND_DRAIN_TIMEOUT_MS}ms of quitting; leaving them to Electron`);
+  });
+}
+
+holdQuitUntilDrained(app, {beforeQuit: stopShell, owned: () => backgroundStart !== null, drain: drainBackground});
 
 app.whenReady().then(async () => {
   let temporaryInstall = false;
@@ -332,7 +354,22 @@ app.whenReady().then(async () => {
   }
   try {
     const gate = await startupGate();
-    if (!gate.proceed) { app.exit(0); return; }
+    if (!gate.proceed) {
+      if (gate.notice) {
+        await announceStartupNotice(gate.notice, {
+          supported: () => Notification.isSupported(),
+          show: (body, onShown) => {
+            const notice = new Notification({title: "Mission Control", body, silent: true});
+            notice.once("show", onShown);
+            notice.show();
+          },
+          fallback: showStartupNoticeWindow,
+          log: logMain,
+        });
+      }
+      app.exit(0);
+      return;
+    }
     migratedStartup = gate.committed;
     requireFreshDaemon = gate.fresh || process.argv.includes("--mission-binary-first-launch");
     const startup = startPackagedShell({app, identity: () => readInstallState().identity, log: (line) => console.error(line)});
@@ -392,6 +429,10 @@ app.whenReady().then(async () => {
   if (runningBundle) observeUpdateLaunch(mainWindow.webContents, runningBundle, stateDir());
   updater = new UpdateController(
     createDefaultUpdaterPort({
+      userDataDirectory: app.getPath('userData'),
+      processNames: () => Object.fromEntries(app.getAppMetrics().map((metric) => [
+        metric.pid, metric.name || metric.serviceName || metric.type,
+      ])),
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,
@@ -441,8 +482,9 @@ app.whenReady().then(async () => {
       dialog.showErrorBox("Personal installation needs recovery", "The personal installation committed, but its runtime could not start. Stop any older background daemon, then reopen the personal app. The retained system app will not be started against the upgraded state.");
     } finally {
       // exit releases the single-instance lock without emitting before-quit.
-      // Stop owned workers explicitly so reopening can attempt a fresh startup.
-      try { stopShell(); } finally { app.exit(1); }
+      // Stop owned workers explicitly, and wait for them, so reopening can attempt a fresh
+      // startup instead of meeting a daemon that is still shutting down.
+      try { stopShell(); } finally { void drainBackground().finally(() => app.exit(1)); }
     }
   }
 });

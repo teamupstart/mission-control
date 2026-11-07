@@ -8,7 +8,9 @@ import { join, relative } from 'node:path';
 import { prepareStagedInstall, installStagedApp, inspectBundle } from '../scripts/install-staged-app.mjs';
 import { prepareInPlaceInstall, runMigration, migrationReceipt } from '../scripts/install-migration.mjs';
 import { spawnBundledUpdateHelper } from '../scripts/update-helper-runtime.mjs';
-import { realApplyOperations } from '../scripts/apply-update.mjs';
+import { realApplyOperations, runApplyUpdate } from '../scripts/apply-update.mjs';
+import { waitForBundleExit, type MacAppOps } from '../scripts/mac-app-lifecycle.mjs';
+import { processFingerprint } from '../scripts/update-process-owners.mjs';
 
 /** Every entry's path and permission bits, which is what the install digest hashes. */
 function bundleModes(bundle: string) {
@@ -182,4 +184,69 @@ test('the update helper backup and restore copies keep the app at its own modes 
   copy(backup, restored);
   assert.deepEqual(bundleModes(restored), expected, 'the helper restore copy lost the original modes');
   assert.equal(inspectBundle(restored).digest, digest);
+});
+
+test('reopening an in-place update with a live owner exits promptly and leaves the transaction alone', async (t) => {
+  const {migrationStartupGate} = await import('../scripts/migration-runtime.mjs');
+  const f = fixture(t, false);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  let gate: {proceed: boolean} | undefined;
+  f.ports.waitForParent = async () => {
+    gate = await migrationStartupGate({stateDirectory: f.stateDirectory, runningBundle: f.app, port: 1});
+    assert.equal(gate.proceed, false);
+  };
+  const result = await runMigration(plan, f.ports);
+  assert.equal(result.committed, true);
+  assert.equal(gate?.proceed, false);
+});
+
+test('in-place rollback preserves the blocking process diagnostic in the durable outcome', async (t) => {
+  const f = fixture(t, false);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const reason = 'Mission Control bundle processes did not exit: 39896 (Mission Control Helper; parent 1)';
+  f.ports.waitForParent = async () => { throw new Error(reason); };
+  const result = await runMigration(plan, f.ports);
+  assert.equal(result.committed, false);
+  assert.equal(result.error, reason);
+  const outcome = JSON.parse(readFileSync(join(f.stateDirectory, 'update-outcome.json'), 'utf8'));
+  assert.ok(outcome.message.includes(reason));
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+});
+
+for (const work of [
+  'workflow check test, attempt check-123, run run-456, session sdk:789',
+  'Mission Control orphaned Node utility',
+  'Mission Control session sdk:orphan, task task-789',
+]) test(`a pre-replacement blocker restores the usable app and names its work in outcome and log: ${work}`, async (t) => {
+  const f = fixture(t, false);
+  const plan = prepareInPlaceInstall({descriptor: f.descriptor, stateDirectory: f.stateDirectory});
+  const handoff = join(f.root, 'handoff.json');
+  writeFileSync(handoff, JSON.stringify({plan, parent: {pid: 42, identity: 'parent'}, port: 1}));
+  const logPath = join(f.stateDirectory, 'update.log');
+  const identity = 'exact check process';
+  const mac = {now: () => 0, sleep: async () => {}, identity: () => identity,
+    run: async () => ({code: 0, stdout: `39896 1 S ${f.app}/Contents/MacOS/Mission Control\n`}),
+  } as unknown as MacAppOps;
+  let waits = 0;
+  let reopened = '';
+  const result = await runApplyUpdate({migrationPlan: handoff, sourceApp: plan.source, targetApp: plan.target,
+    sourceClone: plan.oldReceipt.sourceClone!, appPath: f.app, stateDirectory: f.stateDirectory,
+    logPath, targetTag: 'v1.26.0', parentPid: 42, stagedBundle: plan.stagedBundle, stagedRevision: plan.stagedRevision,
+  }, {...realApplyOperations(logPath), showProgress: () => () => {}, preflightAll: async () => {},
+    migrationPorts: () => ({...f.ports, launchSource: async (source) => { reopened = source; }}),
+    waitForBundle: async () => {
+      waits++;
+      await waitForBundleExit(f.app, mac, 0, undefined, [{pid: 39896, fingerprint: processFingerprint(identity)!, group: true, work}]);
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(waits, 1, 'rollback must not restart the failed wait against an untouched bundle');
+  assert.equal(reopened, f.app, 'the previous app is reopened without manual cleanup or retry');
+  assert.equal(readFileSync(f.receiptPath, 'utf8'), f.oldBytes);
+  const outcome = JSON.parse(readFileSync(join(f.stateDirectory, 'update-outcome.json'), 'utf8'));
+  for (const text of [outcome.message, readFileSync(logPath, 'utf8')]) {
+    assert.match(text, /39896/);
+    assert.ok(text.includes(work), text);
+    assert.doesNotMatch(text, /Close them|retrying|Manual recovery/);
+  }
 });

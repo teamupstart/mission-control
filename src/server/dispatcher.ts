@@ -3,6 +3,12 @@ import type { ResidentMcpLaunch } from "./harness/types.ts";
 import { reserveTaskPlans } from "./plans/store.ts";
 import { localWorkflowProblem } from "./plans/publication.ts";
 import { isActiveTask } from "@shared/task-status.ts";
+import {
+  hasOpenLaunchFailure,
+  launchWorkKey,
+  newLaunchFailure,
+  type TaskLaunchFailure,
+} from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess } from "./terminal/launch-process.ts";
@@ -10,6 +16,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
+  AdvisorChoice,
   AgentType,
   PermissionMode,
   Session,
@@ -49,6 +56,7 @@ import { injectPrompt } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import {
   getHarnessesConfig,
+  resolveDispatchAdvisor,
   resolveDispatchEffort,
   resolveDispatchModelWithTier,
   resolveDispatchRuntime,
@@ -70,6 +78,7 @@ import {
 import type { Registry } from "./registry.ts";
 import { verifyHeadIs } from "./git/ensemble-snapshot.ts";
 import { freshRemoteDefaultSha, originConfigured } from "./git/remote-default.ts";
+import { stackPrInstruction } from "./stacking/lineage.ts";
 import { FULL_SHA } from "./workflows/commit-id.ts";
 import {
   kindMissionMcpRequirement,
@@ -106,7 +115,8 @@ import {
   recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
-import { updatePipelineCommissionRecovery } from "./db.ts";
+import { updatePipelineCommissionRecovery, getTask as getDurableTask, taskWorkEpisodeForTask, recordTaskRepoChanges } from "./db.ts";
+import { taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import type {
   PipelineEngineerLifecycle,
   PipelineEngineerRunSnapshot,
@@ -337,6 +347,11 @@ export class Dispatcher {
        */
       residentMcp?: (task: Task) => ResidentMcpLaunch | null;
       /**
+       * The resident profile a resident task launched from, recorded on its launch failure so
+       * the failed tile can launch that profile again. Null when it cannot be named.
+       */
+      residentProfileId?: (task: Task) => string | null;
+      /**
        * Which commit each of the task's repositories is frozen at before provisioning.
        *
        * A seam only so a focused test can prove the ORDERING - that a base failure happens
@@ -389,6 +404,9 @@ export class Dispatcher {
     this.patch(taskId, {
       status: "dispatching",
       error: null,
+      // A new attempt: whatever the last one failed of is no longer this task's state, and a
+      // failure of this one writes its own record below.
+      launchFailure: null,
       dispatchedAt: task.dispatchedAt ?? Date.now(),
       // A retry must prove its new provider run instead of inheriting the prior attempt's
       // slug and completing against a projection it did not launch.
@@ -652,6 +670,9 @@ export class Dispatcher {
           planSkills: planSkills?.ok ? planSkills.commands : null,
           workflowEvidence,
           planDiscovery,
+          // A stacked launch was just pinned to its prerequisite's open pull request, so the
+          // base it names is that pull request's branch. `undefined`: no episode exists yet.
+          stackInstruction: stackPrInstruction(provisioned, undefined),
         });
       const intent = composeTurnOne(standingPrefix);
       // The SAME turn one with the block in the SAME slot, for an out-of-band pair whose
@@ -695,6 +716,11 @@ export class Dispatcher {
         task.kind,
       );
       const effort = resolveDispatchEffort(task.agent, task.effort, task.kind, model);
+      // The advisor, rendered by the harness that declares it on BOTH arms below. Resolved
+      // against the model THIS launch resolved, because Settings -> Harnesses chooses it per
+      // model. Null renders nothing at all, so an Inherit launch is byte-identical to one
+      // from before.
+      const advisor = resolveDispatchAdvisor(task, model);
       resolution = {
         agent: task.agent,
         runtime,
@@ -722,6 +748,7 @@ export class Dispatcher {
           wt,
           model,
           effort,
+          advisor,
           missionMcp,
           intent,
           extraDirs,
@@ -740,6 +767,12 @@ export class Dispatcher {
       const stateHome = createDisposableAgentStateHome();
       pendingAgentStateHome = stateHome;
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
+      // `--settings` is single-valued and nothing else in this argv renders it, so the
+      // advisor's flag-layer object can own the flag outright. Whoever adds a second
+      // contributor merges into one JSON value here, the way `systemPromptAppendArgs` does.
+      const advisorSpec = harnessFor(task.agent).advisor;
+      const advisorArgs = advisor ? (advisorSpec?.launchArgs(advisor) ?? []) : [];
+      const advisorEnv = advisor ? (advisorSpec?.launchEnv(advisor) ?? {}) : {};
       // "Auto mode on dispatch" as a LAUNCH FLAG (`--permission-mode auto` for Claude),
       // not a post-launch Shift+Tab walk. The walk read the mode off the pane's footer,
       // which a fresh session's folder-trust dialog hides, so it gave up and the session
@@ -818,6 +851,7 @@ export class Dispatcher {
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
+        ...advisorArgs,
         ...modeArgs,
         ...askArgs,
         ...extraDirArgs,
@@ -892,6 +926,7 @@ export class Dispatcher {
           agentArgs,
           stateHome,
           terminalBackend,
+          advisorEnv,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
@@ -1044,6 +1079,9 @@ export class Dispatcher {
         outcome: "failed",
       });
       const message = err instanceof Error ? err.message : String(err);
+      // Read off `cur` before any branch below tears its resources down, so the record names
+      // the phase this attempt actually reached.
+      const launchFailure = this.launchFailureFor(cur);
       // The same resource proof startup reconciliation uses, restricted to the base-freeze
       // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no
       // hidden agent or checkout, so put backlog-capable work back where the operator is
@@ -1055,6 +1093,7 @@ export class Dispatcher {
         this.patch(taskId, {
           status: returnsToBacklog ? "backlog" : "failed",
           error: message,
+          launchFailure,
           sessionId: null,
           ...(returnsToBacklog ? { dispatchedAt: null } : {}),
         });
@@ -1081,6 +1120,9 @@ export class Dispatcher {
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
+          // Its agent and worktree are kept, so this failure is answered by opening or
+          // cancelling it - never by a retry that would reclaim them.
+          launchFailure: { ...launchFailure, sessionKept: true },
           error:
             alive === true
               ? embedded === true
@@ -1094,6 +1136,7 @@ export class Dispatcher {
         this.patch(taskId, {
           status: "failed",
           error: message,
+          launchFailure,
           sessionId: null,
         });
         await this.teardownTaskResources(taskId, cur, message);
@@ -1524,6 +1567,7 @@ export class Dispatcher {
           launchPresentation: { prompt: engineerPrompt, displayText: task.intent },
           model: null,
           effort: null,
+          advisorModel: null,
           permissionMode: dispatchPermissionMode(task.agent),
           mcp,
           extraDirs: [],
@@ -1748,6 +1792,7 @@ export class Dispatcher {
     wt: DispatchWorkspace,
     model: string | null,
     effort: ThinkingLevel | null,
+    advisorModel: AdvisorChoice | null,
     missionMcp: MissionMcpRequirement | null,
     /** Turn one, already carrying the repo manifest when the task has attached repos. */
     intent: string,
@@ -1837,6 +1882,7 @@ export class Dispatcher {
       launchPresentation: { prompt: intent, displayText: task.intent },
       model,
       effort,
+      advisorModel,
       permissionMode: dispatchPermissionMode(task.agent),
       mcp,
       residentMcp,
@@ -2203,6 +2249,34 @@ export class Dispatcher {
   }
 
   /** Merge fields onto the CURRENT registry task, never a stale local snapshot. */
+  /** This attempt's launch-failure record, as `cur` stood when it failed. */
+  private launchFailureFor(cur: Task, sessionKept = false): TaskLaunchFailure {
+    const resident = TASK_KIND_BEHAVIOR[cur.kind].launch === "resident";
+    return newLaunchFailure(cur, Date.now(), resident ? this.deps.residentProfileId?.(cur) ?? null : null, sessionKept);
+  }
+
+  /**
+   * The same work just started, so its earlier launch failures are answered: dismiss them.
+   *
+   * "The same work" is `launchWorkKey` - the resident profile for a resident, otherwise kind,
+   * repository and title - so a retry filed as a new task (a chat, a resident launched again
+   * from its profile) clears the failure it was retrying, and an unrelated task that failed
+   * the same way, or another profile that happens to share a name, is left alone.
+   */
+  private settleEarlierLaunchFailures(taskId: string): void {
+    const started = this.registry.getTask(taskId);
+    if (!started) return;
+    // A resident's work is the profile it launched from, which this attempt carries no record
+    // of - so it is asked for, the same way a failure records it.
+    const resident = TASK_KIND_BEHAVIOR[started.kind].launch === "resident";
+    const key = launchWorkKey(started, resident ? this.deps.residentProfileId?.(started) ?? null : null);
+    const now = Date.now();
+    for (const t of this.registry.listTasks()) {
+      if (t.id === taskId || !hasOpenLaunchFailure(t) || launchWorkKey(t) !== key) continue;
+      this.registry.upsertTask({ ...t, launchFailure: { ...t.launchFailure!, dismissedAt: now }, updatedAt: now });
+    }
+  }
+
   private patch(taskId: string, fields: Partial<Task>): void {
     const cur = this.registry.getTask(taskId);
     if (!cur) return;
@@ -2213,6 +2287,12 @@ export class Dispatcher {
     // bound" exactly once.
     if (cur.sessionId === null && typeof fields.sessionId === "string") {
       this.notifySessionBound(taskId);
+    }
+    // The other transition with a consequence beyond this row: the launch started. Read here
+    // rather than at each launch arm, because there are several - terminal, embedded, managed
+    // pipeline host - and an arm that forgot would leave its retried failure on the board.
+    if (cur.status === "dispatching" && fields.status === "running") {
+      this.settleEarlierLaunchFailures(taskId);
     }
   }
 
@@ -2650,6 +2730,24 @@ export async function teardownWorktree(
       }
     }
   }
+  // Freeze change evidence after the agent is stopped, before any checkout is removed.
+  // Resource cleanup may clear paths and baselines; that cannot make unshipped work vanish.
+  const source = taskId ? getDurableTask(taskId) : undefined;
+  const binding = source && taskWorkEpisodeForTask(source.id);
+  if (source && binding && source.extraRepos.length > 0) {
+    const refs = taskRepoRefs(source);
+    const changes = await Promise.all(refs.map(async ref => {
+      if (!ref.worktreePath || !trees.some(tree => tree.worktreePath === ref.worktreePath)) {
+        return binding.repoChanges?.find(v => v.repoRoot === ref.repoRoot) ?? { repoRoot: ref.repoRoot, verdict: "unknown" as const };
+      }
+      const head = await headCommit(ref.worktreePath);
+      return { repoRoot: ref.repoRoot, verdict: head === null ? "unknown" as const : repoChangeVerdict(ref, { prUrl: null, headSha: head }) };
+    }));
+    const current = getDurableTask(source.id);
+    if (!current || JSON.stringify(taskRepoRefs(current)) !== JSON.stringify(refs) || !recordTaskRepoChanges(binding, changes, true)) {
+      throw new Error("task repository ownership changed before cleanup");
+    }
+  }
   const failures: string[] = [];
   const reclaimed: string[] = [];
   for (const tree of trees) {
@@ -2976,10 +3074,12 @@ export async function spawnUniquely(
   agentArgs: readonly string[] = [],
   stateHome?: string,
   terminalBackend: string | null = null,
+  /** Capability-rendered launch variables, written into the wrapper beside the isolation. */
+  extraEnv: Readonly<Record<string, string>> = {},
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   try {
-    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome });
+    const argv = isolatedAgentArgv([agentBin, ...agentArgs], { cwd, stateHome: effectiveStateHome, extraEnv });
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend);
   } catch (error) {
     cleanupDisposableAgentStateHome(effectiveStateHome);

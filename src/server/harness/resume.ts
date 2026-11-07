@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Session } from "@shared/types.ts";
+import type { AdvisorChoice, Session } from "@shared/types.ts";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../agent-subprocess-env.ts";
 import { STATE_DIR, resumeGuardPath } from "../config.ts";
 import { missionToolsAvailability } from "../mission-tools.ts";
@@ -18,6 +18,12 @@ export interface ResumeContext {
   managed: boolean;
   requiredTools: readonly MissionMcpTool[];
   extraDirs: readonly string[];
+  /**
+   * The advisor the owning task resolves to for the model this conversation runs on - the
+   * Settings -> Harnesses choice, or a pin the task saved before that move - rendered the way
+   * a terminal dispatch renders it. Omitted or null inherits.
+   */
+  advisorModel?: AdvisorChoice | null;
 }
 export interface PreparedResume {
   cwd: string;
@@ -46,6 +52,14 @@ export function resumeConversation(session: Pick<Session, "agent" | "agentSessio
   return `${session.agent}:${session.agentSessionId}`;
 }
 
+/**
+ * How long the resume guard's `--check` may take. A bound on a hung guard, not a guess at a
+ * healthy one: at 5s a loaded Mac's Node startup ran past it and a sound guard was reported as
+ * unusable, refusing the resume with a false "run: npm run build". Matches the MCP handshake
+ * bound in `mission-mcp.ts`.
+ */
+export const RESUME_GUARD_CHECK_TIMEOUT_MS = 15_000;
+
 /** All fallible provisioning, including the final wrapper, precedes SDK stop. */
 export async function prepareTerminalResume(session: Session, context: ResumeContext): Promise<PreparedResume> {
   if (!session.cwd || !session.agentSessionId) throw new Error("this conversation has no checkout or native identity to resume");
@@ -54,7 +68,7 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
   const guard = resumeGuardPath();
   if (!existsSync(guard)) throw new Error("Mission Control's managed resume guard is not built - run: npm run build");
   const runtime = resolveMissionMcpRuntime();
-  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: 5_000 });
+  const guardCheck = await run(runtime.command, [guard, "--check"], { env: runtime.env, timeoutMs: RESUME_GUARD_CHECK_TIMEOUT_MS });
   if (guardCheck.code !== 0 || guardCheck.stdout.trim() !== "mission-resume-guard-v1") {
     throw new Error("Mission Control's managed resume guard is unusable - run: npm run build");
   }
@@ -90,7 +104,11 @@ export async function prepareTerminalResume(session: Session, context: ResumeCon
     }
     const scope = harness.multiRepoDispatch;
     if (context.extraDirs.length && scope?.kind === "flags") argv.push(...scope.launchArgs([...context.extraDirs]));
-    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd });
+    const advisor = context.advisorModel && harness.advisor
+      ? { args: harness.advisor.launchArgs(context.advisorModel), env: harness.advisor.launchEnv(context.advisorModel) }
+      : { args: [], env: {} };
+    argv.push(...advisor.args);
+    const env = agentSubprocessEnv({}, { stateHome: lease.home, loopbackAccess: true, cwd: session.cwd, extraEnv: advisor.env });
     dropPaneIdentityEnv(env);
     delete env.MISSION_SESSION_ID;
     env.MISSION_AGENT_SESSION_ID = session.agentSessionId;

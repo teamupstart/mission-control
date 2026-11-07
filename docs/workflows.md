@@ -889,7 +889,9 @@ run, and amber on an inert grant is how a matrix teaches you to stop reading it.
 **Commands use the built-in native pool.** Two Commands run at once, and each holds one exact,
 detached lease for as long as it runs. A repository whose native policy is disabled or whose
 allocator positively refuses capacity uses a throwaway detached Git worktree pinned to the
-captured commit. An ambiguous native outcome does not try another provider. The configured argv
+same commit. That commit is the captured HEAD for a clean submission and the [review
+snapshot](worktrees-and-checks.md#running-a-check-command) for an uncommitted one, so a ship
+task's Commands check its work rather than the base it started from. An ambiguous native outcome does not try another provider. The configured argv
 still runs on positive degradation and its real result still gates the workflow; the fallback
 does not record the gate as passed without running it. Commands also run
 through their own small attempt budget, separate from the review budget, so a build never spends
@@ -1002,6 +1004,30 @@ selected workflow active and archives the previous binding automatically. **Swit
 also starts a review of the selected workflow. Switching cancels any active run on the previous
 binding; its run history remains readable. The replacement and conflict rules are documented in
 [Switching a session workflow](workflow-system.md#switching-a-session-workflow).
+
+A **Foreman complete** binding gets its run only from Foreman's claim, and Foreman claims only
+against a resolved goal. When the session has finished a work cycle, no run is open, and its
+latest instruction is still unresolved (reconciling, or judged "needs more context"), nothing
+will run on its own. The console detail's bind chip says so: it turns amber and its tooltip reads
+"<workflow> v<n> is waiting on this session's goal: Foreman cannot call the work complete while
+the latest instruction is unresolved. Click for ways to proceed." Its accessible name is still
+the workflow and version. The board tile does not flag the stall: it keeps drawing the session's
+runs, and a stalled binding can still have finished ones, because only an open run holds the stall
+off. Opening the dialog on that binding shows the same sentence in a notice, which offers one way
+forward and names the other:
+
+- **Accept objective as is** records the pending instructions as steering and confirms the
+  current objective as the completion contract, through the same route as the
+  [Foreman drawer's control](foreman.md). The notice and the chip's stalled state clear as the
+  goal resolves, and Foreman verifies the work and claims the run on its next tick. It is offered
+  only when the goal has an objective.
+- **Submit bound version** is the dialog's existing footer button, which the notice names rather
+  than repeats. The run freezes the objective as it stands.
+
+Whether that manual run carries the `unreconciled` badge described below depends on which stall
+it is. While the latest instruction is still reconciling, an accepted instruction is waiting for
+the goal refiner, so the run is badged, and the notice says so. Once that instruction has been
+judged "needs more context", its revision is resolved and the run is not badged.
 
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
@@ -2121,6 +2147,12 @@ touches the other. Each run's own head-mismatch and fresh-observation machinery 
 and asks for a resubmission, and the per-pull-request merge verdict is the backstop that
 keeps anything stale from merging.
 
+When a sibling repository owns the conversation's turn, Runs names the holding repository,
+run and condition, such as waiting for evidence readiness. The packet stays prepared until
+that run releases the conversation. See the
+[per-repository binding contract](agent-guides/change-contracts.md#one-workflow-run-is-one-repository)
+for evidence-routing and automatic capture-repair admission rules.
+
 ### Runs Mission Control started for itself
 
 Almost every run is one an operator submitted. A run can also be started by Mission Control
@@ -2494,8 +2526,10 @@ review newly added or omitted code. For a legacy parent without publication proo
 compares its accepted full content tree instead. A missing accepted tree requires a fresh full
 review before completion. Neither comparison filters the PR tree,
 so missing deliverables and unexpected committed content remain visible. Check nodes verify that
-their pinned commit has the captured publication tree before running: commit required deliverables
-and resubmit if it does not. Checks run in their existing isolated committed worktree, so excluded
+their pinned commit has the captured publication tree before running. Uncommitted submissions
+pin Commands to a review snapshot of that exact publication tree, including required source
+changes but excluding retained reports. A stale or different pinned tree requires a fresh
+submission. Checks run in their existing isolated committed worktree, so excluded
 local fixtures cannot make a test pass. An unconfigured or unavailable check retains its existing
 explicit skipped outcome; this policy does not invent a test result.
 
@@ -2764,23 +2798,22 @@ stage groups. No-Mistakes version 22 adds it after typecheck/test/lint and befor
 Bindings keep their published version until explicitly upgraded. Earlier versions and other
 built-ins are unchanged.
 
-Enable it in the reviewed repository's root `.coderabbit.yaml`:
+Either `.coderabbit.yaml` or `.coderabbit.config.ts` in the repository root enables it, unless the
+YAML turns it off:
 
 ```yaml
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-inheritance: true
 reviews:
   auto_review:
-    enabled: true
+    enabled: false
 ```
 
-Only the local boolean `true` enables it. Mission Control does not fetch inherited settings.
-Missing/false/non-boolean configuration skips with a warning and starts no CodeRabbit process.
-Invalid, ambiguous, oversized or unreadable YAML also displays a configuration error while
-skipping. Only a run whose pinned graph contains a CodeRabbit check captures this YAML snapshot.
-Submission capture freezes the decision; retries reuse it and new submissions refresh it.
+With neither file, or with that opt-out, the check skips with a warning and starts no CodeRabbit
+process. Invalid, ambiguous, oversized or unreadable YAML also skips and displays a configuration
+error. Mission Control does not fetch inherited settings. Only a run whose pinned graph contains a
+CodeRabbit check captures this snapshot. Submission capture freezes the decision; retries reuse it
+and new submissions refresh it.
 
-No Library override is needed. Optional repository-root tuning selects a base ref and severity
+Optional repository-root tuning selects a base ref and severity
 (default `major`, including critical). Without tuning, the locally observed `origin/HEAD` supplies
 the default base; if it is unavailable, set an explicit base in Library. Removing tuning restores
 these defaults. The command previews its owned argv, never an editable shell recipe.
@@ -2791,22 +2824,33 @@ ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion always skips with a visible warning, even if the tool is unavailable. It does not
 mean a clean review. YAML-enabled reviews with
 remaining allowance require Commands permission, repository Trust, CodeRabbit CLI >=0.9.1,
-and stored authentication under the daemon's effective `HOME`. Unavailability or incomplete
-review blocks with an error and a **Settings > Setup** link, without spending a repair round or
-sending code-fix instructions. Correct the problem and explicitly retry. No install, login,
-CLI update, remote-ref fetch or paid-credit continuation happens automatically.
+and stored authentication under the daemon's effective `HOME`. Unavailability, authentication
+or vendor-wait problems block with an error and a **Settings > Setup** link. A review that ran but
+returned a result Mission Control cannot accept blocks with an error that points at the attempt's
+retained output instead, since Setup would show a healthy CLI. Neither spends a repair round or
+sends code-fix instructions. Correct the problem and explicitly retry. No install, login, CLI
+update, remote-ref fetch or paid-credit continuation happens automatically.
 
-Only committed content is reviewed. Dirty submissions must be committed and submitted again.
-The first successful comparison pins the full captured head, configured base, resolved base tip
-and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
+CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
+through its review snapshot, a commit of exactly the captured publication content parented on HEAD, so a ship
+task that has not committed yet is reviewed rather than refused. The `.coderabbit.yaml` that
+gates the review is the one in that commit; an ignored, uncommitted YAML blocks with a
+submit-again remedy rather than reviewing under a configuration the review cannot see. A dirty
+submission captured before review snapshots existed also blocks with a submit-again remedy, not a
+Setup link. The first successful comparison pins the full reviewed head, configured base,
+resolved base tip and merge-base. If resolution fails, correct local refs or base-ref tuning and use Retry on the
 same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
 
-A complete gate, an explicit zero unreviewed-file count and matching exit code pass or return
-findings for repair. Missing completion or coverage count, reused review, incomplete coverage,
-contradictory output, semantic limits or lost findings
-storage block. Raw-log truncation alone does not invalidate independently retained findings.
+A complete gate, explicit full coverage and matching exit code pass or return findings for
+repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,
+which must be zero, and later CLIs print the list of reviewed files instead. Mission Control never
+trusts that list on its own word. Before the review starts it lists the pinned comparison's changed
+files with `git diff --name-status --no-renames <merge-base> <head>`, and the list must name every
+path that exists at the head and nothing outside the comparison. A deleted path, or the old side of
+a rename, may appear but is never required. Missing completion or coverage, reused review,
+incomplete coverage, contradictory output, semantic limits or lost findings storage block. Raw-log truncation alone does not invalidate independently retained findings.
 Run detail shows comparison provenance, severity counts, remaining allowance and diagnostics.
 **Load findings** pages the complete retained normalized findings, including advisory severities;
 the attributed `read_workflow_command_output` tool uses the same bounded authorized reader.
@@ -2816,4 +2860,11 @@ Repair instructions require the owning session to read all retained findings and
 claim before changing code. Valid repairs are committed for a new submission. A false positive
 requires an explicit operator decision through the existing node-disable/recovery controls;
 clearing vendor findings or silently lowering severity does not earn approval. This local CLI
-review is independent of GitHub CodeRabbit comment/thread follow-up.
+review is independent of [GitHub CodeRabbit follow-up](inspector-and-shipping.md#coderabbit-follow-up).
+It does not fetch PR summary comments or cloud pre-merge checks. Enable **Follow up on CodeRabbit
+comments** in Settings > Shipping to have eligible Foreman sessions assess those errors and
+warnings as well as inline review findings; YAML enablement alone does not enable that setting.
+
+On the Workflow runs page, press **Esc** to return to the selected run’s bound session.
+An open overlay closes first. When a text field has focus, the first press leaves the field.
+Runs whose bound session is no longer available stay on the Runs page.

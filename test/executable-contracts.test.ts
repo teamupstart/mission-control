@@ -377,3 +377,11 @@ test("every direct child-process call matches one structured executable boundary
     }));
   assert.deepEqual(observed.sort(), declared.sort());
 });
+
+test("Atlassian CLI has its own append-only identity and OAuth binary override", () => {
+  assert.equal(EXECUTABLE_IDS[26], "acli");
+  assert.deepEqual(
+    [EXECUTABLE_SPECS.acli.id, EXECUTABLE_SPECS.acli.label, EXECUTABLE_SPECS.acli.command, EXECUTABLE_SPECS.acli.overrideEnv],
+    ["acli", "Atlassian CLI", "acli", "ACLI_BIN"],
+  );
+});

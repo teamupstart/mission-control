@@ -8,6 +8,7 @@ import { scrubCheckEnv } from "./check-env.ts";
 import { resolveCapturedCommit, FULL_SHA } from "./commit-id.ts";
 import type { CheckResult, CheckRunDeps, CheckRunReservation, RunCheckInput } from "./checks.ts";
 import { workflowLog } from "./log.ts";
+import { CODERABBIT_OPERATOR_ACTION, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
 
 export const CODERABBIT_SETUP = "Settings > Setup";
 export const CODERABBIT_MANAGED_ENV = { CODERABBIT_CLI_DISABLE_AUTO_UPDATE: "true", CR_CLI_AUTH_TIMEOUT: "5000" };
@@ -47,6 +48,13 @@ export async function probeCodeRabbit(): Promise<{ command: string; env: NodeJS.
 
 export async function resolveCodeRabbitComparison(input: {
   repoRoot: string; headSha: string | null; yaml: CodeRabbitConfigSnapshot; command: WorkflowCommandView;
+  /**
+   * Stacked pull requests: the refreshed, verified parent base a stacked task is reviewed
+   * against. When it names one, it is the comparison base - the same base the Persona diff
+   * used - and an operator's explicit baseRef does not override it. Throws when the refresh
+   * failed; that becomes the comparison's error.
+   */
+  stackBase?: () => Promise<{ branch: string; sha: string; repoRoot: string } | null>;
 }): Promise<CodeRabbitComparison> {
   const rule = input.command.overrides.find((r) => r.repoRoot === input.repoRoot)?.review;
   const tuning: CodeRabbitTuning = rule ?? { kind: "coderabbit", baseRef: null, severity: "major" };
@@ -61,6 +69,22 @@ export async function resolveCodeRabbitComparison(input: {
   try {
     if (!input.headSha) throw new Error("No captured committed head. Commit and submit again");
     result.head = await resolveCapturedCommit(input.repoRoot, input.headSha);
+    const stacked = input.stackBase ? await input.stackBase() : null;
+    if (stacked) {
+      // At the task's repository root, from explicit commit ids: both commits are in its
+      // object store (linked worktrees share it), so nothing here runs in the checkout.
+      const atRoot = async (args: string[]) => {
+        const r = await run("git", ["-C", stacked.repoRoot, ...args], { timeoutMs: 5000, maxBuffer: 64 * 1024 });
+        if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("The stacked comparison could not be resolved at the repository root");
+        return r.stdout.trim();
+      };
+      result.baseRef = `refs/remotes/origin/${stacked.branch}`;
+      result.baseTip = stacked.sha;
+      result.mergeBase = await atRoot(["merge-base", "--all", result.baseTip, result.head]);
+      if (!FULL_SHA.test(result.mergeBase)) throw new Error("The stacked comparison has no unique merge base");
+      result.empty = (await atRoot(["diff", "--name-only", result.mergeBase, result.head, "--"])) === "";
+      return result;
+    }
     if (!result.baseRef) {
       // A locally observed remote HEAD is reliable; guessing main/master is not.
       result.baseRef = await git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
@@ -73,6 +97,29 @@ export async function resolveCodeRabbitComparison(input: {
     result.empty = (await git(["diff", "--name-only", result.mergeBase, result.head, "--"])) === "";
   } catch (error) { result.error = error instanceof Error ? error.message : "CodeRabbit comparison is unavailable"; }
   return result;
+}
+
+/**
+ * The pinned comparison's changed paths, which a `reviewedFiles` completion is checked against.
+ * Renames are split so the new path is required and the old one is merely allowed, the same
+ * way a deletion is. NUL-separated so no path is quoted or mangled.
+ */
+export async function codeRabbitChangedPaths(repoRoot: string, mergeBase: string, head: string): Promise<CodeRabbitChangedPaths> {
+  if (!FULL_SHA.test(mergeBase) || !FULL_SHA.test(head)) throw new Error("CodeRabbit comparison is not pinned to full commits");
+  const r = await run("git", ["-C", repoRoot, "diff", "--name-status", "--no-renames", "--no-relative", "--no-ext-diff", "-z", mergeBase, head, "--"],
+    { timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 });
+  if (r.code !== 0 || r.outcomeUnknown || r.overflowed || r.stderr.trim()) throw new Error("the pinned comparison's changed files could not be listed");
+  const fields = r.stdout.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  if (fields.length % 2) throw new Error("the pinned comparison's changed files could not be parsed");
+  const required: string[] = [], allowed: string[] = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const status = fields[i]!, path = fields[i + 1]!;
+    if (!/^[ACDMTUX]$/.test(status) || !path) throw new Error("the pinned comparison's changed files could not be parsed");
+    allowed.push(path);
+    if (status !== "D") required.push(path);
+  }
+  return { required, allowed };
 }
 
 /** Same recipe for arbitrary workflows and No-Mistakes. YAML and allowance precede probes. */
@@ -94,7 +141,11 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     slot: "coderabbit", status, command: null, exitCode: null, output: "", truncatedBytes: 0, artifacts: [], timeoutMs: null,
     note: `Warning: ${warning}. YAML ${yaml?.source ?? ".coderabbit.yaml"}: ${yaml?.state ?? "missing"}; digest ${yaml?.digest ?? "unavailable"}.`, warning, review: { ...summary("skipped", warning), ...(status === "budget_spent" ? { remainingRuns: 0 } : {}) }, ...(error ? { diagnosticError: error } : {}),
   } });
-  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[]): CheckResult => ({ kind: "action_required", reason: `Error: ${reason}. Open ${CODERABBIT_SETUP}.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), setup: true });
+  // Setup is the remedy for installation, login, trust and runtime problems. A review that ran
+  // and returned a result Mission Control cannot accept is a different problem: Setup would
+  // show a healthy CLI, so point at the retained output instead.
+  // `remedy` replaces both: a problem neither Setup nor the retained output can fix says its own.
+  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
   reservation = input.reserveRun?.();
   if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
@@ -103,7 +154,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     const denied = checkBlockedReason(input.policy, input.cwd, input.repoRoot);
     if (denied) return block(denied);
     if (!input.repoRoot || !deps.execute) return block("CodeRabbit execution runtime or repository is unavailable");
-    if (input.coderabbit?.dirty || yaml.committed === false) return block("Submission contains uncommitted changes. Commit all reviewed content and create a new submission");
+    // Uncommitted work is reviewed through the capture's review snapshot, so `dirty` means a
+    // submission captured before snapshots existed: it has no commit holding what it reviewed.
+    if (input.coderabbit?.dirty) return block("This submission captured uncommitted changes without a review snapshot", undefined, undefined, false, "Submit again so Mission Control captures one");
+    if (yaml.committed === false) return block(`The captured ${yaml.source} is not the one in the reviewed commit`, undefined, undefined, false, `Make sure ${yaml.source} is not ignored, then submit again`);
     failureStage = "comparison";
     comparison = await input.coderabbit!.comparison();
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");
@@ -122,7 +176,8 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
     failureStage = "result";
     const review = execution.review;
-    if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts);
+    if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts,
+      !review || review.diagnostic === CODERABBIT_OPERATOR_ACTION);
     const skipped = review.status === "skipped";
     const note = `${review.diagnostic}. Head ${comparison.head}; base ${comparison.baseRef} at ${comparison.baseTip}; merge-base ${comparison.mergeBase}; threshold ${comparison.severity}. ${Object.entries(review.counts).map(([severity, count]) => `${severity}: ${count}`).join(", ")}. YAML ${comparison.yaml.source}: ${comparison.yaml.state}; digest ${comparison.yaml.digest}. ${review.titles.join("; ")}`.slice(0, WORKFLOW_EXECUTION_LIMITS.verdictSummary);
     return { kind: "outcome", outcome: { slot: "coderabbit", status: skipped ? "skipped" : execution.exitCode === 2 ? "failed" : "passed", command,

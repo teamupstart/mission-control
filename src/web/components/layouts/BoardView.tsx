@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { provisioningTasks } from "@shared/session.ts";
+import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
+import { latestLaunchFailure } from "@shared/launch-failure.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "@shared/pipeline.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes } from "../../lib/tone.ts";
@@ -14,9 +16,10 @@ import {
   type FleetToneGroup,
 } from "../../lib/fleet-order.ts";
 import { repoColor } from "../../lib/repo-color.ts";
-import { toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
+import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { useUiConfig } from "../../lib/uiConfig.ts";
 import {
+  collapsedColumnSessionIds,
   columnWidthOf,
   setColumnWidth,
   useColumnWidths,
@@ -27,6 +30,7 @@ import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
+import { ConsoleView } from "./ConsoleView.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
@@ -159,7 +163,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // Hoisted into its own const rather than read inline in the call below: a hook buried in an
   // argument list is one refactor away from ending up inside a condition, and the Rules of Hooks
   // violation that follows is not something this file's tests would catch.
-  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash } = useUiConfig();
+  const { groupBoardByRepo: groupByRepo, showEmptyColumnStash, boardSidebarAllSessions } = useUiConfig();
   const order = orderSessions(
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
@@ -200,8 +204,30 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
    * placeholder closes.
    */
   const pending = provisioningTasks(props.tasks);
+  // Dispatches that failed before their session started, drawn where their placeholder was.
+  // From the full task list for the same reason: a filter must not hide a dispatch that failed.
+  // A returned failure is shown on its Backlog card and a kept one on its session card - when
+  // that card is on screen. A folded Backlog column or a fleet filter can hide it, and then the
+  // failure is drawn here instead, so the count and Show always have something to reach.
+  const backlogShown = columnWidthOf(widths, "backlog") !== "collapsed";
+  // A session card is not on screen when its repository row or its column is folded, or when
+  // its column is the drilled-in rail - whose rows carry no failure notice.
+  const hiddenCards = new Set([
+    ...hiddenSessionIds(groups, repoCollapsed),
+    ...collapsedColumnSessionIds(groups, widths.collapsed),
+  ]);
+  const failed = fleetFailureGroups(props.tasks, (group) => {
+    const latest = latestLaunchFailure(group);
+    if (group.outcome === "returned") return backlogShown && props.backlog.some((t) => t.id === latest.id);
+    const sessionId = latest.sessionId;
+    if (sessionId === null || hiddenCards.has(sessionId)) return false;
+    const onRail = focusedTone != null
+      && groups.some((g) => g.tone === focusedTone && g.sessions.some((s) => s.id === sessionId));
+    return !onRail && props.sessions.some((s) => s.id === sessionId);
+  });
+  const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null, pending.length);
+  const modes = boardColumnModes(groups, revealed, focusedTone != null, starters);
   // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
   // chip to bring them back from.
   const stashed = showEmptyColumnStash
@@ -325,6 +351,16 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     />
   };
 
+  // Reuse the full Console rail, including state, repository and workflow grouping.
+  // App still owns Board selection and Escape, so returning preserves the overview.
+  if (selected && boardSidebarAllSessions) {
+    return (
+      <main ref={boardTourRef} className="board board-all-sessions" data-focus={focusedTone}>
+        <ConsoleView {...props} onBackToBoard={props.onDeselect} />
+      </main>
+    );
+  }
+
   return (
     <main
       ref={boardTourRef}
@@ -352,6 +388,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         onManageTrust={props.onManageForemanTrust}
         sessions={props.sessions}
         workflowSummaries={props.workflowSummaries}
+        stackShipping={props.stackShipping}
       />
 
       <RestoringSessionsColumn
@@ -375,7 +412,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           // to show its rows whatever the overview had folded. The fold is kept, so coming back
           // to the board finds the column as it was left.
           const collapsed = width === "collapsed" && !isRail;
-          const count = g.sessions.length + (g.tone === "working" ? pending.length : 0);
+          const count = g.sessions.length + (g.tone === "working" ? starters : 0);
           if (collapsed) {
             return (
               <section
@@ -498,6 +535,9 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 {g.tone === "working" && (
                   <PendingList tasks={pending} variant={isRail ? "rail" : "tile"} />
                 )}
+                {g.tone === "working" && (
+                  <FailedLaunchList groups={failed} variant={isRail ? "rail" : "tile"} />
+                )}
                 {/* The rail's body is this one element, filling it, so hovering anywhere
                     below the head gives the sentence the rail has no room to print. The
                     sentence is in the markup too, for a screen reader. */}
@@ -511,7 +551,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     </p>
                   </Tooltip>
                 ) : g.sessions.length === 0 ? (
-                  g.tone === "working" && pending.length > 0 ? null : (
+                  g.tone === "working" && starters > 0 ? null : (
                     <p className="board-col-empty">Nothing here</p>
                   )
                 ) : isRail ? (

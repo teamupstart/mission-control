@@ -3,12 +3,17 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { existsSync } from "node:fs";
+import type { Server } from "node:http";
+import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
+import type { Context } from "hono";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs } from "./config.ts";
@@ -83,6 +88,8 @@ import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/ind
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
+import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
+import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
 import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -137,6 +144,8 @@ await initializeExecutableEnvironment();
 // the kernel while leaving the metadata available to explain who owned the previous run.
 const stateOwnership = acquireStateOwnership();
 const database = openDb();
+// The desktop window's launch colour follows the stored skin, whoever stored it.
+syncWindowBackground();
 for (const problem of pendingPlanWriteWarnings()) console.warn("Plan write recovery:", problem);
 // Only the daemon can read app_config. The Foreman imports the same runner in a separate
 // process and receives this resolved transport over HTTP. Resolve on every run so an API
@@ -195,6 +204,14 @@ const reconcileManagedResumeResources = () => {
 };
 reconcileManagedResumeResources();
 setInterval(reconcileManagedResumeResources, 30_000).unref();
+// Install this build's built-in residents before the Registry reads the profile catalog, so the
+// first snapshot already carries them and an upgrade's new revision. A failure costs the
+// built-ins, never startup: operator profiles are untouched by it.
+try {
+  reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());
+} catch (error) {
+  console.error("[residents] could not install the built-in resident profiles:", error);
+}
 const registry = new Registry();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
 // then shared by task dispatch, checks, manual leases, routes, and recurring maintenance.
@@ -742,8 +759,17 @@ const webDir =
   process.env.MISSION_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
 const hasDist = existsSync(webDir);
 if (hasDist) {
+  // The document itself carries the stored skin, so a profile with no local cache - a first
+  // desktop launch after a skin was chosen in a browser - paints it from the first frame. Read
+  // per request: a rebuild replaces the file, and the skin can change between loads.
+  // `storedSkin()`: serving a page never writes the config, and a malformed field elsewhere in
+  // the record cannot fail the page.
+  const dashboardDocument = (c: Context) =>
+    c.html(renderDashboardDocument(readFileSync(join(webDir, "index.html"), "utf8"), storedSkin()));
+  app.get("/", dashboardDocument);
+  app.get("/index.html", dashboardDocument);
   app.use("/*", serveStatic({ root: webDir }));
-  app.get("*", serveStatic({ path: join(webDir, "index.html") }));
+  app.get("*", dashboardDocument);
 }
 
 let shutdownStarted = false;
@@ -899,6 +925,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 async function shutdown(): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  const shutdownStartedAt = Date.now();
   // Before anything tears a session down, so the departures that follow are attributed to the
   // daemon stopping rather than reported as endings with no known reason.
   //
@@ -907,6 +934,7 @@ async function shutdown(): Promise<void> {
   // reason exists to label - leaving a clean exit indistinguishable from a crash in the one
   // case where it is perfectly well known.
   noteDaemonShuttingDown();
+  const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   stopSettingsBackups();
   stopPoller();
@@ -943,7 +971,7 @@ async function shutdown(): Promise<void> {
   await sdkSessions.stopAll();
   // `workflows.stop()` cancels any live check process group and then waits for its attempt to
   // release its provider-authoritative worktree before native maintenance stops.
-  await workflows.stop();
+  await stoppingWorkflows;
   ensembles.stop();
   away.stop();
   stopHeadlessPruner();
@@ -977,15 +1005,26 @@ async function shutdown(): Promise<void> {
   // remote flush gets only what is left of it, so an offline exit never waits for a server.
   if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+  // Ends the open-ended requests (event and transcript streams, review long-polls), then bounds
+  // the rest. An unbounded close held every desktop quit until the shell gave up on this process.
+  // See `http-shutdown.ts`.
+  const { forced } = await closeHttpServer(server as Server);
   // No subsystem or request can reach SQLite now. Close it before dropping ownership so a
   // replacement daemon cannot acquire the state home while this process still has an open
   // connection. A crash skips these lines but still closes both descriptors in the kernel.
   closeDb();
   stateOwnership.release();
+  // After the last cleanup step, so the figure is the whole shutdown the shell waited for.
+  console.log(
+    `[mission-control] shutdown finished in ${Date.now() - shutdownStartedAt}ms` +
+      (forced ? ` (requests still open after ${HTTP_CLOSE_GRACE_MS}ms were closed)` : ""),
+  );
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+
+// Request the existing shutdown lifecycle before the Electron shell exits.
+process.parentPort?.on("message", ({data}) => {
+  if (data?.type === "mission:shutdown") process.emit("SIGTERM");
+});

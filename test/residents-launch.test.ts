@@ -5,6 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { ResidentLaunchResult } from "../src/shared/residents.ts";
 
 import type { Persona } from "../src/shared/workflow.ts";
@@ -29,7 +31,7 @@ const {
 } = await import("../src/server/residents/manager.ts");
 const store = await import("../src/server/residents/store.ts");
 const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
-const { openDb } = await import("../src/server/db.ts");
+const { getTask, getTaskSessionClosure, openDb } = await import("../src/server/db.ts");
 const { ResidentLoop } = await import("../src/server/residents/loop.ts");
 const { registerResidentLoopRoutes } = await import("../src/server/residents/routes.ts");
 const {
@@ -127,6 +129,7 @@ function harness(options: {
   registry?: Registry;
   resolve?: typeof resolveRepoRoot;
   waitMs?: number;
+  acceptanceWaitMs?: number;
   start?: boolean;
   hasLiveDriver?: (id: string) => boolean;
   removeWorkspace?: ConstructorParameters<typeof ResidentManager>[0]["removeWorkspace"];
@@ -162,6 +165,7 @@ function harness(options: {
       return (options.resolve ?? resolveRepoRoot)(path);
     },
     launchResponseWaitMs: options.waitMs ?? 5_000,
+    acceptanceWaitMs: options.acceptanceWaitMs,
     hasLiveDriver: options.hasLiveDriver,
     removeWorkspace: options.removeWorkspace,
   });
@@ -257,13 +261,13 @@ test("a repeated requestId returns the same run and task and dispatches once", a
   assert.equal(h.dispatched.length, 1);
 });
 
-test("the restart route replays the same run and task without repeating completion or dispatch", async t => {
+test("the restart route ends the old run, leaves its session to the operator, and replays without repeating dispatch", async t => {
   const h = harness();
   const loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
   t.after(() => loop.stop());
   const complete = t.mock.method(h.tasks, "complete");
   const app = new Hono();
-  registerResidentLoopRoutes(app, { registry: h.registry, loop, tasks: h.tasks, residents: h.residents });
+  registerResidentLoopRoutes(app, { registry: h.registry, loop, residents: h.residents });
   const profile = profileIn(h);
   const original = await h.residents.launch(profile.id, { repoRoot: REPO, instructions: "Watch the release", requestId: "before-restart" });
   if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
@@ -283,7 +287,18 @@ test("the restart route replays the same run and task without repeating completi
   assert.equal(first.run.settings.authority.controlOtherSessions, true);
   assert.equal(first.run.control.authorizedAt, null, "Restart does not substitute for a desktop Launch grant");
   assert.notEqual(store.getResidentRun(original.result.run.id)!.run.endedAt, null);
-  assert.equal(h.registry.getTask(original.result.taskId)!.status, "done");
+  // The replaced task stays open for the operator to complete: Restart neither completes it
+  // nor closes its session, and its run - now ended - never wakes it again.
+  const replaced = h.registry.getTask(original.result.taskId)!;
+  assert.equal(replaced.status, "running");
+  assert.equal(getTaskSessionClosure(original.result.taskId), null, "the replaced session is not closed for the operator");
+  assert.equal(store.getResidentRun(original.result.run.id)!.run.pauseReason, "Restarting on new profile");
+  // The replaced task carries a durable record naming its replacement, so the browser keeps
+  // offering Complete until the operator takes it - whatever the replacement does next.
+  assert.deepEqual(replaced.residentRestart, { replacementTaskId: first.taskId, revision: 2 });
+  assert.deepEqual(getTask(original.result.taskId)?.residentRestart, { replacementTaskId: first.taskId, revision: 2 },
+    "derived from SQLite, so a reload or a daemon restart reads the same record");
+  assert.equal(h.registry.listResidentRuns().some(run => run.id === original.result.run.id), false);
 
   const replayResponse = await restart();
   assert.equal(replayResponse.status, 200);
@@ -296,8 +311,14 @@ test("the restart route replays the same run and task without repeating completi
   assert.equal(runCount(), 2, "only the original and its replacement run exist");
   assert.equal(residentTasks(h.registry).length, 2);
   assert.deepEqual(h.dispatched, [original.result.taskId, first.taskId], "the replacement dispatch happens once");
-  assert.equal(complete.mock.callCount(), 1, "a replay never completes the original task again");
-  assert.equal(complete.mock.calls[0]!.arguments[0], original.result.taskId);
+  assert.equal(complete.mock.callCount(), 0, "Restart never completes the original task");
+  assert.equal(h.registry.getTask(original.result.taskId)!.status, "running");
+  complete.mock.restore();
+  // The replacement ending does not take the record with it.
+  await h.tasks.complete(first.taskId, "Closed by operator");
+  await h.residents.reconcileRunEnds();
+  assert.equal(h.registry.listResidentRuns().some(run => run.id === first.run.id), false);
+  assert.deepEqual(getTask(original.result.taskId)?.residentRestart, { replacementTaskId: first.taskId, revision: 2 });
 });
 
 test("a replay after the profile is edited returns the original run and its pinned revision", async () => {
@@ -341,6 +362,105 @@ test("a replay of a pending launch answers in progress and creates nothing; laun
   if (!("result" in settled)) assert.fail(JSON.stringify(settled));
   assert.equal(settled.result.state, "launched");
   assert.equal(h.dispatched.length, 1);
+});
+
+test("a launch answered on acceptance returns once its task exists, without waiting for the session", async () => {
+  // A long wait: only acceptance can answer this launch quickly.
+  const h = harness({ mode: "hold", waitMs: 60_000 });
+  const profile = profileIn(h);
+  const startedAt = Date.now();
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted", answerWhen: "accepted" });
+  assert.ok(Date.now() - startedAt < 5_000, "answered on acceptance, not on the session");
+  if (!("result" in first)) assert.fail(JSON.stringify(first));
+  assert.equal(first.status, 202);
+  if (first.result.state !== "pending") assert.fail(JSON.stringify(first.result));
+  assert.equal(first.result.accepted, true, "accepted: its task exists");
+  assert.equal(h.registry.getTask(first.result.run.taskId)?.status, "dispatching", "the task exists and is dispatching");
+  assert.deepEqual(h.dispatched, [first.result.run.taskId]);
+
+  // A replay asking the same way names the same launch, answers at once, and starts nothing.
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted", answerWhen: "accepted" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.state, "pending");
+  assert.equal(replay.result.run.id, first.result.run.id);
+
+  // The run still settles from its session, exactly as a launch that waited would.
+  h.release();
+  const settled = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted" });
+  if (!("result" in settled)) assert.fail(JSON.stringify(settled));
+  assert.equal(settled.result.state, "launched");
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
+});
+
+test("a launch whose acceptance wait expires before its task exists answers not accepted, and a replay answers once it is", async (t) => {
+  // A short session wait must not shorten the acceptance wait; only the acceptance bound can.
+  const h = harness({ waitMs: 0, acceptanceWaitMs: 20 });
+  const profile = profileIn(h);
+  let releaseCatalog: () => void = () => {};
+  const catalogHeld = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  const read = h.residents.mcpCatalog.read.bind(h.residents.mcpCatalog);
+  t.mock.method(h.residents.mcpCatalog, "read", async (...args: Parameters<typeof read>) => {
+    await catalogHeld;
+    return read(...args);
+  });
+
+  const first = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-not-yet-accepted", answerWhen: "accepted" });
+  if (!("result" in first) || first.result.state !== "pending") assert.fail(JSON.stringify(first));
+  assert.equal(first.result.accepted, false, "answered before the run's task exists");
+  assert.equal(h.registry.getTask(first.result.run.taskId), undefined);
+
+  releaseCatalog();
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-not-yet-accepted", answerWhen: "accepted" });
+  if (!("result" in replay)) assert.fail(JSON.stringify(replay));
+  assert.ok(replay.result.state === "launched" || (replay.result.state === "pending" && replay.result.accepted), JSON.stringify(replay.result));
+  assert.equal(replay.result.run.id, first.result.run.id);
+  assert.notEqual(h.registry.getTask(first.result.run.taskId), undefined, "the task now exists");
+  assert.equal(runCount(), 1);
+  assert.equal(h.dispatched.length, 1);
+});
+
+test("a launch answered on acceptance that then fails to start records the reason on its task and its run", async () => {
+  const h = harness({ mode: "hold", waitMs: 60_000 });
+  const profile = profileIn(h);
+  const accepted = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-then-fail", answerWhen: "accepted" });
+  if (!("result" in accepted) || accepted.result.state !== "pending") assert.fail(JSON.stringify(accepted));
+  const { taskId } = accepted.result.run;
+  assert.equal(h.registry.getTask(taskId)?.status, "dispatching", "answered while the startup is still under way");
+
+  // The held startup now fails, after Dispatch has already closed on the accepted answer.
+  h.mode.current = "fail";
+  h.release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const task = h.registry.getTask(taskId);
+  assert.equal(task?.status, "failed");
+  assert.equal(task?.error, `agent binary "claude" not found on PATH`, "the task carries the failure reason");
+  const stored = store.getResidentRun(accepted.result.run.id)?.run;
+  assert.equal(stored?.launchState, "failed");
+  assert.equal(stored?.launchError, task?.error, "the run records the same reason");
+
+  // The same launch replayed now answers the failure, and never starts a second resident.
+  const replay = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-then-fail", answerWhen: "accepted" });
+  if (!("result" in replay) || replay.result.state !== "failed") assert.fail(JSON.stringify(replay));
+  assert.equal(replay.result.error, task?.error);
+  assert.equal(runCount(), 1);
+  assert.deepEqual(h.dispatched, [taskId]);
+});
+
+test("a launch answered on acceptance still answers a failure that left no task", async (t) => {
+  const h = harness({ waitMs: 60_000 });
+  const profile = profileIn(h);
+  t.mock.method(h.tasks, "create", () => {
+    throw new Error("the task could not be created");
+  });
+  const outcome = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "req-accepted-fail", answerWhen: "accepted" });
+  if (!("result" in outcome) || outcome.result.state !== "failed") assert.fail(JSON.stringify(outcome));
+  assert.equal(outcome.status, 409);
+  assert.equal(outcome.result.error, "the task could not be created");
+  assert.deepEqual(h.dispatched, []);
 });
 
 test("a dispatch that fails before its session starts fails the run with the task's error, and a replay returns it", async () => {
@@ -1379,7 +1499,7 @@ test("unpriced capped models are refused at save and at launch", async () => {
   assert.deepEqual(h.dispatched, []);
 });
 
-test("Restart recovers after old-task completion before replacement reservation, but ordinary completion cannot restart", async t => {
+test("Restart recovers after ending the old run before replacement reservation, but ordinary completion cannot restart", async t => {
   let h = harness();
   let loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
   t.after(() => loop.stop());
@@ -1387,10 +1507,10 @@ test("Restart recovers after old-task completion before replacement reservation,
   const original = await h.residents.launch(profile.id, { repoRoot: REPO, requestId: "interrupted-restart" });
   if (!("result" in original) || original.result.state !== "launched") assert.fail(JSON.stringify(original));
   assert.equal(h.residents.updateProfile(profile.id, 1, settings({ instructions: "New brief" })).ok, true);
-  const complete = t.mock.method(h.tasks, "complete");
+  const endRun = t.mock.method(h.residents, "endRun");
   const createApp = () => {
     const app = new Hono(); app.onError(() => new Response("interrupted", { status: 500 }));
-    registerResidentLoopRoutes(app, { registry: h.registry, loop, tasks: h.tasks, residents: h.residents });
+    registerResidentLoopRoutes(app, { registry: h.registry, loop, residents: h.residents });
     return app;
   };
   const launch = t.mock.method(h.residents, "launch", async () => { throw new Error("crash before reservation"); });
@@ -1398,24 +1518,44 @@ test("Restart recovers after old-task completion before replacement reservation,
   assert.equal((await createApp().request(path, { method: "POST" })).status, 500);
   assert.notEqual(store.getResidentRun(original.result.run.id)!.run.endedAt, null);
   assert.equal(runCount(), 1, "no replacement was reserved before the interruption");
+  // Between the failure and any retry, the operator is left an open original session that
+  // still offers Complete, and is told plainly that no new session started.
+  const stranded = h.registry.getTask(original.result.taskId)!;
+  assert.equal(stranded.status, "running", "a failed replacement never completes the original task");
+  assert.deepEqual(stranded.residentRestart, { replacementTaskId: null, revision: null });
+  assert.deepEqual(getTask(original.result.taskId)?.residentRestart, { replacementTaskId: null, revision: null },
+    "the record is durable, so a reload shows the same offer");
+  {
+    const { residentReplacementsBySession } = await import("../src/web/residents/marker.ts");
+    const { ResidentReplacedBand } = await import("../src/web/residents/ResidentBand.tsx");
+    const { mkSession, mkTaskSummary } = await import("./helpers/session-fixture.ts");
+    const session = mkSession({ id: "s-original", task: mkTaskSummary({ id: stranded.id, kind: "resident", status: stranded.status }) });
+    const replacement = residentReplacementsBySession([session], h.registry.listTasks(), h.registry.listResidentRuns()).get("s-original")!;
+    assert.deepEqual({ state: replacement.state, sessionId: replacement.sessionId }, { state: "not-started", sessionId: null });
+    const markup = renderToStaticMarkup(createElement(ResidentReplacedBand, { replacement, onOpenSession: () => {}, onComplete: () => {} }));
+    assert.match(markup, /Restart ended this run, but the new session did not start\./);
+    assert.match(markup, />Complete &amp; close</);
+    assert.doesNotMatch(markup, /Open new session/);
+  }
   launch.mock.restore();
   assert.equal(h.dispatched.length, 1);
   await h.residents.stop(); await loop.stop();
   // Fresh owners rehydrate from SQLite; no in-flight promise or live run remains.
   h = harness();
   loop = new ResidentLoop({ registry: h.registry, refreshSession: () => {}, sdk: { sendWhenIdle: async () => null, compact: async () => 1 } });
-  const repeatedComplete = t.mock.method(h.tasks, "complete");
+  const repeatedEnd = t.mock.method(h.residents, "endRun");
   const retry = await createApp().request(path, { method: "POST" });
   assert.equal(retry.status, 200);
   const replacement = await retry.json() as ResidentLaunchResult;
   assert.equal(replacement.state, "launched");
   if (replacement.state !== "launched") assert.fail("expected replacement to launch");
   assert.equal(replacement.run.profileRevision, 2);
-  assert.equal(complete.mock.callCount(), 1, "completion is not repeated");
+  assert.equal(endRun.mock.callCount(), 1, "the old run was ended once");
+  assert.equal(h.registry.getTask(original.result.taskId)?.status, "running", "the replaced task is left for the operator to complete");
   const replay = await (await createApp().request(path, { method: "POST" })).json() as ResidentLaunchResult;
   if (replay.state !== "launched") assert.fail("expected launched replay");
   assert.equal(replay.run.id, replacement.run.id); assert.equal(replay.taskId, replacement.taskId);
-  assert.equal(repeatedComplete.mock.callCount(), 0, "the restored task is not completed again");
+  assert.equal(repeatedEnd.mock.callCount(), 0, "the retry does not end the old run again");
   assert.equal(h.dispatched.length, 1);
   await h.tasks.complete(replacement.taskId, "Closed by operator");
   assert.equal(h.residents.updateProfile(profile.id, 2, settings({ instructions: "Third brief" })).ok, true);

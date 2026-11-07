@@ -263,9 +263,9 @@ test("choosing plan defaults the after-work Workflow to Plan Validation", async 
 
   await kind.selectOption("plan");
 
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
-  // The option a person actually reads, not just the value behind it.
+  await expect(afterWork).toHaveValue("__default");
   expect(await selectedLabel(afterWork)).toContain("Plan Validation");
+
   // And the rail beside the select agrees, so the consequence is legible without opening
   // the dropdown.
   await expect(dialog.getByText("No handoff")).toBeHidden();
@@ -278,7 +278,8 @@ test("switching back to ship hands the plan switch's stash back", async ({ dashb
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
 
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  expect(await selectedLabel(afterWork)).toContain("Plan Validation");
 
   await kind.selectOption("ship");
 
@@ -293,7 +294,8 @@ test("plan only defaults the Workflow, it does not lock it", async ({ dashboard 
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
 
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  expect(await selectedLabel(afterWork)).toContain("Plan Validation");
 
   const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
   await afterWork.selectOption(builtinId);
@@ -331,7 +333,8 @@ test("a trip through scout and plan still returns the original selection", async
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue("__none");
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  expect(await selectedLabel(afterWork)).toContain("Plan Validation");
 
   await kind.selectOption("ship");
 

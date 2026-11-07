@@ -12,6 +12,7 @@ import type {
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
+import { modelLabel } from "@shared/model.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
 import {
   compactTokens,
@@ -1437,10 +1438,12 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
     (session.goal.resolvedPromptRevision ?? 0) < (session.goal.promptRevision ?? 0);
   const unclear = session.goal.relationship === "unclear";
   const stateClass = resolving ? "resolving" : unclear ? "unclear" : session.goal.source ?? "heuristic";
+  // Both paused states name their exit, which lives in the Foreman drawer.
+  const exit = "Open Foreman intent to accept the objective as is.";
   const detail = resolving
-    ? `${session.goal.text} (reconciling the latest instruction with this objective)`
+    ? `${session.goal.text} (reconciling the latest instruction with this objective) ${exit}`
     : unclear
-      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused)`
+      ? `${session.goal.text} (latest instruction may change this objective; automatic wrap-up is paused) ${exit}`
       : session.goal.source === "heuristic"
         ? `${session.goal.text} (initial objective, being refined)`
         : session.goal.text;
@@ -1871,6 +1874,7 @@ const EMPTY_OMIT: ReadonlySet<RuntimeMetaPart> = new Set();
 /**
  * The runtime row: model, thinking level, and a context-window pressure meter - the same
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
+ * A read-only advisor chip follows the model when the transcript shows Claude ran with one.
  *
  * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
  * tile draws its whole body as spans. A layout that needs the effort control outside an
@@ -1899,10 +1903,13 @@ export function RuntimeMetaRow({
   const hasModel = Boolean(meta?.model || session?.configuredModel) && !omit.has("model");
   const hasEffort = Boolean(meta?.thinkingLevel || meta?.nativeEffort) && !omit.has("effort");
   const hasCtx = meta?.contextPct != null && !omit.has("context");
+  // Not one of the host-omittable parts: it is drawn only when a session actually ran with
+  // an advisor, which is rare enough that no host needs to opt out of it.
+  const advisorModel = meta?.advisorModel ?? null;
   // Nothing LEFT to draw, which now covers both "the session has not reported it" and
   // "this host asked for it to be left out". An empty `.card-runtime` would still take its
   // flex gap on the row, so the early return has to widen with the prop.
-  if (!hasModel && !hasEffort && !hasCtx) return null;
+  if (!hasModel && !hasEffort && !hasCtx && !advisorModel) return null;
   const tone = contextTone(meta?.contextPct ?? null);
   const ctxTitle =
     meta?.contextTokens != null && meta.contextWindow != null
@@ -1918,6 +1925,7 @@ export function RuntimeMetaRow({
           </span>
         </Tooltip>
       ))}
+      {advisorModel && <AdvisorChip modelId={advisorModel} />}
       {hasEffort && meta &&
         (session ? (
           <EffortPicker session={session} />
@@ -1946,6 +1954,23 @@ export function RuntimeMetaRow({
         </Tooltip>
       )}
     </span>
+  );
+}
+
+/**
+ * Which advisor model Claude ran this session with, read only.
+ *
+ * The value comes from the transcript (`SessionMeta.advisorModel`), so it shows what the
+ * session did rather than what a settings file says it should do. It is a `group` named
+ * "Advisor model" because a bare `span` cannot carry an accessible name.
+ */
+function AdvisorChip({ modelId }: { modelId: string }): React.JSX.Element {
+  return (
+    <Tooltip label={`Advisor: ${modelId}. Claude consults this model at key moments, from the advisorModel setting in Claude Code`}>
+      <span className="rt-pill rt-advisor" role="group" aria-label="Advisor model">
+        Advisor: {modelLabel(modelId) ?? modelId}
+      </span>
+    </Tooltip>
   );
 }
 

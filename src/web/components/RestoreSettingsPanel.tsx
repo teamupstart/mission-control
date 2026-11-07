@@ -290,7 +290,7 @@ export function RestoreSettingsPanelView({
               <button type="button" className="btn btn-ghost" onClick={closeDialog} disabled={state.restoring}>Cancel</button>
             </Tooltip>
             <Tooltip label="Capture a safety snapshot and restore the verified settings">
-              <button type="button" className="btn btn-danger" onClick={actions.restore} disabled={!canSubmitSettingsRestore(state)}>
+              <button data-dialog-default type="button" className="btn btn-danger" onClick={actions.restore} disabled={!canSubmitSettingsRestore(state)}>
                 {state.restoring ? "Restoring…" : "Restore settings"}
               </button>
             </Tooltip>

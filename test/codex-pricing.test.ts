@@ -148,3 +148,26 @@ test("the Sol alias and verified Pro snapshots retain their base rates and cache
     }
   }
 });
+
+// Rates verified against the GPT-6.1 Sol model reference on 2026-11-02.
+test("GPT-6.1 Sol prices cache tiers and the full-input long-context boundary", () => {
+  assert.equal(estimateStandardApiUsage(usage("gpt-6.1-sol"))?.costUsd, 0.0137);
+  const event = usage("gpt-6.1-sol", { input: 100_000, cacheRead: 100_000, cacheWrite: 72_000, output: 10_000 });
+  assert.equal(estimateStandardApiUsage(event)?.costUsd, 0.49);
+  assert.equal(estimateStandardApiUsage({ ...event, input: 100_001 })?.costUsd, 0.930004);
+  assert.equal(estimateStandardApiUsage(usage("gpt-6.1-sol-preview")), null);
+});
+
+test("the November audit covers Terra, Cyber, older snapshots and Pro long context", () => {
+  assert.equal(estimateStandardApiUsage(usage("gpt-6.1-terra"))?.costUsd, 0.00685);
+  assert.equal(estimateStandardApiUsage(usage("gpt-5.6-cyber"))?.costUsd, 0.091875);
+  assert.equal(estimateStandardApiUsage(usage("gpt-4o-2024-05-13", { cacheRead: 0, cacheWrite: 0 }))?.costUsd, 0.011);
+  assert.equal(estimateStandardApiUsage(usage("gpt-5.5-pro", { input: 272_001, output: 1000, cacheRead: 0, cacheWrite: 0 }))?.costUsd, 16.59006);
+});
+
+test("audited legacy snapshots resolve only their exact verified ids", () => {
+  for (const [model, expected] of [["gpt-4-turbo-2024-04-09", 0.022], ["gpt-4-0613", 0.054], ["gpt-3.5-turbo-0125", 0.0011]] as const) {
+    assert.equal(estimateStandardApiUsage(usage(model, { cacheRead: 0, cacheWrite: 0 }))?.costUsd, expected);
+    assert.equal(estimateStandardApiUsage(usage(`${model}-preview`)), null);
+  }
+});

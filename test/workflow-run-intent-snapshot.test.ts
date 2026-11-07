@@ -48,6 +48,7 @@ const { freezeWorkflowRunIntent, workflowRunIntentFingerprint } =
 const { WorkflowContextSnapshotSchema, WorkflowRunIntentSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { classifyWorkflowGoalProvenance } = await import("../src/server/workflows/goal-provenance.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 
 const repositoryRoot = process.cwd();
@@ -1176,6 +1177,41 @@ test("Persona intent reports an unresolved relationship for a captured pending i
   assert.ok(intentSection.includes(HUMAN_ASK));
   assert.match(intentSection, /Captured objective version 1; prompt revision 2; resolved revision 1; relationship unresolved\./);
   assert.doesNotMatch(intentSection, /relationship (?:null|undefined|initial|steer)/);
+});
+
+test("a run frozen after the objective is accepted as is carries the former pending asks as steering", () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("accepted-objective")]);
+  const { session, binding } = bindingFor(registry, "accepted-objective");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  registry.captureAcceptedPrompt(session.id, "B", binding.noteKey);
+  registry.captureAcceptedPrompt(session.id, "B, but rename the heading to Advisor Overrides", binding.noteKey);
+  // Stalled exactly as the incident was: the head was latched `unclear` and left pending.
+  registry.upsertGoal(session.id, { relationship: "unclear", rationale: "latched" });
+
+  const stalled = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(classifyWorkflowGoalProvenance({ rawGoal: stalled.rawGoal, intentSource: stalled.intentSource, now: 1 }).verdict,
+    "unreconciled", "a run frozen around the stall is labelled, not blocked");
+  assert.deepEqual(stalled.steering, []);
+
+  const result = registry.acceptGoalObjective(session.id, 42);
+  assert.ok(result && result.accepted);
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(frozen.rawGoal, HUMAN_ASK, "the contract was confirmed, not rewritten");
+  assert.deepEqual(frozen.intentSource, {
+    objectiveVersion: 1, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer",
+  });
+  assert.equal(frozen.steeringResolvedRevision, 3);
+  assert.deepEqual(frozen.steering?.map((n) => [n.revision, n.instruction, n.relationship]), [
+    [2, "B", "steer"],
+    [3, "B, but rename the heading to Advisor Overrides", "steer"],
+  ]);
+  assert.ok(frozen.steering?.every((n) => n.rationale.startsWith("Accepted by you:")));
+  assert.equal(
+    classifyWorkflowGoalProvenance({ rawGoal: frozen.rawGoal, intentSource: frozen.intentSource, now: 1 }).verdict,
+    "objective",
+  );
 });
 
 test("a session without an objective falls back to its prompt without inventing provenance", () => {

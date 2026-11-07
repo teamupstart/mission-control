@@ -1,3 +1,5 @@
+import { cumulativeUsageBaseline, cumulativeUsageDelta as claudeUsageDelta } from "../../sdk/cumulative-usage.ts";
+export { cumulativeUsageDelta as claudeUsageDelta } from "../../sdk/cumulative-usage.ts";
 import { resolveTranscriptPath } from "./transcript.ts";
 import { CompactionCompletion } from "../compaction.ts";
 import { defaultWindowForModel } from "@shared/model.ts";
@@ -22,10 +24,12 @@ import type {
   SdkSessionHandle,
   SdkSpec,
   SdkTurn,
+  SdkTurnFailure,
   SdkUsage,
   SessionRequest,
   SessionRequestAnswer,
 } from "../types.ts";
+import { isProviderCapacityMessage } from "../../llm/provider-failure.ts";
 import type { LlmSpendModelUsage } from "@shared/llm-spend.ts";
 import { claudeEnvelopeModels, claudeEnvelopeTurnId } from "./envelope.ts";
 import type {
@@ -41,6 +45,8 @@ import type {
   ClaudeSdkUserMessage,
 } from "./sdk-types.ts";
 import { defaultClaudeSdkDeps } from "./sdk-deps.ts";
+import { withAgentTraceContext } from "../../agent-trace-context.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 
 // Claude Code, driven EMBEDDED - the `@anthropic-ai/claude-agent-sdk` behind `SdkSpec`.
@@ -355,13 +361,14 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /** An accepted live selection must outlive the query, independently of init metadata. */
   private modelOverride: string | null = null;
   /**
-   * The preceding query-to-date usage snapshot, used to recover one turn's delta.
+   * The preceding conversation-to-date usage snapshot, used to recover one turn's delta.
    *
    * Claude's streaming-input SDK keeps one `query()` alive across turns. Every `result`
-   * repeats the totals for that whole query, so sending those snapshots straight to the
+   * repeats the totals for that conversation, so sending those snapshots straight to the
    * append-only ledger makes turn two include turn one again, turn three include both, and
    * so on. Retaining the last snapshot here keeps that vendor-specific counter behavior at
-   * the adapter boundary. The registry continues to receive an ordinary per-turn delta.
+   * the adapter boundary for live deltas. The Registry also receives the raw snapshot
+   * so its atomic ledger checkpoint can account across driver and daemon replacements.
    */
   private cumulativeUsage: SdkUsage | null = null;
   /**
@@ -394,11 +401,32 @@ class ClaudeSdkSession implements SdkSessionHandle {
    * where the old counter had no path back to zero at all.
    */
   private turnActive = false;
+  /**
+   * The capacity failure the running turn's own API-error message reported, held until the
+   * `result` that closes the turn. Claude Code reports the error on an assistant frame and
+   * closes the turn on the next `result`, so the two have to be joined here.
+   */
+  private turnFailure: SdkTurnFailure | null = null;
   /** Serialize the experimental control so a slow older reading cannot land after a newer one. */
   private rateLimitRefresh: Promise<void> = Promise.resolve();
   private stopped = false;
 
-  constructor(private readonly cwd: string) {}
+  /**
+   * Closes the turn an `authentication_failed` frame opened when no `result` follows it.
+   * Armed by that frame; disarmed by the turn's `result`, a later healthy frame, or the end.
+   */
+  private authenticationStall: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The query whose auth-failed turn the driver closed itself. Its late `result`, if one
+   * ever comes, describes a turn already reported done and must not be reported again.
+   */
+  private authenticationClosedTurn: ClaudeSdkQuery | null = null;
+
+  constructor(
+    private readonly cwd: string,
+    private readonly resumedConversation: string | null,
+    private readonly authTiming: ClaudeAuthTiming = DEFAULT_AUTH_TIMING,
+  ) {}
 
   get recoveryProcessId(): number | null {
     return this.authenticationRecovery ? null : this.query?.recoveryProcessId ?? null;
@@ -481,16 +509,29 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
 
     this.recoveringQuery = stale;
+    this.disarmAuthenticationStall();
     this.turns.close();
-    await draining;
+    // Closing the input is the polite ending, and the one that lets a CLI still finishing up
+    // release the conversation file itself. A process that has stopped making progress - the
+    // reason this recovery exists - may never act on it, so the wait is bounded and the SDK
+    // is then asked to stop the subprocess outright.
+    if (!(await settlesWithin(draining, this.authTiming.drainMs))) {
+      console.warn(
+        `[claude-sdk] stale process for ${this.agentSessionId} did not exit after its input closed; stopping it`,
+      );
+      // Deferred so a transport that throws synchronously (already torn down) counts as
+      // settled instead of escaping and aborting the relaunch this recovery exists for.
+      await settlesWithin(Promise.resolve().then(() => stale.return(undefined)), this.authTiming.drainMs);
+      if (!(await settlesWithin(draining, this.authTiming.drainMs))) {
+        console.warn(`[claude-sdk] stale process for ${this.agentSessionId} has not drained; resuming anyway`);
+      }
+    }
     if (this.stopped) throw new Error("this session's driver has stopped");
 
     this.turns = new TurnStream();
     this.authenticationFailed = false;
     this.turnActive = false;
-    // Each `query()` reports counters for that query process, even when it resumes the same
-    // native conversation. The replacement therefore starts a new accounting window.
-    this.cumulativeUsage = null;
+    // Resuming the same conversation retains its cumulative counters and baseline.
     try {
       const fresh = await this.relaunch(this.turns, this.agentSessionId, this.modelOverride);
       if (this.stopped) {
@@ -764,6 +805,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   attach(query: ClaudeSdkQuery): void {
     this.query = query;
     this.queryEnded = false;
+    this.authenticationClosedTurn = null;
     const pump = this.pump(query);
     this.queryPump = pump;
     void pump.catch((error) => {
@@ -936,6 +978,10 @@ class ClaudeSdkSession implements SdkSessionHandle {
     let reason = "the session ended";
     try {
       for await (const message of query) {
+        // Authentication recovery can resume past a stale process that never drained, so
+        // this pump may outlive its query's place in the session. Once a replacement is
+        // attached, nothing the stale process says describes the live conversation.
+        if (this.query !== null && this.query !== query) continue;
         this.consume(message);
       }
     } catch (err) {
@@ -944,6 +990,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (this.recoveringQuery === query && !this.stopped) {
         this.recoveringQuery = null;
         if (this.query === query) this.query = null;
+      } else if (this.query !== null && this.query !== query && !this.stopped) {
+        // A superseded stale process ending, possibly after a later recovery replaced
+        // `recoveringQuery`. Its end is not this session's end.
       } else if (
         this.authenticationFailed &&
         this.agentSessionId !== null &&
@@ -961,6 +1010,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
   }
 
   private finish(reason: string): void {
+    this.disarmAuthenticationStall();
     this.compaction.fail(reason);
     if (this.stopped && this.query === null) return;
     this.stopped = true;
@@ -987,6 +1037,19 @@ class ClaudeSdkSession implements SdkSessionHandle {
     }
     if (message.type === "assistant" && message.error === "authentication_failed") {
       this.authenticationFailed = true;
+      this.armAuthenticationStall();
+    } else if (
+      message.type === "assistant" &&
+      !message.parent_tool_use_id &&
+      (this.authenticationStall || this.authenticationClosedTurn)
+    ) {
+      // The CLI answered again after reporting the failure, so its credentials work after
+      // all: a relaunch on the next send would only interrupt a turn that is progressing.
+      // Even when the stall already reported the turn done, this frame reopens it, and the
+      // `result` that follows is that turn's real completion rather than a late duplicate.
+      this.disarmAuthenticationStall();
+      this.authenticationFailed = false;
+      this.authenticationClosedTurn = null;
     }
     // The init frame is the one authoritative answer to "which model did this launch
     // actually bind?" It is especially important on resume: the durable launch request may
@@ -1013,11 +1076,24 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // to dequeue after a `result` we had already read as the end of the work - re-arms the
       // flag here, on its own first frame, without the driver having to predict it.
       this.turnActive = true;
+      const failure = claudeCapacityFailure(message);
+      if (failure) this.turnFailure = failure;
       this.out.emit({ kind: "state", state: "working", activity: assistantActivity(message) });
       return;
     }
     if (message.type === "result") {
+      this.disarmAuthenticationStall();
+      if (this.authenticationClosedTurn !== null && this.authenticationClosedTurn === this.query) {
+        // The late close of a turn the stall already reported done. Its usage snapshot is
+        // left for the next result, which repeats the conversation totals, to account.
+        this.authenticationClosedTurn = null;
+        this.turnActive = false;
+        this.turnFailure = null;
+        return;
+      }
       this.turnActive = false;
+      const failure = this.turnFailure ?? claudeResultCapacityFailure(message);
+      this.turnFailure = null;
       const cumulative = claudeTurnUsage(message, this.modelId);
       const usage = cumulative ? claudeUsageDelta(cumulative, this.cumulativeUsage) : null;
       // Advance only from a snapshot the ledger can actually accept. Otherwise a result
@@ -1026,13 +1102,45 @@ class ClaudeSdkSession implements SdkSessionHandle {
       // only token counters: the next priced cumulative result must still subtract the last
       // priced total instead of treating the temporary unknown as zero.
       if (cumulative?.turnId && cumulative.models?.length) {
-        this.cumulativeUsage = claudeUsageBaseline(cumulative, this.cumulativeUsage);
+        this.cumulativeUsage = cumulativeUsageBaseline(cumulative, this.cumulativeUsage);
       }
-      this.out.emit({ kind: "turn_done", usage });
+      this.out.emit({
+        kind: "turn_done", usage,
+        ...(cumulative?.turnId && cumulative.models?.length
+          ? { usageSnapshot: { usage: cumulative, resumed: this.agentSessionId === this.resumedConversation } } : {}),
+        ...(failure ? { failure } : {}),
+      });
       this.compaction.finish();
       this.refreshRateLimits();
       return;
     }
+  }
+
+  private armAuthenticationStall(): void {
+    this.disarmAuthenticationStall();
+    const query = this.query;
+    const timer = setTimeout(() => {
+      if (this.authenticationStall !== timer) return;
+      this.authenticationStall = null;
+      if (this.stopped || this.query !== query || !this.turnActive || !this.authenticationFailed) return;
+      console.warn(
+        `[claude-sdk] ${this.agentSessionId ?? "an unbound session"} reported an authentication failure without closing its turn; closing it so the next turn can reload credentials`,
+      );
+      // The bookkeeping a `result` would have done, minus usage: the CLI reported none, and
+      // the next result's cumulative totals still carry anything this turn spent.
+      this.turnActive = false;
+      this.turnFailure = null;
+      this.authenticationClosedTurn = query;
+      this.out.emit({ kind: "turn_done", usage: null });
+      this.compaction.finish();
+    }, this.authTiming.turnGraceMs);
+    timer.unref?.();
+    this.authenticationStall = timer;
+  }
+
+  private disarmAuthenticationStall(): void {
+    if (this.authenticationStall) clearTimeout(this.authenticationStall);
+    this.authenticationStall = null;
   }
 
   private bind(agentSessionId: string): void {
@@ -1108,122 +1216,6 @@ export function claudeTurnUsage(
   };
 }
 
-/** A cumulative counter's new contribution, tolerating a provider-side reset. */
-function cumulativeDelta(current: number, previous: number): number {
-  return current >= previous ? current - previous : current;
-}
-
-/** Whether any query-wide counter proves the provider started a new accounting window. */
-function cumulativeUsageReset(current: SdkUsage, previous: SdkUsage): boolean {
-  return (
-    current.input < previous.input ||
-    current.output < previous.output ||
-    current.cacheRead < previous.cacheRead ||
-    current.cacheWrite < previous.cacheWrite ||
-    (current.reasoningOutput ?? 0) < (previous.reasoningOutput ?? 0) ||
-    (current.costUsd !== null && previous.costUsd !== null && current.costUsd < previous.costUsd)
-  );
-}
-
-/** Whether one model's counters prove its cumulative accounting window restarted. */
-function cumulativeModelUsageReset(
-  current: LlmSpendModelUsage,
-  previous: LlmSpendModelUsage,
-): boolean {
-  return (
-    current.input < previous.input ||
-    current.output < previous.output ||
-    current.reasoningOutput < previous.reasoningOutput ||
-    current.cacheRead < previous.cacheRead ||
-    current.cacheWrite < previous.cacheWrite ||
-    (
-      current.reportedCostUsd !== null &&
-      previous.reportedCostUsd !== null &&
-      current.reportedCostUsd < previous.reportedCostUsd
-    )
-  );
-}
-
-/**
- * Advance cumulative counters without forgetting the last price the provider knew.
- *
- * Claude may omit cost from one otherwise valid result and resume reporting it later. That
- * unknown turn must keep its null delta, but storing null as the next baseline would make the
- * later query-to-date price subtract from zero. Token counters still advance normally while
- * scalar and per-model costs carry forward. An observable reset clears those remembered costs
- * so a new accounting window still contributes its whole first priced result.
- */
-function claudeUsageBaseline(current: SdkUsage, previous: SdkUsage | null): SdkUsage {
-  if (!previous || cumulativeUsageReset(current, previous)) return current;
-  const previousModels = new Map(previous.models?.map((model) => [model.modelId, model]) ?? []);
-  const models = current.models?.map((model) => {
-    const prior = previousModels.get(model.modelId);
-    const reset = prior ? cumulativeModelUsageReset(model, prior) : false;
-    return {
-      ...model,
-      reportedCostUsd:
-        model.reportedCostUsd ?? (reset ? null : prior?.reportedCostUsd ?? null),
-    };
-  });
-  return {
-    ...current,
-    costUsd: current.costUsd ?? previous.costUsd,
-    ...(models ? { models } : {}),
-  };
-}
-
-/**
- * Convert two Claude query-to-date snapshots into the newest turn's usage.
- *
- * The first snapshot contributes its whole value. Later snapshots contribute only their
- * increase. A lower current value means Claude reset that counter, so the current value is
- * the new contribution rather than a negative delta. The result keeps the newest frame UUID:
- * it remains the durable replay key for this delta even though it was never the boundary of
- * the cumulative figures on the wire.
- */
-export function claudeUsageDelta(
-  current: SdkUsage,
-  previous: SdkUsage | null,
-): SdkUsage {
-  if (!previous || cumulativeUsageReset(current, previous)) return current;
-  const previousModels = new Map(previous?.models?.map((model) => [model.modelId, model]) ?? []);
-  const models = current.models?.map((model) => {
-    const prior = previousModels.get(model.modelId);
-    return {
-      ...model,
-      input: cumulativeDelta(model.input, prior?.input ?? 0),
-      output: cumulativeDelta(model.output, prior?.output ?? 0),
-      reasoningOutput: cumulativeDelta(model.reasoningOutput, prior?.reasoningOutput ?? 0),
-      cacheRead: cumulativeDelta(model.cacheRead, prior?.cacheRead ?? 0),
-      cacheWrite: cumulativeDelta(model.cacheWrite, prior?.cacheWrite ?? 0),
-      reportedCostUsd:
-        model.reportedCostUsd === null
-          ? null
-          : cumulativeDelta(model.reportedCostUsd, prior?.reportedCostUsd ?? 0),
-    };
-  });
-  return {
-    input: cumulativeDelta(current.input, previous?.input ?? 0),
-    output: cumulativeDelta(current.output, previous?.output ?? 0),
-    cacheRead: cumulativeDelta(current.cacheRead, previous?.cacheRead ?? 0),
-    cacheWrite: cumulativeDelta(current.cacheWrite, previous?.cacheWrite ?? 0),
-    ...(current.reasoningOutput !== undefined
-      ? {
-          reasoningOutput: cumulativeDelta(
-            current.reasoningOutput,
-            previous?.reasoningOutput ?? 0,
-          ),
-        }
-      : {}),
-    modelId: current.modelId,
-    costUsd:
-      current.costUsd === null
-        ? null
-        : cumulativeDelta(current.costUsd, previous?.costUsd ?? 0),
-    ...(current.turnId && models ? { turnId: current.turnId, models } : {}),
-  };
-}
-
 /**
  * The ticker line for an assistant turn: what it is doing right now.
  *
@@ -1248,6 +1240,49 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
     }
   }
   return null;
+}
+
+/** The API-error categories Claude Code tags a capacity failure with. */
+const CLAUDE_CAPACITY_ERRORS = new Set(["overloaded", "server_error", "rate_limit"]);
+
+/**
+ * The capacity failure a top-level assistant frame reports, or null.
+ *
+ * Claude Code retries a 529 on its own and, once those retries are spent, ends the turn with
+ * a synthetic assistant message. Its `error` tag alone is not enough: "Repeated 529
+ * Overloaded errors" is tagged `server_error` and the "Opus is experiencing high load"
+ * off-switch is tagged `rate_limit`, tags that also cover failures waiting cannot fix. So
+ * `overloaded` is trusted outright and the other two only when the text says capacity. A
+ * subagent's error is ignored: it ends the subagent, not this turn.
+ */
+export function claudeCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.type !== "assistant" || message.parent_tool_use_id) return null;
+  const error = typeof message.error === "string" ? message.error : null;
+  if (!error || !CLAUDE_CAPACITY_ERRORS.has(error)) return null;
+  const text = assistantText(message);
+  if (error === "overloaded" || isProviderCapacityMessage(text)) {
+    return { kind: "capacity", message: text || "Claude's API is overloaded." };
+  }
+  return null;
+}
+
+/** The same verdict read off an error `result`, for a stream that carried no error frame. */
+function claudeResultCapacityFailure(message: ClaudeSdkMessage): SdkTurnFailure | null {
+  if (message.is_error !== true || typeof message.result !== "string") return null;
+  const text = message.result.trim();
+  return isProviderCapacityMessage(text) ? { kind: "capacity", message: text } : null;
+}
+
+function assistantText(message: ClaudeSdkMessage): string {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text"
+      ? String((block as { text?: unknown }).text ?? "")
+      : ""))
+    .join("\n")
+    .trim();
 }
 
 /**
@@ -1277,6 +1312,18 @@ function withArtifactTool(env: Record<string, string | undefined>): Record<strin
   return env.CLAUDE_CODE_ARTIFACT === undefined ? { ...env, CLAUDE_CODE_ARTIFACT: "1" } : env;
 }
 
+/**
+ * The task's advisor pin as session environment: `off` sets the one switch that also beats
+ * an inherited user setting. Inherit (`null`) and a model pin leave the env as it was.
+ */
+function withAdvisorEnv(
+  env: Record<string, string | undefined>,
+  choice: SdkLaunchOptions["advisorModel"],
+): Record<string, string | undefined> {
+  const extra = choice ? capabilitiesFor("claude").advisor?.launchEnv(choice) ?? {} : {};
+  return Object.keys(extra).length > 0 ? { ...env, ...extra } : env;
+}
+
 /** One resident entry as Claude Code's `mcpServers` value. */
 function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> {
   const claude = entry.options.claude ?? {};
@@ -1284,7 +1331,9 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
     ...(claude.timeoutMs !== undefined ? { timeout: claude.timeoutMs } : {}),
     ...(claude.alwaysLoad !== undefined ? { alwaysLoad: claude.alwaysLoad } : {}),
   };
-  if (entry.shape === "http") return { type: "http", url: entry.url, headers: entry.headers, ...options };
+  // Type, URL and headers exactly as configured, `{}` included: Claude Code keys a stored OAuth
+  // login by the name and a hash of these three, so this is how a resident finds the operator's.
+  if (entry.shape === "http") return { type: entry.transport, url: entry.url, headers: entry.headers, ...options };
   return { type: "stdio", command: entry.command, args: entry.args, env: entry.env, ...options };
 }
 
@@ -1311,17 +1360,69 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
 }
 
 /**
+ * `claudeMcpOptions` plus the task's advisor pin, as ONE flag-layer `settings` object.
+ *
+ * Both write the same option, and the SDK takes a single value for it, so a resident run
+ * pinned to an advisor has to carry `disableClaudeAiConnectors` and `advisorModel` together;
+ * spreading the two separately would let whichever came second erase the other. Inherit adds
+ * nothing, so an unpinned launch's options are exactly what they were before the pin existed.
+ */
+function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
+  const mcp = claudeMcpOptions(opts);
+  const advisor = opts.advisorModel ? capabilitiesFor("claude").advisor?.sdkSettings(opts.advisorModel) ?? {} : {};
+  if (Object.keys(advisor).length === 0) return mcp;
+  return { ...mcp, settings: { ...mcp.settings, ...advisor } };
+}
+
+/**
  * How long a resident's start waits for Claude to report its servers and for them to stop
  * pending. Long enough for a server fetched on first use, such as an `npx` package, to come up.
  */
 const RESIDENT_MCP_SETTLE_MS = 60_000;
+
+interface ClaudeAuthTiming {
+  /** How long an `authentication_failed` frame waits for the `result` that closes its turn. */
+  turnGraceMs: number;
+  /** How long recovery waits on a stale subprocess, before and after asking it to stop. */
+  drainMs: number;
+}
+
+/**
+ * Claude Code normally closes an auth-failed turn with a `result` straight after the
+ * synthetic "Not logged in" frame. A turn that failed while folding in a mid-turn
+ * background-task notification has been seen to emit that frame and then nothing, leaving
+ * the process alive and the turn open for hours - and recovery runs only on the NEXT send,
+ * which an open turn holds back. The grace is far longer than the gap between the two frames
+ * and far shorter than any resident pacing interval.
+ */
+const DEFAULT_AUTH_TIMING: ClaudeAuthTiming = { turnGraceMs: 30_000, drainMs: 10_000 };
+
+/** Whether `promise` settled within `ms` (nothing to wait for counts). The timer never holds the daemon open. */
+async function settlesWithin(promise: Promise<unknown> | null, ms: number): Promise<boolean> {
+  if (!promise) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise.then(() => true, () => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const RESIDENT_MCP_POLL_MS = 200;
 
 /**
  * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
  * the set must be configured and must not have failed, be switched off, or wait on a login: a
- * resident never runs silently without one of its servers. A remote server behind an OAuth login
- * Claude Code holds lands here as failed, because the launcher's bridge cannot present that login.
+ * resident never runs silently without one of its servers.
+ *
+ * A remote server Claude Code connects to itself presents the operator's stored OAuth login. With
+ * no usable login - never signed in, or a token it could not refresh - Claude reports it
+ * `needs-auth` (measured on Claude Code 2.1.317), and caches that verdict by server name alone, so
+ * a later start may report it again without trying. A server behind a login that is reached through the
+ * launcher's bridge instead is reported `failed`, because the bridge cannot present one.
  */
 function residentMcpStatusProblem(
   statuses: ReadonlyArray<{ name: string; status: string }>,
@@ -1334,7 +1435,9 @@ function residentMcpStatusProblem(
     const state = reported.get(name);
     if (state === undefined) return `did not configure its MCP server ${name}`;
     if (state === "disabled") return `has its MCP server ${name} switched off`;
-    if (state === "needs-auth") return `cannot use its MCP server ${name}, which needs a login a resident cannot present`;
+    if (state === "needs-auth") {
+      return `cannot use its MCP server ${name}, which needs a login Claude Code does not have or could not refresh; sign in to ${name} with /mcp in Claude Code, then launch again`;
+    }
     if (state === "failed") return `could not connect to its MCP server ${name}`;
   }
   return null;
@@ -1395,10 +1498,14 @@ async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, 
 
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   const settleMs = deps.residentMcpSettleMs ?? RESIDENT_MCP_SETTLE_MS;
+  const authTiming: ClaudeAuthTiming = {
+    turnGraceMs: deps.authFailureTurnGraceMs ?? DEFAULT_AUTH_TIMING.turnGraceMs,
+    drainMs: deps.authRecoveryDrainMs ?? DEFAULT_AUTH_TIMING.drainMs,
+  };
   return {
     answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
-      const session = new ClaudeSdkSession(opts.cwd);
+      const session = new ClaudeSdkSession(opts.cwd, opts.resume, authTiming);
       // Turn one is queued before the query is constructed, so the first thing the CLI
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
@@ -1406,7 +1513,13 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       const options: ClaudeSdkQueryOptions = {
         cwd: opts.cwd,
         pathToClaudeCodeExecutable: await deps.executable(),
-        env: withArtifactTool(deps.env(opts.cwd, opts.stateHome)),
+        // This session's trace context, which also clears any `TRACEPARENT` the daemon
+        // inherited. Claude Code reads it at each interaction span in an SDK session; it
+        // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
+        env: withAgentTraceContext(
+          withAdvisorEnv(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.advisorModel),
+          opts.traceContext,
+        ),
         ...(opts.model ? { model: opts.model } : {}),
         ...(opts.effort ? { effort: opts.effort } : {}),
         ...(permissionMode ? { permissionMode } : {}),
@@ -1457,7 +1570,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // every session that started in any other mode unable to reach bypass at all.
         allowDangerouslySkipPermissions: true,
         ...(opts.resume ? { resume: opts.resume } : {}),
-        ...claudeMcpOptions(opts),
+        ...claudeFlagOptions(opts),
         // The ask channel's disallow + redirect are deliberately NOT rendered here. They
         // exist because a menu on a child's screen is unreadable to the dashboard; a
         // driver request IS the dashboard's own control, so the native tool is better
@@ -1479,7 +1592,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // replaced, so the replacement mints its own.
         const fresh = await deps.query({ prompt, options: {
           ...base,
-          ...claudeMcpOptions(opts),
+          ...claudeFlagOptions(opts),
           // The original options predate any accepted live model change.
           ...(modelOverride ? { model: modelOverride } : {}),
           resume,

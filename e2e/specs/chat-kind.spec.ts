@@ -99,7 +99,8 @@ test("chat is immediate and restores Workflow and dependencies after a detour", 
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue("__none");
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  await expect(afterWork.locator("option:checked")).toContainText("Plan Validation");
   await kind.selectOption("ship");
   await expect(afterWork).toHaveValue(workflowId);
   await expect(dialog.locator(".dep-chip", { hasText: dependencyTitle })).toBeVisible();
@@ -107,7 +108,8 @@ test("chat is immediate and restores Workflow and dependencies after a detour", 
   await kind.selectOption("chat");
   await afterWork.selectOption(workflowId);
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
+  await expect(afterWork).toHaveValue("__default");
+  await expect(afterWork.locator("option:checked")).toContainText("Plan Validation");
   await kind.selectOption("ship");
   await expect(afterWork).toHaveValue(workflowId);
 });

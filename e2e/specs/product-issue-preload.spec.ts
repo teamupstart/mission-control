@@ -12,8 +12,9 @@ import { recordsIn } from "../fixtures/records.ts";
 
 test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
 
-for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged dashboard after a held press"] as const) {
-  test(`a real desktop Report click publishes from the ${surface}`, async ({ daemon }) => {
+for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged dashboard after a held press", "packaged dashboard via Meta+Enter", "packaged dashboard via Control+Enter"] as const) {
+  const shortcut = surface.includes("Meta+Enter") ? "Meta+Enter" : surface.includes("Control+Enter") ? "Control+Enter" : null;
+  test(`a real desktop Report ${shortcut ? "shortcut" : "click"} publishes from the ${surface}`, async ({ daemon }) => {
     writeFileSync(daemon.ghProductPath, JSON.stringify({ preflight: "ok", issueCreate: "created" }));
     writeProductAuthorizationScript(daemon.home, { answer: "grant" });
     const dev = surface === "hot-updated dashboard" ? await startDevDashboard(daemon) : null;
@@ -63,10 +64,21 @@ for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged 
             }, { capture: true, once: true });
           });
         }
-        await dialog.getByRole("button", { name: "Report publicly" }).click({
-          // Chromium's transient activation begins on mouse-down, not the final trusted click.
-          delay: heldPress ? 6_000 : 0,
-        });
+        if (shortcut) {
+          await expect(dialog.getByRole("button", { name: "Report publicly" })).toBeEnabled();
+          const title = dialog.getByRole("textbox", { name: "Title", exact: true });
+          await title.press("Enter");
+          await title.dispatchEvent("keydown", { key: "Enter", metaKey: true, bubbles: true });
+          await expect(dialog.getByRole("button", { name: "Report publicly" })).toBeVisible();
+          expect(recordsIn<{ argv: string[] }>(daemon.recordDir, (file) => file.startsWith("gh-"))
+            .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create")).toHaveLength(0);
+          await title.press(shortcut);
+        } else {
+          await dialog.getByRole("button", { name: "Report publicly" }).click({
+            // Chromium's transient activation begins on mouse-down, not the final trusted click.
+            delay: heldPress ? 6_000 : 0,
+          });
+        }
         if (gesture) expect((await gesture).text()).toBe("report-gesture:true:false");
         await expect(dialog.getByRole("link", { name: "View GitHub issue" })).toBeVisible();
         const creates = recordsIn<{ argv: string[] }>(daemon.recordDir, (file) => file.startsWith("gh-"))
@@ -77,7 +89,7 @@ for (const surface of ["packaged dashboard", "hot-updated dashboard", "packaged 
           const dir = join(process.cwd(), "e2e/.artifacts/report-publicly");
           mkdirSync(dir, { recursive: true });
           await page.mouse.move(1, 1);
-          await dialog.screenshot({ path: join(dir, `desktop-${heldPress ? "held" : dev ? "hot-updated" : "packaged"}-reported.png`) });
+          await dialog.screenshot({ path: join(dir, `desktop-${shortcut ? shortcut.split("+")[0]!.toLowerCase() : heldPress ? "held" : dev ? "hot-updated" : "packaged"}-reported.png`) });
         }
       } finally {
         await application.close();

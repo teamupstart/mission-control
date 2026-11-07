@@ -14,7 +14,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowCheckSlot, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
@@ -1133,6 +1133,65 @@ async function waitFor(check: () => boolean, message: string, timeoutMs = 10_000
   }
 }
 
+test("engine shutdown refuses a check released after lease acquisition", { skip: !SUPPORTED, timeout: 20_000 }, async (t) => {
+  const f = fixture({ slots: 1 });
+  const id = "shutdown-before-spawn";
+  const marker = join(home, "shutdown-command-ran");
+  const command = [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`];
+  const store = seedCheckRun(id, f.repoRoot, f.headSha);
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let heldAttemptId = "";
+  const acquire = f.leases.acquireForAttempt.bind(f.leases);
+  t.mock.method(f.leases, "acquireForAttempt", async (input: Parameters<typeof acquire>[0]) => {
+    const path = await acquire(input);
+    heldAttemptId = input.attemptId;
+    // The real lease is durable, but the runtime has not reached its real supervisor yet.
+    await hold;
+    return path;
+  });
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => { throw new Error("this check-only workflow must not call a model"); },
+    workflowPolicy: () => ({
+      liveEnabled: false, repoAllowlist: [f.repoRoot], defaultWorkflowId: null,
+      retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
+      checksEnabled: true, skipPassedJudges: true,
+    }),
+    workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot),
+      overrides: slot === "test" ? [{ repoRoot: f.repoRoot, command }] : [] }),
+    checkDeps: (attempt) => ({ execute: f.runtime.executorFor(attempt) }),
+    unresolvedCheckLease: (submissionId, nodeId) => f.leases.unresolvedLeaseForNode(submissionId, nodeId),
+  });
+  let shutdown: Promise<void> | undefined;
+  engine.start();
+  try {
+    engine.activateSubmission(`submission-${id}`);
+    await waitFor(() => heldAttemptId !== "", "the engine never reached the held lease acquisition");
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "held");
+    assert.equal(existsSync(marker), false);
+    let stopped = false;
+    shutdown = engine.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    assert.equal(stopped, false, "shutdown must wait for the held attempt to settle");
+
+    release();
+    await shutdown;
+
+    assert.equal(existsSync(marker), false, "a check released after shutdown must never execute its command");
+    const interrupted = store.getAttempt(heldAttemptId)!;
+    assert.equal(interrupted.state, "error");
+    assert.match(interrupted.error!, /Mission Control is shutting down/);
+    assert.equal(leaseRows.get(heldAttemptId)?.cleanupState, "returned");
+    assert.equal(f.leases.unresolvedLeaseForNode(`submission-${id}`, "gate"), false);
+    assert.deepEqual(liveRows(), []);
+    assert.deepEqual(f.pool.trees.filter((tree) => tree.state === "leased"), []);
+  } finally {
+    release();
+    await (shutdown ?? engine.stop());
+    store.cancelRun(`run-${id}`, "test_cleanup");
+  }
+});
+
 /**
  * The defect this gate exists for is invisible without this test, because the happy path and
  * the broken path both end with "the check eventually finished".
@@ -1275,4 +1334,111 @@ test("checks require the reviewed publication tree and cannot depend on a local 
   });
   assert.equal(mismatch.kind, "infrastructure");
   assert.match(mismatch.kind === "infrastructure" ? mismatch.reason : "", /Commit the required deliverables/);
+
+  // A pre-commit review runs the required source from its publication snapshot. Retained
+  // report bytes remain available to Personas, but can never become a Command's fixture.
+  const { captureReviewSnapshot } = await import("../src/server/git/review-snapshot.ts");
+  const persisted = await captureWorkflowPublication(f.repoRoot, [], { objectStorage: "repository" });
+  const snapshot = await captureReviewSnapshot(f.repoRoot, Date.now(), {
+    treeOid: persisted.publication.treeOid, headOid: persisted.headOid,
+  });
+  const reviewed = await f.runtime.executorFor(attemptRef())({
+    ...request,
+    headSha: snapshot.commitOid,
+    publicationTreeOid: persisted.publication.treeOid,
+    command: [process.execPath, "-e", "const fs = require('node:fs'); require('node:assert/strict').equal(fs.readFileSync('required-source.ts', 'utf8'), 'export {};\\n'); if (fs.existsSync('docs/reports/result/report.html')) process.exit(1)"],
+  });
+  assert.equal(reviewed.kind, "exited");
+  assert.equal(reviewed.kind === "exited" && reviewed.exitCode, 0);
+});
+
+// ---- CodeRabbit coverage is checked against the pinned diff ----------------
+
+/**
+ * CLI 0.9.2 stopped printing `unreviewedFileCount` and prints `reviewedFiles` instead, and every
+ * real review then blocked as "Invalid CodeRabbit completion/gate". A fake CLI prints that
+ * exact completion shape here, so the runtime has to list the pinned diff and accept it.
+ */
+function codeRabbitRun(id: string, reviewedFiles: string[]) {
+  const f = fixture();
+  const git = (...args: string[]) => execFileSync("git", ["-C", f.repoRoot, ...args], { stdio: "pipe" }).toString().trim();
+  const base = f.headSha;
+  // A modification, an addition and a deletion: the deletion is allowed but never required.
+  writeFileSync(join(f.repoRoot, "root.txt"), "changed\n");
+  writeFileSync(join(f.repoRoot, "added.ts"), "export const added = 1;\n");
+  git("rm", "-q", "packages/web/marker.txt");
+  git("add", "-A");
+  git("commit", "-qm", "feature");
+  const head = git("rev-parse", "HEAD");
+  const store = seedCheckRun(id, f.repoRoot, head, "coderabbit");
+  const ref = { runId: `run-${id}`, submissionId: `submission-${id}`, attemptId: `attempt-${id}`, nodeId: "gate" };
+  store.insertAttempt({ id: ref.attemptId, submissionId: ref.submissionId, nodeId: "gate", attempt: 1,
+    state: "running", persona: null, inputFingerprint: id, now: 4 });
+  const complete = { type: "complete", status: "review_completed", findings: 0,
+    gate: { threshold: "major", status: "passed", blockingFindings: 0 },
+    reviewedFiles, outcome: "completed", message: "Review completed" };
+  const stdout = [{ type: "status", phase: "setup", status: "setting_up" }, { type: "heartbeat", status: "reviewing" }, complete]
+    .map((event) => JSON.stringify(event)).join("\n") + "\n";
+  return { f, ref, store, request: {
+    slot: "coderabbit" as const,
+    command: [process.execPath, "-e", `process.stdout.write(${JSON.stringify(stdout)})`],
+    repoRoot: f.repoRoot, workingSubpath: "", headSha: head,
+    coderabbit: { interpreterVersion: 1 as const,
+      yaml: { source: ".coderabbit.yaml" as const, digest: null, enabled: true, state: "enabled" as const, diagnostic: "fixture" },
+      baseRef: "main", baseTip: base, mergeBase: base, head, empty: false, severity: "major" as const,
+      ruleRevision: 1, timeoutMs: 30_000, maxRuns: 10, error: null },
+  } };
+}
+
+test("a reviewedFiles completion covering the pinned diff is a complete review", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files", ["added.ts", "root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.review?.status, "complete", outcome.review?.diagnostic);
+  assert.match(outcome.review!.diagnostic, /Complete CodeRabbit review: 0 findings/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("a reviewedFiles completion that skipped a changed file is incomplete", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-reviewed-files-missed", ["root.txt"]);
+  const outcome = await f.runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "exited");
+  if (outcome.kind !== "exited") return;
+  assert.equal(outcome.review?.status, "incomplete");
+  assert.match(outcome.review!.diagnostic, /1 of 2 changed files not reviewed/);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test("changed paths that cannot be listed are infrastructure, before any tree is leased", { skip: !SUPPORTED }, async () => {
+  const { ref, store, f, request } = codeRabbitRun("coderabbit-changed-paths-unavailable", []);
+  const runtime = new CheckRuntime(f.leases, { leaseStore: leaseRows, teardown: TEARDOWN, timeoutMs: 30_000,
+    changedPaths: async () => { throw new Error("git refused"); } });
+  const outcome = await runtime.executorFor(ref)(request);
+  assert.equal(outcome.kind, "infrastructure");
+  if (outcome.kind !== "infrastructure") return;
+  assert.equal(outcome.started, false);
+  assert.match(outcome.reason, /changed files could not be listed: git refused/);
+  assert.deepEqual(f.pool.calls.filter((call) => call.cmd === "get"), []);
+  store.cancelRun(ref.runId, "test_cleanup", 99);
+});
+
+test('an already aborted check acquires no worktree and never reaches platform lookup or supervision', async () => {
+  const f = fixture();
+  const calls: string[] = [];
+  const runtime = new CheckRuntime(f.leases, {
+    leaseStore: leaseRows,
+    platform: () => { calls.push('platform'); return {supported: false, note: 'must not probe'}; },
+    supervise: async () => { throw new Error('must not spawn'); },
+  });
+  const shutdown = new AbortController();
+  shutdown.abort();
+  const outcome = await runtime.executorFor(attemptRef())({slot: 'test', command: PASSES,
+    repoRoot: f.repoRoot, workingSubpath: '', headSha: f.headSha, signal: shutdown.signal});
+  assert.deepEqual(outcome, {kind: 'infrastructure', started: false,
+    reason: 'check interrupted because Mission Control is shutting down'});
+  assert.deepEqual(calls, []);
+  assert.deepEqual(f.pool.calls, []);
+  assert.deepEqual(liveRows(), []);
 });

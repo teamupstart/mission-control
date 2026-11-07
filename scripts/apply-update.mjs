@@ -12,11 +12,13 @@
 // three quarters of an hour.
 
 import { acknowledgeHelper, finishHelper } from "./update-helper-runtime.mjs";
+import { sanitizeDiagnostic } from "./update-diagnostic.mjs";
 import { prepareSourceUpdate, installStagedApp, bundleCommit as bundleSourceCommit } from "./install-staged-app.mjs";
 import { readReceipt } from "../src/shared/install-receipt.mjs";
 import { randomBytes } from "node:crypto";
-import { assertSafeAppLaunch, assertSafeAppLaunches, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
+import { showUpdateProgress, updateProgressRequestPath, assertSafeAppLaunch, assertSafeAppLaunches, COMMAND_TIMEOUT_MS, realMacAppOps, waitForBundleExit, prepareAppLaunch, verifyAppLaunch, stopAttemptLaunch, launchAckPath } from "./mac-app-lifecycle.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
+import { readCheckProcessOwners } from './update-process-owners.mjs';
 import {
   appendFileSync,
   existsSync,
@@ -24,6 +26,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -139,33 +142,9 @@ export function parseArgs(argv) {
   return { args: values, problem: null };
 }
 
-/**
- * The same rule set as `sanitizeLogLine` in `src/main/update-log.ts`, plus a length cap.
- *
- * A deliberate copy, not an oversight: this file's detached dependency graph cannot import
- * the main-process TypeScript logger after it outlives the app bundle.
- * `test/update-log.test.ts` asserts both produce identical output, which is what keeps a copy
- * from becoming a divergence - the URL rules were added to both in the same change, after a
- * review found that a registry or git URL reached the log in full.
- */
-export function sanitizeDiagnostic(value) {
-  return String(value)
-    .replace(
-      /(["'])Authorization\1\s*:\s*(["'])(?!<redacted>)[^"']*\2/gi,
-      "$1Authorization$1: $2<redacted>$2",
-    )
-    // `(?!<redacted>)`: see the note beside the same rule in `src/main/update-log.ts`. Without
-    // it a second pass over this function's own output consumed the following word.
-    .replace(/Authorization\s*:\s*(?!<redacted>)[^\s]+(?:\s+[^\s]+)?/gi, "Authorization: <redacted>")
-    .replace(/\b(?:gh[opusr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/g, "<redacted-token>")
-    .replace(/\b(token|access_token|auth)\s*[=:]\s*[^\s]+/gi, "$1=<redacted>")
-    .replace(/\bfile:\/\/\/[^\s"')]+/g, "file://<path>")
-    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`)<>\]]+/gi, "<url>")
-    .replace(/^\s*[\w.+-]+@(?=[\w.-]*[a-z])[\w-]+(?:\.[\w-]+)+:(?=\s)/gi, "<url>:")
-    .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+:[^\s"'`)<>]+/gi, "<url>")
-    .replace(/(^|[\s"'(=])\/(?:[^\s"'),]+\/?)+/g, "$1<path>")
-    .slice(0, 500);
-}
+// The redaction policy lives in `update-diagnostic.mjs` so a migration rollback can apply it
+// too; re-exported here for this module's existing importers.
+export { sanitizeDiagnostic };
 
 /** Keep the decisive tail of a failed child process instead of only its exit status. */
 export function installFailureSummary(output) {
@@ -225,8 +204,41 @@ export function openAppForRelaunch(appPath, nonce, spawn = spawnSync) {
 export function realApplyOperations(
   logPath,
   installTimeoutMs = INSTALL_TIMEOUT_MS,
+  displayProgress = showUpdateProgress,
 ) {
   const mac = realMacAppOps(dirname(logPath));
+  let closeProgress = null;
+  let progressMessage = "";
+  let progressHidden = false;
+  let processOwners = [];
+  let lastWaiting = '';
+  let requestPath = null;
+  let requestPoll = null;
+  const revealProgress = () => {
+    closeProgress?.();
+    progressHidden = false;
+    closeProgress = displayProgress(progressMessage, undefined, () => { progressHidden = true; });
+  };
+  const progress = (message, nonce) => {
+    if (message !== progressMessage) {
+      progressMessage = message;
+      if (!progressHidden) revealProgress();
+    }
+    if (nonce && !requestPath) {
+      requestPath = updateProgressRequestPath(dirname(logPath), nonce);
+      // Consume requests even if they predate polling. watchFile's initial stat can
+      // otherwise absorb a fast reopen as its baseline without reporting a change.
+      requestPoll = setInterval(() => {
+        try { unlinkSync(requestPath); } catch { return; }
+        revealProgress();
+      }, 100);
+    }
+    return () => {
+      if (requestPoll) { clearInterval(requestPoll); requestPoll = null; }
+      if (requestPath) { rmSync(requestPath, {force: true}); requestPath = null; }
+      closeProgress?.(); closeProgress = null; progressMessage = ""; progressHidden = false;
+    };
+  };
   const log = (line) => {
     try {
       appendFileSync(logPath, `${new Date().toISOString()} ${sanitizeDiagnostic(line)}\n`, {
@@ -244,7 +256,28 @@ export function realApplyOperations(
     // Several bundles from ONE sweep: the sweep is machine-wide, so a sweep per bundle re-reads
     // the same launchd jobs only to filter them differently.
     preflightAll: (bundles) => assertSafeAppLaunches(bundles, mac, installTimeoutMs),
-    waitForBundle: (bundle) => waitForBundleExit(bundle, mac),
+    showProgress: progress,
+    setProcessOwners: (owners) => {
+      processOwners = Array.isArray(owners) ? owners.filter((owner) => Number.isInteger(owner?.pid) && owner.pid > 1 &&
+        /^[a-f0-9]{64}$/.test(owner.fingerprint) && typeof owner.group === 'boolean' &&
+        typeof owner.work === 'string' && owner.work.length < 2000) : [];
+    },
+    waitForBundle: async (bundle) => {
+      let closeWaitProgress;
+      const previousMessage = closeProgress ? progressMessage : null;
+      try {
+        await waitForBundleExit(bundle, mac, 120_000, (message) => {
+          // A transaction already owns a progress dialog. The legacy path has no
+          // migration handoff, so this shared boundary owns its visible wait instead.
+          if (!closeProgress) closeWaitProgress = progress(message);
+          else progress(message);
+          if (message !== lastWaiting) { log(message); lastWaiting = message; }
+        }, [...readCheckProcessOwners(dirname(logPath), mac), ...processOwners]);
+      } finally {
+        closeWaitProgress?.();
+        if (previousMessage && closeProgress && progressMessage !== previousMessage) progress(previousMessage);
+      }
+    },
     prepareLaunch: (bundle) => prepareAppLaunch(bundle, mac),
     verifyLaunch: (bundle, nonce) => verifyAppLaunch(bundle, nonce, mac),
     stopLaunch: (bundle, nonce) => stopAttemptLaunch(bundle, nonce, mac),
@@ -342,10 +375,14 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     // from MCP env settings in a second, unbounded temp handoff after it is consumed.
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");
     if (resolve(args.migrationPlan) === privateManifest) rmSync(privateManifest, {force: true});
-    const ports = migrationRuntimePorts(handoff);
+    const ports = ops.migrationPorts?.(handoff) ?? migrationRuntimePorts(handoff);
+    ops.setProcessOwners?.(handoff.processOwners);
     const stopTarget = ports.stopTarget;
     ports.stopTarget = async (journal) => {
       await stopTarget(journal);
+      // Before replacement, rollback only verifies the untouched app and receipt. Waiting
+      // for an unrelated process here strands a usable app behind the same failed wait again.
+      if (plan.kind === 'in-place' && journal.stage === 'prepared') return;
       await ops.waitForBundle(plan.target);
       await ops.preflight(plan.target);
     };
@@ -373,7 +410,10 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       await ops.waitForBundle(plan.target);
       await ops.preflightAll([plan.source, plan.target]);
     };
-    const result = await runMigration(plan, ports);
+    const closeProgress = ops.showProgress?.("Waiting for Mission Control and its background work to close, then installing the update. Mission Control will reopen automatically. You can hide this message without cancelling the update.", plan.nonce);
+    let result;
+    try { result = await runMigration(plan, ports); }
+    finally { closeProgress?.(); }
     if (args.attemptDirectory && result.committed) finishHelper(args.attemptDirectory);
     if (result.error) ops.log(`migration: ${result.diagnostic ?? result.error}`);
     return {ok: result.committed, message: result.error ?? null};
@@ -513,7 +553,17 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
 
   try {
     record({ result: "in-progress", targetVersion, recordedAt: ops.nowIso() });
-    if (args.attemptDirectory) acknowledgeHelper(args.attemptDirectory);
+    let parent;
+    if (args.attemptDirectory) {
+      const marker = readMigrationJson(join(args.attemptDirectory, "owner.json"));
+      if (marker.protocol !== 1 || marker.path !== realpathSync(args.attemptDirectory) ||
+        marker.parent?.pid !== args.parentPid || typeof marker.parent.identity !== "string" || !marker.parent.identity) {
+        throw new Error("The update helper ownership changed.");
+      }
+      parent = marker.parent;
+      ops.setProcessOwners?.(marker.processOwners ?? []);
+      acknowledgeHelper(args.attemptDirectory);
+    }
     // The single owner of the retention lifetime, and it runs here rather than beside either
     // outcome because the failures BEFORE the backup exists - the app never quitting, the app
     // being gone already - reach `fail()` with `backupReady` still false and would leave an
@@ -526,10 +576,8 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       ops.log(`could not clear the retained failure directory: ${error?.message ?? error}`);
     }
     await ops.preflight(args.appPath);
-    if (args.attemptDirectory) {
-      const {parent} = readMigrationJson(join(args.attemptDirectory, "owner.json"));
-      await migrationRuntimePorts({parent, port: 1}).waitForParent();
-    } else await ops.waitForParent(args.parentPid);
+    if (parent) await migrationRuntimePorts({parent, port: 1}).waitForParent();
+    else await ops.waitForParent(args.parentPid);
     await ops.waitForBundle(args.appPath);
     await ops.preflight(args.appPath);
     if (!ops.exists(args.appPath)) throw new Error("the installed app is missing before the update");

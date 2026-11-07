@@ -192,10 +192,11 @@ export interface ClaudeSdkQueryOptions {
    */
   strictMcpConfig?: boolean;
   /**
-   * Launch-scoped flag settings, merged over the operator's. A resident run sets only
-   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set.
+   * Launch-scoped flag settings, merged over the operator's. A resident run sets
+   * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
+   * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean };
+  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,
@@ -257,6 +258,16 @@ export interface ClaudeSdkDeps {
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
   /** How long a resident's start waits to confirm its MCP servers. Production uses the default. */
   residentMcpSettleMs?: number;
+  /**
+   * How long an `authentication_failed` frame may wait for the `result` that normally
+   * closes its turn before the driver closes the turn itself. Production uses the default.
+   */
+  authFailureTurnGraceMs?: number;
+  /**
+   * How long authentication recovery waits for the stale subprocess to drain after its
+   * input closes, and again after `return()` asks it to stop. Production uses the default.
+   */
+  authRecoveryDrainMs?: number;
 }
 
 /** A one-shot only needs to consume frames; it drives none of the live query controls. */

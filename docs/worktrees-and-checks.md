@@ -73,6 +73,11 @@ than by the checkout path used to reach it. Released slot directories remain in 
 dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
+The allocator serializes new Git worktree creation within each repository. Distinct slot
+paths still share Git registration metadata, and a concurrent creation can see a registration
+before its `commondir` file exists. Slot reservations remain short; resets and setup commands
+do not hold this creation lock.
+
 A slot never crosses a task boundary holding a branch. Reset detaches the checkout at the exact
 requested commit before it hard-resets and cleans, and both state transitions that hand a slot on
 - finalizing a lease and marking a returned slot available - independently prove path, repository,
@@ -402,8 +407,13 @@ What a Command gets:
 
 - **An argv, never a shell.** `&&`, `|`, `;` and `$(…)` reach the command as ordinary
   arguments, so there is no string for a repository's configured command to break out of.
-- **The captured commit, in a pooled worktree**, not your own working copy - so a check never
-  sees, and can never disturb, whatever you have open. The tree is `reset --hard` to that exact
+- **The submitted content, in a pooled worktree**, not your own working copy - so a check never
+  sees, and can never disturb, whatever you have open. A clean submission is checked at its
+  captured commit. An uncommitted one - a ship task hands its work over before it commits - is
+  checked at its *review snapshot*: the capture writes the complete tracked and nonignored
+  worktree as a commit parented on HEAD, through a temporary index, and names it
+  `refs/mission-control/workflow-reviews/<commit>`. No branch, index or file in your checkout
+  moves, and the ref is pruned 30 days after capture. The tree is `reset --hard` to that exact
   commit and cleaned with `clean -fd`, never `-fdx`, which is what preserves the pool's warm
   ignored dependencies: your `node_modules` survives, so a check is a build rather than an
   install. A subdirectory command runs in that subdirectory *of the leased tree*.
@@ -468,9 +478,10 @@ alone does not end a run or remove its workspace.
 ### CodeRabbit comparisons
 
 CodeRabbit uses the same supervised Check lease and retained-output reader. It reviews the
-captured committed head against a frozen merge-base, resolving refs in the run's repository.
-It never fetches refs or overlays uncommitted content. Dirty YAML-enabled submissions block
-with a commit-and-resubmit remedy. Missing/invalid YAML and exhausted allowance skip with
+same commit the other Commands are pinned to - the captured head, or the review snapshot of an
+uncommitted submission - against a frozen merge-base, resolving refs in the run's repository.
+It never fetches refs. A dirty submission captured before review snapshots existed blocks with
+a submit-again remedy. Missing/invalid YAML and exhausted allowance skip with
 warnings before any availability probe. Complete normalized findings have their own 4 MiB /
 1,000-finding bound within the shared 64 MiB run quota; raw stdout/stderr keep their independent
 2 MiB cap. A semantic overflow or unavailable findings artifact blocks even on exit zero.

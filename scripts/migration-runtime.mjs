@@ -1,7 +1,7 @@
 import { spawnBundledUpdateHelper } from "./update-helper-runtime.mjs";
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
-import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses } from "./mac-app-lifecycle.mjs";
+import { assertSafeAppLaunch, COMMAND_TIMEOUT_MS, prepareAppLaunch, realMacAppOps, parseLaunchServices, parseAppProcesses, updateProgressRequestPath } from "./mac-app-lifecycle.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -25,8 +25,18 @@ export async function boundedMigrationWait(predicate, message, { timeout = MIGRA
   throw new Error(message);
 }
 
+/** kill(0) also succeeds for an exited child until its parent reaps it. */
+function migrationProcessIsAlive(pid) {
+  if (!processIsAlive(pid)) return false;
+  const state = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: COMMAND_TIMEOUT_MS,
+  });
+  // Only a positive zombie observation proves exit. An unreadable state remains live.
+  return state.status !== 0 || !/^Z/.test(state.stdout.trim());
+}
+
 export function sameMigrationProcess(record) {
-  if (!record || !processIsAlive(record.pid)) return false;
+  if (!record || !migrationProcessIsAlive(record.pid)) return false;
   const current = processIdentity(record.pid);
   return current === null || !record.identity || current === record.identity;
 }
@@ -99,8 +109,11 @@ export function migrationRuntimePorts({ parent, port, inventory, checkpoint, tim
         record = readMigrationJson(path);
         if (record.nonce !== journal.plan.nonce || record.bundle !== journal.plan.target || record.commit !== journal.plan.targetIdentity.commit || record.stateDirectory !== journal.plan.stateDirectory || !Number.isInteger(record.pid) || record.pid < 1 || typeof record.identity !== "string" || !record.identity) throw new Error("The personal app launch identity does not match this attempt.");
       }
-      if (!record || !processIsAlive(record.pid)) return;
+      if (!record || !migrationProcessIsAlive(record.pid)) return;
       const identity = processIdentity(record.pid);
+      // The target may exit while ps reads its identity. Positive exit proof needs no
+      // signal; an unreadable identity on a still-live process remains a refusal.
+      if (!identity && !migrationProcessIsAlive(record.pid)) return;
       if (!identity || !record.identity) throw new Error("The personal app process identity could not be verified for recovery.");
       if (identity !== record.identity) return;
       if (record.pid === process.pid) throw new Error("Close the personal app, then reopen the retained system app to recover.");
@@ -147,6 +160,15 @@ export function verifyMigrationAssets(bundle) {
   }
 }
 
+/**
+ * What an ordinary launch is told while an update helper still owns the transaction.
+ *
+ * It names no other app on purpose. In place, source and target are the same bundle, so the
+ * former "Reopen the system app" advice pointed back at the app the person had just opened.
+ * The helper relaunches the app itself when it finishes, committed or restored.
+ */
+export const MIGRATION_IN_PROGRESS_NOTICE = "Mission Control is installing an update. It will reopen on its own when the update finishes.";
+
 /** The main entry calls this before its ordinary single-instance/redirect decision. */
 export async function migrationStartupGate({ stateDirectory, runningBundle, nonce, port, policy, timeout = MIGRATION_TIMEOUT_MS }) {
   if (!existsSync(join(stateDirectory, MIGRATION_JOURNAL))) {
@@ -165,6 +187,17 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     // The personal main process may stay alive with unresolved repairs. A second
     // launch can now use the ordinary redirect/single-instance path immediately.
     return {proceed: true, committed: true, fresh: false};
+  }
+  // A Finder/Dock launch must leave the bundle before the helper can replace it.
+  // Waiting inside this process would itself hold the old executable open.
+  if (!nonce && plan.kind === "in-place" && journal.ownerRole === "helper" && sameMigrationProcess(journal.owner)) {
+    // Ask the existing helper to reveal its progress, including after Hide. Do not wait
+    // here or touch the transaction's journal/deadline: this launch must leave the bundle.
+    atomicMigrationJson(updateProgressRequestPath(stateDirectory, plan.nonce), {pid: process.pid, at: Date.now()});
+    return {proceed: false, committed: false, fresh: false};
+  }
+  if (!nonce && sameMigrationProcess(journal.owner)) {
+    return {proceed: false, committed: false, fresh: false, notice: MIGRATION_IN_PROGRESS_NOTICE};
   }
   if (target && plan.kind && !nonce && !sameMigrationProcess(journal.owner) && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
     // Recovery must outlive this launch too. Copy a complete runtime before asking

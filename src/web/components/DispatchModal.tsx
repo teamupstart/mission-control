@@ -1,4 +1,6 @@
+import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
+import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_TYPES,
@@ -19,6 +21,8 @@ import {
   taskKindModel,
 } from "@shared/kind-defaults.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { modelLabel } from "@shared/model.ts";
+import { ADVISOR_CHOICE_LABELS, resolveLaunchAdvisor, type AdvisorResolution } from "@shared/advisor.ts";
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
   type HarnessesConfig,
@@ -287,7 +291,9 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.priority === EMPTY_DISPATCH_DRAFT.priority &&
     d.model === EMPTY_DISPATCH_DRAFT.model &&
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
+    d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
+    d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.enabled === EMPTY_DISPATCH_DRAFT.enabled &&
     d.dependencies.length === 0
   );
@@ -421,6 +427,54 @@ export function defaultEffortOptionLabel(
  */
 const AGENT_FIELD_TIP =
   "Which harness this task is dispatched to - switching resets the model and effort overrides";
+/**
+ * Which advisor this launch will get, and where that came from - read-only, because the
+ * advisor is chosen per model on Settings -> Harnesses. The one action is for a pin a task
+ * was saved with before that move: "Use Settings" clears it on the next save.
+ */
+function DispatchAdvisorLine({
+  agent,
+  resolution,
+  model,
+  className,
+  onUseSettings,
+}: {
+  agent: AgentType;
+  resolution: AdvisorResolution;
+  model: string | null;
+  className: string;
+  onUseSettings: () => void;
+}): React.JSX.Element {
+  const value = resolution.choice ? ADVISOR_CHOICE_LABELS[resolution.choice] : "Inherit";
+  const settingsLink = (
+    <Tooltip label="Open Settings → Harnesses, where the advisor is chosen per model">
+      <a href="#/settings/harnesses">Settings → Harnesses</a>
+    </Tooltip>
+  );
+  return (
+    <p className={`dispatch-advisor-line${className}`} role="note" aria-label="Advisor for this launch">
+      <span className="dispatch-advisor-label">Advisor</span>
+      <span className="dispatch-advisor-value">{value}</span>
+      {resolution.source === "task" ? (
+        <>
+          <span>saved on this task before the advisor moved to {settingsLink}.</span>
+          <Tooltip label="Clear this task's advisor so Settings → Harnesses chooses it when it launches">
+            <button type="button" className="btn btn-ghost dispatch-advisor-clear" onClick={onUseSettings}>
+              Use Settings
+            </button>
+          </Tooltip>
+        </>
+      ) : resolution.source === "override" ? (
+        <span>for {modelLabel(model) ?? model}, from {settingsLink}</span>
+      ) : resolution.choice ? (
+        <span>from {settingsLink}</span>
+      ) : (
+        <span>inherits {AGENT_IDENTITY[agent].label}&apos;s own settings. Change it on {settingsLink}.</span>
+      )}
+    </p>
+  );
+}
+
 const KIND_FIELD_TIP =
   "What this task is asked to produce - a kind with no diff also clears the after-work Workflow";
 const AFTER_WORK_FIELD_TIP =
@@ -489,6 +543,7 @@ export function DispatchLayer({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
   onClose,
   onOpenSchedule,
   onOpenLaunchFix,
@@ -527,6 +582,11 @@ export function DispatchLayer({
   harnessesRevision?: number;
   /** Refetch exact active pipeline roots when observation consent changes under an open modal. */
   pipelinesRevision?: string;
+  /**
+   * The effective Stacked pull requests default (`SettingsStatus.shipping.stacking`), which a
+   * same-repository dependency chip shows as the mode it inherits until the operator picks one.
+   */
+  stackingDefault?: StackingMode;
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
@@ -896,7 +956,7 @@ export function DispatchLayer({
               onLaunchModeChange: chooseLaunchMode,
               resident: residentDraft,
               onResidentChange: setResidentDraft,
-              onResidentLaunched: (submitted, options) => {
+              onResidentLaunched: (submitted) => {
                 // The same reconciliation a Single dispatch gets: a draft edited while the
                 // launch was in flight is newer input, and is kept with a fresh request id.
                 setResidentDraft((current) =>
@@ -911,7 +971,7 @@ export function DispatchLayer({
                         repoFromProfile: submitted.repoFromProfile,
                       }
                     : { ...current, requestId: crypto.randomUUID() });
-                if (!options?.keepOpen) onClose();
+                onClose();
               },
               profiles: residentProfiles,
               personas,
@@ -960,6 +1020,7 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
       />
     );
   }
@@ -991,6 +1052,7 @@ export function DispatchLayer({
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
         pipelinesRevision={pipelinesRevision}
+        stackingDefault={stackingDefault}
       />
     );
   }
@@ -1010,6 +1072,7 @@ export function DispatchLayer({
       foremanEnabled={foremanEnabled}
       harnessesRevision={harnessesRevision}
       pipelinesRevision={pipelinesRevision}
+      stackingDefault={stackingDefault}
     />
   );
 }
@@ -1044,6 +1107,7 @@ function DispatchModal({
   foremanEnabled = false,
   harnessesRevision = 0,
   pipelinesRevision = "count:0",
+  stackingDefault = STACKING_SHIPPED_DEFAULT,
 }: {
   /**
    * Which of the form's four jobs this is, carrying that job's inputs and no others.
@@ -1075,6 +1139,7 @@ function DispatchModal({
    */
   harnessesRevision?: number;
   pipelinesRevision?: string;
+  stackingDefault?: StackingMode;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   /**
@@ -1214,12 +1279,7 @@ function DispatchModal({
   // a text field: the pass has to put the caret in it when the question opens, and has to be
   // able to tell a key pressed IN it from one pressed anywhere else in the dialog.
   const repoInputRef = useRef<HTMLInputElement>(null);
-  // The overlay owns the dispatch chord, but its listener is intentionally stable (see
-  // `Overlay`). Point it at the current submit closure so a field edit does not leave the
-  // shortcut submitting the previous render's draft.
-  const submitRef = useRef<(dispatchNow: boolean) => Promise<void>>(async () => {});
-  // The guided pass's keys, reached the same way and for the same reason: `Overlay`'s
-  // listener is subscribed once, so pointing it at a ref rather than at a closure is what
+  // The guided pass's keys use a stable listener, so pointing it at a ref is what
   // keeps typing in the task box from re-subscribing a window listener on every keystroke.
   const guidedKeyRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
   // Parsed once per render: the preview below and the submit body must never disagree
@@ -1231,6 +1291,7 @@ function DispatchModal({
       draft.title.trim() ||
       draft.dependencies.length > 0,
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // The backlog details fold (priority, labels, title, dependencies). Open from the start
   // when there is something inside to see - an edit, or a draft that already carries one of
   // them - and closed on a fresh dispatch, where the summary line names what is unset.
@@ -1318,7 +1379,49 @@ function DispatchModal({
         ? undefined
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
+  const [planRequirements, setPlanRequirements] = useState<{ task: Task; result: TaskPlanDependencyRequirements } | null>(null);
+  const hasPlanPins = Boolean(editing?.planInputs?.length || editing?.planInputError);
+  useEffect(() => {
+    if (!editing || !hasPlanPins) return;
+    let cancelled = false;
+    void api.taskPlanDependencies(editing.id).then((result) => {
+      if (!cancelled) setPlanRequirements({ task: editing, result: result ?? { requirements: [], error: "Could not verify pinned plan prerequisites. Reopen the editor to retry." } });
+    });
+    return () => { cancelled = true; };
+  }, [editing, hasPlanPins]);
+  const planRequirementsResult = planRequirements?.task === editing ? planRequirements.result : null;
+  const planRequirementsProblem = hasPlanPins
+    ? planRequirementsResult?.error ?? (planRequirementsResult ? null : "Checking pinned plan prerequisites…")
+    : null;
   const dependencyKey = dependencyInputKey;
+  function removalReason(key: string): string | null {
+    if (planRequirementsProblem) return planRequirementsProblem;
+    const required = planRequirementsResult?.requirements.filter(requirement =>
+      requirement.dependencyKeys.includes(key) && !draft.dependencies.some(candidate =>
+        dependencyKey(candidate) !== key && requirement.dependencyKeys.includes(dependencyKey(candidate))));
+    if (!required?.length) return null;
+    return required.map(requirement => `Required by pinned plan ${requirement.title} revision ${requirement.input.revision}.`).join(" ")
+      + " Retain this prerequisite to preserve the exact originating work episode or local publication artifact. Changing it requires updating the plan input and dependency together.";
+  }
+  /**
+   * Can this dependency start the task on its open pull request at all? Stacking covers a
+   * same-repository TASK prerequisite that has not merged: a pull request has one base, and
+   * only a task records what it was cut on. The chip's Stack / After merge control and the
+   * wait note both ask this, so neither promises a stack the other would not offer.
+   */
+  function isStackable(dependency: TaskDependencyInput): dependency is Extract<TaskDependencyInput, { type: "task" }> {
+    if (dependency.type !== "task") return false;
+    const target = tasks.find((task) => task.id === dependency.taskId);
+    if (target === undefined || target.repoRoot !== draft.repoRoot.trim()) return false;
+    // Already merged, so the edge is satisfied the moment it is saved and there is no open
+    // parent to start on: a stored edge says so itself, and a prerequisite added now is
+    // judged the way the server will record it - a finished task, or a live session whose
+    // pull request merged (see `TaskManager`'s dependency resolution).
+    const stored = editing?.dependencies.find((edge) => dependencyKey(dependencyInputOf(edge)) === dependencyKey(dependency));
+    if (stored?.satisfiedAt != null) return false;
+    if (target.status === "done") return false;
+    return !sessions.some((session) => session.state !== "exited" && session.task?.id === target.id && session.prState === "merged");
+  }
   const dependencyByKey = useMemo(() => {
     const out = new Map<string, { input: TaskDependencyInput; label: string; group: "backlog" | "session" }>();
     for (const task of tasks) {
@@ -1349,12 +1452,16 @@ function DispatchModal({
         group: "session",
       });
     }
-    // Keep disappeared targets visible in an edit. They remain blocking until removed,
-    // but hiding them from the select would also make them impossible to remove.
+    // Durable completion takes precedence over current source availability or a newer episode.
+    // Keep unresolved disappeared targets visible so they can still be removed.
     for (const dependency of editing?.dependencies ?? []) {
       const input = dependencyInputOf(dependency);
       const key = dependencyKey(input);
-      if (!out.has(key)) out.set(key, { input, label: dependency.type === "plan" ? `${dependency.title} (${dependency.satisfiedAt === null ? "waiting for publication" : "published"})` : `${dependency.title} (unavailable)`, group: "session" });
+      if (dependency.satisfiedAt !== null || !out.has(key)) out.set(key, {
+        input,
+        label: `${dependency.title} (${dependency.satisfiedAt !== null ? dependency.type === "plan" ? "published" : "merged" : dependency.type === "plan" ? "waiting for publication" : "unavailable"})`,
+        group: "session",
+      });
     }
     return out;
   }, [editing, sessions, tasks]);
@@ -1380,12 +1487,13 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, editing?.planPolicy?.storage ?? planStorage ?? "repository");
+  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null, draft.planStorage ?? planStorage ?? "repository");
   const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
   const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
   const usesHarness = kindBehavior.launch === "harness";
   const managedPipeline = draft.kind === "pipeline" && pipelineLaunchRuntime === "agent-sdk";
+  const advisorSpec = capabilitiesFor(draft.agent).advisor;
   const selectableAgents = managedPipeline
     ? AGENT_TYPES.filter(supportsManagedPipelineHost)
     : AGENT_TYPES;
@@ -1452,7 +1560,10 @@ function DispatchModal({
     if (kind === draft.kind) return {};
     if (taskHasOwnDefaultWorkflow(kind)) {
       if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
-      return { workflowId: taskDefaultWorkflowId(kind, null, planStorage ?? "repository") };
+      // Plan defaults resolve with storage at save time, even if Settings changed.
+      return { workflowId: kind === "plan"
+        ? undefined
+        : taskDefaultWorkflowId(kind, null, draft.planStorage ?? planStorage ?? "repository") };
     }
     if (!hasReviewableDiff(kind)) {
       if (!hasReviewableDiff(draft.kind)) return {};
@@ -1536,7 +1647,7 @@ function DispatchModal({
    * rule. Two copies of this expression are what let them disagree in the first place.
    */
   function overridesForAgent(agent: AgentType): Partial<DispatchDraft> {
-    return agent === draft.agent ? {} : { model: "", effort: "" };
+    return agent === draft.agent ? {} : { model: "", effort: "", advisorModel: "" };
   }
 
   // Pipeline host constraints can change while this modal stays open. Kind selection applies
@@ -2265,10 +2376,9 @@ function DispatchModal({
   }
 
   async function submit(dispatchNow: boolean): Promise<void> {
-    // Ensemble has no route through here. Its primary slot is Review-then-Launch, its shelve
-    // button is not rendered, and ⌘↵ is refused - so this is not a reachable path but a
-    // statement of which payload the mode owns: an Ensemble goes out through
-    // `useEnsembleLaunch`, whole, and never as a single task built from this draft.
+    // Ensemble has no route through here. Its primary action and Cmd/Ctrl+Enter follow
+    // Review-then-Launch through `useEnsembleLaunch`; its shelve button is not rendered.
+    // An Ensemble goes out whole, never as a single task built from this draft.
     if (mode.kind === "ensemble") return;
     // A new task with unmet dependencies is filed into the backlog even from the primary
     // action. It is not launching yet, so an unavailable Foreman must not erase the user's
@@ -2347,6 +2457,7 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           workflowId: submitted.workflowId,
+          ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           dependencies: submitted.dependencies,
           backlog: !launchesNow,
           // The switch governs a task left in the backlog. An immediate dispatch is
@@ -2375,14 +2486,15 @@ function DispatchModal({
     // terminal home are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
     // keeps the modal open with the fields intact so you can retry.
-    if (!r.ok) fail(r.error ?? (editing ? "could not save the task" : "dispatch failed"), r.fix);
+    if (!r.ok) fail(editing
+      ? `${dispatchNow ? "Could not save task; dispatch was not attempted" : "Could not save task"}: ${r.error ?? "save rejected"}`
+      : r.error ?? "dispatch failed", r.fix);
     else if (launched && !launched.ok) {
       fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
     }
     else onSubmitted(submitted);
   }
 
-  submitRef.current = submit;
   const onOverlayEscape = useCallback((event: KeyboardEvent): boolean => {
     if (!guidedRunning) return false;
     event.preventDefault();
@@ -2391,22 +2503,9 @@ function DispatchModal({
   }, [guidedLeave, guidedRunning]);
 
   const onOverlayKeyDown = useCallback((event: KeyboardEvent): void => {
-    // The guided pass gets first refusal, and refuses every modifier chord - so ⌘↵ below
-    // still dispatches from inside a pass, which is the one shortcut that has to keep
-    // working while the questions are up.
-    if (guidedKeyRef.current(event)) return;
-    // This is the dialog's primary action, not a textarea editing command. Keeping it on
-    // the topmost overlay makes it work after the operator moves through Crew, Backlog
-    // details, or the footer, while Overlay's stack still prevents a covered dialog from
-    // acting. Ensemble keeps its deliberate Review-then-Launch flow.
-    if (
-      event.key !== "Enter" ||
-      (!event.metaKey && !event.ctrlKey) ||
-      ensembleMode
-    ) return;
-    event.preventDefault();
-    void submitRef.current(true);
-  }, [ensembleMode]);
+    // The guided pass refuses modifier chords; Overlay owns the default action.
+    guidedKeyRef.current(event);
+  }, []);
 
   // The brief - repo, title, task - is shared by both modes but arranged differently:
   // Single leads repo-then-task with the title folded into Backlog details, Ensemble puts
@@ -2646,7 +2745,6 @@ function DispatchModal({
     <Overlay
       id={OVERLAY_IDS.dispatch}
       onClose={onClose}
-      ignoreBackdropDrag
       // Ensemble alone widens the dialog: a candidate lane holds four controls on one
       // line at 760 and clips at Single's width.
       className={`modal dispatch-modal${ensembleMode ? " dispatch-modal-ensemble" : ""}${
@@ -2949,6 +3047,23 @@ function DispatchModal({
               </Tooltip>
             </label>
           </div>
+          {/* The advisor is a harness setting chosen per model, not a task field, so the form
+              only says which one this launch will get - resolved against the model the
+              launch will actually run on, the same rule the daemon applies. */}
+          {usesHarness && advisorSpec && defaults && (
+            <DispatchAdvisorLine
+              agent={draft.agent}
+              resolution={resolveLaunchAdvisor(
+                defaults,
+                draft.agent,
+                launchModelFor(defaults, draft.agent, draft.kind, draft.model || null, null),
+                draft.advisorModel || null,
+              )}
+              model={launchModelFor(defaults, draft.agent, draft.kind, draft.model || null, null)}
+              className={guidedDim}
+              onUseSettings={() => update({ advisorModel: "" })}
+            />
+          )}
           <span className={`field-hint dispatch-crew-hint${guidedDim}`}>
             {usesHarness
               ? "Defaults come from this kind's row on Settings → Models, then from Settings → Harnesses. Switching agent resets the model and effort overrides."
@@ -2964,6 +3079,49 @@ function DispatchModal({
           )}
         </div>
 
+        {draft.kind === "plan" && (
+          <div className="dispatch-more-wrap">
+            <Tooltip label={advancedOpen ? "Collapse advanced task settings" : "Choose where this task saves its plan"}>
+              <button
+                type="button"
+                className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
+                aria-expanded={advancedOpen}
+                onClick={() => setAdvancedOpen((open) => !open)}
+              >
+                <span className="dispatch-more-title">Advanced</span>
+                {!advancedOpen && <span className="dispatch-more-summary">Plan storage: {(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}</span>}
+                <span className="dispatch-more-chev" aria-hidden>{advancedOpen ? "▴" : "▾"}</span>
+              </button>
+            </Tooltip>
+            {advancedOpen && (
+              <div className={`dispatch-more-body${guidedDim}`}>
+                <label className="field">
+                  <span className="field-label">Plan storage</span>
+                  <Tooltip label="Choose where this task saves its plan. The global default is resolved when saved; existing plan artifacts keep their storage.">
+                    <select aria-label="Plan storage" className="field-input" value={draft.planStorage ?? "__default"} disabled={planStorage === null}
+                      onChange={(event) => {
+                        const storage = event.target.value === "__default" ? null : event.target.value as "repository" | "local";
+                        const previousDefault = taskDefaultWorkflowId("plan", null, draft.planStorage ?? planStorage ?? "repository");
+                        const savedDefault = editing?.kind === "plan"
+                          && editing.workflowId === taskDefaultWorkflowId("plan", null, editing.planPolicy?.storage ?? "repository");
+                        update({ planStorage: storage,
+                          ...(draft.workflowId === previousDefault ? { workflowId: savedDefault || !editing || editing.kind !== "plan"
+                            ? undefined
+                            : taskDefaultWorkflowId("plan", null, storage ?? planStorage ?? "repository") } : {}) });
+                      }}>
+                      <option value="__default">Use global default - {planStorage === null ? "loading…" : planStorage === "local" ? "Local plan store" : "Repository"}</option>
+                      <option value="local">Local plan store</option>
+                      <option value="repository">Repository</option>
+                    </select>
+                  </Tooltip>
+                  <span className="field-hint">{editing ? `Pinned storage: ${editing.planPolicy?.storage === "local" ? "Local plan store" : "Repository"}. ` : ""}
+                    {(draft.planStorage ?? planStorage) === "local" ? "Retained outside Git; validates without a plan PR." : "Published through the repository PR workflow."}
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
         {/* The completion handoff is a first-class dispatch choice, not backlog metadata:
             it changes what happens after the agent finishes rather than how the task is
             ranked. The rail shape makes that sequence legible without turning one select
@@ -3001,7 +3159,7 @@ function DispatchModal({
                   update({
                     workflowId:
                       value === "__default"
-                        ? editing
+                        ? editing && draft.kind !== "plan"
                           ? defaultWorkflowId
                           : undefined
                         : value === "__none"
@@ -3010,7 +3168,7 @@ function DispatchModal({
                   });
                 }}
               >
-                {!editing && (
+                {(!editing || draft.workflowId === undefined) && (
                   <option value="__default">
                     {workflowConfig === null
                       ? "Dispatch default — loading…"
@@ -3173,34 +3331,79 @@ function DispatchModal({
                 {backlogCompatible && <div className="field">
                   <span className="field-label">
                     Dependencies{" "}
-                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR"}</span>
+                    <span className="field-hint">{draft.dependencies.some((dependency) => dependency.type === "plan") ? "exact plan publication and code merges" : "each waits for its merged PR unless set to Stack"}</span>
                   </span>
                   {/* Chips plus one grouped add control, instead of an always-tall native
                       multi-select: each chip names its target and removes with one click,
                       and the picker only offers what is not already chosen. */}
+                  {hasPlanPins && <div className="field-hint">
+                    Pinned plan inputs:
+                    {editing?.planInputs?.map(input => <div key={`${input.repoKey}:${input.planId}:${input.revision}`}>
+                      <Tooltip label={`Open pinned plan revision ${input.revision} in a new tab`}>
+                        <a href={managedPlanPreview(input.planId, input.revision)} target="_blank" rel="noreferrer">
+                          {planRequirementsResult?.requirements.find(requirement => requirement.input.planId === input.planId && requirement.input.revision === input.revision)?.title ?? input.planId} revision {input.revision}
+                        </a>
+                      </Tooltip>{" · "}{input.files.join(", ")}
+                    </div>)}
+                  </div>}
                   <div className="dep-chips">
                     {draft.dependencies.map((dependency) => {
                       const key = dependencyKey(dependency);
                       const label = dependencyByKey.get(key)?.label ?? "unavailable";
+                      const reason = removalReason(key);
+                      const stackable = isStackable(dependency);
+                      const mode = dependency.type === "plan" ? undefined : dependency.mode;
+                      const shown = mode ?? stackingDefault;
                       return (
-                        <span key={key} className="dep-chip">
-                          {label}
-                          <Tooltip label="Remove this dependency">
-                            <button
-                              type="button"
-                              className="dep-chip-x"
-                              aria-label={`Remove dependency: ${label}`}
-                              onClick={() =>
-                                updateDependencies(
-                                  draft.dependencies.filter(
-                                    (candidate) => dependencyKey(candidate) !== key,
-                                  ),
-                                )
-                              }
-                            >
-                              ✕
-                            </button>
-                          </Tooltip>
+                        <span key={key} className="dep-entry">
+                          <span className="dep-chip">
+                            {label}
+                            {stackable && dependency.type === "task" && (
+                              <span className="dep-mode" role="group" aria-label={`When to start after ${label}`}>
+                                {(["stack", "merge"] as const).map((option) => (
+                                  <Tooltip
+                                    key={option}
+                                    label={option === "stack"
+                                      ? "Start as soon as this has an open pull request, and open this task's pull request against its branch"
+                                      : "Start once this task's pull request has merged"}
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`dep-mode-opt${shown === option ? " is-on" : ""}${shown === option && mode === undefined ? " is-inherited" : ""}`}
+                                      aria-pressed={shown === option}
+                                      onClick={() =>
+                                        updateDependencies(draft.dependencies.map((candidate) =>
+                                          dependencyKey(candidate) === key && candidate.type === "task"
+                                            ? { ...candidate, mode: option }
+                                            : candidate))
+                                      }
+                                    >
+                                      {option === "stack" ? "Stack" : "After merge"}
+                                    </button>
+                                  </Tooltip>
+                                ))}
+                                {mode === undefined && <span className="dep-mode-default">default</span>}
+                              </span>
+                            )}
+                            <Tooltip label={reason ?? "Remove this dependency"}>
+                              <button
+                                type="button"
+                                className="dep-chip-x"
+                                aria-label={`Remove dependency: ${label}`}
+                                disabled={Boolean(reason)}
+                                onClick={() =>
+                                  updateDependencies(
+                                    draft.dependencies.filter(
+                                      (candidate) => dependencyKey(candidate) !== key,
+                                    ),
+                                  )
+                                }
+                              >
+                                ✕
+                              </button>
+                            </Tooltip>
+                          </span>
+                          {reason && <span className="field-hint dep-requirement">{reason}</span>}
                         </span>
                       );
                     })}
@@ -3241,7 +3444,7 @@ function DispatchModal({
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
                       {unmetDependencyCount === 1 ? "dependency" : "dependencies"} - it{" "}
-                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : "and dispatches when their PRs merge."}
+                      {editing ? "stays in" : "lands in"} the backlog {draft.dependencies.some((dependency) => dependency.type === "plan") ? "until its exact plan publications and code merges are ready." : draft.dependencies.some((dependency) => isStackable(dependency) && (dependency.mode ?? stackingDefault) === "stack") ? "and dispatches when their PRs merge, or sooner on a Stack dependency once its PR is open and every other dependency has merged." : "and dispatches when their PRs merge."}
                     </span>
                   )}
                 </div>}
@@ -3397,6 +3600,7 @@ function DispatchModal({
           >
             <button
               ref={tourSubmitRef}
+              data-dialog-default
               className={`btn btn-primary${selectedDependenciesUnmet && !editing ? " btn-wait" : ""}`}
               onClick={() => void submit(true)}
               disabled={

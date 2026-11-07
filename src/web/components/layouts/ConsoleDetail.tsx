@@ -12,6 +12,7 @@ import {
   newestSessionRun,
   sessionCanBindWorkflow,
   workflowBindChipTitle,
+  workflowCompletionStall,
 } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
@@ -33,7 +34,7 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
-import { ResidentBand } from "../../residents/ResidentBand.tsx";
+import { ResidentBand, ResidentReplacedBand } from "../../residents/ResidentBand.tsx";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
@@ -59,6 +60,7 @@ import {
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
+import { useComposerFocusRequest } from "../../lib/composer-focus.ts";
 import { useTimelineReviews } from "../../lib/timelineReviews.ts";
 import { foremanNoteCompanionsOpenAsk, visibleForemanEpisodes } from "../../lib/foreman-review.ts";
 import {
@@ -145,30 +147,43 @@ export function intentRefreshStamp(goal: Session["goal"]): string {
   ].join(":");
 }
 
-/** Load the full completion contract only for the drawer that can render it. */
+/**
+ * Load the full completion contract only for the drawer that can render it. The setter lets
+ * a write that answers with the full record (accepting the objective) show it at once: an
+ * `unclear` verdict accepted with nothing pending moves no revision the stamp reads.
+ */
 function useIntent(
   sessionId: string,
   refreshStamp: string,
   open: boolean,
-): SessionGoal | null {
+): [SessionGoal | null, (goal: SessionGoal) => void] {
   const [intent, setIntent] = useState<SessionGoal | null>(null);
+  // Bumped by every fetch and by every record a write hands back. A read applies only while it
+  // is still the newest, so a GET that started before an accept cannot land after it and put
+  // the paused reading back.
+  const generation = useRef(0);
   useEffect(() => {
     if (!open) return;
-    let live = true;
+    const mine = ++generation.current;
+    const current = () => generation.current === mine;
     setIntent(null);
     void api
       .goal(sessionId)
       .then((goal) => {
-        if (live) setIntent(goal);
+        if (current()) setIntent(goal);
       })
       .catch(() => {
-        if (live) setIntent(null);
+        if (current()) setIntent(null);
       });
     return () => {
-      live = false;
+      if (current()) generation.current++;
     };
   }, [sessionId, refreshStamp, open]);
-  return intent;
+  const applyWritten = useCallback((goal: SessionGoal) => {
+    generation.current++;
+    setIntent(goal);
+  }, []);
+  return [intent, applyWritten];
 }
 
 /**
@@ -207,10 +222,14 @@ export function ConsoleDetail({
   // gate above read every one. Derived from the same list so the two cannot disagree.
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
+  // A Foreman-complete binding whose cycle finished under an unresolved goal: the chip says so
+  // and its click opens the dialog that offers the ways forward.
+  const workflowStall = workflowCompletionStall(session, workflowBinding, workflowRuns);
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
   const resident = view.residentBySession?.get(session.id) ?? null;
+  const replacedBy = resident ? null : view.residentReplacementBySession?.get(session.id) ?? null;
   const pipelineCommission = pipelineCommissionForSession(view, session);
   const pipelineCommissionRun = pipelineCommission?.linkedRun
     ? (view.pipelineRunByKey?.get(pipelineRunKeyOf(pipelineCommission.linkedRun)) ?? null)
@@ -244,7 +263,7 @@ export function ConsoleDetail({
    */
   const conversationView = useSessionConversationView(session.id);
   const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
-  const intent = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
+  const [intent, setIntent] = useIntent(session.id, intentRefreshStamp(session.goal), drawerOpen);
   const timelineReviews = useTimelineReviews(session.id, view.reviews);
   const noteCompanionsOpenAsk = foremanNoteCompanionsOpenAsk({
     dialog: activePaneDialog(session),
@@ -366,6 +385,14 @@ export function ConsoleDetail({
     }
   }
 
+  /** The drawer's exit from a paused goal. Returns the refusal sentence, or null on success. */
+  async function acceptObjective(): Promise<string | null> {
+    const res = await api.acceptGoal(session.id);
+    if (!res.ok) return `The objective was not accepted: ${res.error.replace(/[.\s]+$/, "")}.`;
+    setIntent(res.goal);
+    return null;
+  }
+
   async function withdrawForeman(): Promise<void> {
     setInviteBusy(true);
     try {
@@ -387,6 +414,8 @@ export function ConsoleDetail({
     focusPending.current = false;
     transcriptRef.current?.focusReply();
   }, [tab]);
+
+  useComposerFocusRequest(session.id, focusReply);
 
   // Both pieces of local state that are really claims ABOUT the invite, retired the moment
   // the invite itself moves - however it moved.
@@ -595,16 +624,23 @@ export function ConsoleDetail({
         {/* The shared gate: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
-          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
+          <Tooltip label={workflowStall ?? workflowBindChipTitle(workflowBinding)}>
             <button
               ref={tourBindChipRef}
-              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
+              className={
+                workflowBinding
+                  ? `workflow-bind-chip armed${workflowStall ? " stalled" : ""}`
+                  : "workflow-bind-chip"
+              }
               onClick={() => view.onBindWorkflow?.(session.id)}
             >
               {workflowBinding
                 ? (
                   <>
-                    <span aria-hidden>⌘ </span>
+                    {/* The stalled chip trades the armed ⌘ for a pause mark, so the state does
+                        not rest on its amber alone. Still `aria-hidden`: the tooltip carries the
+                        stall in words, and the accessible name stays the workflow and version. */}
+                    <span className="wbc-mark" aria-hidden>{workflowStall ? "⏸\uFE0E " : "⌘ "}</span>
                     <span className="wbc-name">{workflowBinding.workflowName}</span>
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>
@@ -648,6 +684,13 @@ export function ConsoleDetail({
           resident is named, not decoration on top of it. */}
       {resident && (
         <ResidentBand mark={resident} session={session} onOpenProfile={view.onOpenResidentProfile} />
+      )}
+      {replacedBy && (
+        <ResidentReplacedBand
+          replacement={replacedBy}
+          onOpenSession={view.onFocusSession ?? view.onSelect}
+          onComplete={live ? () => view.onComplete(session.id) : undefined}
+        />
       )}
 
       {pipelineCommission && (
@@ -709,7 +752,10 @@ export function ConsoleDetail({
                 </a>
                 </Tooltip>
               ) : (
-                <span className="task-outcome">{session.task.outcome}</span>
+                // The outcome ellipsises, so the hover is the only place a long one is whole.
+                <Tooltip label={`Outcome: ${session.task.outcome}`}>
+                  <span className="task-outcome" tabIndex={0}>{session.task.outcome}</span>
+                </Tooltip>
               ))}
           </div>
           )}
@@ -734,6 +780,7 @@ export function ConsoleDetail({
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           onWithdraw={() => void withdrawForeman()}
+          onAcceptObjective={acceptObjective}
         />
       )}
 

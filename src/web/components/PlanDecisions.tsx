@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
-import { formatResponse } from "@shared/review-item.ts";
+import { CHAT_ABOUT_IT, formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -26,6 +26,16 @@ export function decisionChoiceKey(decisionId: string, optionId: string): string 
 function toDecisionAnswers(decisions: PlanDecision[], answers: Answers): PlanDecisionAnswer[] {
   return decisions.map((d) => {
     const a = answers[d.id];
+    // Moved to chat: nothing picked before the move is an answer, only the note travels.
+    if (a?.chat) {
+      return {
+        decisionId: d.id,
+        selected: [],
+        other: null,
+        chat: true,
+        ...(a.note.trim() ? { note: a.note.trim() } : {}),
+      };
+    }
     return {
       decisionId: d.id,
       selected: a?.selected ?? [],
@@ -83,6 +93,15 @@ export function DecisionForm({
    * offer a box whose text would go nowhere.
    */
   allowNote = false,
+  /**
+   * Offer "Chat about it" on every question, plus "Chat about all" when there are several.
+   *
+   * A moved question counts as answered, so the human can submit what they know and take the
+   * rest to the conversation in one go; `formatResponse` tells the agent to explain those and
+   * wait rather than decide them. Off by default, like the note: a form rendered on its own
+   * has no conversation to move anything into.
+   */
+  allowChat = false,
   foremanRecommended,
   besideSubmit,
   answers: heldAnswers,
@@ -101,6 +120,7 @@ export function DecisionForm({
   hideQuestions?: boolean;
   namePrefix?: string;
   allowNote?: boolean;
+  allowChat?: boolean;
   /**
    * Exact decision-option keys Foreman's prose names.
    *
@@ -140,21 +160,40 @@ export function DecisionForm({
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
-      return { ...prev, [d.id]: { ...cur, selected } };
+      return { ...prev, [d.id]: { ...cur, selected, chat: false } };
+    });
+  }
+
+  function moveToChat(id: string, chat: boolean): void {
+    setAnswers((prev) => {
+      const cur = prev[id] ?? EMPTY;
+      return { ...prev, [id]: chat ? { ...cur, selected: [], other: "", chat: true } : { ...cur, chat: false } };
     });
   }
 
   function setText(id: string, field: "other" | "note", text: string): void {
-    setAnswers((prev) => ({
-      ...prev,
-      [id]: { ...(prev[id] ?? EMPTY), [field]: text },
-    }));
+    setAnswers((prev) => {
+      const cur = prev[id] ?? EMPTY;
+      // Typing an answer outside the options is answering, so it leaves chat. A note does
+      // not: beside a moved question it says what is unclear.
+      const chat = field === "other" && text.trim() ? false : cur.chat;
+      return { ...prev, [id]: { ...cur, [field]: text, chat } };
+    });
   }
 
   // Built once per render and used for both the completeness test and the submit, so the
   // button's enabled state is decided over exactly the payload it would send.
   const payload = toDecisionAnswers(decisions, answers);
   const complete = decisions.length > 0 && decisions.every((d, i) => isAnswered(d, payload[i]));
+  const chatCount = allowChat ? payload.filter((a) => a.chat).length : 0;
+
+  function chatAboutAll(): void {
+    const all = toDecisionAnswers(
+      decisions,
+      Object.fromEntries(decisions.map((d) => [d.id, { ...get(d.id), chat: true }])),
+    );
+    onSubmit(formatResponse(decisions, all, lead), all);
+  }
 
   return (
     <div className="decisions">
@@ -172,15 +211,18 @@ export function DecisionForm({
               key={o.id}
               className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
             >
-              <Tooltip label={o.detail ?? o.label}>
-                <input
-                  type={d.multiSelect ? "checkbox" : "radio"}
-                  name={`${namePrefix}-${d.id}`}
-                  checked={get(d.id).selected.includes(o.id)}
-                  onChange={(e) => choose(d, o.id, e.target.checked)}
-                  disabled={busy}
-                />
-              </Tooltip>
+              {/*
+                No `Tooltip`: it repeated the detail printed below, and picking an option
+                focuses the radio, so the bubble stayed up over the question until blur. The
+                enclosing label already names the radio. "Chat about it" keeps its bubble.
+              */}
+              <input
+                type={d.multiSelect ? "checkbox" : "radio"}
+                name={`${namePrefix}-${d.id}`}
+                checked={get(d.id).selected.includes(o.id)}
+                onChange={(e) => choose(d, o.id, e.target.checked)}
+                disabled={busy}
+              />
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}
@@ -200,6 +242,25 @@ export function DecisionForm({
               onChange={(e) => setText(d.id, "other", e.target.value)}
               disabled={busy}
             />
+          )}
+          {allowChat && (
+            <label className={`decision-option decision-chat${get(d.id).chat ? " is-chat" : ""}`}>
+              <Tooltip label="Skip choosing for now: the agent explains this question in the conversation and waits for you">
+                <input
+                  type={d.multiSelect ? "checkbox" : "radio"}
+                  name={`${namePrefix}-${d.id}`}
+                  checked={get(d.id).chat === true}
+                  onChange={(e) => moveToChat(d.id, e.target.checked)}
+                  disabled={busy}
+                />
+              </Tooltip>
+              <span className="decision-option-body">
+                <span className="decision-option-label">
+                  <ChatGlyph />
+                  {CHAT_ABOUT_IT}
+                </span>
+              </span>
+            </label>
           )}
           {allowNote && (
             <textarea
@@ -223,18 +284,50 @@ export function DecisionForm({
           </Tooltip>
         )}
         {besideSubmit}
+        {allowChat && decisions.length > 1 && (
+          <Tooltip label="Move every question to the conversation: the agent explains them and waits for you">
+            <button
+              className={`btn btn-chat${besideSubmit ? "" : " decisions-chat-all"}`}
+              disabled={busy}
+              onClick={chatAboutAll}
+            >
+              Chat about all
+            </button>
+          </Tooltip>
+        )}
         <Tooltip
-          label={complete ? "Send these decisions back to the agent" : "Answer every decision above first"}
+          label={
+            !complete
+              ? `Answer every decision above${allowChat ? ", or move it to chat," : ""} first`
+              : chatCount
+                ? "Send these answers, and ask the agent to discuss the rest in the conversation"
+                : "Send these decisions back to the agent"
+          }
         >
           <button
             className="btn btn-approve"
+            data-dialog-default
             disabled={busy || !complete}
             onClick={() => onSubmit(formatResponse(decisions, payload, lead), payload)}
           >
-            Submit
+            {chatCount ? `Submit & chat (${chatCount})` : "Submit"}
           </button>
         </Tooltip>
       </div>
     </div>
+  );
+}
+
+export function ChatGlyph(): React.JSX.Element {
+  return (
+    <svg className="chat-glyph" viewBox="0 0 16 14" aria-hidden="true" focusable="false">
+      <path
+        d="M2 1.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7l-3.5 2.7V10.5H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

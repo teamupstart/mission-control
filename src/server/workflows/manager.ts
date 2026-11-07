@@ -227,6 +227,8 @@ import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
+import { stackPrInstruction } from "../stacking/lineage.ts";
+import { resolveStackDiffBase } from "../stacking/diff-base.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
@@ -678,6 +680,11 @@ export class WorkflowManager {
         },
         onSubmissionSucceeded: (submissionId) =>
           this.enterInspectorGate(submissionId) || Boolean(configuredSucceeded?.(submissionId)),
+        // The CodeRabbit merge base follows the same stacked base as the Persona diff.
+        stackDiffBase: options.engine?.stackDiffBase ?? (async (binding) => {
+          const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : undefined;
+          return session ? resolveStackDiffBase(this.registry, session, binding.repoRoot || null) : null;
+        }),
       },
     );
     this.registry.initializeWorkflowRuns(this.runs());
@@ -3271,6 +3278,7 @@ export class WorkflowManager {
       skillCommand: skill.command,
       repoRoot: binding.repoRoot || null,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
+      stackInstruction: this.stackInstructionFor(session, binding.repoRoot || null),
     });
     const prepared = this.store.prepareDelivery({
       id: randomUUID(),
@@ -4868,6 +4876,18 @@ export class WorkflowManager {
     if (binding.deliveryMode === "live") await this.deliverPrepared(prepared.delivery.id, false);
   }
 
+  /**
+   * Stacked pull requests: what to tell this session about its pull request's base, for the
+   * task it is running, when the packet targets that task's PRIMARY repository. Stacking never
+   * covers a secondary repository, so a per-repository run in one gets no line at all.
+   */
+  private stackInstructionFor(session: Session, repoRoot: string | null): string | null {
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!task?.stackParentTaskId) return null;
+    if (repoRoot && repoRoot !== task.repoRoot) return null;
+    return stackPrInstruction(task, this.registry.workEpisodeForSession(session.id)?.episodeId ?? null);
+  }
+
   private originalGoal(runId: string): string {
     for (const submission of this.store.listSubmissions(runId)) {
       if (submission.mode !== "full_workflow") continue;
@@ -5012,8 +5032,20 @@ export class WorkflowManager {
     if (version?.resumptionPolicy !== "auto" || binding.deliveryMode !== "live"
         || binding.state !== "active" || submission.mode !== "full_workflow"
         || !session || session.state === "exited" || noteKeyFor(session) !== binding.noteKey
-        || binding.sessionCwd !== session.cwd || binding.sessionRepoRoot !== session.repoRoot
         || (binding.sessionAgent !== null && binding.sessionAgent !== session.agent)) return false;
+    // A secondary binding stores the reviewed worktree, not the conversation's cwd.
+    // Keep the conversation guard on its own binding, then verify the secondary against
+    // the current issued task checkout. A detached, released or reissued tree is not ours.
+    const conversation = binding.repoRoot ? this.store.activeBindingForNote(binding.noteKey) : binding;
+    if (!conversation || conversation.sessionId !== session.id
+        || conversation.sessionCwd !== session.cwd || conversation.sessionRepoRoot !== session.repoRoot
+        || (conversation.sessionAgent !== null && conversation.sessionAgent !== session.agent)) return false;
+    if (binding.repoRoot) {
+      const task = this.registry.taskForSession(session.id, session.cwd);
+      if (!task || task.sessionId !== session.id || binding.sessionRepoRoot !== binding.repoRoot
+          || !taskReposFor(task.id).some((repo) => repo.repoRoot === binding.repoRoot
+            && repo.worktreePath !== null && repo.worktreePath === binding.sessionCwd)) return false;
+    }
     // Action continuations and external artifacts own a different activation route. Never
     // turn a shipping capture into a new review from Session, or discard an expected HEAD.
     let current: WorkflowSubmission | null = submission;
@@ -5539,6 +5571,10 @@ export class WorkflowManager {
         && this.options.trackCiFailures?.() === true,
       pullRequestPolicy: snapshot.completion.kind === "pull_request"
         || snapshot.requiredSkillId === PULL_REQUEST_SKILL,
+      stackInstruction: snapshot.completion.kind === "pull_request"
+        || snapshot.requiredSkillId === PULL_REQUEST_SKILL
+        ? this.stackInstructionFor(session, binding.repoRoot || null)
+        : null,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -6224,57 +6260,6 @@ export class WorkflowManager {
     return this.registry.promptResourceBlockerForSession(session.id);
   }
 
-  /**
-   * The delivery another of this conversation's reviews is still owed a turn for, or null
-   * when the pane is free.
-   *
-   * A multi-repo task's session runs one review per repository it changed, and they share one
-   * pane, one transcript and one turn. At most one may have a packet outstanding: two
-   * instructions typed into one conversation interleave into a turn neither expects, and the
-   * transcript anchor that proves a packet was picked up cannot say which of them the session
-   * answered. Within a run, two ready actions are still REFUSED rather than serialized - that
-   * contract is per run and is unchanged; this one is between runs, where serializing is the
-   * only available answer because the runs are genuinely independent reviews.
-   *
-   * A conversation with one active binding - every single-repo session - returns null from
-   * the first line and pays one indexed read, so nothing about its delivery path moves.
-   *
-   * What counts as outstanding is "the session still owes this packet a turn":
-   *
-   *  - `sending`: being typed right now, and the only truly concurrent case.
-   *  - a delivered SESSION ACTION whose attempt is still waiting: the instruction has been
-   *    read and the action has not completed.
-   *  - a delivered REPAIR PACKET on a run still parked on the submission it was sent for:
-   *    the agent is repairing that repository, and handing it a second repository's findings
-   *    mid-repair is the interleaving this exists to prevent.
-   *
-   * Deliberately NOT outstanding: `refused`, `uncertain` and `cancelled`. Each of those
-   * belongs to a run that is blocked waiting on a person, and a queue that held every sibling
-   * behind a blocked run would turn one operator's unanswered question into a stalled fleet.
-   */
-  private conversationDeliveryHold(delivery: WorkflowDelivery): WorkflowDelivery | null {
-    const bindings = this.store.activeBindingsForNote(delivery.noteKey);
-    if (bindings.length < 2) return null;
-    for (const binding of bindings) {
-      const run = this.store.activeRunForBinding(binding.id);
-      if (!run || run.id === delivery.runId || runIsTerminal(run)) continue;
-      const latest = this.store.latestSubmission(run.id);
-      for (const other of this.store.listDeliveries(run.id)) {
-        if (other.state === "sending") return other;
-        if (other.state !== "delivered") continue;
-        if (other.kind === "session_action") {
-          const attempt = other.nodeAttemptId ? this.store.getAttempt(other.nodeAttemptId) : null;
-          if (attempt?.state === "waiting") return other;
-          continue;
-        }
-        const preparation = workflowPreparationRecovery({ status: run.status, phase: run.currentPhase, gateState: run.gateState });
-        if ((run.status === "waiting_for_session" || run.status === "waiting_for_evidence_readiness"
-            || (other.kind === "evidence_capture_repair" && preparation?.state === "pending"))
-            && other.submissionId === latest?.id) return other;
-      }
-    }
-    return null;
-  }
 
   /**
    * Hold a packet behind the sibling review currently using the conversation's turn.
@@ -6411,7 +6396,7 @@ export class WorkflowManager {
     // AFTER the consent gate and before the first byte. A packet that is going to be refused
     // should be refused now rather than after waiting its turn, and a packet that is going to
     // be typed must not be typed while a sibling repository's review still owns the turn.
-    const hold = this.conversationDeliveryHold(delivery);
+    const hold = this.store.conversationDeliveryHold(delivery);
     if (hold) {
       this.queueDeliveryBehind(delivery, hold);
       return;
@@ -7745,7 +7730,7 @@ export class WorkflowManager {
       parent = latest;
       const generation = this.store.workflowEvidenceGeneration(
         binding.noteKey,
-        binding.repoRoot || binding.sessionCwd || "",
+        binding.sessionCwd || "",
       );
       triggerKey = `evidence-preflight:${run.id}:${parent.id}:${generation}`;
     } else if (
@@ -7948,7 +7933,7 @@ export class WorkflowManager {
     if (!parsed.success) return null;
     probe.stagedImageGeneration = this.store.workflowEvidenceGeneration(
       binding.noteKey,
-      binding.repoRoot || binding.sessionCwd || "",
+      binding.sessionCwd || "",
     );
     return probeMatchesEvidence(probe, parsed.data.evidence);
   }

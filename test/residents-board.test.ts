@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
 import type { Session } from "../src/shared/types.ts";
-import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
+import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // Phase 2 of residents: how a resident is FOUND. The board section of a profile revision, the
 // pinned partition the board, the rail and the arrow keys all walk, the join from a session to
@@ -33,11 +33,12 @@ const {
   residentMarkTitle,
   residentMarksBySession,
   residentProfileMark,
+  residentReplacementsBySession,
 } = await import("../src/web/residents/marker.ts");
 const { DISPLAY_ITEMS } = await import("../src/web/lib/board-card.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { ResidentBand } = await import("../src/web/residents/ResidentBand.tsx");
+const { ResidentBand, ResidentReplacedBand, residentReplacementSentence } = await import("../src/web/residents/ResidentBand.tsx");
 const { ResidentsDock } = await import("../src/web/residents/ResidentsDock.tsx");
 
 function revision(board?: unknown, name = "Triage Bot") {
@@ -165,6 +166,49 @@ test("only a live run has a wire summary", () => {
   assert.equal(residentRunSummary({ ...run, endedAt: 9 }), null);
   assert.equal(residentRunSummary({ ...run, launchState: "failed", endedAt: 9 }), null);
   assert.notEqual(residentRunSummary({ ...run, launchState: "pending" }), null);
+});
+
+test("a replaced session keeps its Complete offer through every state of its replacement", () => {
+  const old = mkSession({ id: "s-old", name: "Agent Wrangler", task: mkTaskSummary({ id: "task-old", kind: "resident", status: "running" }) });
+  const oldTask = mkTask({ id: "task-old", kind: "resident", status: "running", residentRestart: { replacementTaskId: "task-new", revision: 2 } });
+  const newTask = mkTask({ id: "task-new", kind: "resident", status: "running" });
+  const run = summary({ taskId: "task-new", profileRevision: 2 });
+  const fresh = mkSession({ id: "s-new", task: mkTaskSummary({ id: "task-new", kind: "resident", status: "running" }) });
+  const band = (replacement: ReturnType<typeof residentReplacementsBySession> extends ReadonlyMap<string, infer R> ? R : never) =>
+    renderToStaticMarkup(createElement(ResidentReplacedBand, { replacement, onOpenSession: () => {}, onComplete: () => {} }));
+
+  // Starting: the replacement run is reserved but its session has not appeared yet.
+  const starting = residentReplacementsBySession([old], [oldTask, newTask], [run]).get("s-old")!;
+  assert.deepEqual({ state: starting.state, sessionId: starting.sessionId, revision: starting.revision }, { state: "starting", sessionId: null, revision: 2 });
+  assert.equal(residentReplacementSentence(starting), "Restarting on revision 2 in a new session. This session no longer wakes.");
+  assert.match(band(starting), /<button[^>]*disabled=""[^>]*>Open new session<\/button>/);
+  assert.match(band(starting), /<button[^>]*>Complete &amp; close<\/button>/);
+
+  // Live: the session appears, and Open new session becomes usable and names it.
+  const live = residentReplacementsBySession([old, fresh], [oldTask, newTask], [run]).get("s-old")!;
+  assert.deepEqual({ state: live.state, sessionId: live.sessionId }, { state: "live", sessionId: "s-new" });
+  assert.doesNotMatch(band(live), /disabled/);
+  assert.equal(residentReplacementsBySession([old, fresh], [oldTask, newTask], [run]).has("s-new"), false);
+
+  // Stopped: the replacement was reserved but its run has ended. The offer to complete stays.
+  const stopped = residentReplacementsBySession([old, fresh], [oldTask, { ...newTask, status: "done" }], []).get("s-old")!;
+  assert.equal(stopped.state, "stopped");
+  assert.equal(stopped.name, "Agent Wrangler", "with no live run the band names the session itself");
+  assert.equal(residentReplacementSentence(stopped), "Restarted on revision 2, but that session is no longer running. This session no longer wakes.");
+  assert.doesNotMatch(band(stopped), /Open new session/);
+  assert.match(band(stopped), /Complete &amp; close/);
+
+  // Not started: Restart ended the run, but its launch failed before reserving a replacement.
+  // No new session ever existed, so the band must not say one stopped.
+  const notStarted = residentReplacementsBySession([old], [{ ...oldTask, residentRestart: { replacementTaskId: null, revision: null } }], []).get("s-old")!;
+  assert.deepEqual({ state: notStarted.state, sessionId: notStarted.sessionId }, { state: "not-started", sessionId: null });
+  assert.equal(residentReplacementSentence(notStarted), "Restart ended this run, but the new session did not start. This session no longer wakes.");
+  assert.doesNotMatch(band(notStarted), /Open new session|no longer running/);
+  assert.match(band(notStarted), /Complete &amp; close/);
+
+  // Gone once the replaced task is completed.
+  const doneOld = { ...old, task: mkTaskSummary({ id: "task-old", kind: "resident", status: "done" }) };
+  assert.equal(residentReplacementsBySession([doneOld], [{ ...oldTask, status: "done" }], [run]).size, 0);
 });
 
 test("a session joins its run through its task id; every other session is absent", () => {

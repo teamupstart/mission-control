@@ -67,6 +67,7 @@ import {
   isArchiveRepoSlot,
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
+import { DEFAULT_SKIN, SKIN_IDS } from "./skins.ts";
 import { EMULATOR_IDS, TERMINAL_BACKEND_IDS } from "./terminal.ts";
 import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
@@ -78,10 +79,12 @@ import {
   PROMPTED_RECOVERY_REASONS,
   SESSION_RUNTIMES,
   TASK_KINDS,
+  TASK_STATUSES,
   THINKING_LEVELS,
+  ADVISOR_CHOICES,
 } from "./types.ts";
-import type { AgentType, SessionRuntime, Task } from "./types.ts";
-import { supportsEffort } from "./harness-capabilities.ts";
+import type { AdvisorChoice, AgentType, SessionRuntime, Task, TaskRepoPrSummary } from "./types.ts";
+import { supportsAdvisor, supportsEffort } from "./harness-capabilities.ts";
 import { HARNESS_MODEL_INPUT_MODES } from "./model.ts";
 import { INSPECTOR_LIMITS } from "./inspector.ts";
 import {
@@ -194,6 +197,8 @@ import {
 } from "./schedules.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
+/** An advisor pin. Inherit is not a value: it is an omitted field, or `null` on an update. */
+const AdvisorChoiceSchema = z.enum(ADVISOR_CHOICES);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
   EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
     message: "reasoning effort is not supported by this harness",
@@ -517,6 +522,32 @@ export const PlanDecisionSchema = z.object({
 export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
 
 /**
+ * Why a `request_input` ask could not be answered on its dashboard card, or null when it can.
+ *
+ * The card is the human's only way to answer, so an ask it cannot carry is refused before a
+ * review exists rather than shown as something nobody can act on: a blank question has nothing
+ * to read, a blank option label is a radio with no name, and two options with the same label
+ * cannot be told apart - neither by the person choosing nor by the agent, which receives the
+ * chosen option back as its LABEL. Shared by the MCP tool, which explains the refusal to the
+ * agent in its own words, and by `CreateReviewSchema`, which holds the line for any client.
+ */
+export function inputQuestionProblem(
+  question: string,
+  options: ReadonlyArray<{ label: string }> | undefined,
+): string | null {
+  if (!question.trim()) return "the question is empty";
+  const seen = new Set<string>();
+  for (const [index, option] of (options ?? []).entries()) {
+    const label = option.label.trim();
+    if (!label) return `option ${index + 1} has an empty label`;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return `more than one option is labelled "${label}", so the answer could not say which was chosen`;
+    seen.add(key);
+  }
+  return null;
+}
+
+/**
  * An MCP-driven agent creating a review item bound to its session's pane.
  *
  * A `plan-decisions` review must carry at least one decision: the whole point of the
@@ -553,6 +584,12 @@ export const CreateReviewSchema = z
   .refine((r) => r.kind !== "input" || (r.decisions?.length ?? 0) <= 1, {
     message: "kind 'input' carries at most one decision",
     path: ["decisions"],
+  })
+  .superRefine((r, ctx) => {
+    if (r.kind !== "input") return;
+    const decision = r.decisions?.[0];
+    const problem = inputQuestionProblem(decision ? decision.question : r.body.trim() || r.title, decision?.options);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `This question cannot be answered on its card: ${problem}`, path: ["decisions"] });
   })
   .refine((r) => r.kind === "plan-decisions" || r.kind === "input" || !r.decisions?.length, {
     message: "only kinds 'plan-decisions' and 'input' can carry decisions",
@@ -866,6 +903,7 @@ export const PlanDecisionAnswerSchema = z.object({
   selected: z.array(z.string().min(1)),
   other: z.string().nullable().optional().default(null),
   note: z.string().nullable().optional(),
+  chat: z.boolean().optional(),
 });
 export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
 
@@ -929,10 +967,18 @@ const TASK_TRIAGE_FIELDS = {
   labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
 };
 
+/**
+ * How a same-repository dependency releases its dependent: after its pull request merges, or
+ * as soon as it has an open one (stacked). Absent means "inherit the Shipping default at
+ * evaluation time" (`effectiveEdgeMode` in `@shared/stacking.ts`), so an edge stored before
+ * this field existed follows whatever the operator sets later.
+ */
+export const DependencyModeSchema = z.enum(["merge", "stack"]);
+
 /** A dependency target selected from the backlog or the live-session list. */
 export const TaskDependencyInputSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("task"), taskId: z.string().min(1) }),
-  z.object({ type: z.literal("session"), sessionId: z.string().min(1) }),
+  z.object({ type: z.literal("task"), taskId: z.string().min(1), mode: DependencyModeSchema.optional() }),
+  z.object({ type: z.literal("session"), sessionId: z.string().min(1), mode: DependencyModeSchema.optional() }),
   PlanIdentitySchema.extend({ type: z.literal("plan") }).strict(),
 ]);
 export type TaskDependencyInput = z.infer<typeof TaskDependencyInputSchema>;
@@ -1031,6 +1077,9 @@ export const HarnessModelCatalogQuerySchema = z
   .strict();
 
 
+export const TaskPlanStorageSchema = z.enum(["repository", "local"]).nullable().optional()
+  .describe("Plan tasks only: local or repository; null resolves and pins the current global default. Omit on update to keep the pin.");
+
 /**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
@@ -1069,6 +1118,9 @@ export const DispatchSchema = z
     model: ModelIdSchema.optional(),
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
+    // No advisor field: the advisor is a harness setting chosen per launch model
+    // (`HarnessesConfig.advisor`), not something a task pins. An `advisorModel` sent by an
+    // older client is stripped like any other unknown key.
     /**
      * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
      * plan tasks, Bug Fix Review for bugfix tasks, Documentation Review for document tasks,
@@ -1076,6 +1128,7 @@ export const DispatchSchema = z
      * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     backlog: z.boolean().optional().default(false),
     /**
      * Whether Foreman's backlog autopilot may schedule this task. Defaults on for every
@@ -1257,6 +1310,33 @@ export const RescheduleTaskSchema = z.object({}).strict();
 export const RequeueTaskSchema = z.object({}).strict();
 
 /**
+ * Dismiss open launch failures (`POST /api/launch-failures/dismiss`). A list, because a failed
+ * tile stands for every attempt of the same work that failed the same way, and one Dismiss on
+ * it answers all of them. Bounded as a request body, not as a product limit.
+ */
+export const DismissLaunchFailuresSchema = z
+  .object({ taskIds: z.array(z.string().min(1)).min(1).max(100) })
+  .strict();
+
+/**
+ * Start a report session for one launch failure (`POST /api/launch-failures/report`).
+ *
+ * The daemon builds the session's brief from `taskId` alone, so the browser never carries the
+ * failure's facts. `repoRoot` is only where the report session runs: every session kind but a
+ * resident needs a checkout, and a failed resident has none of its own to offer.
+ */
+export const ReportLaunchFailureSchema = z
+  .object({ taskId: z.string().min(1), repoRoot: z.string().min(1) })
+  .strict();
+
+/**
+ * Try a failed launch again (`POST /api/launch-failures/retry`): a backlog kind is re-filed and
+ * dispatched as the same task, a chat is filed again as a new one. A resident is launched again
+ * from its profile instead, through the one resident launch call.
+ */
+export const RetryLaunchFailureSchema = z.object({ taskId: z.string().min(1) }).strict();
+
+/**
  * Move one backlog task in the operator's order - the ONE route that writes
  * `Task.backlogRank`, and the only way the order ever changes by hand.
  *
@@ -1310,6 +1390,10 @@ export type ReorderTask = z.infer<typeof ReorderTaskSchema>;
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names an override.
  *
+ * `advisorModel` accepts ONLY `null`. A task can no longer pin an advisor - that moved to
+ * `HarnessesConfig.advisor` - but a task filed before the move may still carry one, and the
+ * dispatch form's "Use Settings" action is how an operator takes it back off.
+ *
  * `enabled` is the backlog's enable/disable toggle, and it is deliberately NOT
  * annotation: it only means anything while the task is in the backlog, so it falls
  * under the same status guard as the provisioning fields. Exempting it would let a
@@ -1340,7 +1424,9 @@ const UpdateTaskFieldsSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
     effort: EffortLevelSchema.nullable().optional(),
+    advisorModel: z.null().optional(),
     workflowId: z.string().min(1).max(500).nullable().optional(),
+    planStorage: TaskPlanStorageSchema,
     dependencies: TaskDependenciesSchema.optional(),
     planInputs: TaskPlanInputsSchema.optional(),
   });
@@ -1353,13 +1439,17 @@ export const UpdateTaskSchema = UpdateTaskFieldsSchema
   );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
-/** MCP and dashboard task configuration use the same field validators. */
+/**
+ * MCP and dashboard task configuration use the same field validators. No `advisorModel`: a
+ * new task cannot pin one, and this schema is strict, so a caller still sending it is told.
+ */
 export const McpTaskConfigurationSchema = UpdateTaskFieldsSchema.omit({
   repoRoot: true,
   extraRepoRoots: true,
   title: true,
   intent: true,
   planInputs: true,
+  advisorModel: true,
 }).strict();
 
 /** A separate route prevents older daemons from silently dropping task overrides. */
@@ -1383,6 +1473,28 @@ export const McpUpdateTaskSchema = UpdateTaskFieldsSchema.omit({
 }).extend({
   repository: z.string().trim().min(1).optional(),
   additionalRepositories: z.array(z.string().trim().min(1)).max(MAX_TASK_EXTRA_REPOS).optional(),
+}).strict();
+
+/** Durable task facts plus pull request references, without session-private state. */
+export type McpTaskSnapshot = Task & { prUrl: string | null; repoPrs: TaskRepoPrSummary[] };
+
+/** Read-only task queries share validation between the MCP child and daemon. */
+export const McpListTasksSchema = z.object({
+  status: z.enum(TASK_STATUSES).optional().describe("Saved task status; done is successful completion"),
+  kind: z.enum(TASK_KINDS).optional(),
+  repository: z.string().trim().min(1).optional().describe("Absolute checkout path or unique repository directory name; matches primary or attached repositories. Omit for all tasks"),
+  labels: z.array(z.string().trim().min(1)).max(MAX_LABELS).optional().describe("Require every supplied label (exact, case-sensitive matches)"),
+  priority: z.enum(TASK_PRIORITIES).nullable().optional().describe("Null matches tasks without a priority"),
+  enabled: z.boolean().optional(),
+  dependsOnTaskId: z.string().trim().min(1).optional().describe("Match a direct task dependency, including one already satisfied"),
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: z.string().min(1).max(4096).optional().describe("nextCursor from the previous page; keep filters unchanged"),
+  includeIntent: z.boolean().default(false).describe("Include full intent text; omitted by default to keep lists compact"),
+}).strict();
+export type McpListTasks = z.infer<typeof McpListTasksSchema>;
+
+export const McpGetTaskSchema = z.object({
+  taskId: z.string().trim().min(1).describe("Id of a task in any status"),
 }).strict();
 
 /** MCP deletes one task through the existing lifecycle and cleanup owner. */
@@ -2475,6 +2587,24 @@ export const ShippingConfigSchema = z.object({
    * this is a switch and not a hard-coded answer.
    */
   closeSessionAfterMerge: z.boolean().default(false),
+  /**
+   * Stacked pull requests: whether a same-repository dependency without its own `mode` lets
+   * its dependent start on the prerequisite's open pull request (`stack`) or waits for it to
+   * merge (`merge`).
+   *
+   * Optional with NO default, and that is the contract rather than an omission. Absent means
+   * "the shipped default" (`effectiveStacking` / `STACKING_SHIPPED_DEFAULT` in
+   * `@shared/stacking.ts`), so an install that never chose follows that constant when a later
+   * release changes it. A Zod default here would write the current value into every saved
+   * blob and pin every install to it. Only an explicit operator choice writes this key.
+   */
+  stacking: DependencyModeSchema.optional(),
+  /**
+   * The deepest a stack may grow: how many unmerged stacked pull requests may sit above one
+   * that targets the default branch. A dependent whose parent is already this deep waits for
+   * the bottom of its stack to merge.
+   */
+  maxStackDepth: z.number().int().min(1).max(5).default(3),
 });
 export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
 
@@ -2605,6 +2735,33 @@ const taskKindDefaultsPatchShape = Object.fromEntries(
   HARNESS_LAUNCHED_TASK_KINDS.map((kind) => [kind, TaskKindDefaultPatchSchema.optional()]),
 ) as Record<HarnessLaunchedTaskKind, z.ZodOptional<typeof TaskKindDefaultPatchSchema>>;
 
+/** One harness's advisor defaults AS STORED. See `HarnessesConfigSchema.advisor`. */
+const HarnessAdvisorDefaultsSchema = z
+  .object({
+    default: z.string().nullable().default(null),
+    overrides: z.record(z.string(), z.string()).default({}),
+  })
+  .default({});
+
+/**
+ * One harness's advisor defaults as a PATCH. `default` replaces the stored one; `overrides`
+ * merges per model, and a `null` there removes that model's override.
+ */
+const HarnessAdvisorPatchSchema = z
+  .object({
+    default: AdvisorChoiceSchema.nullable().optional(),
+    overrides: z.record(ModelIdSchema, AdvisorChoiceSchema.nullable()).optional(),
+  })
+  .strict();
+
+/** The choices one advisor patch writes, for the capability check below. */
+function advisorPatchChoices(patch: z.infer<typeof HarnessAdvisorPatchSchema> | undefined): AdvisorChoice[] {
+  if (!patch) return [];
+  return [patch.default, ...Object.values(patch.overrides ?? {})].filter(
+    (choice): choice is AdvisorChoice => choice != null,
+  );
+}
+
 /**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
@@ -2696,8 +2853,37 @@ export const HarnessesConfigSchema = z.object({
    * added but can never come to mean a different kind later.
    */
   kindDefaults: z.object(taskKindDefaultsShape).default({}),
+  /**
+   * The advisor each harness's dispatched sessions launch with, chosen by the model the
+   * launch resolved. `overrides` is keyed by bare model id (`claude-opus-5-5`); a launch
+   * whose model has no override, or that names no model at all, gets `default`.
+   *
+   * `null` is Inherit: nothing is rendered and the operator's own Claude settings decide,
+   * which is the shipped value, so this key changes no launch until it is set. Only a harness
+   * that declares `advisor` can hold anything else - the patch refuses the rest.
+   *
+   * Stored loosely for the reason `sessionRuntime` is: this blob is parsed on every dispatch,
+   * so a choice a newer build wrote must not throw. `resolveLaunchAdvisor` narrows every read
+   * through `supportsAdvisor`, and nothing may read these values raw.
+   */
+  advisor: z
+    .object({
+      claude: HarnessAdvisorDefaultsSchema,
+      codex: HarnessAdvisorDefaultsSchema,
+      pi: HarnessAdvisorDefaultsSchema,
+    })
+    .default({}),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+/** One harness's stored advisor defaults, as read. */
+export type HarnessAdvisorDefaults = HarnessesConfig["advisor"][AgentType];
+
+/** Every harness on Inherit with no overrides - what an untouched installation holds. */
+export function emptyHarnessAdvisorDefaults(): HarnessesConfig["advisor"] {
+  return Object.fromEntries(
+    AGENT_TYPES.map((agent) => [agent, { default: null, overrides: {} }]),
+  ) as HarnessesConfig["advisor"];
+}
 /** One task kind's stored launch defaults, as read. */
 export type TaskKindDefault = HarnessesConfig["kindDefaults"][HarnessLaunchedTaskKind];
 
@@ -2953,9 +3139,50 @@ export const HarnessesConfigPatchSchema = z
      * blank the agent beside it.
      */
     kindDefaults: z.object(taskKindDefaultsPatchShape).strict().optional(),
+    /** Merged per harness and then per model by `setHarnessesConfig`. */
+    advisor: z
+      .object({
+        claude: HarnessAdvisorPatchSchema.optional(),
+        codex: HarnessAdvisorPatchSchema.optional(),
+        pi: HarnessAdvisorPatchSchema.optional(),
+      })
+      .strict()
+      .optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" })
+  // Read off the capability, so a harness that gains an advisor is settable with no edit here.
+  .refine(
+    (o) =>
+      AGENT_TYPES.every((agent) =>
+        advisorPatchChoices(o.advisor?.[agent]).every((choice) => supportsAdvisor(agent, choice)),
+      ),
+    { path: ["advisor"], message: "this harness has no advisor to set" },
+  );
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+/**
+ * What a harness's OWN configuration says about its advisor, which is what Inherit resolves
+ * to. Read by the daemon from the operator's settings so the Harnesses panel can say whether
+ * a dispatched session will actually consult one. Null for a harness with no advisor.
+ */
+export const AdvisorEnvironmentSchema = z.object({
+  /** The advisor the operator's user settings name, as written there (`opus`), or null. */
+  inherited: z.string().nullable(),
+  /** Where `inherited` was read from, shown beside it. */
+  source: z.string(),
+  /**
+   * Why no advisor can run in a dispatched session whatever is chosen, as one sentence, or
+   * null. An Off choice needs no reason; this is for a pin that will not take effect.
+   */
+  blocked: z.string().nullable(),
+});
+export type AdvisorEnvironment = z.infer<typeof AdvisorEnvironmentSchema>;
+export const HarnessAdvisorEnvironmentsSchema = z.object({
+  claude: AdvisorEnvironmentSchema.nullable(),
+  codex: AdvisorEnvironmentSchema.nullable(),
+  pi: AdvisorEnvironmentSchema.nullable(),
+});
+export type HarnessAdvisorEnvironments = z.infer<typeof HarnessAdvisorEnvironmentsSchema>;
 
 /**
  * One stored per-multiplexer terminal preference. Loose for the reason
@@ -3211,6 +3438,12 @@ export const LineDensitySchema = z.enum(LINE_DENSITIES);
 export type LineDensity = (typeof LINE_DENSITIES)[number];
 
 /**
+ * Which skin paints the dashboard. The registry, its append-only rule and the reason a stored
+ * id is never renamed live in `./skins.ts`; this is only the validator over its ids.
+ */
+export const SkinIdSchema = z.enum(SKIN_IDS);
+
+/**
  * How the console's conversation header marks a task session's kind (`TaskKindMark`).
  *
  * Every kind is marked, `ship` included, because a kind printed only when it is not the
@@ -3410,6 +3643,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  /** Today's look. A skin is opt-in; nothing an install already shows changes on upgrade. */
+  skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
   taskKindCard: "tab",
   keybindings: {},
@@ -3488,6 +3723,8 @@ export const UI_CONFIG_DEFAULTS = {
    * the board spent those pixels on the columns that hold sessions.
    */
   showEmptyColumnStash: true,
+  /** Show every state group in the Board drill-in sidebar. */
+  boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
   collapsedBoardColumns: [],
   /**
@@ -3513,6 +3750,14 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  /**
+   * The skin. `.catch` rather than `.default`, so an id written by a build that shipped a skin
+   * this one does not (a downgrade) reads as Default instead of failing the whole `ui` record.
+   * A missing key lands in the same place, so no migration is owed. Tolerant on READ only:
+   * `UiConfigPatchSchema` validates this field strictly, so a bad write is a 400 and the
+   * dashboard's optimistic store rolls the skin back rather than storing "default" by accident.
+   */
+  skin: SkinIdSchema.catch(UI_CONFIG_DEFAULTS.skin),
   taskKindHeader: TaskKindHeaderStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindHeader),
   taskKindCard: TaskKindCardStyleSchema.default(UI_CONFIG_DEFAULTS.taskKindCard),
   /**
@@ -3637,6 +3882,7 @@ export const UiConfigSchema = z.object({
    * something needs you.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
+  boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.
    *
@@ -3679,7 +3925,11 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().refine(
+export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
+  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+  // `{ skin: "nope" }` into a successful write of Default.
+  skin: SkinIdSchema.optional(),
+}).refine(
   (o) => Object.keys(o).length > 0,
   { message: "empty config update" },
 );
@@ -5900,7 +6150,7 @@ const WorkflowSteeringContextSchema = z.union([
 ]);
 
 export const CodeRabbitConfigSnapshotSchema = z.object({
-  source: z.literal(".coderabbit.yaml"), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
+  source: z.enum([".coderabbit.yaml", ".coderabbit.config.ts"]), committed: z.boolean().optional(), digest: z.string().length(64).nullable(), enabled: z.boolean(),
   state: z.enum(["enabled", "disabled", "missing", "invalid", "unreadable"]), diagnostic: z.string().max(1000),
 });
 const WorkflowContextSnapshotInputSchema = z.object({
@@ -5969,6 +6219,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
         bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
       })).max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount),
     }).optional(),
+    reviewCommit: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
     diffTruncated: z.boolean(),
@@ -8214,8 +8465,11 @@ export const ArchiveResidentProfileSchema = z
   .strict();
 export type ArchiveResidentProfile = z.infer<typeof ArchiveResidentProfileSchema>;
 
-/** `POST /api/residents/profiles/:id/launch`. The schema lives with the launch contract. */
-export const LaunchResidentRequestSchema = LaunchResidentSchema;
+/** `POST /api/residents/profiles/:id/launch`. Restart IDs belong only to the restart route. */
+export const LaunchResidentRequestSchema = LaunchResidentSchema.refine(
+  (input) => !input.requestId.startsWith("resident-restart:"),
+  { message: "This request ID is reserved for profile restarts.", path: ["requestId"] },
+);
 
 export { ScheduleNextIterationSchema as ScheduleNextIterationRequestSchema } from "./residents.ts";
 /** Skill-source mutations share one validated config contract. */

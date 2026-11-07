@@ -31,6 +31,7 @@ const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { clearScoutPromptContext, openScoutPromptContext, scoutPromptTurns } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
+const { claimHumanEcho, HUMAN_ECHO_TTL_MS } = await import("../src/server/injections.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -64,11 +65,17 @@ async function settles(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   }
 }
 
-/** Poll instead of sleeping a fixed span, so a settle window costs its own length and no more. */
+/**
+ * Poll instead of sleeping a fixed span, so a settle window costs its own length and no more.
+ *
+ * The deadline reads `performance.now()`, not `Date.now()`: a case that mocks `Date` to age a
+ * ledger entry would otherwise freeze this clock too, and a delivery that never completed would
+ * hang the file instead of failing it.
+ */
 async function until(predicate: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await tick(5);
   }
 }
@@ -2438,3 +2445,264 @@ for (const { state, startOffset } of [
     assert.deepEqual(injected, ["first fast turn", "second queued turn"]);
   });
 }
+
+// ---- one Goal revision per human SDK follow-up ----
+//
+// A follow-up reaches the Goal by two doors: the outbox's acknowledgement and the agent's
+// prompt-hook echo of the same text. Exactly one of them may open a revision, whichever order
+// they arrive in and whichever of them fails.
+
+type HookEvent = Parameters<InstanceType<typeof Registry>["applyHook"]>[0];
+
+function sdkEcho(registry: InstanceType<typeof Registry>, key: string, name: string, prompt: string): void {
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: key,
+    cwd: `/repo/${name}`,
+    transcriptPath: null,
+    env: {},
+    prompt,
+  } as HookEvent);
+}
+
+function turnDone(registry: InstanceType<typeof Registry>, id: string): void {
+  registry.applyDriverEvent(id, { kind: "turn_done", usage: null });
+}
+
+/** An idle SDK session whose driver runs `onSend` at its acceptance boundary. */
+function echoFixture(
+  name: string,
+  onSend: (f: { registry: InstanceType<typeof Registry>; key: string; text: string }) => "started" | null,
+) {
+  const registry = new Registry();
+  const id = `sdk:${name}`;
+  const key = `conversation:${name}`;
+  registry.registerSdkSession({ id, agent: "claude", name, cwd: `/repo/${name}`, agentSessionId: key });
+  const calls: string[] = [];
+  const manager = new PendingTurnManager(
+    registry,
+    {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_id, turn, beforeSend) => {
+        calls.push(turn.text);
+        const blocker = beforeSend?.();
+        if (blocker) throw new Error(blocker);
+        return onSend({ registry, key, text: turn.text });
+      },
+    },
+    { idleSettleMs: 0, pickupTimeoutMs: 15 },
+  );
+  manager.start();
+  working(registry, id);
+  turnDone(registry, id);
+  return { registry, manager, id, key, calls };
+}
+
+for (const order of ["before", "after"] as const) {
+  test(`a delivered SDK follow-up echoed ${order} its acknowledgement opens one revision`, async () => {
+    const text = `follow up echoed ${order}`;
+    const f = echoFixture(`echo-${order}`, ({ registry, key }) => {
+      if (order === "before") sdkEcho(registry, key, `echo-${order}`, text);
+      return "started";
+    });
+    f.manager.submit(f.id, text);
+    await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "delivery");
+    if (order === "after") sdkEcho(f.registry, f.key, `echo-${order}`, text);
+    assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+    assert.equal(f.registry.getGoal(f.id)?.prompt, text);
+    f.manager.stop();
+  });
+}
+
+test("an early echo whose turn completes before the SDK acknowledgement opens one revision", async () => {
+  const name = "echo-turn-ends-first";
+  const text = "a quick follow-up the agent finishes before the ack";
+  const f = echoFixture(name, ({ registry, key }) => {
+    sdkEcho(registry, key, name, text);
+    working(registry, `sdk:${name}`);
+    turnDone(registry, `sdk:${name}`);
+    return "started";
+  });
+  f.manager.submit(f.id, text);
+  await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "delivery");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+  f.manager.stop();
+});
+
+test("an early echo followed by a refused SDK acknowledgement opens one revision", async () => {
+  const text = "early echo then refusal";
+  let echoed = false;
+  const f = echoFixture("echo-refused", ({ registry, key }) => {
+    if (!echoed) sdkEcho(registry, key, "echo-refused", text);
+    echoed = true;
+    return null;
+  });
+  f.manager.submit(f.id, text);
+  await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued"
+    && f.calls.length > 0, "the refusal");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("an early echo followed by an uncertain SDK acknowledgement opens one revision", async () => {
+  const text = "early echo then uncertainty";
+  const f = echoFixture("echo-uncertain", ({ registry, key }) => {
+    sdkEcho(registry, key, "echo-uncertain", text);
+    throw new Error("receipt lost after the boundary");
+  });
+  f.manager.submit(f.id, text);
+  await until(() => f.registry.getSession(f.id)?.pendingTurns[0]?.state === "uncertain", "uncertainty");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+for (const failure of ["throws", "returns null"] as const) {
+  test(`an early echo whose capture ${failure} is recorded by the acknowledgement, once`, async (t) => {
+    const text = `early echo whose capture ${failure}`;
+    const name = `echo-capture-${failure === "throws" ? "throws" : "null"}`;
+    let hookFailed = false;
+    const f = echoFixture(name, ({ registry, key }) => {
+      const original = Registry.prototype.captureAcceptedPrompt;
+      const mock = t.mock.method(registry, "captureAcceptedPrompt", function (
+        this: InstanceType<typeof Registry>,
+        ...args: Parameters<typeof original>
+      ) {
+        if (!hookFailed) {
+          hookFailed = true;
+          if (failure === "throws") throw new Error("goal write failed");
+          return null;
+        }
+        return original.apply(this, args);
+      });
+      try {
+        sdkEcho(registry, key, name, text);
+      } catch {
+        /* the hook's own capture threw; the acknowledgement records the turn */
+      }
+      assert.equal(mock.mock.callCount(), 1);
+      return "started";
+    });
+    f.manager.submit(f.id, text);
+    await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "delivery");
+    assert.ok(hookFailed);
+    assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+    assert.equal(f.registry.getGoal(f.id)?.prompt, text);
+    f.manager.stop();
+  });
+}
+
+for (const failure of ["throws", "returns null"] as const) {
+  test(`an acknowledgement whose capture ${failure} leaves the turn for its echo, once`, async (t) => {
+    const text = `acknowledged capture ${failure}`;
+    const name = `echo-ack-${failure === "throws" ? "throws" : "null"}`;
+    const f = echoFixture(name, () => "started");
+    const original = Registry.prototype.captureAcceptedPrompt;
+    let ackFailed = false;
+    t.mock.method(f.registry, "captureAcceptedPrompt", function (
+      this: InstanceType<typeof Registry>,
+      ...args: Parameters<typeof original>
+    ) {
+      if (!ackFailed) {
+        ackFailed = true;
+        if (failure === "throws") throw new Error("goal write failed");
+        return null;
+      }
+      return original.apply(this, args);
+    });
+    f.manager.submit(f.id, text);
+    await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "delivery");
+    assert.ok(ackFailed, "the acknowledgement's capture was the one that failed");
+    assert.equal(f.registry.getGoal(f.id), null, "nothing recorded yet");
+    sdkEcho(f.registry, f.key, name, text);
+    assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+    assert.equal(f.registry.getGoal(f.id)?.prompt, text);
+    f.manager.stop();
+  });
+}
+
+test("a refused SDK send with no echo captures nothing and leaves no expectation", async () => {
+  const text = "refused and never echoed";
+  const f = echoFixture("echo-none-refused", () => null);
+  f.manager.submit(f.id, text);
+  await until(() => f.calls.length > 0
+    && f.registry.getSession(f.id)?.pendingTurns[0]?.state === "queued", "the refusal");
+  assert.equal(f.registry.getGoal(f.id), null);
+  assert.equal(claimHumanEcho(f.id, f.key, text).kind, "none");
+  f.manager.stop();
+  clearPendingTurns(f.key);
+});
+
+test("an identical retype after an unechoed SDK follow-up is its own revision", async () => {
+  const text = "say it again";
+  const f = echoFixture("echo-retype", () => "started");
+  f.manager.submit(f.id, text);
+  await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "the first send");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+  working(f.registry, f.id);
+  turnDone(f.registry, f.id);
+  f.manager.submit(f.id, text);
+  await until(() => f.calls.length === 2
+    && f.registry.getSession(f.id)?.pendingTurns.length === 0, "the retype");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 2, "one revision per send");
+  f.manager.stop();
+});
+
+test("a steered SDK follow-up echoed after the running turn ends opens one revision", async (t) => {
+  const name = "echo-steered";
+  const text = "fold this into the next turn";
+  const f = steeringFixture(name);
+  const key = `steering:${name}`;
+  const row = f.manager.submit(f.id, text).pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.sends.length === 1, "the steer");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1, "the acknowledgement captured it");
+  const capture = t.mock.method(f.registry, "captureAcceptedPrompt");
+
+  // The running turn ends, and only then does Claude dequeue the follow-up and echo it.
+  turnDone(f.registry, f.id);
+  assert.equal(claimHumanEcho(f.id, key, "not this text").kind, "none");
+  sdkEcho(f.registry, key, name, text);
+  assert.equal(capture.mock.callCount(), 0, "the echo answered skip");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+
+  // The follow-up's own turn completes; a later hook-only arrival of the text is new input.
+  working(f.registry, f.id);
+  turnDone(f.registry, f.id);
+  sdkEcho(f.registry, key, name, text);
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 2);
+  f.manager.stop();
+});
+
+test("a steered follow-up's entry survives the turn it waited behind and expires with its own", async () => {
+  const name = "echo-steered-expiry";
+  const text = "queued behind the running turn";
+  const f = steeringFixture(name);
+  const key = `steering:${name}`;
+  const row = f.manager.submit(f.id, text).pendingTurn!;
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  await until(() => f.sends.length === 1, "the steer");
+  turnDone(f.registry, f.id);
+  working(f.registry, f.id);
+  turnDone(f.registry, f.id);
+  assert.equal(claimHumanEcho(f.id, key, text).kind, "none", "its own turn completed");
+  f.manager.stop();
+});
+
+test("with no turn end, a captured SDK follow-up stops absorbing echoes once it ages out", async (t) => {
+  const name = "echo-aged";
+  const text = "an echo that never came";
+  // Only Date is mocked: the manager's default clock and the registry's hook clock both read
+  // it, while the polling below still runs on real timers.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const f = echoFixture(name, () => "started");
+  f.manager.submit(f.id, text);
+  await until(() => f.registry.getSession(f.id)?.pendingTurns.length === 0, "delivery");
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 1);
+  t.mock.timers.tick(HUMAN_ECHO_TTL_MS + 1);
+  sdkEcho(f.registry, f.key, name, text);
+  assert.equal(f.registry.getGoal(f.id)?.promptRevision, 2, "a hook-only arrival is captured");
+  f.manager.stop();
+});

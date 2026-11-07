@@ -112,6 +112,8 @@ if (args[0] === "api" && args[1] === "user") {
             state: "OPEN",
             headRefOid: state.headSha,
             headRefName: "feature",
+            baseRefName: "main",
+            repository: { defaultBranchRef: { name: "main" } },
             isDraft: false,
             title: "Inspector finding resolution",
             body: "Exercise the route out of an open finding.",
@@ -572,9 +574,11 @@ test("a reply that only answers a question leaves the finding blocking the merge
   assert.equal(state.merged, false, "an answered question must never land the pull request");
 });
 
-for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resolution-in-review", "reply-resolution-retry", "resolution-retry"] as const) {
+for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "reply-on-author-resolved-thread", "resolution-in-review", "reply-resolution-retry", "resolution-retry"] as const) {
   test(`final clean review after finding resolution: ${scenario}`, async () => {
     const viaReview = scenario === "resolution-in-review" || scenario === "resolution-retry";
+    const authorResolved = scenario === "reply-on-author-resolved-thread";
+    const sameHead = scenario === "reply-on-reviewed-head" || authorResolved;
     const fingerprint = "dc436b4e2f";
     const marker = formatMarker({ id: "finding-1", fingerprint, round: 4 });
     process.env.FAKE_REPLY_RESOLVED = "1";
@@ -586,14 +590,14 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
       databaseId: 202, body: "The latest push fixes this issue.",
       createdAt: "2026-07-23T13:00:00Z", author: { login: "author" },
     });
-    writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: false, threadComments: comments,
+    writeGithubState({ headSha: "head-fixed", threadBody: marker, threadResolved: authorResolved, threadComments: comments,
       failResolves: scenario.endsWith("retry") ? 1 : 0 });
     setInspectorConfig({ enabled: true, mode: "live", repoAllowlist: [project], maxCommentsPerRound: 8 });
     setShippingConfig({ autoMerge: false });
     const key = adopt(501);
     seedReviewedPr(key, fingerprint);
     updateInspectorPr(key, { reviewComplete: true }, Date.now());
-    if (scenario !== "reply-on-reviewed-head") updateInspectorPr(key, { headSha: "head-before-fix" }, Date.now());
+    if (!sameHead) updateInspectorPr(key, { headSha: "head-before-fix" }, Date.now());
     const stop = startInspector(registryStub());
     try {
       await waitFor("finding to resolve and head to be recorded", () =>
@@ -612,8 +616,48 @@ for (const scenario of ["reply-on-new-head", "reply-on-reviewed-head", "resoluti
     assert.equal(ledger.lastError, null);
     assert.equal(state.posts.length, 1, "every resolution path publishes exactly one final clean review");
     assert.equal(ledger.cleanReviewHeadSha, "head-fixed");
-    assert.equal(ledger.round, scenario === "reply-on-reviewed-head" ? 5 : 6);
+    assert.equal(ledger.round, sameHead ? 5 : 6);
+    if (authorResolved) assert.deepEqual(state.actions, ["posted reply", "accepted review for head-fixed"],
+      "evaluate the author reply without requiring a push or resolving the closed thread again");
     assert.equal(state.replies.length, viaReview ? 0 : 1);
     assert.equal(loadInspectorComments(key)[0]?.resolutionPending ?? false, false);
+  });
+}
+
+// GitHub resolution is context, never proof that Inspector withdrew its finding.
+for (const scenario of ["disagrees", "no-reply", "already-answered", "already-resolved", "reply-cap", "foreign-thread", "dry-run"] as const) {
+  test(`author-resolved threads retain reply safeguards: ${scenario}`, async () => {
+    const fingerprint = "dc436b4e2f";
+    const marker = formatMarker({ id: "finding-1", fingerprint, round: 4 });
+    process.env.FAKE_REPLY_RESOLVED = scenario === "disagrees" ? "0" : "1";
+    const comments: FakeComment[] = [{
+      databaseId: 101, body: marker, createdAt: "2026-07-23T12:00:00Z",
+      author: { login: scenario === "foreign-thread" ? "someone-else" : "operator" },
+    }];
+    if (scenario !== "no-reply") comments.push({
+      databaseId: 202, body: "This is already handled by the guard.",
+      createdAt: "2026-07-23T13:00:00Z", author: { login: "author" },
+    });
+    writeGithubState({ threadBody: marker, threadResolved: true, threadComments: comments });
+    setInspectorConfig({ enabled: true, mode: scenario === "dry-run" ? "dry-run" : "live", repoAllowlist: [project] });
+    setShippingConfig({ autoMerge: false });
+    const key = adopt(502);
+    seedReviewedPr(key, fingerprint, {
+      status: scenario === "already-resolved" ? "resolved" : "open",
+      answeredCommentId: scenario === "already-answered" ? 202 : null,
+      replies: scenario === "reply-cap" ? 6 : 0,
+    });
+    updateInspectorPr(key, { reviewComplete: true }, Date.now());
+    await runOneSweep();
+    await runOneSweep();
+    const state = readGithubState();
+    assert.equal(state.replies.length, scenario === "disagrees" ? 1 : 0,
+      "only a new, eligible reply on a still-open Inspector finding is evaluated, once");
+    assert.equal(loadInspectorComments(key)[0]?.status, scenario === "already-resolved" ? "resolved" : "open");
+    assert.equal(state.actions.includes("resolved thread T_1"), false);
+    if (scenario !== "already-resolved") {
+      assert.equal(getInspectorPr(key)?.cleanReviewHeadSha, null, "GitHub resolution alone cannot certify a clean review");
+      assert.equal(state.posts.length, 0);
+    }
   });
 }

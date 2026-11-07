@@ -1,6 +1,8 @@
+import { useTourTargetRef } from "../../tour/target-context.tsx";
 import type { Session } from "@shared/types.ts";
 import { pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { provisioningTasks } from "@shared/session.ts";
+import { FailedLaunchList, fleetFailureGroups } from "../LaunchFailures.tsx";
 import {
   clusterFallbackLabel,
   fleetRows,
@@ -42,7 +44,10 @@ import {
  * shortcuts drive. Nothing selected means nothing to send into, so the pane says so
  * rather than silently swallowing a keystroke.
  */
-export function ConsoleView(props: SessionViewProps): React.JSX.Element {
+export function ConsoleView(props: SessionViewProps & {
+  onBackToBoard?: () => void;
+}): React.JSX.Element {
+  const detailTourRef = useTourTargetRef<HTMLElement>("see-work:session-detail");
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
   // The one fleet ordering, so the rail's rows come out in the order the arrow keys walk and
   // an ensemble's siblings sit together under one header. Empty groups are dropped here (and
@@ -61,10 +66,14 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     pinnedResidentSessions(props.residentBySession),
   );
   const pending = provisioningTasks(props.tasks);
+  // Every open failure: the rail has no Backlog column and its rows carry no notices, so a
+  // returned or kept failure has nowhere else to be found here.
+  const failed = fleetFailureGroups(props.tasks);
+  const starters = pending.length + failed.length;
   // Keep Working mounted for the first dispatch onto an otherwise quiet fleet because its
   // task-backed placeholders live inside that group.
   const groups = order.groups.filter(
-    (g) => g.sessions.length > 0 || (g.tone === "working" && pending.length > 0),
+    (g) => g.sessions.length > 0 || (g.tone === "working" && starters > 0),
   );
   const repoTotals = repoSessionTotals(order);
   // Which repository groups are folded, from the store `App` and the board read too. Shared
@@ -151,6 +160,16 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
         aria-label="Sessions"
         onFocusCapture={() => props.onConsoleZoneChange("rail")}
       >
+        {props.onBackToBoard && (
+          <header className="board-col-head">
+            <Tooltip label="Back to the board (Esc)">
+              <button className="board-back" aria-label="Back to the board" onClick={props.onBackToBoard}>
+                ‹
+              </button>
+            </Tooltip>
+            <h2>All sessions</h2>
+          </header>
+        )}
         {groups.map((g) => (
           <div key={g.tone}>
             <div className={`rail-group tone-${g.tone}`}>
@@ -164,7 +183,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
                   free or held agent because the session does not exist yet. */}
               {g.heldFrom === null ? (
                 <span className="rail-group-n">
-                  {g.sessions.length + (g.tone === "working" ? pending.length : 0)}
+                  {g.sessions.length + (g.tone === "working" ? starters : 0)}
                 </span>
               ) : (
                 <span className="rail-group-n rail-group-split">
@@ -182,6 +201,7 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
             {/* Not interactive and not part of session navigation: arrow keys continue to
                 walk only real session ids while the placeholder occupies the right place. */}
             {g.tone === "working" && <PendingList tasks={pending} variant="rail" />}
+            {g.tone === "working" && <FailedLaunchList groups={failed} variant="rail" />}
             {/* Sibling members of one run sit under a header row of their own, inside the
                 tone section they belong to. The header is NOT a session row: rail navigation
                 walks session ids, so an arrow key steps over it (`layoutNav.ts`). */}
@@ -226,6 +246,8 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
       </nav>
 
       <section
+        ref={active && props.onBackToBoard ? detailTourRef : undefined}
+        aria-label={active && props.onBackToBoard ? "Session detail workspace" : undefined}
         className="console-detail"
         onFocusCapture={() => props.onConsoleZoneChange("detail")}
       >

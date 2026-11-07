@@ -323,6 +323,20 @@ test("keyboard selection, focus containment and manual dismissal preserve the in
   await expect(invoker).toBeFocused();
 });
 
+test("Cmd+Enter starts the selected tour from its preview", async ({ page, daemon }) => {
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expectContentClearsBorder(picker(page));
+  await picker(page).getByRole("radio", { name: "Author what runs" }).check();
+  await picker(page).getByRole("button", { name: "Dismiss" }).focus();
+  await page.keyboard.press("Meta+Enter");
+  await expect(picker(page)).toBeHidden();
+  await expect(page.locator(".driver-popover")).toContainText("The Library");
+  expect(await hash(page)).toBe("#/library");
+  expect(await (await fetch(`${daemon.baseURL}/api/tasks`)).json()).toEqual([]);
+  await screenshot(page, "cmd-enter-selected-tour-started");
+  await page.getByRole("button", { name: "Exit tour" }).click();
+});
+
 test("dirty draft Cancel and Leave keep the preview, requiring Start again", async ({ page, daemon }) => {
   await pin(daemon, { showToursOnStartup: false });
   await page.goto(`${daemon.baseURL}/#/library/personas/new`);

@@ -10,6 +10,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "./ensemble.ts";
 // `TaskPriority`, `TaskStatus` and `ThinkingLevel` from here.
 import type { MissionSchedule } from "./schedules.ts";
 import type { ResidentProfile, ResidentRunSummary } from "./residents.ts";
+import type { TaskLaunchFailure } from "./launch-failure.ts";
 import type { CheapAction, Divergence, SkipReason } from "./foreman.ts";
 import type { ForemanHealthStatus } from "./foreman-health.ts";
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
@@ -247,6 +248,15 @@ export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as cons
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
+ * A per-task advisor override for a Claude dispatch: the model aliases Claude Code's
+ * `advisorModel` setting accepts, plus `off`, which disables the advisor tool outright.
+ * Inherit is not a value here - it is `null` on the task, and the launch renders nothing.
+ * Fable is deliberately absent; see `docs/dispatch-and-backlog.md#advisor`.
+ */
+export const ADVISOR_CHOICES = ["opus", "sonnet", "off"] as const;
+export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
+
+/**
  * A harness's live permission posture.
  *
  * The first six values are Claude's exact hook/footer strings. The remaining four
@@ -305,6 +315,15 @@ export interface SessionMeta {
   source: MetaSource;
   /** epoch ms these values were observed (drives precedence + freshness TTL). */
   updatedAt: number;
+  /**
+   * Raw id of the advisor model named by the newest eligible main-chain assistant record in
+   * the transcript (its top-level `advisorModel`), e.g. `claude-opus-5-5`. Sidechain and
+   * API-error records are not eligible. Absent when that newest record is unstamped, even if
+   * an older stamped turn is still in the scanned tail, and absent when no eligible record is
+   * in the tail. Only the transcript reports it, so a statusLine reading keeps the last
+   * transcript value.
+   */
+  advisorModel?: string | null;
 }
 
 /** Which estimator produced the API-equivalent dollar figure. */
@@ -1981,7 +2000,7 @@ export type TaskPriority = "low" | "med" | "high" | "blocker";
  */
 export type TaskDependency =
   | (PlanIdentity & { type: "plan"; title: string; selectedAt: number | null; satisfiedAt: number | null; sessionId: null; episodeId: null; agentSessionId: null; branch: null; prUrl: null })
-  | {
+  | ({
       type: "task";
       taskId: string;
       title: string;
@@ -1992,8 +2011,8 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    }
-  | {
+    } & StackEdgeFields)
+  | ({
       type: "session";
       sessionId: string;
       title: string;
@@ -2003,7 +2022,30 @@ export type TaskDependency =
       prUrl: string | null;
       selectedAt: number | null;
       satisfiedAt: number | null;
-    };
+    } & StackEdgeFields);
+
+/**
+ * Stacked pull requests, on a task or session edge. Every field is optional on read, so an
+ * edge stored before stacking existed parses unchanged and means "inherit, unstamped".
+ *
+ * `mode` is the operator's override; absent inherits the Shipping default when it is read
+ * (`effectiveEdgeMode`). The four `stack*` fields are the daemon's READINESS STAMP: written
+ * only when the prerequisite's current episode has an open, non-draft pull request in its
+ * primary repository and its agent finished the episode, and cleared when that stops being
+ * true before the dependent starts. Only a recorded `stackReadyAt` timestamp releases an edge
+ * to start, and `satisfiedAt` keeps meaning "the prerequisite merged" - stacking never
+ * touches it.
+ */
+export interface StackEdgeFields {
+  mode?: "merge" | "stack";
+  stackReadyAt?: number | null;
+  /** The prerequisite pull request's head branch when the stamp was written. */
+  stackBaseBranch?: string | null;
+  /** Its head commit when the stamp was written. Dispatch reads the branch afresh. */
+  stackBaseSha?: string | null;
+  /** The prerequisite's primary-repository pull request the stamp was read from. */
+  stackPrUrl?: string | null;
+}
 
 /**
  * One SECONDARY repository attached to a multi-repo task.
@@ -2057,6 +2099,21 @@ export const TASK_WORKTREE_RETENTION_DAYS = 30;
 
 /** Bytes of automatic-cleanup explanation that may reach a browser. One short sentence. */
 export const TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT = 200;
+
+/**
+ * A resident task whose run Restart on new profile ended, while the task itself is still open.
+ *
+ * Restart leaves completing the replaced session to the operator, so the Console keeps offering
+ * Complete until the task is done - whatever happened to the replacement since. Derived on read
+ * from the resident runs (the ended run's restart pause and the replacement its request id
+ * names), never stored on the `tasks` row, and absent once the task is terminal.
+ */
+export interface TaskResidentRestart {
+  /** The replacement run's task; null when Restart ended this run but reserved no replacement. */
+  replacementTaskId: string | null;
+  /** The profile revision the replacement pinned; null with no replacement. */
+  revision: number | null;
+}
 
 /**
  * What automatic worktree cleanup has to say about this task, or null when it has nothing.
@@ -2168,6 +2225,12 @@ export interface Task {
    */
   effort: ThinkingLevel | null;
   /**
+   * Advisor override for this task, or null to inherit whatever the operator's Claude
+   * Code settings say. Unlike `model` and `effort` there is no Mission Control default
+   * to resolve: null renders nothing at launch, so the CLI's own settings decide.
+   */
+  advisorModel: AdvisorChoice | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until
@@ -2223,6 +2286,21 @@ export interface Task {
    * too: it costs one column write and keeps one code path.
    */
   baseSha: string | null;
+  /**
+   * Stacked pull requests: what this task's CURRENT work episode was cut on, written at every
+   * dispatch. A stacked dispatch records the prerequisite task, its pull request's head
+   * branch and URL, and the exact parent commit the primary repository was pinned to (the same
+   * value as `baseSha`). An unstacked dispatch writes null to all four, so a rescheduled task's
+   * new episode records its own parent or none. Primary repository only: secondary
+   * repositories are always cut from their default branch.
+   *
+   * Optional on read for rows and fixtures from before the columns existed; absent and null
+   * both mean "not stacked".
+   */
+  stackParentTaskId?: string | null;
+  stackBaseBranch?: string | null;
+  stackBaseSha?: string | null;
+  stackPrUrl?: string | null;
   /**
    * Secondary repositories attached to this task, in `position` order. Empty for the
    * single-repo tasks that are nearly all of them.
@@ -2306,6 +2384,18 @@ export interface Task {
   /** Failure reason, including one carried by a backlog task that is safe to retry. */
   error: string | null;
   /**
+   * Set by the dispatcher when this attempt failed before its session started, and cleared
+   * when the task is dispatched again. Absent or null on every other task, including one
+   * whose session ran and was later lost. See `@shared/launch-failure.ts`.
+   */
+  launchFailure?: TaskLaunchFailure | null;
+  /**
+   * Set on a Report bug session: the failed task it was started to report. The session's own
+   * identity, persisted on it, so a report session that itself fails to start never offers a
+   * Report bug of its own - whatever has happened to the failure that started it since.
+   */
+  launchReportFor?: string | null;
+  /**
    * Automatic worktree cleanup's own state for this task, or null when it has nothing to say.
    *
    * Derived from the retention ledger every time the task is loaded or refreshed, so it rides
@@ -2314,6 +2404,11 @@ export interface Task {
    * FAILED are the task's own record, and a maintenance note must never overwrite either.
    */
   automaticCleanup: TaskAutomaticCleanup | null;
+  /**
+   * Set while this resident task's run was ended by Restart on new profile and the task is still
+   * open. Derived like `automaticCleanup`; optional so tasks built in memory need not carry it.
+   */
+  residentRestart?: TaskResidentRestart | null;
   createdAt: number;
   updatedAt: number;
   dispatchedAt: number | null;
@@ -2550,6 +2645,13 @@ export interface PlanDecisionAnswer {
    * before it, and every answer a form without the note box produces, simply lack it.
    */
   note?: string | null;
+  /**
+   * The human moved this question to the conversation instead of answering it ("Chat about
+   * it"). It counts as answered for the form, with `selected` empty and `other` null, and
+   * the agent is told to discuss it rather than decide it. Absent on every other answer,
+   * so rows written before it read exactly as they did.
+   */
+  chat?: boolean;
 }
 
 export interface ReviewItem {
@@ -2787,8 +2889,70 @@ export interface InspectorPr {
    * `headRefName` rather than treating null as an empty title.
    */
   title: string | null;
+  /** The branch the pull request targets, as of the last poll. Null until polled. */
+  baseRefName?: string | null;
+  /**
+   * The base the review recorded in `headSha` was made against. A base that changed under
+   * an unchanged head is a different diff, so the review no longer counts. Null on rows
+   * reviewed before this was recorded, which count only while the base is the default
+   * branch.
+   */
+  reviewedBaseRef?: string | null;
+  /**
+   * The base branch's tip when that review was made, or the latest tip since then that GitHub
+   * confirmed gives the same merge base. A stacked parent rebased under an unchanged child
+   * head moves the merge base, so the diff changed and the review no longer counts. Null when
+   * not recorded.
+   */
+  reviewedBaseSha?: string | null;
+  /** The merge commit GitHub reported once this pull request merged. */
+  mergeCommitSha?: string | null;
+  /** Stack lineage. See `StackLineage`. Absent or null `stackParentPrUrl` = no lineage. */
+  stack?: StackLineage | null;
   adoptedAt: number;
   updatedAt: number;
+}
+
+/**
+ * The stack lineage of one pull request row, written once when the row is adopted for a
+ * stacked task's primary repository.
+ *
+ * It outlives the session, a restart and the Shipping setting: switching stacking off decides
+ * whether a dependent STARTS early, never what an already-stacked pull request is built on.
+ * The first child pull request of a work episode is seeded from the task's dispatch; every
+ * later one in the same task, repository and episode copies the most recently adopted
+ * previous row's lineage unchanged.
+ */
+export interface StackLineage {
+  /** The stacked task this pull request belongs to. */
+  taskId: string;
+  /** The task's work episode when the row was adopted. Inheritance never crosses it. */
+  episode: string | null;
+  /** When the row was adopted. "Most recently adopted" is the highest value. */
+  adoptedAt: number;
+  /** The CURRENT parent pull request. */
+  parentPrUrl: string;
+  /** The parent commit the child was cut at. Never changes. */
+  baseSha: string | null;
+  /** The child head the release check passed for. Null or another head means held. */
+  releasedHeadSha: string | null;
+  /**
+   * The parent state that release was granted under. A release under a MERGED parent is final;
+   * one under a CLOSED parent is re-evaluated, because the parent can be reopened and then
+   * merge, and a merge brings its own ancestry requirement. Null on a release recorded before
+   * this was, which is treated as closed.
+   */
+  releasedBasis?: "merged" | "closed" | null;
+  /** Each change of the current parent. Empty until a replacement parent takes over. */
+  history: StackLineageChange[];
+  /** One line about the last base correction, for the merge queue. */
+  note: string | null;
+}
+
+export interface StackLineageChange {
+  from: string;
+  to: string;
+  at: number;
 }
 
 /**
@@ -2978,8 +3142,22 @@ export interface LlmStatus {
 export interface SettingsStatus {
   /** The Inspector's two switches the dots care about; its allowlist is not a dot fact. */
   inspector: { enabled: boolean; mode: "dry-run" | "live" };
-  /** YOLO mode's master switch. Armed is an amber dot; the soak/method are not dot facts. */
-  shipping: { autoMerge: boolean };
+  /**
+   * YOLO mode's master switch (armed is an amber dot; the soak/method are not dot facts), and
+   * the EFFECTIVE Stacked pull requests default - the stored choice or the shipped default -
+   * which a dependency chip shows as the mode an edge inherits until the operator sets one.
+   * Optional so a snapshot from a daemon that predates stacking still parses; a reader then
+   * falls back to `STACKING_SHIPPED_DEFAULT`.
+   */
+  shipping: {
+    autoMerge: boolean;
+    stacking?: "merge" | "stack";
+    /**
+     * The Stacked pull requests depth cap, so a blocked card can say a stack is too deep
+     * rather than promise one. Optional for the same reason as `stacking`.
+     */
+    maxStackDepth?: number;
+  };
   /** How many configured task sources failed their last sweep. Nonzero is a red dot. */
   taskSources: { failing: number };
   /**
@@ -3442,6 +3620,26 @@ export interface TranscriptMessage {
    * on it.
    */
   presentation?: TranscriptPresentation;
+  /**
+   * One call to Claude's server-side advisor, when this assistant turn carries its result.
+   *
+   * Read from the `advisor_tool_result` content block Claude Code writes after a
+   * `server_tool_use` block named `advisor`. The call marker itself carries nothing to draw,
+   * so only the result produces this field. `model` is the record's top-level
+   * `advisorModel` (a full model id such as `claude-opus-5-5`), or null when the record
+   * does not name one. `text` is present only for an `advisor_result` that carries text;
+   * a redacted result is encrypted and has none. `errorCode` is the API's `error_code`.
+   * A result shape Claude Code does not recognise is ignored, as the CLI ignores it.
+   */
+  advisor?: TranscriptAdvisor;
+}
+
+/** What an advisor call produced, as `TranscriptMessage.advisor` reports it. */
+export interface TranscriptAdvisor {
+  model: string | null;
+  outcome: "advised" | "redacted" | "declined" | "error";
+  text?: string;
+  errorCode?: string;
 }
 
 /**

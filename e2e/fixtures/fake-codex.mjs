@@ -164,6 +164,10 @@ function recordResumePhase(phase) {
  * proved the list came from here rather than from `MODEL_CATALOG`.
  */
 const CATALOG_ROWS = [
+  // Opt-in discovery row: profile tests must see an unpriced normal choice before selection.
+  ...(process.env.MC_E2E_CODEX_UNPRICED_CATALOG === "1"
+    ? [["gpt-e2e-unpriced-live", "Unpriced live model", "Discovered test model.", false]]
+    : []),
   ["gpt-6-astra", "GPT-6-Astra", "Our most capable model for complex, demanding work.", false],
   ["gpt-6-sol", "GPT-6-Sol", "Strong model for complex coding and agentic workflows.", false],
   ["gpt-6-luna", "GPT-6-Luna", "Efficient model for focused tasks.", false],
@@ -789,7 +793,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/start":
       respond(id, {
         thread: thread({ type: "idle" }),
-        model: MODEL,
+        // The model the thread was started on, as the real app-server answers: the requested
+        // one, or its own default. Answering the default regardless contradicted the rollout's
+        // `turn_context`, and whichever of the two reached the session last decided which
+        // model it showed - a race that read as the daemon dropping a dispatched model.
+        model: params?.model ?? MODEL,
         modelProvider: "openai",
         serviceTier: null,
         cwd: process.cwd(),
@@ -805,7 +813,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const finishResume = () => {
         respond(id, {
           thread: thread({ type: "idle" }),
-          model: MODEL,
+          model: params?.model ?? MODEL,
           modelProvider: "openai",
           serviceTier: null,
           cwd: process.cwd(),

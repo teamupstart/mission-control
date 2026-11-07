@@ -3,6 +3,7 @@ import { countWritebacks } from "./db.ts";
 import { getPipelinesConfig } from "./pipelines/config.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { effectiveStacking } from "@shared/stacking.ts";
 import { getTaskSourcesConfig } from "./task-sources/config.ts";
 import { taskSourceStatuses } from "./task-sources/sweeper.ts";
 import {
@@ -57,7 +58,7 @@ export function settingsStatus(): SettingsStatus {
   const pipelines = getPipelinesConfig();
   return {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },
-    shipping: { autoMerge: shipping.autoMerge },
+    shipping: { autoMerge: shipping.autoMerge, stacking: effectiveStacking(shipping), maxStackDepth: shipping.maxStackDepth },
     taskSources: { failing },
     // Keep the append-only `present` compatibility fact for older dashboards. The current
     // dashboard always draws Conductor and uses `observing` alone for the Runs and Dispatch

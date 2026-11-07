@@ -92,7 +92,7 @@ export function TourPicker({ entries, enabled, hydrated, saving, saveError, onSa
             <h4>What you’ll learn</h4>
             <ul>{selected.preview.outcomes.map((outcome) => <li key={outcome}>{outcome}</li>)}</ul>
             <Tooltip label={`Start ${selected.title} from the beginning`}>
-              <button className="btn btn-primary" onClick={() => onStart(selected.id)}>Start this tour</button>
+              <button data-dialog-default className="btn btn-primary" onClick={() => onStart(selected.id)}>Start this tour</button>
             </Tooltip>
           </section>
         </> : <p className="tour-picker-empty">No tours are available.</p>}

@@ -36,8 +36,22 @@ function report(root: string, content = html): void {
   mkdirSync(join(root, "docs/reports/result"), { recursive: true });
   writeFileSync(join(root, reportPath), content);
 }
-function evidence(capture: Awaited<ReturnType<typeof captureWorkflowPublication>>) {
-  return { ...capture, workingTreeDirty: true } as WorkflowContextSnapshot["evidence"];
+function evidence(capture: Awaited<ReturnType<typeof captureWorkflowPublication>>): WorkflowContextSnapshot["evidence"] {
+  return {
+    ...capture,
+    headSha: capture.headOid,
+    workingTreeDirty: true,
+    diffFingerprint: "fixture",
+    diff: "",
+    diffTruncated: false,
+    workingTreeStatus: [],
+    workingTreeStatusTruncated: false,
+    transcript: [],
+    transcriptAnchor: null,
+    transcriptTruncated: false,
+    standards: [],
+    standardsTruncated: false,
+  };
 }
 
 test("retained local report and text evidence do not change required publication", async () => {

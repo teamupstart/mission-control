@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch } from "@shared/protocol.ts";
 import { api, fetchUiConfig } from "./api.ts";
+import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
 /**
@@ -23,7 +24,26 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * bad trade. Reconciling tabs live is a `ui_config` ServerEvent, noted as follow-up.
  */
 
-let current: UiConfig = readCache();
+/**
+ * The skin the daemon served this document with (`src/server/dashboard-document.ts`), or null
+ * where nothing served one - the Vite dev server, a test. It is the daemon's stored answer at
+ * load time, so it beats a cache that a new profile does not have or another browser made stale:
+ * without it `lib/skin.ts` would apply the cache's Default over the document's Daylight before
+ * the fetch below put it back, which is a dark frame.
+ */
+function servedSkin(): UiConfig["skin"] | null {
+  if (typeof document === "undefined") return null;
+  const value = document.querySelector?.('meta[name="mission-skin"]')?.getAttribute("content");
+  return isSkinId(value) ? value : null;
+}
+
+function firstPaintConfig(): UiConfig {
+  const cached = readCache();
+  const served = servedSkin();
+  return served === null ? cached : { ...cached, skin: served };
+}
+
+let current: UiConfig = firstPaintConfig();
 const listeners = new Set<() => void>();
 let hydrated = false;
 let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;

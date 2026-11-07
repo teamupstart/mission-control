@@ -62,7 +62,7 @@ test("Library typed tuning saves, reloads and removes without changing YAML enab
  await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("10");
  await expect(dashboard.getByLabel("If the command is unavailable")).toBeDisabled();
  await expect(dashboard.getByLabel("When the run budget is exhausted")).toBeDisabled();
- await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("No Library override is required");
+ await expect(dashboard.getByRole("region",{name:"CodeRabbit tuning"})).toContainText("unless the YAML turns it off");
  await expect(dashboard.getByRole("main")).toContainText("completed review. Granting");
  await dashboard.getByLabel("Repository root for CodeRabbit tuning").fill(daemon.repo);await dashboard.keyboard.press("Escape");
  await dashboard.getByRole("button",{name:"Add repository tuning"}).click();
@@ -180,10 +180,41 @@ test("a passing gate without an explicit coverage count remains incomplete", asy
  expect(attempt.verdict).toBeNull();
  expect(attempt.output).toMatchObject({ review: { status: "incomplete" } });
  await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
- await expect(dashboard.getByRole("main")).toContainText("incomplete");
- await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toBeVisible();
- await dashboard.getByRole("link", { name: "Settings > Setup" }).scrollIntoViewIfNeeded();
+ await expect(dashboard.getByRole("main")).toContainText("CodeRabbit completion reported no review coverage");
+ // The CLI is installed and signed in, so Setup would show nothing wrong. Point at the output.
+ await expect(dashboard.getByRole("main")).toContainText("Inspect this attempt's retained CodeRabbit output");
+ await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toHaveCount(0);
+ await dashboard.getByText(/Inspect this attempt's retained CodeRabbit output/).first().scrollIntoViewIfNeeded();
  await shot(dashboard, "missing-coverage-incomplete-r2");
+});
+
+test("a CLI 0.9.2 completion that lists reviewed files passes when it covers the pinned comparison", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ reviewedFiles: "all" }));
+ const r = await start(dashboard, daemon);
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")?.output,
+  { timeout: 60_000 }).toMatchObject({ status: "passed", review: { status: "complete" } });
+ expect((await detail(daemon, r.id)).run.status).toBe("completed");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await expect(dashboard.getByRole("main")).toContainText("Complete CodeRabbit review: 0 findings");
+ await expect(dashboard.getByRole("main")).not.toContainText("Invalid CodeRabbit completion/gate");
+ await shot(dashboard, "reviewed-files-complete");
+});
+
+test("a CLI 0.9.2 completion that skipped a changed file blocks with its coverage gap, not a Setup link", async ({ dashboard, daemon }) => {
+ yaml(daemon, "reviews: {auto_review: {enabled: true}}");
+ writeFileSync(join(daemon.home, "coderabbit-script.json"), JSON.stringify({ reviewedFiles: "missing-one" }));
+ const r = await start(dashboard, daemon);
+ await expect.poll(async () => (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")?.state,
+  { timeout: 60_000 }).toBe("error");
+ const attempt = (await detail(daemon, r.id)).attempts.find(a => a.nodeId === "cr")!;
+ expect(attempt.verdict).toBeNull();
+ expect(attempt.output).toMatchObject({ review: { status: "incomplete" } });
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);
+ await expect(dashboard.getByRole("main")).toContainText(/CodeRabbit review coverage disagrees with the pinned comparison: 1 of \d+ changed files not reviewed/);
+ await expect(dashboard.getByRole("link", { name: "Settings > Setup" })).toHaveCount(0);
+ await dashboard.getByText(/Inspect this attempt's retained CodeRabbit output/).first().scrollIntoViewIfNeeded();
+ await shot(dashboard, "reviewed-files-gap");
 });
 
 
@@ -196,7 +227,7 @@ test("the new No-Mistakes stage uses YAML defaults without tuning",async({dashbo
  await dashboard.getByRole("tab",{name:/^Evidence/}).click();
  await dashboard.getByRole("button",{name:"Continue to review"}).click();
  await expect.poll(async()=>{const d=await detail(daemon,r.id);return d.attempts.find(a=>a.nodeId==="nmr-check-coderabbit")?.output;},{timeout:60000}).toMatchObject({status:"skipped",warning:expect.any(String)});
- await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await dashboard.getByRole("tab",{name:/^Review worklist/}).click();await dashboard.getByRole("group",{name:"Worklist segment"}).getByRole("button",{name:/^Passed/}).click();await dashboard.getByRole("button",{name:/^Skipped Command · coderabbit/}).click();await expect(dashboard.getByRole("main")).toContainText("Root .coderabbit.yaml is missing");await dashboard.locator(".wf-run-summary").filter({hasText:"Root .coderabbit.yaml is missing"}).scrollIntoViewIfNeeded();await shot(dashboard,"no-mistakes-yaml-gate");
+ await dashboard.goto(`${daemon.baseURL}/#/runs/${r.id}`);await dashboard.getByRole("tab",{name:/^Review worklist/}).click();await dashboard.getByRole("group",{name:"Worklist segment"}).getByRole("button",{name:/^Passed/}).click();await dashboard.getByRole("button",{name:/^Skipped Command · coderabbit/}).click();await expect(dashboard.getByRole("main")).toContainText("Neither root .coderabbit.yaml nor .coderabbit.config.ts exists");await dashboard.locator(".wf-run-summary").filter({hasText:"Neither root .coderabbit.yaml nor .coderabbit.config.ts exists"}).scrollIntoViewIfNeeded();await shot(dashboard,"no-mistakes-yaml-gate");
 });
 
 test("an existing binding stays on No-Mistakes version 21 and never gains CodeRabbit implicitly",async({dashboard,daemon})=>{

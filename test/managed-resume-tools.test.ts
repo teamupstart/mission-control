@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { managedResumeFixture } from "./helpers/managed-resume-fixture.ts";
 import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
-import { mkSession, mkTask } from "./helpers/session-fixture.ts";
+import { meta, mkSession, mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "managed-resume-"));
 process.env.MISSION_HOME = home;
@@ -17,8 +17,10 @@ process.env.MISSION_CLAUDE_BIN = process.execPath;
 process.env.MISSION_CODEX_BIN = process.execPath;
 process.env.MISSION_PI_BIN = process.execPath;
 await managedResumeFixture(home);
-const { prepareTerminalResume, managedResumeRoot } = await import("../src/server/harness/resume.ts");
+const { prepareTerminalResume, managedResumeRoot, RESUME_GUARD_CHECK_TIMEOUT_MS } = await import("../src/server/harness/resume.ts");
 const { resumeContext } = await import("../src/server/resume-context.ts");
+const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
+const { openDb } = await import("../src/server/db.ts");
 const { MISSION_MCP_TOOLS, verifyMissionMcpTools } = await import("../src/server/mission-mcp.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { claimResumeLease, completeResumeLease, createResumeLease, beginResumeLaunch, readResumeLease,
@@ -160,6 +162,63 @@ test("requirements union live Persona and ensemble obligations with task kind an
   assert.ok(resumeContext(source, mkTask({ kind: "scout" }), false, false).requiredTools.includes("submit_scout_artifacts"));
 });
 
+test("a terminal resume renders the task's advisor pin exactly as its first launch did", async () => {
+  // The owning task's pin reaches the resume context; a pin the harness does not offer does not.
+  const source = session("advisor-context");
+  assert.equal(resumeContext(source, mkTask({ advisorModel: "opus" }), false, false).advisorModel, "opus");
+  assert.equal(resumeContext(source, mkTask({ advisorModel: null }), false, false).advisorModel, null);
+  assert.equal(resumeContext(source, mkTask({ agent: "codex", advisorModel: "opus" }), false, false).advisorModel, null);
+  assert.equal(resumeContext(source, null, false, false).advisorModel, null);
+
+  const read = async (id: string, advisorModel: "opus" | "off" | null) => {
+    const prepared = await prepareTerminalResume(session(id), { ...context, advisorModel });
+    try {
+      const launch = JSON.parse(readFileSync(join(prepared.stateHome, "launch.json"), "utf8")) as {
+        argv: string[]; env: Record<string, string>;
+      };
+      assert.deepEqual(launch.argv, prepared.argv);
+      const at = launch.argv.indexOf("--settings");
+      return { settings: at === -1 ? null : JSON.parse(launch.argv[at + 1]!), off: launch.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL };
+    } finally { prepared.dispose(); }
+  };
+  assert.deepEqual(await read("advisor-resume-opus", "opus"), { settings: { advisorModel: "opus" }, off: undefined });
+  assert.deepEqual(await read("advisor-resume-off", "off"), { settings: null, off: "1" });
+  assert.deepEqual(await read("advisor-resume-inherit", null), { settings: null, off: undefined });
+});
+
+test("a terminal resume chooses the advisor for the model the conversation runs on", async () => {
+  // Settings -> Harnesses chooses the advisor per model, so resume asks the same question the
+  // dispatch did: the session's reported model first, and the task's resolved launch model
+  // when the session has not reported one.
+  setHarnessesConfig({
+    defaultModel: { claude: "claude-sonnet-5" },
+    advisor: { claude: { default: "opus", overrides: { "claude-opus-4-8": "off", "claude-sonnet-5": "sonnet" } } },
+  });
+  try {
+    const task = mkTask({ agent: "claude", model: null, advisorModel: null });
+    // Reported as a long-context id; the override is keyed by the bare one.
+    const reported = mkSession({ ...session("advisor-model-reported"), meta: meta({ modelId: "claude-opus-4-8[1m]" }) });
+    const unreported = mkSession({ ...session("advisor-model-unreported"), meta: null });
+    assert.equal(resumeContext(reported, task, false, false).advisorModel, "off");
+    // No reported model: the harness default (Sonnet 5) supplies it, and its override applies.
+    assert.equal(resumeContext(unreported, task, false, false).advisorModel, "sonnet");
+    // A task pin supplies it instead, and a model with no override gets the default.
+    assert.equal(resumeContext(unreported, mkTask({ agent: "claude", model: "claude-haiku-4-5", advisorModel: null }), false, false).advisorModel, "opus");
+
+    // And the resolved choice is what the reopened CLI is handed.
+    const prepared = await prepareTerminalResume(reported, resumeContext(reported, task, false, false));
+    try {
+      const launch = JSON.parse(readFileSync(join(prepared.stateHome, "launch.json"), "utf8")) as {
+        argv: string[]; env: Record<string, string>;
+      };
+      assert.equal(launch.argv.includes("--settings"), false);
+      assert.equal(launch.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL, "1");
+    } finally { prepared.dispose(); }
+  } finally {
+    openDb().exec("DELETE FROM app_config");
+  }
+});
+
 test("missing tools and renderer exceptions revoke preparation without retaining secrets", async (t) => {
   const mcp = process.env.MISSION_MCP_SERVER;
   process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "stale.mjs"), ["request_input"]);
@@ -176,6 +235,26 @@ test("an unusable guard fails before provisioning any lease", async () => {
   writeFileSync(process.env.MISSION_RESUME_GUARD, "process.exit(0);");
   try { await assert.rejects(prepareTerminalResume(session("bad-guard"), context), /guard is unusable/); }
   finally { process.env.MISSION_RESUME_GUARD = prior; }
+});
+
+test("the guard check admits a sound guard slower than 5s and still refuses one slower than its bound", async () => {
+  // At the old 5s bound a loaded Mac's Node startup ran past it and a sound guard was reported as
+  // unusable. A guard that only answers after each delay shows which side of the bound it is on.
+  const prior = process.env.MISSION_RESUME_GUARD;
+  const slowGuard = (name: string, delayMs: number) => {
+    const path = join(home, `${name}.mjs`);
+    writeFileSync(path, `await new Promise((resolve) => setTimeout(resolve, ${delayMs}));\nif (process.argv[2] === "--check") process.stdout.write("mission-resume-guard-v1\\n");\n`);
+    return path;
+  };
+  try {
+    process.env.MISSION_RESUME_GUARD = slowGuard("slow-guard", 5_500);
+    const prepared = await prepareTerminalResume(session("slow-guard"), context);
+    prepared.dispose();
+    process.env.MISSION_RESUME_GUARD = slowGuard("hung-guard", RESUME_GUARD_CHECK_TIMEOUT_MS + 1_500);
+    const start = Date.now();
+    await assert.rejects(prepareTerminalResume(session("hung-guard"), context), /guard is unusable/);
+    assert.ok(Date.now() - start < RESUME_GUARD_CHECK_TIMEOUT_MS + 1_500, "refused at the bound, not after the guard answered");
+  } finally { process.env.MISSION_RESUME_GUARD = prior; }
 });
 
 test("selected 504 with no wrapper expires across restart and fences every late claim", async () => {
@@ -362,15 +441,18 @@ console.log(process.argv.includes('-p')?date:'1 0 '+date+'\\n'+process.ppid+' 1 
 });
 
 for (const { doubleFork, signal } of [{ doubleFork: false, signal: null }, { doubleFork: true, signal: null },
-  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 20_000 }, async () => {
+  { doubleFork: false, signal: "SIGHUP" }] as const) test(`real wrapper retains credentials for a ${doubleFork ? "double-forked" : "detached"} descendant${signal ? " after " + signal : ""}`, { timeout: 30_000 }, async () => {
   const nativeId = `detached-${doubleFork}-${signal}`;
   writeFileSync(join(home, "token"), "fixture-only-loopback-credential", { mode: 0o600 });
   const p = await prepareTerminalResume(session(nativeId), context);
   const marker = join(home, `${nativeId}.json`);
   const check = `${marker}.check`, result = `${marker}.result`, stop = `${marker}.stop`;
   const descendantScript = join(home, `descendant-${doubleFork}.mjs`);
+  // Keep the signal case slower than the old three-second startup assumption. Signal
+  // delivery must wait for readiness, including cold inventory and process startup.
   writeFileSync(descendantScript, `import {writeFileSync,renameSync,existsSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
+${signal ? "await new Promise(resolve=>setTimeout(resolve,4000));" : ""}
 writeFileSync(${JSON.stringify(marker + ".tmp")},JSON.stringify({pid:process.pid,home:process.env.MISSION_HOME}));
 renameSync(${JSON.stringify(marker + ".tmp")},${JSON.stringify(marker)});
 const t=setInterval(()=>{
@@ -403,7 +485,8 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
   const exited = new Promise((resolve) => guard.once("exit", resolve));
   try {
     if (signal) {
-      for (let i = 0; i < 100 && !existsSync(marker) && guard.exitCode === null; i++) await delay(30);
+      const readyDeadline = Date.now() + 15_000;
+      while (Date.now() < readyDeadline && !existsSync(marker) && guard.exitCode === null) await delay(30);
       assert.ok(existsSync(marker), stderr);
       process.kill(-guard.pid!, signal);
     }
@@ -424,6 +507,10 @@ ${signal ? "await new Promise(()=>setInterval(()=>{},1000));" : ""}`);
     writeFileSync(stop, "stop");
     if (guard.exitCode === null) guard.kill("SIGTERM");
     await exited;
+    // A signalled wrapper can exit before its agent. Reap this fixture's remaining
+    // foreground group so inherited stdout/stderr cannot keep the test worker alive.
+    try { process.kill(-guard.pid!, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
     if (existsSync(marker)) {
       const { pid } = JSON.parse(readFileSync(marker, "utf8"));
       for (let i = 0; i < 100; i++) {

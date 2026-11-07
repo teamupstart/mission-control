@@ -48,7 +48,9 @@ Respond with ONLY a single JSON object - no prose, no markdown fences - of this 
 RULES:
 - "initial": this is the first substantive human instruction. Establish the objective from it.
 - "steer": the new instruction changes method, priority, sequence, or an intermediate step. Keep the
-  objective unchanged. Completing the focus alone does NOT complete the objective.
+  objective unchanged. Completing the focus alone does NOT complete the objective. When the objective
+  or the conversation explicitly offers choices (options, mockups, "A or B", "pick one"), a reply that
+  names one of them is steering, not an amendment.
 - "amend": the new instruction materially changes acceptance criteria while preserving the same main
   outcome. Begin objective with the current durable objective exactly, then append the amendment without
   dropping, paraphrasing, or negating existing requirements. Runtime validation rejects an amendment that

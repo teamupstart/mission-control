@@ -361,6 +361,21 @@ managed updates.
 
 ## Updates from the installed app
 
+Accepting an update requests orderly shutdown of the owned Foreman and daemon before the
+shell exits. Running workflow checks are interrupted with a shutdown reason; their process
+groups are reaped and their leases settle through the usual workflow cleanup. Checks still
+waiting to start cannot release their command after shutdown begins. A check's private owner
+pipe also tears down its group if the daemon dies before orderly cleanup can run; durable
+startup recovery reconciles the remaining lease record.
+
+The detached helper displays a macOS progress dialog while waiting for the old app and its
+background processes. If a bundle process remains, the dialog names its PID, executable,
+parent and owning work. **Hide** keeps progress hidden across message changes without cancelling the update. Once a blocker exits, transaction progress replaces its stale wait message. Reopening an in-place
+update while its helper is alive leaves the update alone and exits promptly; the helper opens
+the completed app. A dead helper still follows interrupted-update recovery. Rollback outcomes
+retain the original blocking reason, alongside confirmation that the previous app and receipt
+were preserved.
+
 A managed app checks the canonical repository's stable GitHub Releases through the already
 authenticated `gh` CLI. When a newer version is available, the dashboard shows a full-width banner
 with the version, a shortened plain-text release summary, and **Update Now** and **Later** controls.
@@ -510,10 +525,61 @@ The app marks itself as quitting before the quit request, so the hide-on-close g
 normally. The helper checks competing launchers and waits for all bundle executables to exit
 before replacement, using the [launch safeguards below](#update-relaunch-safeguards).
 
+Every quit, including the one an update requests, holds the app open while the daemon and
+Foreman drain, bounded by the shared 30-second quit deadline. The app sends a private shutdown
+message first. A failed send or utility timeout requests forced termination and waits for exit;
+if the overall deadline is reached, Electron reaps the remaining utilities. Workflow checks
+start draining before slower session shutdown. The detached helper then handles any verified
+survivors before replacing the bundle.
+
+The daemon's last shutdown step closes its HTTP server. Requests that never end on their own -
+the dashboard's `/events` stream, transcript streams, and MCP review long-polls - are ended at
+once: a stream finishes its body, and a long-poll answers as its timeout would, so the agent
+polls the next daemon. Any other request gets a five-second grace, and only one still open after
+that is cut. Without this, an open dashboard held every quit until the utility deadline
+force-killed the daemon. `daemon.log` records `shutdown finished in <ms>` after the database
+close and lock release, on every orderly exit.
+
+If a bundle wait times out, its diagnostic names the verified owner or falls back to a bounded
+summary of the executable and check-supervisor marker. The helper never prints command lines
+or uses that fallback description as authority to signal a process. Rollback outcomes use the
+shared diagnostic redaction policy.
+
+Other migration kinds retain the startup notification and bounded fallback window when their
+helper is alive. In-place updates use the existing helper's progress dialog, as described below,
+so the transient app launch does not hold the old bundle open while displaying a notice.
+
 The helper must acquire the existing receipt/update lock and acknowledge its nonce and process
 identity before the app requests quit. Parent and target waits are bounded and use PID plus
 start/command identity. GUI launches clear `ELECTRON_RUN_AS_NODE` and preserve the exact state
-home. No helper opens SQLite or starts a second daemon.
+home. Every helper snapshot captures verified process ownership before quit, including legacy
+updates without a migration handoff. The legacy helper loads the runtime ownership record only
+after checking its parent and attempt directory, before acknowledging startup or waiting.
+The helper reads existing check leases through a read-only SQLite connection to identify
+blockers by check, attempt, run and session. It never runs database migrations, writes workflow
+state, releases leases, or starts a second daemon. The accepted desktop also supplies its
+descendant identities and Electron service names, revalidating the desktop identity after the
+process-table read. SDK recovery lifetimes retain a start-time and command digest captured by
+the owning supervisor, identifying session processes even after reparenting and including the
+session and task in diagnostics. Older records lacking that digest do not authorize signals.
+Orphaned native Electron services
+are recognized only for the same user's exact bundle helper executable, native service type,
+and app profile; merely running an arbitrary command from the bundle is insufficient.
+After a short drain, the helper terminates
+verified remaining owners, escalating stubborn processes without asking the user to kill them.
+Unverified processes are never signalled. If a process still prevents replacement, its ownership
+diagnostic is preserved in both the outcome and log. A failure before replacement reopens the
+untouched previous app without repeating the failed process wait during rollback.
+An incomplete process-table snapshot fails inspection; parsed rows alone cannot prove that the
+old bundle is clear when another process row is malformed.
+
+The shared bundle wait also opens blocker-specific progress for legacy updates without a
+migration handoff, and closes that wait's dialog on completion or failure. Transaction updates
+keep their existing progress dialog through the installation.
+
+Opening the app during an in-place update requests progress from the same helper, including
+after Hide, then promptly exits the transient launch. This request does not change the journal,
+start another helper, or reset a deadline. The helper opens the completed app automatically.
 
 Targets advertising `missionInstallTransaction` protocol 1 use the existing migration journal
 and startup gate for in-place installation. Journal protocol 2 adds this mode; protocol-1
@@ -556,8 +622,14 @@ backup is kept instead. A subsequent legacy attempt clears the previous retained
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
 update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
-hides that result until update state changes. Success and failure outcomes are retired from disk
-only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
+acknowledges that result in the updater. Dismissing either the outcome dialog or its dashboard
+banner retires the result from both disk and live state, so background checks, dashboard reloads,
+and app restarts do not show it again. If the saved marker has been replaced or cannot be
+cleared, dismissal leaves the notice visible and preserves the replacement. Comparison and
+removal hold the existing helper/receipt lock, excluding helper writes and in-process recovery
+for the entire retirement operation; a busy lock leaves the notice available to retry. A later update
+attempt can still report its own result.
+Success and failure outcomes are retired only after an actual operator answer. Renderer delivery is logged but never clears an outcome:
 if the renderer hangs afterward, the notice returns on relaunch. Outcomes remain on disk across
 renderer loss or a missing dashboard host. A newly launched
 app waits asynchronously for its live helper to finish before interpreting the pending outcome,
@@ -593,8 +665,18 @@ The app checks launch ownership before handing off an update. The detached helpe
 under the existing helper lock before waiting for shutdown and immediately before installing.
 `scripts/mac-app-lifecycle.mjs` owns the same read-only macOS inspection for both processes:
 
-- Enumerate `launchctl list`, then inspect each job in `gui/<uid>` with `launchctl print`.
-  Inspect its program and argument block, including shell wrappers that execute this bundle's
+- Read every job in `gui/<uid>` from one `launchctl dumpstate`, which prints each job exactly as
+  `launchctl print` does and answers in well under a second where printing hundreds of jobs one
+  at a time took tens of seconds on a loaded Mac. The dump is used only when all of it is
+  accounted for: every unindented line is a launchd section header or a closing brace, no
+  header repeats, every service appears in the unbroken run directly after its own domain, every
+  domain that states a service count holds exactly that many, and the GUI domain's jobs are
+  exactly the labels it lists. A header-shaped line printed by a job argument's embedded newline
+  therefore interrupts the run and is refused, except after the run's last job, where a forged
+  domain header reads like the next domain. That one job is always read with its own
+  `launchctl print` instead of from the dump. Otherwise inspection falls back to enumerating
+  `launchctl list` and running `launchctl print` for each job.
+  Inspect each job's program and argument block, including shell wrappers that execute this bundle's
   `Contents/MacOS` binary. Resolve symlinked executable paths, including quoted or escaped paths
   inside shell commands, even for dormant jobs with no PID. Inspection never executes shell code.
   Executable positions are inspected, so an app path passed as ordinary data to a fixed executable
@@ -627,6 +709,21 @@ under the existing helper lock before waiting for shutdown and immediately befor
   Foreground application. A label that merely resembles an application job is not sufficient.
 - Compare main executables with `lsappinfo list`. Electron helpers need not have their own
   Foreground registration. Any unregistered main instance blocks the update.
+- A main executable running as plain Node is not an instance. The MCP server and hooks that
+  Mission Control registers in `~/.claude.json` and `~/.claude/settings.json` run
+  `Contents/MacOS/Mission Control` with `ELECTRON_RUN_AS_NODE=1`, so a `claude` or `codex`
+  started in a terminal holds such a process. Only unregistered main processes are examined. Each
+  one's argv and environment are read from the kernel's own record (`KERN_PROCARGS2`) by the
+  `processArguments` export of the state-lock addon every app already ships. Per process that
+  costs two in-process `sysctl` calls (`KERN_ARGMAX` to size the buffer, then `KERN_PROCARGS2`),
+  plus a `kill(pid, 0)` only when the second call fails, and no child process. `ps -E` reads the
+  same record but joins its entries with unescaped spaces, so there a value such as
+  `NOTE=x ELECTRON_RUN_AS_NODE=1` is indistinguishable from the flag. The addon keeps every entry separate. A process is in Node
+  mode only when its first `ELECTRON_RUN_AS_NODE` entry is non-empty, matching how Electron itself
+  reads it with `getenv`. An argument naming the flag or a satellite script is not evidence, and
+  neither is another variable whose value contains it. A process LaunchServices lists in any role
+  stays an instance. A process whose record cannot be read is not treated as Node. The
+  environment is tested for that flag and discarded, never logged.
 
 A conflict names the job and the exact, quoted `launchctl bootout 'gui/<uid>/<label>'` command.
 Mission Control never removes the job itself. Inspection errors fail closed. A packaged start
@@ -636,7 +733,25 @@ This is diagnostic only: detecting an unmanaged start does not kill it. Parent P
 evidence, since ordinary LaunchServices launches also have launchd as their parent.
 
 After the parent exits, the helper waits up to two minutes for **all** processes whose executable
-is beneath the bundle, including orphan helpers and utility processes. After replacement it runs
+is beneath the bundle, including orphan helpers and utility processes. There is one exception: a
+Node-mode process that Mission Control does not own and whose first argument is one of this
+bundle's operator satellites. These are the scripts Mission Control registers in an operator's own
+agent configuration, listed once as `OPERATOR_SATELLITES` in `src/shared/owned-runtime.mjs`:
+`dist/mcp/server.mjs`, `dist/satellites/hook.mjs` and `dist/satellites/harness-statusline.mjs`.
+The integration installer resolves its paths from that list, and the daemon's MCP server path is
+tested against it. Such an MCP server
+can live as long as the operator's terminal session, and the updater has no authority to signal
+it. It also does not need to stop. Every swap renames bundles and never writes into one, so the
+process keeps the files it has open. Each satellite is a single bundle that imports only Node
+builtins, loads nothing beside itself and never opens the state database.
+`test/operator-satellites.test.ts` rebuilds each one from its `package.json` command and checks
+that. It also fails when the build emits a satellite the list neither includes nor names as
+daemon-launched, such as `dist/satellites/codex-hook.mjs`, which only dispatched sessions run. An
+operator satellite's next launch runs the new build. Any other
+Node-mode script, including an orphaned workflow check, is still waited on. A timeout names it as
+a script on Mission Control's bundled Node and names the program that started it, never as the
+app itself. Retry cleanup likewise neither refuses over nor signals a Node-mode main process.
+After replacement it runs
 `lsregister -f` using macOS's LaunchServices utility and waits up to 25 seconds for old bundle
 instances to disappear from `lsappinfo list`. It then rechecks launch conflicts and calls `open`
 on the exact bundle. It never directly executes the application binary or requests a new instance
@@ -754,10 +869,12 @@ published assets. The desktop consumer bounds release and asset pagination, excl
 prereleases from stable selection, and checks the accepted tag against the manifest commit.
 
 Tags created by the release workflow are pushed with the short-lived App installation token, so
-they start a new `ci.yml` run. Its `package` job builds the macOS dmg, checks that the tag and
-package versions agree, and uploads the dmg as a 90-day Actions artifact. This is a separate
-release build check; the dmg is not attached to the GitHub Release. The package job can also be run
-manually through `workflow_dispatch`.
+they start a new `ci.yml` run. That run executes the same Linux checks as a `main` push, plus a
+`gates` step that fails when the tag and package versions disagree. It builds no dmg. `ci.yml`'s
+`package` job builds an unsigned developer dmg and uploads it as an Actions artifact, but only
+when run manually through `workflow_dispatch`, on the same pinned macOS image as the signing
+producer. It never runs on a push: a job that ran only for tags once kept two stable releases
+from being signed (see [release verification](release-verification.md#tag-ci-cancelled-by-a-retired-runner-2026-11-06-utc)).
 
 The separate [signed distribution producer](release-verification.md) consumes successful
 canonical push CI, publishes a signed/notarized ZIP and DMG under an immutable identity,

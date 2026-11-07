@@ -82,6 +82,8 @@ export type CheckResult =
 
 /** What the execution runtime is asked to do, once the ladder has decided it should run. */
 export interface CheckExecutionRequest {
+  /** The owning workflow engine is draining for shutdown. */
+  signal?: AbortSignal;
   slot: WorkflowCheckSlot;
   /** argv, never a shell string. Nothing downstream has a shell. */
   command: string[];

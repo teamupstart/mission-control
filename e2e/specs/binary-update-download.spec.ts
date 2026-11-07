@@ -23,7 +23,7 @@ for (const colorScheme of ["dark", "light"] as const) {
       stagedBundleIdentity: () => ({version: "1.2.4", revision: "staged-1", commit: "b".repeat(40)}),
       launchPreflight: async () => {}, helperSource: () => "", stateDirectory: () => daemon.home,
       handoff: async args => {expect(args.descriptor?.receipt.installedCommit).toBe("b".repeat(40)); handoffs++;}, requestQuit: () => {quits++;},
-      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: () => {},
+      readOutcome: () => null, clearOutcome: () => false, now: Date.now, random: () => 0, log: () => {},
       dialogs: {available: async () => "defer", ready: async () => "defer", preparing: async () => {}, applying: async () => {}, error: async () => {}, outcome: async () => {}, upToDate: async () => {}},
     };
     const controller = new UpdateController(port); await controller.start(); await controller.check(true);
@@ -123,7 +123,7 @@ for (const kind of ["source", "binary"] as const) {
         expect(args.migration?.target).toBe(candidate.descriptor.receipt.appPath);
         handoffs++;
       }, requestQuit: () => {quits++;},
-      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: () => {},
+      readOutcome: () => null, clearOutcome: () => false, now: Date.now, random: () => 0, log: () => {},
       dialogs: {available: async () => "defer", ready: async () => "defer", preparing: async () => {}, applying: async () => {}, error: async () => {}, outcome: async () => {}, upToDate: async () => {}},
     };
     const controller = new UpdateController(port); await controller.start(); await controller.check(true);
@@ -204,7 +204,7 @@ for (const channel of ["stable", "alpha"] as const) {
       stagedBundleIdentity: () => ({version: "1.2.5", revision: "staged-1", commit: supported.manifest.commit}),
       launchPreflight: async () => {}, helperSource: () => "", stateDirectory: () => daemon.home,
       handoff: async () => {throw new Error("No install is requested by this fixture");}, requestQuit: () => {throw new Error("No shutdown is expected");},
-      readOutcome: () => null, clearOutcome: () => {}, now: Date.now, random: () => 0, log: () => {},
+      readOutcome: () => null, clearOutcome: () => false, now: Date.now, random: () => 0, log: () => {},
       dialogs: {available: async () => "defer", ready: async () => "defer", preparing: async () => {}, applying: async () => {}, error: async () => {}, outcome: async () => {}, upToDate: async () => {}},
     };
     const controller = new UpdateController(port); await controller.start(); await controller.check(true);

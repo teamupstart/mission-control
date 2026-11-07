@@ -1,3 +1,4 @@
+import type { TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { actionFetch } from "./experience.ts";
 import type {
@@ -56,6 +57,7 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  HarnessAdvisorEnvironments,
   HarnessModelCatalogs,
   TerminalsConfig,
   TerminalsConfigPatch,
@@ -130,7 +132,7 @@ import type {
   EnsembleSubmitAck,
 } from "../ensembles/types.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
-import type { SetupChecksSnapshot, SetupRowId } from "@shared/setup-catalog.ts";
+import type { SetupChecksSnapshot, SetupRowId, SetupServicePrerequisite } from "@shared/setup-catalog.ts";
 import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-targets.ts";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
@@ -208,6 +210,7 @@ export interface SetupServiceStartResult extends ActionResult {
   outcome?: "started" | "refused" | "unknown";
   label?: string;
   detail?: string;
+  prerequisite?: SetupServicePrerequisite;
 }
 
 /**
@@ -286,6 +289,9 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** What each harness's own settings say about its advisor; null while unreachable. */
+export const fetchHarnessAdvisorEnvironments = () =>
+  fetchJson<HarnessAdvisorEnvironments>("/api/harnesses/advisor");
 /** Which terminal app each multiplexer's detached sessions are focused into. */
 export const fetchTerminalsConfig = () => fetchJson<TerminalsConfig>("/api/terminals/config");
 /**
@@ -953,6 +959,29 @@ export async function resolveRepo(
   }
 }
 
+/** What accepting a goal's objective answered: the full record, or the refusal. */
+export type AcceptGoalResult =
+  | { ok: true; goal: SessionGoal }
+  | { ok: false; error: string; status?: number };
+
+/**
+ * POST the accept route and hand back the full goal it answers with. Its own fetch rather than
+ * `post`, which spreads the body into an `ActionResult` and would mix the record's fields with
+ * the transport's. Never throws.
+ */
+async function acceptGoal(id: string): Promise<AcceptGoalResult> {
+  try {
+    const res = await actionFetch(`/api/sessions/${encodeURIComponent(id)}/goal/accept`, {
+      method: "POST",
+    });
+    const data = (await res.json().catch(() => ({}))) as SessionGoal & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    return { ok: true, goal: data };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
 export async function fetchRepos(): Promise<string[]> {
   try {
@@ -1556,6 +1585,7 @@ export interface DispatchInput {
   effort?: import("@shared/types.ts").ThinkingLevel;
   /** After-work Workflow; omitted follows the dispatch default, null explicitly opts out. */
   workflowId?: string | null;
+  planStorage?: "repository" | "local" | null;
   /** Backlog-task or live-session prerequisites. */
   dependencies?: TaskDependencyInput[];
   backlog?: boolean;
@@ -1890,6 +1920,8 @@ export const api = {
    * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
+  taskPlanDependencies: (id: string) =>
+    fetchJson<TaskPlanDependencyRequirements>(`/api/tasks/${encodeURIComponent(id)}/plan-dependencies`),
   updateTask: (id: string, patch: UpdateTask) =>
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /**
@@ -1942,6 +1974,16 @@ export const api = {
   // Send a dispatched task back to the backlog at the rank it had, cancelling it first when it
   // is still live. The session footer's Return to backlog; refused (409) on a done task.
   requeueTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/requeue`, {}),
+  // A dispatch that never started (`@shared/launch-failure.ts`). Dismiss answers every attempt
+  // a failed tile stands for; report starts the session that catalogs the failure and drafts
+  // its public bug report, which still waits for the operator to submit it; retry dispatches a
+  // backlog kind again as the same task, and files a chat again as a new one.
+  dismissLaunchFailures: (taskIds: readonly string[]) =>
+    post<ActionResult & { dismissed?: number }>(`/api/launch-failures/dismiss`, { taskIds }),
+  reportLaunchFailure: (taskId: string, repoRoot: string) =>
+    post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
+  retryLaunchFailure: (taskId: string) =>
+    post<ActionResult & { task?: Task }>(`/api/launch-failures/retry`, { taskId }),
   // `satisfyDependents` is the operator's explicit override of the merge gate on
   // declared dependencies - omitted rather than sent as false so the request body stays
   // the one every existing caller already sends. See `CompleteTaskSchema`.
@@ -1989,6 +2031,9 @@ export const api = {
   // --- Foreman (auto-responder) ---
   setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
   retryForemanPlanner: () => post(`/api/foreman/planner/retry`, {}),
+  /** Each group with the occurrence the operator was shown; resolves with how many hid. */
+  dismissForemanErrors: (issues: { id: string; occurrenceId: string }[]) =>
+    post<ActionResult & { dismissed?: number }>(`/api/foreman/health/dismiss`, { issues }),
   setSkillsConfig: (cfg: SkillsConfigPatch) => put(`/api/skills/config`, cfg),
 
   // --- Harnesses (dispatch-time defaults) ---
@@ -2105,6 +2150,12 @@ export const api = {
   /** Full resolved intent for the Foreman drawer; the session snapshot carries only its summary. */
   goal: (id: string) =>
     fetchJson<SessionGoal>(`/api/sessions/${encodeURIComponent(id)}/goal`),
+  /**
+   * Accept the current objective as is: record every pending instruction as steering and let
+   * Foreman judge completion against this objective on its next tick. Never changes the
+   * objective. 404 without a goal, 409 without an objective, otherwise the full record.
+   */
+  acceptGoal: (id: string) => acceptGoal(id),
 
   /**
    * The answers this session's human gave, oldest first - the durable half of the

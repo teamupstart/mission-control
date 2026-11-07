@@ -391,6 +391,13 @@ relationship or reconciliation state, and Foreman's rationale. This is the inspe
 for what Foreman currently believes the session is trying to finish; the rows below it remain
 the decision history.
 
+While that reading is paused (an instruction still reconciling, or a relationship of **needs
+more context**), Foreman skips the session on every tick, because it never judges completion
+against an unresolved instruction. The section then offers **Accept objective as is**, which
+ends the pause; what it records and what it leaves alone are described under
+[Goal](sessions.md#goal). Foreman's next tick after that verifies the work against the
+objective and can claim the session's bound Workflow.
+
 Only one worker drives the sessions at a time. A manually started worker beside the packaged
 app is safe: the second process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
@@ -644,8 +651,15 @@ plan is successfully stored.
 When Foreman reports a failure, its top-bar control turns amber and shows an issue count.
 Open it to read the error received, the activity and provider/model involved, occurrence
 count, first/last occurrence, and the names of sessions where it was seen. **Copy error**
-copies the displayed diagnostic; **Open model settings** takes you to Foreman's model
-choices. Error text is plain text, bounded to 600 characters, with common credential forms
+copies the displayed diagnostic, falling back to the desktop app's synchronous clipboard
+path when the async Clipboard API is refused; **Open model settings** takes you to Foreman's
+model choices. **Dismiss** hides an error group once you have read it, and **Dismiss all**
+appears when there is more than one. A dismissed group stays hidden while the worker keeps
+republishing the same occurrence, and returns, with its full count, the next time that
+failure happens again. Dismissing acknowledges the occurrence on screen: if the error
+recurred after the popover drew it, that newer occurrence is not hidden, and the popover says
+so and shows it. Dismissal only filters what the popover and issue count show: it does
+not change retries, recovery, or what the worker reports. Error text is plain text, bounded to 600 characters, with common credential forms
 redacted. An unknown error stays an unknown error: a rate-limit response is not relabeled
 as exhausted account usage.
 
@@ -669,7 +683,8 @@ that every such session remains blocked.
 Errors remain visible when Foreman is disabled or its worker stops, labeled as the last report
 when reporting is stale. Reports are process-local, not a durable incident history: a replacement
 worker starts a new record, and a surviving worker republishes on its next heartbeat after a
-daemon restart. The worker sends this bounded projection over HTTP; the daemon projects it in
+daemon restart. Dismissals are process-local the same way: a daemon restart shows every
+reported group again. The worker sends this bounded projection over HTTP; the daemon projects it in
 the existing Foreman status response, and the worker never opens the database.
 
 Turning Foreman on, its mode, the work queues and the on-drain action stay in the topbar

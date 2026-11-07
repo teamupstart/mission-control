@@ -31,6 +31,21 @@ process exit, including crashes; orderly shutdown closes SQLite before releasing
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
 
+Electron requests shutdown over each owned utility's private message port and holds the shell
+open while Foreman and the daemon drain, bounded by the shared quit deadline. A utility timeout
+or failed message requests termination and awaits its exit; the overall deadline lets Electron
+reap any remaining utilities before the update helper handles verified survivors.
+The daemon stops workflow checks before slower
+session drains. The workflow engine's abort signal also follows a check through lease
+acquisition to its spawn gate, preventing late branch execution during shutdown. Detached
+check shims tear down their own group on loss of the private owner pipe; the daemon remains
+the only writer of interruption outcomes and lease recovery.
+
+The detached update helper outlives the desktop and drains verified owned processes before
+replacing the app. It never writes workflow state or releases leases; the daemon's existing
+recovery owns those transitions after relaunch. The [desktop update ownership contract](../desktop-and-packaging.md#updates-from-the-installed-app)
+defines capture, identity verification, cleanup and diagnostics for both helper modes.
+
 ## Resident loop ownership
 
 `ResidentManager` owns profiles, launch reservations and task-driven run ends. `ResidentLoop`
@@ -277,6 +292,10 @@ through `ResidentManager.sessionControlRevoked` before the live grant is turned 
 launch and restore are the only resident callers of `setSessionControlEnabled(id, true)`; the
 session-control route's trusted menu click above is the other grant source, as
 [security](../security.md#delegated-session-control) states.
+**Restart on new profile** arms the same resident-launch capability synchronously from its
+desktop click, using `residentRestartRequestId` and the displayed new revision. Its route passes
+the same caller check to `ResidentManager.launch`. The replacement receives its own grant only
+when its pinned revision requests control and the click matches; it never copies the old grant.
 `session-control.ts` authenticates the current signed session credential and checks that
 grant before translating typed commands to the existing dashboard routes. It introduces no
 second driver, terminal write policy, queue owner or review lifecycle. New session-control
@@ -366,6 +385,25 @@ The Registry is the sole owner of normalized work-cycle state. Terminal hook ada
 their raw event vocabulary into `work_started` and `turn_completed`; SDK driver state reaches the
 same Registry transition path. Generic Registry, Foreman, Workflow, and task code must not inspect
 raw hook event names to identify a completed turn.
+
+An SDK `turn_done` that carries a capacity `failure` is not a completion while the supervisor
+holds a retry for it: the Registry keeps the card working with the retry countdown as its
+activity and emits no `turn_completed`. When an accepted turn is already queued behind the
+failure, no retry is scheduled because that turn is the retry, and the cycle likewise stays
+open until it ends. Cancelling the retry timer does not by itself complete
+the cycle. The cycle completes when:
+
+- a later turn ends without a capacity failure. That turn can be the retry's own continuation,
+  a delivered message that replaced the retry, or a turn the driver was already running when
+  the retry came due;
+- the attempts are spent, on the last failed turn;
+- an operator interrupt cancels the waiting retry, or the driver refuses the retry's send;
+- a context clear the driver confirms. The completion is recorded against the replaced
+  conversation's logical key, never the replacement's.
+
+Stopping the session cancels the timer and leaves the cycle active, because the work was not
+finished. A clear, stop, or interrupt the driver refuses re-arms the retry at the same attempt
+and emits no completion.
 
 `session_work_cycles` stores one current projection per logical conversation key: generation,
 active state, completion time, and update time. It is separate from `session_events`, whose any-row

@@ -12,7 +12,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-goals-"));
 process.env.HARNESS_HOME = home;
-const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal, pruneSessionGoals } = await import("../src/server/db.ts");
+const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal, pruneSessionGoals, readSessionGoalSteering } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { foremanStatus } = await import("../src/server/foreman/config.ts");
 
@@ -437,4 +437,228 @@ test("a legacy goal does not mistake a new instruction for its missing opening r
   r.upsertGoal(s.id, { prompt: "an older ask", promptRevision: 1 });
   r.captureAcceptedPrompt(s.id, "continue", s.agentSessionId ?? s.id);
   assert.equal(r.getGoal(s.id)?.openingPrompt, null);
+});
+
+// ---- Accept objective as is: a person's exit from a paused goal ----
+
+/** An SDK session whose first instruction resolved as the objective, then took `later`. */
+function acceptFixture(id: string, later: string[]) {
+  const r = new Registry();
+  const s = r.registerSdkSession({
+    id: `sdk:${id}`,
+    agent: "claude",
+    name: id,
+    cwd: `/wt/${id}`,
+    agentSessionId: `agent:${id}`,
+  });
+  const key = `agent:${id}`;
+  r.captureAcceptedPrompt(s.id, "ship the accept control", key);
+  r.resolveGoal(s.id, {
+    objective: "Ship the accept control in the Foreman drawer",
+    text: "Ship the accept control",
+    source: "model",
+    relationship: "initial",
+    rationale: "opening request",
+    objectiveVersion: 1,
+    resolvedPromptRevision: 1,
+    pendingPrompts: [],
+  }, "ship the accept control");
+  for (const prompt of later) r.captureAcceptedPrompt(s.id, prompt, key);
+  return { r, s, key };
+}
+
+test("accepting the objective records every pending instruction as steering, in order", () => {
+  const { r, s, key } = acceptFixture("accept-order", [
+    "B",
+    "B, but rename the heading to Advisor Overrides",
+  ]);
+  const before = r.getGoal(s.id)!;
+  assert.equal(before.resolvedPromptRevision, 1);
+  assert.equal(before.promptRevision, 3);
+
+  const result = r.acceptGoalObjective(s.id, 5_000);
+  assert.ok(result && result.accepted);
+  const goal = result.goal;
+  assert.equal(goal.relationship, "steer");
+  assert.equal(goal.resolvedPromptRevision, goal.promptRevision);
+  assert.equal(goal.promptRevision, 3);
+  assert.deepEqual(goal.pendingPrompts, []);
+  assert.equal(goal.focus, "B, but rename the heading to Advisor Overrides");
+  assert.match(goal.rationale ?? "", /^Accepted by you: the current objective is the completion contract\. 2 instructions were recorded as steering\.$/);
+  // The contract is confirmed, never rewritten.
+  assert.equal(goal.objective, before.objective);
+  assert.equal(goal.text, before.text);
+  assert.equal(goal.source, before.source);
+  assert.equal(goal.objectiveVersion, before.objectiveVersion);
+  assert.equal(goal.openingPrompt, before.openingPrompt);
+  assert.equal(goal.updatedAt, before.updatedAt, "a confirmed contract has not changed course");
+
+  assert.deepEqual(readSessionGoalSteering(key, goal.resolvedPromptRevision), [
+    { revision: 2, instruction: "B", relationship: "steer",
+      rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 5_000 },
+    { revision: 3, instruction: "B, but rename the heading to Advisor Overrides", relationship: "steer",
+      rationale: "Accepted by you: the current objective is the completion contract.", timestamp: 5_000 },
+  ]);
+  // Durable, not just in memory.
+  assert.deepEqual(getSessionGoal(key)?.pendingPrompts, []);
+  assert.equal(getSessionGoal(key)?.resolvedPromptRevision, 3);
+  // The card now reads a resolved, steering intent.
+  assert.equal(r.getSession(s.id)?.goal?.relationship, "steer");
+  assert.equal(r.getSession(s.id)?.goal?.resolvedPromptRevision, 3);
+});
+
+test("accepting a legacy revision whose text was lost records it as (not captured)", () => {
+  const { r, s, key } = acceptFixture("accept-legacy", []);
+  r.upsertGoal(s.id, {
+    promptRevision: 2,
+    relationship: "unclear",
+    pendingPrompts: [{ revision: 2, prompt: null }],
+  });
+  const result = r.acceptGoalObjective(s.id, 6_000);
+  assert.ok(result && result.accepted);
+  assert.equal(result.goal.resolvedPromptRevision, 2);
+  // Nothing to show for a lost prompt, so the focus it had stays.
+  assert.equal(result.goal.focus, "ship the accept control");
+  assert.match(result.goal.rationale ?? "", /1 instruction was recorded as steering\.$/);
+  assert.deepEqual(
+    readSessionGoalSteering(key, 2).map((n) => [n.revision, n.instruction]),
+    [[2, "(not captured)"]],
+  );
+});
+
+test("an unclear verdict with nothing pending accepts its latest prompt at its own revision", () => {
+  const { r, s, key } = acceptFixture("accept-unclear", ["maybe also restyle it"]);
+  // The refiner's genuine `unclear` verdict resolves the revision but writes no steering.
+  r.resolveGoal(s.id, {
+    relationship: "unclear",
+    rationale: "Could mean a new requirement or a passing remark.",
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, "maybe also restyle it");
+  assert.deepEqual(readSessionGoalSteering(key, 2), []);
+  const versionBefore = r.getGoal(s.id)!.objectiveVersion;
+
+  const result = r.acceptGoalObjective(s.id, 7_000);
+  assert.ok(result && result.accepted);
+  assert.equal(result.goal.relationship, "steer");
+  assert.equal(result.goal.resolvedPromptRevision, 2);
+  assert.equal(result.goal.promptRevision, 2);
+  assert.equal(result.goal.objectiveVersion, versionBefore);
+  assert.deepEqual(
+    readSessionGoalSteering(key, 2).map((n) => [n.revision, n.instruction, n.rationale]),
+    [[2, "maybe also restyle it", "Accepted by you: the current objective is the completion contract."]],
+  );
+});
+
+test("a later prompt re-queues an unclear instruction, so accepting records both", () => {
+  const { r, s, key } = acceptFixture("accept-unclear-then-more", ["maybe also restyle it"]);
+  r.resolveGoal(s.id, {
+    relationship: "unclear",
+    rationale: "Could mean a new requirement or a passing remark.",
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, "maybe also restyle it");
+
+  // Revision 3 arrives before anyone presses Accept. Without the re-queue, capture would
+  // overwrite both the verdict and the only copy of revision 2's text.
+  r.captureAcceptedPrompt(s.id, "then add the regression test", key);
+  const reopened = r.getGoal(s.id)!;
+  assert.equal(reopened.resolvedPromptRevision, 1);
+  assert.equal(reopened.promptRevision, 3);
+  assert.equal(reopened.relationship, null);
+  assert.deepEqual(reopened.pendingPrompts, [
+    { revision: 2, prompt: "maybe also restyle it" },
+    { revision: 3, prompt: "then add the regression test" },
+  ]);
+  // Durable: a restart reads the same queue back.
+  assert.deepEqual(getSessionGoal(key)?.pendingPrompts, reopened.pendingPrompts);
+
+  const result = r.acceptGoalObjective(s.id, 7_500);
+  assert.ok(result && result.accepted);
+  assert.equal(result.goal.resolvedPromptRevision, 3);
+  assert.equal(result.goal.objectiveVersion, reopened.objectiveVersion);
+  assert.deepEqual(readSessionGoalSteering(key, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "then add the regression test"],
+  ]);
+});
+
+test("an unclear verdict with a newer instruction queued is kept as steering, never dropped", () => {
+  const { r, s, key } = acceptFixture("unclear-with-queue", ["maybe also restyle it", "then add the test"]);
+  const before = r.getGoal(s.id)!;
+  // The refiner judges revision 2 while revision 3 already waits.
+  r.resolveGoal(s.id, {
+    objective: before.objective,
+    text: before.text,
+    source: "model",
+    relationship: "unclear",
+    rationale: "Could mean a new requirement or a passing remark.",
+    objectiveVersion: before.objectiveVersion,
+    resolvedPromptRevision: 2,
+    pendingPrompts: [{ revision: 3, prompt: "then add the test" }],
+  }, "maybe also restyle it", 8_100);
+  const kept = r.getGoal(s.id)!;
+  assert.equal(kept.relationship, "steer");
+  assert.equal(kept.rationale,
+    "Kept as steering: a newer instruction arrived before this one was clear. Could mean a new requirement or a passing remark.");
+  assert.equal(kept.objective, before.objective);
+  assert.equal(kept.objectiveVersion, before.objectiveVersion);
+  assert.deepEqual(readSessionGoalSteering(key, 2).map((n) => [n.revision, n.instruction]),
+    [[2, "maybe also restyle it"]]);
+
+  // Accepting now records the rest; nothing typed is missing from the steering log.
+  const result = r.acceptGoalObjective(s.id, 8_200);
+  assert.ok(result && result.accepted);
+  assert.deepEqual(readSessionGoalSteering(key, 3).map((n) => [n.revision, n.instruction]), [
+    [2, "maybe also restyle it"],
+    [3, "then add the test"],
+  ]);
+});
+
+test("a final unclear verdict, with nothing newer queued, still pauses", () => {
+  const { r, s, key } = acceptFixture("unclear-final", ["maybe also restyle it"]);
+  r.resolveGoal(s.id, {
+    relationship: "unclear", rationale: "ambiguous", resolvedPromptRevision: 2, pendingPrompts: [],
+  }, "maybe also restyle it");
+  assert.equal(r.getGoal(s.id)!.relationship, "unclear");
+  assert.deepEqual(readSessionGoalSteering(key, 2), []);
+});
+
+test("only an unclear verdict is re-queued; a settled instruction stays resolved", () => {
+  const { r, s, key } = acceptFixture("no-requeue-after-steer", ["use the existing helper"]);
+  r.resolveGoal(s.id, {
+    relationship: "steer", rationale: "method", resolvedPromptRevision: 2, pendingPrompts: [],
+  }, "use the existing helper");
+  r.captureAcceptedPrompt(s.id, "then add the regression test", key);
+  const goal = r.getGoal(s.id)!;
+  assert.equal(goal.resolvedPromptRevision, 2);
+  assert.deepEqual(goal.pendingPrompts, [{ revision: 3, prompt: "then add the regression test" }]);
+});
+
+test("accepting is idempotent: a settled goal comes back unchanged", () => {
+  const { r, s, key } = acceptFixture("accept-idempotent", ["then add a test"]);
+  const first = r.acceptGoalObjective(s.id, 8_000);
+  assert.ok(first && first.accepted);
+  const second = r.acceptGoalObjective(s.id, 9_000);
+  assert.ok(second && second.accepted);
+  assert.deepEqual(second.goal, first.goal);
+  assert.equal(readSessionGoalSteering(key, 2).length, 1);
+  assert.equal(readSessionGoalSteering(key, 2)[0]!.timestamp, 8_000);
+});
+
+test("accepting needs a goal and an objective", () => {
+  const r = new Registry();
+  assert.equal(r.acceptGoalObjective("no-such-session"), null);
+  const s = r.registerSdkSession({
+    id: "sdk:accept-none",
+    agent: "claude",
+    name: "accept none",
+    cwd: "/wt/accept-none",
+    agentSessionId: "agent:accept-none",
+  });
+  assert.equal(r.acceptGoalObjective(s.id), null, "no goal yet");
+  // A legacy row: a revision recorded, no objective ever derived.
+  r.upsertGoal(s.id, { promptRevision: 1, pendingPrompts: [{ revision: 1, prompt: null }] });
+  assert.deepEqual(r.acceptGoalObjective(s.id), { accepted: false });
+  assert.equal(r.getGoal(s.id)?.resolvedPromptRevision, 0, "a refused accept writes nothing");
 });

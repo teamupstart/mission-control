@@ -2807,7 +2807,7 @@ export interface CodeRabbitTuning {
   severity: CodeRabbitSeverity;
 }
 export interface CodeRabbitConfigSnapshot {
-  source: ".coderabbit.yaml";
+  source: ".coderabbit.yaml" | ".coderabbit.config.ts";
   committed?: boolean;
   digest: string | null;
   enabled: boolean;
@@ -3006,7 +3006,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
-  coderabbit: "Committed CodeRabbit review, enabled only by root .coderabbit.yaml reviews.auto_review.enabled: true.",
+  coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
   lint: "The style and correctness pass that runs before review.",
@@ -4612,6 +4612,13 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
       localArtifacts: Array<{ path: string; sha256: string; bytes: number }>;
       artifactProblems?: string[];
     };
+    /**
+     * The full commit Commands and CodeRabbit are pinned to. HEAD for a clean capture; for an
+     * uncommitted one, a Mission Control review snapshot of the publication tree parented on
+     * HEAD (the complete content tree for captures made before publication proofs existed).
+     * Null for snapshots captured before review snapshots existed, or with no Command to run.
+     */
+    reviewCommit?: string | null;
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;
@@ -4893,6 +4900,14 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  /** Live sibling ownership of the conversation, independent of paginated event history. */
+  deliveryHold?: {
+    runId: string;
+    deliveryId: string;
+    repoRoot: string | null;
+    kind: WorkflowDeliveryKind;
+    state: WorkflowDeliveryState;
+  } | null;
   evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;

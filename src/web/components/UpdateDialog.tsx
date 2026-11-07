@@ -75,6 +75,7 @@ export function UpdateDialog({
             <button
               type="button"
               className={action.tone === "primary" ? "btn btn-primary" : "btn btn-ghost"}
+              data-dialog-default={action.tone === "primary" ? "true" : undefined}
               autoFocus={action.tone === "primary"}
               onClick={() => onAnswer(request.id, action.choice)}
             >

@@ -945,3 +945,24 @@ test("a session-scoped refusal parks it, and so does a refusal that will not say
   // fail toward is the one that loops.
   assert.equal(assignRefusalParksSession(undefined), true);
 });
+
+// Stacked pull requests: a task released to start on its prerequisite's open pull request has
+// to be cut from that pull request's head, so it is never handed to an existing agent - the
+// autopilot dispatches it into a fresh worktree instead of repeating a refused assignment.
+test("a stack-released task is dispatched, never assigned to a free agent", () => {
+  const parent = mkTask({ status: "running", sessionId: "busy" });
+  const stacked = mkTask({
+    backlogRank: 1,
+    dependencies: [{
+      type: "task", taskId: parent.id, title: parent.title, sessionId: null, episodeId: null,
+      agentSessionId: null, branch: null, prUrl: null, selectedAt: 1, satisfiedAt: null,
+      stackReadyAt: 5, stackBaseBranch: "feat/parent", stackBaseSha: "a".repeat(40),
+      stackPrUrl: "https://github.com/acme/repo/pull/7",
+    }],
+  });
+  const free = mkSession();
+  const action = decide({ tasks: [parent, stacked], sessions: [free], plan: mkPlan([[stacked.id, []]]) });
+  assert.notEqual(action.kind, "assign");
+  assert.equal(action.kind, "dispatch");
+  assert.equal("task" in action ? action.task.id : null, stacked.id);
+});

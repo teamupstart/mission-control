@@ -835,7 +835,7 @@ test("a run never vetoes a SIBLING repository's pull request", async () => {
     transcriptPath: null,
     env: { tmuxPane: `%${serial}` },
     prUrl: "https://github.com/owner/repo/pull/1",
-    prCreated: false,
+    prCreated: true,
   });
 
   // Both reviews are open, so both repositories' pull requests are held - by their OWN run.
@@ -916,6 +916,49 @@ test("two repositories' packets never type into one pane at once", async () => {
     .scheduleQueuedDeliveries(f.agentSessionId);
   await f.manager.stop();
   assert.equal(f.store.getDelivery(second.delivery.id)?.state, "delivered");
+});
+
+test("a sibling evidence-readiness hold is visible until a new submission releases the queue", async () => {
+  const { f, runs } = await twoLiveRuns();
+  const primary = runs.find(entry => !entry.binding.repoRoot)!;
+  const secondary = runs.find(entry => entry.binding.repoRoot)!;
+  db.prepare("UPDATE workflow_deliveries SET kind = 'evidence_readiness' WHERE id = ?").run(secondary.delivery.id);
+  f.store.setRunState(secondary.run.id, "waiting_for_evidence_readiness", "evidence_readiness", null, Date.now());
+  const manager = f.manager as unknown as {
+    deliverPrepared(id: string, retry: boolean): Promise<void>;
+    scheduleQueuedDeliveries(noteKey: string): void;
+  };
+  await manager.deliverPrepared(secondary.delivery.id, false);
+  await manager.deliverPrepared(primary.delivery.id, false);
+  assert.equal(f.store.getDelivery(primary.delivery.id)?.state, "prepared");
+  assert.deepEqual(f.store.runDetail(primary.run.id)?.deliveryHold, {
+    runId: secondary.run.id, deliveryId: secondary.delivery.id,
+    repoRoot: SECOND_ROOT, kind: "evidence_readiness", state: "delivered",
+  });
+  // Idle alone never acknowledges missing evidence or fabricates a delivery.
+  manager.scheduleQueuedDeliveries(f.agentSessionId);
+  await f.manager.stop();
+  assert.equal(f.store.getDelivery(primary.delivery.id)?.state, "prepared");
+  f.store.setSubmissionState(secondary.submission.id, "waiting_for_evidence_readiness", Date.now());
+  const refine = { id: "secondary-evidence-segment", runId: secondary.run.id,
+    waitingSubmissionId: secondary.submission.id, triggerKey: "new-evidence", manualRetry: false, now: Date.now() };
+  assert.deepEqual(f.store.reserveEvidenceReadinessRefinement(refine), { ok: false, reason: "no_change" });
+  f.store.stageWorkflowEvidence(f.agentSessionId, [], Date.now(), null, [{
+    id: "secondary-claim", clientCriterionId: "secondary-criterion", criterion: "Secondary proof is registered",
+    proofClass: "focused_execution", repositoryScope: "repo-02", sourceRoot: secondary.binding.sessionCwd!,
+    links: [],
+  }]);
+  // A newly captured submission answers the old readiness packet even if the new
+  // submission still has gaps. It must receive its own packet through the ordinary queue.
+  const refined = f.store.reserveEvidenceReadinessRefinement(refine);
+  assert.equal(refined.ok, true, "the worktree-scoped generation wakes the secondary run");
+  assert.equal(f.store.listSubmissionCoverage(refine.id).length, 1);
+  assert.equal(f.store.getSubmission(refine.id)?.round, secondary.submission.round);
+  assert.equal(f.store.runDetail(primary.run.id)?.deliveryHold, null);
+  manager.scheduleQueuedDeliveries(f.agentSessionId);
+  await f.manager.stop();
+  assert.equal(f.store.getDelivery(primary.delivery.id)?.state, "delivered");
+  assert.equal(f.store.runDetail(primary.run.id)?.deliveryHold, null);
 });
 
 test("a BLOCKED run's unresolved packet never holds its siblings hostage", async () => {

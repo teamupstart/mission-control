@@ -122,6 +122,22 @@ test("un-pinning effort sends null, and pinning one sends the level", () => {
   });
 });
 
+test("a legacy advisor pin reads back and can only be cleared, never set", () => {
+  const pinned = mkTask({ advisorModel: "opus" });
+  assert.equal(draftFromTask(pinned).advisorModel, "opus");
+  assert.equal(draftFromTask(mkTask()).advisorModel, "", "no pin reads back as the empty value");
+  // "Use Settings" empties the draft's pin, and the save sends the clear.
+  assert.deepEqual(taskUpdatePatch(pinned, edited(pinned, { advisorModel: "" }), pinned.intent), {
+    advisorModel: null,
+  });
+  // Saving a pinned task without clearing it leaves the pin alone.
+  assert.equal(taskUpdatePatch(pinned, draftFromTask(pinned), pinned.intent), null);
+  // The advisor is chosen on Settings -> Harnesses, so a draft cannot pin one.
+  const free = mkTask();
+  assert.equal(taskUpdatePatch(free, edited(free, { advisorModel: "sonnet" }), free.intent), null);
+  assert.equal(draftsEqual(draftFromTask(pinned), draftFromTask(free)), false);
+});
+
 test("the composed intent is what the patch compares, so an attachment alone is a change", () => {
   // The stored intent carries the paths `withAttachments` appended, so a drop with no
   // typing still rewrites it - and a save that only re-composed the same text does not.
@@ -178,6 +194,9 @@ test("every field on the form reaches the patch", () => {
     labels: "moved",
     model: "gpt-5.6-sol",
     effort: "xhigh",
+    // The one change the form can make to a pin is clearing one saved before the advisor
+    // moved to Settings -> Harnesses, so it is judged against a task that has one.
+    advisorModel: "",
     workflowId: "workflow-review",
     enabled: false,
     dependencies: [{ type: "task", taskId: "prerequisite" }],
@@ -196,8 +215,8 @@ test("every field on the form reaches the patch", () => {
     "a field on the form with no entry here is a field nobody has decided how to save",
   );
 
-  const t = mkTask();
   for (const [field, value] of Object.entries(changed)) {
+    const t = field === "advisorModel" ? mkTask({ advisorModel: "opus" }) : mkTask();
     // `intent` is the one field that does not reach the patch off the draft: what gets
     // stored is the typed text with the attachment paths appended, so the modal composes
     // it and passes it in. Changing the draft's copy alone must therefore do nothing.
@@ -221,4 +240,21 @@ test("a working copy is stale exactly when the row's editable fields moved", () 
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", labels: ["bug"] }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", title: "Renamed" }))));
   assert.ok(!draftsEqual(seed, draftFromTask(mkTask({ priority: "low", enabled: false }))));
+});
+
+test("converting a non-plan task carries every explicit storage choice", () => {
+  const task = mkTask({ kind: "ship", planPolicy: null });
+  for (const planStorage of ["repository", "local", null] as const) {
+    const draft = edited(task, { kind: "plan", planStorage, workflowId: undefined });
+    assert.deepEqual(taskUpdatePatch(task, draft, task.intent), { kind: "plan", planStorage });
+  }
+  const existingPlan = mkTask({ kind: "plan", planPolicy: { storage: "repository", commitPlanHtml: false } });
+  assert.equal(taskUpdatePatch(existingPlan, draftFromTask(existingPlan), existingPlan.intent), null);
+});
+
+test("plan conversion carries an explicit None even when the ship task also had no workflow", () => {
+  const task = mkTask({ kind: "ship", workflowId: null });
+  assert.deepEqual(taskUpdatePatch(task, edited(task, { kind: "plan", workflowId: null }), task.intent), {
+    kind: "plan", workflowId: null,
+  });
 });

@@ -1,4 +1,5 @@
-import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS } from "./coderabbit-result.ts";
+import { CodeRabbitResultParser, CODERABBIT_RESULT_LIMITS, type CodeRabbitChangedPaths } from "./coderabbit-result.ts";
+import { codeRabbitChangedPaths } from "./coderabbit.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { WorkflowCommandArtifactDescriptor } from "@shared/workflow.ts";
 import type {
@@ -106,6 +107,8 @@ export interface CheckRuntimeDeps {
   db?: DatabaseSync;
   /** Defaults to asking git. See `resolveCapturedCommit`. */
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
+  /** Defaults to asking git. See `codeRabbitChangedPaths`. */
+  changedPaths?: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
   artifacts?: WorkflowCommandArtifactService;
 }
 
@@ -121,6 +124,7 @@ export class CheckRuntime {
   private readonly timeoutMs: number | undefined;
   private readonly teardown: CheckGroupTeardownOptions | undefined;
   private readonly resolveCommit: (repoRoot: string, headSha: string) => Promise<string>;
+  private readonly changedPaths: (repoRoot: string, mergeBase: string, head: string) => Promise<CodeRabbitChangedPaths>;
   private readonly artifacts: WorkflowCommandArtifactService;
 
   /**
@@ -143,6 +147,7 @@ export class CheckRuntime {
     this.timeoutMs = deps.timeoutMs;
     this.teardown = deps.teardown;
     this.resolveCommit = deps.resolveCommit ?? resolveCapturedCommit;
+    this.changedPaths = deps.changedPaths ?? codeRabbitChangedPaths;
     this.artifacts = deps.artifacts ?? new WorkflowCommandArtifactService(deps.db);
     const store = deps.leaseStore ?? new CheckLeaseStore(deps.db);
     const lookup: CheckSupervisorLookup = (attemptId) => {
@@ -171,6 +176,10 @@ export class CheckRuntime {
     attempt: CheckAttemptRef,
     request: CheckExecutionRequest,
   ): Promise<CheckExecutionResult> {
+    if (request.signal?.aborted) {
+      return {kind: "infrastructure", started: false,
+        reason: "check interrupted because Mission Control is shutting down"};
+    }
     // Asked before a tree is taken. `runSupervisedCheck` asks it again - it has to, since it
     // is reachable on its own - but an unsupported platform must never reach a pool at all:
     // leasing a worktree to decline a check would spend the resource the decline exists to
@@ -188,6 +197,20 @@ export class CheckRuntime {
         reason:
           "this submission captured no commit, so there was nothing to pin a check worktree to",
       };
+    }
+
+    // Resolved before a tree is leased, so a failure costs nothing to unwind. A CLI that
+    // reports `reviewedFiles` is checked against these rather than trusted.
+    let changedPaths: CodeRabbitChangedPaths | null = null;
+    if (request.coderabbit) {
+      const { mergeBase, head } = request.coderabbit;
+      try {
+        if (!mergeBase || !head) throw new Error("the comparison is not pinned");
+        changedPaths = await this.changedPaths(request.repoRoot, mergeBase, head);
+      } catch (err) {
+        return { kind: "infrastructure", started: false,
+          reason: `the CodeRabbit comparison's changed files could not be listed: ${message(err)}` };
+      }
     }
 
     // `acquireForAttempt` verifies the commit BEFORE it leases, using the same full-40-hex
@@ -219,7 +242,7 @@ export class CheckRuntime {
       };
     }
 
-    const parser = request.coderabbit ? new CodeRabbitResultParser(attempt.attemptId, request.coderabbit.severity) : null;
+    const parser = request.coderabbit ? new CodeRabbitResultParser(attempt.attemptId, request.coderabbit.severity, changedPaths) : null;
     let capture: ReturnType<WorkflowCommandArtifactService["beginCapture"]> | undefined;
     try {
       capture = attempt.runId ? this.artifacts.beginCapture({
@@ -238,6 +261,7 @@ export class CheckRuntime {
     try {
       outcome = await this.supervise(
         {
+          signal: request.signal,
           attemptId: attempt.attemptId,
           command: request.command,
           // THE LEASED TREE, joined with the subpath the winning command entry named. Never

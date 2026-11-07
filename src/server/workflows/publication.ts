@@ -5,7 +5,7 @@ import { WORKFLOW_TEXT_EVIDENCE_LIMITS, type WorkflowContextSnapshot,
   type WorkflowEvidenceTextArtifact } from "@shared/workflow.ts";
 import { scoutReportDirectory } from "@shared/scouts.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
-import { captureWorktreeTree, isolatedGitEnvironment, LocalArtifactChangedError } from "../git/worktree-tree.ts";
+import { captureWorktreeTree, isolatedGitEnvironment, LocalArtifactChangedError, type CaptureWorktreeTreeOptions } from "../git/worktree-tree.ts";
 import { run } from "../util/exec.ts";
 import { inspectCheckoutTextArtifact } from "./images.ts";
 
@@ -18,8 +18,10 @@ import { inspectCheckoutTextArtifact } from "./images.ts";
 export async function captureWorkflowPublication(
   cwd: string,
   reservedTextEvidence: readonly Pick<WorkflowEvidenceTextArtifact, "bytes">[] = [],
+  options: Pick<CaptureWorktreeTreeOptions, "objectStorage"> = {},
 ): Promise<{
   contentTreeOid: string;
+  headOid: string | null;
   publication: NonNullable<WorkflowContextSnapshot["evidence"]["publication"]>;
   artifacts: WorkflowEvidenceTextArtifact[];
 }> {
@@ -100,7 +102,7 @@ export async function captureWorkflowPublication(
   }));
   let tree: Awaited<ReturnType<typeof captureWorktreeTree>>;
   try {
-    tree = await captureWorktreeTree(root, { localArtifacts });
+    tree = await captureWorktreeTree(root, { ...options, localArtifacts });
   } catch (error) {
     if (!(error instanceof LocalArtifactChangedError)) throw error;
     // Validation raced a writer. Discard all exemptions and stale retained bytes, and
@@ -108,10 +110,11 @@ export async function captureWorkflowPublication(
     problem(error.path, error.message);
     localArtifacts = [];
     artifacts.length = 0;
-    tree = await captureWorktreeTree(root);
+    tree = await captureWorktreeTree(root, options);
   }
   return {
     contentTreeOid: tree.treeOid,
+    headOid: tree.headOid,
     publication: {
       version: 1,
       treeOid: tree.publicationTreeOid,

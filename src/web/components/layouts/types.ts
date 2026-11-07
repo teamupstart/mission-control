@@ -19,8 +19,8 @@ import {
   type PipelineRun,
   type PipelineRunLink,
 } from "@shared/pipeline.ts";
-import type { BacklogTrustView } from "../../lib/backlog-copy.ts";
-import type { ResidentSessionMark } from "../../residents/marker.ts";
+import type { BacklogTrustView, StackShipping } from "../../lib/backlog-copy.ts";
+import type { ResidentReplacement, ResidentSessionMark } from "../../residents/marker.ts";
 
 /** The Board card's in-place workflow disclosure, registered for App's global shortcut. */
 export interface WorkflowDisclosureHandle {
@@ -70,6 +70,8 @@ export interface SessionViewProps {
   backlogTrust?: BacklogTrustView | null;
   /** Route task-local trust explanations to the existing Trust matrix. */
   onManageForemanTrust?: () => void;
+  /** The Shipping stacking default and depth cap, for blocked stack cards. Absent: unknown. */
+  stackShipping?: StackShipping;
   /** Every workflow summary; the backlog bulk edit offers the published ones as After work. */
   workflowSummaries?: WorkflowSummary[];
   selectedId: string | null;
@@ -297,6 +299,19 @@ export interface SessionViewProps {
    * and, through `pinnedResidentSessions`, by `orderSessions` in all three orderings.
    */
   residentBySession?: ReadonlyMap<string, ResidentSessionMark>;
+  /**
+   * App-owned join from each session Restart on new profile replaced to its replacement
+   * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no
+   * `residentBySession` entry; the Console offers Complete and the new session from this.
+   */
+  residentReplacementBySession?: ReadonlyMap<string, ResidentReplacement>;
+  /**
+   * Bring a session forward from wherever the operator is - App's `focusSession`, which clears
+   * the fleet filter before selecting. Unlike `onSelect`, it can reach a session the current
+   * filter hides, which a replacement often is: its name or status can differ from the session
+   * it replaced, and selecting a hidden id would close the detail instead of opening it.
+   */
+  onFocusSession?: (id: string) => void;
   /** Open a resident's profile on `#/residents`, from its Console band. */
   onOpenResidentProfile?: (profileId: string) => void;
 }

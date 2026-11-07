@@ -111,7 +111,7 @@ export function processIdentity(pid, run = defaultProcessQuery) {
 }
 
 function defaultProcessQuery(pid) {
-  return execFileSync("/bin/ps", ["-o", "lstart=,command=", "-p", String(pid)], {
+  return execFileSync("/bin/ps", ["-ww", "-o", "lstart=,command=", "-p", String(pid)], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });

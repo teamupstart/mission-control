@@ -219,6 +219,23 @@ test("the Conversation rendering is reachable by the words someone would half-re
   assert.ok(!labels.includes(control.label), "two controls answer to the same name");
 });
 
+// The Skin picker, named on its own for the Conversation picker's reason: a control that
+// was never indexed passes every sweep above by not existing.
+test("the Skin picker is indexed under Display, jumps, and answers to theme, dark and light", () => {
+  const control = SETTINGS_CONTROLS.find((c) => c.id === "skin");
+  assert.ok(control, "the Skin picker is not in the search index at all");
+  assert.equal(control.label, "Skin");
+  assert.equal(control.category, "display");
+  assert.equal(control.anchor, "display/skin");
+  assert.equal(control.kind, "jump", "a picker has nothing to flip from a search row");
+  assert.match(renderCategory("display"), /data-anchor="display\/skin"/);
+  const searchable = [control.label, control.description, ...control.keywords].join(" ").toLowerCase();
+  for (const term of ["skin", "theme", "dark", "light", "colour", "color", "appearance"]) {
+    assert.ok(searchable.includes(term), `"${term}" does not reach the Skin picker`);
+    assert.ok(control.keywords.includes(term), `"${term}" left the Skin picker's keywords`);
+  }
+});
+
 // Guided dispatch, named on its own for the reason above the Conversation picker: the
 // sweeps only ask their questions of whatever the array happens to hold, so a control that
 // was never added passes every one of them by not existing. This one has a second thing to

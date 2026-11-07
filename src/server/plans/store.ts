@@ -10,6 +10,9 @@ import { resolveRepoRoot } from "../repos.ts";
 import { getSkillsConfig, skillsConfigProblem } from "../skills/config.ts";
 import { validateStaticReportHtml } from "../archives/html.ts";
 import { run } from "../util/exec.ts";
+import { resolveRoots } from "../archives/checkout.ts";
+import { scoutRepoSlots } from "../scouts/repos.ts";
+import { discoverPlanCaptureScopes } from "./capture-scopes.ts";
 import { PlanStoreError, digest, readSafe, replaceSafe, withPlanDirectory } from "./files.ts";
 export { PlanStoreError } from "./files.ts";
 
@@ -119,13 +122,25 @@ export async function planContext(authority: PlanAuthority) {
     policy: reservation ? ManagedPlanPolicySchema.parse(JSON.parse(reservation.policy)) : authority.policy ?? newPlanPolicy() };
 }
 
-export function newPlanPolicy(): ManagedPlanPolicy {
+export function newPlanPolicy(storage?: "repository" | "local" | null): ManagedPlanPolicy {
   const problem = skillsConfigProblem();
   if (problem) throw new PlanStoreError(problem);
   const config = getSkillsConfig();
-  return config.planStorage === "local"
+  return (storage ?? config.planStorage) === "local"
     ? { version: 2, storage: "local", commitPlanHtml: config.commitPlanHtml }
     : { storage: "repository", commitPlanHtml: config.commitPlanHtml };
+}
+
+/** A reserved identity or any saved artifact makes the task's storage immutable. */
+export async function taskPlanStorageLocked(task: Task): Promise<boolean> {
+  if (openDb().prepare(
+    "SELECT 1 FROM managed_plan_reservations WHERE task_id = ? UNION ALL SELECT 1 FROM managed_plans WHERE task_id = ? LIMIT 1",
+  ).get(task.id, task.id)) return true;
+  // Older tasks wrote plans without managed identities. Reuse task-owned diff discovery
+  // so a plan elsewhere in the repository cannot lock an unrelated backlog task.
+  const discovery = await discoverPlanCaptureScopes(await resolveRoots(scoutRepoSlots(task)));
+  if (discovery.unreadable.length) throw new PlanStoreError("Cannot verify existing plan artifacts; plan storage cannot change while a task checkout is unavailable");
+  return discovery.scopes.length > 0;
 }
 
 /** Pre-policy plan tasks keep Git publication, with the saved HTML choice at first pin. */

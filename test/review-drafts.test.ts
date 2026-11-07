@@ -215,3 +215,12 @@ test("an unsubscribed listener is not called and leaves nothing behind", () => {
   updateReviewDraft("r1", (d) => ({ ...d, note: "x" }));
   assert.equal(calls, 0);
 });
+
+test("a question moved to chat is a draft worth keeping across a reload", () => {
+  writeReviewDraft("r-chat", {
+    ...EMPTY_REVIEW_DRAFT,
+    decisions: { q: { selected: [], other: "", note: "", chat: true } },
+  });
+  reloadReviewDraftsFromStorage();
+  assert.deepEqual(readReviewDraft("r-chat").decisions, { q: { selected: [], other: "", note: "", chat: true } });
+});

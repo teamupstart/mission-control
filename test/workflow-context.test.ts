@@ -695,6 +695,26 @@ test("repository capture fails closed and detects worktree evidence changes", as
   assert.notEqual(repairedProbe.diffFingerprint, dirtyProbe.diffFingerprint);
   assert.equal(probeMatchesEvidence(repairedProbe, dirtyCapture.context.evidence), false);
 
+  await t.test("edits beyond the bounded untracked diff still wake review", async () => {
+    const directory = join(repo, "untracked-probe");
+    mkdirSync(directory);
+    try {
+      for (let index = 0; index < 101; index++) {
+        writeFileSync(join(directory, `${String(index).padStart(3, "0")}.txt`), "first\n");
+      }
+      const before = (await readWorkflowContextRaw(registry, binding)).context.evidence;
+      assert.equal(before.diffTruncated, true);
+      writeFileSync(join(directory, "100.txt"), "other\n");
+      const after = await readWorkflowEvidenceProbe(registry, binding);
+      assert.equal(after.headSha, before.headSha);
+      assert.deepEqual(after.workingTreeStatus, before.workingTreeStatus);
+      assert.equal(after.diffFingerprint, before.diffFingerprint);
+      assert.notEqual(after.contentTreeOid, before.contentTreeOid);
+      assert.equal(probeMatchesEvidence(after, before), false,
+        "status and the bounded diff alone must not suppress a real repair");
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   const reportPath = join(repo, "docs/reports/probe/report.html");
   mkdirSync(join(repo, "docs/reports/probe"), { recursive: true });
   writeFileSync(reportPath, "<!doctype html><title>Probe</title><p>First proof.</p>");

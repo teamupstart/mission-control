@@ -1419,6 +1419,13 @@ export async function readWorkflowContext(
  * capturing transcript, standards, decisions, or compacted context. Full tree identity also
  * sees untracked artifact edits, and the policy version permits one fresh capture after an
  * upgrade without rewriting the old submission.
+ * This is not a constant-cost metadata probe: its temporary index hashes tracked and
+ * nonignored untracked content. On macOS arm64/Node 26, three local samples with 10,000
+ * tracked files (~39 MiB) took 0.60-0.99s; adding 1,000 untracked text files and a 16 MiB
+ * binary took 2.27-3.51s for the whole probe. These are observations, not a latency bound.
+ * Status, HEAD and the real index cannot key a safe cache: an edit beyond the bounded diff
+ * can leave all three unchanged. The full tree detects that repair; prior retained report
+ * hashes below additionally detect raw bytes normalized away by Git.
  *
  * `diffFingerprint` is intentionally the SAME hash a full capture stores: the bounded patch
  * plus the complete status fingerprint. HEAD and the bounded status list are useful cheap

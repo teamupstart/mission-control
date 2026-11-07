@@ -7889,11 +7889,13 @@ export class WorkflowManager {
    * Read the repository, and nothing else.
    *
    * Half of "has the work under review moved since this submission was captured?", which is
-   * the cheap pre-filter and the whole reason there is no "capture then discard" mode: an
+   * the repository pre-filter and the whole reason there is no "capture then discard" mode: an
    * idle repair session with unchanged work must leave the run exactly where it is.
    * Re-reading the diff, the transcript window and the standards on every tick to discover
-   * unchanged repair work is not free. `readWorkflowEvidenceProbe` reads Git identity and the
-   * prior snapshot's retained artifact bytes only. Every field it reads is a fingerprint input,
+   * unchanged repair work is not free. `readWorkflowEvidenceProbe` reads the bounded diff,
+   * hashes the complete worktree through a temporary index, and reads prior retained report
+   * bytes. Its cost grows with nonignored checkout content; see the measurements beside that
+   * reader. Every field it reads is a fingerprint input,
    * so a differing probe cannot lead to `unchanged_evidence`. Its content-sensitive diff fingerprint also
    * detects edits inside a path that was already dirty in the failed round. The converse is
    * deliberately not true: a transcript-only change leaves the probe matching while the full
@@ -8044,7 +8046,7 @@ export class WorkflowManager {
      *
      * This is the method's only await, so it is also the only point at which the world can
      * move underneath it - and asking the gates before it would recheck a world that had not
-     * had the chance to change yet, which is the same as not rechecking at all. Two git reads
+     * had the chance to change yet, which is the same as not rechecking at all. The repository reads
      * take long enough for a session to pick up its turn.
      */
     const probe = await this.probeRepository(scheduledBinding, scheduledSubmission).catch(() => null);

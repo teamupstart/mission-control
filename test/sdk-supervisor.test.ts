@@ -650,29 +650,34 @@ test("an early echo whose capture throws is recorded by the acknowledgement, onc
   assert.equal(f.registry.getGoal(f.session.id)?.prompt, text);
 });
 
-test("an acknowledgement whose capture throws leaves the turn for its echo, once", async (t) => {
-  const f = await boundFollowUpSession("agent-follow-up-ack-throws");
-  t.after(f.fake.restore);
-  const text = "the acknowledgement's Goal write fails";
-  const original = Registry.prototype.captureAcceptedPrompt;
-  let threw = false;
-  t.mock.method(f.registry, "captureAcceptedPrompt", function (
-    this: InstanceType<typeof Registry>,
-    ...args: Parameters<typeof original>
-  ) {
-    if (!threw) {
-      threw = true;
-      throw new Error("goal write failed");
-    }
-    return original.apply(this, args);
+for (const failure of ["throws", "returns null"] as const) {
+  test(`an acknowledgement whose capture ${failure} leaves the turn for its echo, once`, async (t) => {
+    const f = await boundFollowUpSession(`agent-follow-up-ack-${failure === "throws" ? "throws" : "null"}`);
+    t.after(f.fake.restore);
+    const text = `the acknowledgement's Goal capture ${failure}`;
+    const original = Registry.prototype.captureAcceptedPrompt;
+    let failed = false;
+    t.mock.method(f.registry, "captureAcceptedPrompt", function (
+      this: InstanceType<typeof Registry>,
+      ...args: Parameters<typeof original>
+    ) {
+      if (!failed) {
+        failed = true;
+        // A throw is a failed write; null is the registry refusing the prompt. Either way
+        // `captureGoalBestEffort` answers false, and the entry must stay for the echo.
+        if (failure === "throws") throw new Error("goal write failed");
+        return null;
+      }
+      return original.apply(this, args);
+    });
+    assert.equal(await f.follow(text), "started", "a failed Goal capture never fails the send");
+    assert.ok(failed, "the acknowledgement's capture was the one that failed");
+    assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 1, "nothing recorded yet");
+    f.echo(text);
+    assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
+    assert.equal(f.registry.getGoal(f.session.id)?.prompt, text);
   });
-  assert.equal(await f.follow(text), "started", "a failed Goal write never fails the send");
-  assert.ok(threw, "the acknowledgement's capture was the one that failed");
-  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 1, "nothing recorded yet");
-  f.echo(text);
-  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
-  assert.equal(f.registry.getGoal(f.session.id)?.prompt, text);
-});
+}
 
 test("a steered follow-up echoed after the running turn ends opens one revision", async (t) => {
   const f = await boundFollowUpSession("agent-follow-up-steered");

@@ -100,6 +100,7 @@ function script(): Script {
 
 function githubOf(s: Script): StackGitHub {
   return {
+    compare: async () => ({ ok: false, error: "unused" }),
     prRefs: async (_cwd, url) => {
       s.reads += 1;
       await s.duringRead?.();
@@ -150,8 +151,10 @@ test("a finished prerequisite with an open primary pull request stamps its stack
 
 test("a wait-for-merge default or an After merge edge is never stamped", async () => {
   for (const setup of [
-    (w: World) => { w.config = ShippingConfigSchema.parse({}); },
+    (w: World) => { w.config = ShippingConfigSchema.parse({ stacking: "merge" }); },
     (w: World) => { w.tasks.set("C", { ...w.tasks.get("C")!, dependencies: [edge("A", { mode: "merge" })] }); w.config = ShippingConfigSchema.parse({ stacking: "stack" }); },
+    // The shipped default is Stack: an After merge edge still waits under it.
+    (w: World) => { w.tasks.set("C", { ...w.tasks.get("C")!, dependencies: [edge("A", { mode: "merge" })] }); w.config = ShippingConfigSchema.parse({}); },
   ]) {
     const w = world();
     setup(w);

@@ -401,9 +401,12 @@ prerequisite's branch, and lands after it. Stacking follows declared
 work is never chained together.
 
 **Settings → Shipping → Stacked pull requests** sets the default for same-repository
-dependencies: *Wait for merge* or *Stack on its branch*. It ships as *Wait for merge*. An
-install that never chose a value follows the shipped default, and only an explicit choice is
-stored. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
+dependencies: *Wait for merge* or *Stack on its branch*. It ships as *Stack on its branch*,
+because the [stack lifecycle](#the-stack-lifecycle) catches a stacked child up, retargets and
+restacks it, and holds it with a named reason and a fix when its stack breaks. It lands a stack
+automatically when the conditions in [when a stack lands by itself](#the-stack-lifecycle) hold;
+that section also lists what needs an operator. An install that never chose a value follows the shipped default,
+and only an explicit choice is stored, so an explicit *Wait for merge* is kept. **Maximum stack depth** (1 to 5, default 3) caps how many stacked pull requests may
 sit above one that targets the default branch. Each dependency can override the default from
 its chip in the dispatch form and the backlog editor: **Stack** or **After merge**.
 
@@ -481,8 +484,8 @@ parent, a parent that can no longer be read, or a base that is no longer the def
 withdraws it. A parent that is reopened and then merges needs its merge commit in the child,
 like any merged parent. The child is held until the check passes again. Lineage belongs to the pull request, so switching
 the setting off or flipping a chip to *After merge* stops **new** stacks only: a pull request
-that is already stacked keeps its hold until it is released. This release does not yet
-retarget, restack or prompt anything on its own; those steps are the person's for now.
+that is already stacked keeps its hold until it is released. The
+[stack lifecycle](#the-stack-lifecycle) below brings it to the state this check accepts.
 
 **Review while stacked.** The GitHub Inspector reviews the pull request's diff against its
 current base, and the reviewed head records that base. A base that changes under an
@@ -521,6 +524,143 @@ the session's checkout, read-only, exactly as it does for any other task.
 It never merges into a branch other than the default branch, never force-pushes, never
 stacks across repositories, and never runs a git command that changes a worktree's checkout,
 branches or commits. The only GitHub write it makes on its own is a pull request's base.
+
+#### The stack lifecycle
+
+A stack keeps itself landable. On every Inspector tick, each open pull request with stack
+lineage is observed with its current parent: their states and heads, whether the parent's head
+is in the child's history, and how many commits the child is behind (GitHub's compare API).
+That observation is recorded on the ledger row, and the lifecycle **state** is derived from it
+and from the release record. It runs whatever the Shipping setting says, with the GitHub
+Inspector and CodeRabbit both off, and with the child's session gone: the lineage belongs to
+the pull request. When more than one state applies, the first in this order wins, so a parent
+that advanced and then merged or closed never gets a catch-up prompt:
+
+| State | When | What happens |
+|---|---|---|
+| Released | the release check passed for the child's current head | nothing: an ordinary pull request against the default branch, merged by the ordinary gates |
+| Broken | the parent closed without merging, the parent task was cancelled, failed or rescheduled back into the backlog while its pull request was open, or GitHub closed the child | held, with a named reason and the actions below |
+| Parent merged, needs retarget | the parent merged and the child's base is not yet the default branch | the base is retargeted on this tick |
+| Restack needed | the parent merged, the child is on the default branch, and the release check has not passed for its head (including a head moved by an unrelated push) | the **restack** prompt |
+| Parent moved | the parent is open and its head is not in the child's history | the **catch-up** prompt |
+| Current | none of the above | nothing |
+
+**Base reconciliation.** Every tick compares the child's base with the branch it belongs on
+(the parent's branch while it is open, the default branch once it merged or closed) and
+retargets it through GitHub's API when they differ. It is skipped when they already match,
+which covers GitHub's own retarget after an auto-deleted branch. A refused retarget is tried
+again on the next tick, and until it succeeds the merge queue reads *Retarget failed:* with
+GitHub's reason. The base-aware review record forces a re-review after a retarget, and
+`stack-hold` keeps the child held until the restack is verified.
+
+**Prompts.** Two prompts go to the child's session, both through Foreman's review follow-up,
+the same path and rules as the CodeRabbit follow-up:
+
+- *catch up*: merge the parent branch in, resolve conflicts, run focused checks, push;
+- *restack*: merge `origin/<default branch>` in, resolve conflicts, run focused checks, push.
+
+Both say never to force-push or rebase. Each is claimed before it is typed, keyed to the pull
+request, the prompt kind and the tip that made it necessary (the parent's head for a catch-up,
+the parent's merge commit for a restack), never to the child's head. An unrelated push to the
+child therefore sends nothing new, while the parent pushing again, or a different parent
+merging after a replacement, re-arms it. A restart, a push or a setting toggle never re-arms a
+claim. Foreman types one only into the child's single live owning session, while it is idle with
+no queued turns, no work queue and no active workflow, and only when Foreman is on, live,
+allowed in the repository and invited into that session. Those session conditions and the idle
+settle window are one shared rule (`followupSessionBlocker`, `foremanSettleMs`) that Foreman's
+decision and the daemon's recheck both call, so the worker never selects a prompt the daemon
+then refuses. The daemon builds the text from the
+ledger row and checks every condition again inside the delivery. A confirmed non-delivery
+releases the claim. A delivery that may have landed (a lost response, a restart between the
+claim and the confirmation) stays *uncertain* and is never retried automatically, because a
+retry could deliver it twice.
+
+The merge queue row keeps the gate label (`stacked-base` or `stack-hold`) and shows the
+lifecycle as its detail, which never becomes a gate value:
+
+| Lifecycle label | Meaning | Action offered |
+|---|---|---|
+| *Stacked on #A (waiting for it to merge)* | current, or caught up | none |
+| *Catching up with #A* | the catch-up prompt is pending or delivered | none |
+| *Restacking onto main* | retarget or restack under way (counted with **waiting**, not **blocked**) | none |
+| *Catch-up needed: no session* / *Restack needed: no session* | no live session owns the child. Nothing is sent and nothing restarts it | resume the task with its **Resume** control. That gives the prompt a live owner again: if Foreman may drive the resumed session (on and live, invited, hooks seen, a pane, allowed in the repository), it delivers the prompt once on the session's first settled-idle tick; otherwise the row reads *Foreman is off* or *Foreman can't send it* and offers the manual send |
+| *Catch-up needed: Foreman is off* / *Restack needed: Foreman is off* | Foreman is switched off or not live | **Send catch-up prompt** / **Send restack prompt** |
+| *Restack needed: Foreman can't send it - <reason>* (or *Catch-up needed: ...*) | Foreman is on, but its own session rule will never type into the owning session: not invited, no hooks seen, no pane, or not allowed in this repository. The same rule (`followupStableBlocker`) Foreman's decision and the delivery recheck use, so a prompt is never shown as on its way that Foreman would refuse | **Send catch-up prompt** / **Send restack prompt** |
+| *Catch-up prompt delivery uncertain* / *Restack prompt delivery uncertain* | the claim was stored but the delivery never confirmed | **Send catch-up prompt** / **Send restack prompt**, which finishes the uncertain claim, claims again and sends once |
+| *Retarget failed: <reason>* | GitHub refused the base edit | none; retried every tick |
+| *Checking #A on GitHub - prompts wait until it can be read* | the last tick could not read the current parent. Its last known facts are kept, but the parent may have merged or closed since, so no prompt or action is offered on them, Foreman cannot deliver one, and nothing is retargeted | none; the next successful read clears it |
+| *Stack broken: #A closed* | the parent closed without merging | **Move onto main**, **Wait for a replacement** |
+| *Stack broken: GitHub closed this pull request after #A merged* | the child was closed when its base branch was deleted | **Reopen against main** |
+| *Stack broken: GitHub closed this pull request and #A closed* | as above, with a parent that closed unmerged | **Move onto main** |
+| *Stack broken: this pull request was closed while #A is still open* | the child was closed (by hand, say) while its parent is open | **Reopen on #A's branch** |
+| *Stack broken: #A's task was cancelled* (or *failed*) | the parent task stopped while its pull request is open | **Reschedule #A's task** |
+| *Stack broken: #A's task was rescheduled* | the parent task is back in the backlog and has not started again | **Start #A's task** |
+
+The child's board tile shows the same label and buttons. The manual sends use the same inject
+route and guards as Foreman, minus Foreman's own switches: the session must still be idle with
+no queued turns, no work queue and no active workflow.
+
+**Broken stacks.** A broken child is already held by `stacked-base` or `stack-hold`.
+
+- **Move onto main** asks the session to cherry-pick only its own commits onto a new branch cut
+  from the default branch, open a replacement pull request against it and close the old one.
+  The replacement inherits the old row's current parent, stack base and lineage history, stays
+  on the default branch, and is released only when the closed-parent branch of the release
+  check passes. The closed row then reads *Replaced by #N* and offers nothing.
+- **Reopen against main** (the child was closed by GitHub and its parent merged) asks the
+  session to open a new pull request from the same branch against the default branch, then
+  merge the default branch in and push. The new pull request inherits the lineage, and the
+  restack and the merged-parent release apply as usual.
+- **Reopen on #A's branch** (the child was closed while its parent is still open) asks the
+  session to open a new pull request from the same branch against the open parent's branch.
+  It inherits the closed row's lineage, base correction keeps it there, and it is an ordinary
+  stacked child again; the closed row then reads *Replaced by #N*.
+- **Wait for a replacement** (offered only while the child is open and its parent closed
+  unmerged) records the choice. When the parent task opens a replacement pull request in the
+  **same work episode** (a session of the parent task, adopted by the Inspector after the closed
+  one), the **replacement-parent transition** runs on the next tick. It is the only writer that
+  changes a row's current parent, and it writes only the open child's own row, in one step:
+  it appends `{from, to, at}` to the lineage history, makes the replacement the current parent
+  and clears the release. The commit the child was cut at never changes. It is idempotent, and
+  never runs for a released child or one from the parent task's next episode. The child is then
+  retargeted onto the replacement's branch and caught up with it, and is released through the
+  merged-parent branch once the replacement merges and the child restacks. A replacement that
+  also closes unmerged makes the child broken again, with the same actions.
+
+- **Reschedule #A's task** and **Start #A's task** (the parent task stopped while its pull
+  request is still open) restart the parent's work through the task's own reschedule and
+  dispatch controls. The child cannot release itself while that pull request is open, so the fix
+  is the parent's: once it is running again, in this work episode or a later one, its open pull
+  request can be pushed to and merge, and the child reads as stacked again and restacks as usual.
+  Closing the parent pull request on GitHub instead turns this into the closed-parent case above,
+  with *Move onto main*.
+
+A stacked child is running while its parent's pull request is open, so it is never in the
+backlog; the stopped parent is named on the child's own tile and merge-queue row. Flipping an edge to *After merge*, or the Shipping default to *Wait for merge*, after
+the child started changes nothing for it.
+
+**When a stack lands by itself.** With YOLO mode on, a two-pull-request stack lands bottom-up
+with no human step except conflicts - the parent merges, the child is retargeted, restacked,
+released, reviewed clean and merged - when all of these hold:
+
+- the child's task has exactly one live session, and Foreman may drive it: Foreman is on and
+  live, invited into that session, the session has reported hooks and has a pane, and the
+  repository is on Foreman's allowlist;
+- the Inspector reviews live in that repository and YOLO mode may merge there (the ordinary
+  merge gates above);
+- each prompt Foreman types is confirmed delivered. A delivery whose outcome is uncertain is
+  never retried automatically, so it waits for the operator's send (below);
+- GitHub can be read for the parent on each tick.
+
+When a prompt is needed and Foreman may not drive the one live session that owns the child, the
+child is held and its row says why (*Foreman is off*, or *Foreman can't send it - <reason>*) and
+offers **Send catch-up prompt** or **Send restack prompt**: one click from the operator, after
+which the stack carries on as above. The same send is offered when a delivery's outcome is
+uncertain (*Catch-up prompt delivery uncertain*, *Restack prompt delivery uncertain*), because
+Foreman never retries one itself. With no live session the row reads *no session* and waits
+for **Resume**. While the parent cannot be read, the row reads *Checking #A on GitHub* and
+nothing is offered until GitHub answers. A failing merge gate holds the child exactly as it
+holds any pull request.
 
 ### When a task's pull request merges
 

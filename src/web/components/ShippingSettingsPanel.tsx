@@ -8,6 +8,7 @@ import { mergeBucket, mergeStatus, mergeTallies, type MergeBucket } from "../lib
 import type { InspectorConfig } from "@shared/protocol.ts";
 import type { ShippingState } from "../useShipping.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { StackLifecycle } from "./StackLifecycle.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { NumberSetting } from "./ForemanBar.tsx";
@@ -445,8 +446,14 @@ export function ShippingSettingsPanel({
               branch and is held until it has been restacked onto the default branch.
             </p>
             <p className="settings-hint">
+              When the parent pushes again or merges, Foreman asks the child's session to merge the
+              new commits in and push, and the daemon retargets the child once its parent merges.
+              With Foreman off, the merge queue below says so and offers to send the prompt.
+            </p>
+            <p className="settings-hint">
               Switching to Wait for merge stops new stacks only. Pull requests that are already
-              stacked keep their hold until they are released.
+              stacked keep their hold and their catch-up, restack and broken-stack handling until
+              they are released.
             </p>
           </ConsoleCard>
 
@@ -534,6 +541,9 @@ export function ShippingSettingsPanel({
                       {row.codeRabbit?.status !== "complete" && row.codeRabbit?.unresolved !== null && row.codeRabbit?.unresolved !== undefined ? ` Last complete observation: ${row.codeRabbit.unresolved} unresolved.` : ""}
                       {" "}{row.codeRabbit?.error ?? row.codeRabbit?.delivery ?? "Waiting for a complete observation"}
                     </span>
+                    {/* Stacked pull requests: the lifecycle under the gate label - why the
+                        child is held and the action that moves it. Never the gate itself. */}
+                    <StackLifecycle prKey={row.key} standing={row.stackStanding} />
                   </span>
                   <span className="sc-when">{when(row, now)}</span>
                 </div>

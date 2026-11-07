@@ -51,6 +51,7 @@ import { maybeMerge } from "../shipping/merge.ts";
 import { reviewBaseChanged } from "@shared/shipping.ts";
 import { defaultStackGitHub, type StackGitHub } from "../stacking/github.ts";
 import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
+import { observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
@@ -351,6 +352,19 @@ export function useInspectorStackGitHub(github: StackGitHub): () => void {
   stackGitHub = github;
   return () => {
     stackGitHub = previous;
+  };
+}
+
+/**
+ * What the stack lifecycle reads from the Registry (tasks and work episodes). Set when the
+ * Inspector starts; a test sets its own. Without one, no lifecycle observation runs.
+ */
+let stackLifecycle: StackLifecycleContext | null = null;
+export function useInspectorStackLifecycle(context: StackLifecycleContext | null): () => void {
+  const previous = stackLifecycle;
+  stackLifecycle = context;
+  return () => {
+    stackLifecycle = previous;
   };
 }
 
@@ -668,6 +682,21 @@ async function processPr(
   );
   onObserved?.(s, now);
 
+  // Stacked pull requests: observe the child and its current parent, reconcile the child's
+  // base with the branch it belongs on, and run the replacement-parent transition the operator
+  // asked for - before the row is retired, so a child GitHub closed is recorded as a broken
+  // stack, and whatever the Inspector's own switches say, because a stacked child keeps its
+  // lifecycle with the Inspector, the Shipping setting and its session all gone. Re-read
+  // afterwards: a transition changes the current parent and withdraws the release.
+  if (pr.stack && stackLifecycle) {
+    try {
+      await observeStackLifecycle(pr, s, dir, stackGitHub, stackLifecycle, now);
+    } catch (error) {
+      console.error("[inspector] stack lifecycle observation failed:", pr.key, error);
+    }
+    pr = getInspectorPr(pr.key) ?? pr;
+  }
+
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
   if (s.state !== "OPEN") {
@@ -686,7 +715,11 @@ async function processPr(
   }
 
   // Observation consent never grants Inspector review, posting, or merge authority.
-  if (!getInspectorConfig().enabled) return true;
+  // Both the config this sweep started with AND the one true now: a sweep that started with
+  // the Inspector off ran only to observe stacked rows, and its snapshot predates whatever the
+  // operator did since, so it must not go on to review or merge if the Inspector is switched
+  // on mid-sweep. The next sweep reads afresh.
+  if (!cfg.enabled || !getInspectorConfig().enabled) return true;
 
   // A push is new evidence, and `pushEndsTheWait` decides whether it is the kind of
   // evidence that ends the wait its predecessor earned - always, for the six-hour park
@@ -1308,6 +1341,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // insert. Gating it would mean a user who opens pull requests first and turns the
   // Inspector on afterwards can never review any of them, because the proof they were
   // ours went by while nobody was listening and cannot be recovered.
+  useInspectorStackLifecycle(registry);
   const offPrOpened = registry.onPrOpened((e: PrOpened) => {
     const adopted = adoptOpenedPr(registry, e, Date.now());
     // Refresh NOW rather than waiting for the next tick. The chip is how anyone knows the
@@ -1348,12 +1382,19 @@ export function startInspector(registry: Registry, options: InspectorStartOption
     if (stopped) return;
     try {
       const cfg = getInspectorConfig();
-      if (cfg.enabled || codeRabbitEnabled()) {
-        for (const pr of loadOpenInspectorPrs()) {
+      // Stacked children are observed even with both review sources off: a child keeps its
+      // lifecycle (base reconciliation, broken-stack detection, the prompts it needs) whatever
+      // any setting says. Only rows with lineage, so the Inspector being off still costs
+      // nothing for every other pull request.
+      const reviewing = (): boolean => getInspectorConfig().enabled || codeRabbitEnabled();
+      const sweeping = reviewing();
+      const due = sweeping ? loadOpenInspectorPrs() : loadOpenInspectorPrs().filter((row) => row.stack);
+      if (sweeping || due.length > 0) {
+        for (const pr of due) {
           if (stopped) break;
           // Re-read per PR so turning the feature off mid-sweep is honoured now rather
           // than after everything already queued has posted.
-          if (!getInspectorConfig().enabled && !codeRabbitEnabled()) break;
+          if (!reviewing() && !pr.stack) break;
           // The row may have been written by an earlier PR in this same sweep.
           const fresh = getInspectorPr(pr.key) ?? pr;
           const observed: {

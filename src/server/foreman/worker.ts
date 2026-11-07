@@ -98,6 +98,7 @@ import {
   activeWorkflowOwnsSession,
   advanceFollowupMark,
   decideReviewFollowup,
+  foremanSettleMs,
   followupPrs,
 } from "./review-followup.ts";
 import type { FollowupMark, FollowupPr } from "./review-followup.ts";
@@ -220,7 +221,7 @@ const TRIAGE_TIMEOUT_MS = Number(process.env.FOREMAN_TRIAGE_TIMEOUT_MS || 30_000
  * (persisted, surfaced in ForemanBar); these are module constants with an env
  * override, following the FOREMAN_REVIEW_TIMEOUT_MS precedent.
  */
-const SETTLE_MS = Number(process.env.FOREMAN_QUEUE_SETTLE_MS || 10_000);
+const SETTLE_MS = foremanSettleMs();
 const PICKUP_TIMEOUT_MS = Number(process.env.FOREMAN_QUEUE_PICKUP_MS || 45_000);
 /** How often the background timer renews the lease (3 misses = expiry). */
 const LEASE_RENEW_MS = 30_000;
@@ -1031,6 +1032,7 @@ async function runReviewFollowup(
           trackReviewComments: cfg.trackReviewFeedback,
           codeRabbitAutoResolve: shipping?.codeRabbitAutoResolve === true,
           trackCiFailures: cfg.trackCiFailures,
+          stackPrompts: true,
           settleMs: SETTLE_MS,
         },
         now,
@@ -1078,6 +1080,7 @@ async function runReviewFollowup(
           trackReviewComments: freshCfg.trackReviewFeedback,
           codeRabbitAutoResolve: freshShipping?.codeRabbitAutoResolve === true,
           trackCiFailures: freshCfg.trackCiFailures,
+          stackPrompts: true,
           settleMs: SETTLE_MS,
         },
         now: Date.now(),
@@ -1090,7 +1093,7 @@ async function runReviewFollowup(
       // daemon reports as refused restores the pre-nudge mark to retry on a later pass.
       freshMarks.set(freshDecision.prKey, freshDecision.mark);
       try {
-        await client.inject(fresh.id, freshDecision.payload, freshDecision.codeRabbit);
+        await client.inject(fresh.id, freshDecision.payload, freshDecision.codeRabbit, freshDecision.stack);
       } catch (err) {
         // Only a delivery the daemon POSITIVELY reported as undelivered frees this session:
         // its previous mark is restored so it re-nudges, and it is NOT claimed, so the

@@ -1,4 +1,5 @@
 import {
+  compareCommits,
   configuredGitHubRepositories,
   fetchPrRefs,
   isAncestor,
@@ -6,6 +7,7 @@ import {
   parseGitHubRemoteUrl,
   parsePrUrl,
   retargetPr,
+  type BaseComparison,
   type GhResult,
   type GitHubRepositoryIdentity,
   type PrRefs,
@@ -27,6 +29,8 @@ export interface StackGitHub {
   prRefs(cwd: string | null, prUrl: string): Promise<GhResult<PrRefs>>;
   /** Is `ancestor` in `head`'s history, per GitHub's compare API? */
   isAncestor(cwd: string | null, owner: string, repo: string, ancestor: string, head: string): Promise<GhResult<boolean>>;
+  /** Is `base` in `head`'s history, and how far behind it is `head`? Per GitHub's compare API. */
+  compare(cwd: string | null, owner: string, repo: string, base: string, head: string): Promise<GhResult<BaseComparison>>;
   /** The commit a pull request from `head` onto `base` is diffed from, per GitHub. */
   mergeBase(cwd: string | null, owner: string, repo: string, base: string, head: string): Promise<GhResult<string>>;
   /** Fetch one origin branch at the repository root and return its verified tip. */
@@ -49,6 +53,7 @@ export const defaultStackGitHub: StackGitHub = {
     return fetchPrRefs(cwd, parsed.owner, parsed.repo, parsed.number);
   },
   isAncestor,
+  compare: compareCommits,
   mergeBase,
   branchSha: (repoRoot, branch) => primaryBranchSha(repoRoot, branch),
   repositories: configuredGitHubRepositories,

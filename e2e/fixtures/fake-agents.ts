@@ -743,11 +743,22 @@ if (argv[0] === "--version") {
 } else if (argv[0] === "api" && argv[1] === "--method" && argv[2] === "PATCH" && (argv[3] || "").split("/").at(-2) === "pulls") {
   // A pull request base edit. The body is recorded beside the argv so a spec can read WHICH
   // base the daemon asked for; nothing is published.
+  let input = "";
+  try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
   if (dir) {
-    let input = "";
-    try { input = require("node:fs").readFileSync(0, "utf8"); } catch {}
     writeFileSync(join(dir, \`gh-patch-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv, input }, null, 2));
   }
+  // GitHub applies the edit: the scripted pull request reads the new base from now on, so a
+  // daemon that reconciles the base every tick sees it settled rather than asking again.
+  try {
+    const base = JSON.parse(input).base;
+    const number = (argv[3] || "").split("/").at(-1);
+    const path = process.env.MC_E2E_GH_PRS;
+    if (typeof base === "string" && path) {
+      const prs = scriptedPrs().map((p) => (String(p.number) === number ? { ...p, baseRefName: base } : p));
+      writeFileSync(path, JSON.stringify(prs, null, 2));
+    }
+  } catch {}
   process.stdout.write("{}\\n");
 } else if (command.startsWith("pr view")) {
   const url = argv[2];

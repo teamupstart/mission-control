@@ -26864,6 +26864,46 @@ span.line-run-prov {
   align-self: center;
   flex: none;
 }
+/* Stacked pull requests lifecycle: the label under a held child's gate, and the buttons
+   that move it. Wraps rather than ellipsizing: a broken stack's actions must stay reachable. */
+.stack-lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+.sc-standing .stack-lifecycle {
+  margin-top: 2px;
+}
+.stack-label {
+  color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--working) 45%, var(--border));
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.stack-label.is-broken {
+  border-color: color-mix(in srgb, var(--attention) 60%, var(--border));
+}
+.stack-action {
+  font: inherit;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+.stack-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.stack-message {
+  color: var(--muted);
+}
 /* Ready to start on a prerequisite's open pull request: a fact about the base, not a wait. */
 .bl-stacked {
   color: var(--fg);

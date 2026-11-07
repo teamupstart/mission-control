@@ -547,8 +547,9 @@ merged yet carries a **Stack** / **After merge** toggle. A prerequisite that has
 (its task is finished, or its pull request merged) has nothing left to stack on, so its chip
 has no toggle, and neither does a dependency on a session with no task or on a task in
 another repository. Until you pick one the toggle shows the mode it inherits, marked *default*,
-from **Settings → Shipping → Stacked pull requests** (which ships as *Wait for merge*).
-Changing the setting later moves every chip you never set.
+from **Settings → Shipping → Stacked pull requests** (which ships as *Stack on its branch*).
+Changing the setting later moves every chip you never set. Set a chip, or the setting, to
+*After merge* / *Wait for merge* to keep today's wait for that dependency or for all of them.
 
 A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
 until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
@@ -562,6 +563,21 @@ drag-to-assign and Foreman never hand it to an existing agent. Session dependenc
 a task, plan publications and cross-repository dependencies always wait for merge. See
 [Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests) for how the stacked
 pull request is reviewed and released to merge.
+
+After it starts, a stacked task keeps itself current through the
+[stack lifecycle](inspector-and-shipping.md#the-stack-lifecycle). When its prerequisite pushes
+again, its session is asked to merge the prerequisite's branch in. When the prerequisite's pull
+request **merges**, the daemon retargets the stacked pull request to the default branch and asks
+the session to merge `origin/<default branch>` in and push, with no force-push. Once the
+restack is verified, the pull request is reviewed against the default branch and merges
+through the ordinary gates, so under YOLO mode a stack lands bottom-up under the conditions in
+[when a stack lands by itself](inspector-and-shipping.md#the-stack-lifecycle).
+The prompts go through Foreman; when it cannot send one, the merge queue says why and offers to
+send it by hand. If the task's session is gone the prompt waits for **Resume**, which gives it an
+owner again. If the prerequisite's pull
+request closes without merging, or its task is cancelled or rescheduled, the stacked pull
+request is held as *Stack broken* with an action that fixes it. Flipping the dependency to
+*After merge* after the task started changes nothing for it.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can leave the

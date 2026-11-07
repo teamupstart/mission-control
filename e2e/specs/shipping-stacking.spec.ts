@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
-import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
+import { writeGhCompare, writeGhPullRequests } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
@@ -57,18 +57,20 @@ async function boardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   await page.goto(`${daemon.baseURL}/`);
 }
 
-test("the Stacked pull requests card sets the default and it survives a reload", async ({ dashboard, daemon }) => {
+test("the Stacked pull requests card shows Stack as the shipped default, sets an explicit choice, and it survives a reload", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   const card = dashboard.locator("[data-anchor='shipping/stacking']");
   await expect(card).toBeVisible();
-  const waitForMerge = card.getByRole("radio", { name: "Wait for merge (default)" });
-  const stack = card.getByRole("radio", { name: "Stack on its branch" });
-  // Shipped off, and nothing stored: the effective value is the shipped default.
-  await expect(waitForMerge).toBeChecked();
-  await expect(card).toContainText("Wait for merge - a dependent starts once its prerequisite merges");
+  const waitForMerge = card.getByRole("radio", { name: "Wait for merge" });
+  const stack = card.getByRole("radio", { name: "Stack on its branch (default)" });
+  // Fresh state, nothing stored: stacking is on by default once the lifecycle ships.
+  await expect(stack).toBeChecked();
+  await expect(card).toContainText("Stack - a dependent starts on its prerequisite's open pull request");
   expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking).toBeUndefined();
   await expect(card).toContainText("never merges into a branch other than the default branch, never force-pushes");
+  await expect(card).toContainText("Foreman asks the child's session to merge the new commits in and push");
   await expect(card).toContainText("Switching to Wait for merge stops new stacks only");
+  await shoot(card, "shipping-card-default-stack");
 
   // Saving another Shipping control does not pin the install to the default.
   const soak = dashboard.getByRole("spinbutton", { name: "minutes open before it may merge" });
@@ -77,9 +79,10 @@ test("the Stacked pull requests card sets the default and it survives a reload",
   await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).soakMinutes).toBe(7);
   expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking).toBeUndefined();
 
-  await stack.locator("..").click();
-  await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking).toBe("stack");
-  await expect(card).toContainText("Stack - a dependent starts on its prerequisite's open pull request");
+  // An explicit Wait for merge is stored, and kept.
+  await waitForMerge.locator("..").click();
+  await expect.poll(async () => (await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking).toBe("merge");
+  await expect(card).toContainText("Wait for merge - a dependent starts once its prerequisite merges");
   const depth = card.getByRole("spinbutton", { name: "stacked pull requests above one on the default branch" });
   await expect(depth).toHaveValue("3");
   await depth.fill("2");
@@ -88,7 +91,7 @@ test("the Stacked pull requests card sets the default and it survives a reload",
   await shoot(card, "shipping-card");
 
   await dashboard.reload();
-  await expect(dashboard.locator("[data-anchor='shipping/stacking']").getByRole("radio", { name: "Stack on its branch" })).toBeChecked();
+  await expect(dashboard.locator("[data-anchor='shipping/stacking']").getByRole("radio", { name: "Wait for merge" })).toBeChecked();
   await expect(dashboard.locator("[data-anchor='shipping/stacking']").getByRole("spinbutton", { name: "stacked pull requests above one on the default branch" })).toHaveValue("2");
 });
 
@@ -216,13 +219,14 @@ test("a dependency chip toggles Stack / After merge in the dispatch form and the
   await add.selectOption(value);
   const group = dialog.getByRole("group", { name: /When to start after Phase one groundwork/ });
   await expect(group).toBeVisible();
-  // Inherits the shipped default until changed, and says so.
-  await expect(group.getByRole("button", { name: "After merge" })).toHaveAttribute("aria-pressed", "true");
+  // Inherits the shipped default (Stack) until changed, and says so.
+  await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
   await expect(group).toContainText("default");
+  await expect(dialog).toContainText("or sooner on a Stack dependency once its PR is open and every other dependency has merged.");
+  await group.getByRole("button", { name: "After merge" }).click();
   await group.getByRole("button", { name: "Stack" }).click();
   await expect(group.getByRole("button", { name: "Stack" })).toHaveAttribute("aria-pressed", "true");
   await expect(group).not.toContainText("default");
-  await expect(dialog).toContainText("or sooner on a Stack dependency once its PR is open and every other dependency has merged.");
   await shoot(dialog, "dispatch-chip-stack");
   await dialog.getByRole("button", { name: /Schedule after dependencies|Add to backlog/ }).first().click();
   await expect(dialog).toBeHidden();
@@ -516,4 +520,290 @@ test("the merge queue names both stacking holds and a non-default base", async (
   await expect(dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#43" }))
     .toContainText("its base is not, or is not known to be, the default branch");
   await shoot(dashboard, "merge-queue-holds");
+});
+
+// ---- Phase 2: the stack lifecycle ----
+//
+// One stack, end to end, through the real daemon with fake agents and a fake `gh`: stacking
+// is on by DEFAULT (nothing is configured), the parent closes and the child reads "Stack broken"
+// on its board tile and in the merge queue with both actions; the operator waits for a
+// replacement, the parent task opens one, and the child follows it; the replacement merges,
+// the child is retargeted to main, and with Foreman off the merge queue offers the restack
+// prompt, whose button types it into the child's (fake) session.
+type LifecycleRow = { key: string; mergeBlock: string | null; stack: { parentPrUrl: string; history: { from: string; to: string }[] } | null;
+  stackStanding: { label: string | null; actions: string[] } | null };
+
+/**
+ * A two-pull-request stack through the real flow: a parent task opens #`parentNumber` and
+ * finishes, and a dependent (no mode: the Stack default) is released, dispatched on the
+ * parent's head and opens #`childNumber` against the parent's branch. Fake agents, fake `gh`.
+ */
+async function openStack(daemon: DaemonHandle, parentNumber: number, childNumber: number) {
+  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking, "nothing configured: the shipped default applies").toBeUndefined();
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const hook = async (s: Session, event: "PostToolUse" | "Stop", prUrl?: string) => {
+    const res = await fetch(`${daemon.baseURL}/hooks/${event}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": token },
+      body: JSON.stringify({
+        agent: s.agent, sessionId: s.agentSessionId, cwd: s.cwd,
+        ...(prUrl ? { toolName: "Bash", prCreated: true, prUrl, prUrls: [prUrl] } : {}),
+      }),
+    });
+    expect(res.status).toBe(204);
+  };
+  const gitIn = (cwd: string) => (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "e2e", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "e2e", GIT_COMMITTER_EMAIL: "e2e@example.invalid" },
+  }).trim();
+  const settled = async (taskId: string): Promise<Session> => {
+    let found!: Session;
+    await expect.poll(async () => {
+      found = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === taskId)!;
+      return Boolean(found?.cwd && found.agentSessionId && found.state === "idle");
+    }, { timeout: 60_000 }).toBe(true);
+    return found;
+  };
+
+  const parent = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, intent: "Build the lifecycle groundwork", title: "Lifecycle groundwork",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  const parentSession = await settled(parent.id);
+  const pgit = gitIn(parentSession.cwd!);
+  pgit("switch", "-c", "feat/stack-parent");
+  writeFileSync(join(parentSession.cwd!, "groundwork.txt"), "groundwork\n");
+  pgit("add", "groundwork.txt");
+  pgit("commit", "-q", "-m", "groundwork");
+  pgit("push", "-q", "origin", "feat/stack-parent");
+  const parentUrl = `https://github.com/acme/mission-e2e/pull/${parentNumber}`;
+  const parentPr = { cwd: parentSession.cwd!, number: parentNumber, url: parentUrl, state: "OPEN" as "OPEN" | "CLOSED" | "MERGED", createdAt: new Date().toISOString(),
+    mergedAt: null as string | null, headRefOid: pgit("rev-parse", "HEAD"), headRefName: "feat/stack-parent" };
+  writeGhPullRequests(daemon.home, [parentPr]);
+  await hook(parentSession, "PostToolUse", parentUrl);
+  await hook(parentSession, "Stop");
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === parentSession.id)?.prState, { timeout: 30_000 }).toBe("open");
+
+  const child = await backlogTask(daemon, "Lifecycle phase two", { dependencies: [{ type: "task", taskId: parent.id }] });
+  await expect.poll(async () => {
+    const edge = (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === child.id)!.dependencies[0]!;
+    return edge.type === "task" ? edge.stackPrUrl ?? null : null;
+  }, { timeout: 30_000, message: "an edge with no mode inherits the default, which is now Stack" }).toBe(parentUrl);
+  await api(daemon, `/api/tasks/${child.id}/dispatch`, { overrideDisabled: true });
+  const childSession = await settled(child.id);
+  const cgit = gitIn(childSession.cwd!);
+  cgit("switch", "-c", "feat/stack-child");
+  writeFileSync(join(childSession.cwd!, "phase-two.txt"), "phase two\n");
+  cgit("add", "phase-two.txt");
+  cgit("commit", "-q", "-m", "phase two");
+  const childUrl = `https://github.com/acme/mission-e2e/pull/${childNumber}`;
+  const childPr = { cwd: childSession.cwd!, number: childNumber, url: childUrl, state: "OPEN" as const, createdAt: new Date().toISOString(),
+    mergedAt: null, headRefOid: cgit("rev-parse", "HEAD"), headRefName: "feat/stack-child", baseRefName: "feat/stack-parent" };
+  writeGhPullRequests(daemon.home, [parentPr, childPr]);
+  await hook(childSession, "PostToolUse", childUrl);
+  await hook(childSession, "Stop");
+
+  const row = async () => (await api<LifecycleRow[]>(daemon, "/api/inspector/prs")).find((candidate) => candidate.key === `acme/mission-e2e#${childNumber}`);
+  await expect.poll(async () => (await row())?.stack?.parentPrUrl, { timeout: 30_000 }).toBe(parentUrl);
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe(`Stacked on #${parentNumber} (waiting for it to merge)`);
+  return { parent, child, parentSession, childSession, pgit, hook, parentPr, childPr, parentUrl, childUrl, row };
+}
+
+test("a stack breaks, follows a replacement parent, and offers its restack prompt with Foreman off", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  // Foreman ships on and live with an empty allowlist; this case is about it being OFF.
+  await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
+  const { parentSession, childSession, pgit, hook, parentPr: parent71, childPr: child72, parentUrl: P71, row } = await openStack(daemon, 71, 72);
+
+  // ---- the parent closes without merging: a broken stack, on the tile and in the queue ----
+  parent71.state = "CLOSED";
+  writeGhPullRequests(daemon.home, [parent71, child72]);
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe("Stack broken: #71 closed");
+
+  await boardLayout(dashboard, daemon);
+  const tile = dashboard.locator(".stack-lifecycle").filter({ hasText: "Stack broken: #71 closed" });
+  await expect(tile).toBeVisible({ timeout: 30_000 });
+  await expect(tile.getByRole("button", { name: "Move onto main" })).toBeEnabled();
+  await expect(tile.getByRole("button", { name: "Wait for a replacement" })).toBeEnabled();
+  await shoot(dashboard, "board-stack-broken");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#72" });
+  await expect(queued).toContainText("Stack broken: #71 closed");
+  await expect(queued.getByRole("button", { name: "Move onto main" })).toBeEnabled();
+  await expect(queued.getByRole("button", { name: "Wait for a replacement" })).toBeEnabled();
+  await shoot(queued, "merge-queue-stack-broken");
+
+  // ---- wait for a replacement; the parent task opens #73 in the same episode ----
+  await queued.getByRole("button", { name: "Wait for a replacement" }).click();
+  await expect(queued).toContainText("Stack broken: #71 closed - waiting for a replacement", { timeout: 15_000 });
+  await expect(queued.getByRole("button", { name: "Wait for a replacement" })).toHaveCount(0);
+  pgit("switch", "-c", "feat/stack-parent-v2");
+  writeFileSync(join(parentSession.cwd!, "groundwork.txt"), "groundwork, again\n");
+  pgit("commit", "-q", "-am", "groundwork again");
+  pgit("push", "-q", "origin", "feat/stack-parent-v2");
+  const P73 = "https://github.com/acme/mission-e2e/pull/73";
+  const parent73 = { cwd: parentSession.cwd!, number: 73, url: P73, state: "OPEN" as "OPEN" | "MERGED", createdAt: new Date().toISOString(),
+    mergedAt: null as string | null, headRefOid: pgit("rev-parse", "HEAD"), headRefName: "feat/stack-parent-v2", mergeCommit: null as string | null };
+  writeGhPullRequests(daemon.home, [parent71, parent73, child72]);
+  await hook(parentSession, "PostToolUse", P73);
+
+  await expect.poll(async () => (await row())?.stack?.parentPrUrl, { timeout: 30_000, message: "the replacement-parent transition" }).toBe(P73);
+  expect((await row())!.stack!.history.map(({ from, to }) => ({ from, to }))).toEqual([{ from: P71, to: P73 }]);
+  await expect(queued).toContainText("Stacked on #73", { timeout: 15_000 });
+  const patches = () => recordsIn<{ argv: string[]; input: string }>(daemon.recordDir, (file) => file.startsWith("gh-patch-"))
+    .filter((call) => call.argv.includes("repos/acme/mission-e2e/pulls/72"))
+    .map((call) => (JSON.parse(call.input) as { base: string }).base);
+  await expect.poll(() => patches().includes("feat/stack-parent-v2"), { timeout: 15_000, message: "retargeted onto the replacement's branch" }).toBe(true);
+  await shoot(queued, "merge-queue-stacked-on-replacement");
+
+  // ---- the replacement merges: retarget to main, and with Foreman off, a manual restack ----
+  const MERGE = "5eed".repeat(10);
+  parent73.state = "MERGED";
+  parent73.mergedAt = new Date().toISOString();
+  parent73.mergeCommit = MERGE;
+  writeGhPullRequests(daemon.home, [parent71, parent73, { ...child72, baseRefName: "feat/stack-parent-v2" }]);
+  await expect.poll(() => patches().at(-1), { timeout: 30_000, message: "retargeted to the default branch" }).toBe("main");
+  writeGhPullRequests(daemon.home, [parent71, parent73, { ...child72, baseRefName: "main" }]);
+  await expect(queued).toContainText("Restack needed: Foreman is off", { timeout: 30_000 });
+  await expect(queued.getByRole("status")).toHaveCount(0, { timeout: 1_000 });
+  const send = queued.getByRole("button", { name: "Send restack prompt" });
+  await expect(send).toBeEnabled();
+  await shoot(queued, "merge-queue-restack-foreman-off");
+  await send.click();
+  await expect.poll(async () => {
+    const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
+    return transcript.messages.some((m) => m.role === "user" && m.text.includes("merge `origin/main` into `feat/stack-child`") && m.text.includes("Do NOT force-push"));
+  }, { timeout: 30_000, message: "the restack prompt reached the child's session" }).toBe(true);
+  await expect(queued).toContainText("Restacking onto main", { timeout: 15_000 });
+  await expect(queued.getByRole("button", { name: "Send restack prompt" })).toHaveCount(0);
+  await shoot(queued, "merge-queue-restacking");
+
+  // Nothing merged and nothing force-pushed: the daemon's only GitHub writes were base edits.
+  const writes = recordsIn<{ argv: string[] }>(daemon.recordDir, (file) => file.startsWith("gh-"))
+    .filter((call) => call.argv.includes("--method"))
+    .map((call) => call.argv.slice(0, 3).join(" "));
+  expect([...new Set(writes)]).toEqual(["api --method PATCH"]);
+});
+
+// A stopped parent task breaks the stack while its pull request is still open: the child can
+// never release itself while #81 is open, so the action that fixes it restarts the parent's
+// work - Reschedule puts the cancelled task back in the backlog, Start dispatches it - and once
+// the parent is working again the child reads as an ordinary stack waiting for its parent.
+test("a cancelled parent task holds its stack with a Reschedule, then a Start, that restarts its work", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const { parent, row } = await openStack(daemon, 81, 82);
+  expect((await api<{ ok: boolean }>(daemon, `/api/tasks/${parent.id}/cancel`, {})).ok).toBe(true);
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe("Stack broken: #81's task was cancelled");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#82" });
+  await expect(queued).toContainText("Stack broken: #81's task was cancelled");
+  const reschedule = queued.getByRole("button", { name: "Reschedule #81's task" });
+  await expect(reschedule).toBeEnabled();
+  await shoot(queued, "merge-queue-parent-task-cancelled");
+  await reschedule.click();
+  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status, { timeout: 15_000 })
+    .toBe("backlog");
+
+  await expect(queued).toContainText("Stack broken: #81's task was rescheduled", { timeout: 30_000 });
+  await expect(queued.getByRole("button", { name: "Reschedule #81's task" })).toHaveCount(0);
+  const start = queued.getByRole("button", { name: "Start #81's task" });
+  await expect(start).toBeEnabled();
+  await dashboard.mouse.move(0, 0);
+  await shoot(queued, "merge-queue-parent-task-rescheduled");
+  await start.click();
+  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === parent.id)?.status, { timeout: 30_000 })
+    .not.toBe("backlog");
+
+  // Working again on its open pull request: no longer broken, just stacked and waiting.
+  await expect(queued).toContainText("Stacked on #81 (waiting for it to merge)", { timeout: 30_000 });
+  await expect(queued.getByRole("button", { name: "Start #81's task" })).toHaveCount(0);
+  await dashboard.mouse.move(0, 0);
+  await shoot(queued, "merge-queue-parent-task-restarted");
+});
+
+// A child closed while its parent is still open (closed by hand, say) is a broken stack too,
+// and its fix is to open it again where it belongs: on the open parent's branch.
+test("a child closed while its parent is open offers Reopen on the parent's branch, sent to its session", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const { childSession, parentPr, childPr, row } = await openStack(daemon, 91, 92);
+  writeGhPullRequests(daemon.home, [parentPr, { ...childPr, state: "CLOSED" as const }]);
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 })
+    .toBe("Stack broken: this pull request was closed while #91 is still open");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#92" });
+  await expect(queued).toContainText("Stack broken: this pull request was closed while #91 is still open");
+  const reopen = queued.getByRole("button", { name: "Reopen on #91's branch" });
+  await expect(reopen).toBeEnabled();
+  await expect(queued.getByRole("button", { name: "Wait for a replacement" })).toHaveCount(0);
+  await shoot(queued, "merge-queue-child-closed-parent-open");
+  await reopen.click();
+  await expect.poll(async () => {
+    const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
+    return transcript.messages.some((m) => m.role === "user"
+      && m.text.includes("gh pr create --base feat/stack-parent") && m.text.includes("Stacked on #91") && m.text.includes("Do NOT force-push"));
+  }, { timeout: 30_000, message: "the reopen prompt reached the child's session" }).toBe(true);
+});
+
+// Foreman is on and live, but its own rule will never type into this child's session (here,
+// the repository is not on its allowlist). The row must not read as a restack under way: it
+// says why Foreman can't send it, offers the manual send, and that send reaches the session.
+test("when Foreman's own rule refuses the child's session, the row names why and offers the manual restack", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const { childSession, parentPr, childPr, row } = await openStack(daemon, 111, 112);
+  await api(daemon, "/api/foreman/config", { enabled: true, mode: "live", repoAllowlist: ["/not/this/repository"] }, "PUT");
+  writeGhPullRequests(daemon.home, [
+    { ...parentPr, state: "MERGED" as const, mergedAt: new Date().toISOString(), mergeCommit: "5eed".repeat(10) },
+    childPr,
+  ]);
+  const label = "Restack needed: Foreman can't send it - Foreman is not allowed in this repository";
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe(label);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#112" });
+  await expect(queued).toContainText(label);
+  await expect(queued).not.toContainText("Restacking onto main");
+  const send = queued.getByRole("button", { name: "Send restack prompt" });
+  await expect(send).toBeEnabled();
+  await shoot(queued, "merge-queue-foreman-cannot-send");
+  await send.click();
+  await expect.poll(async () => {
+    const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
+    return transcript.messages.some((m) => m.role === "user" && m.text.includes("merge `origin/main` into `feat/stack-child`"));
+  }, { timeout: 30_000, message: "the manual restack reached the child's session" }).toBe(true);
+  await expect(queued).toContainText("Restacking onto main", { timeout: 15_000 });
+});
+
+// A parent GitHub cannot be read must not be acted on: it may have merged or closed since the
+// last read, and a catch-up would then name a branch that no longer exists. The row says the
+// parent is being checked and offers nothing until a read succeeds.
+test("when the parent cannot be read, the pending catch-up is withdrawn until GitHub answers again", async ({ dashboard, daemon }) => {
+  test.setTimeout(240_000);
+  const { parentPr, childPr, row } = await openStack(daemon, 121, 122);
+  // The parent pushes again; GitHub's compare says the child is behind its new head.
+  const moved = { ...parentPr, headRefOid: "a1".repeat(20) };
+  writeGhCompare(daemon.home, { [`${moved.headRefOid}...${childPr.headRefOid}`]: "behind 1" });
+  writeGhPullRequests(daemon.home, [moved, childPr]);
+  const offered = "Catch-up needed: Foreman can't send it - Foreman is not allowed in this repository";
+  await expect.poll(async () => (await row())?.stackStanding?.label, { timeout: 30_000 }).toBe(offered);
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
+  const queued = dashboard.locator(".sc-row").filter({ hasText: "mission-e2e#122" });
+  await expect(queued).toContainText(offered);
+  await expect(queued.getByRole("button", { name: "Send catch-up prompt" })).toBeEnabled();
+
+  // GitHub stops answering for the parent.
+  writeGhPullRequests(daemon.home, [childPr]);
+  const checking = "Checking #121 on GitHub - prompts wait until it can be read";
+  await expect(queued).toContainText(checking, { timeout: 30_000 });
+  await expect(queued.getByRole("button", { name: "Send catch-up prompt" })).toHaveCount(0);
+  await shoot(queued, "merge-queue-parent-unreadable");
+
+  // It answers again: the catch-up is offered once more.
+  writeGhPullRequests(daemon.home, [moved, childPr]);
+  await expect(queued).toContainText(offered, { timeout: 30_000 });
+  await expect(queued.getByRole("button", { name: "Send catch-up prompt" })).toBeEnabled();
 });

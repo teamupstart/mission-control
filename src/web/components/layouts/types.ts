@@ -98,6 +98,19 @@ export interface SessionViewProps {
   onDeselect: () => void;
   /** Open detail id: the Console selection or the Board's drill-in. */
   detailId: string | null;
+  /**
+   * The session whose detail is open, from App's one `detailSession` lookup: the fleet list
+   * first, then an open resident that the Drawer placement keeps out of `sessions`. Absent in a
+   * static rendering, where the view falls back to finding `detailId` in `sessions`.
+   */
+  detailSession?: Session | null;
+  /**
+   * Residents drawn as visitor cards: they need you while the Residents drawer is closed. In
+   * `sessions` like any fleet member, but a view draws them as `ResidentVisitorCard`, which
+   * opens the drawer through `onOpenResidentDrawer` instead of the detail.
+   */
+  residentVisitors?: ReadonlySet<string>;
+  onOpenResidentDrawer?: (sessionId: string) => void;
   onOpenReviews: (id: string) => void;
   /** One-shot request to reveal a session's integrated Diff tab, optionally at one fix. */
   diffTabRequest: { sessionId: string; commit: string | null; nonce: number } | null;

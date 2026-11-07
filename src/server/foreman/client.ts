@@ -1305,12 +1305,17 @@ export class ForemanClient implements ForemanActions {
    * ever safe when the daemon positively said `pasted: false`; a request that never
    * completed tells us nothing about what the daemon did with it.
    */
-  async inject(id: string, text: string, codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup): Promise<void> {
+  async inject(
+    id: string,
+    text: string,
+    codeRabbit?: import("@shared/code-rabbit.ts").CodeRabbitFollowup,
+    stack?: import("@shared/stacking.ts").StackPromptRequest,
+  ): Promise<void> {
     let res: Response;
     try {
       // `origin` is what lets the conversation log say who typed this. Every inject from
       // this client is Foreman's: the human's own replies go through the dashboard.
-      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text, origin: "foreman", codeRabbit });
+      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text, origin: "foreman", codeRabbit, stack });
     } catch (err) {
       throw new InjectError(`inject ${id} -> ${String(err)}`, true);
     }

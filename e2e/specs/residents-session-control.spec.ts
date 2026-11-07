@@ -128,7 +128,7 @@ async function restartOnNewProfile(page: Page, daemon: DaemonHandle, profileId: 
 }
 
 test("a browser Restart on new profile does not grant session control", async ({ dashboard, daemon }) => {
-  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
   const profile = await createControlProfile(daemon);
   await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "browser-original" });
   await idleResident(daemon);
@@ -140,7 +140,7 @@ test("a resident launched from the standalone browser starts without session con
   dashboard,
   daemon,
 }) => {
-  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
 
   // The editor's Authority section: off by default, and explicit about the one way it is granted.
   await dashboard.goto(`${daemon.baseURL}/#/residents`);
@@ -200,7 +200,7 @@ test("a resident launched from the standalone browser starts without session con
 });
 
 test("a launch whose session control is still pending closes Dispatch at once, and the dock says so", async ({ dashboard, daemon }) => {
-  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+  await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
   const profile = await createControlProfile(daemon);
   // A launch that answered before its session had a full identity: the daemon consumed the click
   // and the grant still waits. Only a desktop click can be consumed, so the launch's real answer is
@@ -251,7 +251,7 @@ test("desktop Launch and Restart on new profile clicks grant session control, an
   try {
     const dashboard = await application.firstWindow();
     await startDaemon();
-    await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+    await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
     const profile = await createControlProfile(daemon);
 
     // A page script cannot arm a launch: the capability is already claimed, and a forged one is
@@ -321,7 +321,7 @@ test("a desktop app attached to a daemon it did not start launches without sessi
   const application = await launchDesktop(daemon);
   try {
     const dashboard = await application.firstWindow();
-    await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat" }, "PUT");
+    await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
     const profile = await createControlProfile(daemon);
     await dashboard.goto(`${daemon.baseURL}/#/residents/${encodeURIComponent(profile.id)}`);
     await dashboard.getByRole("region", { name: `Resident profile ${PROFILE}` }).getByRole("button", { name: "Launch" }).click();

@@ -3397,6 +3397,16 @@ export const LayoutModeSchema = z.enum(LAYOUT_MODES);
 export type LayoutMode = (typeof LAYOUT_MODES)[number];
 
 /**
+ * Where live residents are drawn. `drawer` keeps them off the Board columns and the Console
+ * rail, in the Residents drawer on the right edge; `fleet` is the earlier placement, where a
+ * resident is a fleet session with its marker. One list, read by the daemon's validation and by
+ * the placement predicate in `src/web/lib/resident-placement.ts`.
+ */
+export const RESIDENT_PLACEMENTS = ["drawer", "fleet"] as const;
+export const ResidentPlacementSchema = z.enum(RESIDENT_PLACEMENTS);
+export type ResidentPlacement = (typeof RESIDENT_PLACEMENTS)[number];
+
+/**
  * How one session's Conversation is DRAWN - the same rows, read two ways.
  *
  * `chat` is the shipped log: role bylines, bubbles, tool chips. `terminal` is the Native
@@ -3631,6 +3641,13 @@ export const UI_CONFIG_DEFAULTS = {
    * layout it already had, including a Console it was handed by the old default.
    */
   layout: "board",
+  /**
+   * The drawer, for a fresh install and for every install that never stored a choice -
+   * including one upgrading from a build that only had the fleet placement.
+   */
+  residentPlacement: "drawer",
+  /** The drawer floats over the page until someone pins it as a column. */
+  residentDrawerPinned: false,
   conversationView: "terminal",
   /**
    * Condensed, which CHANGES what an existing operator sees on upgrade - and is the
@@ -3738,6 +3755,10 @@ export const UI_CONFIG_DEFAULTS = {
 
 export const UiConfigSchema = z.object({
   layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
+  /** Where residents live: the drawer, or the Board and Console beside every other session. */
+  residentPlacement: ResidentPlacementSchema.default(UI_CONFIG_DEFAULTS.residentPlacement),
+  /** Whether the Residents drawer is pinned as a column beside the fleet. Per machine. */
+  residentDrawerPinned: z.boolean().default(UI_CONFIG_DEFAULTS.residentDrawerPinned),
   /**
    * Which rendering the Conversation opens in. A per-session override lives in the browser
    * only and never reaches here - see `src/web/lib/conversation-view.ts` for why that one is
@@ -5008,6 +5029,17 @@ export const CONVERSATION_TEXT_MAX_LENGTH = 100_000;
  */
 export const InjectPromptSchema = z.object({
   codeRabbit: z.object({ prKey: z.string().min(1).max(512), observationId: z.string().uuid() }).optional(),
+  /**
+   * A Stacked pull requests prompt or broken-stack action, by identity only (see
+   * `StackPromptRequest`). The daemon replaces `text` with the prompt it builds from the pull
+   * request row, claims a catch-up or restack before typing it, and refuses anything the
+   * child no longer needs.
+   */
+  stack: z.object({
+    prKey: z.string().min(1).max(512),
+    kind: z.enum(["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"]),
+    tip: z.string().min(1).max(128).nullable(),
+  }).optional(),
   text: z.string().min(1).max(CONVERSATION_TEXT_MAX_LENGTH),
   /** Human conversation composers opt into the editable outbox by default. */
   buffer: z.boolean().optional().default(true),
@@ -5026,6 +5058,12 @@ export const InjectPromptSchema = z.object({
   origin: PromptOriginSchema,
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;
+
+/** *Wait for a replacement* on a broken stack: let a replacement parent take the child over. */
+export const StackAwaitReplacementSchema = z.object({
+  prKey: z.string().min(1).max(512),
+  wait: z.boolean(),
+});
 
 /** Transient browser presence used only to keep Foreman clear of a human draft. */
 export const ComposerActivitySchema = z.object({

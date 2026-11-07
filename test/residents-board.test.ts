@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ResidentProfile, ResidentRunSummary } from "../src/shared/residents.ts";
-import type { Session } from "../src/shared/types.ts";
+import type { ReviewItem, Session, SessionGoalSummary } from "../src/shared/types.ts";
 import { mkSession, mkTask, mkTaskSummary } from "./helpers/session-fixture.ts";
 
 // Phase 2 of residents: how a resident is FOUND. The board section of a profile revision, the
@@ -382,4 +382,185 @@ test("the Residents button names its live count and opens nothing until pressed"
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /class="residents-count">2</);
   assert.doesNotMatch(html, /role="dialog"/);
+});
+
+test("in Drawer placement the Residents button keeps its name and opens the drawer, never the dock", () => {
+  const html = renderToStaticMarkup(createElement(ResidentsDock, {
+    runs: [summary({ taskId: "t1" })],
+    profiles: [profile()],
+    sessions: [],
+    // Even asked to start open, the dock's popover is not drawn behind a drawer.
+    defaultOpen: true,
+    onToggleDrawer: () => {},
+    drawerOpen: true,
+    onOpenSession: () => {},
+    onOpenLaunch: () => {},
+    onManage: () => {},
+  }));
+  assert.match(html, /class="ghost-btn residents-btn on"/);
+  assert.match(html, /aria-label="Residents - 1 live"/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.doesNotMatch(html, /role="dialog"/);
+});
+
+// ---- the Residents drawer: ⌥-number boundary and the empty state ----
+
+const { ResidentDrawerCardBody, ResidentsDrawer, ResidentsEdgeTab, residentDrawerEntries } = await import("../src/web/residents/ResidentsDrawer.tsx");
+const { residentShortcutIndex } = await import("../src/web/lib/keybindings.ts");
+const { useResidentLaunches } = await import("../src/web/residents/useResidentLaunches.ts");
+
+/** Ten live residents, oldest launch first, each with its own session. */
+function tenResidents(): { runs: ResidentRunSummary[]; sessions: Session[] } {
+  const runs: ResidentRunSummary[] = [];
+  const sessions: Session[] = [];
+  for (let n = 1; n <= 10; n += 1) {
+    runs.push(summary({ taskId: `t${n}`, createdAt: n }));
+    sessions.push(mkSession({ id: `s${n}`, task: mkTaskSummary({ id: `t${n}`, kind: "resident" }) }));
+  }
+  return { runs, sessions };
+}
+
+/** The drawer, pinned so it renders without an overlay host, with a stub launcher. */
+function drawerMarkup(runs: ResidentRunSummary[], sessions: Session[]): string {
+  const launcher: ReturnType<typeof useResidentLaunches> = { launches: {}, launch: async () => {} };
+  return renderToStaticMarkup(createElement(ResidentsDrawer, {
+    entries: residentDrawerEntries(runs, [profile()], sessions),
+    profiles: [profile()],
+    pinned: true,
+    selectedId: null,
+    onSelect: () => {},
+    onOpen: () => {},
+    onClose: () => {},
+    onPinnedChange: () => {},
+    launcher,
+    onOpenLaunch: () => {},
+    onManage: () => {},
+    reviews: [],
+    renderReview: () => null,
+  }));
+}
+
+test("resident nine is ⌥9 and resident ten has no shortcut, in the order ⌥N opens", () => {
+  const { runs, sessions } = tenResidents();
+  const entries = residentDrawerEntries(runs, [profile()], sessions);
+  assert.deepEqual(entries.map((entry) => entry.shortcut), [1, 2, 3, 4, 5, 6, 7, 8, 9, null]);
+  // ⌥9 is index 8, which is the ninth resident - the one printing ⌥9 - and no key reaches the tenth.
+  const key = (code: string) => residentShortcutIndex({ code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false });
+  assert.equal(entries[key("Digit9")!]!.session!.id, "s9");
+  assert.equal(entries[key("Digit1")!]!.session!.id, "s1");
+  assert.equal(key("Digit0"), null);
+
+  // The drawer prints nine keycaps, ⌥1 … ⌥9, and nothing on the tenth card.
+  const html = drawerMarkup(runs, sessions);
+  const keycaps = [...html.matchAll(/class="residents-drawer-key"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  assert.deepEqual(keycaps, ["⌥1", "⌥2", "⌥3", "⌥4", "⌥5", "⌥6", "⌥7", "⌥8", "⌥9"]);
+  assert.equal((html.match(/data-resident-card=/g) ?? []).length, 10);
+  assert.doesNotMatch(html, /⌥10/);
+});
+
+test("with no resident running, the drawer says so and the edge tab carries no number", () => {
+  const html = drawerMarkup([], []);
+  assert.match(html, /No residents are running\. Launch one from a profile below\./);
+  assert.match(html, /Residents <span class="residents-drawer-count">· 0 live<\/span>/);
+  assert.doesNotMatch(html, /data-resident-card=/);
+  // The footer still offers the profiles.
+  assert.match(html, /aria-label="Launch Triage Bot"/);
+
+  const empty = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 0, needsYou: false, onOpen: () => {} }));
+  assert.match(empty, /aria-label="Open the Residents drawer - 0 live"/);
+  assert.doesNotMatch(empty, /residents-edge-count/);
+  assert.doesNotMatch(empty, /needs-you/);
+  const one = renderToStaticMarkup(createElement(ResidentsEdgeTab, { live: 1, needsYou: true, onOpen: () => {} }));
+  assert.match(one, /class="residents-edge-count"[^>]*>1</);
+  assert.match(one, /class="residents-edge-tab needs-you"/);
+});
+
+// ---- the selected card's body: the ask, the latest message, and the reply box ----
+
+/** A resident's open `request_input` question with two options. */
+function residentAsk(sessionId: string): ReviewItem {
+  return {
+    id: "rv-1", sessionId, kind: "input", status: "pending",
+    title: "Ship the nightly migration?", body: "Ship the nightly migration?",
+    decisions: [{ id: "q", question: "Ship the nightly migration?", options: [
+      { id: "yes", label: "Ship it" }, { id: "no", label: "Hold it" },
+    ], allowOther: false }],
+    response: null, createdAt: 1, resolvedAt: null,
+  } as ReviewItem;
+}
+
+/** The body as the drawer draws it, with the injected review renderer stubbed to a marker. */
+function cardBodyMarkup(session: Session, reviews: ReviewItem[] = []): string {
+  return renderToStaticMarkup(createElement(ResidentDrawerCardBody, {
+    session,
+    name: "Triage Bot",
+    reviews,
+    renderReview: (review: ReviewItem) => createElement("section", { className: "stub-review-card" }, review.title),
+    children: createElement("div", { className: "residents-drawer-actions" }, "actions"),
+  }));
+}
+
+test("with a pending ask, the selected card draws it through the injected ReviewCard and keeps the reply box", () => {
+  const session = mkSession({ id: "s1", activity: "checking the nightly job" });
+  const html = cardBodyMarkup(session, [residentAsk("s1")]);
+  assert.match(html, /aria-label="Triage Bot is asking"/);
+  assert.match(html, /<section class="stub-review-card">Ship the nightly migration\?<\/section>/);
+  // The ask replaces the latest-message line rather than stacking under it.
+  assert.doesNotMatch(html, /residents-drawer-latest/);
+  assert.doesNotMatch(html, /checking the nightly job/);
+  assert.match(html, /<textarea[^>]*aria-label="Reply to Triage Bot"/);
+  // The card's own actions stay, after the new content.
+  assert.ok(html.indexOf("Reply to Triage Bot") < html.indexOf("residents-drawer-actions"));
+});
+
+test("a menu the resident is parked on is drawn as the Conversation draws it, its rows as buttons", () => {
+  const session = mkSession({
+    id: "s1",
+    paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 },
+  });
+  const html = cardBodyMarkup(session);
+  assert.match(html, /aria-label="Triage Bot is asking"/);
+  assert.match(html, /Run npm test\?/);
+  assert.match(html, /<button[^>]*>(?:(?!<\/button>).)*Yes/);
+  assert.doesNotMatch(html, /residents-drawer-latest/);
+});
+
+test("with nothing asked, the selected card shows the latest message and a reply box", () => {
+  const html = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job" }));
+  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot">checking the nightly job<\/p>/);
+  assert.doesNotMatch(html, /is asking/);
+  assert.match(html, /<textarea[^>]*aria-label="Reply to Triage Bot"[^>]*placeholder="Reply to Triage Bot…"/);
+  // The send chord is printed on the button; the keycap stays out of its accessible name.
+  assert.match(html, />Send <kbd class="residents-drawer-reply-key" aria-hidden="true">⌘⏎<\/kbd><\/button>/);
+});
+
+test("a resident that cannot be messaged gets no reply box, and its actions remain", () => {
+  // A terminal session with no pane: `canMessage` says no, as it does to the Conversation's box.
+  const html = cardBodyMarkup(mkSession({ id: "s1", terminals: [], activity: "checking the nightly job" }));
+  assert.doesNotMatch(html, /Reply to Triage Bot/);
+  assert.doesNotMatch(html, /<textarea/);
+  assert.match(html, /checking the nightly job/);
+  assert.match(html, /residents-drawer-actions/);
+});
+
+test("with no activity line, the latest message falls back to the session's goal", () => {
+  const html = cardBodyMarkup(mkSession({ id: "s1", activity: null, goal: { text: "keep the nightly job green", source: null, updatedAt: 1 } }));
+  assert.match(html, /<p class="residents-drawer-latest" aria-label="Latest from Triage Bot">keep the nightly job green<\/p>/);
+});
+
+test("the activity line wins over the goal when both are present", () => {
+  const html = cardBodyMarkup(mkSession({ id: "s1", activity: "checking the nightly job", goal: { text: "keep the nightly job green", source: null, updatedAt: 1 } }));
+  assert.match(html, /aria-label="Latest from Triage Bot">checking the nightly job<\/p>/);
+  assert.doesNotMatch(html, /keep the nightly job green/);
+});
+
+test("with neither an activity line nor a goal, the card draws no empty latest-message line", () => {
+  for (const goal of [null, { text: null, source: null, updatedAt: 1 } satisfies SessionGoalSummary]) {
+    const html = cardBodyMarkup(mkSession({ id: "s1", activity: null, goal }));
+    assert.doesNotMatch(html, /residents-drawer-latest/);
+    assert.doesNotMatch(html, /Latest from/);
+    // The reply box and the actions are still drawn.
+    assert.match(html, /aria-label="Reply to Triage Bot"/);
+    assert.match(html, /residents-drawer-actions/);
+  }
 });

@@ -6,7 +6,8 @@ import { PlanView } from "./PlanView.tsx";
 import { ChatGlyph, DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
-import { reviewDecisions, showsBody } from "../lib/reviews.ts";
+import { quickDecision, reviewDecisions, showsBody } from "../lib/reviews.ts";
+import { QuickDecisionButtons } from "./QuickDecisionButtons.tsx";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import {
@@ -94,9 +95,16 @@ export function ReviewCard({
   review,
   note: sessionNote,
   onMovedToChat,
+  quickAnswers = false,
 }: {
   review: ReviewItem;
   note?: SessionNoteSummary | null;
+  /**
+   * Answer a one-question ask by pressing an option, for a surface with no room for the form
+   * (the Residents drawer's card). Only questions `quickDecision` admits are drawn this way;
+   * anything richer keeps the full form. Either way the answer goes through `resolve` below.
+   */
+  quickAnswers?: boolean;
   /**
    * Called once an answer that moved at least one question to chat has been delivered, so the
    * surface can close and focus the session's message box: the conversation is where the
@@ -116,6 +124,7 @@ export function ReviewCard({
   const [foremanOpen, setForemanOpen] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  const quick = quickAnswers ? quickDecision(review) : null;
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
   const finalBundle = review.standingApprovalEligible === true
     && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
@@ -244,7 +253,16 @@ export function ReviewCard({
         `plan-decisions` with no decisions cannot be created (the schema forbids it); an
         `input` with none is the open-ended ask, and still gets the textarea.
       */}
-      {decisions ? (
+      {quick ? (
+        <QuickDecisionButtons
+          decision={quick}
+          busy={busy}
+          recommended={recommendedKeys}
+          onDismiss={() => void resolve("dismiss", null)}
+          onAnswer={(selections) =>
+            void resolve("answer", formatResponse([quick], selections, decisionLead(review.kind)), selections)}
+        />
+      ) : decisions ? (
         <DecisionForm
           decisions={decisions}
           busy={busy}

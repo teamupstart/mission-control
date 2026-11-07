@@ -375,8 +375,9 @@ Inspector consent. See [CodeRabbit follow-up](inspector-and-shipping.md#coderabb
 
 Shipping also stores the [Stacked pull requests](inspector-and-shipping.md#stacked-pull-requests)
 pair. `stacking` is `merge` (wait for the prerequisite to merge) or `stack` (start on its open
-pull request), and it has **no stored default**: an absent key means the shipped default, so an
-install that never chose follows a later release's default. Only an explicit choice on the
+pull request), and it has **no stored default**: an absent key means the shipped default,
+which is `stack`, so an install that never chose stacks eligible same-repository dependencies.
+An explicit `merge` is kept. Only an explicit choice on the
 Shipping card writes it, and saving another Shipping card leaves it absent. `maxStackDepth` is
 an integer from 1 to 5, default 3. Settings snapshots include both, and a snapshot taken before
 an explicit choice restores with `stacking` still absent. A dependency edge's own `mode`

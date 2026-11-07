@@ -85,6 +85,10 @@ function seam(g: Gh): StackGitHub {
       const answer = g.ancestry.get(`${ancestor}..${head}`);
       return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: answer };
     },
+    compare: async (_cwd, _o, _r, base, head) => {
+      const answer = g.ancestry.get(`${base}..${head}`);
+      return answer === undefined ? { ok: false, error: "compare failed" } : { ok: true, value: { contains: answer, behindBy: answer ? 0 : 1 } };
+    },
     mergeBase: async (_cwd, _o, _r, base, head) => {
       g.compares.push(`${base}...${head}`);
       const answer = g.mergeBases.get(`${base}...${head}`);
@@ -125,7 +129,7 @@ test("the first child pull request is seeded from the task's dispatch", async ()
   const lineage = getInspectorPr(key)?.stack;
   assert.deepEqual(lineage && { ...lineage }, {
     taskId: "child", episode: "ep1", adoptedAt: 2_000, parentPrUrl: PARENT, baseSha: CUT,
-    releasedHeadSha: null, releasedBasis: null, history: [], note: null,
+    releasedHeadSha: null, releasedBasis: null, history: [], note: null, observation: null, awaitReplacementAt: null,
   });
   // Written once: a second adoption signal cannot rewrite it.
   assert.equal(adoptStackLineage(key, { task: stackedTask({ stackPrUrl: REPLACEMENT_PARENT }), episodeId: "ep1" }, 3_000), false);

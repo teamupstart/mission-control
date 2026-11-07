@@ -119,9 +119,29 @@ unanswered, Dispatch keeps that one launch available to retry exactly.
 
 ## Finding a resident
 
-A running resident is marked wherever its session appears, and every mark comes from the
-revision the run launched with: editing the profile's color, label or pin changes the next launch,
-never a resident that is already running.
+**Settings → Display → Residents → Where residents live** decides where running residents are
+drawn. The choice is stored per machine beside **Layout** and applies live.
+
+| Where residents live | What you see |
+|---|---|
+| **Drawer** (default) | Residents leave the Board columns and the Console rail and live in [the Residents drawer](#the-residents-drawer) on the right edge. A fresh install, and any install that never chose, gets the drawer. |
+| **Board and Console** | Residents sit in the Board columns and the Console rail beside every other session, with their marker, and the top bar's **Residents** button opens [the Residents dock](#the-residents-dock). |
+
+Either way a resident opens on the same full detail - Conversation, Work queue, Workflows,
+Diff and Files, with the resident band - as the Board drill-in on the Board and in the detail
+pane in Console:
+
+- **⌥1…⌥9** open live resident 1 to 9, in the order the drawer and the dock list them (oldest
+  launch first), from any page. They match the physical digit key, so they work on macOS, where
+  Option+digit types a symbol, and they do nothing while a text field has focus. They cannot be
+  rebound, and **⌘1…⌘9** keep numbering only fleet sessions.
+- **⌘K** finds a live resident by name or label and opens its detail.
+- The **Need you** count, desktop alerts and the chime include a resident that needs you in
+  both placements.
+
+In **Board and Console** placement, every mark below comes from the revision the run launched
+with: editing the profile's color, label or pin changes the next launch, never a resident that
+is already running.
 
 - **Border glow.** Its Board card has a glowing outline in the profile's color, and a label
   chip beside its name - the label you set, up to four characters, or initials from the profile's
@@ -134,21 +154,83 @@ never a resident that is already running.
   <kbd>⌘</kbd>-number shortcuts follow that order. Turn the pin off under **Board presence** and
   a resident takes its place in the column's ordinary order like any other session: by name,
   within its repository's group when **Group by repository** is on.
-- **Console band.** Opening a resident shows a band under the Console header: the label chip,
-  the profile name, the Persona if it has one, the revision it launched from and whether it is pinned. When the
-  profile has been edited since the launch, the band says **Profile changed since launch** and
-  the new revision. When the resident's revision turns **Control other sessions** on, the band
-  says **control granted** or **control not granted**, the latter beside the session control
-  menu. **Profile** opens the profile on the Residents page.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
 
+In **Drawer** placement there is no card or rail row for the marker or the pin to act on, so
+**Resident marker** and the profile's **Pin to top of column** say they apply only in Board and
+Console. The marker's color and label still draw the drawer's cards and the visitor card.
+
+The **Console band** shows in both placements. Opening a resident shows a band under the
+Console header: the label chip, the profile name, the Persona if it has one, the revision it
+launched from and whether it is pinned. When the profile has been edited since the launch, the
+band says **Profile changed since launch** and the new revision. When the resident's revision
+turns **Control other sessions** on, the band says **control granted** or **control not
+granted**, the latter beside the session control menu. **Profile** opens the profile on the
+Residents page.
+
+### The Residents drawer
+
+In **Drawer** placement the top bar's **Residents** button, **Shift+H**, the ⌘K command **Open
+the Residents drawer or dock**, and the edge tab on the window's right edge all open a 330px
+drawer that slides in from the right over the current page and dims it. Escape or a click outside
+closes it. The edge tab shows ⌂ and the live count, with no number when nothing is running, and
+turns amber while any resident needs you. The top-bar button keeps its name and count.
+
+- **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
+  top line holds the chip, the name, a state dot and the resident's **⌥**-number. Under it are
+  tags for the loop's state, iteration and next wake, and any pause or wake reason.
+- **Selected card.** The selected card expands to **Open**, **Run now** and **Pause** or
+  **Resume**, and a **Control** badge when the resident's revision asks for session control.
+  <kbd>↑</kbd>/<kbd>↓</kbd> move the selection and <kbd>Enter</kbd> opens the selected card;
+  a double-click opens a card too.
+- **Answering from the drawer.** Above its actions, the selected card shows what the resident
+  is asking, or else its latest message, clamped to three lines (the line the Console rail
+  prints under its name). A question it asked through `request_input` with one set of options
+  shows each option as a button: one press answers it, beside **Chat about it** and **Dismiss**.
+  A question that needs more (several questions, several picks, or an answer of your own) shows
+  the same form the attention inbox draws. A menu the session is parked on shows its rows as
+  buttons, as the Conversation tab does. Either way the answer goes back the way the inbox sends
+  it. The card lists every question the resident has pending; once none is left, the amber
+  state and the visitor card clear.
+- **Quick reply.** Under that is a reply box labeled **Reply to** and the resident's name.
+  <kbd>⌘</kbd><kbd>Enter</kbd> or **Send** delivers it exactly as the Conversation tab's reply
+  box does, queued behind a busy turn the same way; plain <kbd>Enter</kbd> starts a new line.
+  The box shares the Conversation's draft, so text typed here is waiting there when you open
+  the resident. <kbd>Escape</kbd> leaves the box for the card, and the next Escape closes a
+  floating drawer. While the box has focus, the arrow keys, <kbd>Enter</kbd> and **⌥N** act on
+  the text, not the drawer. A resident that cannot take a message has no reply box.
+- **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
+  same launch behavior the dock has (see below), and **Manage residents** opens the Residents
+  page. The dock and the drawer share one launch state, so closing either while a launch is
+  starting never starts a second resident.
+- **Pin.** **Pin** docks the drawer as a column beside the fleet, so the Board or Console
+  narrows instead of being covered. The pin is stored per machine. **Unpin** or **Shift+H**
+  closes it.
+
+**Escape returns to the drawer.** When you open a resident from the floating drawer, the drawer
+closes as the detail opens, and the Escape that leaves the detail reopens it with that resident
+still selected. On the Board that is the Escape that closes the drill-in; in Console it is the
+Escape that leaves the detail. A pinned drawer stays on screen beside the detail, so Escape
+leaves the detail and moves focus to that resident's card instead. Moving to any other session
+first drops the return. A resident opened by **⌥N** or the palette with the drawer closed leaves
+the usual way.
+
+**Visitor card.** While the drawer is closed, a resident that needs you shows a visitor card in
+the Board's **Needs you** column, or among the Console rail's sessions that need you: a dashed
+outline in its marker color with the chip, the name and *Resident · opens in the drawer*.
+Clicking it, or <kbd>Enter</kbd> on it, opens the drawer with that resident selected. The arrow
+keys reach it; the <kbd>⌘</kbd>-numbers skip it, so they don't shift while its ask is open. It
+disappears while the drawer is open or pinned, while that resident's own detail is open, and
+once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
+landing on the visitor card opens the resident's detail.
+
 ### The Residents dock
 
-**Residents** sits beside **Foreman** in the top bar. While any resident is running it shows how
-many; with none running it shows no number. Click it, press **Shift+H**, or choose **Open the
-Residents dock** in the ⌘K palette.
+In **Board and Console** placement, **Residents** sits beside **Foreman** in the top bar. While
+any resident is running it shows how many; with none running it shows no number. Click it, press
+**Shift+H**, or choose **Open the Residents drawer or dock** in the ⌘K palette.
 
 - **Live** shows each running resident as a card in its marker color. The card's top line has
   the chip, the name, the session's state and **Open**, which opens that session. Under it are

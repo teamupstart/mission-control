@@ -174,6 +174,36 @@ test("a merge-based restack after a squash merge leaves only the child's own cha
   assert.doesNotThrow(() => git(checkout, "merge-base", "--is-ancestor", squash, "HEAD"));
 });
 
+test("the lifecycle's prompts in git: catch up with a moved parent, then restack after its squash merge, never force-pushing", () => {
+  const { author, checkout } = fixture();
+  git(checkout, "fetch", "-q", "origin");
+  // Cut from the parent, as a stacked dispatch does, and pushed as the child's pull request.
+  git(checkout, "checkout", "-q", "-b", "feat/child", "origin/feat/parent");
+  commit(checkout, "child.txt", "child\n", "child work");
+  git(checkout, "push", "-q", "-u", "origin", "feat/child");
+  // A review repair lands on the parent: the catch-up prompt merges the parent branch in.
+  git(author, "checkout", "-q", "feat/parent");
+  commit(author, "parent.txt", "parent v2\n", "parent repair");
+  git(author, "push", "-q", "origin", "feat/parent");
+  git(checkout, "fetch", "-q", "origin");
+  git(checkout, "merge", "-q", "--no-edit", "origin/feat/parent");
+  git(checkout, "push", "-q", "origin", "feat/child"); // a plain push: the branch only moved forward
+  // The parent squash-merges (with its repair) and the restack prompt merges origin/main in.
+  git(author, "checkout", "-q", "main");
+  git(author, "merge", "-q", "--squash", "feat/parent");
+  git(author, "commit", "-q", "-m", "Parent (#7)");
+  git(author, "push", "-q", "origin", "main");
+  git(checkout, "fetch", "-q", "origin");
+  git(checkout, "merge", "-q", "--no-edit", "origin/main");
+  git(checkout, "push", "-q", "origin", "feat/child");
+  // The child's diff against main is only its own change, and main's squash commit is in its
+  // history - what the release check verifies through GitHub's compare API.
+  const changed = git(checkout, "diff", "--name-only", "origin/main...HEAD").split("\n").filter(Boolean);
+  assert.deepEqual(changed, ["child.txt"]);
+  assert.doesNotThrow(() => git(checkout, "merge-base", "--is-ancestor", git(checkout, "rev-parse", "origin/main"), "HEAD"));
+  assert.equal(git(checkout, "rev-parse", "HEAD"), git(checkout, "rev-parse", "origin/feat/child"));
+});
+
 test("a stacked child's review diff uses its pull request's CURRENT base, read from GitHub, not the dispatch-time branch", async () => {
   const { author, checkout } = fixture();
   // A second branch on origin, which the child's pull request actually targets.

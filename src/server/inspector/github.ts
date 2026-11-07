@@ -586,6 +586,40 @@ export async function isAncestor(
 }
 
 /**
+ * How far `head` is from `base`, per GitHub's compare API: whether `base` is in `head`'s
+ * history (`ahead` or `identical`), and how many of `base`'s commits `head` lacks.
+ *
+ * Generic on purpose - a stacked child behind its parent's branch and a pull request behind
+ * its default branch are the same question - so nothing here names a stack. `behindBy` is null
+ * when GitHub did not report a count. A read; no git runs in any worktree.
+ */
+export interface BaseComparison {
+  /** Is `base` in `head`'s history? */
+  contains: boolean;
+  behindBy: number | null;
+}
+
+export async function compareCommits(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+): Promise<GhResult<BaseComparison>> {
+  const res = await run(
+    ghBin(),
+    ["api", `repos/${owner}/${repo}/compare/${base}...${head}`, "--jq", '.status + " " + (.behind_by | tostring)'],
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (res.code !== 0) return fail("gh api (compare)", res);
+  const [status = "", count = ""] = res.stdout.trim().split(/\s+/);
+  const behindBy = /^\d+$/.test(count) ? Number(count) : null;
+  if (status === "ahead" || status === "identical") return { ok: true, value: { contains: true, behindBy: behindBy ?? 0 } };
+  if (status === "behind" || status === "diverged") return { ok: true, value: { contains: false, behindBy } };
+  return { ok: false, error: `compare reported an unrecognized status "${status.slice(0, 40)}"` };
+}
+
+/**
  * The merge base of two commits, per GitHub's compare API: the commit a pull request from
  * `head` onto `base` is diffed from. A read; no git runs in any worktree. An unknown commit
  * or an answer that is not a commit id is a failure, never a guess.

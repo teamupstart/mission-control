@@ -265,7 +265,9 @@ test("canonical download streams progress, redacts credentials, detects corrupti
   const script = async (body: string) => writeFile(command, `#!${process.execPath}\n${body}\n`, {mode: 0o700});
   await script(`if (process.env.GH_DEBUG || process.env.DEBUG) process.exit(4); console.log = () => {}; process.stdout.write(${JSON.stringify(payload)});`);
   const progress: number[] = [];
-  const run = (name: string, signal = new AbortController().signal, selected = asset, timeoutMs = 1000) => downloadBinaryAsset({command, env: {...process.env, GH_DEBUG: "api", DEBUG: "headers"}, asset: selected,
+  // Integrity checks include real Node startup, which can exceed a second under suite
+  // contention. Keep that budget separate from the explicit 50ms timeout case below.
+  const run = (name: string, signal = new AbortController().signal, selected = asset, timeoutMs = 10_000) => downloadBinaryAsset({command, env: {...process.env, GH_DEBUG: "api", DEBUG: "headers"}, asset: selected,
     path: join(root, name), signal, timeoutMs, onBytes: n => progress.push(n)});
   await run("valid"); assert.deepEqual(progress, [0, payload.length]); assert.equal(await readFile(join(root, "valid"), "utf8"), payload);
   await assert.rejects(run("digest", undefined, {...asset, sha256: "0".repeat(64)}), /SHA-256/);

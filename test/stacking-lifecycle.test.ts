@@ -17,6 +17,7 @@ import type { StackLifecycleContext } from "../src/server/stacking/state.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-stacking-lifecycle-"));
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
+const { recordStackObservation } = db;
 const { observeClosedStackChildren, observeStackLifecycle } = await import("../src/server/stacking/state.ts");
 const { recheckStackParent, stackPromptCandidate, stackStandingFor } = await import("../src/server/stacking/delivery.ts");
 const { adoptStackLineage, refreshStackRelease } = await import("../src/server/stacking/lineage.ts");
@@ -583,7 +584,8 @@ test("an unreadable parent decides nothing: last facts kept for display, no reta
   // the child to merge a parent branch that may no longer exist.
   g.refs.delete(P1);
   const marked = await observe(key, g, { baseRefName: "feat/parent", headSha: CHILD_PUSHED }, 6_000);
-  assert.deepEqual(marked, { ...first!, parentUnreadSince: 6_000 }, "the last facts, kept, and marked unconfirmed");
+  assert.deepEqual(marked, { ...first!, childHeadSha: CHILD_PUSHED, parentUnreadSince: 6_000 },
+    "the last PARENT facts, kept and marked unconfirmed; the child's own facts as just read");
   assert.deepEqual(row(key).stack!.observation, marked);
   assert.deepEqual(g.retargets, [], "no base edit on an unknown parent");
   assert.deepEqual(g.compares, [`${P1_HEAD_2}..${CHILD_HEAD}`], "no compare either");
@@ -802,16 +804,16 @@ test("a recovery prompt is sent only if the parent still matches what the offer 
   await observe(key, g, { state: "CLOSED", baseRefName: "feat/parent" });
   db.updateInspectorPr(key, { state: "closed" }, 1);
   // Still open on the same branch: the offer stands.
-  assert.equal(await recheckStackParent(row(key), "reopen-on-parent", seam(g)), null);
+  assert.equal((await recheckStackParent(row(key), "reopen-on-parent", seam(g))).error, undefined);
   // It merged since the last check: refused, rather than naming a branch that may be gone.
   g.refs.set(P1, refs({ state: "MERGED", mergeCommitSha: MERGE }));
-  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /#7 changed since it was last checked/);
+  assert.match((await recheckStackParent(row(key), "reopen-on-parent", seam(g))).error ?? "", /#7 changed since it was last checked/);
   // Its branch changed: refused for Reopen on #7's branch.
   g.refs.set(P1, refs({ headRefName: "feat/parent-renamed" }));
-  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /changed since it was last checked/);
+  assert.match((await recheckStackParent(row(key), "reopen-on-parent", seam(g))).error ?? "", /changed since it was last checked/);
   // Unreadable: refused.
   g.refs.delete(P1);
-  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /could not be read from GitHub/);
+  assert.match((await recheckStackParent(row(key), "reopen-on-parent", seam(g))).error ?? "", /could not be read from GitHub/);
 });
 
 test("closed stacked children are read in round-robin pages, so none is starved", async () => {
@@ -838,4 +840,52 @@ test("closed stacked children are read in round-robin pages, so none is starved"
   assert.deepEqual(observedAt(), [10_000, 10_000, 20_000], "the oldest-read row is reached next");
   await observeClosedStackChildren(seam(g), ctx, () => "/repo", 30_000, 2);
   assert.deepEqual(observedAt(), [30_000, 30_000, 20_000], "and the walk wraps around");
+});
+
+test("a child that closes or merges on a tick whose parent read fails is recorded as such, and recovered", async () => {
+  const g = gh();
+  g.refs.set(P1, refs());
+  g.ancestry.set(`${P1_HEAD}..${CHILD_HEAD}`, true);
+  // The child closes on the same tick GitHub fails to answer for its parent.
+  const closing = stackedChild();
+  await observe(closing, g, {}, 5_000);
+  g.refs.delete(P1);
+  const marked = await observe(closing, g, { state: "CLOSED", baseRefName: "feat/parent" }, 6_000);
+  assert.equal(marked?.childState, "CLOSED", "the child's own facts come from the snapshot that WAS read");
+  assert.equal(marked?.parentUnreadSince, 6_000);
+  db.updateInspectorPr(closing, { state: "closed", observedState: "CLOSED" }, 6_000);
+  // GitHub recovers: the retired row is still read, and its recovery action appears.
+  g.refs.set(P1, refs());
+  g.refs.set(row(closing).url, refs({ state: "CLOSED", headSha: CHILD_HEAD, headRefName: "feat/child", baseRefName: "feat/parent" }));
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 7_000);
+  assert.equal(row(closing).stack!.observation!.parentUnreadSince ?? null, null);
+  assert.deepEqual(stackStandingFor(row(closing), [owner()], FOREMAN_ON)!.actions, ["reopen-on-parent"]);
+
+  // A child that MERGES on such a tick is released, never left "checking" for ever.
+  const merging = stackedChild(3_000);
+  await observe(merging, g, {}, 5_000);
+  g.refs.delete(P1);
+  await observe(merging, g, { state: "MERGED", baseRefName: "main" }, 6_000);
+  assert.equal(row(merging).stack!.observation!.childState, "MERGED");
+  const standing = stackStandingFor(row(merging), [owner()], FOREMAN_ON)!;
+  assert.equal(standing.state, "released");
+  assert.equal(standing.label, null);
+});
+
+test("a closed child whose parent is confirmed merged is not read again: its offer cannot change", async () => {
+  const key = stackedChild();
+  const reads: string[] = [];
+  const g = gh();
+  g.refs.set(P1, refs({ state: "MERGED", mergeCommitSha: MERGE }));
+  await observe(key, g, { state: "CLOSED", baseRefName: "feat/parent" });
+  db.updateInspectorPr(key, { state: "closed", observedState: "CLOSED" }, 1);
+  assert.deepEqual(stackStandingFor(row(key), [owner()], FOREMAN_ON)!.actions, ["reopen-against-main"]);
+  const counting: StackGitHub = { ...seam(g), prRefs: async (cwd, url) => { reads.push(url); return seam(g).prRefs(cwd, url); } };
+  await observeClosedStackChildren(counting, ctx, () => "/repo", 20_000);
+  assert.deepEqual(reads, [], "no GitHub reads for a settled stack");
+  // An unconfirmed merged parent (the last read failed) is still read until confirmed.
+  recordStackObservation(key, { ...row(key).stack!.observation!, parentUnreadSince: 15_000 }, 15_000);
+  g.refs.set(row(key).url, refs({ state: "CLOSED", headSha: CHILD_HEAD, headRefName: "feat/child", baseRefName: "feat/parent" }));
+  await observeClosedStackChildren(counting, ctx, () => "/repo", 30_000);
+  assert.ok(reads.length > 0);
 });

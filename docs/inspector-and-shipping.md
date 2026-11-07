@@ -620,8 +620,10 @@ observed every sweep (GitHub reads only), so the action it offers follows its pa
 closed while #A was open offers *Reopen on #A's branch*, and once #A merges it offers *Reopen
 against main* instead. Every recovery prompt also reads the parent again just before it is
 typed, and is refused if the parent's state - or, for *Reopen on #A's branch*, its branch - no
-longer matches what the offer was based on, or GitHub cannot be read. Closed children are read
-a bounded page per sweep, round-robin, so every one is reached however many there are. A
+longer matches what the offer was based on, or GitHub cannot be read; inside the delivery's
+write lock it is checked once more against the latest observation. Closed children are read a
+bounded page per sweep, round-robin, so every one is reached however many there are, and one
+whose parent is confirmed merged is no longer read, since its offer cannot change. A
 recovery prompt is claimed like a catch-up or restack, keyed to the stack state it answers:
 once delivered it reads *(sent)* and is not sent again - a second *Move onto main* would ask
 for a second replacement pull request - until that state changes.

@@ -76,11 +76,13 @@ function fixture(observation: Partial<StackObservation> = {}) {
   refresh();
   const messages: string[] = [];
   let lose = false;
+  let atLock = () => {};
   const app = buildApp({
     registry, reviews: {} as RouteDeps["reviews"], tasks: {} as RouteDeps["tasks"],
     queues: { get: () => ({ items: [] }) } as unknown as RouteDeps["queues"],
     workflows: { runs: () => runs, localPlanPublication: () => undefined, reconcileDispatchedTaskWorkflows: () => {} } as unknown as RouteDeps["workflows"],
     sdkSessions: { send: async (_id: string, input: { text: string }, guard: () => string | null) => {
+      atLock();
       const blocked = guard(); if (blocked) throw new Error(blocked);
       messages.push(input.text);
       // A lost response: the text landed, the daemon never learned so.
@@ -93,7 +95,7 @@ function fixture(observation: Partial<StackObservation> = {}) {
       method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
       body: JSON.stringify({ text: "UNTRUSTED WORKER TEXT", origin, buffer: false, stack }),
     });
-  return { key, session, sessions, messages, post, refresh, app, refreshes, setRuns: (r: WorkflowRunSummary[]) => { runs = r; }, setLose: () => { lose = true; } };
+  return { key, session, sessions, messages, post, refresh, app, refreshes, setLock: (f: () => void) => { atLock = f; }, setRuns: (r: WorkflowRunSummary[]) => { runs = r; }, setLose: () => { lose = true; } };
 }
 
 /**
@@ -464,4 +466,20 @@ test("a recovery action is claimed: delivered once, never sent again for the sam
   assert.deepEqual(f.session.inspector?.stack?.sentActions, []);
   assert.equal((await f.post("human", move)).status, 200);
   assert.equal(f.messages.length, 2);
+});
+
+test("a recovery action whose parent changes while delivery waits for the lock is not typed", async (t) => {
+  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
+  const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
+  // The pre-send read saw #7 closed. While the delivery waits for the session's write lock, the
+  // Inspector observes #7 reopened - the guard inside the lock refuses the stale instruction.
+  f.setLock(() => {
+    recordStackObservation(f.key, { ...getInspectorPr(f.key)!.stack!.observation!, parentState: "OPEN" }, 3);
+  });
+  const res = await f.post("human", { prKey: f.key, kind: "move-onto-main", tip: null });
+  assert.notEqual(res.status, 200);
+  assert.equal((await res.json() as { pasted: boolean }).pasted, false);
+  assert.deepEqual(f.messages, [], "nothing was typed");
+  assert.equal(readStackPromptClaim(f.key, "move-onto-main", "https://github.com/acme/repo/pull/7|CLOSED|feat/parent|OPEN"), null,
+    "a positive non-delivery releases the action's claim");
 });

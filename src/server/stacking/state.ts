@@ -57,21 +57,26 @@ export async function observeStackLifecycle(
   let parentUrl = lineage.parentPrUrl;
   const read = await github.prRefs(dir, parentUrl);
   if (!read.ok || !read.value) {
-    // An unknown parent decides nothing: no base edit, no transition, no new facts. The last
-    // observation is kept for display, but marked unconfirmed, so no prompt or action is
-    // offered on it until a read succeeds - the parent may have merged or closed meanwhile.
-    if (previous?.parentUrl === parentUrl && previous.parentUnreadSince) return previous;
+    // An unknown parent decides nothing: no base edit, no transition, no new parent facts. The
+    // last parent facts are kept for display, marked unconfirmed, so no prompt or action is
+    // offered on them until a read succeeds - the parent may have merged or closed meanwhile.
+    // The CHILD's own facts come from a snapshot that was read, so they are recorded as they are
+    // now: a child that closes or merges on this very tick must be seen as closed or merged, or
+    // it is retired as open and never offered its recovery (or its release).
+    const child = {
+      childState: snapshot.state,
+      childHeadSha: snapshot.headSha || null,
+      baseRefName: snapshot.baseRefName || null,
+      defaultBranch: snapshot.defaultBranch || null,
+    };
     // With nothing known about THIS parent yet - the first read failed, or a replacement just
-    // took over - record the child's own facts and an unknown parent, so the row says it is
-    // checking rather than claiming the stack is fine.
+    // took over - the parent is recorded as unknown, so the row says it is checking rather than
+    // claiming the stack is fine.
     const marked: StackObservation = previous?.parentUrl === parentUrl
-      ? { ...previous, parentUnreadSince: now }
+      ? { ...previous, ...child, parentUnreadSince: previous.parentUnreadSince ?? now }
       : {
           observedAt: now,
-          childState: snapshot.state,
-          childHeadSha: snapshot.headSha || null,
-          baseRefName: snapshot.baseRefName || null,
-          defaultBranch: snapshot.defaultBranch || null,
+          ...child,
           parentUrl,
           parentState: null,
           parentHeadSha: null,
@@ -220,7 +225,14 @@ export async function observeClosedStackChildren(
   closedChildrenCursor = page.length < pageSize ? "" : page.at(-1)!.key;
   for (const row of page) {
     const lineage = row.stack;
-    if (!lineage || lineage.observation?.childState !== "CLOSED") continue;
+    const o = lineage?.observation ?? null;
+    if (!lineage) continue;
+    // Closed by the ledger's own reading, or by the last observation: either is enough, so a row
+    // retired on a tick whose observation still said OPEN is not lost.
+    if (row.observedState !== "CLOSED" && o?.childState !== "CLOSED") continue;
+    // A confirmed MERGED parent is terminal: the offered action (Reopen against main) cannot
+    // change, so reading it again buys nothing and spends the shared gh rate limit.
+    if (o?.parentState === "MERGED" && !o.parentUnreadSince && o.parentUrl === lineage.parentPrUrl) continue;
     const latest = latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);
     if (latest && latest.key !== row.key) continue;
     const dir = dirOf(row);

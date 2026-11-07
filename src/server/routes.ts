@@ -15,7 +15,8 @@ import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldown
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
-import { recheckStackParent, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
@@ -5926,9 +5927,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const stackRequest = parsed.data.stack;
     const stackOrigin = origin === "foreman" ? "foreman" : origin === "human" ? "human" : null;
     let stackClaim: string | null = null;
+    // The parent as read just before delivery, for a recovery action. The guard below runs
+    // inside the transport's write lock and cannot read GitHub (it is synchronous, and every
+    // sender shares it), so it checks the ledger's latest observation against this read instead.
+    let stackParentRead: PrRefs | null = null;
     const stackGuard = (): string | null => {
       if (!stackRequest) return null;
       try {
+        if (stackParentRead && stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+          const changed = stackParentDiffers(getInspectorPr(stackRequest.prKey)?.stack?.observation, stackParentRead, stackRequest.kind);
+          if (changed) return changed;
+        }
         if (!stackOrigin) return "Stack prompts are sent by Foreman or the operator";
         const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin,
           getInspectorPr(stackRequest.prKey), getForemanConfig(), stackClaim !== null);
@@ -5948,8 +5957,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       // A recovery action was chosen from the parent's last observed state; read it again
       // before typing, so a parent that merged or closed since never gets a stale instruction.
       if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
-        const changed = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
-        if (changed) return c.json({ error: changed, pasted: false }, 409);
+        const recheck = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
+        if (recheck.error !== undefined) return c.json({ error: recheck.error, pasted: false }, 409);
+        stackParentRead = recheck.parent;
       }
       const blocked = stackGuard();
       if (blocked) return c.json({ error: blocked, pasted: false }, 409);

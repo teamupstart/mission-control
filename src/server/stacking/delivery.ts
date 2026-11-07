@@ -18,6 +18,7 @@ import {
 } from "@shared/stacking.ts";
 import { latestStackedPr, readStackPromptClaim } from "../db.ts";
 import type { StackGitHub } from "./github.ts";
+import type { PrRefs } from "../inspector/github.ts";
 import { activeWorkflowOwnsSession, followupPrs, followupSessionBlocker, followupStableBlocker, foremanSettleMs } from "../foreman/review-followup.ts";
 import { foremanMayActLive } from "../foreman/verdict.ts";
 import { hasPane } from "../foreman/queue-machine.ts";
@@ -170,17 +171,37 @@ export async function recheckStackParent(
   row: InspectorPr | null,
   kind: StackPromptActionKind,
   github: StackGitHub,
-): Promise<string | null> {
+): Promise<{ error: string } | { error?: undefined; parent: PrRefs }> {
   const lineage = row?.stack;
   const o = lineage?.observation;
-  if (!row || !lineage || !o || o.parentUrl !== lineage.parentPrUrl) return "The stack has not been checked yet - try again after the next check";
-  const parent = stackPrNumber(lineage.parentPrUrl);
-  const name = parent === null ? "The parent" : `#${parent}`;
+  if (!row || !lineage || !o || o.parentUrl !== lineage.parentPrUrl) return { error: "The stack has not been checked yet - try again after the next check" };
   const read = await github.prRefs(row.cwd ?? row.repoRoot, lineage.parentPrUrl);
-  if (!read.ok || !read.value) return `${name} could not be read from GitHub - try again once it can`;
-  const changed = read.value.state !== o.parentState
-    || (kind === "reopen-on-parent" && (read.value.headRefName || null) !== o.parentHeadRefName);
+  if (!read.ok || !read.value) return { error: `${parentName(lineage.parentPrUrl)} could not be read from GitHub - try again once it can` };
+  const changed = stackParentDiffers(o, read.value, kind);
+  return changed ? { error: changed } : { parent: read.value };
+}
+
+/**
+ * Whether a recovery offer, made from observation `o`, still describes `parent`. Null when it
+ * does; otherwise the refusal. Synchronous, so the transport's write-lock guard can apply it
+ * against the ledger as it stands at the moment of typing: if the Inspector observed the parent
+ * change while the delivery waited for the lock, the stale instruction is never typed.
+ */
+export function stackParentDiffers(
+  o: StackObservation | null | undefined,
+  parent: Pick<PrRefs, "state" | "headRefName">,
+  kind: StackPromptActionKind,
+): string | null {
+  const name = parentName(o?.parentUrl ?? null);
+  if (!o || o.parentUnreadSince) return `${name} could not be confirmed from GitHub - try again once it can`;
+  const changed = parent.state !== o.parentState
+    || (kind === "reopen-on-parent" && (parent.headRefName || null) !== o.parentHeadRefName);
   return changed ? `${name} changed since it was last checked - the row updates on the next check` : null;
+}
+
+function parentName(url: string | null): string {
+  const number = stackPrNumber(url);
+  return number === null ? "The parent" : `#${number}`;
 }
 
 /**

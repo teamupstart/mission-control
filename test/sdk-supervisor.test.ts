@@ -789,6 +789,31 @@ test("a daemon packet with a pending follow-up's text is checked for authorship 
   assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
 });
 
+test("a retype is recorded by its echo when the first send's echo never arrived", async (t) => {
+  const f = await boundFollowUpSession("agent-follow-up-lost-first-echo");
+  t.after(f.fake.restore);
+  const text = "the same words, twice";
+  await f.follow(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2, "the first send's acknowledgement recorded it");
+  // Its echo never arrives. The retype's acknowledgement cannot record it.
+  const original = Registry.prototype.captureAcceptedPrompt;
+  let failed = false;
+  t.mock.method(f.registry, "captureAcceptedPrompt", function (
+    this: InstanceType<typeof Registry>,
+    ...args: Parameters<typeof original>
+  ) {
+    if (!failed) {
+      failed = true;
+      return null;
+    }
+    return original.apply(this, args);
+  });
+  await f.follow(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
+  f.echo(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 3, "the retype is heard");
+});
+
 test("a driver refusal releases the follow-up's expectation", async (t) => {
   const f = await boundFollowUpSession("agent-follow-up-refused");
   t.after(f.fake.restore);

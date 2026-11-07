@@ -104,6 +104,20 @@ test("an echo whose hook capture failed is still spent", () => {
   assert.deepEqual(confirmHumanEcho(retype, { now: T0 }), { captured: false });
 });
 
+test("an echo goes to a send still waiting for its revision before a recorded one", () => {
+  // The first send was recorded by its acknowledgement and its echo never came.
+  const first = expect("lost echo, then a retype", idle(0));
+  confirmHumanEcho(first, { now: T0 });
+  markHumanEchoCaptured(first, { now: T0 });
+  // The retype's acknowledgement could not record it.
+  const retype = expect("lost echo, then a retype", idle(0));
+  assert.deepEqual(confirmHumanEcho(retype, { now: T0 }), { captured: false });
+  const claimed = claim("lost echo, then a retype");
+  assert.equal(claimed.kind, "capture", "the echo records the retype rather than being skipped as the first send's");
+  if (claimed.kind === "capture") markHumanEchoCaptured(claimed.ticket, { echoed: true, now: T0 });
+  assert.equal(claim("lost echo, then a retype").kind, "skip", "only the recorded first send is left");
+});
+
 test("release never drops a captured entry", () => {
   const ticket = expect("kept", idle(0));
   confirmHumanEcho(ticket, { now: T0 });

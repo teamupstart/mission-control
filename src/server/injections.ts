@@ -323,8 +323,9 @@ export function originOf(sessionId: string, text: string): TurnOrigin | undefine
  *
  * One entry per SEND, never per text. A retype of the same words is its own send with its
  * own entry, so it is captured by its own door like any other follow-up: a person repeating
- * an instruction is heard. Entries for one text answer echoes oldest first, the order the
- * driver received them in.
+ * an instruction is heard. An echo for one text goes to the oldest of its sends still waiting
+ * for a revision, and is spent against an already recorded one only when none is waiting
+ * (see `claimHumanEcho`).
  *
  * States, in the order a send moves through them:
  *
@@ -574,11 +575,12 @@ export function releaseHumanEcho(ticket: HumanEchoTicket, now = Date.now()): voi
 /**
  * Decide a prompt-hook arrival against the follow-ups this session is waiting on.
  *
- * `skip` when the oldest unechoed entry for this text was already captured by its send: this
- * is that send's echo, and it is spent. `capture` when it has not been: the hook is the first
- * door, and the caller marks the ticket once its own capture succeeded. The entry is left
- * exactly as it was, so a capture that fails leaves the acknowledgement to record the turn.
- * `none` when nothing matches, and the arrival takes the ordinary path.
+ * `capture` when an unechoed entry for this text has not been recorded yet: the hook is a
+ * door for it, and the caller marks the ticket once its own capture succeeded. The entry is
+ * left exactly as it was, so a capture that fails leaves the acknowledgement to record the
+ * turn. `skip` when every unechoed entry for this text was already recorded: this is one of
+ * their echoes, and it is spent. `none` when nothing matches, and the arrival takes the
+ * ordinary path.
  */
 export function claimHumanEcho(
   sessionId: string,
@@ -587,9 +589,15 @@ export function claimHumanEcho(
   now = Date.now(),
 ): HumanEchoClaim {
   const key = injectionFingerprint(text);
-  const entry = liveEchoes(sessionId, now)?.find(
+  const candidates = (liveEchoes(sessionId, now) ?? []).filter(
     (e) => e.key === key && e.noteKey === noteKey && !e.echoed,
   );
+  // A send still waiting for its revision first, oldest first; only then a recorded one. The
+  // texts are identical, so which send an echo "belongs to" decides nothing but the count, and
+  // oldest-first alone lets an earlier send whose echo never came absorb a later send's only
+  // remaining path. Preferring the unrecorded send cannot double-count: the hook marks it
+  // captured, and that send's own acknowledgement then skips it.
+  const entry = candidates.find((e) => e.state !== "captured") ?? candidates[0];
   if (!entry) return { kind: "none" };
   if (entry.state === "captured") {
     drop(entry);

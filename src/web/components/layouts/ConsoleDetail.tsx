@@ -12,6 +12,7 @@ import {
   newestSessionRun,
   sessionCanBindWorkflow,
   workflowBindChipTitle,
+  workflowCompletionStall,
 } from "../../lib/held.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { Keycap } from "../Keycap.tsx";
@@ -221,6 +222,9 @@ export function ConsoleDetail({
   // gate above read every one. Derived from the same list so the two cannot disagree.
   const workflowRun = newestSessionRun(workflowRuns);
   const workflowBinding = view.workflowBindingBySession?.get(session.id) ?? null;
+  // A Foreman-complete binding whose cycle finished under an unresolved goal: the chip says so
+  // and its click opens the dialog that offers the ways forward.
+  const workflowStall = workflowCompletionStall(session, workflowBinding, workflowRuns);
   /** The guided workflows tour's handle on the binding chip. Inert unless a tour runs. */
   const tourBindChipRef = useTourTargetRef<HTMLButtonElement>("workflows:binding-chip");
   const ensembleLink = session.task?.ensemble ?? null;
@@ -620,16 +624,23 @@ export function ConsoleDetail({
         {/* The shared gate: a terminal run releases the offer here
             too, and stands its outcome chip next to it rather than instead of it. */}
         {sessionCanBindWorkflow(workflowRuns) && view.onBindWorkflow && (
-          <Tooltip label={workflowBindChipTitle(workflowBinding)}>
+          <Tooltip label={workflowStall ?? workflowBindChipTitle(workflowBinding)}>
             <button
               ref={tourBindChipRef}
-              className={workflowBinding ? "workflow-bind-chip armed" : "workflow-bind-chip"}
+              className={
+                workflowBinding
+                  ? `workflow-bind-chip armed${workflowStall ? " stalled" : ""}`
+                  : "workflow-bind-chip"
+              }
               onClick={() => view.onBindWorkflow?.(session.id)}
             >
               {workflowBinding
                 ? (
                   <>
-                    <span aria-hidden>⌘ </span>
+                    {/* The stalled chip trades the armed ⌘ for a pause mark, so the state does
+                        not rest on its amber alone. Still `aria-hidden`: the tooltip carries the
+                        stall in words, and the accessible name stays the workflow and version. */}
+                    <span className="wbc-mark" aria-hidden>{workflowStall ? "⏸\uFE0E " : "⌘ "}</span>
                     <span className="wbc-name">{workflowBinding.workflowName}</span>
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>

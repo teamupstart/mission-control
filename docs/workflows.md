@@ -1006,6 +1006,30 @@ also starts a review of the selected workflow. Switching cancels any active run 
 binding; its run history remains readable. The replacement and conflict rules are documented in
 [Switching a session workflow](workflow-system.md#switching-a-session-workflow).
 
+A **Foreman complete** binding gets its run only from Foreman's claim, and Foreman claims only
+against a resolved goal. When the session has finished a work cycle, no run is open, and its
+latest instruction is still unresolved (reconciling, or judged "needs more context"), nothing
+will run on its own. The console detail's bind chip says so: it turns amber and its tooltip reads
+"<workflow> v<n> is waiting on this session's goal: Foreman cannot call the work complete while
+the latest instruction is unresolved. Click for ways to proceed." Its accessible name is still
+the workflow and version. The board tile does not flag the stall: it keeps drawing the session's
+runs, and a stalled binding can still have finished ones, because only an open run holds the stall
+off. Opening the dialog on that binding shows the same sentence in a notice, which offers one way
+forward and names the other:
+
+- **Accept objective as is** records the pending instructions as steering and confirms the
+  current objective as the completion contract, through the same route as the
+  [Foreman drawer's control](foreman.md). The notice and the chip's stalled state clear as the
+  goal resolves, and Foreman verifies the work and claims the run on its next tick. It is offered
+  only when the goal has an objective.
+- **Submit bound version** is the dialog's existing footer button, which the notice names rather
+  than repeats. The run freezes the objective as it stands.
+
+Whether that manual run carries the `unreconciled` badge described below depends on which stall
+it is. While the latest instruction is still reconciling, an accepted instruction is waiting for
+the goal refiner, so the run is badged, and the notice says so. Once that instruction has been
+judged "needs more context", its revision is resolved and the run is not badged.
+
 Each submit and resubmit carries a durable request key. The daemon creates the submission
 before evidence capture, so retrying the same request returns the same durable row and never
 starts duplicate work. **Bind and submit** returns as soon as that capturing row is durable,

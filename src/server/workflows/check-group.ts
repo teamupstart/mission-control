@@ -60,6 +60,15 @@ export const CHECK_GROUP_CONFIRM_MS = 5_000;
 /** How often the emptiness probe runs. Cheap - one `kill(pid, 0)` per tick. */
 const POLL_MS = 100;
 
+/**
+ * How long a group whose leader is already gone is watched for its last members to exit.
+ *
+ * Short on purpose. It only has to cover a group that was just signalled and is finishing
+ * its exit, which takes milliseconds; a descendant that genuinely outlives its leader keeps
+ * answering, and every recovery pass over it pays this once before reporting `unknown`.
+ */
+const LEADERLESS_SETTLE_MS = 1_000;
+
 export interface CheckGroupTeardownOptions {
   graceMs?: number;
   confirmMs?: number;
@@ -159,7 +168,10 @@ async function waitForEmpty(pid: number, budgetMs: number, pollMs: number): Prom
  *     But it is still probed: an identity we cannot confirm says nothing about the group, and
  *     `ESRCH` on the group id proves emptiness on its own, without a signal being sent.
  *     That distinction is what lets a daemon that crashed after its checks finished hand
- *     their trees back instead of stranding a pool slot per crash.
+ *     their trees back instead of stranding a pool slot per crash. When the identity is
+ *     unreadable because the leader has gone, the probe is repeated for a short bounded window
+ *     first, so a group that was just signalled and is still exiting is proven empty rather than
+ *     reported `unknown`.
  *
  *     The consequence worth knowing, because it decides how a stuck lease eventually clears:
  *     once the LEADER is gone, its identity is unreadable, so a group that still has surviving
@@ -190,8 +202,19 @@ export async function terminateCheckGroup(
 
   if (!signallableGroup(pid) || expectedIdentity === "") return "empty";
 
-  if (processStartIdentity(pid) !== expectedIdentity) {
-    return checkGroupAnswers(pid) ? "unknown" : "empty";
+  const current = processStartIdentity(pid);
+  if (current !== expectedIdentity) {
+    // A readable, different identity is a recycled pid: answer at once, so recovery never
+    // waits on a stranger's group.
+    if (current !== null) return checkGroupAnswers(pid) ? "unknown" : "empty";
+    // An unreadable one means the leader has gone, and the group may be mid-exit rather than
+    // stuck: daemon shutdown has just `SIGKILL`ed it (`killLiveCheckGroups`), the leader was
+    // reaped first, and a descendant has not finished dying. Answering on the first probe
+    // reported that `unknown` and held the lease for a group a moment from empty. Still never
+    // signalled; only probed, for a short bounded window, before the fail-closed answer.
+    return (await waitForEmpty(pid, Math.min(confirmMs, LEADERLESS_SETTLE_MS), pollMs))
+      ? "empty"
+      : "unknown";
   }
   // Already finished, and nothing left behind: the common case for a check that exited on its
   // own. Probing before signalling keeps a clean run from sending signals nobody needed.

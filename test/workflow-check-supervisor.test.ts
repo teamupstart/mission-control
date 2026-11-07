@@ -795,6 +795,35 @@ test("a surviving descendant whose LEADER is gone is never signalled", async () 
   assert.equal(checkGroupAnswers(pid), true, "and nothing was signalled");
 });
 
+test("a leaderless group that is still dying is proven empty, not reported unknown", async () => {
+  // Shutdown's shape: the whole group was just signalled, the leader has already gone, and a
+  // descendant is still on its way out. Nothing may be signalled (the identity is
+  // unreadable), but the probe can still watch the group empty and say so.
+  const leader = spawn(
+    NODE,
+    [
+      "-e",
+      "require('node:child_process').spawn('sleep', ['0.4'], { stdio: 'ignore' });" +
+        "setTimeout(() => process.exit(0), 100);",
+    ],
+    { detached: true, stdio: "ignore" },
+  );
+  const pid = leader.pid!;
+  raw.push(pid);
+  const identity = await waitForStartIdentity(pid);
+  assert.notEqual(identity, null);
+  await new Promise<void>((r) => leader.once("exit", () => r()));
+  for (let i = 0; i < 60 && processStartIdentity(pid) !== null; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(processStartIdentity(pid), null, "the leader is gone");
+  assert.equal(checkGroupAnswers(pid), true, "and its descendant has not exited yet");
+  assert.equal(
+    await terminateCheckGroup(pid, identity!, { graceMs: 20, confirmMs: 5_000, pollMs: 10 }),
+    "empty",
+  );
+});
+
 test("nothing stays registered for the exit hook once a check is finished", async () => {
   const dir = workspace();
   const { registry } = recordingRegistry();

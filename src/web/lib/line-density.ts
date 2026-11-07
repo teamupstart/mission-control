@@ -39,8 +39,8 @@ export interface LineDensityOption {
 }
 
 /**
- * In `LINE_DENSITIES` order, which is densest-last, so the picker reads as a fold rather
- * than as two unrelated modes.
+ * In `LINE_DENSITIES` order, which is densest-last and then off, so the picker reads as a
+ * fold that ends in nothing rather than as three unrelated modes.
  *
  * The descriptions name what is TRADED, not what is drawn, because that is the whole
  * decision: expanded costs 47.5px of conversation to print six sentences a tooltip already
@@ -61,10 +61,24 @@ export const LINE_DENSITY_OPTIONS: readonly LineDensityOption[] = [
     description:
       "One row: counts and tones only, with whatever needs you promoted onto it. Hands 47.5px back.",
   },
+  {
+    id: "hidden",
+    label: "Disabled",
+    description:
+      "No strip: the fleet starts right under the top bar. Stage counts and drawers are not shown.",
+  },
 ];
 
-/** The next density the caret steps to. Two members, so this is the other one. */
+/**
+ * The next density the caret and <kbd>Shift+L</kbd> step to: the other of the two DRAWN
+ * densities.
+ *
+ * `hidden` steps to itself. Switching the Line off is a choice made in Settings, and a bare
+ * letter pressed on the fleet should not quietly undo it - the caret that would have folded
+ * the strip is not on screen either, so the chord is the only control left that could.
+ */
 export function nextLineDensity(current: LineDensity): LineDensity {
+  if (current === "hidden") return "hidden";
   return current === "expanded" ? "condensed" : "expanded";
 }
 
@@ -95,7 +109,9 @@ export function useLineDensity(): [LineDensity, (next: LineDensity) => void] {
  * needs no dependency and there is nothing for a future edit to forget.
  */
 export function toggleLineDensity(): void {
-  void updateUiConfig({ lineDensity: nextLineDensity(uiConfig().lineDensity) });
+  const current = uiConfig().lineDensity;
+  const next = nextLineDensity(current);
+  if (next !== current) void updateUiConfig({ lineDensity: next });
 }
 
 /** One amber stage's sentence, kept attributed to the stage it came from. */

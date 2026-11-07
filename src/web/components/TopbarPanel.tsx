@@ -14,6 +14,7 @@ import {
   type TopbarLayout,
 } from "../lib/topbar-items.ts";
 import { PREVIEW_FOREMAN, PREVIEW_TOPBAR_FLEET, previewFleetCost } from "../lib/topbar-preview.ts";
+import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { Topbar } from "./Topbar.tsx";
 
@@ -102,8 +103,8 @@ function TopbarPreview({ layout }: { layout: TopbarLayout }): React.JSX.Element 
 }
 
 /**
- * Display > Top bar: which optional items the bar draws, and which of its controls stay
- * minimized.
+ * Display > Top bar: which optional items the bar draws, which of its controls stay
+ * minimized, and how the Line - the pipeline strip directly under it - is drawn.
  *
  * Two lists because they are two questions about two kinds of item (`lib/topbar-items.ts`).
  * An optional item is a checkbox, as on the Board card panel. A control that cannot be removed
@@ -214,6 +215,11 @@ export function TopbarPanel(): React.JSX.Element {
         </div>
       </div>
 
+      {/* The band directly under the bar, with its own preview: the strip is drawn by the
+          fleet rather than by `Topbar`, so the bar's preview above cannot show it. Its
+          reset is its own Disabled/Condensed choice, not "Reset all", which restores the
+          bar's items only. */}
+      <LineDensityPanel />
     </section>
   );
 }

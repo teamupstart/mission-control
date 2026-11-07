@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
+import { LineDensityPanel } from "../src/web/components/LineDensityPanel.tsx";
+import { nextLineDensity } from "../src/web/lib/line-density.ts";
+import type { LineDensity } from "../src/shared/protocol.ts";
 import { LINE_STAGES, type LineStageSummary, type LineSummary } from "../src/shared/line.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
 
@@ -152,7 +155,7 @@ test("a stage with nothing to report still says what it is for", () => {
 
 const renderCondensed = (
   summary: LineSummary | null,
-  onDensity?: (next: "expanded" | "condensed") => void,
+  onDensity?: (next: LineDensity) => void,
 ): string =>
   renderToStaticMarkup(
     createElement(LineStrip, {
@@ -289,4 +292,39 @@ test("the caret reports the fold state, so it is legible without sight", () => {
     }),
   );
   assert.match(expanded, /aria-expanded="true" aria-label="Condense the Line"/);
+});
+
+test("a Line switched off draws nothing, not even an empty landmark", () => {
+  // An empty `nav` named "The Line" would still be announced as a landmark holding nothing,
+  // and a zero-height band would still be a node for the board to sit under.
+  const off = renderToStaticMarkup(
+    createElement(LineStrip, {
+      summary: full,
+      density: "hidden",
+      onStage: () => {},
+      onDensity: () => {},
+    }),
+  );
+  assert.equal(off, "");
+});
+
+test("the fold steps between the drawn densities and never in or out of Disabled", () => {
+  // The caret and Shift+L fold the strip. Switching it off is a Settings choice, and a bare
+  // letter pressed on the fleet must not quietly undo it.
+  assert.equal(nextLineDensity("expanded"), "condensed");
+  assert.equal(nextLineDensity("condensed"), "expanded");
+  assert.equal(nextLineDensity("hidden"), "hidden");
+});
+
+test("the settings panel offers all three choices over a live preview of the strip", () => {
+  const html = renderToStaticMarkup(createElement(LineDensityPanel));
+  for (const value of ["expanded", "condensed", "hidden"]) {
+    assert.match(html, new RegExp(`name="line-density"( checked="")? value="${value}"`));
+  }
+  assert.match(html, /<span class="layout-option-label">Disabled<\/span>/);
+  // The preview is the real strip, at the shipped default, carrying the fixture's stages -
+  // and kept out of the accessibility tree so the page does not grow a second Line.
+  assert.match(html, /class="line-preview-stage"[^>]*inert=""[^>]*aria-hidden="true"/);
+  assert.match(html, /<nav class="line is-condensed" aria-label="The Line">/);
+  assert.match(html, /aria-label="Backlog, 5 tasks waiting/);
 });

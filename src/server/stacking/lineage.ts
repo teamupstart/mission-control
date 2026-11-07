@@ -76,7 +76,34 @@ export function adoptStackLineage(prKey: string, source: LineageSource, now: num
  * and nothing is ever retargeted to a finished parent's (possibly deleted) branch. Unknown
  * state retargets nothing.
  */
+/**
+ * Pull requests whose base is being edited right now. The adoption-time correction and the
+ * Inspector tick's reconciliation both retarget, and a second edit started before the first
+ * lands would ask GitHub for the same change twice; whichever comes second waits a tick.
+ */
+const retargeting = new Set<string>();
+export function retargetInFlight(prKey: string): boolean {
+  return retargeting.has(prKey);
+}
+export async function withRetarget<T>(prKey: string, run: () => Promise<T>): Promise<T | null> {
+  if (retargeting.has(prKey)) return null;
+  retargeting.add(prKey);
+  try {
+    return await run();
+  } finally {
+    retargeting.delete(prKey);
+  }
+}
+
 export async function correctStackBase(
+  prKey: string,
+  github: StackGitHub,
+  now: number,
+): Promise<"unchanged" | "retargeted" | "unknown" | "failed"> {
+  return (await withRetarget(prKey, () => correctStackBaseNow(prKey, github, now))) ?? "unchanged";
+}
+
+async function correctStackBaseNow(
   prKey: string,
   github: StackGitHub,
   now: number,

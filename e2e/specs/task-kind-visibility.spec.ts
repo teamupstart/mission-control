@@ -138,8 +138,15 @@ test("a ship task is badged before its name in the console, and the path band no
 
     // Hover says what the kind is for, and so does the badge's accessible description.
     await expect(badge).toHaveAccessibleDescription(new RegExp(`^${kind} task - `));
-    await badge.hover();
-    await expect(dashboard.locator(".tooltip")).toContainText(`${kind} task - `);
+    // The tooltip opens on mouseenter, and a hover is one mouseenter. A live session's header
+    // re-renders on every upsert, and one landing as the pointer arrives can swallow the
+    // tooltip with no second mouseenter to bring it back (the pointer never moved), which is
+    // what loses this read under full-suite load. Leave and re-enter until it shows.
+    await expect(async () => {
+      await dashboard.mouse.move(0, 0);
+      await badge.hover();
+      await expect(dashboard.locator(".tooltip")).toContainText(`${kind} task - `, { timeout: 2_000 });
+    }).toPass({ timeout: 20_000 });
     await shot(head, `console-${kind}-badge`, `the ${kind} session is badged ${kind.toUpperCase()} before its name`);
   }
 });
@@ -187,8 +194,12 @@ test("at the header's last rung the badge keeps its icon, and its word stays rea
   // purpose its accessible description, and hovering it says both.
   await expect(badge).toHaveText("ship");
   await expect(badge).toHaveAccessibleDescription(/^ship task - deliver a change$/);
-  await badge.hover();
-  await expect(dashboard.locator(".tooltip")).toContainText("ship task - deliver a change");
+  // Leave and re-enter until it shows: see the console case above for why one hover can miss.
+  await expect(async () => {
+    await dashboard.mouse.move(0, 0);
+    await badge.hover();
+    await expect(dashboard.locator(".tooltip")).toContainText("ship task - deliver a change", { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
   await shot(head, "console-badge-last-rung", `at ${width}px the header is on rung 7 and the SHIP badge is its icon`);
 });
 

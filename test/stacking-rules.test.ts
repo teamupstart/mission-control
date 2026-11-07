@@ -41,8 +41,8 @@ function byId(...tasks: Task[]): Map<string, Task> {
   return new Map(tasks.map((task) => [task.id, task]));
 }
 
-test("the shipped default is wait-for-merge, and an absent key follows it", () => {
-  assert.equal(STACKING_SHIPPED_DEFAULT, "merge");
+test("the shipped default is stack, and an absent key follows it", () => {
+  assert.equal(STACKING_SHIPPED_DEFAULT, "stack");
   const parsed = ShippingConfigSchema.parse({});
   assert.equal(parsed.stacking, undefined, "no stored default: absent means the shipped default");
   assert.equal(effectiveStacking(parsed), STACKING_SHIPPED_DEFAULT);

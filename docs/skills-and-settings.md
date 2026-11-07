@@ -173,13 +173,19 @@ launch requirement and this one is not.
 
 The **Mockups** row applies when someone asks to see what something could look like:
 mock-ups, mockups, wireframes, UI sketches, or design comps. The session writes each one as a
-file in its own checkout, under `docs/mockups/<slug>/` or beside the repository plan it belongs
-to and never under an ignored path, as a self-contained HTML page or a browser image. It then
-names each checkout-relative path on its own line, such as
+self-contained HTML page or a browser image under `docs/mockups/<slug>/` in its own checkout,
+and names each checkout-relative path on its own line, such as
 `Mockup: docs/mockups/settings-panel/two-column.html`. The conversation links that path to the
 Files tab and previews the page or image inline at the foot of the turn, as
-[Message formatting](ui.md#message-formatting) describes. Mock-ups stay untracked unless the
-person asks for them to be committed. The contract lives in
+[Message formatting](ui.md#message-formatting) describes.
+
+**Mock-ups are not committed unless a plan needs them.** The session makes `docs/mockups/`
+ignore itself with a `docs/mockups/.gitignore` holding `*`, so nothing in it appears in
+`git status`, is staged by `git add -A`, or is captured in a workflow's review snapshot - the
+snapshot a workflow's pull request step commits. The Files list shows `docs/mockups/` anyway;
+it is the only ignored directory it lists. The one mock-up that is committed is one a plan in
+the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
+committed with the plan. The contract lives in
 [`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A

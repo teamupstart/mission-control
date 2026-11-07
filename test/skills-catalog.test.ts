@@ -1,8 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { frontmatterBlock, parseFrontmatter, parseSkill, readCatalog } from "../src/server/skills/catalog.ts";
 import { artifactKind, conversationArtifacts } from "../src/web/lib/conversationArtifacts.ts";
+import { listSessionFiles } from "../src/server/session-files.ts";
+
+const skillDescription = (id: string): string =>
+  readCatalog().skills.find((skill) => skill.id === id)?.description ?? "";
 
 // The catalog reader. Its frontmatter parser is deliberately narrow - the files are
 // authored in this repo and reviewed with it - so what matters is that anything it
@@ -326,6 +333,36 @@ test("the shipped mockups skill teaches exactly the presentation the conversatio
     conversationArtifacts(`Variant B: ${page}`, listing).map(({ path }) => path),
     [page],
   );
+});
+
+test("the mockups skill's own setup command keeps mock-ups out of git and in the Files list", async () => {
+  // The skill's promise is that a mock-up is never committed unless a plan needs it. Run the
+  // command exactly as the skill states it, so the promise cannot drift from what git does.
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  const setup = text.match(/```sh\n\s*(mkdir -p docs\/mockups[^\n]+)\n\s*```/)?.[1];
+  assert.ok(setup, "the skill states its setup command in a fenced sh block");
+  assert.match(text, /\*\*Never commit a mock-up, unless it is necessary to a plan\.\*\*/);
+  assert.match(text, /beside the plan's `plan\.md` in `docs\/plans\/<name>\/`/);
+  assert.match(skillDescription("mockups"), /never committed unless a plan needs it/);
+
+  const dir = mkdtempSync(join(tmpdir(), "mission-mockups-skill-"));
+  try {
+    execFileSync("git", ["-C", dir, "init", "-q"]);
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    // Idempotent, and never overwrites a marker that is already there.
+    writeFileSync(join(dir, "docs/mockups/.gitignore"), "*\n# kept\n");
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    assert.equal(readFileSync(join(dir, "docs/mockups/.gitignore"), "utf8"), "*\n# kept\n");
+
+    mkdirSync(join(dir, "docs/mockups/settings-panel"), { recursive: true });
+    writeFileSync(join(dir, "docs/mockups/settings-panel/two-column.html"), "<h1>Two columns</h1>\n");
+    assert.equal(execFileSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }), "");
+    execFileSync("git", ["-C", dir, "add", "-A"]);
+    assert.equal(execFileSync("git", ["-C", dir, "diff", "--cached", "--name-only"], { encoding: "utf8" }), "");
+    assert.deepEqual(await listSessionFiles(dir), [{ path: "docs/mockups/settings-panel/two-column.html" }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {

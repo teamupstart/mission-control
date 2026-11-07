@@ -1,6 +1,6 @@
 ---
 name: mockups
-description: Write every requested mock-up as a renderable file in the session's own checkout and present its checkout-relative path on its own line, so Mission Control links it to the Files viewer and previews it inline in the conversation. Use whenever someone asks for mock-ups, mockups, mock ups, wireframes, UI sketches, screen designs, design comps, or visual concepts of an interface, including mock-ups that accompany a plan.
+description: Write every requested mock-up as a renderable file in the session's own checkout, in a git-ignored docs/mockups/ so it is never committed unless a plan needs it, and present its checkout-relative path on its own line, so Mission Control links it to the Files viewer and previews it inline in the conversation. Use whenever someone asks for mock-ups, mockups, mock ups, wireframes, UI sketches, screen designs, design comps, or visual concepts of an interface, including mock-ups that accompany a plan.
 metadata:
   mission:
     category: design
@@ -31,27 +31,38 @@ of work, such as a plan that needs a picture of the screen it proposes.
 Not for: proof that shipped UI works. A screenshot of the running app taken as evidence for
 a review is evidence, and it follows the repository's evidence rules instead.
 
-## Always: write each mock-up into the checkout
+## Always: write each mock-up into the checkout, and keep it out of git
 
-1. **In the session's own checkout.** Use `docs/mockups/<slug>/`, where `<slug>` is a
-   kebab-case name for the subject (`settings-panel`, `retry-banner`). When the mock-ups
-   belong to a plan kept in the repository, put them beside its `plan.md` instead. Never in
-   `/tmp`, a scratchpad, your home directory, or another worktree: the conversation links
-   and previews only files inside this session's checkout.
-2. **Never under an ignored path.** The Files list and the conversation's links are built
-   from the checkout's tracked and untracked files, and ignored files are in neither, so a
-   mock-up written there renders as dead text. Check before you hand it over:
+1. **In the session's own checkout, under `docs/mockups/<slug>/`**, where `<slug>` is a
+   kebab-case name for the subject (`settings-panel`, `retry-banner`). Never in `/tmp`, a
+   scratchpad, your home directory, or another worktree: the conversation links and previews
+   only files inside this session's checkout.
+2. **Make `docs/mockups/` ignore itself before writing the first one:**
 
    ```sh
-   git check-ignore -q docs/mockups/settings-panel/two-column.html && echo ignored
+   mkdir -p docs/mockups && { [ -e docs/mockups/.gitignore ] || printf '*\n' > docs/mockups/.gitignore; }
    ```
 
-   If that prints `ignored`, move the file.
+   That one file ignores the whole directory, itself included. Nothing in it shows in
+   `git status`, `git add -A` stages none of it, and a workflow's review snapshot leaves it
+   out, so a "commit everything that was reviewed" step cannot carry a mock-up into a pull
+   request. Mission Control still lists `docs/mockups/` in Files, links its paths and
+   previews them; it is the one ignored directory it does that for, so a mock-up anywhere
+   else that git ignores renders as dead text. Confirm it took before you hand over:
+
+   ```sh
+   git check-ignore -q docs/mockups/settings-panel/two-column.html || echo "not ignored"
+   ```
+
+   If that prints `not ignored`, the repository has its own rules for that directory; the
+   mock-up is still never committed, so leave it untracked.
 3. **One file per mock-up or variant**, named for what it shows
    (`two-column.html`, `tabs.html`), not `mockup1.html`. Put variants of one subject in the
    same directory so they sit together in Files.
-4. **Leave it untracked** unless the person asks you to commit it or the work you are
-   delivering ships it. A mock-up existing in the checkout is not a reason to commit it.
+4. **Never commit a mock-up, unless it is necessary to a plan.** That is the only exception,
+   and the next section says how. Not because it exists, not because a step says to commit
+   everything, not because it is good work. A mock-up is for looking at; the change it
+   informs is what ships.
 
 ## Always: make it a format the conversation renders
 
@@ -117,7 +128,13 @@ talks about it. A new variant gets a new file.
 
 ## Mock-ups that accompany a plan
 
-Put them beside the plan in the repository, link each from the plan's own HTML with a
-relative href (`<a href="two-column.html">`), and present them in the conversation as above
-as well. A reviewer reading the plan and a reader scrolling the session should both reach
-the same file.
+A mock-up is committed only when it is part of a plan kept in the repository and the plan
+needs it: the plan links to it, or its design is argued from it. That one moves out of
+`docs/mockups/` and sits beside the plan's `plan.md` in `docs/plans/<name>/`, which is not
+ignored. Link it from the plan's own HTML with a relative href
+(`<a href="two-column.html">`), present it in the conversation as above, and commit it with
+the plan. A reviewer reading the plan and a reader scrolling the session then reach the same
+file.
+
+Everything else stays in `docs/mockups/` and uncommitted: the variants the plan rejected,
+sketches made while exploring, and every mock-up for a plan stored outside the repository.

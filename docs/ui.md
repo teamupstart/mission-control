@@ -1246,8 +1246,11 @@ A file that has gone, is over 5 MiB, or cannot be decoded says so in the card in
 nothing.
 
 The checkout listing behind these links and previews is read when the conversation opens and
-again each time the session finishes a turn, so a file the agent writes while you watch is linked
-and previewed in the turn that names it.
+again whenever a new message lands while the session is between turns, so a file the agent writes
+while you watch is linked and previewed in the turn that names it. The listing holds the
+checkout's tracked and untracked files, leaving out what git ignores, with one exception:
+`docs/mockups/`, where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+keeps mock-ups git-ignored so they are never committed, is listed anyway.
 
 The boundary beside the Files list is draggable, so a long document can take space back from
 the list or a deeply nested checkout can give the list more room. The Diff tab uses the same

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -14,9 +14,11 @@ import {
   readGitTreeFile,
   readSessionFile,
   saveSessionFile,
+  SESSION_MOCKUP_ROOT,
   SessionFileError,
   withFileSaveLock,
 } from "../src/server/session-files.ts";
+import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
 import {
   applyFileLoadFailure,
   applyFileLoadSuccess,
@@ -56,6 +58,66 @@ test("lists tracked and untracked non-ignored regular files deterministically", 
     { path: "a.txt" },
     { path: "z.txt" },
   ]);
+});
+
+test("self-ignored mock-ups are listed while git, and a review snapshot, never see them", async (t) => {
+  // The `mockups` skill keeps mock-ups out of every commit by making `docs/mockups/` ignore
+  // itself. That only works if the Files list still shows them, and only matters if git -
+  // and the workflow review snapshot that a pull request step commits - really skip them.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  execFileSync("git", ["-C", dir, "config", "user.email", "t@test"]);
+  execFileSync("git", ["-C", dir, "config", "user.name", "t"]);
+  await writeFile(path.join(dir, ".gitignore"), ".env\n");
+  await writeFile(path.join(dir, "README.md"), "# Repo\n");
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "commit", "-qm", "init"]);
+  const before = await captureWorktreeTree(dir);
+
+  await writeFile(path.join(dir, ".env"), "SECRET=1\n");
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/two-column.html`), "<h1>Two columns</h1>\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/tabs.png`), PNG);
+
+  assert.deepEqual(await listSessionFiles(dir), [
+    { path: ".gitignore" },
+    { path: "docs/mockups/settings/tabs.png" },
+    { path: "docs/mockups/settings/two-column.html" },
+    { path: "README.md" },
+  ], "mock-ups listed; the marker and every other ignored file are not");
+  assert.equal(execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }), "");
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  assert.equal(
+    execFileSync("git", ["-C", dir, "diff", "--cached", "--name-only"], { encoding: "utf8" }),
+    "",
+    "git add -A stages no mock-up",
+  );
+  assert.equal(
+    (await captureWorktreeTree(dir)).treeOid,
+    before.treeOid,
+    "the workflow review snapshot's content is unchanged by mock-ups",
+  );
+  assert.equal(
+    (await readSessionFile(dir, "docs/mockups/settings/two-column.html")).text,
+    "<h1>Two columns</h1>\n",
+  );
+});
+
+test("a mock-up that a plan needs, beside the plan, is an ordinary file git will commit", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await mkdir(path.join(dir, "docs/plans/settings"), { recursive: true });
+  await writeFile(path.join(dir, "docs/plans/settings/plan.md"), "# Settings\n");
+  await writeFile(path.join(dir, "docs/plans/settings/two-column.html"), "<h1>Chosen</h1>\n");
+  assert.deepEqual(
+    execFileSync("git", ["-C", dir, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" })
+      .split("\n")
+      .filter(Boolean),
+    ["?? docs/plans/settings/plan.md", "?? docs/plans/settings/two-column.html"],
+  );
 });
 
 test("pinned Git tree files stay exact, bounded, traversal-safe, and read-only", async (t) => {

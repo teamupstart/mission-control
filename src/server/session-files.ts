@@ -17,6 +17,20 @@ import { locateExecutable } from "./executables/locator.ts";
 import { nativePlanFiles } from "./plans/native.ts";
 
 export const MAX_SESSION_FILE_ENTRIES = 10_000;
+
+/**
+ * Where the `mockups` skill keeps a session's mock-ups, git-ignored by its own `.gitignore`.
+ *
+ * Mock-ups are for looking at, not for shipping. The skill makes this directory ignore itself
+ * (`docs/mockups/.gitignore` holding `*`), so nothing in it shows in `git status`, is staged
+ * by `git add -A`, or is captured in a workflow's review snapshot - which would otherwise
+ * carry an untracked mock-up into "commit everything that was reviewed". The listing below
+ * still reports the files, because a mock-up the operator cannot open is no mock-up at all.
+ *
+ * Only this one directory is listed through its ignore rule. Every other ignored path -
+ * `node_modules`, `dist`, an `.env` - stays out of the Files list exactly as before.
+ */
+export const SESSION_MOCKUP_ROOT = "docs/mockups";
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_PREVIEW_BYTES = 5 * 1024 * 1024;
 
@@ -223,17 +237,24 @@ export async function listSessionFiles(
   const root = await realpath(cwd).catch(() => {
     throw new SessionFileError("session checkout is unavailable", 404);
   });
-  const result = await run(
-    "git",
-    ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-    { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 },
-  );
+  const listing = { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 };
+  const [result, mockups] = await Promise.all([
+    run("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], listing),
+    run(
+      "git",
+      ["-C", root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", SESSION_MOCKUP_ROOT],
+      listing,
+    ),
+  ]);
   if (result.code !== 0 || result.overflowed) {
     throw new SessionFileError("could not list files in this checkout", 500);
   }
-  const discovered = result.stdout
-    .split("\0")
-    .filter(Boolean)
+  // Best effort: a failed mock-up read leaves the checkout's own listing intact. The marker
+  // that ignores the directory is plumbing, not a mock-up, so it is not offered as one.
+  const ignoredMockups = mockups.code === 0 && !mockups.overflowed
+    ? mockups.stdout.split("\0").filter((entry) => entry && entry !== `${SESSION_MOCKUP_ROOT}/.gitignore`)
+    : [];
+  const discovered = [...new Set([...result.stdout.split("\0").filter(Boolean), ...ignoredMockups])]
     .sort((a, b) => a.localeCompare(b));
   const files: SessionFileEntry[] = [];
   for (const filePath of discovered) {

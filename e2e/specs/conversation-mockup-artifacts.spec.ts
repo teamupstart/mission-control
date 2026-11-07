@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
@@ -40,6 +41,18 @@ const PAGE_SOURCE = `<!doctype html>
 function write(cwd: string, path: string, contents: string | Buffer): void {
   mkdirSync(join(cwd, dirname(path)), { recursive: true });
   writeFileSync(join(cwd, path), contents);
+}
+
+/** What the skill runs first: `docs/mockups/` ignores itself, so git never offers a mock-up. */
+function ignoreMockups(cwd: string): void {
+  write(cwd, "docs/mockups/.gitignore", "*\n");
+}
+
+/** The checkout's own answer to "is there anything to commit under docs/mockups?". */
+function gitStatus(cwd: string): string {
+  return execFileSync("git", ["-C", cwd, "status", "--porcelain", "--untracked-files=all", "--", "docs/mockups"], {
+    encoding: "utf8",
+  });
 }
 
 /** A real, decodable PNG of one flat colour, so the card has actual pixels to show. */
@@ -152,9 +165,12 @@ test("mock-ups written while the conversation is open are linked and previewed i
   await openConversation(page, daemon, live.id);
 
   // Written after the conversation's own listing, while the operator is watching - which is
-  // when a session actually produces a mock-up.
+  // when a session actually produces a mock-up - into the self-ignoring directory the skill
+  // sets up, so git has nothing to commit while the dashboard still shows every file.
+  ignoreMockups(live.cwd);
   write(live.cwd, PAGE, PAGE_SOURCE);
   write(live.cwd, IMAGE, png(IMAGE_WIDTH, IMAGE_HEIGHT, [46, 125, 210]));
+  expect(gitStatus(live.cwd), "git sees no mock-up to commit").toBe("");
   await inject(daemon, live.id, MOCKUP_TURN);
 
   const turn = page.getByRole("article", { name: "claude" })
@@ -223,6 +239,7 @@ test("an image the browser cannot decode says so, and Refresh recovers once the 
 }) => {
   await dispatch(page, daemon);
   const live = await session(daemon);
+  ignoreMockups(live.cwd);
   write(live.cwd, BROKEN, "this is not a PNG\n");
   const turnText = `The screenshot did not render.\nScreenshot: ${BROKEN}`;
   await inject(daemon, live.id, turnText);

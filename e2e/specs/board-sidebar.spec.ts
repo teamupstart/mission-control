@@ -207,3 +207,54 @@ test("Board-only setting stays hidden in Console and rolls back a failed save", 
   await toggle.click();
   await expect(toggle).not.toBeChecked();
 });
+
+// #1393: with more sessions than a short window can show, the drill-in rail scrolls and the
+// session detail beside it fits the window. Each rail row's hidden tooltip sentence used to
+// stretch the Board itself into a second vertical scroller on the detail's side.
+test("a rail taller than the window scrolls by itself without a scrollbar beside the detail", async ({ dashboard: page, daemon }) => {
+  const goals = ["Audit routing", "Trim bundle", "Check docs", "Fix flaky test", "Tidy styles", "Probe cache"];
+  for (const goal of goals) await dispatch(page, daemon, goal);
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.getByRole("radiogroup", { name: "Dashboard layout" }).getByRole("radio", { name: /^Board/ }).check();
+  await page.setViewportSize({ width: 1100, height: 420 });
+
+  const board = page.locator("main.board");
+  const overflow = (locator: typeof board) => locator.evaluate((el) => el.scrollHeight - el.clientHeight);
+  const expectOnlyTheRailScrolls = async (rail: typeof board) => {
+    // A complementary pane beside the Board rail, a region inside the all-sessions console.
+    await expect(page.getByLabel("Session detail workspace")).toBeVisible();
+    await expect.poll(() => overflow(rail)).toBeGreaterThan(0);
+    await expect.poll(() => overflow(board)).toBe(0);
+    // The rail still reaches its last session on its own.
+    await rail.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await expect(rail.locator(".rail-row").last()).toBeInViewport();
+    await expect.poll(() => board.evaluate((el) => el.scrollTop)).toBe(0);
+  };
+
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.locator(".board-col.tone-working .tile-name").first().click();
+  await expect(page.locator(".board-col.is-rail .rail-row")).toHaveCount(goals.length);
+  await expectOnlyTheRailScrolls(page.locator(".board-col.is-rail .board-col-body"));
+  await page.keyboard.press("Escape");
+
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.getByRole("checkbox", { name: "Show all sessions in sidebar" }).check();
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await page.locator(".board-col.tone-working .tile-name").first().click();
+  const rail = page.getByRole("navigation", { name: "Sessions", exact: true });
+  await expect(rail.locator(".rail-row")).toHaveCount(goals.length);
+  await expectOnlyTheRailScrolls(rail);
+  await capture(page, "short-window-all-sessions");
+
+  // The detail side still sizes itself to the window rather than to its content: its
+  // bottom edge sits on the window's at every height, and it never needs to scroll.
+  const detail = page.getByLabel("Session detail workspace");
+  const detailBottom = () => detail.evaluate((el) => Math.round(el.getBoundingClientRect().bottom));
+  for (const height of [420, 760, 520]) {
+    await page.setViewportSize({ width: 1100, height });
+    await expect.poll(detailBottom).toBe(height);
+    await expect.poll(() => overflow(board)).toBe(0);
+    console.log(`viewport ${height}px: detail bottom ${await detailBottom()}px, board overflow ${await overflow(board)}px`);
+  }
+  await capture(page, "tall-window-all-sessions");
+});

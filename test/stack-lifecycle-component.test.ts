@@ -30,7 +30,7 @@ function standing(over: Partial<StackStanding>): StackStanding {
   return {
     state: "broken", parentUrl: "https://github.com/acme/repo/pull/7", parentNumber: 7, brokenReason: "parent-closed",
     retargetError: null, prompt: null, actions: ["move-onto-main", "await-replacement"], awaitingReplacement: false,
-    sessionId: "child-session", sessionHasPane: true, parentTaskId: "parent", label: "Stack broken: #7 closed", inProgress: false,
+    sessionId: "child-session", sentActions: [], sessionHasPane: true, parentTaskId: "parent", label: "Stack broken: #7 closed", inProgress: false,
     facts: { prNumber: 8, prUrl: "https://github.com/acme/repo/pull/8", headRefName: "feat/child", parentNumber: 7,
       parentUrl: "https://github.com/acme/repo/pull/7", parentHeadRefName: "feat/parent", defaultBranch: "main" },
     ...over,

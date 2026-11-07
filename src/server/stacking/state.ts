@@ -195,6 +195,10 @@ export async function observeStackLifecycle(
   return observation;
 }
 
+/** How many closed stacked children one sweep reads, and where the next sweep resumes. */
+const CLOSED_CHILDREN_PER_SWEEP = 50;
+let closedChildrenCursor = "";
+
 /**
  * Keep observing stacked children that GitHub (or a person) closed and that no later pull
  * request of the same task and episode has replaced. The Inspector tick retires a closed row,
@@ -207,8 +211,14 @@ export async function observeClosedStackChildren(
   ctx: StackLifecycleContext,
   dirOf: (pr: InspectorPr) => string | null,
   now: number,
+  pageSize = CLOSED_CHILDREN_PER_SWEEP,
 ): Promise<void> {
-  for (const row of loadClosedStackChildren()) {
+  // A bounded page per sweep, round-robin by key: every eligible row is reached in turn however
+  // many there are, and no sweep spends more than one page of GitHub reads on them.
+  let page = loadClosedStackChildren(closedChildrenCursor, pageSize);
+  if (page.length === 0 && closedChildrenCursor) page = loadClosedStackChildren("", pageSize);
+  closedChildrenCursor = page.length < pageSize ? "" : page.at(-1)!.key;
+  for (const row of page) {
     const lineage = row.stack;
     if (!lineage || lineage.observation?.childState !== "CLOSED") continue;
     const latest = latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);

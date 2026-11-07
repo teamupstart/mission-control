@@ -440,3 +440,28 @@ test("saving Foreman's config refreshes the cached stack standings at once", asy
   assert.ok(f.refreshes.count > before, "the route refreshed the cached standings");
   assert.equal(f.session.inspector?.stack?.prompt?.status, "pending", "Foreman reads it as its own to send, without waiting a sweep");
 });
+
+test("a recovery action is claimed: delivered once, never sent again for the same stack state", async (t) => {
+  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
+  const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
+  const move = { prKey: f.key, kind: "move-onto-main", tip: null };
+  const first = await f.post("human", move);
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal(f.messages.length, 1);
+  f.refresh();
+  assert.deepEqual(f.session.inspector?.stack?.sentActions, ["move-onto-main"], "shown as sent");
+  // A second click before the session has acted: refused, and nothing more is typed - it would
+  // ask for a second replacement pull request.
+  const second = await f.post("human", move);
+  assert.equal(second.status, 409);
+  assert.match((await second.json() as { error: string }).error, /already sent/);
+  assert.equal(f.messages.length, 1);
+  // The stack state changes (the parent was reopened, then closed under a new branch): a new
+  // key, so the action is offered and accepted again.
+  recordStackObservation(f.key, { ...getInspectorPr(f.key)!.stack!.observation!, parentHeadRefName: "feat/parent-v2" }, 2);
+  t.after(useStackGitHub(parentReads({ ...CLOSED_PARENT, headRefName: "feat/parent-v2" })));
+  f.refresh();
+  assert.deepEqual(f.session.inspector?.stack?.sentActions, []);
+  assert.equal((await f.post("human", move)).status, 200);
+  assert.equal(f.messages.length, 2);
+});

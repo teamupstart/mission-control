@@ -12,6 +12,7 @@ import {
   stackPromptNeed,
   type StackPromptActionKind,
   type StackPromptRequest,
+  type StackObservation,
   type StackPromptStatus,
   type StackStanding,
 } from "@shared/stacking.ts";
@@ -114,6 +115,11 @@ export function stackStandingFor(
   const actions = replacedBy
     ? []
     : stackActions(state, o).filter((action) => action !== "await-replacement" || !lineage.awaitReplacementAt);
+  // Recovery prompts already delivered for this exact stack state: shown as sent, not offered.
+  const actionTip = stackActionTip(o);
+  const sentActions = actions.filter((action) =>
+    (action === "move-onto-main" || action === "reopen-against-main" || action === "reopen-on-parent")
+    && readStackPromptClaim(row.key, action, actionTip)?.outcome === "delivered");
   const lifecycle = stackLifecycleLabel({ state, parentNumber, brokenReason, retargetError, prompt }, o);
   // The parent could not be read on the last tick: say so instead of acting on what may be
   // stale - no prompt and no action is offered (`stackPromptNeed`, `stackActions`).
@@ -134,6 +140,7 @@ export function stackStandingFor(
     actions,
     awaitingReplacement: Boolean(lineage.awaitReplacementAt) && state === "broken",
     sessionId: owner?.id ?? null,
+    sentActions,
     sessionHasPane: owner ? hasPane(owner) : false,
     parentTaskId: o?.parentTaskId ?? null,
     label: lineage.awaitReplacementAt && state === "broken" && brokenReason === "parent-closed" && !unread
@@ -176,6 +183,15 @@ export async function recheckStackParent(
   return changed ? `${name} changed since it was last checked - the row updates on the next check` : null;
 }
 
+/**
+ * The stack state a broken-stack recovery action answers, as its claim key: the current parent
+ * and its state and branch, and the child's state. A recovery that changes any of them (a
+ * replacement opened, the parent merged) makes a new key, so the action can be offered again.
+ */
+export function stackActionTip(o: StackObservation | null): string {
+  return [o?.parentUrl ?? "", o?.parentState ?? "", o?.parentHeadRefName ?? "", o?.childState ?? ""].join("|");
+}
+
 export type StackCandidate =
   | { error: string }
   | {
@@ -184,7 +200,8 @@ export type StackCandidate =
       standing: StackStanding;
       payload: string;
       /** The claim key for a prompt; null for an action, which is not claimed. */
-      claim: { kind: "catch-up" | "restack"; tip: string } | null;
+      /** The claim key: a prompt's condition tip, or the stack state a recovery action answers. */
+      claim: { kind: StackPromptRequest["kind"]; tip: string };
     };
 
 /**
@@ -216,7 +233,7 @@ export function stackPromptCandidate(
   const standing = stackStandingFor(row, sessions, foreman);
   if (!standing) return { error: "That pull request is not stacked" };
   if (standing.sessionId !== sessionId) return { error: "The stacked pull request's owning session is unknown or changed" };
-  let claim: { kind: "catch-up" | "restack"; tip: string } | null = null;
+  let claim: { kind: StackPromptRequest["kind"]; tip: string };
   if (request.kind === "catch-up" || request.kind === "restack") {
     const prompt = standing.prompt;
     if (!prompt || prompt.kind !== request.kind || prompt.tip !== request.tip) {
@@ -232,6 +249,13 @@ export function stackPromptCandidate(
   } else {
     if (origin !== "human") return { error: "Broken-stack actions are sent by the operator" };
     if (!standing.actions.includes(request.kind)) return { error: "That action is not offered for this stack" };
+    // Claimed like a prompt, keyed to the stack state it answers: once delivered it is not sent
+    // again - a second Move onto main would ask for a second replacement - until that changes.
+    const tip = stackActionTip(row.stack.observation ?? null);
+    if (readStackPromptClaim(row.key, request.kind, tip)?.outcome === "delivered" || standing.sentActions.includes(request.kind)) {
+      return { error: "That action was already sent - the row changes once the session acts on it" };
+    }
+    claim = { kind: request.kind, tip };
   }
   if (session.state === "exited") return { error: "The session exited" };
   if (session.pendingTurns?.length) return { error: "Queued conversation turns own this session" };

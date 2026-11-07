@@ -121,8 +121,13 @@ export function StackLifecycle({
         // every other action is typed into the child's session and needs that session live.
         const restart = action === "reschedule-parent" || action === "start-parent";
         const needsSession = action !== "await-replacement" && !restart;
-        const unavailable = (needsSession && (noSession || noChannel)) || (restart && !standing.parentTaskId);
-        const hint = needsSession && (noSession || noChannel)
+        // Delivered for this exact stack state already: a second send would repeat the request
+        // (a second replacement pull request), so it stays shut until the stack changes.
+        const sent = standing.sentActions?.includes(action) ?? false;
+        const unavailable = sent || (needsSession && (noSession || noChannel)) || (restart && !standing.parentTaskId);
+        const hint = sent
+          ? "Already sent - the row changes once the session acts on it"
+          : needsSession && (noSession || noChannel)
           ? channelHint
           : restart && !standing.parentTaskId ? "The parent task is not known on this board" : ACTION_HINT[action];
         const send = (): Promise<{ ok: boolean; error?: string }> => {
@@ -142,7 +147,7 @@ export function StackLifecycle({
                 void run(send, action === "await-replacement" ? "Waiting for a replacement" : restart ? "Done" : "Sent");
               }}
             >
-              {stackActionLabel(action, standing.parentNumber)}
+              {stackActionLabel(action, standing.parentNumber)}{sent ? " (sent)" : ""}
             </button>
           </Tooltip>
         );

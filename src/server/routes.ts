@@ -5957,11 +5957,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         getInspectorPr(stackRequest.prKey), getForemanConfig());
       if (candidate.error !== undefined) return c.json({ error: candidate.error, pasted: false }, 409);
       if (stackSending.has(stackRequest.prKey)) return c.json({ error: "A stack prompt is already being delivered", pasted: false }, 409);
-      if (candidate.claim) {
-        // The operator's send is the explicit re-arm of an uncertain claim; Foreman's never is.
-        stackClaim = claimStackPrompt(stackRequest.prKey, candidate.claim.kind, candidate.claim.tip, session.id, Date.now(), origin === "human");
-        if (!stackClaim) return c.json({ error: "That stack prompt was already claimed", pasted: false }, 409);
-      }
+      // Every prompt and recovery action is claimed before it is typed. The operator's send is
+      // the explicit re-arm of an uncertain claim; Foreman's never is.
+      stackClaim = claimStackPrompt(stackRequest.prKey, candidate.claim.kind, candidate.claim.tip, session.id, Date.now(), origin === "human");
+      if (!stackClaim) return c.json({ error: "That stack prompt was already claimed", pasted: false }, 409);
       text = candidate.payload;
     }
     if (request) {

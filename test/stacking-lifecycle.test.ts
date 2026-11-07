@@ -813,3 +813,29 @@ test("a recovery prompt is sent only if the parent still matches what the offer 
   g.refs.delete(P1);
   assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /could not be read from GitHub/);
 });
+
+test("closed stacked children are read in round-robin pages, so none is starved", async () => {
+  const g = gh();
+  g.refs.set(P1, refs());
+  g.ancestry.set(`${P1_HEAD}..${CHILD_HEAD}`, true);
+  // Three closed, unreplaced children of three different tasks.
+  const keys: string[] = [];
+  for (const id of ["task-a", "task-b", "task-c"]) {
+    nextNumber += 1;
+    const url = `https://github.com/acme/repo/pull/${nextNumber}`;
+    const key = adoptRow(url, "child-session", 2_000);
+    db.recordInspectorPrLineage(key, { taskId: id, episode: "ep", adoptedAt: 2_000, parentPrUrl: P1, baseSha: CUT, history: [] });
+    await observe(key, g, { state: "CLOSED", baseRefName: "feat/parent" }, 3_000);
+    db.updateInspectorPr(key, { state: "closed", observedState: "CLOSED" }, 3_000);
+    g.refs.set(url, refs({ state: "CLOSED", headSha: CHILD_HEAD, headRefName: "feat/child", baseRefName: "feat/parent" }));
+    keys.push(key);
+  }
+  const observedAt = () => keys.map((key) => row(key).stack!.observation!.observedAt);
+  // A page of two per sweep: the first two, then the third, then back to the first.
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 10_000, 2);
+  assert.deepEqual(observedAt(), [10_000, 10_000, 3_000]);
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 20_000, 2);
+  assert.deepEqual(observedAt(), [10_000, 10_000, 20_000], "the oldest-read row is reached next");
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 30_000, 2);
+  assert.deepEqual(observedAt(), [30_000, 30_000, 20_000], "and the walk wraps around");
+});

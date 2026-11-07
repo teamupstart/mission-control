@@ -4310,8 +4310,8 @@ function migrate(d: DatabaseSync): void {
   // only a new tip is a new key. A new table, so it is created here beside its upgrade path.
   d.exec(`CREATE TABLE IF NOT EXISTS stack_prompt_claims (
     pr_key     TEXT NOT NULL,
-    kind       TEXT NOT NULL,      -- catch-up | restack
-    tip        TEXT NOT NULL,      -- parent head (catch-up) or parent merge commit (restack)
+    kind       TEXT NOT NULL,      -- catch-up | restack | a recovery action kind
+    tip        TEXT NOT NULL,      -- parent head (catch-up), parent merge commit (restack), or the stack state an action was offered in
     claim_id   TEXT NOT NULL,
     outcome    TEXT NOT NULL,      -- uncertain | delivered
     session_id TEXT,
@@ -14525,25 +14525,28 @@ function stackAtomically<T>(fn: () => T): T {
 }
 
 /**
- * Stacked children the ledger retired as closed (not merged), newest first: the rows whose
- * recovery action still depends on a parent that can move. Bounded, like the listing.
+ * One page of the stacked children the ledger retired as closed (not merged): the rows whose
+ * recovery action still depends on a parent that can move. Ordered by key and resumed after
+ * `afterKey`, so a caller walking the pages reaches every row in turn. Ordering by recency
+ * would starve the oldest rows, since observing a row makes it recent again.
  */
-export function loadClosedStackChildren(limit = 50): InspectorPr[] {
+export function loadClosedStackChildren(afterKey = "", limit = 50): InspectorPr[] {
   const rows = openDb()
     .prepare(
       `SELECT * FROM inspector_prs
         WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
-          AND (observed_state IS NULL OR observed_state <> 'MERGED')
-        ORDER BY updated_at DESC LIMIT ?`,
+          AND (observed_state IS NULL OR observed_state <> 'MERGED') AND key > ?
+        ORDER BY key ASC LIMIT ?`,
     )
-    .all(limit) as unknown as InspectorPrRow[];
+    .all(afterKey, limit) as unknown as InspectorPrRow[];
   return rows.map(rowToInspectorPr);
 }
 
 /** One catch-up or restack prompt claim. */
 export interface StackPromptClaim {
   prKey: string;
-  kind: "catch-up" | "restack";
+  /** A prompt (`catch-up`, `restack`) or a broken-stack recovery action typed as one. */
+  kind: "catch-up" | "restack" | "move-onto-main" | "reopen-against-main" | "reopen-on-parent";
   tip: string;
   claimId: string;
   outcome: "uncertain" | "delivered";
@@ -14558,7 +14561,8 @@ export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind
   if (!row) return null;
   return {
     prKey: String(row.pr_key),
-    kind: row.kind === "restack" ? "restack" : "catch-up",
+    kind: (["catch-up", "restack", "move-onto-main", "reopen-against-main", "reopen-on-parent"] as const)
+      .find((kind) => kind === row.kind) ?? "catch-up",
     tip: String(row.tip),
     claimId: String(row.claim_id),
     outcome: row.outcome === "delivered" ? "delivered" : "uncertain",

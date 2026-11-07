@@ -564,6 +564,8 @@ export interface StackStanding {
   awaitingReplacement: boolean;
   /** The one live session that owns the child, when there is exactly one. */
   sessionId: string | null;
+  /** Recovery actions already delivered for the current stack state; not sent again. */
+  sentActions: StackActionKind[];
   /** The parent task, for the restart actions. Null when unknown. */
   parentTaskId: string | null;
   /**

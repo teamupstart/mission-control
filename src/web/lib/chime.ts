@@ -38,6 +38,12 @@ export function unlockAudio(): void {
   void context()?.resume();
 }
 
+/** Count a successfully requested OS tone in the same burst gate as Web Audio. */
+export function recordFallbackSound(severity: AlertSeverity): void {
+  lastPlayed = Date.now();
+  lastSeverity = severity;
+}
+
 /**
  * Report unavailable audio separately from deliberate rate limiting, so desktop
  * delivery can supply a fallback without defeating the chime's burst suppression.

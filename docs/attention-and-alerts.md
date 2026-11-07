@@ -199,7 +199,10 @@ Turning **Sound** off keeps desktop notifications visible but silent, including 
 catch-up notification after a disconnect. With Sound on, Mission Control plays its
 chime without a second system sound. If browser audio cannot play, including before
 the first interaction after a reload, an enabled desktop notification supplies the
-system tone instead. Rate-limited chimes remain quiet; they do not trigger this fallback.
+system tone instead. Chimes and system tones share the same 1.2-second burst limit;
+later alerts still show desktop notifications but stay silent. Within one batch,
+only the first notification may request a system tone. Rate-limited chimes remain
+quiet; they do not trigger this fallback.
 
 The session detail always states what would actually happen and names only the channels that are
 live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop

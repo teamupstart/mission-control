@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { playChime, unlockAudio } from "../src/web/lib/chime.ts";
+import { playChime, recordFallbackSound, unlockAudio } from "../src/web/lib/chime.ts";
 
 test("chime availability distinguishes autoplay suspension, rate limiting and playback failures", (t) => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -46,9 +46,18 @@ test("chime availability distinguishes autoplay suspension, rate limiting and pl
   };
   assert.equal(playChime("attention"), "unavailable");
   assert.equal(oscillators, 0, "suspended audio must not queue a delayed duplicate chime");
+  recordFallbackSound("info");
+  assert.equal(playChime("info"), "rate-limited", "a delivered system tone consumes the shared gate");
+  now += 400;
+  assert.equal(playChime("attention"), "unavailable", "urgent fallback can cut through an info tone");
+  recordFallbackSound("attention");
+  assert.equal(playChime("attention"), "rate-limited", "separate fallback alerts stay quiet in a burst");
   unlockAudio();
   assert.equal(starts, 0, "unlock must not replay an alert already handled by the OS");
-  assert.equal(playChime("info"), "played", "failed attempts must not consume the rate gate");
+  now += 1_199;
+  assert.equal(playChime("attention"), "rate-limited", "unlock does not bypass the fallback's rate gate");
+  now += 1;
+  assert.equal(playChime("info"), "played", "the fallback gate reopens after 1200ms");
   assert.equal(starts, 1);
   now += 400;
   assert.equal(playChime("attention"), "played", "urgent audio cuts through a recent info chime");

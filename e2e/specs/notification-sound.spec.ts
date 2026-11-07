@@ -68,6 +68,8 @@ async function observeDelivery(page: Page, audioState?: AudioContextState): Prom
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<Session> {
+  const sessions = async () => (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[];
+  const existing = new Set((await sessions()).map((s) => s.id));
   await page.getByRole("button", { name: "Dispatch", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expectContentClearsBorder(dialog);
@@ -77,9 +79,9 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<Session> {
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
-  const sessions = async () => (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[];
-  await expect.poll(async () => (await sessions()).find((s) => s.runtime === "sdk")?.agentSessionId).toBeTruthy();
-  return (await sessions()).find((s) => s.runtime === "sdk")!;
+  const created = async () => (await sessions()).find((s) => s.runtime === "sdk" && !existing.has(s.id));
+  await expect.poll(async () => (await created())?.agentSessionId).toBeTruthy();
+  return (await created())!;
 }
 
 async function disconnect(page: Page): Promise<void> {
@@ -215,7 +217,8 @@ for (const mode of ["live", "reconnect"] as const) {
       await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
       await page.keyboard.press("Escape");
       expect((await delivery(page)).notes).toBe(0);
-      await page.clock.setFixedTime(new Date());
+      // The earlier OS tone consumes the same burst gate as a chime.
+      await page.clock.setFixedTime(new Date(Date.now() + 1_300));
       await hook(daemon, session, "UserPromptSubmit");
       await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
       await hook(daemon, session, "Notification");
@@ -233,6 +236,61 @@ for (const mode of ["live", "reconnect"] as const) {
     });
   }
 }
+
+for (const mode of ["live", "reconnect"] as const) {
+  test(`suspended audio rate-limits separate ${mode} fallback alerts`, async ({ dashboard: page, daemon }) => {
+    const session = await dispatch(page, daemon);
+    const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ alerts: { notifications: true, sound: true } }),
+    });
+    expect(saved.ok).toBe(true);
+    await observeDelivery(page, "suspended");
+    await page.reload();
+    await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+    const start = Date.now();
+    for (const [index, offset] of [0, 400, 1_200].entries()) {
+      await page.clock.setFixedTime(new Date(start + offset));
+      if (index > 0) {
+        await hook(daemon, session, "UserPromptSubmit");
+        if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+        await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+      }
+      if (mode === "reconnect") await disconnect(page);
+      await hook(daemon, session, "Notification");
+      if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+      await expect.poll(async () => (await delivery(page)).toasts.length).toBe(index + 1);
+      expect((await delivery(page)).toasts[index]?.silent).toBe(index === 1);
+      expect((await delivery(page)).notes).toBe(0);
+    }
+  });
+}
+
+test("suspended audio permits only the first system tone in a multiple-alert batch", async ({ dashboard: page, daemon }) => {
+  const first = await dispatch(page, daemon);
+  const second = await dispatch(page, daemon);
+  const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ alerts: { notifications: true, sound: true } }),
+  });
+  expect(saved.ok).toBe(true);
+  await observeDelivery(page, "suspended");
+  await page.reload();
+  await expect(page.locator(".rail-row.tone-working")).toHaveCount(2);
+  // Pause event delivery without signalling a disconnect. Forwarding the daemon's
+  // next snapshot then supplies both real transitions in one live batch.
+  await page.evaluate(() => (window as SoundWindow).soundProbe.stream.close());
+  await hook(daemon, first, "Notification");
+  await hook(daemon, second, "Notification");
+  await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+  await expect.poll(async () => (await delivery(page)).toasts.length).toBe(2);
+  const batch = await delivery(page);
+  expect(batch.toasts.map((toast) => toast.tag).sort()).toEqual([`input:${first.id}`, `input:${second.id}`].sort());
+  expect(batch.toasts.map((toast) => toast.silent)).toEqual([false, true]);
+  expect(batch.notes).toBe(0);
+});
 
 test("reconnect with Sound on and running audio plays a chime with a silent notification", async ({ dashboard: page, daemon }) => {
   const session = await dispatch(page, daemon);

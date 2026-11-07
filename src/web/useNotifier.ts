@@ -8,7 +8,7 @@ import {
   withKnownStalls,
 } from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
-import { playChime, unlockAudio } from "./lib/chime.ts";
+import { playChime, recordFallbackSound, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
   return typeof Notification !== "undefined" && Notification.permission === "granted";
@@ -20,7 +20,7 @@ function notify(
   tag: string,
   silent: boolean,
   deepLink?: { workflowRunId?: string | null; ensembleId?: string | null },
-): void {
+): boolean {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
@@ -37,8 +37,10 @@ function notify(
       }
       n.close();
     };
+    return true;
   } catch {
-    /* notifications unavailable on this platform - sound still plays */
+    // No desktop delivery to record in the sound rate gate.
+    return false;
   }
 }
 
@@ -106,7 +108,8 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       if (missed.length === 0) return;
       const fallbackSound = settings.sound && playChime("attention") === "unavailable";
       if (settings.notifications && canNotify()) {
-        notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
+        const delivered = notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
+        if (delivered && fallbackSound) recordFallbackSound("attention");
       }
       return;
     }
@@ -118,12 +121,15 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     if (alerts.length === 0) return;
     // One chime per batch, at its most urgent severity. The OS is a fallback only
     // for unavailable audio, never for Sound off or an intentionally throttled chime.
-    const fallbackSound = settings.sound && playChime(batchSeverity(alerts)) === "unavailable";
+    const severity = batchSeverity(alerts);
+    const fallbackSound = settings.sound && playChime(severity) === "unavailable";
     if (settings.notifications && canNotify()) {
       for (const [index, a] of alerts.entries()) {
-        notify(a.title, a.body, a.id, !fallbackSound || index > 0, {
+        const audible = fallbackSound && index === 0;
+        const delivered = notify(a.title, a.body, a.id, !audible, {
           workflowRunId: a.workflowRunId, ensembleId: a.ensembleId,
         });
+        if (delivered && audible) recordFallbackSound(severity);
       }
     }
   }, [scope, settings, ready]);

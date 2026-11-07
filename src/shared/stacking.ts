@@ -531,6 +531,11 @@ export type StackPromptStatus =
   /** No live session owns the child. Resume the task to deliver it. */
   | "no-session"
   /**
+   * The one live owner has no pane, so nothing - Foreman or the operator - can type the prompt
+   * into it. Resume the task to give it a delivery channel again.
+   */
+  | "no-pane"
+  /**
    * Foreman will not send it: off, not live, or its own stable session rule refuses the owner
    * (not invited, an agent it cannot drive, no hooks, no pane, not allowed here). The operator
    * sends it by hand.
@@ -561,6 +566,11 @@ export interface StackStanding {
   sessionId: string | null;
   /** The parent task, for the restart actions. Null when unknown. */
   parentTaskId: string | null;
+  /**
+   * Whether the owning session has a pane anything can type into. Without one, no prompt or
+   * prompt-typed action can be delivered, so none is offered as clickable.
+   */
+  sessionHasPane: boolean;
   /** The lifecycle label, or null when there is nothing to say (released). */
   label: string | null;
   /** True for the in-progress labels that belong with `waiting` rather than `blocked`. */
@@ -606,6 +616,8 @@ export function stackLifecycleLabel(
     switch (s.prompt.status) {
       case "no-session":
         return { label: `${name.needed}: no session`, inProgress: false };
+      case "no-pane":
+        return { label: `${name.needed}: the session has no pane to type into - resume its task to restore one`, inProgress: false };
       case "foreman-off":
         return {
           label: s.prompt.blocker

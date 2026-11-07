@@ -7,6 +7,8 @@ import {
 } from "@shared/stacking.ts";
 import {
   getInspectorPr,
+  latestStackedPr,
+  loadClosedStackChildren,
   loadOpenInspectorPrs,
   noteInspectorPrStack,
   recordStackObservation,
@@ -43,7 +45,7 @@ export interface StackLifecycleContext {
  */
 export async function observeStackLifecycle(
   pr: InspectorPr,
-  snapshot: PrSnapshot,
+  snapshot: Pick<PrSnapshot, "state" | "headSha" | "baseRefName" | "defaultBranch">,
   dir: string,
   github: StackGitHub,
   ctx: StackLifecycleContext,
@@ -58,9 +60,31 @@ export async function observeStackLifecycle(
     // An unknown parent decides nothing: no base edit, no transition, no new facts. The last
     // observation is kept for display, but marked unconfirmed, so no prompt or action is
     // offered on it until a read succeeds - the parent may have merged or closed meanwhile.
-    if (!previous || previous.parentUrl !== parentUrl) return previous;
-    if (previous.parentUnreadSince) return previous;
-    const marked: StackObservation = { ...previous, parentUnreadSince: now };
+    if (previous?.parentUrl === parentUrl && previous.parentUnreadSince) return previous;
+    // With nothing known about THIS parent yet - the first read failed, or a replacement just
+    // took over - record the child's own facts and an unknown parent, so the row says it is
+    // checking rather than claiming the stack is fine.
+    const marked: StackObservation = previous?.parentUrl === parentUrl
+      ? { ...previous, parentUnreadSince: now }
+      : {
+          observedAt: now,
+          childState: snapshot.state,
+          childHeadSha: snapshot.headSha || null,
+          baseRefName: snapshot.baseRefName || null,
+          defaultBranch: snapshot.defaultBranch || null,
+          parentUrl,
+          parentState: null,
+          parentHeadSha: null,
+          parentHeadRefName: null,
+          parentMergeCommitSha: null,
+          parentHeadInChild: null,
+          baseBehindBy: null,
+          parentTaskStopped: null,
+          parentEpisodeId: null,
+          parentTaskId: null,
+          retargetError: null,
+          parentUnreadSince: now,
+        };
     recordStackObservation(pr.key, marked, now);
     return marked;
   }
@@ -86,7 +110,7 @@ export async function observeStackLifecycle(
     const replacement = findReplacementParent(pr, parentUrl, parentTaskId, parentEpisodeId, ctx);
     if (replacement) {
       const refs = await github.prRefs(dir, replacement.url);
-      if (refs.ok && refs.value?.state === "OPEN" && transitionStackParent(pr.key, parentUrl, replacement.url, now)) {
+      if (refs.ok && refs.value?.state === "OPEN" && transitionStackParent(pr.key, parentUrl, replacement.url, now, head)) {
         noteInspectorPrStack(
           pr.key,
           `current parent replaced: #${stackPrNumber(parentUrl) ?? "?"} closed, #${replacement.number} took over`,
@@ -169,6 +193,37 @@ export async function observeStackLifecycle(
   };
   recordStackObservation(pr.key, observation, now);
   return observation;
+}
+
+/**
+ * Keep observing stacked children that GitHub (or a person) closed and that no later pull
+ * request of the same task and episode has replaced. The Inspector tick retires a closed row,
+ * but its recovery action - Reopen on #A's branch, Reopen against main, Move onto main - is
+ * chosen from its PARENT's state, and that parent can still merge or close afterwards. Reads
+ * only: the child's own refs, then the ordinary observation of its current parent.
+ */
+export async function observeClosedStackChildren(
+  github: StackGitHub,
+  ctx: StackLifecycleContext,
+  dirOf: (pr: InspectorPr) => string | null,
+  now: number,
+): Promise<void> {
+  for (const row of loadClosedStackChildren()) {
+    const lineage = row.stack;
+    if (!lineage || lineage.observation?.childState !== "CLOSED") continue;
+    const latest = latestStackedPr(lineage.taskId, row.owner, row.repo, lineage.episode);
+    if (latest && latest.key !== row.key) continue;
+    const dir = dirOf(row);
+    if (!dir) continue;
+    const child = await github.prRefs(dir, row.url);
+    if (!child.ok || !child.value) continue;
+    await observeStackLifecycle(row, {
+      state: child.value.state,
+      headSha: child.value.headSha,
+      baseRefName: child.value.baseRefName,
+      defaultBranch: child.value.defaultBranch,
+    }, dir, github, ctx, now);
+  }
 }
 
 /**

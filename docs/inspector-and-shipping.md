@@ -590,6 +590,7 @@ lifecycle as its detail, which never becomes a gate value:
 | *Catch-up needed: Foreman is off* / *Restack needed: Foreman is off* | Foreman is switched off or not live | **Send catch-up prompt** / **Send restack prompt** |
 | *Restack needed: Foreman can't send it - <reason>* (or *Catch-up needed: ...*) | Foreman is on, but its own session rule will never type into the owning session: not invited, no hooks seen, no pane, or not allowed in this repository. The same rule (`followupStableBlocker`) Foreman's decision and the delivery recheck use, so a prompt is never shown as on its way that Foreman would refuse | **Send catch-up prompt** / **Send restack prompt** |
 | *Catch-up prompt delivery uncertain* / *Restack prompt delivery uncertain* | the claim was stored but the delivery never confirmed | **Send catch-up prompt** / **Send restack prompt**, which finishes the uncertain claim, claims again and sends once |
+| *Catch-up needed: the session has no pane to type into - resume its task to restore one* (or *Restack needed: ...*) | the one live owner has no pane, so neither Foreman nor the operator can type into it | resume the task; no send is offered until a pane exists |
 | *Retarget failed: <reason>* | GitHub refused the base edit | none; retried every tick |
 | *Checking #A on GitHub - prompts wait until it can be read* | the last tick could not read the current parent. Its last known facts are kept, but the parent may have merged or closed since, so no prompt or action is offered on them, Foreman cannot deliver one, and nothing is retargeted | none; the next successful read clears it |
 | *Stack broken: #A closed* | the parent closed without merging | **Move onto main**, **Wait for a replacement** |
@@ -614,6 +615,13 @@ no queued turns, no work queue and no active workflow.
   session to open a new pull request from the same branch against the default branch, then
   merge the default branch in and push. The new pull request inherits the lineage, and the
   restack and the merged-parent release apply as usual.
+A closed child that no later pull request of its task and work episode has replaced keeps being
+observed every sweep (GitHub reads only), so the action it offers follows its parent: a child
+closed while #A was open offers *Reopen on #A's branch*, and once #A merges it offers *Reopen
+against main* instead. Every recovery prompt also reads the parent again just before it is
+typed, and is refused if the parent's state - or, for *Reopen on #A's branch*, its branch - no
+longer matches what the offer was based on, or GitHub cannot be read.
+
 - **Reopen on #A's branch** (the child was closed while its parent is still open) asks the
   session to open a new pull request from the same branch against the open parent's branch.
   It inherits the closed row's lineage, base correction keeps it there, and it is an ordinary
@@ -622,7 +630,9 @@ no queued turns, no work queue and no active workflow.
   unmerged) records the choice. When the parent task opens a replacement pull request in the
   **same work episode** (a session of the parent task, adopted by the Inspector after the closed
   one), the **replacement-parent transition** runs on the next tick. It is the only writer that
-  changes a row's current parent, and it writes only the open child's own row, in one step:
+  changes a row's current parent, and it writes only the open child's own row, in one step that
+  re-checks, as it writes, that the child is still open, the operator still waits for a
+  replacement, and the release check has not released its current head meanwhile:
   it appends `{from, to, at}` to the lineage history, makes the replacement the current parent
   and clears the release. The commit the child was cut at never changes. It is idempotent, and
   never runs for a released child or one from the parent task's next episode. The child is then

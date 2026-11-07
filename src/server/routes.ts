@@ -15,7 +15,8 @@ import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldown
 import { paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
 import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, setStackAwaitReplacement } from "./db.ts";
-import { stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import { recheckStackParent, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
+import { activeStackGitHub } from "./stacking/github.ts";
 import { StackAwaitReplacementSchema } from "@shared/protocol.ts";
 import { isTerminalState as codeRabbitTerminalItem } from "@shared/queue.ts";
 import { registerSessionControlRoutes, sessionControlActor, sessionControlCallerRefusal } from "./session-control.ts";
@@ -903,6 +904,20 @@ interface ForemanWriteRefusal {
  * they are shared with the dashboard and are bookkeeping downstream of a typing act these
  * gates already refused, so widening their schemas would buy nothing.
  */
+/**
+ * One row's stack standing, or null when it cannot be computed. It reads the database, and one
+ * bad row must not turn a whole merge-queue listing into a 500 - the same fallback the
+ * Registry's own copy uses.
+ */
+function safeStackStanding(...args: Parameters<typeof stackStandingFor>): ReturnType<typeof stackStandingFor> {
+  try {
+    return stackStandingFor(...args);
+  } catch (error) {
+    console.error("[routes] could not compute a stack standing:", args[0].key, error);
+    return null;
+  }
+}
+
 function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
@@ -5930,6 +5945,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     if (stackRequest) {
       if (request) return c.json({ error: "One follow-up per delivery", pasted: false }, 400);
+      // A recovery action was chosen from the parent's last observed state; read it again
+      // before typing, so a parent that merged or closed since never gets a stale instruction.
+      if (stackRequest.kind !== "catch-up" && stackRequest.kind !== "restack") {
+        const changed = await recheckStackParent(getInspectorPr(stackRequest.prKey), stackRequest.kind, activeStackGitHub());
+        if (changed) return c.json({ error: changed, pasted: false }, 409);
+      }
       const blocked = stackGuard();
       if (blocked) return c.json({ error: blocked, pasted: false }, 409);
       const candidate = stackPromptCandidate(registry, session.id, stackRequest, stackOrigin!,
@@ -6944,6 +6965,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     const config = setForemanConfig(parsed.data);
+    // Stacked pull requests: every cached stack standing says whether Foreman will send its
+    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
+    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
+    // merge queue hides the manual send it now needs.
+    registry.refreshInspections();
     if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
     return c.json(config);
   });
@@ -7233,7 +7259,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json(loadInspectorInspections(50).map((row) => ({
         ...row,
         codeRabbit: codeRabbitStanding(registry, row.key),
-        stackStanding: row.stack ? stackStandingFor(row, sessions, foreman) : null,
+        stackStanding: row.stack ? safeStackStanding(row, sessions, foreman) : null,
       })));
     }
     // Two guards, each doing work the other cannot.
@@ -7284,7 +7310,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const pr = getInspectorPr(parsed.data.prKey);
     if (!pr?.stack) return c.json({ error: "no stacked pull request with that key" }, 404);
     if (parsed.data.wait) {
-      const standing = stackStandingFor(pr, registry.liveSessions(), getForemanConfig());
+      const standing = safeStackStanding(pr, registry.liveSessions(), getForemanConfig());
       if (pr.state !== "open" || !standing?.actions.includes("await-replacement")) {
         return c.json({ error: "waiting for a replacement is offered only for an open child whose parent closed" }, 409);
       }

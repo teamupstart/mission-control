@@ -17,8 +17,8 @@ import type { StackLifecycleContext } from "../src/server/stacking/state.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-stacking-lifecycle-"));
 process.env.HARNESS_HOME = home;
 const db = await import("../src/server/db.ts");
-const { observeStackLifecycle } = await import("../src/server/stacking/state.ts");
-const { stackPromptCandidate, stackStandingFor } = await import("../src/server/stacking/delivery.ts");
+const { observeClosedStackChildren, observeStackLifecycle } = await import("../src/server/stacking/state.ts");
+const { recheckStackParent, stackPromptCandidate, stackStandingFor } = await import("../src/server/stacking/delivery.ts");
 const { adoptStackLineage, refreshStackRelease } = await import("../src/server/stacking/lineage.ts");
 const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -607,11 +607,18 @@ test("an unreadable parent decides nothing: last facts kept for display, no reta
   assert.deepEqual(resumed.prompt, { kind: "restack", tip: MERGE, status: "pending" });
   assert.ok(stackPromptCandidate(registryOf([session]), session.id, request, "foreman", row(key), FOREMAN_ON).error, "the old catch-up stays refused");
 
-  // A child never observed at all, with an unreadable parent, stays unobserved and current.
+  // The FIRST read of a parent failing is recorded too: the child's own facts, an unknown
+  // parent, marked unconfirmed - so the row says it is checking, not that the stack is fine.
   const unseen = stackedChild(3_000);
-  assert.equal(await observe(unseen, gh()), null);
-  assert.equal(row(unseen).stack!.observation, null);
-  assert.equal(stackStandingFor(row(unseen), [owner()], FOREMAN_ON)!.prompt, null);
+  const firstFailure = await observe(unseen, gh(), {}, 9_000);
+  assert.equal(firstFailure?.parentUnreadSince, 9_000);
+  assert.equal(firstFailure?.parentState, null);
+  assert.equal(firstFailure?.childHeadSha, CHILD_HEAD);
+  assert.deepEqual(row(unseen).stack!.observation, firstFailure);
+  const checking = stackStandingFor(row(unseen), [owner()], FOREMAN_ON)!;
+  assert.equal(checking.label, "Checking #7 on GitHub - prompts wait until it can be read");
+  assert.equal(checking.prompt, null);
+  assert.deepEqual(checking.actions, []);
 });
 
 test("a failed compare leaves ancestry unknown: no catch-up prompt, no cached answer, and the next tick asks again", async () => {
@@ -679,7 +686,6 @@ test("a session Foreman's own rule will never drive reads as Foreman can't send 
   const offAllowlist = { enabled: true, mode: "live", repoAllowlist: ["/elsewhere"] } as unknown as Parameters<typeof stackStandingFor>[2];
   for (const [session, foreman, reason] of [
     [owner({ hooksSeen: false }), FOREMAN_ON, "the session is not hook-instrumented"],
-    [owner({ runtime: "terminal", terminals: [] }), FOREMAN_ON, "no pane to type into"],
     [owner({ foremanInvite: null }), FOREMAN_ON, "Foreman is not invited into this session"],
     [owner(), offAllowlist, "Foreman is not allowed in this repository"],
   ] as const) {
@@ -691,11 +697,8 @@ test("a session Foreman's own rule will never drive reads as Foreman can't send 
     assert.equal(standing.inProgress, false, "held, not in progress");
     // The same rule refuses Foreman at delivery, so the two can never disagree...
     assert.ok(stackPromptCandidate(registryOf([session]), session.id, request, "foreman", row(key), foreman).error, reason);
-    // ...and the operator's manual send is the route that is offered and accepted, as long as
-    // the daemon has a way to type into the session at all.
-    if (reason !== "no pane to type into") {
-      assert.equal(stackPromptCandidate(registryOf([session]), session.id, request, "human", row(key), foreman).error, undefined, reason);
-    }
+    // ...and the operator's manual send is the route that is offered and accepted.
+    assert.equal(stackPromptCandidate(registryOf([session]), session.id, request, "human", row(key), foreman).error, undefined, reason);
   }
   // Plain "Foreman is off" stays plain.
   const off = stackStandingFor(row(key), [owner()], FOREMAN_OFF)!;
@@ -703,4 +706,110 @@ test("a session Foreman's own rule will never drive reads as Foreman can't send 
   assert.equal(off.prompt?.blocker, undefined);
   // A transient hold is not a reason: a busy owner stays pending, and Foreman delivers once it parks.
   assert.equal(stackStandingFor(row(key), [owner({ state: "working" })], FOREMAN_ON)!.prompt?.status, "pending");
+});
+
+test("an owner with no pane is offered no send it cannot deliver: the row says to resume the task", async () => {
+  const key = await restackNeeded();
+  const request = { prKey: key, kind: "restack" as const, tip: MERGE };
+  const paneless = owner({ runtime: "terminal", terminals: [] });
+  for (const foreman of [FOREMAN_ON, FOREMAN_OFF]) {
+    const standing = stackStandingFor(row(key), [paneless], foreman)!;
+    assert.equal(standing.prompt?.status, "no-pane", "not foreman-off: that would offer a manual send");
+    assert.equal(standing.sessionHasPane, false);
+    assert.equal(standing.label, "Restack needed: the session has no pane to type into - resume its task to restore one");
+    assert.equal(standing.inProgress, false);
+  }
+  // Nothing can type into it: refused to Foreman and to the operator alike.
+  assert.ok(stackPromptCandidate(registryOf([paneless]), paneless.id, request, "foreman", row(key), FOREMAN_ON).error);
+  assert.match(stackPromptCandidate(registryOf([paneless]), paneless.id, request, "human", row(key), FOREMAN_ON).error ?? "",
+    /no pane to type into - resume its task/);
+  // A resumed session with a pane gets it back.
+  assert.equal(stackStandingFor(row(key), [owner()], FOREMAN_ON)!.prompt?.status, "pending");
+});
+
+test("the replacement transition re-checks the operator's choice, the child's state and its release when it writes", async () => {
+  const key = stackedChild();
+  const g = gh();
+  g.refs.set(P1, refs());
+  g.ancestry.set(`${P1_HEAD}..${CHILD_HEAD}`, true);
+  await observe(key, g, {}, 5_000);
+  g.refs.set(P1, refs({ state: "CLOSED" }));
+  adoptRow(P2, "parent-ep-parent", 6_000);
+  g.refs.set(P2, refs({ headSha: P2_HEAD, headRefName: "feat/parent-v2" }));
+  // The operator withdraws "Wait for a replacement" while the replacement's read is in flight.
+  db.setStackAwaitReplacement(key, 6_500, 6_500);
+  const withdrawing: StackGitHub = {
+    ...seam(g),
+    prRefs: async (cwd, url) => {
+      if (url === P2) db.setStackAwaitReplacement(key, null, 6_600);
+      return seam(g).prRefs(cwd, url);
+    },
+  };
+  await observeStackLifecycle(row(key), snapshot({ baseRefName: "main" }), "/repo", withdrawing, ctx, 7_000);
+  assert.equal(row(key).stack!.parentPrUrl, P1, "a withdrawn choice is honoured even mid-transition");
+  assert.deepEqual(row(key).stack!.history, []);
+  // The release check releases this very head in the gap: the transition refuses too.
+  db.setStackAwaitReplacement(key, 7_500, 7_500);
+  const releasing: StackGitHub = {
+    ...seam(g),
+    prRefs: async (cwd, url) => {
+      if (url === P2) db.releaseInspectorPrStack(key, CHILD_HEAD, "closed", 7_600);
+      return seam(g).prRefs(cwd, url);
+    },
+  };
+  await observeStackLifecycle(row(key), snapshot({ baseRefName: "main" }), "/repo", releasing, ctx, 8_000);
+  assert.equal(row(key).stack!.parentPrUrl, P1);
+  assert.equal(row(key).stack!.releasedHeadSha, CHILD_HEAD, "the release recorded in the gap is kept");
+  // And a closed child is never swapped.
+  db.revokeInspectorPrStack(key, 8_100);
+  db.updateInspectorPr(key, { state: "closed" }, 8_100);
+  assert.equal(db.transitionStackParent(key, P1, P2, 8_200, CHILD_HEAD), false);
+  // With the choice standing, the child open and unreleased, it goes through.
+  db.updateInspectorPr(key, { state: "open" }, 8_300);
+  assert.equal(db.transitionStackParent(key, P1, P2, 8_400, CHILD_HEAD), true);
+  assert.equal(row(key).stack!.parentPrUrl, P2);
+});
+
+test("a closed, unreplaced child keeps its parent observed, so its recovery action follows the parent", async () => {
+  const key = stackedChild();
+  const g = gh();
+  g.refs.set(P1, refs());
+  g.ancestry.set(`${P1_HEAD}..${CHILD_HEAD}`, true);
+  // Closed while its parent is open: Reopen on #7's branch.
+  await observe(key, g, { state: "CLOSED", baseRefName: "feat/parent" });
+  db.updateInspectorPr(key, { state: "closed", observedState: "CLOSED" }, 1);
+  assert.deepEqual(stackStandingFor(row(key), [owner()], FOREMAN_ON)!.actions, ["reopen-on-parent"]);
+  // The parent then merges. The retired row is still read every sweep, so the offer changes.
+  g.refs.set(P1, refs({ state: "MERGED", mergeCommitSha: MERGE }));
+  g.refs.set(row(key).url, refs({ state: "CLOSED", headSha: CHILD_HEAD, headRefName: "feat/child", baseRefName: "feat/parent" }));
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 20_000);
+  assert.equal(row(key).stack!.observation!.parentState, "MERGED");
+  assert.deepEqual(stackStandingFor(row(key), [owner()], FOREMAN_ON)!.actions, ["reopen-against-main"]);
+  assert.deepEqual(g.retargets, [], "reads only: a closed pull request is never retargeted");
+  // Once replaced by a later pull request of the same task and episode, it is no longer read.
+  nextNumber += 1;
+  const replacement = adoptRow(`https://github.com/acme/repo/pull/${nextNumber}`, "child-session", 30_000);
+  adoptStackLineage(replacement, { task: CHILD_TASK, episodeId: "ep-child" }, 30_000);
+  g.refs.set(P1, refs({ state: "CLOSED" }));
+  await observeClosedStackChildren(seam(g), ctx, () => "/repo", 40_000);
+  assert.equal(row(key).stack!.observation!.parentState, "MERGED", "the replaced row is left alone");
+});
+
+test("a recovery prompt is sent only if the parent still matches what the offer was based on", async () => {
+  const key = stackedChild();
+  const g = gh();
+  g.refs.set(P1, refs());
+  await observe(key, g, { state: "CLOSED", baseRefName: "feat/parent" });
+  db.updateInspectorPr(key, { state: "closed" }, 1);
+  // Still open on the same branch: the offer stands.
+  assert.equal(await recheckStackParent(row(key), "reopen-on-parent", seam(g)), null);
+  // It merged since the last check: refused, rather than naming a branch that may be gone.
+  g.refs.set(P1, refs({ state: "MERGED", mergeCommitSha: MERGE }));
+  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /#7 changed since it was last checked/);
+  // Its branch changed: refused for Reopen on #7's branch.
+  g.refs.set(P1, refs({ headRefName: "feat/parent-renamed" }));
+  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /changed since it was last checked/);
+  // Unreadable: refused.
+  g.refs.delete(P1);
+  assert.match(await recheckStackParent(row(key), "reopen-on-parent", seam(g)) ?? "", /could not be read from GitHub/);
 });

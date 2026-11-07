@@ -10,13 +10,16 @@ import {
   stackLifecycleLabel,
   stackPrNumber,
   stackPromptNeed,
+  type StackPromptActionKind,
   type StackPromptRequest,
   type StackPromptStatus,
   type StackStanding,
 } from "@shared/stacking.ts";
 import { latestStackedPr, readStackPromptClaim } from "../db.ts";
+import type { StackGitHub } from "./github.ts";
 import { activeWorkflowOwnsSession, followupPrs, followupSessionBlocker, followupStableBlocker, foremanSettleMs } from "../foreman/review-followup.ts";
 import { foremanMayActLive } from "../foreman/verdict.ts";
+import { hasPane } from "../foreman/queue-machine.ts";
 
 // Stacked pull requests: delivering the catch-up and restack prompts, and the broken-stack
 // actions, through the SAME path the CodeRabbit follow-up uses. Foreman's review follow-up
@@ -92,6 +95,8 @@ export function stackStandingFor(
       ? "uncertain"
       : !owner
       ? "no-session"
+      : !hasPane(owner)
+      ? "no-pane"
       : blocker
       ? "foreman-off"
       : "pending";
@@ -129,6 +134,7 @@ export function stackStandingFor(
     actions,
     awaitingReplacement: Boolean(lineage.awaitReplacementAt) && state === "broken",
     sessionId: owner?.id ?? null,
+    sessionHasPane: owner ? hasPane(owner) : false,
     parentTaskId: o?.parentTaskId ?? null,
     label: lineage.awaitReplacementAt && state === "broken" && brokenReason === "parent-closed" && !unread
       ? `${label} - waiting for a replacement`
@@ -144,6 +150,30 @@ export function stackStandingFor(
       defaultBranch: o?.defaultBranch ?? null,
     },
   };
+}
+
+/**
+ * Read the current parent again right before a broken-stack recovery prompt is typed, and
+ * refuse when it no longer matches what the offer was based on. The action was chosen from the
+ * parent's last observed state, and the parent can merge or close in between: *Reopen on #A's
+ * branch* sent after #A merged would name a branch that may be gone. A read of GitHub only;
+ * null when the offer still stands.
+ */
+export async function recheckStackParent(
+  row: InspectorPr | null,
+  kind: StackPromptActionKind,
+  github: StackGitHub,
+): Promise<string | null> {
+  const lineage = row?.stack;
+  const o = lineage?.observation;
+  if (!row || !lineage || !o || o.parentUrl !== lineage.parentPrUrl) return "The stack has not been checked yet - try again after the next check";
+  const parent = stackPrNumber(lineage.parentPrUrl);
+  const name = parent === null ? "The parent" : `#${parent}`;
+  const read = await github.prRefs(row.cwd ?? row.repoRoot, lineage.parentPrUrl);
+  if (!read.ok || !read.value) return `${name} could not be read from GitHub - try again once it can`;
+  const changed = read.value.state !== o.parentState
+    || (kind === "reopen-on-parent" && (read.value.headRefName || null) !== o.parentHeadRefName);
+  return changed ? `${name} changed since it was last checked - the row updates on the next check` : null;
 }
 
 export type StackCandidate =
@@ -227,6 +257,8 @@ export function stackPromptCandidate(
     if (blocked) return { error: blocked };
   } else if (session.state !== "idle") {
     return { error: "The session is still working - send it once it is idle" };
+  } else if (!hasPane(session)) {
+    return { error: "The session has no pane to type into - resume its task to restore one" };
   }
   return { session, standing, payload: buildStackPrompt(request.kind, standing.facts), claim };
 }

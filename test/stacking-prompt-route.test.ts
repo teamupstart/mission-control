@@ -19,6 +19,22 @@ import { getForemanConfig } from "../src/server/foreman/config.ts";
 import { decideReviewFollowup, followupPrs, followupSessionBlocker, foremanSettleMs } from "../src/server/foreman/review-followup.ts";
 import { stackPromptCandidate } from "../src/server/stacking/delivery.ts";
 import type { StackObservation } from "../src/shared/stacking.ts";
+import { openDb } from "../src/server/db.ts";
+import { useStackGitHub, type StackGitHub } from "../src/server/stacking/github.ts";
+import type { PrRefs } from "../src/server/inspector/github.ts";
+
+/** A GitHub seam that answers only the parent read the route's recovery recheck makes. */
+function parentReads(parent: PrRefs | null): StackGitHub {
+  const unused = async () => ({ ok: false as const, error: "unused" });
+  return {
+    prRefs: async () => (parent ? { ok: true, value: parent } : { ok: false, error: "unreadable" }),
+    isAncestor: unused, compare: unused, mergeBase: unused,
+    branchSha: async () => ({ ok: false, reason: "unused", outcomeUnknown: false }),
+    repositories: async () => [], primaryRepository: async () => null, retarget: unused,
+  };
+}
+const CLOSED_PARENT: PrRefs = { state: "CLOSED", isDraft: false, headSha: "d".repeat(40), headRefName: "feat/parent",
+  baseRefName: "main", defaultBranch: "main", mergeCommitSha: null };
 
 const PARENT = "https://github.com/acme/repo/pull/7";
 const MERGE = "e".repeat(40);
@@ -54,7 +70,8 @@ function fixture(observation: Partial<StackObservation> = {}) {
     session.inspector = { prKey: key, url, mode: "live", open: 0, postedOpen: 0, round: 1, lastReviewedAt: null, failed: false,
       stack: stackStandingFor(getInspectorPr(key)!, sessions, getForemanConfig()) };
   };
-  registry.refreshInspections = refresh;
+  const refreshes = { count: 0 };
+  registry.refreshInspections = () => { refreshes.count += 1; refresh(); };
   setForemanConfig({ enabled: true, mode: "live", repoAllowlist: ["/tmp/repo"], trackReviewFeedback: false, trackCiFailures: false });
   refresh();
   const messages: string[] = [];
@@ -62,7 +79,7 @@ function fixture(observation: Partial<StackObservation> = {}) {
   const app = buildApp({
     registry, reviews: {} as RouteDeps["reviews"], tasks: {} as RouteDeps["tasks"],
     queues: { get: () => ({ items: [] }) } as unknown as RouteDeps["queues"],
-    workflows: { runs: () => runs, localPlanPublication: () => undefined } as unknown as RouteDeps["workflows"],
+    workflows: { runs: () => runs, localPlanPublication: () => undefined, reconcileDispatchedTaskWorkflows: () => {} } as unknown as RouteDeps["workflows"],
     sdkSessions: { send: async (_id: string, input: { text: string }, guard: () => string | null) => {
       const blocked = guard(); if (blocked) throw new Error(blocked);
       messages.push(input.text);
@@ -76,7 +93,7 @@ function fixture(observation: Partial<StackObservation> = {}) {
       method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
       body: JSON.stringify({ text: "UNTRUSTED WORKER TEXT", origin, buffer: false, stack }),
     });
-  return { key, session, sessions, messages, post, refresh, setRuns: (r: WorkflowRunSummary[]) => { runs = r; }, setLose: () => { lose = true; } };
+  return { key, session, sessions, messages, post, refresh, app, refreshes, setRuns: (r: WorkflowRunSummary[]) => { runs = r; }, setLose: () => { lose = true; } };
 }
 
 /**
@@ -204,7 +221,8 @@ test("the operator's manual send: refused while the session works, delivered onc
   setForemanConfig({ enabled: true });
 });
 
-test("a broken-stack action goes through the same route, only from the operator, only when offered", async () => {
+test("a broken-stack action goes through the same route, only from the operator, only when offered", async (t) => {
+  t.after(useStackGitHub(parentReads(CLOSED_PARENT)));
   const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
   const move = { prKey: f.key, kind: "move-onto-main", tip: null };
   assert.equal((await f.post("foreman", move)).status, 409, "actions are the operator's");
@@ -373,4 +391,52 @@ test("Foreman's decision and the daemon's recheck read ONE session rule and ONE 
     if (previous === undefined) delete process.env.FOREMAN_QUEUE_SETTLE_MS;
     else process.env.FOREMAN_QUEUE_SETTLE_MS = previous;
   }
+});
+
+test("a recovery action is refused, and nothing typed, when the parent changed since the offer was made", async (t) => {
+  const f = fixture({ parentState: "CLOSED", parentMergeCommitSha: null });
+  const move = { prKey: f.key, kind: "move-onto-main", tip: null };
+  // The parent was reopened since the last check.
+  t.after(useStackGitHub(parentReads({ ...CLOSED_PARENT, state: "OPEN" })));
+  const changed = await f.post("human", move);
+  assert.equal(changed.status, 409);
+  assert.match((await changed.json() as { error: string }).error, /#7 changed since it was last checked/);
+  // GitHub cannot be read for it: refused too.
+  t.after(useStackGitHub(parentReads(null)));
+  const unreadable = await f.post("human", move);
+  assert.equal(unreadable.status, 409);
+  assert.match((await unreadable.json() as { error: string }).error, /could not be read from GitHub/);
+  assert.deepEqual(f.messages, [], "nothing reached the session");
+});
+
+test("one row whose stack standing cannot be computed does not take the merge-queue listing down", async () => {
+  const f = fixture();
+  const db = openDb();
+  // The claims table is unreadable, so a row that needs a prompt throws when its standing is computed.
+  db.exec("ALTER TABLE stack_prompt_claims RENAME TO stack_prompt_claims_hidden");
+  try {
+    const res = await f.app.request("/api/inspector/prs", { headers: { host: "127.0.0.1:7317" } });
+    assert.equal(res.status, 200, await res.clone().text());
+    const rows = await res.json() as Array<{ key: string; stackStanding: unknown }>;
+    const row = rows.find((candidate) => candidate.key === f.key);
+    assert.ok(row, "the row is still listed");
+    assert.equal(row!.stackStanding, null, "with no standing, rather than a 500 for every row");
+  } finally {
+    db.exec("ALTER TABLE stack_prompt_claims_hidden RENAME TO stack_prompt_claims");
+  }
+});
+
+test("saving Foreman's config refreshes the cached stack standings at once", async () => {
+  const f = fixture();
+  setForemanConfig({ enabled: false });
+  f.refresh();
+  assert.equal(f.session.inspector?.stack?.prompt?.status, "foreman-off");
+  const before = f.refreshes.count;
+  const res = await f.app.request("/api/foreman/config", {
+    method: "PUT", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true, mode: "live", repoAllowlist: ["/tmp/repo"] }),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.ok(f.refreshes.count > before, "the route refreshed the cached standings");
+  assert.equal(f.session.inspector?.stack?.prompt?.status, "pending", "Foreman reads it as its own to send, without waiting a sweep");
 });

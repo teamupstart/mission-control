@@ -49,9 +49,9 @@ import {
 import { scrubSecrets } from "./scrub.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { reviewBaseChanged } from "@shared/shipping.ts";
-import { defaultStackGitHub, type StackGitHub } from "../stacking/github.ts";
+import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
 import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
-import { observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
+import { observeClosedStackChildren, observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
 import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
@@ -346,13 +346,8 @@ export const DENY_SETTINGS = JSON.stringify({
  * supplies credentials and the reviewer's read scope, never the identity of the PR.
  */
 /** The GitHub seam stacking reads through. Replaced only by tests. */
-let stackGitHub: StackGitHub = defaultStackGitHub;
 export function useInspectorStackGitHub(github: StackGitHub): () => void {
-  const previous = stackGitHub;
-  stackGitHub = github;
-  return () => {
-    stackGitHub = previous;
-  };
+  return useStackGitHub(github);
 }
 
 /**
@@ -693,7 +688,7 @@ async function processPr(
   // afterwards: a transition changes the current parent and withdraws the release.
   if (pr.stack && stackLifecycle) {
     try {
-      await observeStackLifecycle(pr, s, dir, stackGitHub, stackLifecycle, now);
+      await observeStackLifecycle(pr, s, dir, activeStackGitHub(), stackLifecycle, now);
     } catch (error) {
       console.error("[inspector] stack lifecycle observation failed:", pr.key, error);
     }
@@ -828,7 +823,7 @@ async function processPr(
   let gated = pr;
   if (pr.stack) {
     try {
-      await refreshStackRelease(pr, s, dir, stackGitHub, now);
+      await refreshStackRelease(pr, s, dir, activeStackGitHub(), now);
     } catch (error) {
       // A release that could not be checked is not trusted.
       revokeInspectorPrStack(pr.key, now);
@@ -842,7 +837,7 @@ async function processPr(
   // merge gate and the review reuse below may trust the recorded review.
   let baseReview: "current" | "changed" | "unknown" = "current";
   try {
-    baseReview = await reviewedStackBase(gated, s, dir, stackGitHub, now);
+    baseReview = await reviewedStackBase(gated, s, dir, activeStackGitHub(), now);
   } catch (error) {
     baseReview = "unknown";
     console.error("[inspector] stacked review base check failed:", pr.key, error);
@@ -1359,7 +1354,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
         // Stacked pull requests: the lineage is already on the row (`adoptOpenedPr`). The
         // base check reads GitHub, so it runs off the hook's path.
         if (getInspectorPr(parsed.key)?.stack) {
-          void correctStackBase(parsed.key, stackGitHub, Date.now())
+          void correctStackBase(parsed.key, activeStackGitHub(), Date.now())
             .then(() => registry.refreshInspections())
             .catch((error) => console.error("[inspector] could not check the stacked base:", parsed.key, error));
         }
@@ -1432,6 +1427,17 @@ export function startInspector(registry: Registry, options: InspectorStartOption
         // stop claiming the last good result. One grouped query per 90s, and it emits
         // only for sessions whose summary actually changed.
         registry.refreshInspections();
+      }
+      // Stacked children already retired as closed: their recovery action depends on a parent
+      // that can still merge or close, so its state is read again every sweep (GitHub reads
+      // only). Its own guard, so one failure cannot cost the open rows' sweep above.
+      if (stackLifecycle && !stopped) {
+        try {
+          await observeClosedStackChildren(activeStackGitHub(), stackLifecycle, liveDir, Date.now());
+          registry.refreshInspections();
+        } catch (error) {
+          console.error("[inspector] closed stacked children could not be observed:", error);
+        }
       }
     } catch (err) {
       console.error("[inspector] tick failed:", err);

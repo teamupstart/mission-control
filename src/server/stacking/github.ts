@@ -62,6 +62,23 @@ export const defaultStackGitHub: StackGitHub = {
 };
 
 /**
+ * The seam the daemon's stacking code reads through right now: the Inspector tick, and the
+ * inject route's last-moment parent recheck. One holder, so a test that swaps it swaps it for
+ * both. Replaced only by tests.
+ */
+let active: StackGitHub = defaultStackGitHub;
+export function activeStackGitHub(): StackGitHub {
+  return active;
+}
+export function useStackGitHub(github: StackGitHub): () => void {
+  const previous = active;
+  active = github;
+  return () => {
+    active = previous;
+  };
+}
+
+/**
  * The GitHub repository a checkout's pull requests are opened in: `origin`'s, when `origin`
  * is a GitHub remote, else the checkout's only GitHub remote. Null when neither holds - two
  * GitHub remotes and no GitHub `origin`, or none at all - because a parent pull request

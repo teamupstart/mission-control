@@ -30,6 +30,36 @@ const ACTION_HINT: Record<StackActionKind, string> = {
     "Start the parent task again in a fresh worktree, so it can finish and merge its pull request.",
 };
 
+/** What `runStackAction` drives in the component. */
+export interface StackActionState {
+  setBusy: (busy: boolean) => void;
+  setMessage: (message: string | null) => void;
+  onChanged?: () => void;
+}
+
+/**
+ * Run one button's request: busy while it is in flight, then the outcome as a message. `busy`
+ * is cleared whatever happens - a request that throws or rejects must not leave every button
+ * disabled until the component remounts.
+ */
+export async function runStackAction(
+  what: () => Promise<{ ok: boolean; error?: string }>,
+  done: string,
+  state: StackActionState,
+): Promise<void> {
+  state.setBusy(true);
+  state.setMessage(null);
+  try {
+    const r = await what();
+    state.setMessage(r.ok ? done : r.error ?? "could not send it");
+    if (r.ok) state.onChanged?.();
+  } catch (error) {
+    state.setMessage(error instanceof Error ? error.message : "could not send it");
+  } finally {
+    state.setBusy(false);
+  }
+}
+
 export function StackLifecycle({
   prKey,
   standing,
@@ -53,15 +83,15 @@ export function StackLifecycle({
   // way out of that one is the task's existing Resume control.
   const send = prompt && (prompt.status === "foreman-off" || prompt.status === "uncertain") ? prompt : null;
   const noSession = !standing.sessionId;
+  // A live owner with no pane cannot be typed into by anyone: its prompt-typed actions stay
+  // visible (they say what would fix the stack) but cannot be pressed until the task is resumed.
+  const noChannel = !noSession && standing.sessionHasPane === false;
+  const channelHint = noSession
+    ? "No live session owns this pull request - resume its task first"
+    : "The session has no pane to type into - resume its task to restore one";
 
-  async function run(what: () => Promise<{ ok: boolean; error?: string }>, done: string): Promise<void> {
-    setBusy(true);
-    setMessage(null);
-    const r = await what();
-    setBusy(false);
-    setMessage(r.ok ? done : r.error ?? "could not send it");
-    if (r.ok) onChanged?.();
-  }
+  const run = (what: () => Promise<{ ok: boolean; error?: string }>, done: string): Promise<void> =>
+    runStackAction(what, done, { setBusy, setMessage, onChanged });
 
   return (
     <span className="stack-lifecycle" role="group" aria-label="Stacked pull request">
@@ -69,11 +99,11 @@ export function StackLifecycle({
         {standing.label}
       </span>
       {send && (
-        <Tooltip label={noSession ? "No live session owns this pull request - resume its task first" : "Type the prompt into the child's session now, through the same guards Foreman uses"}>
+        <Tooltip label={noSession || noChannel ? channelHint : "Type the prompt into the child's session now, through the same guards Foreman uses"}>
           <button
             type="button"
             className="stack-action"
-            disabled={busy || noSession}
+            disabled={busy || noSession || noChannel}
             onClick={(e) => {
               e.stopPropagation();
               void run(
@@ -91,9 +121,9 @@ export function StackLifecycle({
         // every other action is typed into the child's session and needs that session live.
         const restart = action === "reschedule-parent" || action === "start-parent";
         const needsSession = action !== "await-replacement" && !restart;
-        const unavailable = (needsSession && noSession) || (restart && !standing.parentTaskId);
-        const hint = needsSession && noSession
-          ? "No live session owns this pull request - resume its task first"
+        const unavailable = (needsSession && (noSession || noChannel)) || (restart && !standing.parentTaskId);
+        const hint = needsSession && (noSession || noChannel)
+          ? channelHint
           : restart && !standing.parentTaskId ? "The parent task is not known on this board" : ACTION_HINT[action];
         const send = (): Promise<{ ok: boolean; error?: string }> => {
           if (action === "await-replacement") return api.stackAwaitReplacement(prKey, true);

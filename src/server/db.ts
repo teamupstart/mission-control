@@ -14484,12 +14484,27 @@ export function setStackAwaitReplacement(key: string, at: number | null, now: nu
  * old parent. `stack_base_sha` - the commit the child was cut at - is never touched. The
  * operator's wait choice is spent by the swap.
  */
-export function transitionStackParent(key: string, from: string, to: string, now: number): boolean {
+export function transitionStackParent(key: string, from: string, to: string, now: number, childHeadSha: string | null = null): boolean {
   return stackAtomically(() => {
     const row = openDb()
-      .prepare(`SELECT stack_parent_pr_url, stack_lineage_history FROM inspector_prs WHERE key = ?`)
-      .get(key) as { stack_parent_pr_url: string | null; stack_lineage_history: string | null } | undefined;
+      .prepare(
+        `SELECT stack_parent_pr_url, stack_lineage_history, state, stack_await_replacement_at, stack_released_head_sha
+           FROM inspector_prs WHERE key = ?`,
+      )
+      .get(key) as {
+        stack_parent_pr_url: string | null;
+        stack_lineage_history: string | null;
+        state: string;
+        stack_await_replacement_at: number | null;
+        stack_released_head_sha: string | null;
+      } | undefined;
     if (!row || row.stack_parent_pr_url !== from || from === to) return false;
+    // Re-checked HERE, in the transaction that writes, not only where the caller decided: the
+    // replacement's read is awaited in between, and in that gap the operator can withdraw the
+    // choice, the child can close, or the release check can release this very head. Any of
+    // those makes the swap wrong.
+    if (row.state !== "open" || row.stack_await_replacement_at === null) return false;
+    if (childHeadSha && row.stack_released_head_sha === childHeadSha) return false;
     const history = [...parseLineageHistory(row.stack_lineage_history), { from, to, at: now }];
     const result = openDb()
       .prepare(
@@ -14497,7 +14512,7 @@ export function transitionStackParent(key: string, from: string, to: string, now
             SET stack_parent_pr_url = ?, stack_lineage_history = ?,
                 stack_released_head_sha = NULL, stack_released_basis = NULL,
                 stack_await_replacement_at = NULL, updated_at = ?
-          WHERE key = ? AND stack_parent_pr_url = ?`,
+          WHERE key = ? AND stack_parent_pr_url = ? AND state = 'open' AND stack_await_replacement_at IS NOT NULL`,
       )
       .run(to, JSON.stringify(history), now, key, from);
     return Number(result.changes) > 0;
@@ -14507,6 +14522,22 @@ export function transitionStackParent(key: string, from: string, to: string, now
 /** `inTransaction`, or the caller's own transaction when one is already open. */
 function stackAtomically<T>(fn: () => T): T {
   return openDb().isTransaction ? fn() : inTransaction(fn);
+}
+
+/**
+ * Stacked children the ledger retired as closed (not merged), newest first: the rows whose
+ * recovery action still depends on a parent that can move. Bounded, like the listing.
+ */
+export function loadClosedStackChildren(limit = 50): InspectorPr[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM inspector_prs
+        WHERE state = 'closed' AND stack_parent_pr_url IS NOT NULL AND merged_at IS NULL
+          AND (observed_state IS NULL OR observed_state <> 'MERGED')
+        ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(limit) as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
 }
 
 /** One catch-up or restack prompt claim. */

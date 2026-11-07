@@ -12,6 +12,8 @@ test.use({ daemonEnv: { MC_E2E_HOLD_FIRST_TURN: "1" } });
 type SoundWindow = Window & {
   soundProbe: {
     toasts: Array<{ title: string; body?: string; tag?: string; silent?: boolean | null }>;
+    failNextNotification?: boolean;
+    failedNotifications: number;
     notes: number;
     audioState?: AudioContextState;
     stream: EventSource;
@@ -21,13 +23,18 @@ type SoundWindow = Window & {
 
 async function observeDelivery(page: Page, audioState?: AudioContextState): Promise<void> {
   await page.addInitScript((initialAudioState) => {
-    const state = { toasts: [], notes: 0, audioState: initialAudioState } as unknown as SoundWindow["soundProbe"];
+    const state = { toasts: [], failedNotifications: 0, notes: 0, audioState: initialAudioState } as unknown as SoundWindow["soundProbe"];
     (window as SoundWindow).soundProbe = state;
     // Capture the OS API boundary without raising real desktop alerts during a test.
     window.Notification = class {
       static permission = "granted";
       static requestPermission = async () => "granted";
       constructor(title: string, options: NotificationOptions = {}) {
+        if (state.failNextNotification) {
+          state.failNextNotification = false;
+          state.failedNotifications++;
+          throw new Error("desktop notification construction failed");
+        }
         state.toasts.push({ title, ...options });
       }
       close(): void {}
@@ -238,6 +245,43 @@ for (const mode of ["live", "reconnect"] as const) {
 }
 
 for (const mode of ["live", "reconnect"] as const) {
+  test(`failed ${mode} desktop notification leaves the fallback sound gate available`, async ({ dashboard: page, daemon }) => {
+    const session = await dispatch(page, daemon);
+    const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ alerts: { notifications: true, sound: true } }),
+    });
+    expect(saved.ok).toBe(true);
+    await observeDelivery(page, "suspended");
+    await page.reload();
+    await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+    const start = Date.now();
+    await page.clock.setFixedTime(new Date(start));
+    await page.evaluate(() => { (window as SoundWindow).soundProbe.failNextNotification = true; });
+    if (mode === "reconnect") await disconnect(page);
+    await hook(daemon, session, "Notification");
+    if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    await expect.poll(() => page.evaluate(() => (window as SoundWindow).soundProbe.failedNotifications)).toBe(1);
+    expect(await delivery(page)).toEqual({ toasts: [], notes: 0 });
+
+    // A separate alert inside the 1200ms burst window must still request sound:
+    // the failed constructor delivered no fallback tone to consume that window.
+    await hook(daemon, session, "UserPromptSubmit");
+    if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+    await page.clock.setFixedTime(new Date(start + 400));
+    if (mode === "reconnect") await disconnect(page);
+    await hook(daemon, session, "Notification");
+    if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+    await expect.poll(async () => (await delivery(page)).toasts.length).toBe(1);
+    expect((await delivery(page)).toasts[0]).toMatchObject({
+      silent: false,
+      tag: mode === "reconnect" ? "reconnect-catchup" : `input:${session.id}`,
+    });
+    expect((await delivery(page)).notes).toBe(0);
+  });
+
   test(`suspended audio rate-limits separate ${mode} fallback alerts`, async ({ dashboard: page, daemon }) => {
     const session = await dispatch(page, daemon);
     const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {

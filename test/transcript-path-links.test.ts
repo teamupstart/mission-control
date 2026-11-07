@@ -166,38 +166,38 @@ test("the panel asks for the listing and hands it to the renderer", () => {
   const panel = readFileSync("src/web/components/TranscriptPanel.tsx", "utf8");
   assert.match(
     panel,
-    /useWorkspacePaths\(\s*files,\s*sessionId,\s*Boolean\(session\.cwd && onOpenFile\),\s*session\.state === "working",?\s*\)/,
+    /useWorkspacePaths\(\s*files,\s*sessionId,\s*Boolean\(session\.cwd && onOpenFile\),\s*session\.state === "working" \? null : \(messages\.at\(-1\)\?\.id \?\? ""\),?\s*\)/,
   );
   assert.match(panel, /<Markdown breaks onLinkClick=\{onOpenFile\} filePaths=\{filePaths\}>/);
 });
 
-test("a transcript re-lists its checkout when a turn ends, and not on every frame", () => {
+test("a transcript re-lists its checkout when a turn lands, and not on every frame", () => {
   // A listing taken only when the conversation mounted predates every file the agent writes
   // while the operator watches, so the turn presenting a fresh mock-up or report rendered its
   // path as dead text and drew no preview until something remounted the conversation.
-  const first = { sessionId: "s1", working: false };
-  assert.equal(shouldWarmWorkspacePaths(null, first), true, "the first render lists");
+  const idle = (settledOn: string) => ({ sessionId: "s1", settledOn });
+  const working = { sessionId: "s1", settledOn: null };
+  assert.equal(shouldWarmWorkspacePaths(null, idle("m1")), true, "the first render lists");
   assert.equal(
-    shouldWarmWorkspacePaths({ sessionId: "s1", working: true }, first),
+    shouldWarmWorkspacePaths(null, working),
+    true,
+    "a transcript opened mid-turn still lists its history's paths",
+  );
+  assert.equal(shouldWarmWorkspacePaths(idle("m1"), working), false, "starting a turn wrote nothing yet");
+  assert.equal(shouldWarmWorkspacePaths(working, working), false, "a streaming turn's frames are free");
+  assert.equal(
+    shouldWarmWorkspacePaths(working, idle("m2")),
     true,
     "a finished turn lists again, after the files it names exist",
   );
   assert.equal(
-    shouldWarmWorkspacePaths(first, { sessionId: "s1", working: true }),
-    false,
-    "starting a turn has written nothing yet",
+    shouldWarmWorkspacePaths(idle("m1"), idle("m2")),
+    true,
+    "a turn too quick to be seen working still lists when its message lands",
   );
-  assert.equal(shouldWarmWorkspacePaths(first, first), false, "an idle re-render is free");
+  assert.equal(shouldWarmWorkspacePaths(idle("m2"), idle("m2")), false, "an idle re-render is free");
   assert.equal(
-    shouldWarmWorkspacePaths(
-      { sessionId: "s1", working: true },
-      { sessionId: "s1", working: true },
-    ),
-    false,
-    "a streaming turn's frames do not each pay for a listing",
-  );
-  assert.equal(
-    shouldWarmWorkspacePaths(first, { sessionId: "s2", working: true }),
+    shouldWarmWorkspacePaths(idle("m2"), { sessionId: "s2", settledOn: null }),
     true,
     "another session's transcript lists its own checkout, even mid-turn",
   );

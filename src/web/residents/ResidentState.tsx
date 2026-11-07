@@ -14,9 +14,10 @@ export function ResidentState({ profileId }: { profileId: string }): React.JSX.E
     try { await action(); } catch (err) { setError(err instanceof Error ? err.message : "State unavailable"); }
     finally { setBusy(false); }
   }
-  return <section className="resident-state" aria-label="Durable resident state">
+  return <section className="resident-section resident-state" aria-label="Durable resident state">
     <h4>Durable state</h4>
-    <p>Notes, watermarks and Claude auto-memory survive restarts. Copies of this profile start with separate state.</p>
+    <p className="resident-section-blurb">Notes, watermarks and Claude auto-memory survive restarts. Copies of this profile start with separate state.</p>
+    <div className="resident-editor-actions">
     <Tooltip label={view ? "Reload this profile’s saved state files" : "Browse this profile’s saved notes, watermarks and auto-memory"}>
     <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void act(async () => {
       setView(await fetchResidentState(profileId)); setPreview(null);
@@ -25,7 +26,8 @@ export function ResidentState({ profileId }: { profileId: string }): React.JSX.E
     <Tooltip label="Clear saved notes, watermarks and auto-memory after closing all runs">
       <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setConfirm(true)}>Reset state</button>
     </Tooltip>
-    {error && <p role="alert">{error}</p>}
+    </div>
+    {error && <p className="resident-error" role="alert">{error}</p>}
     {view && <>
       <p className="resident-state-path">{view.directory}</p>
       {view.files.length === 0 ? <p>No saved state files.</p> : <ul aria-label="State files">{view.files.map(({ path }) =>

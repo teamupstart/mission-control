@@ -162,17 +162,35 @@ for (const agent of ["claude", "codex"] as const) {
     expect(existsSync(join(state.directory, "MEMORY.md"))).toBeTruthy();
     await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
     const statePanel = page.getByRole("region", { name: "Durable resident state" });
+    const mcpSection = page.getByRole("region", { name: "MCP servers", exact: true });
+    const headingStyle = await mcpSection.getByRole("heading").evaluate((el) => {
+      const css = getComputedStyle(el);
+      return { fontSize: css.fontSize, fontWeight: css.fontWeight, letterSpacing: css.letterSpacing, textTransform: css.textTransform };
+    });
+    await expect.poll(() => statePanel.getByRole("heading", { name: "Durable state", exact: true }).evaluate((el) => {
+      const css = getComputedStyle(el);
+      return { fontSize: css.fontSize, fontWeight: css.fontWeight, letterSpacing: css.letterSpacing, textTransform: css.textTransform };
+    })).toEqual(headingStyle);
+    const descriptionSize = await mcpSection.locator("p.resident-section-blurb").evaluate((el) => getComputedStyle(el).fontSize);
+    await expect(statePanel.locator("p").first()).toHaveCSS("font-size", descriptionSize);
     await statePanel.getByRole("button", { name: "View state", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Browse this profile’s saved notes, watermarks and auto-memory");
     await statePanel.getByRole("button", { name: "View state", exact: true }).click();
     await statePanel.getByRole("button", { name: "Refresh state", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Reload this profile’s saved state files");
     await expect(statePanel).toContainText(state.directory);
+    await expect(statePanel.locator(".resident-state-path")).toHaveCSS("font-size", descriptionSize);
     await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Preview MEMORY.md without changing it");
     await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).click();
     await expect(statePanel.getByRole("region", { name: "State file MEMORY.md" })).toContainText("handled reply 42");
-    if (process.env.MC_E2E_EVIDENCE) await statePanel.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });
+    await expect(statePanel.locator("pre")).toHaveCSS("font-size", descriptionSize);
+    if (process.env.MC_E2E_EVIDENCE) {
+      await page.mouse.move(0, 0);
+      await expect(page.locator(".tooltip")).toHaveCount(0);
+      await statePanel.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });
+      await page.screenshot({ path: join(evidence, `${agent}-state-typography.png`) });
+    }
     await statePanel.getByRole("button", { name: "Reset state", exact: true }).hover();
     await expect(page.locator(".tooltip")).toHaveText("Clear saved notes, watermarks and auto-memory after closing all runs");
     if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-state-reset-tooltip.png`) });

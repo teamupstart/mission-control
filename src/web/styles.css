@@ -12658,11 +12658,17 @@ select:not([multiple]) option:focus-visible {
   padding: 2px 9px;
   font-size: 11.5px;
 }
-/* The second row at the top: Manage residents, where it is seen before the cards. */
+/* The second row at the top: Manage residents, where it is seen before the cards. One band with
+   the title row above it - no divider between them, and only a few pixels of air - so the
+   button reads as the title's own action rather than a section of its own. */
+.residents-drawer-head:has(+ .residents-drawer-bar) {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
 .residents-drawer-bar {
   flex: none;
   display: flex;
-  padding: 8px 16px;
+  padding: 2px 16px 10px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--panel-2);
 }

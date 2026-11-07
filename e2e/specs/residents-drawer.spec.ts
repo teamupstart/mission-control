@@ -614,6 +614,8 @@ test("Manage residents sits on its own row at the top, above the cards, and open
   const firstCard = await cardOf(drawer, FIRST).boundingBox();
   expect(title && button && firstCard).toBeTruthy();
   expect(button!.y).toBeGreaterThan(title!.y + title!.height);
+  // Close under the title, as one band with it: no more than a few pixels of air between them.
+  expect(button!.y - (title!.y + title!.height)).toBeLessThanOrEqual(12);
   expect(button!.y + button!.height).toBeLessThanOrEqual(firstCard!.y);
   await expect(drawer.locator(".residents-drawer-foot").getByRole("button", { name: "Manage residents" })).toHaveCount(0);
   await expectContentClearsBorder(drawer);

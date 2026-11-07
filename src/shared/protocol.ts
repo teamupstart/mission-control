@@ -3426,7 +3426,7 @@ export const ConversationViewSchema = z.enum(CONVERSATION_VIEWS);
 export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 
 /**
- * How much the Line strip SAYS - the same six stages, at two densities.
+ * How much the Line strip SAYS - the same six stages, at two densities, or not at all.
  *
  * `expanded` is the two-line strip: glyph, name, count and a sentence per stage.
  * `condensed` drops the sentences and the wires for a single row of inline segments,
@@ -3434,15 +3434,16 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * `flex: none` inside a `height: 100dvh` shell that does not scroll, so those 47.5px go
  * straight to the conversation pane underneath it
  * (`docs/plans/line-collapse/plan.md`).
+ * `hidden` draws no strip at all: the operator has switched the Line off (Settings ->
+ * Display -> Top bar -> The Line), and the fleet starts directly under the top bar. Its caret goes
+ * with it, so only Settings brings it back.
  *
  * A named set rather than a boolean, and here beside `CONVERSATION_VIEWS` for that key's
- * reason exactly: the study drew a third `hidden` density - zero height, with a 3px
- * segmented attention hairline in its place - and it was held in reserve rather than
- * rejected. A `lineCollapsed: boolean` would have to be RENAMED the day it arrives, and
- * this key is persisted on operators' machines. Adding a member to this list is free;
- * renaming a stored key is not.
+ * reason exactly: `hidden` arrived as a third member without renaming the stored key, which
+ * a `lineCollapsed: boolean` could not have done. Adding a member to this list is free;
+ * renaming a stored key or one of its persisted values is not.
  */
-export const LINE_DENSITIES = ["expanded", "condensed"] as const;
+export const LINE_DENSITIES = ["expanded", "condensed", "hidden"] as const;
 export const LineDensitySchema = z.enum(LINE_DENSITIES);
 /** Derived from the array, not from the schema, so reading it costs the web no zod. */
 export type LineDensity = (typeof LINE_DENSITIES)[number];

@@ -255,14 +255,14 @@ test("the Settings picker sets the density, and the strip and the daemon both fo
 
   const picker = page.getByRole("radiogroup", { name: "Line density" });
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("radio")).toHaveCount(2);
+  await expect(picker.getByRole("radio")).toHaveCount(3);
 
   const expanded = picker.getByRole("radio", { name: /^Expanded/ });
   const condensed = picker.getByRole("radio", { name: /^Condensed/ });
   // The shipped default, read on the surface an operator would read it on.
   await expect(condensed).toBeChecked();
   await expect(expanded).not.toBeChecked();
-  observed("Settings > Display > The Line opened with Condensed checked, the shipped default");
+  observed("Settings > Display > Top bar > The Line opened with Condensed checked, the shipped default");
 
   // ---- the thumbnails are icons, not full-width pictures ----
   //
@@ -272,7 +272,7 @@ test("the Settings picker sets the density, and the strip and the daemon both fo
   // of the line and scales its height by the ratio. Exact rather than bounded because 44x32
   // is a fixed CSS size no font metric moves.
   const thumbs = picker.locator(".view-thumb");
-  await expect(thumbs).toHaveCount(2);
+  await expect(thumbs).toHaveCount(3);
   for (const box of await thumbs.evaluateAll((nodes) =>
     nodes.map((node) => {
       const rect = node.getBoundingClientRect();
@@ -331,4 +331,159 @@ test("the Settings picker sets the density, and the strip and the daemon both fo
   ).toBeChecked();
   observed("folding with the caret moved the Settings radio too - one preference, three controls");
   await shootSettings(page, "settings-picker");
+});
+
+
+test("Disabled removes the strip, survives a reload and Shift+L, and the preview shows each choice", async ({
+  page,
+  daemon,
+}) => {
+  // The third answer. "The Line" is a name few operators know the strip by, so the panel
+  // draws the real strip at the selected density above the choices; this proves the preview
+  // follows the radio, and that Disabled really takes the strip off the fleet and keeps it
+  // off until Settings brings it back.
+  await page.setViewportSize(VIEWPORT);
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.evaluate(() => window.localStorage.clear());
+  await page.reload();
+
+  const picker = page.getByRole("radiogroup", { name: "Line density" });
+  await expect(picker).toBeVisible();
+  // It lives under Display > Top bar, the band directly under which the strip is drawn -
+  // inside that section, after the bar's own lists, and not as a section of its own.
+  const topbarSection = page.locator('[data-anchor="display/topbar"]');
+  await expect(topbarSection.getByRole("heading", { name: "Top bar", level: 3 })).toBeVisible();
+  await expect(topbarSection.getByRole("radiogroup", { name: "Line density" })).toBeVisible();
+  await expect(topbarSection.getByRole("heading", { name: "The Line", level: 4 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "The Line", level: 3 })).toHaveCount(0);
+  observed("the Line setting renders inside Settings > Display > Top bar, under its own subheading");
+  // The preview is `inert` and `aria-hidden`, so it is not a second Line to a screen reader -
+  // which is also why it is reached by its stage rather than by role.
+  const preview = page.locator(".line-preview-stage");
+  await expect(page.getByText("The pipeline strip under the top bar on the fleet")).toBeVisible();
+
+  // ---- the preview draws the real strip at the shipped default ----
+  await expect(preview.locator("nav.line")).toHaveClass(/is-condensed/);
+  await expect(preview.locator(".line-stage")).toHaveCount(6);
+  await expect(preview.locator(".ls-name")).toHaveText([
+    "Intake", "Backlog", "Working", "Review", "Decide", "Shipped",
+  ]);
+  await expect(preview.locator(".ls-sub")).toHaveCount(0);
+  observed("the Line preview drew six condensed stages with their names and counts");
+  await shootPreview(page, "settings-preview-condensed");
+  await shootPlacement(page, "settings-topbar-section");
+
+  // ---- Expanded: the same strip, with its sentences ----
+  await picker.getByRole("radio", { name: /^Expanded/ }).check();
+  await expect(preview.locator("nav.line")).not.toHaveClass(/is-condensed/);
+  await expect(preview.locator(".ls-sub")).toHaveCount(6);
+  await expect(preview.locator(".ls-sub").nth(1)).toHaveText("nothing ready · 5 parked");
+  observed("choosing Expanded redrew the preview with a sentence under every stage");
+  await shootPreview(page, "settings-preview-expanded");
+
+  // ---- Disabled: no strip, and the preview says so ----
+  const disabled = picker.getByRole("radio", { name: /^Disabled/ });
+  await disabled.check();
+  await expect(disabled).toBeChecked();
+  await expect(preview.locator("nav.line")).toHaveCount(0);
+  await expect(preview).toContainText("Nothing is drawn here. The fleet starts directly under the top bar.");
+  await expect
+    .poll(async () => (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity)
+    .toBe("hidden");
+  observed("choosing Disabled emptied the preview and wrote lineDensity \"hidden\" to the daemon");
+  await shootPreview(page, "settings-preview-disabled");
+
+  // ---- the fleet draws no strip, and the chord does not quietly bring it back ----
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
+  await page.keyboard.press("Shift+L");
+  await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
+  expect((await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity).toBe("hidden");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
+  observed("the fleet drew no Line, Shift+L left it off, and it stayed off across a reload");
+
+  // ---- Settings is the way back ----
+  await page.goto(`${daemon.baseURL}/#/settings/display`);
+  await page.getByRole("radiogroup", { name: "Line density" }).getByRole("radio", { name: /^Condensed/ }).check();
+  await page.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(page.getByRole("navigation", { name: "The Line" })).toHaveClass(/is-condensed/);
+  observed("choosing Condensed in Settings brought the strip back");
+});
+
+/** The Line block of Display > Top bar: its preview and its choices. */
+async function shootPreview(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.mouse.move(0, 0);
+  await page.locator(".topbar-line-setting").screenshot({ path: `${EVIDENCE}${name}.png` });
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
+}
+
+/**
+ * The whole Display > Top bar section, heading to Line block, in a viewport tall enough to
+ * hold it - an element taller than the window is stitched under the sticky top bar.
+ */
+async function shootPlacement(page: Page, name: string): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  const before = page.viewportSize();
+  await page.setViewportSize({ width: VIEWPORT.width, height: 2600 });
+  await page.mouse.move(0, 0);
+  await page.locator('[data-anchor="display/topbar"]').screenshot({ path: `${EVIDENCE}${name}.png` });
+  if (before) await page.setViewportSize(before);
+  // eslint-disable-next-line no-console
+  console.log(`CAPTURED e2e/.artifacts/line-density/${name}.png`);
+}
+
+test("the See work tour borrows a condensed Line over Disabled, and leaves Disabled stored", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The tour's first stop spotlights the strip, so with the Line switched off App draws it
+  // condensed for as long as the tour runs - and must not write that back as a preference,
+  // or finishing the tour would quietly undo the operator's Disabled.
+  const stored = async (): Promise<string> =>
+    (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity;
+  const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lineDensity: "hidden" }),
+  });
+  expect(pinned.ok).toBe(true);
+  await dashboard.emulateMedia({ reducedMotion: "reduce" });
+  await dashboard.setViewportSize(VIEWPORT);
+  await dashboard.reload();
+  await expect(dashboard.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  const line = dashboard.getByRole("navigation", { name: "The Line" });
+  await expect(line).toHaveCount(0);
+  observed("with Disabled saved, the fleet drew no Line before the tour");
+
+  // ---- the tour starts, and its first stop has a strip to point at ----
+  const palette = dashboard.getByRole("dialog", { name: "Search everything" });
+  await dashboard.keyboard.press("Meta+k");
+  await expect(palette).toBeVisible();
+  await palette.getByRole("combobox", { name: "Search everything" }).fill("See the work");
+  await palette.getByRole("option", { name: /Start See the work tour, command/ }).click();
+  const stop = dashboard
+    .getByRole("dialog", { name: "Fleet and the Line" })
+    .or(dashboard.getByRole("status", { name: "Fleet and the Line" }));
+  await expect(stop).toBeVisible();
+  await expect(line).toBeVisible();
+  await expect(line).toHaveClass(/is-condensed/);
+  await expect(line.locator(".line-stage")).toHaveCount(6);
+  // The caret is drawn too, but the tour holds focus in its own dialog; what matters is
+  // that the strip borrowed for the tour wrote nothing.
+  expect(await stored()).toBe("hidden");
+  observed("during the See work tour the Line drew condensed while lineDensity stayed \"hidden\"");
+
+  // ---- leaving the tour takes the borrowed strip away again ----
+  await stop.getByRole("button", { name: "Exit tour" }).click();
+  await expect(stop).toBeHidden();
+  await expect(line).toHaveCount(0);
+  expect(await stored()).toBe("hidden");
+  observed("exiting the tour removed the Line again, and lineDensity still read \"hidden\"");
 });

@@ -203,12 +203,18 @@ test("a rendering this build does not ship reads as the shipped one", () => {
 });
 
 test("a density this build does not ship reads as the shipped one", () => {
-  // The third member the study drew and held in reserve - `hidden`, at zero height - is
-  // the realistic version of this: a profile that used a build which shipped it must not
-  // paint a strip this build cannot draw, and must not PUT the value back as if it were
-  // real. It falls to the shipped default, which is a strip you can see.
-  store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  // A profile that used a build which shipped some other density must not paint a strip
+  // this build cannot draw, and must not PUT the value back as if it were real. It falls
+  // to the shipped default, which is a strip you can see.
+  store.set("mission-control.ui", JSON.stringify({ lineDensity: "hairline" }));
   assert.equal(readCache().lineDensity, "condensed");
+});
+
+test("a cached Disabled Line survives a cold paint", () => {
+  // Dropping it here would draw the strip on the first frame and remove it the moment the
+  // daemon answered, stepping the whole fleet up by a band on every load.
+  store.set("mission-control.ui", JSON.stringify({ lineDensity: "hidden" }));
+  assert.equal(readCache().lineDensity, "hidden");
 });
 
 test("a skin this build does not ship reads as Default, and a cached one paints first", () => {

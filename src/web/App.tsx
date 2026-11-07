@@ -4469,7 +4469,10 @@ export function App(): React.JSX.Element {
             pull requests that shipped this week, and the strip is where that is said. */}
         <LineStrip
           summary={lineSummary}
-          density={lineDensity}
+          // Switched off draws nothing - except under the See work tour, whose first stop
+          // spotlights this strip and would otherwise point at nothing. It borrows the
+          // condensed row for the length of the tour and writes no preference.
+          density={lineDensity === "hidden" && seeWorkRun ? "condensed" : lineDensity}
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}

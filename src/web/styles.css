@@ -12780,6 +12780,127 @@ select:not([multiple]) option:focus-visible {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+/* The selected card's latest message: at most three lines, the rest a click away in Open. */
+.residents-drawer-latest {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+/* The open question, drawn by `ReviewCard` or `PaneDialogPrompt` at the card's width. They are
+   sized for a modal and the Conversation; inside a 330px card they take less air. */
+.residents-drawer-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.residents-drawer-ask .review {
+  padding: 2px 0 6px;
+}
+.residents-drawer-ask .review-head {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.residents-drawer-ask .review-head h3 {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.residents-drawer-ask .answer-box,
+.residents-drawer-ask .note-input {
+  min-width: 0;
+}
+.residents-drawer-ask .pane-dialog {
+  margin-top: 0;
+}
+/* A one-question ask answered by one press (`QuickDecisionButtons`): the options as buttons,
+   then Dismiss and Chat about it. */
+.review-quick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.review-quick-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.review-quick-option {
+  max-width: 100%;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 560;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.review-quick-option.is-recommended,
+.review-quick-option.is-foreman-pick {
+  border-color: var(--attention);
+}
+.review-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.review-quick-actions .btn {
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+/* The reply box: one line until it is given more, `⌘⏎` sends. */
+.residents-drawer-reply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 4px 6px;
+}
+.residents-drawer-reply-input {
+  flex: 1 1 0;
+  min-width: 0;
+  max-height: 120px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  outline: none;
+  resize: vertical;
+  field-sizing: content;
+}
+.residents-drawer-reply-input:focus {
+  border-color: color-mix(in oklab, var(--resident) 55%, var(--border));
+}
+.residents-drawer-reply-send {
+  flex: none;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  border-radius: 7px;
+}
+.residents-drawer-reply-key {
+  margin-left: 3px;
+  font-size: 10.5px;
+  opacity: 0.75;
+}
+.residents-drawer-reply-flash {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.residents-drawer-reply-flash.is-error {
+  color: var(--danger);
+}
 .residents-drawer-foot {
   flex: none;
   display: flex;
@@ -16440,7 +16561,6 @@ select.ensemble-judge-persona {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-  line-clamp: 3;
   overflow: hidden;
 }
 .lib-asset-fact {

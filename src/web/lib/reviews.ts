@@ -105,3 +105,33 @@ export function reviewAnswerVerb(review: ReviewItem): string {
       return `${who} answered`;
   }
 }
+
+// ---- answering a one-question ask with one press ----
+
+/**
+ * The decision a review can be answered with by pressing one option, or null when it needs
+ * the full form.
+ *
+ * Only the simplest ask qualifies: a `request_input` question with exactly one single-select
+ * decision and no free-text "Other". Everything else - several decisions, a multi-select, an
+ * "Other" box, a plan's decisions with their note, a final bundle's standing approval - keeps
+ * `DecisionForm`, because a press cannot carry what those forms collect.
+ */
+export function quickDecision(review: ReviewItem): PlanDecision | null {
+  if (review.kind !== "input" || review.standingApprovalEligible === true) return null;
+  const decisions = reviewDecisions(review);
+  if (decisions?.length !== 1) return null;
+  const [decision] = decisions;
+  if (!decision || decision.multiSelect || decision.allowOther || decision.options.length === 0) return null;
+  return decision;
+}
+
+/**
+ * The selections one press sends: the chosen option, or the question moved to chat. The same
+ * shape `DecisionForm` submits for that decision, so the agent reads an identical answer.
+ */
+export function quickSelections(decision: PlanDecision, choice: { optionId: string } | "chat"): PlanDecisionAnswer[] {
+  return choice === "chat"
+    ? [{ decisionId: decision.id, selected: [], other: null, chat: true }]
+    : [{ decisionId: decision.id, selected: [choice.optionId], other: null }];
+}

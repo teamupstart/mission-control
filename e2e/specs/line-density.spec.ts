@@ -387,10 +387,14 @@ test("Disabled removes the strip, survives a reload and Shift+L, and the preview
   await expect(disabled).toBeChecked();
   await expect(preview.locator("nav.line")).toHaveCount(0);
   await expect(preview).toContainText("Nothing is drawn here. The fleet starts directly under the top bar.");
-  await expect
-    .poll(async () => (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity)
-    .toBe("hidden");
-  observed("choosing Disabled emptied the preview and wrote lineDensity \"hidden\" to the daemon");
+  // Stored as its own key, never as a third density an older daemon could not parse - and
+  // the density it was switched off from is kept for switching it back on.
+  const lineConfig = async (): Promise<{ lineHidden: boolean; lineDensity: string }> => {
+    const { config } = await (await fetch(`${daemon.baseURL}/api/ui/config`)).json();
+    return { lineHidden: config.lineHidden, lineDensity: config.lineDensity };
+  };
+  await expect.poll(lineConfig).toEqual({ lineHidden: true, lineDensity: "expanded" });
+  observed("choosing Disabled emptied the preview and stored lineHidden true, keeping lineDensity \"expanded\"");
   await shootPreview(page, "settings-preview-disabled");
 
   // ---- the fleet draws no strip, and the chord does not quietly bring it back ----
@@ -399,7 +403,7 @@ test("Disabled removes the strip, survives a reload and Shift+L, and the preview
   await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
   await page.keyboard.press("Shift+L");
   await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
-  expect((await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity).toBe("hidden");
+  expect(await lineConfig()).toEqual({ lineHidden: true, lineDensity: "expanded" });
   await page.reload();
   await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "The Line" })).toHaveCount(0);
@@ -410,7 +414,8 @@ test("Disabled removes the strip, survives a reload and Shift+L, and the preview
   await page.getByRole("radiogroup", { name: "Line density" }).getByRole("radio", { name: /^Condensed/ }).check();
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await expect(page.getByRole("navigation", { name: "The Line" })).toHaveClass(/is-condensed/);
-  observed("choosing Condensed in Settings brought the strip back");
+  expect(await lineConfig()).toEqual({ lineHidden: false, lineDensity: "condensed" });
+  observed("choosing Condensed in Settings brought the strip back and stored lineHidden false");
 });
 
 /** The Line block of Display > Top bar: its preview and its choices. */
@@ -446,12 +451,12 @@ test("the See work tour borrows a condensed Line over Disabled, and leaves Disab
   // The tour's first stop spotlights the strip, so with the Line switched off App draws it
   // condensed for as long as the tour runs - and must not write that back as a preference,
   // or finishing the tour would quietly undo the operator's Disabled.
-  const stored = async (): Promise<string> =>
-    (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineDensity;
+  const stored = async (): Promise<boolean> =>
+    (await (await fetch(`${daemon.baseURL}/api/ui/config`)).json()).config.lineHidden;
   const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lineDensity: "hidden" }),
+    body: JSON.stringify({ lineHidden: true }),
   });
   expect(pinned.ok).toBe(true);
   await dashboard.emulateMedia({ reducedMotion: "reduce" });
@@ -475,15 +480,16 @@ test("the See work tour borrows a condensed Line over Disabled, and leaves Disab
   await expect(line).toBeVisible();
   await expect(line).toHaveClass(/is-condensed/);
   await expect(line.locator(".line-stage")).toHaveCount(6);
-  // The caret is drawn too, but the tour holds focus in its own dialog; what matters is
-  // that the strip borrowed for the tour wrote nothing.
-  expect(await stored()).toBe("hidden");
-  observed("during the See work tour the Line drew condensed while lineDensity stayed \"hidden\"");
+  // No caret on the borrowed strip: folding it would send a density, which the daemon
+  // reads as switching the Line back on. And the borrowing itself wrote nothing.
+  await expect(line.locator(".ls-fold")).toHaveCount(0);
+  expect(await stored()).toBe(true);
+  observed("during the See work tour the Line drew condensed while lineHidden stayed true");
 
   // ---- leaving the tour takes the borrowed strip away again ----
   await stop.getByRole("button", { name: "Exit tour" }).click();
   await expect(stop).toBeHidden();
   await expect(line).toHaveCount(0);
-  expect(await stored()).toBe("hidden");
-  observed("exiting the tour removed the Line again, and lineDensity still read \"hidden\"");
+  expect(await stored()).toBe(true);
+  observed("exiting the tour removed the Line again, and lineHidden still read true");
 });

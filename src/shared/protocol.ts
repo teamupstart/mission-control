@@ -3426,7 +3426,7 @@ export const ConversationViewSchema = z.enum(CONVERSATION_VIEWS);
 export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
 
 /**
- * How much the Line strip SAYS - the same six stages, at two densities, or not at all.
+ * How much the Line strip SAYS - the same six stages, at two densities.
  *
  * `expanded` is the two-line strip: glyph, name, count and a sentence per stage.
  * `condensed` drops the sentences and the wires for a single row of inline segments,
@@ -3434,16 +3434,21 @@ export type ConversationView = (typeof CONVERSATION_VIEWS)[number];
  * `flex: none` inside a `height: 100dvh` shell that does not scroll, so those 47.5px go
  * straight to the conversation pane underneath it
  * (`docs/plans/line-collapse/plan.md`).
- * `hidden` draws no strip at all: the operator has switched the Line off (Settings ->
- * Display -> Top bar -> The Line), and the fleet starts directly under the top bar. Its caret goes
- * with it, so only Settings brings it back.
  *
  * A named set rather than a boolean, and here beside `CONVERSATION_VIEWS` for that key's
- * reason exactly: `hidden` arrived as a third member without renaming the stored key, which
- * a `lineCollapsed: boolean` could not have done. Adding a member to this list is free;
- * renaming a stored key or one of its persisted values is not.
+ * reason exactly: the study drew a third `hidden` density - zero height, with a 3px
+ * segmented attention hairline in its place - and it was held in reserve rather than
+ * rejected. A `lineCollapsed: boolean` would have to be RENAMED the day it arrives, and
+ * this key is persisted on operators' machines. Adding a member to this list is free;
+ * renaming a stored key is not.
+ *
+ * "Free" for the build that adds it, but not for the builds before it: `getUiConfig` parses
+ * the whole stored record, and an older daemon's `.default()` covers a MISSING value only,
+ * so a member it has never heard of fails every UI preference at once. That is why switching
+ * the Line off is NOT a third member here but its own key, `lineHidden` - an older daemon
+ * strips a key it does not know and draws the strip, which is the right way to fail.
  */
-export const LINE_DENSITIES = ["expanded", "condensed", "hidden"] as const;
+export const LINE_DENSITIES = ["expanded", "condensed"] as const;
 export const LineDensitySchema = z.enum(LINE_DENSITIES);
 /** Derived from the array, not from the schema, so reading it costs the web no zod. */
 export type LineDensity = (typeof LINE_DENSITIES)[number];
@@ -3661,6 +3666,8 @@ export const UI_CONFIG_DEFAULTS = {
    * which is a hover or a click away. That trade was put to the operator and taken.
    */
   lineDensity: "condensed",
+  /** The Line is drawn. `true` is Display > Top bar > The Line > Disabled. */
+  lineHidden: false,
   /** Today's look. A skin is opt-in; nothing an install already shows changes on upgrade. */
   skin: DEFAULT_SKIN,
   taskKindHeader: "badge",
@@ -3772,6 +3779,14 @@ export const UiConfigSchema = z.object({
    * state costs nothing.
    */
   lineDensity: LineDensitySchema.default(UI_CONFIG_DEFAULTS.lineDensity),
+  /**
+   * Whether the operator switched the Line off. A separate key rather than a third density,
+   * so that a daemon from before it - a downgrade, or a worktree build sharing this state
+   * dir - strips it and draws the strip instead of failing to parse this whole record (see
+   * `LINE_DENSITIES`). `lineDensity` keeps the density to come back to when it is switched
+   * on again.
+   */
+  lineHidden: z.boolean().default(UI_CONFIG_DEFAULTS.lineHidden),
   /**
    * The skin. `.catch` rather than `.default`, so an id written by a build that shipped a skin
    * this one does not (a downgrade) reads as Default instead of failing the whole `ui` record.
@@ -3947,13 +3962,39 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
-  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
-  // `{ skin: "nope" }` into a successful write of Default.
-  skin: SkinIdSchema.optional(),
-}).refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
+/**
+ * A dashboard from #1399 - the one build that stored Disabled as a third density - sends
+ * `{ lineDensity: "hidden" }` for it, and switches the Line back on by sending a density
+ * alone. A tab left open across the upgrade is still running that code, so both are read as
+ * what they meant: "hidden" is `lineHidden: true` (rather than a 400 that would roll the
+ * tab's choice back), and a density with no `lineHidden` beside it is `lineHidden: false` -
+ * otherwise that tab would draw the strip while every refreshed one still reads it as off.
+ *
+ * The second rule binds this build too: a density-only patch means "draw the Line". Nothing
+ * here sends one while the Line is off - the caret is not drawn then, and `toggleLineDensity`
+ * does nothing - and the panel always states `lineHidden` explicitly. Every other unknown
+ * density is still refused below.
+ */
+function bridgeLineDensityPatch(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const { lineDensity, ...rest } = raw as Record<string, unknown>;
+  if (lineDensity === "hidden") return { ...rest, lineHidden: true };
+  if ((LINE_DENSITIES as readonly unknown[]).includes(lineDensity) && !("lineHidden" in rest)) {
+    return { ...rest, lineDensity, lineHidden: false };
+  }
+  return raw;
+}
+
+export const UiConfigPatchSchema = z.preprocess(
+  bridgeLineDensityPatch,
+  UiConfigSchema.partial().extend({
+    // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+    // `{ skin: "nope" }` into a successful write of Default.
+    skin: SkinIdSchema.optional(),
+  }).refine(
+    (o) => Object.keys(o).length > 0,
+    { message: "empty config update" },
+  ),
 );
 export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
 

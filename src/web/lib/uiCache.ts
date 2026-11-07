@@ -153,6 +153,9 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     residentDrawerPinned: raw?.residentDrawerPinned === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    // A cache written by the build that stored Disabled as `lineDensity: "hidden"` (#1399)
+    // still means switched off, exactly as the daemon migrates it.
+    lineHidden: raw?.lineHidden === true || (raw?.lineDensity as string | undefined) === "hidden",
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),

@@ -61,6 +61,9 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   // On: the Board has always drawn its empty-column stash, so an upgrade moves nothing.
   assert.equal(config.showEmptyColumnStash, true);
   assert.equal(config.boardSidebarAllSessions, false);
+  // The drawer, floating: residents leave the fleet for an install that never chose.
+  assert.equal(config.residentPlacement, "drawer");
+  assert.equal(config.residentDrawerPinned, false);
   // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
   // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
   // having previously been unconditional. The two working marks ship on. See
@@ -74,6 +77,9 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
 test("a written cache round-trips", () => {
   writeCache({
     layout: "console",
+    // Both off their defaults, so neither round-trips by falling back.
+    residentPlacement: "fleet",
+    residentDrawerPinned: true,
     conversationView: "chat",
     lineDensity: "expanded",
     // Not Default, so it cannot round-trip by falling back to the default.
@@ -111,6 +117,8 @@ test("a written cache round-trips", () => {
   });
   const config = readCache();
   assert.equal(config.layout, "console");
+  assert.equal(config.residentPlacement, "fleet");
+  assert.equal(config.residentDrawerPinned, true);
   assert.equal(config.conversationView, "chat");
   assert.equal(config.lineDensity, "expanded");
   assert.equal(config.skin, "daylight");

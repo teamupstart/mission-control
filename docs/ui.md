@@ -333,7 +333,7 @@ chip** and a second line saying what the thing is, or what it is doing right now
 
 | Group | Kinds | The second line says |
 | --- | --- | --- |
-| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows |
+| **Jump to** | `page`, `workflow`, `run`, `ensemble`, `persona`, `action`, `mission`, `resident` | The authored fact for an asset (version and reviewer count, provider and model, cadence); the **live state** for a run or an ensemble - the same sentence its own page reads, and for a run the session it is reviewing, so four runs of one workflow are four different rows; a live resident's label and state, found by its name or label, opening its full detail in either [resident placement](residents.md#finding-a-resident) |
 | **Do** | `strategy`, `command` | Launch an ensemble on a strategy, dispatch an agent, bind a workflow to a session, open a blank draft on a Library shelf, [report product feedback](#report-product-feedback), browse tours, or start a guided tour |
 | **Settings** | `setting` | The category and what the control does, plus its current value where the palette can flip it |
 
@@ -757,6 +757,11 @@ on **Board**; an install that already stored a layout keeps it:
 |--------|-------|----------|
 | **Board** (default) | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
+
+**Settings → Display → Residents → Where residents live** sits beside it. **Drawer**, the
+default, keeps residents off the Board columns and the Console rail, in a drawer on the right
+edge; **Board and Console** draws them in the fleet with every other session. It applies live and
+persists per machine. See [Finding a resident](residents.md#finding-a-resident).
 
 Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
@@ -1731,6 +1736,9 @@ names the layouts where a shortcut's target exists:
 | <kbd>Enter</kbd> | Load a completed stage's recorded details in the Review worklist | Workflow Runs pipeline |
 | <kbd>⇧</kbd><kbd>S</kbd> | Open **Scouts** - the archive of finished investigations | Anywhere |
 | <kbd>⇧</kbd><kbd>P</kbd> | Open or close **Sitrep** | Fleet |
+| <kbd>⇧</kbd><kbd>A</kbd> | Open the **Residents** page | Anywhere |
+| <kbd>⇧</kbd><kbd>H</kbd> | Open or close the [Residents drawer](residents.md#the-residents-drawer); pinned, it unpins. With **Board and Console** placement it opens the Residents dock instead | Anywhere |
+| <kbd>⌥</kbd><kbd>1</kbd>…<kbd>⌥</kbd><kbd>9</kbd> | Open live resident 1 to 9's full detail, in the order the drawer and the dock list them: the drill-in on the **Board**, the detail pane in **Console**. Matched on the physical digit key, so it works where Option+digit types a symbol; ignored while a text field has focus, and reserved from rebinding | Anywhere, both resident placements |
 | <kbd>+</kbd> | Start the guided dispatch pass. <kbd>Tab</kbd> reaches the ordinary form in one key | Anywhere |
 | type, <kbd>↑</kbd><kbd>↓</kbd>, <kbd>Enter</kbd> | Filter repositories by name, move through the matches and take one | Guided dispatch: Repo |
 | <kbd>p</kbd> / <kbd>t</kbd> / <kbd>l</kbd> / <kbd>c</kbd> | Choose ship / scout / plan / chat | Guided dispatch: Kind |
@@ -1740,7 +1748,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>Backspace</kbd> | Delete a Repo-filter character, or go back one question from a later step | Guided dispatch |
 | <kbd>Tab</kbd> | Leave the guided pass, keep every answer and focus the task box | Guided dispatch |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
-| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
+| <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |

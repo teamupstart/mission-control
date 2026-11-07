@@ -23,6 +23,7 @@ import { checksArmedReading } from "../lib/trust.ts";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
+import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { LineDensityPanel } from "./LineDensityPanel.tsx";
@@ -564,6 +565,8 @@ export function SettingsPage({
         return (
           <>
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
+            {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
+            <ResidentPlacementPanel />
             <LineDensityPanel />
             <ConversationViewPanel />
             <AppearancePanel />

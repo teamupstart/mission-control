@@ -65,11 +65,17 @@ async function settles(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   }
 }
 
-/** Poll instead of sleeping a fixed span, so a settle window costs its own length and no more. */
+/**
+ * Poll instead of sleeping a fixed span, so a settle window costs its own length and no more.
+ *
+ * The deadline reads `performance.now()`, not `Date.now()`: a case that mocks `Date` to age a
+ * ledger entry would otherwise freeze this clock too, and a delivery that never completed would
+ * hang the file instead of failing it.
+ */
 async function until(predicate: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await tick(5);
   }
 }

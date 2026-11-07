@@ -365,6 +365,82 @@ test("the mockups skill's own setup command keeps mock-ups out of git and in the
   }
 });
 
+test("the mockups skill's fallback ignores a mock-up wherever git can, and says what to do where it cannot", async () => {
+  // An untracked mock-up that git does NOT ignore is exactly what `git add -A` and a workflow
+  // review snapshot sweep into a commit, so "leave it untracked" is no fallback. The skill's
+  // own fallback must leave every writable mock-up path ignored, and send the agent to another
+  // name for the one case git cannot ignore: a path the repository already tracks.
+  const text = readFileSync(new URL("../skills/mockups/SKILL.md", import.meta.url), "utf8");
+  const blocks = [...text.matchAll(/```sh\n\s*([^\n]+)\n\s*```/g)].map((match) => match[1]!);
+  const setup = blocks.find((block) => block.startsWith("mkdir -p docs/mockups"));
+  const fallback = blocks.find((block) => block.includes("--git-path info/exclude"));
+  assert.ok(setup && fallback, "the skill states its setup and fallback commands in fenced sh blocks");
+  assert.match(text, /If it still prints `not ignored`, the repository tracks that exact file\. Choose another\s+name/);
+  assert.match(text, /Never write or hand over a mock-up at a path git does not\s+ignore\./);
+  assert.doesNotMatch(text, /leave it untracked/i, "an untracked, unignored mock-up is not a safe state");
+
+  const page = "docs/mockups/settings-panel/two-column.html";
+  const git = (dir: string, ...args: string[]): string =>
+    execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const ignored = (dir: string): boolean => {
+    try {
+      execFileSync("git", ["-C", dir, "check-ignore", "-q", page]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const repository = (marker: string, trackPage: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "mission-mockups-fallback-"));
+    git(dir, "init", "-q");
+    git(dir, "config", "user.email", "t@test");
+    git(dir, "config", "user.name", "t");
+    mkdirSync(join(dir, "docs/mockups/settings-panel"), { recursive: true });
+    writeFileSync(join(dir, "docs/mockups/.gitignore"), marker);
+    if (trackPage) {
+      writeFileSync(join(dir, page), "<h1>Tracked</h1>\n");
+      git(dir, "add", "-f", page);
+    }
+    git(dir, "add", "docs/mockups/.gitignore");
+    git(dir, "commit", "-qm", "repository rules");
+    execFileSync("sh", ["-c", setup], { cwd: dir });
+    return dir;
+  };
+
+  for (const [name, marker] of [
+    ["a repository marker with no rule", "# notes\n"],
+    ["a repository marker that re-includes HTML", "!*.html\n"],
+  ] as const) {
+    const dir = repository(marker, false);
+    try {
+      assert.equal(ignored(dir), false, `${name}: the self-ignore alone does not take`);
+      execFileSync("sh", ["-c", fallback], { cwd: dir });
+      execFileSync("sh", ["-c", fallback], { cwd: dir });
+      assert.equal(ignored(dir), true, `${name}: the fallback ignores it`);
+      writeFileSync(join(dir, page), "<h1>Two columns</h1>\n");
+      assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all", "--", "docs/mockups"), "", name);
+      git(dir, "add", "-A");
+      assert.equal(git(dir, "diff", "--cached", "--name-only"), "", `${name}: git add -A stages nothing`);
+      assert.ok(
+        (await listSessionFiles(dir)).some(({ path }) => path === page),
+        `${name}: Files still lists the mock-up`,
+      );
+      const exclude = readFileSync(join(dir, git(dir, "rev-parse", "--git-path", "info/exclude").trim()), "utf8");
+      assert.equal(exclude.split("\n").filter((line) => line === "docs/mockups/").length, 1, "idempotent");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const tracked = repository("# notes\n", true);
+  try {
+    execFileSync("sh", ["-c", fallback], { cwd: tracked });
+    assert.equal(ignored(tracked), false, "a tracked path cannot be ignored, which is why the skill moves to another name");
+  } finally {
+    rmSync(tracked, { recursive: true, force: true });
+  }
+});
+
 test("the shipped phased-plan skill audits compatibility and schedules direct task dependencies", () => {
   const skill = readCatalog().skills.find((s) => s.id === "phased-plan");
   assert.ok(skill, "phased-plan should be in the catalog");

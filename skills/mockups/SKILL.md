@@ -48,18 +48,29 @@ a review is evidence, and it follows the repository's evidence rules instead.
    out, so a "commit everything that was reviewed" step cannot carry a mock-up into a pull
    request. Mission Control still lists `docs/mockups/` in Files, links its paths and
    previews them; it is the one ignored directory it does that for, so a mock-up anywhere
-   else that git ignores renders as dead text. Confirm it took before you hand over:
+   else that git ignores renders as dead text.
+3. **Confirm each path is ignored before you write it.** A mock-up git does not ignore can
+   be swept into a commit, so this check is not optional:
 
    ```sh
    git check-ignore -q docs/mockups/settings-panel/two-column.html || echo "not ignored"
    ```
 
-   If that prints `not ignored`, the repository has its own rules for that directory; the
-   mock-up is still never committed, so leave it untracked.
-3. **One file per mock-up or variant**, named for what it shows
+   If that prints `not ignored`, the repository has its own rules for `docs/mockups/`. Add
+   the directory to this checkout's local exclude file, which git never commits or shares,
+   then run the check again:
+
+   ```sh
+   f="$(git rev-parse --git-path info/exclude)" && mkdir -p "$(dirname "$f")" && { grep -qx 'docs/mockups/' "$f" 2>/dev/null || printf 'docs/mockups/\n' >> "$f"; }
+   ```
+
+   If it still prints `not ignored`, the repository tracks that exact file. Choose another
+   name and check that one. Never write or hand over a mock-up at a path git does not
+   ignore.
+4. **One file per mock-up or variant**, named for what it shows
    (`two-column.html`, `tabs.html`), not `mockup1.html`. Put variants of one subject in the
    same directory so they sit together in Files.
-4. **Never commit a mock-up, unless it is necessary to a plan.** That is the only exception,
+5. **Never commit a mock-up, unless it is necessary to a plan.** That is the only exception,
    and the next section says how. Not because it exists, not because a step says to commit
    everything, not because it is good work. A mock-up is for looking at; the change it
    informs is what ships.

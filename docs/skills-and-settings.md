@@ -182,7 +182,11 @@ Files tab and previews the page or image inline at the foot of the turn, as
 **Mock-ups are not committed unless a plan needs them.** The session makes `docs/mockups/`
 ignore itself with a `docs/mockups/.gitignore` holding `*`, so nothing in it appears in
 `git status`, is staged by `git add -A`, or is captured in a workflow's review snapshot - the
-snapshot a workflow's pull request step commits. The Files list shows `docs/mockups/` anyway;
+snapshot a workflow's pull request step commits. Before writing each mock-up the session confirms
+with `git check-ignore` that its path is ignored. Where the repository's own rules defeat the
+marker, it adds `docs/mockups/` to the checkout's local `info/exclude`, which is never committed,
+and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
+another name. The Files list shows `docs/mockups/` anyway;
 it is the only ignored directory it lists. The one mock-up that is committed is one a plan in
 the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
 committed with the plan. The contract lives in

@@ -889,3 +889,32 @@ test("a closed child whose parent is confirmed merged is not read again: its off
   await observeClosedStackChildren(counting, ctx, () => "/repo", 30_000);
   assert.ok(reads.length > 0);
 });
+
+test("a prompt delivered to a session that then exits is offered again to the resumed session - by the operator only", async () => {
+  const key = await restackNeeded();
+  const request = { prKey: key, kind: "restack" as const, tip: MERGE };
+  const first = owner({ id: "child-session" });
+  const claim = db.claimStackPrompt(key, "restack", MERGE, first.id, 1)!;
+  db.finishStackPrompt(claim, "delivered", 2);
+  assert.equal(stackStandingFor(row(key), [first], FOREMAN_ON)!.prompt?.status, "sent", "delivered here: sent");
+  // That session exits before pushing: the child waits for an owner, not "sent" for ever.
+  const gone = stackStandingFor(row(key), [], FOREMAN_ON)!;
+  assert.equal(gone.prompt?.status, "no-session");
+  assert.equal(gone.label, "Restack needed: no session");
+  // The task is resumed: a new owner, offered the prompt again with a manual send.
+  const resumed = owner({ id: "child-resumed", agentSessionId: "child-resumed-conversation" });
+  const standing = stackStandingFor(row(key), [resumed], FOREMAN_ON)!;
+  assert.equal(standing.prompt?.status, "orphaned");
+  assert.equal(standing.label, "Restack prompt went to a session that has gone - send it to the resumed one");
+  // Never Foreman's automatic retry...
+  assert.ok(stackPromptCandidate(registryOf([resumed]), resumed.id, request, "foreman", row(key), FOREMAN_ON).error);
+  assert.equal(db.claimStackPrompt(key, "restack", MERGE, resumed.id, 3), null, "Foreman's claim never re-arms");
+  // ...the operator's send re-arms it, for the resumed session, exactly once.
+  assert.equal(stackPromptCandidate(registryOf([resumed]), resumed.id, request, "human", row(key), FOREMAN_ON).error, undefined);
+  const again = db.claimStackPrompt(key, "restack", MERGE, resumed.id, 4, true)!;
+  assert.ok(again);
+  db.finishStackPrompt(again, "delivered", 5);
+  assert.equal(stackStandingFor(row(key), [resumed], FOREMAN_ON)!.prompt?.status, "sent");
+  assert.equal(db.claimStackPrompt(key, "restack", MERGE, resumed.id, 6, true), null, "delivered to this session: never again");
+  assert.ok(stackPromptCandidate(registryOf([resumed]), resumed.id, request, "human", row(key), FOREMAN_ON).error);
+});

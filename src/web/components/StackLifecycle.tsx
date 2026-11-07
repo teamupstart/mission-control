@@ -81,7 +81,9 @@ export function StackLifecycle({
   // The manual send: offered when Foreman will not deliver it (off, not live, not invited) and
   // as the explicit re-arm of a delivery whose outcome is uncertain. Never for no session: the
   // way out of that one is the task's existing Resume control.
-  const send = prompt && (prompt.status === "foreman-off" || prompt.status === "uncertain") ? prompt : null;
+  // The manual send: when Foreman will not deliver it, as the re-arm of an uncertain delivery,
+  // and for a prompt delivered to a session that has gone (re-sent to the resumed one).
+  const send = prompt && (prompt.status === "foreman-off" || prompt.status === "uncertain" || prompt.status === "orphaned") ? prompt : null;
   const noSession = !standing.sessionId;
   // A live owner with no pane cannot be typed into by anyone: its prompt-typed actions stay
   // visible (they say what would fix the stack) but cannot be pressed until the task is resumed.

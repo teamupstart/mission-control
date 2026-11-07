@@ -528,6 +528,12 @@ export type StackPromptStatus =
   | "sent"
   /** Claimed but never confirmed delivered; never retried automatically. */
   | "uncertain"
+  /**
+   * Delivered, but to a session that has since gone - it exited before acting on it - and a
+   * different (resumed) session owns the child now. Offered to the operator to send again;
+   * never retried automatically.
+   */
+  | "orphaned"
   /** No live session owns the child. Resume the task to deliver it. */
   | "no-session"
   /**
@@ -629,6 +635,8 @@ export function stackLifecycleLabel(
         };
       case "uncertain":
         return { label: `${name.prompt} delivery uncertain`, inProgress: false };
+      case "orphaned":
+        return { label: `${name.prompt} went to a session that has gone - send it to the resumed one`, inProgress: false };
       case "pending":
       case "sent":
         return s.prompt.kind === "restack"

@@ -14573,8 +14573,10 @@ export function readStackPromptClaim(prKey: string, kind: StackPromptClaim["kind
 
 /**
  * Claim one prompt before it is typed. Null when it is already claimed - delivered, or
- * uncertain - so nothing is ever sent twice for the same condition. `rearmUncertain` is the
- * operator's explicit re-arm: it finishes an UNCERTAIN claim (and only that) and claims afresh.
+ * uncertain - so nothing is ever sent twice for the same condition. `rearm` is the operator's
+ * explicit re-arm: it finishes an UNCERTAIN claim, or a DELIVERED one whose session is no longer
+ * the one sending (it exited before acting, and the task was resumed), and claims afresh for
+ * `sessionId`. A prompt delivered to the very session asking again is never re-sent.
  */
 export function claimStackPrompt(
   prKey: string,
@@ -14582,11 +14584,13 @@ export function claimStackPrompt(
   tip: string,
   sessionId: string | null,
   now: number,
-  rearmUncertain = false,
+  rearm = false,
 ): string | null {
   return stackAtomically(() => {
     const existing = readStackPromptClaim(prKey, kind, tip);
-    if (existing && !(rearmUncertain && existing.outcome === "uncertain")) return null;
+    const rearmable = existing !== null && rearm
+      && (existing.outcome === "uncertain" || (existing.sessionId !== null && existing.sessionId !== sessionId));
+    if (existing && !rearmable) return null;
     if (existing) {
       openDb().prepare(`DELETE FROM stack_prompt_claims WHERE pr_key = ? AND kind = ? AND tip = ? AND claim_id = ?`)
         .run(prKey, kind, tip, existing.claimId);

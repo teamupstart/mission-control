@@ -62,3 +62,13 @@ test("a no-pane prompt shows its label and no send button", () => {
   }) }));
   assert.match(button(uncertain, "Send restack prompt"), /disabled=""/);
 });
+
+test("a prompt delivered to a session that has gone offers the manual send to the resumed one", () => {
+  const html = renderToStaticMarkup(createElement(StackLifecycle, { prKey: "acme/repo#8", standing: standing({
+    state: "restack-needed", brokenReason: null, actions: [],
+    prompt: { kind: "restack", tip: "e".repeat(40), status: "orphaned" },
+    label: "Restack prompt went to a session that has gone - send it to the resumed one",
+  }) }));
+  assert.match(html, /went to a session that has gone/);
+  assert.doesNotMatch(button(html, "Send restack prompt"), /disabled=""/, "the operator can send it");
+});

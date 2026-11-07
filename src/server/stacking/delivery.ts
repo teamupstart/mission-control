@@ -91,8 +91,14 @@ export function stackStandingFor(
   if (need) {
     const claim = readStackPromptClaim(row.key, need.kind, need.tip);
     const blocker = owner ? foremanBlocker(foreman, owner) : null;
-    const status: StackPromptStatus = claim?.outcome === "delivered"
+    // A delivered prompt is "sent" only while the session it was typed into still owns the
+    // child. Once that session is gone it waits for an owner (Resume), and a resumed session is
+    // offered the prompt again - by the operator, never by Foreman's automatic retry.
+    const deliveredHere = claim?.outcome === "delivered" && (claim.sessionId === null || claim.sessionId === owner?.id);
+    const status: StackPromptStatus = deliveredHere
       ? "sent"
+      : claim?.outcome === "delivered"
+      ? (owner ? "orphaned" : "no-session")
       : claim
       ? "uncertain"
       : !owner
@@ -118,9 +124,11 @@ export function stackStandingFor(
     : stackActions(state, o).filter((action) => action !== "await-replacement" || !lineage.awaitReplacementAt);
   // Recovery prompts already delivered for this exact stack state: shown as sent, not offered.
   const actionTip = stackActionTip(o);
-  const sentActions = actions.filter((action) =>
-    (action === "move-onto-main" || action === "reopen-against-main" || action === "reopen-on-parent")
-    && readStackPromptClaim(row.key, action, actionTip)?.outcome === "delivered");
+  const sentActions = actions.filter((action) => {
+    if (action !== "move-onto-main" && action !== "reopen-against-main" && action !== "reopen-on-parent") return false;
+    const sent = readStackPromptClaim(row.key, action, actionTip);
+    return sent?.outcome === "delivered" && (sent.sessionId === null || sent.sessionId === owner?.id);
+  });
   const lifecycle = stackLifecycleLabel({ state, parentNumber, brokenReason, retargetError, prompt }, o);
   // The parent could not be read on the last tick: say so instead of acting on what may be
   // stale - no prompt and no action is offered (`stackPromptNeed`, `stackActions`).
@@ -273,7 +281,7 @@ export function stackPromptCandidate(
     // Claimed like a prompt, keyed to the stack state it answers: once delivered it is not sent
     // again - a second Move onto main would ask for a second replacement - until that changes.
     const tip = stackActionTip(row.stack.observation ?? null);
-    if (readStackPromptClaim(row.key, request.kind, tip)?.outcome === "delivered" || standing.sentActions.includes(request.kind)) {
+    if (standing.sentActions.includes(request.kind)) {
       return { error: "That action was already sent - the row changes once the session acts on it" };
     }
     claim = { kind: request.kind, tip };

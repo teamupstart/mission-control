@@ -480,8 +480,9 @@ test("the See work tour borrows a condensed Line over Disabled, and leaves Disab
   await expect(line).toBeVisible();
   await expect(line).toHaveClass(/is-condensed/);
   await expect(line.locator(".line-stage")).toHaveCount(6);
-  // The caret is drawn too, but the tour holds focus in its own dialog; what matters is
-  // that the strip borrowed for the tour wrote nothing.
+  // No caret on the borrowed strip: folding it would send a density, which the daemon
+  // reads as switching the Line back on. And the borrowing itself wrote nothing.
+  await expect(line.locator(".ls-fold")).toHaveCount(0);
   expect(await stored()).toBe(true);
   observed("during the See work tour the Line drew condensed while lineHidden stayed true");
 

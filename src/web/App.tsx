@@ -4479,7 +4479,9 @@ export function App(): React.JSX.Element {
           openStage={lineDrawer}
           stageRef={registerLineStage}
           onStage={onLineStage}
-          onDensity={setLineDensity}
+          // No caret on a strip the tour borrowed while the Line is off: folding it would send
+          // a density, which the daemon reads as switching the Line back on.
+          onDensity={lineHidden ? undefined : setLineDensity}
         />
 
         {/* A dispatched task with no session now renders inside the fleet, at the top of the

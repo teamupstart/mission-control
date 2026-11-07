@@ -3964,19 +3964,29 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  */
 /**
  * A dashboard from #1399 - the one build that stored Disabled as a third density - sends
- * `{ lineDensity: "hidden" }` for it. A tab left open across the upgrade is still running
- * that code, so the request is read as what it meant, `lineHidden: true`, rather than
- * refused with a 400 that would roll the tab's own choice back. Every other unknown density
- * is still refused below.
+ * `{ lineDensity: "hidden" }` for it, and switches the Line back on by sending a density
+ * alone. A tab left open across the upgrade is still running that code, so both are read as
+ * what they meant: "hidden" is `lineHidden: true` (rather than a 400 that would roll the
+ * tab's choice back), and a density with no `lineHidden` beside it is `lineHidden: false` -
+ * otherwise that tab would draw the strip while every refreshed one still reads it as off.
+ *
+ * The second rule binds this build too: a density-only patch means "draw the Line". Nothing
+ * here sends one while the Line is off - the caret is not drawn then, and `toggleLineDensity`
+ * does nothing - and the panel always states `lineHidden` explicitly. Every other unknown
+ * density is still refused below.
  */
-function bridgeHiddenLineDensity(raw: unknown): unknown {
+function bridgeLineDensityPatch(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const { lineDensity, ...rest } = raw as Record<string, unknown>;
-  return lineDensity === "hidden" ? { ...rest, lineHidden: true } : raw;
+  if (lineDensity === "hidden") return { ...rest, lineHidden: true };
+  if ((LINE_DENSITIES as readonly unknown[]).includes(lineDensity) && !("lineHidden" in rest)) {
+    return { ...rest, lineDensity, lineHidden: false };
+  }
+  return raw;
 }
 
 export const UiConfigPatchSchema = z.preprocess(
-  bridgeHiddenLineDensity,
+  bridgeLineDensityPatch,
   UiConfigSchema.partial().extend({
     // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
     // `{ skin: "nope" }` into a successful write of Default.

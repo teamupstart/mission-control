@@ -323,7 +323,17 @@ test("a #1399 dashboard's Disabled request is read as lineHidden, and other unkn
     UiConfigPatchSchema.parse({ lineDensity: "hidden", layout: "console" }),
     { layout: "console", lineHidden: true },
   );
-  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "expanded" }), { lineDensity: "expanded" });
+  // Switching it back on from that tab sends a density alone, which means "draw the Line".
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "expanded" }), {
+    lineDensity: "expanded",
+    lineHidden: false,
+  });
+  // This build's panel states `lineHidden` itself, and that is left exactly as sent.
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "condensed", lineHidden: true }), {
+    lineDensity: "condensed",
+    lineHidden: true,
+  });
+  assert.deepEqual(UiConfigPatchSchema.parse({ layout: "board" }), { layout: "board" });
   assert.equal(UiConfigPatchSchema.safeParse({ lineDensity: "hairline" }).success, false);
   assert.equal(UiConfigPatchSchema.safeParse({}).success, false, "an empty update is still refused");
 
@@ -331,6 +341,10 @@ test("a #1399 dashboard's Disabled request is read as lineHidden, and other unkn
   setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "hidden" }));
   assert.equal(getUiConfig().lineHidden, true);
   assert.equal(getUiConfig().lineDensity, "expanded", "the bridged request kept the stored density");
+  // The same old tab switches it back on: a refreshed dashboard must agree that it is on.
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "condensed" }));
+  assert.equal(getUiConfig().lineHidden, false);
+  assert.equal(getUiConfig().lineDensity, "condensed");
 });
 
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {

@@ -142,7 +142,7 @@ if (recordDir) {
   mkdirSync(join(recordDir, "codex"), { recursive: true });
   writeFileSync(
     join(recordDir, "codex", `invocation-${Date.now()}-${process.pid}.json`),
-    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }, null, 2),
+    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), residentStateDir: process.env.RESIDENT_STATE_DIR ?? null }, null, 2),
   );
 }
 

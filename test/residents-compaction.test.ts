@@ -26,6 +26,7 @@ test("Codex's backstop uses the native effective window and refuses absent or ma
 
 test("the pinned launch contributor enables only the proven native layer", () => {
   const run = {
+    profileId: "compaction-profile",
     persona: { personaId: "p", name: "Observer", guidanceMarkdown: "" }, runInstructions: "",
     settings: ResidentProfileRevisionSchema.parse({ identity: { name: "Observer" }, persona: { personaId: "p" }, loop: { contextThreshold: 42 } }),
   } as ResidentRun;

@@ -1,4 +1,4 @@
-import { residentNativeCompactionForTask } from "../residents/launch.ts";
+import { residentNativeCompactionForTask, residentStateForTask } from "../residents/launch.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { transferForSource, transferRetiredSource, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { randomUUID } from "node:crypto";
@@ -462,6 +462,7 @@ export class SdkSupervisor {
         cwd: input.cwd,
         stateHome,
         prompt: input.prompt,
+        residentStateDir: await residentStateForTask(input.taskId),
         residentCompaction: await residentNativeCompactionForTask(input.taskId),
         model: input.model,
         effort: input.effort,
@@ -1373,6 +1374,7 @@ export class SdkSupervisor {
         // No prompt: this is a continuation, and re-sending the original intent would make the
         // agent start the task over on top of whatever it had already done.
         prompt: "",
+        residentStateDir: await residentStateForTask(row.taskId),
         residentCompaction: await residentNativeCompactionForTask(row.taskId, row.residentCompactionTokenLimit),
         model: row.model,
         effort: row.effort,

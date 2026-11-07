@@ -8486,6 +8486,8 @@ export const UpdateResidentProfileSchema = z
 export type UpdateResidentProfile = z.infer<typeof UpdateResidentProfileSchema>;
 
 /** `DELETE /api/residents/profiles/:id`: archive, compare-and-set on the revision the editor read. */
+export const ResetResidentStateSchema = z.object({ confirm: z.literal(true) }).strict();
+
 export const ArchiveResidentProfileSchema = z
   .object({ expectedRevision: z.number().int().positive() })
   .strict();

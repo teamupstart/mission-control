@@ -1370,8 +1370,9 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
 function claudeFlagOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
   const mcp = claudeMcpOptions(opts);
   const advisor = opts.advisorModel ? capabilitiesFor("claude").advisor?.sdkSettings(opts.advisorModel) ?? {} : {};
-  if (Object.keys(advisor).length === 0) return mcp;
-  return { ...mcp, settings: { ...mcp.settings, ...advisor } };
+  const memory = opts.residentStateDir ? { autoMemoryDirectory: opts.residentStateDir, autoMemoryEnabled: true } : {};
+  if (Object.keys(advisor).length === 0 && !opts.residentStateDir) return mcp;
+  return { ...mcp, settings: { ...mcp.settings, ...advisor, ...memory } };
 }
 
 /**
@@ -1517,7 +1518,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // inherited. Claude Code reads it at each interaction span in an SDK session; it
         // needs no `CLAUDE_CODE_PROPAGATE_TRACEPARENT`, which governs OUTBOUND headers.
         env: withAgentTraceContext(
-          withAdvisorEnv(withArtifactTool(deps.env(opts.cwd, opts.stateHome)), opts.advisorModel),
+          withAdvisorEnv(withArtifactTool({ ...deps.env(opts.cwd, opts.stateHome), ...(opts.residentStateDir ? { RESIDENT_STATE_DIR: opts.residentStateDir } : {}) }), opts.advisorModel),
           opts.traceContext,
         ),
         ...(opts.model ? { model: opts.model } : {}),
@@ -1546,7 +1547,7 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
         // control request requires its argument to be a strict subdirectory of cwd or of
         // a directory named here, so a sibling checkout is unreachable to a session that
         // did not start with it.
-        ...(opts.extraDirs.length > 0 ? { additionalDirectories: [...opts.extraDirs] } : {}),
+        ...((opts.extraDirs.length > 0 || opts.residentStateDir) ? { additionalDirectories: [...opts.extraDirs, ...(opts.residentStateDir ? [opts.residentStateDir] : [])] } : {}),
         // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
         // reading it as "skip permissions" is the mistake to avoid: the CLI has two
         // separate flags, and this option compiles to the weaker one.

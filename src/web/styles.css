@@ -38290,3 +38290,8 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-selected > li > button { margin-left: auto; }
 .resident-mcp-add { display: flex; gap: 12px; align-items: end; }
 .resident-mcp-add .field { flex: 1; min-width: 0; }
+
+.resident-state { font-size: 12px; }
+.resident-state-path { overflow-wrap: anywhere; }
+.resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.resident-state ul { max-height: 240px; overflow: auto; }

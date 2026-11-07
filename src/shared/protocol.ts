@@ -3962,13 +3962,29 @@ export type UiConfig = z.infer<typeof UiConfigSchema>;
  * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
  * blanked by a patch that didn't mention it.
  */
-export const UiConfigPatchSchema = UiConfigSchema.partial().extend({
-  // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
-  // `{ skin: "nope" }` into a successful write of Default.
-  skin: SkinIdSchema.optional(),
-}).refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
+/**
+ * A dashboard from #1399 - the one build that stored Disabled as a third density - sends
+ * `{ lineDensity: "hidden" }` for it. A tab left open across the upgrade is still running
+ * that code, so the request is read as what it meant, `lineHidden: true`, rather than
+ * refused with a 400 that would roll the tab's own choice back. Every other unknown density
+ * is still refused below.
+ */
+function bridgeHiddenLineDensity(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const { lineDensity, ...rest } = raw as Record<string, unknown>;
+  return lineDensity === "hidden" ? { ...rest, lineHidden: true } : raw;
+}
+
+export const UiConfigPatchSchema = z.preprocess(
+  bridgeHiddenLineDensity,
+  UiConfigSchema.partial().extend({
+    // Strict, unlike the stored field's `.catch`: a `.partial()` of that would quietly turn
+    // `{ skin: "nope" }` into a successful write of Default.
+    skin: SkinIdSchema.optional(),
+  }).refine(
+    (o) => Object.keys(o).length > 0,
+    { message: "empty config update" },
+  ),
 );
 export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
 

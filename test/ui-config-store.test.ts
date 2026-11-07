@@ -291,7 +291,7 @@ test("Disabled Line is stored as its own key, so a daemon from before it still o
   setUiConfig({ lineHidden: true });
   assert.equal(getUiConfig().lineHidden, true);
   assert.equal(getUiConfig().lineDensity, "expanded", "switching off kept the density to return to");
-  assert.throws(() => setUiConfig({ lineDensity: "hidden" } as never));
+  assert.throws(() => setUiConfig({ lineDensity: "hairline" } as never));
 
   // What this build wrote, read by the schema of a build that never had `lineHidden`.
   const written = getAppConfig(APP_CONFIG_ENTRIES.ui);
@@ -312,6 +312,25 @@ test("a Disabled Line stored as lineDensity \"hidden\" by #1399 is moved to line
   const raw = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
   assert.equal(raw.lineDensity, UI_CONFIG_DEFAULTS.lineDensity);
   assert.equal(raw.lineHidden, true);
+});
+
+test("a #1399 dashboard's Disabled request is read as lineHidden, and other unknown densities are still refused", async () => {
+  // A tab left open across the upgrade still sends Disabled as a third density. Refusing it
+  // with a 400 would roll that tab's own choice back; it means `lineHidden: true`.
+  const { UiConfigPatchSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "hidden" }), { lineHidden: true });
+  assert.deepEqual(
+    UiConfigPatchSchema.parse({ lineDensity: "hidden", layout: "console" }),
+    { layout: "console", lineHidden: true },
+  );
+  assert.deepEqual(UiConfigPatchSchema.parse({ lineDensity: "expanded" }), { lineDensity: "expanded" });
+  assert.equal(UiConfigPatchSchema.safeParse({ lineDensity: "hairline" }).success, false);
+  assert.equal(UiConfigPatchSchema.safeParse({}).success, false, "an empty update is still refused");
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig(UiConfigPatchSchema.parse({ lineDensity: "hidden" }));
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "the bridged request kept the stored density");
 });
 
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {

@@ -39,7 +39,15 @@ export function ResidentState({ profileId }: { profileId: string }): React.JSX.E
     {confirm && <WorkflowConfirmModal onClose={() => setConfirm(false)} request={{
       title: "Reset resident state", body: "Permanently delete this profile’s saved notes, watermarks and auto-memory. Complete and close all its runs first; pausing is not enough. Profile settings and run history are kept.",
       confirmLabel: "Delete saved state", confirmHint: "Permanently clear this profile’s durable state", danger: true,
-      onConfirm: () => { setConfirm(false); void act(async () => { await resetResidentState(profileId); setPreview(null); setView(await fetchResidentState(profileId)); }); },
+      onConfirm: () => {
+        setConfirm(false);
+        if (busy) return;
+        void act(async () => {
+          await resetResidentState(profileId);
+          setView(await fetchResidentState(profileId));
+          setPreview(null);
+        });
+      },
     }} />}
   </section>;
 }

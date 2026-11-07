@@ -29,6 +29,9 @@ const STALL =
   `${WORKFLOW} v1 is waiting on this session's goal: Foreman cannot call the work complete `
   + "while the latest instruction is unresolved.";
 const CHIP_STALL = `${STALL} Click for ways to proceed.`;
+/** The chip's decorative leading mark, armed and stalled (`aria-hidden`, so not in the name). */
+const ARMED_MARK = "⌘";
+const STALL_MARK = "⏸\uFE0E";
 const CHIP_ARMED = `${WORKFLOW} v1 runs when this session's work is complete - click to change it`;
 
 interface Goal {
@@ -173,6 +176,9 @@ test.describe("a follow-up judged as needing more context", () => {
     // The chip turns from a promise into a question, and keeps its accessible name.
     await expect(chip).toHaveClass(/\bstalled\b/);
     await expect(chip).toHaveAccessibleDescription(CHIP_STALL);
+    // A visible cue beyond colour: the armed ⌘ becomes a pause mark, and the name is unchanged.
+    await expect(chip.locator(".wbc-mark")).toHaveText(STALL_MARK);
+    await expect(chip).toHaveAccessibleName(`${WORKFLOW} v1`);
     await shoot(detail.locator("header.detail-head"), dashboard, "01-stalled-chip");
 
     await chip.click();
@@ -252,6 +258,7 @@ test.describe("a follow-up judged as needing more context", () => {
     await expect(dialog).toBeHidden();
     await expect(chip).not.toHaveClass(/\bstalled\b/);
     await expect(chip).toHaveAccessibleDescription(CHIP_ARMED);
+    await expect(chip.locator(".wbc-mark")).toHaveText(ARMED_MARK);
   });
 });
 

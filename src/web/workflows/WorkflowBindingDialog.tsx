@@ -741,6 +741,9 @@ export function WorkflowBindingDialog({
       )}
       {session && stallReason && (
         <WorkflowCompletionStallNotice
+          // Keyed by session: switching the Session select between two stalled sessions on
+          // the same version must not carry one session's error or in-flight accept to the other.
+          key={session.id}
           sessionId={session.id}
           reason={stallReason}
           hasObjective={Boolean(session.goal?.text)}

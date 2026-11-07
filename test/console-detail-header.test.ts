@@ -431,6 +431,8 @@ test("a finished cycle under an unresolved goal marks the armed chip stalled and
     "No-Mistakes Review v8 is waiting on this session's goal: Foreman cannot call the work complete "
       + "while the latest instruction is unresolved. Click for ways to proceed.",
   ));
+  // Not colour alone: the decorative mark becomes a pause mark, still hidden from the name.
+  assert.match(html, /<span class="wbc-mark" aria-hidden="true">⏸\uFE0E <\/span>/);
   // The accessible name is still the workflow and its version.
   assert.match(html, /<span class="wbc-name">No-Mistakes Review<\/span><span class="wbc-version"> v8<\/span>/);
 });
@@ -442,6 +444,7 @@ test("a resolved goal keeps the armed chip's ordinary title and no stalled mark"
   })));
   assert.match(html, /class="workflow-bind-chip armed"/);
   assert.doesNotMatch(html, /stalled/);
+  assert.match(html, /<span class="wbc-mark" aria-hidden="true">⌘ <\/span>/);
   assert.ok(hasTooltip(
     html,
     "No-Mistakes Review v8 runs when this session's work is complete - click to change it",

@@ -637,7 +637,10 @@ export function ConsoleDetail({
               {workflowBinding
                 ? (
                   <>
-                    <span aria-hidden>⌘ </span>
+                    {/* The stalled chip trades the armed ⌘ for a pause mark, so the state does
+                        not rest on its amber alone. Still `aria-hidden`: the tooltip carries the
+                        stall in words, and the accessible name stays the workflow and version. */}
+                    <span className="wbc-mark" aria-hidden>{workflowStall ? "⏸\uFE0E " : "⌘ "}</span>
                     <span className="wbc-name">{workflowBinding.workflowName}</span>
                     <span className="wbc-version">{` v${workflowBinding.workflowVersion}`}</span>
                   </>

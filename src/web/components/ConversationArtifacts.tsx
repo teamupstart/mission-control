@@ -8,6 +8,7 @@ import {
 
 import { fetchSessionFile } from "../lib/api.ts";
 import {
+  artifactKind,
   classifyArtifactPreview,
   readArtifactExpanded,
   writeArtifactExpanded,
@@ -25,11 +26,23 @@ import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
+/**
+ * `source` is what the body renders from, and the only bytes the card retains: the page text
+ * with its checkout stylesheets inlined, or an image's self-contained data URL. Both are
+ * released together when the card leaves eligibility.
+ */
 type PreviewState =
-  | { status: "idle" | "loading"; result: null; previewText: null }
-  | { status: "settled"; result: ArtifactPreviewResult; previewText: string | null };
+  | { status: "idle" | "loading"; result: null; source: null }
+  | { status: "settled"; result: ArtifactPreviewResult; source: string | null };
 
-const IDLE_PREVIEW: PreviewState = { status: "idle", result: null, previewText: null };
+const IDLE_PREVIEW: PreviewState = { status: "idle", result: null, source: null };
+
+const UNDECODABLE_IMAGE: Extract<ArtifactPreviewResult, { kind: "refusal" }> = {
+  kind: "refusal",
+  title: "Image could not be displayed.",
+  explanation: "The browser could not decode this file as an image. Open it in Files to inspect its details.",
+  size: null,
+};
 
 export interface ConversationArtifactsProps {
   sessionId: string;
@@ -89,11 +102,13 @@ function ArtifactCard({
   const [near, setNear] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [preview, setPreview] = useState<PreviewState>(IDLE_PREVIEW);
+  const [imageFailed, setImageFailed] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const reactId = useId().replaceAll(":", "");
   const bodyId = `artifact-body-${reactId}`;
   const eligible = expanded && near;
+  const kind = artifactKind(path) ?? "html";
 
   const slash = path.lastIndexOf("/");
   const name = slash >= 0 ? path.slice(slash + 1) : path;
@@ -127,14 +142,21 @@ function ArtifactCard({
 
     let live = true;
     const abort = new AbortController();
-    setPreview({ status: "loading", result: null, previewText: null });
+    setPreview({ status: "loading", result: null, source: null });
+    setImageFailed(false);
     void (async () => {
       try {
         const response = await fetchSessionFile(sessionId, path, abort.signal);
         if (!live || abort.signal.aborted) return;
         const result = classifyArtifactPreview(response);
         if (result.kind === "refusal") {
-          setPreview({ status: "settled", result, previewText: null });
+          setPreview({ status: "settled", result, source: null });
+          return;
+        }
+        // An image is already self-contained: the reader returned its exact bytes as a data
+        // URL, so there is no stylesheet to inline and no frame to arm.
+        if (result.document.kind === "image") {
+          setPreview({ status: "settled", result, source: result.document.image?.dataUrl ?? null });
           return;
         }
         const previewText = await inlinePreviewStyles(
@@ -147,13 +169,13 @@ function ArtifactCard({
           abort.signal,
         );
         if (!live || abort.signal.aborted) return;
-        setPreview({ status: "settled", result, previewText });
+        setPreview({ status: "settled", result, source: previewText });
       } catch {
         if (!live || abort.signal.aborted) return;
         setPreview({
           status: "settled",
           result: classifyArtifactPreview({ ok: false, error: "Preview read failed" }),
-          previewText: null,
+          source: null,
         });
       }
     })();
@@ -164,7 +186,7 @@ function ArtifactCard({
   }, [eligible, path, refreshNonce, sessionId]);
 
   useEffect(() => {
-    if (!eligible || !onOpenFile) return;
+    if (!eligible || !onOpenFile || kind !== "html") return;
     const onMessage = (event: MessageEvent): void => {
       const data = event.data as { type?: unknown; href?: unknown } | null;
       if (data?.type !== HTML_PREVIEW_LINK_MESSAGE || typeof data.href !== "string") return;
@@ -177,7 +199,7 @@ function ArtifactCard({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [eligible, onOpenFile, path]);
+  }, [eligible, kind, onOpenFile, path]);
 
   const toggle = useCallback(() => {
     setExpanded((current) => {
@@ -188,12 +210,13 @@ function ArtifactCard({
   }, [path, sessionId]);
 
   const ready = preview.status === "settled" && preview.result.kind === "ready";
-  const refusal = preview.status === "settled" && preview.result.kind === "refusal"
-    ? preview.result
-    : null;
-  const source = eligible && ready && preview.previewText !== null
-    ? htmlPreviewSource(preview.previewText)
-    : undefined;
+  const refusal = imageFailed
+    ? UNDECODABLE_IMAGE
+    : preview.status === "settled" && preview.result.kind === "refusal"
+      ? preview.result
+      : null;
+  const retained = eligible && ready ? preview.source : null;
+  const source = kind === "html" && retained !== null ? htmlPreviewSource(retained) : undefined;
   const label = `Preview of ${path}`;
 
   return (
@@ -201,7 +224,7 @@ function ArtifactCard({
       ref={cardRef}
       className={`artifact-card${expanded ? " is-open" : ""}`}
       aria-label={label}
-      data-preview-source={preview.previewText === null ? "released" : "loaded"}
+      data-preview-source={preview.source === null ? "released" : "loaded"}
     >
       <header className="artifact-head">
         <Tooltip label={`${expanded ? "Collapse" : "Expand"} preview of ${path}`}>
@@ -238,7 +261,9 @@ function ArtifactCard({
             The labels are the bare verbs; the accessible names carry the path, so a turn
             presenting three artifacts has three distinguishable pairs rather than six
             controls all called "View". */}
-        {onCommentInFiles && (
+        {/* Files offers no comment mode on an image - it has no lines to anchor to - so an
+            image card hands off only by View rather than arming a control that is off. */}
+        {onCommentInFiles && kind === "html" && (
           <Tooltip label="Open this rendered file in Files and start a comment">
             <button
               type="button"
@@ -275,13 +300,24 @@ function ArtifactCard({
           </>
         ) : (
           <>
-            <iframe
-              ref={frameRef}
-              className="artifact-preview"
-              title={label}
-              sandbox={HTML_PREVIEW_SANDBOX}
-              srcDoc={source}
-            />
+            {kind === "image" ? (
+              retained !== null && (
+                <img
+                  className="artifact-image"
+                  src={retained}
+                  alt={path}
+                  onError={() => setImageFailed(true)}
+                />
+              )
+            ) : (
+              <iframe
+                ref={frameRef}
+                className="artifact-preview"
+                title={label}
+                sandbox={HTML_PREVIEW_SANDBOX}
+                srcDoc={source}
+              />
+            )}
             {preview.status !== "settled" && (
               <p className="artifact-loading">
                 {eligible ? "Loading preview…" : "Preview loads as it approaches the conversation."}

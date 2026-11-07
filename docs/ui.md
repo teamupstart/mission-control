@@ -1236,6 +1236,29 @@ remains inert: its document renders immediately, then a bounded set of checkout-
 stylesheets is inlined through the contained file reader without granting the sandbox scripts
 or network access. A slow stylesheet read therefore delays styling, not the document itself.
 
+A turn that **presents** an HTML page or a browser image also previews it inline, in a card at
+the foot of the turn. Presenting means the path stands on its own line, alone or after a short
+label of letters and spaces and a colon (`Report: docs/reports/x/report.html`,
+`Mockup: docs/mockups/x/screen.png`), or is the destination of a Markdown link. A path mentioned
+mid-sentence stays an ordinary link, and a turn previews at most three files. The card reserves
+a fixed 420px, arrives expanded, and remembers a collapse while the tab stays open. A page
+renders in the same sandbox as Files; an image is scaled down to fit and never enlarged.
+**Refresh** re-reads the file, **View** opens it in Files, and **Comment** opens it in Files with
+comment mode on. Comment is offered for pages only, because an image has no lines to comment on.
+A file that has gone, is over 5 MiB, or cannot be decoded says so in the card instead of drawing
+nothing.
+
+The checkout listing behind these links and previews is read when the conversation opens and
+again whenever a new message lands while the session is between turns, so a file the agent writes
+while you watch is linked and previewed in the turn that names it. The listing holds the
+checkout's tracked and untracked files, leaving out what git ignores, with one exception. HTML
+pages and browser images that git ignores under `docs/mockups/` are listed anyway, because that
+is where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+keeps mock-ups git-ignored so they are never committed. The exception covers only those two
+formats: an ignored `.env` or other file there, or anything under a dot-named folder, stays out
+of the list. A file under `docs/mockups/` that git does not ignore is listed like any other
+checkout file.
+
 The boundary beside the Files list is draggable, so a long document can take space back from
 the list or a deeply nested checkout can give the list more room. The Diff tab uses the same
 divider between Changed files and the selected patch. Focus either divider and use the Left or

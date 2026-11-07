@@ -171,6 +171,32 @@ a human saying the plan is right, so there is nothing to enforce it against and 
 hands the procedure over instead. That is the whole reason the two planning rows above are a
 launch requirement and this one is not.
 
+The **Mockups** row applies when someone asks to see what something could look like:
+mock-ups, mockups, wireframes, UI sketches, or design comps. The session writes each one as a
+self-contained HTML page or a browser image under `docs/mockups/<slug>/` in its own checkout,
+and names each checkout-relative path on its own line, such as
+`Mockup: docs/mockups/settings-panel/two-column.html`. The conversation links that path to the
+Files tab and previews the page or image inline at the foot of the turn, as
+[Message formatting](ui.md#message-formatting) describes.
+
+**Mock-ups are not committed unless a plan needs them.** Every mock-up under `docs/mockups/` must
+be git-ignored before it is written, so it never appears in `git status`, is never staged by
+`git add -A`, and is never captured in a workflow's review snapshot - the snapshot a workflow's
+pull request step commits. When `docs/mockups/.gitignore` does not exist yet, the session creates
+it holding `*`; a repository's own `docs/mockups/.gitignore` is left as it is and may not ignore
+anything, so the marker alone proves nothing. Either way, the session confirms with
+`git check-ignore` that each mock-up path is ignored before writing it. Where it is not, it adds
+`docs/mockups/` to the checkout's local `info/exclude`, which is never committed, and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
+another name. Before presenting mock-ups, it checks again that every `docs/mockups/` path it names
+is ignored and that git has nothing to commit there. The Files list shows the ignored HTML pages
+and browser images in `docs/mockups/` anyway. It is the only ignored directory it lists, and the
+exception admits nothing else that git ignores there, such as a stray `.env`. The one mock-up that is committed is one a plan in
+the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
+committed with the plan. That mock-up is deliberately not ignored, so the hand-over check above
+leaves it out; the session confirms instead that it sits in the plan's directory and the plan
+links it. The contract lives in
+[`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).
+
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
 into its pane when it next goes quiet. Codex declares no reload command, because it

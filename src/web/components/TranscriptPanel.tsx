@@ -397,9 +397,6 @@ export function TranscriptPanel({
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
   const expandChord = bindings.composerEditor;
-  // Only a session with a checkout and a handler that can open one has any use for the
-  // listing; without both, a path in the prose stays the text the agent typed.
-  const filePaths = useWorkspacePaths(files, sessionId, Boolean(session.cwd && onOpenFile));
   // ConsoleDetail builds `onOpenFile` as a fresh closure every render, and `Markdown` is
   // memoized on its props, including
   // this one, because it must be: a skipped render leaves the rendered anchors calling
@@ -434,6 +431,16 @@ export function TranscriptPanel({
   // to the stream's tail and making you find your place again.
   const [messages, setMessages] = useState<TranscriptMessage[]>(() =>
     flattenHistory(readHistory(sessionId)),
+  );
+  // Only a session with a checkout and a handler that can open one has any use for the
+  // listing; without both, a path in the prose stays the text the agent typed. Keyed on the
+  // newest message once the session is between turns, so a file written while you watch
+  // links in the turn that names it - even when the turn was too quick to be seen working.
+  const filePaths = useWorkspacePaths(
+    files,
+    sessionId,
+    Boolean(session.cwd && onOpenFile),
+    session.state === "working" ? null : (messages.at(-1)?.id ?? ""),
   );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);

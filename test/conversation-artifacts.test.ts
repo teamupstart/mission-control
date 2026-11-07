@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { SessionFileDocument } from "../src/shared/types.ts";
 import {
+  artifactKind,
   artifactStateEntryCounts,
   classifyArtifactPreview,
   conversationArtifacts,
@@ -18,9 +19,14 @@ import { ConversationArtifacts } from "../src/web/components/ConversationArtifac
 
 const REPORT = "docs/reports/x/report.html";
 const PLAN = "docs/plans/x/plan.htm";
+const SCREEN = "docs/mockups/x/screen.png";
+const WIREFRAME = "docs/mockups/x/wireframe.SVG";
 const paths = new Set([
   REPORT,
   PLAN,
+  SCREEN,
+  WIREFRAME,
+  "docs/mockups/x/notes.txt",
   "docs/plans/x/plan.md",
   "docs/reports/my notes/report.html",
   "docs/reports/x/report.HTML",
@@ -56,13 +62,36 @@ test("deduplicates by first appearance and caps a turn at three artifacts", () =
   ]);
 });
 
-test("does not promote incidental, placeholder, non-HTML, or absent paths", () => {
+test("does not promote incidental, placeholder, non-previewable, or absent paths", () => {
   assert.deepEqual(found(`I edited ${REPORT} in this change.`), []);
+  assert.deepEqual(found(`I resized ${SCREEN} in this change.`), []);
   assert.deepEqual(found("Report: docs/reports/<slug>/report.html"), []);
   assert.deepEqual(found("docs/plans/x/plan.md"), []);
-  assert.deepEqual(found("image.png", new Set(["image.png"])), []);
+  assert.deepEqual(found("Mockup: docs/mockups/x/notes.txt"), []);
   assert.deepEqual(found("Makefile", new Set(["Makefile"])), []);
   assert.deepEqual(found("missing.html"), []);
+  assert.deepEqual(found("Mockup: docs/mockups/x/missing.png"), []);
+});
+
+test("a browser image presented like a page is an artifact too", () => {
+  // A mock-up is as often a picture as a page, and the Files tab already renders both. The
+  // same presentation rules apply, so a screenshot named mid-sentence stays a link.
+  assert.deepEqual(found(`Mockup: ${SCREEN}`), [SCREEN]);
+  assert.deepEqual(found(WIREFRAME), [WIREFRAME]);
+  assert.deepEqual(found(`- [the wireframe](${WIREFRAME})`), [WIREFRAME]);
+  assert.deepEqual(found(`Mockup: ${REPORT}\nScreenshot: ${SCREEN}`), [REPORT, SCREEN]);
+  assert.deepEqual(found("image.png", new Set(["image.png"])), ["image.png"]);
+});
+
+test("the artifact kind follows the extension registry the daemon classifies with", () => {
+  assert.equal(artifactKind(REPORT), "html");
+  assert.equal(artifactKind(PLAN), "html");
+  for (const path of ["a.png", "a.JPG", "a.jpeg", "a.gif", "a.webp", "a.svg", "a.avif", "a.apng", "a.bmp", "a.ico"]) {
+    assert.equal(artifactKind(path), "image", path);
+  }
+  for (const path of ["a.md", "a.txt", "a.tiff", "a.heic", "a.psd", "Makefile"]) {
+    assert.equal(artifactKind(path), null, path);
+  }
 });
 
 test("matches HTML extensions case-insensitively and strips source locations", () => {
@@ -179,6 +208,31 @@ test("classifies every required preview refusal without browser-sized fixtures",
   if (refused.kind === "refusal") assert.equal(refused.title, "Preview blocked for safety.");
 });
 
+test("a raster image with no text is ready, not refused as invalid UTF-8", () => {
+  // The UTF-8 refusal reads `text === null`, which is exactly what a PNG always has. The
+  // image branch has to answer first or every raster mock-up reads as a decoding failure.
+  const image = { mediaType: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" };
+  const ready = classifyArtifactPreview({
+    ok: true,
+    file: document({ path: SCREEN, kind: "image", editable: false, text: null, image }),
+  });
+  assert.equal(ready.kind, "ready");
+  if (ready.kind === "ready") assert.equal(ready.document.image?.dataUrl, image.dataUrl);
+
+  const missing = classifyArtifactPreview({
+    ok: true,
+    file: document({ path: SCREEN, kind: "image", editable: false, text: null }),
+  });
+  assert.equal(missing.kind, "refusal");
+  if (missing.kind === "refusal") assert.equal(missing.title, "Image preview unavailable.");
+
+  const oversized = classifyArtifactPreview({
+    ok: true,
+    file: document({ path: SCREEN, kind: "oversized", text: null }),
+  });
+  assert.equal(oversized.kind === "refusal" && oversized.title, "Too large to preview.");
+});
+
 test("expanded state survives remount-shaped reads and is collected by session", () => {
   resetArtifactState();
   assert.equal(readArtifactExpanded("s1", REPORT), true);
@@ -248,6 +302,26 @@ test("each action renders only for the handler it needs, so neither implies the 
   }));
   assert.match(commentOnly, new RegExp(`aria-label="Comment on ${REPORT} in Files"`));
   assert.doesNotMatch(commentOnly, /aria-label="View /);
+});
+
+test("an image card offers View but no Comment, and never draws a page frame", () => {
+  // Files has no comment mode on an image - it has no lines - so a Comment hand-off would
+  // land on a control that is switched off.
+  resetArtifactState();
+  const html = renderToStaticMarkup(createElement(ConversationArtifacts, {
+    sessionId: "s1",
+    artifacts: [{ path: SCREEN }, { path: REPORT }],
+    onOpenFile: () => true,
+    onCommentInFiles: () => {},
+    onViewInFiles: () => {},
+  }));
+  assert.match(html, new RegExp(`aria-label="Preview of ${SCREEN.replaceAll("/", "\\/")}"`));
+  assert.match(html, new RegExp(`aria-label="View ${SCREEN.replaceAll("/", "\\/")} in Files"`));
+  assert.match(html, new RegExp(`aria-label="Refresh preview of ${SCREEN.replaceAll("/", "\\/")}"`));
+  assert.doesNotMatch(html, new RegExp(`aria-label="Comment on ${SCREEN.replaceAll("/", "\\/")}`));
+  assert.match(html, new RegExp(`aria-label="Comment on ${REPORT.replaceAll("/", "\\/")} in Files"`));
+  assert.equal((html.match(/<iframe/g) ?? []).length, 1, "only the page gets a sandboxed frame");
+  assert.match(html, new RegExp(`<iframe[^>]*title="Preview of ${REPORT.replaceAll("/", "\\/")}"`));
 });
 
 test("the visible labels are the bare verbs, and the paths live on the accessible names", () => {

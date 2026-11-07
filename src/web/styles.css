@@ -37700,6 +37700,19 @@ body.foreman-sidecar-open .modal-backdrop {
   border-radius: 6px;
 }
 
+/* An image artifact keeps the page card's reserved height, so a mock-up loading never
+   shifts the log. `scale-down` fits a large image whole and leaves a small one at its own
+   pixels rather than enlarging it into a blur. */
+.artifact-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: scale-down;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .artifact-loading {
   position: absolute;
   inset: 50% 16px auto;

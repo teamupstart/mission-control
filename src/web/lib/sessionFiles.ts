@@ -593,6 +593,38 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   ]);
 }
 
+export interface WorkspacePathsWarmKey {
+  sessionId: string;
+  /**
+   * The newest transcript message while the session is between turns, or null mid-turn.
+   * An empty string is a settled transcript with no messages yet.
+   */
+  settledOn: string | null;
+}
+
+/**
+ * Whether a transcript should ask for its checkout listing again.
+ *
+ * Once when a session's transcript first shows, and again whenever a new message lands while
+ * the session is between turns. The second is what makes a file the agent wrote while the
+ * operator was watching - a report, a mock-up - linkable and previewable in the very turn
+ * that names it. A listing taken only on mount predates every such file, so the turn
+ * presenting it rendered its path as dead text until something remounted the conversation.
+ *
+ * Keyed on the newest message rather than on seeing the session leave `working`: a turn can
+ * start and finish between two renders, so a dashboard may never observe the working state
+ * at all, while the message it produced always arrives. Mid-turn the key is null, so a
+ * streaming turn's frames - and the tool calls writing its files - never each pay for a
+ * `git ls-files`; the one listing comes when the turn has finished.
+ */
+export function shouldWarmWorkspacePaths(
+  previous: WorkspacePathsWarmKey | null,
+  next: WorkspacePathsWarmKey,
+): boolean {
+  if (previous?.sessionId !== next.sessionId) return true;
+  return next.settledOn !== null && next.settledOn !== previous.settledOn;
+}
+
 /**
  * The checkout listing behind one session's transcript, asked for only when a transcript
  * is actually on screen.
@@ -600,18 +632,29 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
  * A hook rather than two props because the read and the ask are one decision: a caller
  * that reads the index without warming it renders dead paths for ever, and one that warms
  * without reading pays for a listing it never uses. `enabled` is where the cost is
- * declined - a session with no checkout has nothing to list. The optional controller is
- * for the render-only tests that stub it away; there is no session-files store in a
- * `renderToStaticMarkup` tree, and no effects run there either.
+ * declined - a session with no checkout has nothing to list. `settledOn` re-asks when a turn
+ * lands; see `shouldWarmWorkspacePaths`. The optional controller is for the render-only tests
+ * that stub it away; there is no session-files store in a `renderToStaticMarkup` tree, and
+ * no effects run there either.
  */
 export function useWorkspacePaths(
   files: SessionFilesController | undefined,
   sessionId: string,
   enabled: boolean,
+  settledOn: string | null = "",
 ): ReadonlySet<string> | null {
   const warm = files?.warmPaths;
+  const warmedFor = useRef<{ key: WorkspacePathsWarmKey; warm: (id: string) => void } | null>(null);
   useEffect(() => {
-    if (enabled) warm?.(sessionId);
-  }, [enabled, sessionId, warm]);
+    if (!enabled || !warm) {
+      warmedFor.current = null;
+      return;
+    }
+    const next = { sessionId, settledOn };
+    // A replaced store holds no index for this session, so it is asked as if for the first time.
+    const previous = warmedFor.current?.warm === warm ? warmedFor.current.key : null;
+    warmedFor.current = { key: next, warm };
+    if (shouldWarmWorkspacePaths(previous, next)) warm(sessionId);
+  }, [enabled, sessionId, warm, settledOn]);
   return (enabled ? files?.pathIndex?.[sessionId] : null) ?? null;
 }

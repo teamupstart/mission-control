@@ -211,6 +211,8 @@ test("snapshot rejects artifact bytes that changed after validation", async () =
   const sha256 = createHash("sha256").update(html).digest("hex");
   writeFileSync(join(root, reportPath), html + "changed");
   await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath, sha256 }] }), /changed during capture/);
+  rmSync(join(root, reportPath));
+  await assert.rejects(captureWorktreeTree(root, { localArtifacts: [{ path: reportPath, sha256 }] }), /changed during capture/);
 });
 
 test("a report edited after validation falls back to required publication content", async () => {
@@ -241,6 +243,40 @@ test("a report edited after validation falls back to required publication conten
   assert.equal(capture.publication.treeOid, (await captureWorktreeTree(root)).treeOid);
   assert.deepEqual(readFileSync(join(root, ".git/index")), before);
 });
+
+for (const change of ["deleted", "symlinked", "companion-deleted"] as const) {
+  test(`${change === "companion-deleted" ? "a companion deleted" : `a report ${change}`} after validation falls back without stale receipts`, async () => {
+    const root = repo();
+    const companion = "docs/reports/result/evidence.csv";
+    git(root, "config", "filter.change-report.clean", "node .git/change-report.cjs");
+    writeFileSync(join(root, ".gitattributes"), "*.csv filter=change-report\n");
+    git(root, "add", ".gitattributes");
+    git(root, "commit", "-qm", "companion filter");
+    // The companion sorts before the report, so its filter changes the validated report
+    // before Git checks that report's entry in the temporary index.
+    writeFileSync(join(root, ".git/change-report.cjs"), `
+      const fs = require("node:fs");
+      const input = fs.readFileSync(0);
+      if (!fs.existsSync(".git/report-changed")) {
+        fs.writeFileSync(".git/report-changed", "done");
+        fs.unlinkSync(${JSON.stringify(change === "companion-deleted" ? companion : reportPath)});
+        ${change === "symlinked" ? `fs.symlinkSync(${JSON.stringify(join(root, "source.ts"))}, ${JSON.stringify(reportPath)});` : ""}
+      }
+      process.stdout.write(input);
+    `);
+    report(root, html + '<a href="evidence.csv">Evidence</a>');
+    writeFileSync(join(root, companion), "check,result\npassed,true\n");
+    const before = readFileSync(join(root, ".git/index"));
+    const capture = await captureWorkflowPublication(root);
+    assert.deepEqual(capture.artifacts, []);
+    assert.deepEqual(capture.publication.localArtifacts, []);
+    assert.deepEqual(capture.publication.unpublishedPaths.sort(),
+      (change === "deleted" ? [companion] : change === "companion-deleted" ? [reportPath] : [companion, reportPath]).sort());
+    assert.match(capture.publication.artifactProblems!.join("\n"), /changed during capture/);
+    assert.equal(capture.publication.treeOid, (await captureWorktreeTree(root)).treeOid);
+    assert.deepEqual(readFileSync(join(root, ".git/index")), before);
+  });
+}
 
 for (const filter of ["CRLF normalization", "clean filter"]) {
   test(`retained report receipts use raw bytes with ${filter}`, async () => {

@@ -2512,7 +2512,8 @@ worktree bytes independently of Git clean filters and line-ending normalization.
 64 KiB per file, 48 files and 384 KiB total including other text evidence. The submission's
 reserved text evidence consumes that budget first. A report and its companions that do not fit
 stay together in the publication tree, with a retention-limit problem, rather than failing the
-whole submission. If a report changes between validation and tree capture, the daemon discards
+whole submission. If a report or companion changes, disappears, or becomes a symlink between
+validation and tree capture, the daemon discards
 the pending report exemptions and retained bytes, then captures once with all reports required.
 Other Git capture failures still fail the submission. Invalid reports stay
 required until corrected; the Intent tab's **Evidence snapshot** names the validation problem and

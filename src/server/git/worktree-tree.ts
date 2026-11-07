@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,7 +108,7 @@ export async function captureWorktreeTree(
       if (tracked.has(artifact.path)) throw new Error(`Tracked artifact must be published: ${artifact.path}`);
       const entry = requireOk("git ls-files", await git(worktreePath,
         ["ls-files", "--stage", "--", artifact.path], env));
-      if (!/^100(?:644|755) /.test(entry)) throw new Error(`Local artifact is not a regular file: ${artifact.path}`);
+      if (!/^100(?:644|755) /.test(entry)) throw new LocalArtifactChangedError(artifact.path);
       // Receipts describe raw retained bytes. The temporary index may contain a different
       // representation after clean filters or line-ending normalization.
       const rawOid = requireObjectId("raw artifact object", requireOk("git hash-object",
@@ -127,6 +127,24 @@ export async function captureWorktreeTree(
         : ["ls-tree", "-r", "--name-only", "-z", publicationTreeOid], env), false)
       .split("\0").filter(Boolean);
     return { treeOid, headOid, publicationTreeOid, unpublishedPaths };
+  } catch (error) {
+    // A validated file can disappear during `git add` or the later raw-byte read, before
+    // its index entry or digest can be compared. Classify only an observed file change;
+    // unrelated Git failures still propagate and the caller retries at most once.
+    if (!(error instanceof LocalArtifactChangedError) && options.localArtifacts?.length) {
+      const root = await git(worktreePath, ["rev-parse", "--show-toplevel"], baseEnv);
+      if (root.code === 0) {
+        for (const artifact of options.localArtifacts) {
+          let changed = false;
+          try { changed = !lstatSync(join(root.stdout.trim(), artifact.path)).isFile(); }
+          catch (statError) {
+            changed = ["ENOENT", "ENOTDIR"].includes((statError as NodeJS.ErrnoException).code ?? "");
+          }
+          if (changed) throw new LocalArtifactChangedError(artifact.path);
+        }
+      }
+    }
+    throw error;
   } finally {
     rmSync(indexDir, { recursive: true, force: true });
   }

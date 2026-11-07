@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   AGENT_TYPES,
   type RestoringSession,
+  type ReviewItem,
   type Session,
   type Task,
 } from "@shared/types.ts";
@@ -28,7 +29,7 @@ import type {
   TranscriptFindHandle,
   TranscriptScrollDistance,
 } from "./components/TranscriptPanel.tsx";
-import { ReviewModal } from "./components/ReviewModal.tsx";
+import { ReviewCard, ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
@@ -1875,6 +1876,25 @@ export function App(): React.JSX.Element {
       else setResidentDrawerOpen(true);
     },
     [residentDrawerPinned],
+  );
+  /**
+   * How the drawer's selected card answers a resident's question: the attention inbox's own
+   * `ReviewCard`, with a one-question ask's options as buttons. A question moved to chat opens the resident's conversation, from the drawer,
+   * with the cursor in its reply box.
+   */
+  const renderResidentReview = useCallback(
+    (review: ReviewItem, session: Session): React.ReactNode => (
+      <ReviewCard
+        review={review}
+        note={session.note}
+        quickAnswers
+        onMovedToChat={(sessionId) => {
+          openResidentDetail(sessionId, true);
+          requestComposerFocus(sessionId);
+        }}
+      />
+    ),
+    [openResidentDetail],
   );
   /** `⇧H` and the top-bar button in Drawer placement. Pinned, it unpins - which closes it. */
   const toggleResidentDrawer = useCallback((): void => {
@@ -4576,6 +4596,8 @@ export function App(): React.JSX.Element {
                 onManage={() => navigate({ page: "residents" })}
                 focusRequest={residentCardFocus}
                 onFocusRequestHandled={() => setResidentCardFocus(null)}
+                reviews={pendingReviews}
+                renderReview={renderResidentReview}
               />
             </div>
           );
@@ -4729,6 +4751,8 @@ export function App(): React.JSX.Element {
                   launcher={residentLauncher}
                   onOpenLaunch={openResidentLaunch}
                   onManage={() => navigate({ page: "residents" })}
+                  reviews={pendingReviews}
+                  renderReview={renderResidentReview}
                 />
               )}
               {/* In the slot every page shares: Restart on new profile offers it from the

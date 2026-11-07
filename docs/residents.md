@@ -185,6 +185,22 @@ turns amber while any resident needs you. The top-bar button keeps its name and 
   **Resume**, and a **Control** badge when the resident's revision asks for session control.
   <kbd>↑</kbd>/<kbd>↓</kbd> move the selection and <kbd>Enter</kbd> opens the selected card;
   a double-click opens a card too.
+- **Answering from the drawer.** Above its actions, the selected card shows what the resident
+  is asking, or else its latest message, clamped to three lines (the line the Console rail
+  prints under its name). A question it asked through `request_input` with one set of options
+  shows each option as a button: one press answers it, beside **Chat about it** and **Dismiss**.
+  A question that needs more (several questions, several picks, or an answer of your own) shows
+  the same form the attention inbox draws. A menu the session is parked on shows its rows as
+  buttons, as the Conversation tab does. Either way the answer goes back the way the inbox sends
+  it. The card lists every question the resident has pending; once none is left, the amber
+  state and the visitor card clear.
+- **Quick reply.** Under that is a reply box labeled **Reply to** and the resident's name.
+  <kbd>⌘</kbd><kbd>Enter</kbd> or **Send** delivers it exactly as the Conversation tab's reply
+  box does, queued behind a busy turn the same way; plain <kbd>Enter</kbd> starts a new line.
+  The box shares the Conversation's draft, so text typed here is waiting there when you open
+  the resident. <kbd>Escape</kbd> leaves the box for the card, and the next Escape closes a
+  floating drawer. While the box has focus, the arrow keys, <kbd>Enter</kbd> and **⌥N** act on
+  the text, not the drawer. A resident that cannot take a message has no reply box.
 - **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
   same launch behavior the dock has (see below), and **Manage residents** opens the Residents
   page. The dock and the drawer share one launch state, so closing either while a launch is

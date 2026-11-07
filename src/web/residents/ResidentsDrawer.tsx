@@ -1,9 +1,16 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { canMessage } from "@shared/pane.ts";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
-import type { Session } from "@shared/types.ts";
+import { activePaneDialog } from "@shared/session.ts";
+import type { ReviewItem, Session } from "@shared/types.ts";
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
+import { PaneDialogPrompt } from "../components/PaneDialogPrompt.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { api } from "../lib/api.ts";
+import { useComposerActivity } from "../lib/composer-activity.ts";
+import { clearDraft, draftRevision, readDraft, writeDraft } from "../lib/drafts.ts";
 import { stateDisplay } from "../lib/format.ts";
+import { sdkDeliveryConfirmation } from "../lib/sdk-delivery.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
@@ -82,6 +89,14 @@ export interface ResidentsDrawerProps {
   focusRequest?: { sessionId: string; nonce: number } | null;
   /** The request above has been applied; App clears it so a remount does not replay it. */
   onFocusRequestHandled?: () => void;
+  /** Every pending review; the selected card answers the ones its resident raised. */
+  reviews: readonly ReviewItem[];
+  /**
+   * Draw one pending review through the app's `ReviewCard`. Injected rather than imported:
+   * `ReviewModal.tsx` pulls in react-diff-view's stylesheet, which Node cannot load, and this
+   * drawer is rendered by unit tests.
+   */
+  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
 }
 
 /**
@@ -225,6 +240,8 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
                 selected={entry.session !== null && entry.session.id === selectedId}
                 onSelect={props.onSelect}
                 onOpen={props.onOpen}
+                reviews={props.reviews}
+                renderReview={props.renderReview}
               />
             ))}
           </ul>
@@ -302,11 +319,13 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
  * card, and Enter on the selected card opens it. The selected card expands into
  * `ResidentDrawerCardBody`.
  */
-function ResidentDrawerCard({ entry, selected, onSelect, onOpen }: {
+function ResidentDrawerCard({ entry, selected, onSelect, onOpen, reviews, renderReview }: {
   entry: ResidentDrawerEntry;
   selected: boolean;
   onSelect: (sessionId: string) => void;
   onOpen: (sessionId: string) => void;
+  reviews: readonly ReviewItem[];
+  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
@@ -339,7 +358,12 @@ function ResidentDrawerCard({ entry, selected, onSelect, onOpen }: {
       </Tooltip>
       <ResidentLoopStatusLine loop={run} session={session} tags />
       {selected && session && (
-        <ResidentDrawerCardBody>
+        <ResidentDrawerCardBody
+          session={session}
+          name={mark.name}
+          reviews={reviews.filter((review) => review.sessionId === session.id && review.status === "pending")}
+          renderReview={renderReview}
+        >
           <div className="residents-drawer-actions">
             <Tooltip label={`Open ${mark.name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
               <button
@@ -364,11 +388,137 @@ function ResidentDrawerCard({ entry, selected, onSelect, onOpen }: {
 }
 
 /**
- * The selected card's expanded region. Phase 1 holds the card's actions here; Phase 2 adds
- * the latest message or open question, its options and a reply box inside it, above them.
+ * The selected card's expanded region: what the resident is asking or last said, a reply box,
+ * and the card's actions (`children`) under them.
+ *
+ * Nothing here is a second answering or sending mechanism. A pending review is drawn through
+ * the app's `ReviewCard` (`renderReview`), exactly as the attention inbox draws it; a menu the
+ * session is parked on is drawn through `PaneDialogPrompt`, the component the Conversation tab
+ * leads with; and the reply goes through `api.injectPrompt`, the Conversation reply box's own
+ * call, with its draft and its composer-activity lease.
  */
-export function ResidentDrawerCardBody({ children }: { children: React.ReactNode }): React.JSX.Element {
-  return <div className="residents-drawer-card-body">{children}</div>;
+export function ResidentDrawerCardBody({ session, name, reviews, renderReview, children }: {
+  session: Session;
+  name: string;
+  /** This resident's pending reviews, oldest first. */
+  reviews: readonly ReviewItem[];
+  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  const dialog = activePaneDialog(session);
+  // The line the Console rail prints under a session's name: the last thing it reported.
+  const latest = session.activity ?? session.goal?.text ?? null;
+  return (
+    <div className="residents-drawer-card-body">
+      {reviews.length > 0 ? (
+        <div className="residents-drawer-ask" aria-label={`${name} is asking`}>
+          {reviews.map((review) => <div key={review.id}>{renderReview(review, session)}</div>)}
+        </div>
+      ) : dialog ? (
+        <div className="residents-drawer-ask" aria-label={`${name} is asking`}>
+          <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />
+        </div>
+      ) : latest ? (
+        <p className="residents-drawer-latest" aria-label={`Latest from ${name}`}>{latest}</p>
+      ) : null}
+      {canMessage(session) && <ResidentDrawerReply session={session} name={name} />}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The selected card's reply box. `⌘⏎` sends, Escape leaves the box without closing the drawer,
+ * and plain Enter starts a new line, so a reply is never sent by the key that opens a card.
+ *
+ * Uncontrolled and backed by the session's `reply` draft, the same draft the Conversation
+ * tab's reply box keeps: text typed here is waiting there when the resident is opened.
+ */
+function ResidentDrawerReply({ session, name }: { session: Session; name: string }): React.JSX.Element {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [sending, setSending] = useState(false);
+  const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
+  const composerActivity = useComposerActivity(session.id);
+
+  async function send(): Promise<void> {
+    // The box stays editable while a send is in flight, and the Conversation's box writes the
+    // same draft, so remember what was sent and the draft's stamp at that moment.
+    const submitted = inputRef.current?.value ?? "";
+    const revisionAtSubmit = draftRevision(session.id, "reply");
+    const text = submitted.trim();
+    if (sending || !text) return;
+    setSending(true);
+    setFlash(null);
+    const r = await api.injectPrompt(session.id, text);
+    setSending(false);
+    if (!r.ok) {
+      setFlash({ text: r.error ?? "send failed", ok: false });
+      return;
+    }
+    // Clear only what was sent. Any write to the draft while the send was in flight - in this
+    // box or the Conversation's, even one that re-typed the same words - is the next reply,
+    // and it stays where it was written.
+    // The text check covers a draft the Conversation's box had already rewritten before this
+    // send began, with a pinned drawer open beside it.
+    if (draftRevision(session.id, "reply") === revisionAtSubmit) {
+      if (readDraft(session.id, "reply") === submitted) clearDraft(session.id, "reply");
+      if (inputRef.current?.value === submitted) inputRef.current.value = "";
+    }
+    // The Conversation's own wording, except where it points at a key only that box has.
+    const confirmation = r.delivery === "pending"
+      ? "Queued. Open the conversation to edit it."
+      : sdkDeliveryConfirmation(r.delivery);
+    setFlash({ text: confirmation ?? "Sent.", ok: true });
+  }
+
+  return (
+    <div className="residents-drawer-reply">
+      <textarea
+        ref={inputRef}
+        className="residents-drawer-reply-input"
+        aria-label={`Reply to ${name}`}
+        placeholder={`Reply to ${name}…`}
+        rows={1}
+        defaultValue={readDraft(session.id, "reply")}
+        onFocus={composerActivity.onFocus}
+        onBlur={composerActivity.onBlur}
+        onChange={(e) => {
+          writeDraft(session.id, "reply", e.currentTarget.value);
+          composerActivity.onInput();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+            // Owned here: the floating drawer's overlay would otherwise press its default button.
+            e.preventDefault();
+            void send();
+          } else if (e.key === "Escape") {
+            // Out of the box and back onto this card's head, so the arrow keys walk the cards
+            // again. Stopped here, or the floating drawer's overlay would close on the same press.
+            e.preventDefault();
+            e.stopPropagation();
+            const head = e.currentTarget
+              .closest("[data-resident-card]")
+              ?.querySelector<HTMLButtonElement>(".residents-drawer-card-head");
+            if (head) head.focus();
+            else e.currentTarget.blur();
+          }
+        }}
+      />
+      <Tooltip label={`Send this reply to ${name} (⌘⏎)`}>
+        <button
+          type="button"
+          className="btn btn-send residents-drawer-reply-send"
+          disabled={sending}
+          onClick={() => void send()}
+        >
+          Send <kbd className="residents-drawer-reply-key" aria-hidden>⌘⏎</kbd>
+        </button>
+      </Tooltip>
+      {flash && (
+        <p className={`residents-drawer-reply-flash${flash.ok ? "" : " is-error"}`} role="status">{flash.text}</p>
+      )}
+    </div>
+  );
 }
 
 /**

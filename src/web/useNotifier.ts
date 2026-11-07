@@ -18,15 +18,14 @@ function notify(
   title: string,
   body: string,
   tag: string,
+  silent: boolean,
   deepLink?: { workflowRunId?: string | null; ensembleId?: string | null },
 ): void {
   // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
   // permission is granted (they require the service-worker path); never let that
   // escape the effect.
   try {
-    // The settings-gated chime owns sound. Otherwise the OS can play its own tone
-    // even with Sound off, or add a second tone when the chime is enabled.
-    const n = new Notification(title, { body, tag, silent: true });
+    const n = new Notification(title, { body, tag, silent });
     n.onclick = () => {
       window.focus();
       // One deep link per toast, the same hash routes the dashboard already owns: a
@@ -105,10 +104,10 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
       const missed = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
       if (missed.length === 0) return;
+      const fallbackSound = settings.sound && playChime("attention") === "unavailable";
       if (settings.notifications && canNotify()) {
-        notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup");
+        notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup", !fallbackSound);
       }
-      if (settings.sound) playChime("attention");
       return;
     }
 
@@ -117,13 +116,15 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
 
     const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
     if (alerts.length === 0) return;
+    // One chime per batch, at its most urgent severity. The OS is a fallback only
+    // for unavailable audio, never for Sound off or an intentionally throttled chime.
+    const fallbackSound = settings.sound && playChime(batchSeverity(alerts)) === "unavailable";
     if (settings.notifications && canNotify()) {
-      for (const a of alerts) {
-        notify(a.title, a.body, a.id, { workflowRunId: a.workflowRunId, ensembleId: a.ensembleId });
+      for (const [index, a] of alerts.entries()) {
+        notify(a.title, a.body, a.id, !fallbackSound || index > 0, {
+          workflowRunId: a.workflowRunId, ensembleId: a.ensembleId,
+        });
       }
     }
-    // One chime per batch at the most urgent severity, so a same-tick "info" alert
-    // can't swallow the "attention" tone via the chime's rate limit.
-    if (settings.sound) playChime(batchSeverity(alerts));
   }, [scope, settings, ready]);
 }

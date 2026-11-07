@@ -13,14 +13,15 @@ type SoundWindow = Window & {
   soundProbe: {
     toasts: Array<{ title: string; body?: string; tag?: string; silent?: boolean | null }>;
     notes: number;
+    audioState?: AudioContextState;
     stream: EventSource;
     reconnect: () => Promise<void>;
   };
 };
 
-async function observeDelivery(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const state = { toasts: [], notes: 0 } as unknown as SoundWindow["soundProbe"];
+async function observeDelivery(page: Page, audioState?: AudioContextState): Promise<void> {
+  await page.addInitScript((initialAudioState) => {
+    const state = { toasts: [], notes: 0, audioState: initialAudioState } as unknown as SoundWindow["soundProbe"];
     (window as SoundWindow).soundProbe = state;
     // Capture the OS API boundary without raising real desktop alerts during a test.
     window.Notification = class {
@@ -37,6 +38,12 @@ async function observeDelivery(page: Page): Promise<void> {
       state.notes++;
     };
     OscillatorNode.prototype.stop = function () {};
+    if (initialAudioState) {
+      // Model autoplay suspension deterministically, including browsers that remember
+      // prior interaction with this origin. A real dashboard gesture unlocks this port.
+      Object.defineProperty(AudioContext.prototype, "state", { get: () => state.audioState });
+      AudioContext.prototype.resume = async function () { state.audioState = "running"; };
+    }
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
       constructor(url: string | URL, options?: EventSourceInit) {
@@ -57,7 +64,31 @@ async function observeDelivery(page: Page): Promise<void> {
         resolve();
       };
     });
+  }, audioState);
+}
+
+async function dispatch(page: Page, daemon: DaemonHandle): Promise<Session> {
+  await page.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expectContentClearsBorder(dialog);
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await page.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Check notification delivery");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  const sessions = async () => (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[];
+  await expect.poll(async () => (await sessions()).find((s) => s.runtime === "sdk")?.agentSessionId).toBeTruthy();
+  return (await sessions()).find((s) => s.runtime === "sdk")!;
+}
+
+async function disconnect(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const { stream } = (window as SoundWindow).soundProbe;
+    stream.close();
+    stream.dispatchEvent(new Event("error"));
   });
+  await expect(page.locator(".pulse")).toHaveClass(/is-down/);
 }
 
 async function hook(daemon: DaemonHandle, session: Session, event: string): Promise<void> {
@@ -111,28 +142,12 @@ for (const mode of ["live", "reconnect"] as const) {
     }
     await page.keyboard.press("Escape");
 
-    await page.getByRole("button", { name: "Dispatch", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
-    await expectContentClearsBorder(dialog);
-    await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
-    await page.keyboard.press("Escape");
-    await dialog.getByPlaceholder("What should this agent do?").fill("Check notification delivery");
-    await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
-    await dialog.getByRole("button", { name: "Dispatch now" }).click();
-    await expect(dialog).toBeHidden();
-    const sessions = async () => (await (await fetch(`${daemon.baseURL}/api/sessions`)).json()) as Session[];
-    await expect.poll(async () => (await sessions()).find((s) => s.runtime === "sdk")?.agentSessionId).toBeTruthy();
-    const session = (await sessions()).find((s) => s.runtime === "sdk")!;
+    const session = await dispatch(page, daemon);
     await expect(page.getByRole("navigation", { name: "Sessions", exact: true }).locator(".rail-row")).toHaveCount(1);
     expect(await delivery(page)).toEqual({ toasts: [], notes: 0 });
 
     if (mode === "reconnect") {
-      await page.evaluate(() => {
-        const { stream } = (window as SoundWindow).soundProbe;
-        stream.close();
-        stream.dispatchEvent(new Event("error"));
-      });
-      await expect(page.locator(".pulse")).toHaveClass(/is-down/);
+      await disconnect(page);
     }
     await hook(daemon, session, "Notification");
     if (mode === "reconnect") {
@@ -174,4 +189,47 @@ for (const mode of ["live", "reconnect"] as const) {
     expect((await delivery(page)).toasts[2]?.silent).toBe(true);
     expect((await delivery(page)).notes).toBe(3);
   });
+
+  for (const sound of [true, false]) {
+    test(`suspended audio respects Sound ${sound ? "on" : "off"} for ${mode} alerts`, async ({ dashboard: page, daemon }) => {
+      const session = await dispatch(page, daemon);
+      const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ alerts: { notifications: true, sound } }),
+      });
+      expect(saved.ok).toBe(true);
+      await observeDelivery(page, "suspended");
+      await page.reload();
+      await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+      // No gesture after reload: an incoming alert must use the OS fallback only
+      // when Sound is enabled, and must not queue a chime to play on later unlock.
+      if (mode === "reconnect") await disconnect(page);
+      await hook(daemon, session, "Notification");
+      if (mode === "reconnect") await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+      await expect.poll(async () => (await delivery(page)).toasts.length).toBe(1);
+      expect((await delivery(page)).toasts[0]?.silent).toBe(!sound);
+      expect((await delivery(page)).notes).toBe(0);
+
+      if (!sound || mode === "reconnect") return;
+      await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+      await page.keyboard.press("Escape");
+      expect((await delivery(page)).notes).toBe(0);
+      await page.clock.setFixedTime(new Date());
+      await hook(daemon, session, "UserPromptSubmit");
+      await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+      await hook(daemon, session, "Notification");
+      await expect.poll(async () => (await delivery(page)).toasts.length).toBe(2);
+      expect((await delivery(page)).toasts[1]?.silent).toBe(true);
+      expect((await delivery(page)).notes).toBe(2);
+
+      // A rate-limited chime is deliberate silence, not an unavailable audio device.
+      await hook(daemon, session, "UserPromptSubmit");
+      await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+      await hook(daemon, session, "Notification");
+      await expect.poll(async () => (await delivery(page)).toasts.length).toBe(3);
+      expect((await delivery(page)).toasts[2]?.silent).toBe(true);
+      expect((await delivery(page)).notes).toBe(2);
+    });
+  }
 }

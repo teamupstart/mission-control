@@ -197,7 +197,9 @@ daemon state that survives closing the tab.
 
 Turning **Sound** off keeps desktop notifications visible but silent, including the
 catch-up notification after a disconnect. With Sound on, Mission Control plays its
-chime; desktop notifications do not add a second system sound.
+chime without a second system sound. If browser audio cannot play, including before
+the first interaction after a reload, an enabled desktop notification supplies the
+system tone instead. Rate-limited chimes remain quiet; they do not trigger this fallback.
 
 The session detail always states what would actually happen and names only the channels that are
 live. With desktop and sound on, for example, it reads "Blockers interrupt via desktop

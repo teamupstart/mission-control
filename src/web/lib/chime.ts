@@ -38,28 +38,42 @@ export function unlockAudio(): void {
   void context()?.resume();
 }
 
-/** Play the chime. Rate-limited (severity-aware) so a burst doesn't machine-gun. */
-export function playChime(severity: AlertSeverity): void {
-  const ac = context();
-  if (!ac) return;
+/**
+ * Report unavailable audio separately from deliberate rate limiting, so desktop
+ * delivery can supply a fallback without defeating the chime's burst suppression.
+ */
+export function playChime(severity: AlertSeverity): "played" | "rate-limited" | "unavailable" {
   const now = Date.now();
-  if (!chimeGate(now, lastPlayed, severity, lastSeverity)) return;
+  if (!chimeGate(now, lastPlayed, severity, lastSeverity)) return "rate-limited";
+  let started = false;
+  try {
+    const ac = context();
+    // Do not queue notes on a suspended context: a notification fallback sounds now,
+    // and those queued notes would otherwise play again at the next user gesture.
+    if (!ac || ac.state !== "running") return "unavailable";
+
+    const t0 = ac.currentTime;
+    const notes = severity === "attention" ? [880, 1174.7] : [660];
+    for (const [i, freq] of notes.entries()) {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const start = t0 + i * 0.12;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.15, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(start);
+      started = true;
+      osc.stop(start + 0.24);
+    }
+  } catch {
+    // Audio initialization/playback can fail. Once a note started, suppress the OS
+    // fallback even if a later note failed, so the alert never gets two sound sources.
+  }
+  if (!started) return "unavailable";
   lastPlayed = now;
   lastSeverity = severity;
-
-  const t0 = ac.currentTime;
-  const notes = severity === "attention" ? [880, 1174.7] : [660];
-  notes.forEach((freq, i) => {
-    const osc = ac.createOscillator();
-    const gain = ac.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    const start = t0 + i * 0.12;
-    gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(0.15, start + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
-    osc.connect(gain).connect(ac.destination);
-    osc.start(start);
-    osc.stop(start + 0.24);
-  });
+  return "played";
 }

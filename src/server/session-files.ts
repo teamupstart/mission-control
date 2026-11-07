@@ -267,7 +267,14 @@ export async function listSessionFiles(
     throw new SessionFileError("could not list files in this checkout", 500);
   }
   // Best effort: a failed mock-up read leaves the checkout's own listing intact. Only pages
-  // and images are admitted; the `.gitignore` marker and anything private are not.
+  // and images are admitted; the `.gitignore` marker and anything private are not. A failure
+  // is still logged, or mock-up paths turn into dead text with nothing saying why.
+  if (mockups.code !== 0 || mockups.overflowed) {
+    console.warn("[session-files] ignored mock-up listing failed; mock-ups are omitted from Files", {
+      code: mockups.code,
+      overflowed: mockups.overflowed,
+    });
+  }
   const ignoredMockups = mockups.code === 0 && !mockups.overflowed
     ? mockups.stdout.split("\0").filter(isListedMockup)
     : [];

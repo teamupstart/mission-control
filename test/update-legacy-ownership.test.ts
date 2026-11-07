@@ -15,7 +15,7 @@ import { darwinCheckIdentity } from '../scripts/darwin-process-identity.mjs';
 import type { UpdateProcessOwner } from '../scripts/update-process-owners.mjs';
 
 test('legacy snapshot handoff captures and cleans up an orphaned SDK driver and native utility before continuing', {
-  skip: process.platform !== 'darwin', timeout: 60_000,
+  skip: process.platform !== 'darwin', timeout: 180_000,
 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mc-legacy-ownership-')));
   const bundle = join(root, 'Fixture.app');
@@ -70,7 +70,11 @@ int main(void) {
 }
 `);
   execFileSync('/usr/bin/clang', [sdkSource, '-o', sdkExecutable]);
-  const until = async (predicate: () => boolean, message: string, timeout = 10_000) => {
+  // Each wait returns as soon as its condition holds, so these ceilings cost nothing when the
+  // host is keeping up. They are sized for `npm test` contention, where a freshly launched
+  // Electron utility took longer than the old ten seconds to report ready and failed this
+  // case with nothing wrong: the same fault `update-orphan-electron.test.ts` had.
+  const until = async (predicate: () => boolean, message: string, timeout = 30_000) => {
     const deadline = Date.now() + timeout;
     while (!predicate()) {
       assert.ok(Date.now() < deadline, `${message}\n${existsSync(join(root, 'update.log')) ? readFileSync(join(root, 'update.log'), 'utf8') : ''}`);
@@ -83,7 +87,8 @@ int main(void) {
   const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
   const oldDesktop = spawn(executable, [], {env, stdio: 'ignore'});
   const oldExited = once(oldDesktop, 'exit');
-  const acceptedDesktop = spawn('/bin/sleep', ['120'], {stdio: 'ignore'});
+  // Outlives every wait below, so it never quits on its own before the test releases it.
+  const acceptedDesktop = spawn('/bin/sleep', ['600'], {stdio: 'ignore'});
   const acceptedExited = once(acceptedDesktop, 'exit');
   try {
     await until(() => existsSync(utilityReady), 'native utility did not become ready');
@@ -119,7 +124,7 @@ int main(void) {
     await until(() => {
       const path = join(root, 'update-outcome.json');
       return existsSync(path) && JSON.parse(readFileSync(path, 'utf8')).result !== 'in-progress';
-    }, 'legacy helper did not finish cleaning up the captured owners', 20_000);
+    }, 'legacy helper did not finish cleaning up the captured owners', 60_000);
     const outcome = JSON.parse(readFileSync(join(root, 'update-outcome.json'), 'utf8'));
     assert.equal(outcome.result, 'success', JSON.stringify(outcome));
     assert.equal(processIsAlive(sdkPid), false);

@@ -38,9 +38,15 @@ import {
 } from "./capacity-retry.ts";
 import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
+  confirmHumanEcho,
   confirmReservedInjection,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  rekeyHumanEchoes,
+  releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  type HumanEchoTicket,
 } from "../injections.ts";
 import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
@@ -171,8 +177,11 @@ export class SdkSupervisor {
   private stateHomes = new Map<string, string>();
   private unfinishedTurns = new Map<string, number>();
   private acceptingTurns = new Set<string>();
-  /** Accepted launch-window prompts held until the driver reports their native Goal key. */
-  private pendingLaunchGoalPrompts = new Map<string, string[]>();
+  /**
+   * Accepted launch-window prompts held until the driver reports their native Goal key, each
+   * with its follow-up's expected-echo ticket (none for the launch prompt itself).
+   */
+  private pendingLaunchGoalPrompts = new Map<string, Array<{ prompt: string; ticket: HumanEchoTicket | null }>>();
   /** Native key for the original launch generation; absence means a clear discarded it. */
   private launchGoalNoteKeys = new Map<string, string | null>();
   private stopping = new Set<string>();
@@ -641,7 +650,7 @@ export class SdkSupervisor {
       durable.acceptedTurns ?? (durable.turnInProgress ? 1 : 0),
     );
     if (input.acceptedInitialPrompt?.trim()) {
-      this.pendingLaunchGoalPrompts.set(registration.id, [input.acceptedInitialPrompt]);
+      this.pendingLaunchGoalPrompts.set(registration.id, [{ prompt: input.acceptedInitialPrompt, ticket: null }]);
       this.launchGoalNoteKeys.set(registration.id, null);
     }
     const pump = this.pump(registration.id, handle);
@@ -705,13 +714,27 @@ export class SdkSupervisor {
       setSdkSessionTurnInProgress(id, true);
       this.unfinishedTurns.set(id, unfinished + 1);
       this.acceptingTurns.add(id);
+      let humanEcho: HumanEchoTicket | null = null;
       try {
+        // A human follow-up has a second door: the agent's prompt hook reports the same text
+        // back, possibly before `handle.send` resolves. Registered here, inside the serialized
+        // boundary, so the work cycle it is stamped with is the one the driver sees. A
+        // follow-up sent in the launch window (`noteKey === id`) is registered too, under the
+        // key its echo will carry. The launch prompt itself never comes through here and keeps
+        // `isSeededLaunchEcho`.
+        const echoKey = acceptedGoal ? this.followUpEchoKey(id, acceptedGoal) : null;
+        if (acceptedGoal && echoKey !== null) {
+          humanEcho = expectHumanEcho(id, acceptedGoal.prompt, {
+            noteKey: echoKey,
+            cycle: this.registry.getSession(id)?.workCycle,
+          });
+        }
         const disposition = await handle.send(turn);
         // A delivered turn resumes the work, so a retry waiting on the same session would
         // only repeat it. Cancelled only once the driver took the turn: a refused send must
         // leave the retry in place, or nothing would ever finish the failed turn.
         this.cancelCapacityRetry(id);
-        if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
+        if (acceptedGoal) this.captureAcknowledgedGoal(id, acceptedGoal, humanEcho, disposition);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
           // for. Release this send's pessimistic reservation, while conservatively keeping
@@ -723,6 +746,8 @@ export class SdkSupervisor {
         }
         return disposition;
       } catch (err) {
+        // The driver rejected the turn, so no echo is coming for it either.
+        if (humanEcho) releaseHumanEcho(humanEcho);
         // The driver rejected the turn, so it will not produce a completion for the slot we
         // reserved. Retire exactly that slot; any older accepted turn remains recoverable.
         const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
@@ -1159,8 +1184,50 @@ export class SdkSupervisor {
     }
   }
 
-  /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
-  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
+  /**
+   * The acknowledging door for a human turn: capture it unless the prompt hook already did.
+   *
+   * The entry is marked captured only once this door's capture returned a goal. A refused
+   * prompt or a failed write leaves it confirmed, so a later echo still records the turn.
+   */
+  private captureAcknowledgedGoal(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    humanEcho: HumanEchoTicket | null,
+    disposition: SdkSendDisposition,
+  ): void {
+    if (!humanEcho) {
+      this.captureGoalBestEffort(id, accepted);
+      return;
+    }
+    if (confirmHumanEcho(humanEcho, { queued: disposition === "steered" }).captured) return;
+    if (this.captureGoalBestEffort(id, accepted, humanEcho)) markHumanEchoCaptured(humanEcho);
+  }
+
+  /**
+   * The conversation key a follow-up's prompt-hook echo will carry, or null when nothing will
+   * record the follow-up.
+   *
+   * A launch-window follow-up names the session id, which no hook reports. Once the launch
+   * generation has bound, that is its native key. Before it, the entry waits under the
+   * session id and the bind re-keys it. A clear discarded the generation, so its follow-ups
+   * are never recorded and need no expectation.
+   */
+  private followUpEchoKey(id: string, accepted: AcceptedGoalPrompt): string | null {
+    if (accepted.noteKey !== id) return accepted.noteKey;
+    if (!this.launchGoalNoteKeys.has(id)) return null;
+    return this.launchGoalNoteKeys.get(id) ?? id;
+  }
+
+  /**
+   * Goal persistence cannot turn an acknowledged driver send into a retryable failure.
+   * Answers whether a goal was recorded now; a launch-window prompt held for the bind is not.
+   */
+  private captureGoalBestEffort(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    ticket: HumanEchoTicket | null = null,
+  ): boolean {
     try {
       if (accepted.noteKey === id) {
         // A direct injection can be acknowledged on either side of the first `bound` event.
@@ -1168,23 +1235,23 @@ export class SdkSupervisor {
         // native key rather than the now-stale synthetic key. A clear deletes that generation
         // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
         // leaking into the replacement conversation.
-        if (!this.launchGoalNoteKeys.has(id)) return;
+        if (!this.launchGoalNoteKeys.has(id)) return false;
         const launchNoteKey = this.launchGoalNoteKeys.get(id);
         if (launchNoteKey === null || launchNoteKey === undefined) {
           const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
-          pending.push(accepted.prompt);
+          pending.push({ prompt: accepted.prompt, ticket });
           this.pendingLaunchGoalPrompts.set(id, pending);
-        } else {
-          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+          return false;
         }
-        return;
+        return this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey) !== null;
       }
-      this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
+      return this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey) !== null;
     } catch (err) {
       console.error(
         `[sdk] could not capture accepted Goal prompt for ${id}:`,
         err instanceof Error ? err.message : String(err),
       );
+      return false;
     }
   }
 
@@ -1593,11 +1660,17 @@ export class SdkSupervisor {
             else if (this.launchGoalNoteKeys.get(id) === null) {
               this.launchGoalNoteKeys.set(id, evt.agentSessionId);
             }
+            // Launch-window follow-ups were expected under the session id; their echoes carry
+            // the native key from here on. A clear means nothing will record them.
+            rekeyHumanEchoes(id, id, evt.cleared ? null : evt.agentSessionId);
             const prompts = evt.cleared
               ? []
               : (this.pendingLaunchGoalPrompts.get(id) ?? []);
-            for (const prompt of prompts) {
-              this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+            for (const { prompt, ticket } of prompts) {
+              // The hook door may have reached a held follow-up first.
+              if (ticket && confirmHumanEcho(ticket).captured) continue;
+              const captured = this.captureGoalBestEffort(id, { prompt, noteKey: evt.agentSessionId });
+              if (captured && ticket) markHumanEchoCaptured(ticket);
             }
             this.pendingLaunchGoalPrompts.delete(id);
           }

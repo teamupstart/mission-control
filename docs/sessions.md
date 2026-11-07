@@ -1614,6 +1614,22 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Every follow-up to an Agent SDK session is counted once, too.** A message you send
+afterwards, directly or from the pending-turn outbox, has the same two doors: the driver
+acknowledges it, and the agent's prompt hook reports the same text back. Each delivered turn
+is captured by exactly one of them. Mission Control notes the text just before the driver
+takes it, and whichever door arrives first opens the revision while the other is skipped. A
+door that fails to record the turn leaves it for the other, so a failed write is not a lost
+instruction. Without this rule every follow-up was classified twice, the second time against
+a conversation that had already moved on.
+
+A retype is its own send, so it is still heard: sending the same words again opens a revision
+of its own. The note lasts for the turn the message belongs to. A message accepted while the
+agent is mid-turn waits behind that turn, so its note outlives the running turn and ends with
+its own. Once its turn is next, the note also lapses after two minutes, for a conversation
+that never finishes a turn. A daemon restart between a delivery and its echo forgets the note
+and lets one duplicate through.
+
 **Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
 rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
 packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon

@@ -883,6 +883,46 @@ for (const when of ["before", "after"] as const) {
   });
 }
 
+test("an in-flight launch-window follow-up echoed before its acknowledgement opens one revision", async (t) => {
+  const handle = fakeHandle();
+  let acknowledge!: () => void;
+  const held = new Promise<void>((resolve) => (acknowledge = resolve));
+  handle.send = async (turn) => {
+    handle.sent.push(turn);
+    await held;
+    return "started";
+  };
+  const fake = withFakeDriver(async () => handle);
+  t.after(fake.restore);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const session = await supervisor.start(START);
+  const conversation = "agent-launch-window-early-echo";
+  const text = "a launch-window follow-up whose echo beats its acknowledgement";
+  // Registered under the session id, because the conversation has not bound yet.
+  const sending = supervisor.send(session.id, { text }, undefined, { prompt: text, noteKey: session.id });
+  await waitFor(() => handle.sent.length === 1);
+
+  // The conversation binds while the send is still in flight, which re-keys the follow-up
+  // and records the launch prompt as revision one.
+  handle.push({ kind: "bound", agentSessionId: conversation, transcriptPath: null, modelId: null, pid: null });
+  await waitFor(() => registry.getGoal(session.id)?.promptRevision === 1);
+  const capture = t.mock.method(registry, "captureAcceptedPrompt");
+
+  // The agent reports the follow-up before the driver's acknowledgement resolves.
+  registry.applyHook({
+    agent: "claude", event: "UserPromptSubmit", sessionId: conversation, cwd: START.cwd,
+    transcriptPath: null, env: {}, prompt: text,
+  } as HookEvent);
+  assert.equal(registry.getGoal(session.id)?.promptRevision, 2, "the hook door captured it");
+
+  acknowledge();
+  await sending;
+  assert.equal(capture.mock.callCount(), 1, "the acknowledgement saw the hook's capture and did not repeat it");
+  assert.equal(registry.getGoal(session.id)?.promptRevision, 2);
+  assert.equal(registry.getGoal(session.id)?.prompt, text);
+});
+
 test("a launch-window acknowledgement survives the first binding race", async () => {
   const handle = fakeHandle();
   let acknowledge!: () => void;

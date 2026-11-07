@@ -367,6 +367,7 @@ if (recordDir) {
         termProgram: process.env.TERM_PROGRAM ?? null,
         entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null,
         missionHome: process.env.MISSION_HOME ?? null,
+        residentStateDir: process.env.RESIDENT_STATE_DIR ?? null,
         fleetHome: process.env.FLEET_HOME ?? null,
         harnessHome: process.env.HARNESS_HOME ?? null,
         resolvedMissionState,

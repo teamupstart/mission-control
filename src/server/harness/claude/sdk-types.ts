@@ -196,7 +196,7 @@ export interface ClaudeSdkQueryOptions {
    * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
    * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */
-  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string };
+  settings?: { disableClaudeAiConnectors?: boolean; advisorModel?: string; autoMemoryDirectory?: string; autoMemoryEnabled?: boolean };
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,

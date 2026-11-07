@@ -3,6 +3,7 @@ import type { ResidentRun } from "@shared/residents.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import type { AgentType, SessionRuntime } from "@shared/types.ts";
 import type { ResidentMcpLaunch } from "../harness/types.ts";
+import { ensureResidentState, residentStateDir } from "./state.ts";
 import { residentMcpLaunchForRun } from "./mcp-launch.ts";
 
 /**
@@ -79,6 +80,8 @@ export const RESIDENT_LAUNCH_CONTRIBUTORS: readonly ResidentLaunchContributor[] 
   { id: "compaction", contribute: ({ run, agent }) => capabilitiesFor(agent).residentCompaction?.nativeBackstop
     ? { residentCompaction: { threshold: run.settings.loop.contextThreshold } } : {} },
   mcpContributor,
+  { id: "durableState", contribute: ({ run }) => ({ standingInstructions:
+    `### Durable resident state\n\nYour profile state directory is ${residentStateDir(run.profileId)} (RESIDENT_STATE_DIR). Read it at the start of each run. Store notes, corrections, ledgers and already-handled watermarks here. It survives restarts and profile edits; the run workspace is temporary. Concurrent runs of this profile share this directory; coordinate writes.` }) },
 ];
 
 /** The composed resident additions to one launch. */
@@ -134,4 +137,12 @@ export async function residentNativeCompactionForTask(taskId: string | null, tok
   const settings = RESIDENT_LAUNCH_CONTRIBUTORS.map((part) => part.contribute({ run, agent: run.settings.execution.agent, runtime: "sdk" }))
     .find((part) => part.residentCompaction)?.residentCompaction;
   return settings && tokenLimit !== undefined ? { ...settings, tokenLimit } : settings;
+}
+
+/** Re-derived from durable run ownership for fresh launches and every SDK restore. */
+export async function residentStateForTask(taskId: string | null): Promise<string | undefined> {
+  if (!taskId) return undefined;
+  const { residentRunForTask } = await import("./store.ts");
+  const run = residentRunForTask(taskId)?.run;
+  return run ? ensureResidentState(run.profileId) : undefined;
 }

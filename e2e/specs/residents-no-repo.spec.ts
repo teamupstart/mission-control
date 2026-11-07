@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -92,6 +92,29 @@ for (const agent of ["claude", "codex"] as const) {
     const files = await read<{ files: Array<{ path: string }> }>(`/api/sessions/${session.id}/files`);
     expect(files.files).toContainEqual({ path: "notes.txt" });
 
+    const profile = (await read<Array<{ id: string; name: string }>>("/api/residents/profiles")).find((p) => p.name === name)!;
+    const stateUrl = `/api/residents/profiles/${profile.id}/state`;
+    const state = await read<{ directory: string }>(stateUrl);
+    writeFileSync(join(state.directory, "MEMORY.md"), "Do not notify twice: handled reply 42.");
+    const assertMemoryLaunch = () => {
+      const records = readdirSync(join(daemon.recordDir, agent)).filter((f) => f.startsWith("invocation-")).map((f) => JSON.parse(readFileSync(join(daemon.recordDir, agent, f), "utf8")))
+        .filter((r) => r.cwd === task!.repoRoot);
+      expect(records.length).toBeGreaterThan(0);
+      for (const record of records) {
+        expect(record.residentStateDir).toBe(state.directory);
+        if (agent === "claude") {
+          const flags = JSON.parse(record.argv[record.argv.indexOf("--settings") + 1]);
+          expect(flags.autoMemoryDirectory).toBe(state.directory);
+          expect(flags.autoMemoryEnabled).toBe(true);
+        } else {
+          expect(record.argv.join(" ")).toContain(state.directory);
+        }
+      }
+    };
+    assertMemoryLaunch();
+    const refused = await fetch(`${daemon.baseURL}${stateUrl}/reset`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true }) });
+    expect(refused.status).toBe(409);
+
     // A restart resumes a bound conversation. Launch acceptance precedes the driver's
     // binding event; crashing before it would correctly take the unresumable exit path.
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).find((candidate) => candidate.id === session.id)?.agentSessionId).toBeTruthy();
@@ -99,6 +122,9 @@ for (const agent of ["claude", "codex"] as const) {
     await daemon.restart();
     await expect.poll(async () => (await read<Session[]>("/api/sessions")).some((candidate) => candidate.id === session.id)).toBeTruthy();
     expect(existsSync(sentinel)).toBeTruthy();
+    expect((await read<{ directory: string }>(stateUrl)).directory).toBe(state.directory);
+    expect(readFileSync(join(state.directory, "MEMORY.md"), "utf8")).toContain("reply 42");
+    assertMemoryLaunch();
     const restored = (await read<Session[]>("/api/sessions")).find((candidate) => candidate.id === session.id)!;
     expect(restored).toMatchObject({ cwd: task.repoRoot, repoRoot: null, gitRoot: null });
     await page.goto(`${daemon.baseURL}/#/fleet`);
@@ -133,6 +159,33 @@ for (const agent of ["claude", "codex"] as const) {
     await expect(closing).toBeHidden();
     await expect.poll(async () => (await read<Task[]>("/api/tasks")).find((candidate) => candidate.id === task.id)?.status).toBe("done");
     await expect.poll(() => existsSync(task.repoRoot), { timeout: 30_000 }).toBeFalsy();
+    expect(existsSync(join(state.directory, "MEMORY.md"))).toBeTruthy();
+    await page.goto(`${daemon.baseURL}/#/residents/${profile.id}`);
+    const statePanel = page.getByRole("region", { name: "Durable resident state" });
+    await statePanel.getByRole("button", { name: "View state", exact: true }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Browse this profile’s saved notes, watermarks and auto-memory");
+    await statePanel.getByRole("button", { name: "View state", exact: true }).click();
+    await statePanel.getByRole("button", { name: "Refresh state", exact: true }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Reload this profile’s saved state files");
+    await expect(statePanel).toContainText(state.directory);
+    await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Preview MEMORY.md without changing it");
+    await statePanel.getByRole("button", { name: "MEMORY.md", exact: true }).click();
+    await expect(statePanel.getByRole("region", { name: "State file MEMORY.md" })).toContainText("handled reply 42");
+    if (process.env.MC_E2E_EVIDENCE) await statePanel.screenshot({ path: join(evidence, `${agent}-durable-state.png`) });
+    await statePanel.getByRole("button", { name: "Reset state", exact: true }).hover();
+    await expect(page.locator(".tooltip")).toHaveText("Clear saved notes, watermarks and auto-memory after closing all runs");
+    if (process.env.MC_E2E_EVIDENCE) await page.screenshot({ path: join(evidence, `${agent}-state-reset-tooltip.png`) });
+    await statePanel.getByRole("button", { name: "Reset state", exact: true }).click();
+    const resetDialog = page.getByRole("dialog", { name: "Reset resident state" });
+    await expectContentClearsBorder(resetDialog);
+    await resetDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(existsSync(join(state.directory, "MEMORY.md"))).toBeTruthy();
+    await statePanel.getByRole("button", { name: "Reset state", exact: true }).click();
+    await resetDialog.getByRole("button", { name: "Delete saved state", exact: true }).click();
+    await expect(statePanel).toContainText("No saved state files.");
+    expect(existsSync(join(state.directory, "MEMORY.md"))).toBeFalsy();
+
   });
 }
 

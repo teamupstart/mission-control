@@ -29111,6 +29111,8 @@ span.line-run-prov {
    flex-grow / min-width / opacity move (all numbers or px), so it interpolates cleanly
    both ways with no measuring - see `.board:not([data-focus="none"])` below. */
 .board {
+  --board-rail-width: 320px;
+  container-type: inline-size;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -29130,6 +29132,8 @@ span.line-run-prov {
 .board:not([data-focus="none"]) {
   padding: 0;
   overflow-x: hidden;
+  /* Establish the reading width immediately; only the outer tracks morph. */
+  transition: none;
 }
 /* Collapsed columns and the rail sit flush against the detail pane. */
 .board:not([data-focus="none"]) .board-col + .board-col {
@@ -29166,7 +29170,7 @@ span.line-run-prov {
    rows, and only the divider border the console rail carries. */
 .board:not([data-focus="none"]) .board-col.is-rail {
   flex-grow: 0;
-  min-width: 320px;
+  min-width: var(--board-rail-width);
   opacity: 1;
   border-radius: 0;
   border-color: transparent;
@@ -29434,6 +29438,16 @@ span.line-run-prov {
 .board:not([data-focus="none"]) .board-detail {
   flex-grow: 1;
   min-width: 440px;
+}
+/* Lay out the reader at its destination width while the outer track reveals it.
+   Measuring a transcript inside the growing track starts at almost zero width, then
+   crosses the activity-rail breakpoint. That rewraps the cached history after its
+   initial tail positioning and browser anchoring can strand it far above the bottom.
+   Query the Board, not the viewport, so a pinned Residents drawer is accounted for.
+   No scroll correction is needed, and intentional scrollback remains untouched. */
+.board-detail > .cdetail {
+  width: max(440px, calc(100cqw - var(--board-rail-width)));
+  align-self: flex-start;
 }
 @media (prefers-reduced-motion: no-preference) {
   .board {

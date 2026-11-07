@@ -783,7 +783,10 @@ available:
   spacing, then the launchers' words and chord hints, then Foreman's word - so it stays one
   line, every tab keeps its own word, and every control keeps its name for a screen reader
   and its tooltip for a pointer. The chords keep working at every width.
-  The **Board** drills into that same detail when you open a tile. In Console and Board, the
+  The **Board** drills into that same detail when you open a tile. Its outer tracks animate,
+  while the conversation lays out at its final reading width so opening a task does not
+  rewrap its history and displace the initial position at the bottom. New output still
+  leaves intentional scrollback alone. In Console and Board, the
   Diff tab contains the complete checkout diff reader; the tab itself and
   <kbd>⇧</kbd><kbd>D</kbd> reveal it in place.
 - **The console's two extras are Foreman's**, and both need a conversation to exist:

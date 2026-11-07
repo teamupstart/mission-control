@@ -184,6 +184,19 @@ test("only mock-up formats outside hidden names are admitted from the ignored mo
   }
 });
 
+test("a file git does not ignore under docs/mockups is listed like any other checkout file", async (t) => {
+  // The mock-up filter governs only what the ignored-file query adds. A file the repository
+  // tracks there - in any format - comes through the ordinary listing, as docs/ui.md says.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(path.join(dir, SESSION_MOCKUP_ROOT), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/README.md`), "# Mock-ups\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.env`), "API_KEY=private\n");
+  execFileSync("git", ["-C", dir, "add", "-f", `${SESSION_MOCKUP_ROOT}/README.md`]);
+  assert.deepEqual(await listSessionFiles(dir), [{ path: "docs/mockups/README.md" }]);
+});
+
 test("a mock-up that a plan needs, beside the plan, is an ordinary file git will commit", async (t) => {
   const dir = await fixture();
   t.after(() => rm(dir, { recursive: true, force: true }));

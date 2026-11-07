@@ -1249,10 +1249,12 @@ The checkout listing behind these links and previews is read when the conversati
 again whenever a new message lands while the session is between turns, so a file the agent writes
 while you watch is linked and previewed in the turn that names it. The listing holds the
 checkout's tracked and untracked files, leaving out what git ignores, with one exception. HTML
-pages and browser images under `docs/mockups/` are listed anyway, because that is where the
-[Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior) keeps mock-ups
-git-ignored so they are never committed. Nothing else there is listed: not a `.env` or other
-file in another format, and not anything under a dot-named folder.
+pages and browser images that git ignores under `docs/mockups/` are listed anyway, because that
+is where the [Mockups skill](skills-and-settings.md#skills-every-session-mixed-reload-behavior)
+keeps mock-ups git-ignored so they are never committed. The exception covers only those two
+formats: an ignored `.env` or other file there, or anything under a dot-named folder, stays out
+of the list. A file under `docs/mockups/` that git does not ignore is listed like any other
+checkout file.
 
 The boundary beside the Files list is draggable, so a long document can take space back from
 the list or a deeply nested checkout can give the list more room. The Diff tab uses the same

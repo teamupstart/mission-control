@@ -377,6 +377,12 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
   const handover = blocks.find((block) => block.startsWith("for p in docs/mockups/"));
   assert.ok(setup && fallback && handover, "the skill states its setup, fallback and hand-over commands in fenced sh blocks");
   assert.match(text, /\*\*Verify before you hand over\.\*\*/);
+  // The hand-over check covers docs/mockups/ only. A mock-up a plan needs is deliberately
+  // not ignored, so the skill must exempt it and say what to confirm instead, or the two
+  // instructions cannot both be followed.
+  assert.match(text, /check every `docs\/mockups\/` path you are about to name/);
+  assert.match(text, /The one path this check does not cover is a\s+mock-up a plan needs/);
+  assert.match(text, /leave it out of the hand-over check: before you\s+present it, confirm instead that it sits in the plan's own directory and that the plan links\s+it\./);
   // The hand-over check names exactly the paths the presentation example then presents.
   const presented = [...text.matchAll(/^Mockup: (\S+)$/gm)].map((match) => match[1]!);
   assert.deepEqual(handover.match(/docs\/mockups\/\S+\.(?:html|png)/g), presented);

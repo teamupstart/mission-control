@@ -111,15 +111,17 @@ is fine for an idea; when someone asks for a mock-up, make the file.
 ## Always: present each path on its own line
 
 **Verify before you hand over.** Immediately before the message that presents the mock-ups,
-check every path you are about to name, and that git has nothing to commit under
-`docs/mockups/`:
+check every `docs/mockups/` path you are about to name, and that git has nothing to commit
+under `docs/mockups/`:
 
 ```sh
 for p in docs/mockups/settings-panel/two-column.html docs/mockups/settings-panel/tabs.png; do git check-ignore -q "$p" || echo "not ignored: $p"; done; git status --porcelain --untracked-files=all -- docs/mockups
 ```
 
 It must print nothing. Anything it prints is a mock-up a commit could pick up: fix it with
-step 3 above before you present anything.
+step 3 above before you present anything. The one path this check does not cover is a
+mock-up a plan needs, which lives beside the plan outside `docs/mockups/` and is meant to be
+committed with it; the next section says what to confirm for that one instead.
 
 In that message, name each one like this:
 
@@ -158,7 +160,10 @@ needs it: the plan links to it, or its design is argued from it. That one moves 
 `docs/mockups/` and sits beside the plan's `plan.md` in `docs/plans/<name>/`, which is not
 ignored. Link it from the plan's own HTML with a relative href
 (`<a href="two-column.html">`), present it in the conversation as above, and commit it with
-the plan. A reviewer reading the plan and a reader scrolling the session then reach the same
+the plan. It is not ignored on purpose, so leave it out of the hand-over check: before you
+present it, confirm instead that it sits in the plan's own directory and that the plan links
+it. A mock-up that fails either test is not part of the plan, so it goes back to
+`docs/mockups/`. A reviewer reading the plan and a reader scrolling the session then reach the same
 file.
 
 Everything else stays in `docs/mockups/` and uncommitted: the variants the plan rejected,

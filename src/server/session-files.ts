@@ -249,6 +249,8 @@ async function listDirectoryFiles(root: string): Promise<SessionFileEntry[]> {
 export async function listSessionFiles(
   cwd: string,
   task?: Parameters<typeof taskHasRepository>[0],
+  /** Test seam: the git runner, so the best-effort mock-up query can be made to fail alone. */
+  runGit: typeof run = run,
 ): Promise<SessionFileEntry[]> {
   if (task && !taskHasRepository(task)) return listDirectoryFiles(cwd);
   const root = await realpath(cwd).catch(() => {
@@ -256,8 +258,8 @@ export async function listSessionFiles(
   });
   const listing = { timeoutMs: 15_000, maxBuffer: 8 * 1024 * 1024 };
   const [result, mockups] = await Promise.all([
-    run("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], listing),
-    run(
+    runGit("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], listing),
+    runGit(
       "git",
       ["-C", root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", SESSION_MOCKUP_ROOT],
       listing,

@@ -20,6 +20,7 @@ import {
   withFileSaveLock,
 } from "../src/server/session-files.ts";
 import { captureWorktreeTree } from "../src/server/git/worktree-tree.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import {
   applyFileLoadFailure,
   applyFileLoadSuccess,
@@ -108,6 +109,51 @@ test("self-ignored mock-ups are listed while git, and a review snapshot, never s
     (await readSessionFile(dir, "docs/mockups/settings/two-column.html")).text,
     "<h1>Two columns</h1>\n",
   );
+});
+
+test("a failed or overflowing mock-up query keeps the ordinary listing and says so", async (t) => {
+  // The ignored mock-up query is best effort: whatever happens to it, the checkout's own files
+  // must still list, and the failure must be visible in the daemon log rather than silently
+  // turning every mock-up path into dead text.
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "README.md"), "# Repo\n");
+  await writeFile(path.join(dir, "notes.txt"), "untracked\n");
+  execFileSync("git", ["-C", dir, "add", "README.md"]);
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/two-column.html`), "<h1>m</h1>\n");
+
+  const ordinary = [{ path: "notes.txt" }, { path: "README.md" }];
+  const page = { path: "docs/mockups/settings/two-column.html" };
+  // Only the query carrying `--ignored` is replaced; the ordinary listing runs real git.
+  const failingMockups = (answer: RunResult): typeof run => async (bin, args, opts) =>
+    args.includes("--ignored") ? answer : run(bin, args, opts);
+
+  const control = t.mock.method(console, "warn", () => {});
+  assert.deepEqual(
+    await listSessionFiles(dir, undefined, async (bin, args, opts) => run(bin, args, opts)),
+    [page, ...ordinary].sort((a, b) => a.path.localeCompare(b.path)),
+    "control: through the same seam, a working query lists the mock-up",
+  );
+  assert.equal(control.mock.callCount(), 0);
+  control.mock.restore();
+
+  for (const [name, answer] of [
+    ["fails", { stdout: "", stderr: "fatal: boom", code: 128, outcomeUnknown: false, overflowed: false }],
+    // A truncated answer still names the mock-up; it must not be trusted half-read.
+    ["overflows", { stdout: `${page.path}\0`, stderr: "", code: 0, outcomeUnknown: false, overflowed: true }],
+  ] as const) {
+    const warn = t.mock.method(console, "warn", () => {});
+    assert.deepEqual(
+      await listSessionFiles(dir, undefined, failingMockups(answer)),
+      ordinary,
+      `when the mock-up query ${name}, the checkout's own files still list and no mock-up is invented`,
+    );
+    assert.equal(warn.mock.callCount(), 1, `a mock-up query that ${name} is logged`);
+    assert.deepEqual(warn.mock.calls[0]!.arguments[1], { code: answer.code, overflowed: answer.overflowed });
+    warn.mock.restore();
+  }
 });
 
 test("only mock-up formats outside hidden names are admitted from the ignored mock-up directory", () => {

@@ -8,6 +8,7 @@ import {
   expireHumanEchoes,
   forgetInjections,
   markHumanEchoCaptured,
+  markHumanEchoSeen,
   originOf,
   releaseHumanEcho,
 } from "../src/server/injections.ts";
@@ -88,6 +89,19 @@ test("two sends of one text answer their echoes oldest first", () => {
   assert.equal(claim("twice").kind, "skip");
   assert.equal(claim("twice").kind, "skip");
   assert.equal(claim("twice").kind, "none");
+});
+
+test("an echo whose hook capture failed is still spent", () => {
+  const first = expect("spent anyway", idle(0));
+  const claimed = claim("spent anyway");
+  assert.equal(claimed.kind, "capture");
+  if (claimed.kind === "capture") markHumanEchoSeen(claimed.ticket, T0); // the hook's write failed
+  assert.deepEqual(confirmHumanEcho(first, { now: T0 }), { captured: false }, "the acknowledgement still records it");
+  markHumanEchoCaptured(first, { now: T0 });
+
+  const retype = expect("spent anyway", idle(0));
+  assert.equal(claim("spent anyway").kind, "capture", "the retype's echo is its own, not the first send's");
+  assert.deepEqual(confirmHumanEcho(retype, { now: T0 }), { captured: false });
 });
 
 test("release never drops a captured entry", () => {

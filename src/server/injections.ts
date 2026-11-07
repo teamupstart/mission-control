@@ -357,8 +357,12 @@ interface ExpectedHumanEcho {
   readonly sessionId: string;
   /** `injectionFingerprint` of the sent text. */
   readonly key: string;
-  /** The conversation the send was accepted into. A clear starts a different one. */
-  readonly noteKey: string;
+  /**
+   * The conversation the send was accepted into. A clear starts a different one. A launch-window
+   * follow-up is registered under the session id and re-keyed when the conversation binds
+   * (`rekeyHumanEchoes`).
+   */
+  noteKey: string;
   /** The conversation's completed work-cycle generation when the send was made. */
   readonly baseGeneration: number;
   turnGeneration: number;
@@ -525,6 +529,36 @@ export function markHumanEchoCaptured(
   entry.state = "captured";
   if (options.echoed) entry.echoed = true;
   if (acknowledged && settled(entry)) drop(entry);
+}
+
+/**
+ * The prompt hook has reported this follow-up's echo, whatever its own capture did.
+ *
+ * Spending the echo is a separate fact from recording the turn, and the hook door marks it
+ * before it attempts the capture. If that capture returns null or throws, the acknowledgement
+ * still records the turn, but this entry must not stay open to an echo that has already come:
+ * the next send of the same words would have its own echo matched here, skipped as this
+ * one's, and lost.
+ */
+export function markHumanEchoSeen(ticket: HumanEchoTicket, now = Date.now()): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, now)) return;
+  entry.echoed = true;
+  if (entry.state !== "open" && settled(entry)) drop(entry);
+}
+
+/**
+ * A launch-window follow-up's conversation has bound: move its entries from the session id
+ * to the native key the hook will report, or drop them (`toKey` null) when a clear discarded
+ * that launch generation and nothing will record them.
+ */
+export function rekeyHumanEchoes(sessionId: string, fromKey: string, toKey: string | null): void {
+  const list = expected.get(sessionId);
+  if (!list) return;
+  for (const entry of list.filter((e) => e.noteKey === fromKey)) {
+    if (toKey === null) drop(entry);
+    else entry.noteKey = toKey;
+  }
 }
 
 /**

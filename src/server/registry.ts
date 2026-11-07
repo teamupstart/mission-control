@@ -144,6 +144,7 @@ import {
   claimInjectionEcho,
   expireHumanEchoes,
   markHumanEchoCaptured,
+  markHumanEchoSeen,
   type HumanEchoClaim,
 } from "./injections.ts";
 // The live catalog is seeded from the Phase 1 store at boot; it is a read of durable state,
@@ -8337,6 +8338,11 @@ export class Registry extends EventEmitter {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
     if (this.isSeededLaunchEcho(s, prompt)) return;
+    // Authorship BEFORE the human claim. When Mission Control has typed the same words as a
+    // pending human follow-up, claiming first would hand the daemon's packet the human's
+    // revision and leave the human's own echo to be swallowed as the daemon's. Checked first,
+    // the packet spends its own owed echo and the human entry waits for its real one.
+    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
     const noteKey = noteKeyFor(s);
     const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
     if (claim.kind === "skip") return;
@@ -8344,12 +8350,15 @@ export class Registry extends EventEmitter {
       // Claim, capture and mark are one synchronous stretch. The acknowledging door resumes
       // on a later tick, so it sees either the untouched entry or the captured one, and a
       // capture that returns null or throws leaves the entry for that door to record.
+      //
+      // The echo is spent FIRST, whatever the capture then does: it has arrived, and an entry
+      // still open to it would absorb the next identical send's echo instead.
+      markHumanEchoSeen(claim.ticket, now);
       if (this.captureAcceptedPrompt(s.id, prompt, noteKey, now)) {
         markHumanEchoCaptured(claim.ticket, { echoed: true, now });
       }
       return;
     }
-    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
     this.captureAcceptedPrompt(s.id, prompt, noteKey, now);
   }
 

@@ -33,7 +33,7 @@ const { getSdkSession, listSdkSessions, upsertSdkSession, getSdkSessionProcess }
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
-const { claimHumanEcho, claimInjectionEcho, originOf } = await import("../src/server/injections.ts");
+const { claimHumanEcho, claimInjectionEcho, originOf, reserveInjection } = await import("../src/server/injections.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
 const { pipelineCredentialFromDescriptor } = await import("./helpers/pipeline-credential.ts");
@@ -728,6 +728,67 @@ test("a steered follow-up whose running turn completes before the acknowledgemen
   assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
 });
 
+test("a retype after a failed early hook capture is still recorded when its own acknowledgement fails", async (t) => {
+  const f = await boundFollowUpSession("agent-follow-up-spent-echo");
+  t.after(f.fake.restore);
+  const text = "say it once, then again";
+  const original = Registry.prototype.captureAcceptedPrompt;
+  let calls = 0;
+  // Call 1 is the first send's early hook capture and call 3 the retype's acknowledgement:
+  // both return null. Calls 2 and 4 are real.
+  t.mock.method(f.registry, "captureAcceptedPrompt", function (
+    this: InstanceType<typeof Registry>,
+    ...args: Parameters<typeof original>
+  ) {
+    calls++;
+    if (calls === 1 || calls === 3) return null;
+    return original.apply(this, args);
+  });
+  f.handle.send = async (turn) => {
+    f.handle.sent.push(turn);
+    if (calls === 0) f.echo(turn.text);
+    return "started";
+  };
+  await f.follow(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2, "the acknowledgement recorded the first send");
+
+  // The person sends the same words again, before the first send's turn has ended.
+  await f.follow(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2, "the retype's acknowledgement failed to record it");
+  f.echo(text);
+  assert.equal(calls, 4, "the retype's echo was not mistaken for the first send's");
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 3, "the retype is heard");
+});
+
+test("a daemon packet with a pending follow-up's text is checked for authorship first", async (t) => {
+  const f = await boundFollowUpSession("agent-follow-up-daemon-same-text");
+  t.after(f.fake.restore);
+  const text = "rerun the failing check";
+  const original = Registry.prototype.captureAcceptedPrompt;
+  let failed = false;
+  t.mock.method(f.registry, "captureAcceptedPrompt", function (
+    this: InstanceType<typeof Registry>,
+    ...args: Parameters<typeof original>
+  ) {
+    if (!failed) {
+      failed = true;
+      return null; // the follow-up's acknowledgement could not record it
+    }
+    return original.apply(this, args);
+  });
+  await f.follow(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 1, "the follow-up is waiting for its echo");
+
+  // Mission Control types the same words into the session, and that delivery echoes first.
+  reserveInjection(f.session.id, text, "workflow");
+  f.echo(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 1, "the daemon's packet never opens the human revision");
+
+  // The human follow-up's own echo still finds its entry and records it.
+  f.echo(text);
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
+});
+
 test("a driver refusal releases the follow-up's expectation", async (t) => {
   const f = await boundFollowUpSession("agent-follow-up-refused");
   t.after(f.fake.restore);
@@ -789,6 +850,38 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
     fake.restore();
   }
 });
+
+for (const when of ["before", "after"] as const) {
+  test(`a launch-window follow-up acknowledged ${when} the bind opens one revision with its echo`, async (t) => {
+    const handle = fakeHandle();
+    const fake = withFakeDriver(async () => handle);
+    t.after(fake.restore);
+    const registry = new Registry();
+    const supervisor = new SdkSupervisor(registry);
+    const session = await supervisor.start(START);
+    const conversation = `agent-launch-window-echo-${when}`;
+    const text = `a launch-window follow-up acknowledged ${when} the bind`;
+    const bind = async () => {
+      handle.push({ kind: "bound", agentSessionId: conversation, transcriptPath: null, modelId: null, pid: null });
+      await waitFor(() => registry.getSession(session.id)?.agentSessionId === conversation);
+    };
+    // The caller computed its key before the bind, so it names the launch generation.
+    const follow = () => supervisor.send(session.id, { text }, undefined, { prompt: text, noteKey: session.id });
+    if (when === "after") await bind();
+    await follow();
+    if (when === "before") await bind();
+    await waitFor(() => registry.getGoal(session.id)?.promptRevision === 2);
+    const capture = t.mock.method(registry, "captureAcceptedPrompt");
+
+    registry.applyHook({
+      agent: "claude", event: "UserPromptSubmit", sessionId: conversation, cwd: START.cwd,
+      transcriptPath: null, env: {}, prompt: text,
+    } as HookEvent);
+    assert.equal(capture.mock.callCount(), 0, "the follow-up's echo answered skip");
+    assert.equal(registry.getGoal(session.id)?.promptRevision, 2);
+    assert.equal(registry.getGoal(session.id)?.prompt, text);
+  });
+}
 
 test("a launch-window acknowledgement survives the first binding race", async () => {
   const handle = fakeHandle();

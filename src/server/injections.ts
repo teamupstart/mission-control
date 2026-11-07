@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { TurnOrigin } from "@shared/types.ts";
+import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
 
 /**
  * Who typed a given user turn - the one fact the transcript file cannot carry.
@@ -307,8 +307,285 @@ export function originOf(sessionId: string, text: string): TurnOrigin | undefine
   return seen.get(sessionId)?.get(injectionFingerprint(text))?.origin;
 }
 
+// ---- the human's own follow-ups, expected back from the prompt hook ----
+
+/**
+ * A human follow-up sent to an Agent SDK session, waiting for its prompt-hook echo.
+ *
+ * The other half of the same problem, with the opposite answer. A daemon-typed packet must
+ * never reach the Goal; a human follow-up must reach it exactly ONCE, and it has two doors
+ * that each see it. The send's own acknowledgement captures it (`SdkSupervisor.send` for a
+ * direct `/send`, `PendingTurnManager.deliverSdk` for the composer outbox), and then the
+ * agent's prompt hook reports the same text back to `Registry.captureHookGoalPrompt`. Each is
+ * an accepted human instruction by every test available at its door, so before this each
+ * opened a prompt revision, and the second was classified against a conversation that had
+ * already moved on.
+ *
+ * One entry per SEND, never per text. A retype of the same words is its own send with its
+ * own entry, so it is captured by its own door like any other follow-up: a person repeating
+ * an instruction is heard. Entries for one text answer echoes oldest first, the order the
+ * driver received them in.
+ *
+ * States, in the order a send moves through them:
+ *
+ * - `open`: about to be handed to the driver, not acknowledged yet. The hook may already
+ *   fire, because Claude submits the turn before the send's promise resolves.
+ * - `confirmed`: acknowledged, and no door has captured it.
+ * - `captured`: one door's `captureAcceptedPrompt` returned a goal. `markHumanEchoCaptured`
+ *   is the only way here, and every door calls it AFTER its capture succeeded, never before:
+ *   a door that marked first and then failed to write would leave the other door skipping a
+ *   turn that was never recorded.
+ *
+ * `echoed` is separate from the state because the two doors finish in either order. An entry
+ * whose echo the hook already used must not answer a LATER echo of the same text - that one
+ * belongs to the next send - so a claim passes over it.
+ *
+ * Lifetime is the turn the send belongs to. `turnGeneration` is that turn's work-cycle
+ * generation: the conversation's completed generation plus one for an idle session, plus two
+ * when a cycle is active at the send, because the driver queues it behind the running turn
+ * and Claude fires its prompt hook only once it dequeues it, after that turn's Stop. An entry
+ * expires when its own turn completes (`expireHumanEchoes`), never at the end of the turn it
+ * was queued behind. Once its turn is the next one it is ELIGIBLE, and from then on it also
+ * ages out after `HUMAN_ECHO_TTL_MS`, for a session that never finishes a turn. Age is read
+ * lazily on every access, so no timer exists.
+ *
+ * In memory, like the authorship ledger, for the same reason and with the same trade: a
+ * restart between a delivery and its echo lets one duplicate revision through.
+ */
+interface ExpectedHumanEcho {
+  readonly sessionId: string;
+  /** `injectionFingerprint` of the sent text. */
+  readonly key: string;
+  /** The conversation the send was accepted into. A clear starts a different one. */
+  readonly noteKey: string;
+  /** The conversation's completed work-cycle generation when the send was made. */
+  readonly baseGeneration: number;
+  turnGeneration: number;
+  /** When this entry started aging: its creation for an idle send, else when the turn ahead of it completed. */
+  eligibleAt: number | null;
+  state: "open" | "confirmed" | "captured";
+  echoed: boolean;
+}
+
+declare const humanEchoTicket: unique symbol;
+
+/** One send's entry, held by the door that will settle it. Opaque outside this module. */
+export type HumanEchoTicket = { readonly [humanEchoTicket]: true };
+
+/** What a prompt-hook echo should do about the follow-ups it might be the echo of. */
+export type HumanEchoClaim =
+  | { kind: "skip" }
+  | { kind: "capture"; ticket: HumanEchoTicket }
+  | { kind: "none" };
+
+/**
+ * How long an eligible entry waits for its echo.
+ *
+ * A hook reports a turn within moments of the agent taking it, so this is generous on
+ * purpose. It only has to be shorter than the time before a person plausibly re-sends the
+ * same words with no send of their own - which on an SDK session cannot happen at all - and
+ * long enough that a slow hook is not mistaken for a lost one.
+ */
+export const HUMAN_ECHO_TTL_MS = 120_000;
+
+/** Session id -> outstanding follow-ups, oldest first. */
+const expected = new Map<string, ExpectedHumanEcho[]>();
+
+const asTicket = (entry: ExpectedHumanEcho): HumanEchoTicket => entry as unknown as HumanEchoTicket;
+const fromTicket = (ticket: HumanEchoTicket): ExpectedHumanEcho => ticket as unknown as ExpectedHumanEcho;
+
+/** A session's live entries, after dropping every eligible one that has aged out. */
+function liveEchoes(sessionId: string, now: number): ExpectedHumanEcho[] | undefined {
+  const list = expected.get(sessionId);
+  if (!list) return undefined;
+  const live = list.filter((e) => e.eligibleAt === null || now - e.eligibleAt <= HUMAN_ECHO_TTL_MS);
+  if (live.length === 0) {
+    expected.delete(sessionId);
+    return undefined;
+  }
+  if (live.length === list.length) return list;
+  expected.set(sessionId, live);
+  return live;
+}
+
+/** Whether this ticket's entry is still on file once age has been applied. */
+function live(entry: ExpectedHumanEcho, now: number): boolean {
+  return liveEchoes(entry.sessionId, now)?.includes(entry) ?? false;
+}
+
+function drop(entry: ExpectedHumanEcho): void {
+  const list = expected.get(entry.sessionId);
+  if (!list) return;
+  const index = list.indexOf(entry);
+  if (index < 0) return;
+  list.splice(index, 1);
+  if (list.length === 0) expected.delete(entry.sessionId);
+}
+
+/** Both doors are done with it: acknowledged, and its echo was the one that captured. */
+function settled(entry: ExpectedHumanEcho): boolean {
+  return entry.state === "captured" && entry.echoed;
+}
+
+/**
+ * Register a human follow-up just before the driver is handed it.
+ *
+ * `cycle` is the session's work cycle as the registry projects it at that moment, which is
+ * what decides the turn the send belongs to (see `ExpectedHumanEcho`).
+ */
+export function expectHumanEcho(
+  sessionId: string,
+  text: string,
+  options: { noteKey: string; cycle: WorkCycleSummary | undefined; now?: number },
+): HumanEchoTicket {
+  const now = options.now ?? Date.now();
+  let list = liveEchoes(sessionId, now);
+  if (!list) {
+    if (expected.size >= SESSIONS) {
+      const oldest = expected.keys().next();
+      if (!oldest.done) expected.delete(oldest.value);
+    }
+    list = [];
+    expected.set(sessionId, list);
+  }
+  const base = options.cycle?.generation ?? 0;
+  const queued = options.cycle?.active === true;
+  const entry: ExpectedHumanEcho = {
+    sessionId,
+    key: injectionFingerprint(text),
+    noteKey: options.noteKey,
+    baseGeneration: base,
+    turnGeneration: base + (queued ? 2 : 1),
+    eligibleAt: queued ? null : now,
+    state: "open",
+    echoed: false,
+  };
+  list.push(entry);
+  // Oldest first. A session's follow-ups are serialized and each is echoed within moments,
+  // so reaching this is pathological; the ceiling holds regardless.
+  while (list.length > PER_SESSION) list.shift();
+  return asTicket(entry);
+}
+
+/**
+ * The driver acknowledged this follow-up. Reports whether the hook already captured it, in
+ * which case the acknowledging door must not capture it again.
+ *
+ * `queued` is the driver's own answer that the turn waits behind a running one (`steered`).
+ * The registry's projection of the cycle can lag the driver by an event, so a send stamped
+ * against an idle session is moved to the turn after the running one - never earlier, which
+ * would expire it before its echo.
+ *
+ * A capture is answered from the ticket, never from whether its entry is still on file. The
+ * hook can capture the follow-up and the turn it started can complete, expiring the entry,
+ * all before `handle.send` resolves: a quick turn on an idle session does exactly that. The
+ * ledger has then forgotten the entry, but the send holding this ticket has not, and reading
+ * "gone" as "not captured" would have it record the same turn a second time.
+ */
+export function confirmHumanEcho(
+  ticket: HumanEchoTicket,
+  options: { queued?: boolean; now?: number } = {},
+): { captured: boolean } {
+  const entry = fromTicket(ticket);
+  if (!live(entry, options.now ?? Date.now())) return { captured: entry.state === "captured" };
+  if (entry.state === "open") entry.state = "confirmed";
+  if (options.queued && entry.turnGeneration < entry.baseGeneration + 2) {
+    entry.turnGeneration = entry.baseGeneration + 2;
+    entry.eligibleAt = null;
+  }
+  const captured = entry.state === "captured";
+  if (settled(entry)) drop(entry);
+  return { captured };
+}
+
+/**
+ * One door's `captureAcceptedPrompt` returned a goal for this follow-up. `echoed` says that
+ * door was the prompt hook, so this entry's echo has been spent.
+ */
+export function markHumanEchoCaptured(
+  ticket: HumanEchoTicket,
+  options: { echoed?: boolean; now?: number } = {},
+): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, options.now ?? Date.now())) return;
+  const acknowledged = entry.state !== "open";
+  entry.state = "captured";
+  if (options.echoed) entry.echoed = true;
+  if (acknowledged && settled(entry)) drop(entry);
+}
+
+/**
+ * The driver positively refused this follow-up, so no echo will come. A captured entry is
+ * kept: its turn is in the Goal, and the only reader left is its own echo.
+ */
+export function releaseHumanEcho(ticket: HumanEchoTicket, now = Date.now()): void {
+  const entry = fromTicket(ticket);
+  if (!live(entry, now)) return;
+  if (entry.state !== "captured") drop(entry);
+}
+
+/**
+ * Decide a prompt-hook arrival against the follow-ups this session is waiting on.
+ *
+ * `skip` when the oldest unechoed entry for this text was already captured by its send: this
+ * is that send's echo, and it is spent. `capture` when it has not been: the hook is the first
+ * door, and the caller marks the ticket once its own capture succeeded. The entry is left
+ * exactly as it was, so a capture that fails leaves the acknowledgement to record the turn.
+ * `none` when nothing matches, and the arrival takes the ordinary path.
+ */
+export function claimHumanEcho(
+  sessionId: string,
+  noteKey: string,
+  text: string,
+  now = Date.now(),
+): HumanEchoClaim {
+  const key = injectionFingerprint(text);
+  const entry = liveEchoes(sessionId, now)?.find(
+    (e) => e.key === key && e.noteKey === noteKey && !e.echoed,
+  );
+  if (!entry) return { kind: "none" };
+  if (entry.state === "captured") {
+    drop(entry);
+    return { kind: "skip" };
+  }
+  return { kind: "capture", ticket: asTicket(entry) };
+}
+
+/**
+ * A turn of this conversation completed, leaving it at `completedGeneration`.
+ *
+ * Drops every entry whose own turn that was, and starts the next turn's entries aging. An
+ * entry from a conversation a clear has replaced can never be expired by generation, so it
+ * starts aging too.
+ */
+export function expireHumanEchoes(
+  sessionId: string,
+  noteKey: string,
+  completedGeneration: number,
+  now = Date.now(),
+): void {
+  const list = liveEchoes(sessionId, now);
+  if (!list) return;
+  const kept = list.filter(
+    (entry) => entry.noteKey !== noteKey || entry.turnGeneration > completedGeneration,
+  );
+  for (const entry of kept) {
+    if (entry.eligibleAt === null
+      && (entry.noteKey !== noteKey || entry.turnGeneration === completedGeneration + 1)) {
+      entry.eligibleAt = now;
+    }
+  }
+  if (kept.length === 0) expected.delete(sessionId);
+  else expected.set(sessionId, kept);
+}
+
 /** Forget a session's deliveries. For tests, and for a reset that clears the context. */
 export function forgetInjections(sessionId?: string): void {
-  if (sessionId === undefined) seen.clear();
-  else seen.delete(sessionId);
+  if (sessionId === undefined) {
+    seen.clear();
+    expected.clear();
+  } else {
+    seen.delete(sessionId);
+    expected.delete(sessionId);
+  }
 }

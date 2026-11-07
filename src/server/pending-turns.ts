@@ -29,6 +29,13 @@ import type { SdkTurn } from "./harness/types.ts";
 import { sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { noteOtherSend, withdrawOtherSend } from "./delegated-turns.ts";
+import {
+  confirmHumanEcho,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  releaseHumanEcho,
+  type HumanEchoTicket,
+} from "./injections.ts";
 import { unref } from "./util/timers.ts";
 
 const DEFAULT_IDLE_SETTLE_MS = 1_500;
@@ -892,11 +899,25 @@ export class PendingTurnManager {
       ownershipUncertain: false,
     };
     this.sdkHandoffs.set(turn.noteKey, handoff);
+    // This row's entry in the expected-echo ledger: the agent's prompt hook reports the same
+    // text back and must not open a second Goal revision for it (see `ExpectedHumanEcho`).
+    let humanEcho: HumanEchoTicket | null = null;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const accepted = await send(session.id, { text: turn.text }, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
-        if (!blocker) handoff.acceptanceBoundaryCrossed = true;
+        if (!blocker) {
+          handoff.acceptanceBoundaryCrossed = true;
+          // Registered at the acceptance guard, which runs inside the supervisor's serialized
+          // boundary immediately before the driver is handed the turn. Earlier, the row could
+          // wait behind another operation long enough for its turn stamp to be stale, and a
+          // guard that refuses leaves nothing to release.
+          humanEcho ??= expectHumanEcho(session.id, turn.text, {
+            noteKey: turn.noteKey,
+            cycle: this.registry.getSession(session.id)?.workCycle,
+            now: this.deps.now(),
+          });
+        }
         return blocker;
       });
       if (
@@ -910,6 +931,7 @@ export class PendingTurnManager {
           handoff.acceptanceBoundaryCrossed,
         );
       } else if (accepted === null) {
+        if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         withdrawOtherSend(otherSend);
         releasePendingTurn(
           turn.id,
@@ -927,8 +949,19 @@ export class PendingTurnManager {
         // The driver accepted a human-authored row and the same native conversation still
         // owns it. Goal capture belongs after both facts, never when the row is merely queued
         // in Mission Control or when delivery became uncertain.
+        //
+        // The prompt hook may have been the first door. Capture only when it was not, and
+        // mark the entry only once this capture returned a goal: a refused prompt or a failed
+        // write leaves it confirmed, so the echo still records the turn.
+        const echo = humanEcho
+          ? confirmHumanEcho(humanEcho, { queued: accepted === "steered", now: this.deps.now() })
+          : { captured: false };
         try {
-          this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey);
+          if (!echo.captured
+            && this.registry.captureAcceptedPrompt(session.id, turn.text, turn.noteKey)
+            && humanEcho) {
+            markHumanEchoCaptured(humanEcho, { now: this.deps.now() });
+          }
         } catch (err) {
           // The turn already crossed the driver's acknowledgement boundary. A Goal write
           // failure must not make it retryable and deliver the same human message twice.
@@ -976,6 +1009,7 @@ export class PendingTurnManager {
           true,
         );
       } else {
+        if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         withdrawOtherSend(otherSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }

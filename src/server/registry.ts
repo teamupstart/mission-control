@@ -139,7 +139,13 @@ import type { HookSpec } from "./harness/types.ts";
 // a packet this daemon typed is never captured as the human's Goal - see
 // `isDaemonAuthoredPrompt`. The CONSUMING reader: one delivery buys one suppression, so the
 // same text arriving again is the human retyping it.
-import { claimInjectionEcho } from "./injections.ts";
+import {
+  claimHumanEcho,
+  claimInjectionEcho,
+  expireHumanEchoes,
+  markHumanEchoCaptured,
+  type HumanEchoClaim,
+} from "./injections.ts";
 // The live catalog is seeded from the Phase 1 store at boot; it is a read of durable state,
 // the same shape as `loadActiveTasks` above. The store never imports the registry, so this
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
@@ -2886,6 +2892,12 @@ export class Registry extends EventEmitter {
     const workCycle = signal === "work_started"
       ? markWorkCycleActive(logicalKey, updatedAt)
       : completeWorkCycle(logicalKey, occurredAt, updatedAt);
+    // A completed turn ends the wait for every human follow-up that belonged to it, and starts
+    // the clock on the one queued behind it. Idempotent, so a completion that changed nothing
+    // (idle noise, or the hook and the driver both reporting one Stop) changes nothing here.
+    if (signal === "turn_completed" && workCycle) {
+      expireHumanEchoes(s.id, logicalKey, workCycle.generation, updatedAt);
+    }
     const projected = workCycle ?? undefined;
     if (JSON.stringify(s.workCycle) === JSON.stringify(projected)) return s;
     return { ...s, workCycle: projected };
@@ -8325,8 +8337,48 @@ export class Registry extends EventEmitter {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
     if (this.isSeededLaunchEcho(s, prompt)) return;
+    const noteKey = noteKeyFor(s);
+    const claim = this.claimHumanFollowUpEcho(s, spec, evt, prompt, now);
+    if (claim.kind === "skip") return;
+    if (claim.kind === "capture") {
+      // Claim, capture and mark are one synchronous stretch. The acknowledging door resumes
+      // on a later tick, so it sees either the untouched entry or the captured one, and a
+      // capture that returns null or throws leaves the entry for that door to record.
+      if (this.captureAcceptedPrompt(s.id, prompt, noteKey, now)) {
+        markHumanEchoCaptured(claim.ticket, { echoed: true, now });
+      }
+      return;
+    }
     if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
-    this.captureAcceptedPrompt(s.id, prompt, noteKeyFor(s), now);
+    this.captureAcceptedPrompt(s.id, prompt, noteKey, now);
+  }
+
+  /**
+   * Whether this prompt is the echo of a human follow-up an SDK send door is handling.
+   *
+   * The follow-up's other door. `SdkSupervisor.send` and `PendingTurnManager.deliverSdk`
+   * register every human SDK follow-up before the driver takes it and capture it themselves
+   * on acknowledgement, and then the agent reports the same text back here. Whichever door
+   * gets there first captures it; the second is skipped. See `ExpectedHumanEcho` for the
+   * lifetime and for why a retype, being its own send, is still heard.
+   *
+   * Matched on the submitted text first and the reshaped prompt second, for the reason
+   * `isDaemonAuthoredPrompt` gives.
+   */
+  private claimHumanFollowUpEcho(
+    s: Session,
+    spec: HookSpec,
+    evt: HookIngest,
+    prompt: string,
+    now: number,
+  ): HumanEchoClaim {
+    const noteKey = noteKeyFor(s);
+    const submitted = spec.submittedPromptText(evt);
+    const bySubmitted = submitted === null
+      ? { kind: "none" as const }
+      : claimHumanEcho(s.id, noteKey, submitted, now);
+    if (bySubmitted.kind !== "none" || submitted === prompt) return bySubmitted;
+    return claimHumanEcho(s.id, noteKey, prompt, now);
   }
 
   /**
@@ -8342,7 +8394,7 @@ export class Registry extends EventEmitter {
    *
    * Both the SDK send door (`sdk/deliver.ts`) and the composer door (`pending-turns.ts`)
    * already refuse to seed a Goal from a delivery they know is not the human's. This is the
-   * third door and it used to be the only one that guessed, so a completion-review packet
+   * hook door and it used to be the only one that guessed, so a completion-review packet
    * became the session's ask, was frozen onto the next workflow run, and came back to the
    * agent labelled "Original user goal" - the review then judging the work against Mission
    * Control's own complaint.
@@ -8422,6 +8474,12 @@ export class Registry extends EventEmitter {
    * prompt hook reports it back here. Both are accepted human instructions by every test
    * available at each door, so both opened a revision, and the second one made the durable
    * objective look amended by text no human wrote.
+   *
+   * Every later human follow-up on an SDK session has the same two doors, and those meet
+   * through the expected-echo ledger instead (`claimHumanFollowUpEcho`): the send registers
+   * the text it is about to hand the driver, so the echo carries the same words and can be
+   * matched exactly. The launch cannot use it, because what the hook reports is the COMPOSED
+   * prompt and not the request the supervisor captured, so it keeps this fingerprint check.
    *
    * That second revision is what wedged automatic completion. `refine` classifies it against
    * the first, an `amend` verdict has to survive `amendmentPreservesObjective`, and the

@@ -38,9 +38,14 @@ import {
 } from "./capacity-retry.ts";
 import { listProcessesSnapshot } from "../discovery/processes.ts";
 import {
+  confirmHumanEcho,
   confirmReservedInjection,
+  expectHumanEcho,
+  markHumanEchoCaptured,
+  releaseHumanEcho,
   releaseInjection,
   reserveInjection,
+  type HumanEchoTicket,
 } from "../injections.ts";
 import { getStandingInstructions, getTask as getDurableTask, taskIdForSession, taskSessionClosureForSession } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
@@ -705,13 +710,25 @@ export class SdkSupervisor {
       setSdkSessionTurnInProgress(id, true);
       this.unfinishedTurns.set(id, unfinished + 1);
       this.acceptingTurns.add(id);
+      let humanEcho: HumanEchoTicket | null = null;
       try {
+        // A follow-up into a bound conversation has a second door: the agent's prompt hook
+        // reports the same text back, possibly before `handle.send` resolves. Registered
+        // here, inside the serialized boundary, so the work cycle it is stamped with is the
+        // one the driver sees. The launch generation (`noteKey === id`) is not a follow-up
+        // and keeps `isSeededLaunchEcho`.
+        if (acceptedGoal && acceptedGoal.noteKey !== id) {
+          humanEcho = expectHumanEcho(id, acceptedGoal.prompt, {
+            noteKey: acceptedGoal.noteKey,
+            cycle: this.registry.getSession(id)?.workCycle,
+          });
+        }
         const disposition = await handle.send(turn);
         // A delivered turn resumes the work, so a retry waiting on the same session would
         // only repeat it. Cancelled only once the driver took the turn: a refused send must
         // leave the retry in place, or nothing would ever finish the failed turn.
         this.cancelCapacityRetry(id);
-        if (acceptedGoal) this.captureGoalBestEffort(id, acceptedGoal);
+        if (acceptedGoal) this.captureAcknowledgedGoal(id, acceptedGoal, humanEcho, disposition);
         if (disposition === "steered") {
           // Steering joins the active turn instead of creating another completion to wait
           // for. Release this send's pessimistic reservation, while conservatively keeping
@@ -723,6 +740,8 @@ export class SdkSupervisor {
         }
         return disposition;
       } catch (err) {
+        // The driver rejected the turn, so no echo is coming for it either.
+        if (humanEcho) releaseHumanEcho(humanEcho);
         // The driver rejected the turn, so it will not produce a completion for the slot we
         // reserved. Retire exactly that slot; any older accepted turn remains recoverable.
         const remaining = Math.max(0, (this.unfinishedTurns.get(id) ?? 1) - 1);
@@ -1159,8 +1178,31 @@ export class SdkSupervisor {
     }
   }
 
-  /** Goal persistence cannot turn an acknowledged driver send into a retryable failure. */
-  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): void {
+  /**
+   * The acknowledging door for a human turn: capture it unless the prompt hook already did.
+   *
+   * The entry is marked captured only once this door's capture returned a goal. A refused
+   * prompt or a failed write leaves it confirmed, so a later echo still records the turn.
+   */
+  private captureAcknowledgedGoal(
+    id: string,
+    accepted: AcceptedGoalPrompt,
+    humanEcho: HumanEchoTicket | null,
+    disposition: SdkSendDisposition,
+  ): void {
+    if (!humanEcho) {
+      this.captureGoalBestEffort(id, accepted);
+      return;
+    }
+    if (confirmHumanEcho(humanEcho, { queued: disposition === "steered" }).captured) return;
+    if (this.captureGoalBestEffort(id, accepted)) markHumanEchoCaptured(humanEcho);
+  }
+
+  /**
+   * Goal persistence cannot turn an acknowledged driver send into a retryable failure.
+   * Answers whether a goal was recorded now; a launch-window prompt held for the bind is not.
+   */
+  private captureGoalBestEffort(id: string, accepted: AcceptedGoalPrompt): boolean {
     try {
       if (accepted.noteKey === id) {
         // A direct injection can be acknowledged on either side of the first `bound` event.
@@ -1168,23 +1210,23 @@ export class SdkSupervisor {
         // native key rather than the now-stale synthetic key. A clear deletes that generation
         // from `launchGoalNoteKeys`, so its late acknowledgement is discarded instead of
         // leaking into the replacement conversation.
-        if (!this.launchGoalNoteKeys.has(id)) return;
+        if (!this.launchGoalNoteKeys.has(id)) return false;
         const launchNoteKey = this.launchGoalNoteKeys.get(id);
         if (launchNoteKey === null || launchNoteKey === undefined) {
           const pending = this.pendingLaunchGoalPrompts.get(id) ?? [];
           pending.push(accepted.prompt);
           this.pendingLaunchGoalPrompts.set(id, pending);
-        } else {
-          this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey);
+          return false;
         }
-        return;
+        return this.registry.captureAcceptedPrompt(id, accepted.prompt, launchNoteKey) !== null;
       }
-      this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey);
+      return this.registry.captureAcceptedPrompt(id, accepted.prompt, accepted.noteKey) !== null;
     } catch (err) {
       console.error(
         `[sdk] could not capture accepted Goal prompt for ${id}:`,
         err instanceof Error ? err.message : String(err),
       );
+      return false;
     }
   }
 

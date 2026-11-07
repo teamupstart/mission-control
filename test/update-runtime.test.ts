@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { checkUpdateRuntime, inspectUpdateRuntime, updateNodeProblem } from "../src/main/update-runtime.ts";
 import { executableLocator } from "../src/server/executables/locator.ts";
 
@@ -13,6 +13,42 @@ import { executableLocator } from "../src/server/executables/locator.ts";
 // Keep actual Node execution for the PATH/child-runtime and npm-shebang checks.
 async function probeOutput(path: string, output: string) {
   await writeFile(path, `#!/bin/sh\nprintf '%s\\n' '${output.replace(/'/g, "'\\''")}'\n`, { mode: 0o755 });
+}
+
+type ExecFileCallback = (error: ExecFileException | null, stdout: string, stderr: string) => void;
+type ProbeStub = (
+  executable: string,
+  args: string[],
+  options: ExecFileOptionsWithStringEncoding,
+  callback: ExecFileCallback,
+) => childProcess.ChildProcess | null;
+
+/**
+ * Run the runtime probes for real, under a deadline a contended host can meet.
+ *
+ * The child-PATH and npm-shebang probes really start Node, which is the point of them.
+ * Their production deadline is five seconds, and a Node startup slower than that under
+ * `npm test` contention is the host being busy, not a runtime the probe should refuse: it
+ * failed "then recover" with `ok: false` and would fail the refusal cases on their message.
+ * Only a call carrying exactly the production probe deadline is relaxed, so anything else
+ * reaching `execFile` behaves as it always did. `stub` answers a probe without starting a
+ * process, for the selected-runtime replies that need no Node at all.
+ */
+function realProbesWithRelaxedDeadline(t: TestContext, stub?: ProbeStub): void {
+  const realExecFile = childProcess.execFile;
+  const probes = t.mock.method(childProcess, "execFile", ((
+    executable: string,
+    args: string[],
+    options: ExecFileOptionsWithStringEncoding,
+    callback: ExecFileCallback,
+  ) => {
+    if (options?.timeout !== 5_000) return realExecFile(executable, args, options, callback);
+    const stubbed = stub?.(executable, args, options, callback);
+    if (stubbed) return stubbed;
+    return realExecFile(executable, args, { ...options, timeout: 60_000 }, callback);
+  }) as typeof childProcess.execFile);
+  syncBuiltinESMExports();
+  t.after(() => { probes.mock.restore(); syncBuiltinESMExports(); });
 }
 
 test("Node runtime policy shares the installer's minimum and gives actionable copy", () => {
@@ -35,20 +71,12 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
     // Double only this selected-runtime reply; child PATH and npm shebang probes stay real.
     let selectedOutput = "";
     let selectedError: ExecFileException | null = null;
-    const realExecFile = childProcess.execFile;
-    const selectedProbe = t.mock.method(childProcess, "execFile", ((
-      executable: string,
-      args: string[],
-      options: ExecFileOptionsWithStringEncoding,
-      callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
-    ) => {
-      if (executable !== selected) return realExecFile(executable, args, options, callback);
+    realProbesWithRelaxedDeadline(t, (executable, _args, options, callback) => {
+      if (executable !== selected) return null;
       assert.equal(options.timeout, 5_000, "production probes remain bounded");
       queueMicrotask(() => callback(selectedError, selectedOutput, ""));
       return new childProcess.ChildProcess();
-    }) as typeof childProcess.execFile);
-    syncBuiltinESMExports();
-    t.after(() => { selectedProbe.mock.restore(); syncBuiltinESMExports(); });
+    });
     const identity = (version: string) => {
       selectedOutput = JSON.stringify({ version, execPath: process.execPath });
     };
@@ -83,7 +111,8 @@ test("runtime probes reject old, missing and malformed Node before npm runs, the
   }
 });
 
-test("an npm failure or mismatched child Node refuses preparation", async () => {
+test("an npm failure or mismatched child Node refuses preparation", async (t) => {
+  realProbesWithRelaxedDeadline(t);
   const cwd = await mkdtemp(join(tmpdir(), "mission-node-mismatch-"));
   try {
     const npm = join(cwd, "npm");
@@ -116,6 +145,7 @@ test("checking again forces discovery refresh and uses its replacement runtime",
   const node = join(cwd, "selected-node");
   const npm = join(cwd, "selected-npm");
   const calls: string[] = [];
+  realProbesWithRelaxedDeadline(t);
   // Only discovery is doubled. The selected programs and all runtime checks run for real.
   t.mock.method(executableLocator, "refresh", async (options: { force?: boolean }) => {
     assert.deepEqual(options, { force: true });

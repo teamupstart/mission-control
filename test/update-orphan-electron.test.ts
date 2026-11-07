@@ -12,7 +12,7 @@ import { parseAppProcesses, realMacAppOps, waitForBundleExit } from '../scripts/
 import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
 
 test('a real orphaned Electron utility is identified and reaped without its former desktop or a check lease', {
-  skip: process.platform !== 'darwin', timeout: 45_000,
+  skip: process.platform !== 'darwin', timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'mc-update-orphan-'));
   const bundle = join(root, 'Fixture.app');
@@ -41,8 +41,13 @@ test('a real orphaned Electron utility is identified and reaped without its form
   let orphanPid: number | undefined;
   const ops = realMacAppOps(root);
   const rows = async () => parseAppProcesses((await ops.run('/bin/ps', ['-axww', '-o', 'pid=,ppid=,stat=,comm='])).stdout);
+  // Each wait returns as soon as its condition holds, so a generous ceiling costs nothing
+  // when the host is keeping up. Launching a freshly copied Electron bundle and forking its
+  // utility takes about five seconds alone and thirteen to seventeen with only four copies
+  // of this test running at once, so the old ten-second ceiling failed under `npm test`
+  // with an empty stderr: the utility was still starting, not broken.
   const until = async (predicate: () => boolean | Promise<boolean>, message: string) => {
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     while (!(await predicate())) {
       assert.ok(Date.now() < deadline, `${message}: ${stderr}`);
       await delay(50);
@@ -63,7 +68,8 @@ test('a real orphaned Electron utility is identified and reaped without its form
     assert.equal(orphan?.work, 'Mission Control orphaned Node utility');
     assert.equal(orphan?.group, false);
     const waiting: string[] = [];
-    await waitForBundleExit(bundle, ops, 15_000, message => waiting.push(message), owners);
+    // The same contended-host headroom as `until`: the bound is a ceiling, not a duration.
+    await waitForBundleExit(bundle, ops, 30_000, message => waiting.push(message), owners);
     assert.equal(processIsAlive(orphanPid!), false);
     assert.ok(waiting.some(message => message.includes(`${orphanPid} (`) && message.includes(orphan!.work)));
     console.log(`Verified orphan PID ${orphanPid}: parent 1, ${orphan!.work}, no check lease; automatic cleanup completed the real bundle wait.`);

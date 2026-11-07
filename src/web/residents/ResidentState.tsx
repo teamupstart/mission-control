@@ -44,8 +44,9 @@ export function ResidentState({ profileId }: { profileId: string }): React.JSX.E
         if (busy) return;
         void act(async () => {
           await resetResidentState(profileId);
-          setView(await fetchResidentState(profileId));
           setPreview(null);
+          setView(null);
+          setView(await fetchResidentState(profileId));
         });
       },
     }} />}

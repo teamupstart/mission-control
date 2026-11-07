@@ -560,13 +560,16 @@ function threadsAwaitingUs(
     newest: { databaseId: number | null; body: string; author: string };
   }[] = [];
   for (const t of snapshot.threads) {
-    if (t.isResolved) continue;
     const first = t.comments[0];
     if (!first) continue;
     if (!isOurs(first, login)) continue; // not our thread
     const marker = parseMarker(first.body)!;
     const row = rows.get(marker.fingerprint);
     if (!row) continue;
+    // Authors often reply and resolve together. Their resolution is not Inspector's
+    // verdict: still evaluate the new reply while our finding remains open. Once both
+    // sides are resolved, leave the closed conversation alone.
+    if (t.isResolved && row.status === "resolved") continue;
     if (row.replies >= MAX_REPLIES_PER_THREAD) continue;
 
     const newest = t.comments[t.comments.length - 1]!;
@@ -953,7 +956,7 @@ async function answerFollowUp(
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
   if (answer.resolved) {
-    const resolved = await resolveThread(dir, w.thread.id);
+    const resolved = w.thread.isResolved ? { ok: true } : await resolveThread(dir, w.thread.id);
     if (resolved.ok) {
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);

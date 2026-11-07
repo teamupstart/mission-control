@@ -548,11 +548,17 @@ for (const width of [1024, 900]) {
         railWidth: Math.round(box(".board-col.is-rail").width),
       };
     })).toMatchObject({ overflow: 0, readerPastBoard: 0, readerPastDrawer: 0 });
+    // The reply box sits whole across the reader's width, short of the drawer. Horizontal only:
+    // how much height the composer gets is the window's height and the top bar's wrapping (on
+    // Linux's wider fonts the top bar takes two rows at 900px), which the drawer does not change.
     const reply = page.locator(".board-detail").getByPlaceholder(/^Reply to this session/);
-    await expect(reply).toBeInViewport({ ratio: 1 });
-    const replyBox = await reply.boundingBox();
-    const drawerBox = await drawer.boundingBox();
-    expect(replyBox!.x + replyBox!.width).toBeLessThanOrEqual(drawerBox!.x);
+    await expect(reply).toBeVisible();
+    const replyBox = (await reply.boundingBox())!;
+    const readerBox = (await page.locator(".board-detail > .cdetail").boundingBox())!;
+    const drawerBox = (await drawer.boundingBox())!;
+    expect(replyBox.x).toBeGreaterThanOrEqual(readerBox.x);
+    expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(readerBox.x + readerBox.width);
+    expect(replyBox.x + replyBox.width).toBeLessThanOrEqual(drawerBox.x);
     await capture(page, `10-drill-in-beside-drawer-${width}`);
   });
 }

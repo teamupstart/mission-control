@@ -7,6 +7,7 @@ import { ModePicker } from "../src/web/components/ModePicker.tsx";
 import { RuntimeMetaRow } from "../src/web/components/session-bits.tsx";
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import type { Session, SessionGoalSummary } from "../src/shared/types.ts";
+import type { WorkflowBindingSummary } from "../src/shared/workflow.ts";
 import { meta, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { updateUiConfig } from "../src/web/lib/uiConfig.ts";
 import { UI_CONFIG_DEFAULTS } from "../src/shared/protocol.ts";
@@ -388,4 +389,61 @@ test("the collapsed band leaves nothing behind in its place", async () => {
   assert.ok(existingBand);
   const collapsed = await renderHiding(BOTH_OFF, session);
   assert.equal(collapsed, withBand.replace(`${existingBand}</dl>`, ""));
+});
+
+// ---- the bind chip names a stalled Foreman-complete binding -------------------------------
+
+const ARMED: WorkflowBindingSummary = {
+  id: "binding",
+  workflowVersionId: "version",
+  workflowId: "workflow",
+  workflowName: "No-Mistakes Review",
+  workflowVersion: 8,
+  noteKey: "note",
+  sessionId: "s1",
+  triggerMode: "foreman_complete",
+  deliveryMode: "preview",
+  state: "active",
+  updatedAt: 1,
+};
+
+function renderArmed(session: Session): string {
+  return renderToStaticMarkup(createElement(ConsoleDetail, {
+    session,
+    view: mkSessionView(session, {
+      onBindWorkflow: () => {},
+      workflowBindingBySession: new Map([[session.id, { ...ARMED, sessionId: session.id }]]),
+      workflowRunsBySession: new Map(),
+    }),
+  }));
+}
+
+const finishedCycle = { logicalKey: "k", generation: 1, active: false, completedAt: 50, updatedAt: 50 };
+
+test("a finished cycle under an unresolved goal marks the armed chip stalled and says why", () => {
+  const html = head(renderArmed(mkSession({
+    goal: goal({ relationship: "unclear", promptRevision: 2, resolvedPromptRevision: 2 }),
+    workCycle: finishedCycle,
+  })));
+  assert.match(html, /class="workflow-bind-chip armed stalled"/);
+  assert.ok(hasTooltip(
+    html,
+    "No-Mistakes Review v8 is waiting on this session's goal: Foreman cannot call the work complete "
+      + "while the latest instruction is unresolved. Click for ways to proceed.",
+  ));
+  // The accessible name is still the workflow and its version.
+  assert.match(html, /<span class="wbc-name">No-Mistakes Review<\/span><span class="wbc-version"> v8<\/span>/);
+});
+
+test("a resolved goal keeps the armed chip's ordinary title and no stalled mark", () => {
+  const html = head(renderArmed(mkSession({
+    goal: goal({ relationship: "steer", promptRevision: 2, resolvedPromptRevision: 2 }),
+    workCycle: finishedCycle,
+  })));
+  assert.match(html, /class="workflow-bind-chip armed"/);
+  assert.doesNotMatch(html, /stalled/);
+  assert.ok(hasTooltip(
+    html,
+    "No-Mistakes Review v8 runs when this session's work is complete - click to change it",
+  ));
 });

@@ -1,3 +1,4 @@
+import type { Session } from "@shared/types.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import { workflowRunIsOpen } from "@shared/workflow.ts";
 import type { Tone } from "./format.ts";
@@ -179,4 +180,55 @@ export function workflowBindChipTitle(
     case "manual":
       return `${armed} is armed and waits for you to submit it - click to change it`;
   }
+}
+
+/**
+ * Why a Foreman-complete binding is stuck, or null when it is not.
+ *
+ * A `foreman_complete` binding gets its run only from Foreman's claim, and Foreman claims only
+ * against a resolved intent (`resolvedSessionIntent`, `decidePromptedWrapup` step 8). So a
+ * session whose work cycle has finished while its latest instruction is still unresolved is a
+ * dead end nobody could see: the chip kept promising a review at completion, completion had
+ * happened, and no review was coming. This names that state, for the bind chip and the bind
+ * dialog to read from one place.
+ *
+ * Every conjunct is read off fields every card already carries, so nothing is added to the
+ * wire. A completed, inactive cycle with an unresolved goal means Foreman skipped that
+ * generation: consuming one needs a resolved intent at the same tick, and any later prompt
+ * opens a new active cycle before it can be captured. The unresolved reading is the one
+ * `GoalLine` draws its paused state from, so the chip and the Goal line cannot disagree.
+ *
+ * A missing `workCycle` is "no lifecycle activity persisted", which per its contract fails
+ * closed: no stall is claimed for a cycle nobody has seen complete.
+ *
+ * This is the dialog's sentence. The chip's tooltip is `workflowCompletionStall`, which adds the
+ * click it invites; inside the dialog that click has already happened.
+ */
+export function workflowCompletionStallReason(
+  session: Pick<Session, "goal" | "workCycle">,
+  binding:
+    | Pick<WorkflowBindingSummary, "workflowName" | "workflowVersion" | "triggerMode" | "state">
+    | null
+    | undefined,
+  runs: readonly WorkflowRunSummary[] | null | undefined,
+): string | null {
+  if (!binding || binding.triggerMode !== "foreman_complete" || binding.state !== "active") return null;
+  if (runs?.some((run) => workflowRunIsOpen(run.status))) return null;
+  const goal = session.goal;
+  if (!goal) return null;
+  const unresolved = (goal.resolvedPromptRevision ?? 0) < (goal.promptRevision ?? 0)
+    || goal.relationship === "unclear";
+  if (!unresolved) return null;
+  const cycle = session.workCycle;
+  if (!cycle || cycle.generation < 1 || cycle.active || cycle.completedAt === null) return null;
+  return `${binding.workflowName} v${binding.workflowVersion} is waiting on this session's goal: `
+    + "Foreman cannot call the work complete while the latest instruction is unresolved.";
+}
+
+/** The bind chip's tooltip for a stalled binding, or null when it is not stalled. */
+export function workflowCompletionStall(
+  ...args: Parameters<typeof workflowCompletionStallReason>
+): string | null {
+  const reason = workflowCompletionStallReason(...args);
+  return reason && `${reason} Click for ways to proceed.`;
 }

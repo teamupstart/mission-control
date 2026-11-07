@@ -1285,6 +1285,19 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   border-color: var(--working);
 }
 
+/* A Foreman-complete binding whose cycle finished under an unresolved goal. Amber, the
+   product's attention tone, because the chip has stopped being a promise and become a
+   question for the operator; the hover tooltip says which one. */
+.workflow-bind-chip.armed.stalled {
+  border-color: color-mix(in srgb, var(--attention) 70%, var(--border));
+  background: color-mix(in srgb, var(--attention) 14%, var(--panel));
+  color: var(--attention);
+}
+
+.workflow-bind-chip.armed.stalled:hover {
+  border-color: var(--attention);
+}
+
 /*
  * The repository a chip's run reviews, drawn only when a conversation carries more than one.
  *
@@ -1488,6 +1501,28 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
 .workflow-binding-existing {
   border-left: 3px solid var(--working);
   padding-left: 10px;
+}
+
+/* The stall notice draws a band to the border, so it is `.modal-bleed` and owns its padding. */
+.workflow-binding-stall {
+  margin-block: 12px;
+  padding: 12px var(--modal-inset, 18px);
+  border-block: 1px solid color-mix(in srgb, var(--attention) 40%, var(--border));
+  background: color-mix(in srgb, var(--attention) 8%, var(--panel));
+}
+
+.workflow-binding-dialog .workflow-binding-stall > p {
+  margin: 0 0 10px;
+  color: var(--fg);
+}
+
+.workflow-binding-dialog .workflow-binding-stall > .workflow-binding-stall-alt {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.workflow-binding-stall .wf-error {
+  margin: 10px 0 0;
 }
 
 .workflow-version-bind {

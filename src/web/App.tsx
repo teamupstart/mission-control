@@ -4615,6 +4615,8 @@ export function App(): React.JSX.Element {
                 workflows={workflowSummaries}
                 foremanEnabled={foreman.config?.enabled ?? false}
                 promptedWrapupEnabled={foreman.config?.wrapupTriggers.includes("prompted") ?? false}
+                workflowBindingBySession={workflowBindingBySession}
+                workflowRunsBySession={workflowRunsBySession}
                 onClose={() => setWorkflowBindingTarget(null)}
                 onRun={openWorkflowRun}
               />

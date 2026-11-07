@@ -6,7 +6,9 @@ import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   type WorkflowBinding,
   type WorkflowBindingDefaults,
+  type WorkflowBindingSummary,
   type WorkflowDetail,
+  type WorkflowRunSummary,
   type WorkflowSummary,
   type WorkflowConfig,
   workflowIdForVersion,
@@ -15,6 +17,8 @@ import {
 import { OVERLAY_IDS, Overlay } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+import { api } from "../lib/api.ts";
+import { workflowCompletionStallReason } from "../lib/held.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import {
   WorkflowEvidenceComposer,
@@ -39,6 +43,13 @@ interface WorkflowBindingDialogSharedProps {
   onRun: (id: string) => void;
   foremanEnabled?: boolean;
   promptedWrapupEnabled?: boolean;
+  /**
+   * The fleet's armed bindings and runs, the same maps the console detail's chip reads, so the
+   * dialog names a stalled Foreman-complete binding with the chip's own predicate. Optional:
+   * without them the dialog simply never offers the stall notice.
+   */
+  workflowBindingBySession?: ReadonlyMap<string, WorkflowBindingSummary>;
+  workflowRunsBySession?: ReadonlyMap<string, readonly WorkflowRunSummary[]>;
 }
 
 /**
@@ -54,6 +65,8 @@ export function WorkflowBindingDialogHost({
   onRun,
   foremanEnabled = false,
   promptedWrapupEnabled = false,
+  workflowBindingBySession,
+  workflowRunsBySession,
 }: WorkflowBindingDialogSharedProps & {
   target: WorkflowBindingTarget | null;
 }): React.JSX.Element | null {
@@ -91,7 +104,86 @@ export function WorkflowBindingDialogHost({
       onRun={onRun}
       foremanEnabled={foremanEnabled}
       promptedWrapupEnabled={promptedWrapupEnabled}
+      workflowBindingBySession={workflowBindingBySession}
+      workflowRunsBySession={workflowRunsBySession}
     />
+  );
+}
+
+/**
+ * The bind dialog's notice for a Foreman-complete binding that cannot complete on its own.
+ *
+ * Two ways forward, and only two. **Accept objective as is** confirms the current objective as
+ * the completion contract through the same route the Foreman drawer uses; the notice then goes
+ * away as the session's goal resolves, and Foreman verifies and claims on its next tick.
+ * **Submit bound version** is the footer's existing button, which the notice names rather than
+ * repeats: a second button with the same name and the same effect would make the dialog read
+ * every action twice to a screen reader, and a manual run keeps freezing exactly what it did.
+ *
+ * Accept is offered only when the goal has an objective, the drawer's rule: without one there is
+ * no contract to accept, and the route would refuse it.
+ *
+ * `reconciling` says whether a manual run would carry the `unreconciled` badge, and only then
+ * does the notice promise it. The stall also covers a latest instruction already judged "needs
+ * more context", whose revision is resolved, and a run frozen then is not badged.
+ */
+/**
+ * Whether a run frozen now would be badged `unreconciled`: the same rule the daemon's provenance
+ * classifier applies at freeze time (`classifyWorkflowGoalProvenance`), restated here because
+ * that module is server-side. The opening ask never counts, hence the floor of 1.
+ */
+export function stallRunUnreconciled(session: Pick<Session, "goal">): boolean {
+  const goal = session.goal;
+  if (!goal) return false;
+  return (goal.promptRevision ?? 0) > Math.max(goal.resolvedPromptRevision ?? 0, 1);
+}
+
+export function WorkflowCompletionStallNotice({
+  sessionId,
+  reason,
+  hasObjective,
+  reconciling,
+  disabled,
+}: {
+  sessionId: string;
+  reason: string;
+  hasObjective: boolean;
+  reconciling: boolean;
+  disabled: boolean;
+}): React.JSX.Element {
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+  async function accept(): Promise<void> {
+    setAccepting(true);
+    setAcceptError(null);
+    const res = await api.acceptGoal(sessionId);
+    setAccepting(false);
+    if (!res.ok) setAcceptError(`The objective was not accepted: ${res.error.replace(/[.\s]+$/, "")}.`);
+  }
+  return (
+    <section className="modal-bleed workflow-binding-stall" role="status" aria-label="Workflow waiting on the goal">
+      <p>{reason}</p>
+      {hasObjective && (
+        <Tooltip label="Record the pending instructions as steering and let Foreman judge completion against this objective">
+          <button
+            type="button"
+            className="btn"
+            disabled={disabled || accepting}
+            onClick={() => void accept()}
+          >
+            Accept objective as is
+          </button>
+        </Tooltip>
+      )}
+      <p className="workflow-binding-stall-alt">
+        {hasObjective ? "Or use " : "Use "}
+        <strong>Submit bound version</strong> below to run it now against the objective as it
+        stands{reconciling
+          ? "; while the latest instruction is still reconciling, that run is marked unreconciled."
+          : "."}
+      </p>
+      {acceptError && <p className="wf-error" role="alert">{acceptError}</p>}
+    </section>
   );
 }
 
@@ -144,6 +236,8 @@ export function WorkflowBindingDialog({
   onRun,
   foremanEnabled = false,
   promptedWrapupEnabled = false,
+  workflowBindingBySession,
+  workflowRunsBySession,
 }: WorkflowBindingDialogSharedProps & {
   target: WorkflowBindingTarget;
   sessionId: string;
@@ -301,6 +395,15 @@ export function WorkflowBindingDialog({
     () => workflowBindingSelection(bindings, session, versionId),
     [bindings, session, versionId],
   );
+  /*
+   * The chip's stall, read off the same binding summary and runs, and only while the dialog is
+   * on THAT binding: the notice's submit is the footer's, which acts on `existing`, so a
+   * different version selected here would turn it into a switch.
+   */
+  const armed = session ? workflowBindingBySession?.get(session.id) ?? null : null;
+  const stallReason = session && existing && armed?.id === existing.id
+    ? workflowCompletionStallReason(session, armed, workflowRunsBySession?.get(session.id))
+    : null;
   const evidenceScopeSet = useMemo(() => workflowEvidenceScopes(session), [session]);
   const evidenceSubmission = workflowEvidenceSubmission(evidenceDraft, evidenceScopeSet.options);
   const previewIntent = useRef<{ key: string; requestId: string } | null>(null);
@@ -635,6 +738,15 @@ export function WorkflowBindingDialog({
           {workflowVersionLabel(conflict.workflowVersionId, workflows)}.
           Switching archives that binding and cancels any active run.
         </p>
+      )}
+      {session && stallReason && (
+        <WorkflowCompletionStallNotice
+          sessionId={session.id}
+          reason={stallReason}
+          hasObjective={Boolean(session.goal?.text)}
+          reconciling={stallRunUnreconciled(session)}
+          disabled={busy}
+        />
       )}
       {session && (
         <dl className="workflow-binding-session">

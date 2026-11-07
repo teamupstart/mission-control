@@ -138,7 +138,10 @@ blocks [YOLO mode](#what-has-to-be-true) outright:
 2. **The GitHub Inspector drops it in conversation.** If you reply in one of its threads and it
    agrees its comment was wrong, it says so, resolves the thread, and closes the finding.
    Its answer and its ledger are the same act; it cannot say "dropping this" and go on
-   blocking the merge over it.
+   blocking the merge over it. If you reply and resolve the GitHub thread together, Inspector
+   still evaluates the new reply on its next poll while its local finding remains open.
+   Resolving a GitHub thread alone does not clear the finding: Inspector must agree with
+   the reply. This works on an unchanged commit and needs no workflow restart or empty push.
 3. **You resolve it yourself** - **Resolve**, on the row in **Settings → GitHub Inspector →
    Inspections**. This is the way out of the case the first two cannot reach: a finding
    whose fix was pushed and reviewed once, and which the review then never mentions again.

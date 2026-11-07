@@ -27700,6 +27700,13 @@ span.line-run-prov {
 }
 .console-rail {
   overflow-y: auto;
+  /* The containing block for every absolutely positioned row descendant, above all
+     Tooltip's 1px `.tt-desc`. Unpositioned, those resolved to the nearest positioned
+     ancestor outside this scroller (`main.board` on a drilled-in Board), escaped its clip,
+     and stretched that box's scrollable overflow to the rail's full length. A drilled-in
+     Board computes its vertical overflow to `auto`, so that drew a second, useless
+     scrollbar beside the session detail (#1393). */
+  position: relative;
   border-right: 1px solid var(--border-soft);
   background: color-mix(in oklab, var(--bg-2) 55%, transparent);
 }
@@ -29573,6 +29580,8 @@ span.line-run-prov {
   gap: 9px;
   padding: 9px;
   overflow-y: auto;
+  /* Contains its rows' hidden tooltip sentences; see `.console-rail`. */
+  position: relative;
 }
 .board-col-empty {
   margin: 0;

@@ -27,10 +27,27 @@ export const MAX_SESSION_FILE_ENTRIES = 10_000;
  * carry an untracked mock-up into "commit everything that was reviewed". The listing below
  * still reports the files, because a mock-up the operator cannot open is no mock-up at all.
  *
- * Only this one directory is listed through its ignore rule. Every other ignored path -
- * `node_modules`, `dist`, an `.env` - stays out of the Files list exactly as before.
+ * Only this one directory is listed through its ignore rule, and only what a mock-up can be.
+ * Every other ignored path - `node_modules`, `dist`, an `.env` - stays out of the Files list
+ * exactly as before; see `isListedMockup` for what inside the directory is admitted.
  */
 export const SESSION_MOCKUP_ROOT = "docs/mockups";
+
+/**
+ * Whether an ignored file under `SESSION_MOCKUP_ROOT` may appear in the Files list.
+ *
+ * Being in the directory is not enough. It is ignored precisely so git will not look at it,
+ * which also makes it a natural place to drop a local `.env`, a key, or scratch output - and
+ * the Files viewer is not where those belong. So the exception admits only the formats a
+ * mock-up is, the ones the conversation previews: an HTML page or a browser-decodable image.
+ * A dot-named segment anywhere in the path (`.env.png`, `.private/screen.png`) is refused as
+ * well, because a hidden name is how a file says it is not for display.
+ */
+export function isListedMockup(filePath: string): boolean {
+  if (!filePath.startsWith(`${SESSION_MOCKUP_ROOT}/`)) return false;
+  if (filePath.split("/").some((segment) => segment.startsWith("."))) return false;
+  return isHtml(filePath) || browserImageMediaTypeForPath(filePath) !== null;
+}
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_PREVIEW_BYTES = 5 * 1024 * 1024;
 
@@ -249,10 +266,10 @@ export async function listSessionFiles(
   if (result.code !== 0 || result.overflowed) {
     throw new SessionFileError("could not list files in this checkout", 500);
   }
-  // Best effort: a failed mock-up read leaves the checkout's own listing intact. The marker
-  // that ignores the directory is plumbing, not a mock-up, so it is not offered as one.
+  // Best effort: a failed mock-up read leaves the checkout's own listing intact. Only pages
+  // and images are admitted; the `.gitignore` marker and anything private are not.
   const ignoredMockups = mockups.code === 0 && !mockups.overflowed
-    ? mockups.stdout.split("\0").filter((entry) => entry && entry !== `${SESSION_MOCKUP_ROOT}/.gitignore`)
+    ? mockups.stdout.split("\0").filter(isListedMockup)
     : [];
   const discovered = [...new Set([...result.stdout.split("\0").filter(Boolean), ...ignoredMockups])]
     .sort((a, b) => a.localeCompare(b));

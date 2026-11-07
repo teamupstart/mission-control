@@ -15,6 +15,7 @@ import {
   readSessionFile,
   saveSessionFile,
   SESSION_MOCKUP_ROOT,
+  isListedMockup,
   SessionFileError,
   withFileSaveLock,
 } from "../src/server/session-files.ts";
@@ -79,13 +80,18 @@ test("self-ignored mock-ups are listed while git, and a review snapshot, never s
   await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.gitignore`), "*\n");
   await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/two-column.html`), "<h1>Two columns</h1>\n");
   await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/tabs.png`), PNG);
+  // Ignored for the same reason the mock-ups are, but nothing anyone meant to display.
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.env`), "API_KEY=private\n");
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/settings/notes.txt`), "scratch\n");
+  await mkdir(path.join(dir, `${SESSION_MOCKUP_ROOT}/.private`), { recursive: true });
+  await writeFile(path.join(dir, `${SESSION_MOCKUP_ROOT}/.private/screen.png`), PNG);
 
   assert.deepEqual(await listSessionFiles(dir), [
     { path: ".gitignore" },
     { path: "docs/mockups/settings/tabs.png" },
     { path: "docs/mockups/settings/two-column.html" },
     { path: "README.md" },
-  ], "mock-ups listed; the marker and every other ignored file are not");
+  ], "pages and images listed; the marker, private and scratch files, and every other ignored file are not");
   assert.equal(execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }), "");
   execFileSync("git", ["-C", dir, "add", "-A"]);
   assert.equal(
@@ -102,6 +108,34 @@ test("self-ignored mock-ups are listed while git, and a review snapshot, never s
     (await readSessionFile(dir, "docs/mockups/settings/two-column.html")).text,
     "<h1>Two columns</h1>\n",
   );
+});
+
+test("only mock-up formats outside hidden names are admitted from the ignored mock-up directory", () => {
+  for (const listed of [
+    "docs/mockups/x/two-column.html",
+    "docs/mockups/x/page.HTM",
+    "docs/mockups/x/tabs.png",
+    "docs/mockups/x/wire.svg",
+    "docs/mockups/x/shot.webp",
+    "docs/mockups/x/anim.gif",
+    "docs/mockups/x/photo.jpeg",
+  ]) {
+    assert.equal(isListedMockup(listed), true, listed);
+  }
+  for (const refused of [
+    "docs/mockups/.gitignore",
+    "docs/mockups/.env",
+    "docs/mockups/x/.env.png",
+    "docs/mockups/.private/screen.png",
+    "docs/mockups/x/notes.txt",
+    "docs/mockups/x/id_rsa",
+    "docs/mockups/x/dump.json",
+    "docs/mockups/x/notes.md",
+    "docs/other/two-column.html",
+    "docs/mockups-old/two-column.html",
+  ]) {
+    assert.equal(isListedMockup(refused), false, refused);
+  }
 });
 
 test("a mock-up that a plan needs, beside the plan, is an ordinary file git will commit", async (t) => {

@@ -46,9 +46,10 @@ a review is evidence, and it follows the repository's evidence rules instead.
    That one file ignores the whole directory, itself included. Nothing in it shows in
    `git status`, `git add -A` stages none of it, and a workflow's review snapshot leaves it
    out, so a "commit everything that was reviewed" step cannot carry a mock-up into a pull
-   request. Mission Control still lists `docs/mockups/` in Files, links its paths and
-   previews them; it is the one ignored directory it does that for, so a mock-up anywhere
-   else that git ignores renders as dead text.
+   request. Mission Control still lists the HTML pages and images in `docs/mockups/` in
+   Files, links their paths and previews them. It is the one ignored directory it does that
+   for, and only for those formats, so a mock-up anywhere else that git ignores, or in
+   another format, renders as dead text.
 3. **Confirm each path is ignored before you write it.** A mock-up git does not ignore can
    be swept into a commit, so this check is not optional:
 
@@ -107,7 +108,18 @@ is fine for an idea; when someone asks for a mock-up, make the file.
 
 ## Always: present each path on its own line
 
-In the message that finishes the work, after the files exist, name each one like this:
+**Verify before you hand over.** Immediately before the message that presents the mock-ups,
+check every path you are about to name, and that git has nothing to commit under
+`docs/mockups/`:
+
+```sh
+for p in docs/mockups/settings-panel/two-column.html docs/mockups/settings-panel/tabs.png; do git check-ignore -q "$p" || echo "not ignored: $p"; done; git status --porcelain --untracked-files=all -- docs/mockups
+```
+
+It must print nothing. Anything it prints is a mock-up a commit could pick up: fix it with
+step 3 above before you present anything.
+
+In that message, name each one like this:
 
 ```
 Mockup: docs/mockups/settings-panel/two-column.html

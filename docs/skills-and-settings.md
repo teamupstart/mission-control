@@ -186,8 +186,10 @@ snapshot a workflow's pull request step commits. Before writing each mock-up the
 with `git check-ignore` that its path is ignored. Where the repository's own rules defeat the
 marker, it adds `docs/mockups/` to the checkout's local `info/exclude`, which is never committed,
 and checks again. A path the repository tracks cannot be ignored at all, so the mock-up takes
-another name. The Files list shows `docs/mockups/` anyway;
-it is the only ignored directory it lists. The one mock-up that is committed is one a plan in
+another name. Before presenting mock-ups, it checks again that every path it names is ignored and
+that git has nothing to commit under `docs/mockups/`. The Files list shows the HTML pages and
+browser images in `docs/mockups/` anyway; it is the only ignored directory it lists, and nothing
+else in it, such as a stray `.env`, is shown. The one mock-up that is committed is one a plan in
 the repository needs: it moves beside that plan's `plan.md`, the plan links it, and it is
 committed with the plan. The contract lives in
 [`skills/mockups/SKILL.md`](../skills/mockups/SKILL.md).

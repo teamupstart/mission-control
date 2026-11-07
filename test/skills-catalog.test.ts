@@ -374,7 +374,14 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
   const blocks = [...text.matchAll(/```sh\n\s*([^\n]+)\n\s*```/g)].map((match) => match[1]!);
   const setup = blocks.find((block) => block.startsWith("mkdir -p docs/mockups"));
   const fallback = blocks.find((block) => block.includes("--git-path info/exclude"));
-  assert.ok(setup && fallback, "the skill states its setup and fallback commands in fenced sh blocks");
+  const handover = blocks.find((block) => block.startsWith("for p in docs/mockups/"));
+  assert.ok(setup && fallback && handover, "the skill states its setup, fallback and hand-over commands in fenced sh blocks");
+  assert.match(text, /\*\*Verify before you hand over\.\*\*/);
+  // The hand-over check names exactly the paths the presentation example then presents.
+  const presented = [...text.matchAll(/^Mockup: (\S+)$/gm)].map((match) => match[1]!);
+  assert.deepEqual(handover.match(/docs\/mockups\/\S+\.(?:html|png)/g), presented);
+  const handoverOutput = (dir: string): string =>
+    execFileSync("sh", ["-c", handover], { cwd: dir, encoding: "utf8" });
   assert.match(text, /If it still prints `not ignored`, the repository tracks that exact file\. Choose another\s+name/);
   assert.match(text, /Never write or hand over a mock-up at a path git does not\s+ignore\./);
   assert.doesNotMatch(text, /leave it untracked/i, "an untracked, unignored mock-up is not a safe state");
@@ -414,10 +421,12 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
     const dir = repository(marker, false);
     try {
       assert.equal(ignored(dir), false, `${name}: the self-ignore alone does not take`);
+      writeFileSync(join(dir, page), "<h1>Two columns</h1>\n");
+      assert.match(handoverOutput(dir), /not ignored: docs\/mockups\/settings-panel\/two-column\.html/, `${name}: hand-over refuses it`);
       execFileSync("sh", ["-c", fallback], { cwd: dir });
       execFileSync("sh", ["-c", fallback], { cwd: dir });
       assert.equal(ignored(dir), true, `${name}: the fallback ignores it`);
-      writeFileSync(join(dir, page), "<h1>Two columns</h1>\n");
+      assert.equal(handoverOutput(dir), "", `${name}: hand-over passes once it is ignored`);
       assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all", "--", "docs/mockups"), "", name);
       git(dir, "add", "-A");
       assert.equal(git(dir, "diff", "--cached", "--name-only"), "", `${name}: git add -A stages nothing`);
@@ -436,6 +445,9 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
   try {
     execFileSync("sh", ["-c", fallback], { cwd: tracked });
     assert.equal(ignored(tracked), false, "a tracked path cannot be ignored, which is why the skill moves to another name");
+    writeFileSync(join(tracked, page), "<h1>Overwritten</h1>\n");
+    assert.match(handoverOutput(tracked), /not ignored: docs\/mockups\/settings-panel\/two-column\.html/);
+    assert.match(handoverOutput(tracked), / M docs\/mockups\/settings-panel\/two-column\.html/, "git status shows the commit risk too");
   } finally {
     rmSync(tracked, { recursive: true, force: true });
   }

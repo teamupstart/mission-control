@@ -389,7 +389,12 @@ test("the mockups skill's fallback ignores a mock-up wherever git can, and says 
   const handoverOutput = (dir: string): string =>
     execFileSync("sh", ["-c", handover], { cwd: dir, encoding: "utf8" });
   assert.match(text, /If it still prints `not ignored`, the repository tracks that exact file\. Choose another\s+name/);
-  assert.match(text, /Never write or hand over a mock-up at a path git does not\s+ignore\./);
+  // Scoped to docs/mockups/, with the one exception named beside it: an unqualified "never hand
+  // over an unignored mock-up" contradicts presenting a plan's committed mock-up.
+  assert.match(text, /Never write or hand over a mock-up under `docs\/mockups\/` at a\s+path git does not ignore\./);
+  assert.match(text, /The one mock-up that is handed over from a path git does not\s+ignore is one a plan needs/);
+  assert.doesNotMatch(text, /Never write or hand over a mock-up at a path/);
+  assert.match(text, /## Always: write each mock-up into the checkout, and keep it out of git unless a plan needs it/);
   assert.doesNotMatch(text, /leave it untracked/i, "an untracked, unignored mock-up is not a safe state");
 
   const page = "docs/mockups/settings-panel/two-column.html";

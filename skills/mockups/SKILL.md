@@ -31,12 +31,13 @@ of work, such as a plan that needs a picture of the screen it proposes.
 Not for: proof that shipped UI works. A screenshot of the running app taken as evidence for
 a review is evidence, and it follows the repository's evidence rules instead.
 
-## Always: write each mock-up into the checkout, and keep it out of git
+## Always: write each mock-up into the checkout, and keep it out of git unless a plan needs it
 
 1. **In the session's own checkout, under `docs/mockups/<slug>/`**, where `<slug>` is a
    kebab-case name for the subject (`settings-panel`, `retry-banner`). Never in `/tmp`, a
    scratchpad, your home directory, or another worktree: the conversation links and previews
-   only files inside this session's checkout.
+   only files inside this session's checkout. A mock-up a plan needs later moves beside that
+   plan; see the last section.
 2. **Make `docs/mockups/` ignore itself before writing the first one:**
 
    ```sh
@@ -52,8 +53,8 @@ a review is evidence, and it follows the repository's evidence rules instead.
    Files, links their paths and previews them. It is the one ignored directory it does that
    for, and only for those formats, so a mock-up anywhere else that git ignores, or in
    another format, renders as dead text.
-3. **Confirm each path is ignored before you write it.** A mock-up git does not ignore can
-   be swept into a commit, so this check is not optional:
+3. **Confirm each `docs/mockups/` path is ignored before you write it.** A mock-up git does
+   not ignore can be swept into a commit, so this check is not optional:
 
    ```sh
    git check-ignore -q docs/mockups/settings-panel/two-column.html || echo "not ignored"
@@ -68,8 +69,10 @@ a review is evidence, and it follows the repository's evidence rules instead.
    ```
 
    If it still prints `not ignored`, the repository tracks that exact file. Choose another
-   name and check that one. Never write or hand over a mock-up at a path git does not
-   ignore.
+   name and check that one. Never write or hand over a mock-up under `docs/mockups/` at a
+   path git does not ignore. The one mock-up that is handed over from a path git does not
+   ignore is one a plan needs, beside that plan; the plan-directory and link checks in the
+   last section govern it instead.
 4. **One file per mock-up or variant**, named for what it shows
    (`two-column.html`, `tabs.html`), not `mockup1.html`. Put variants of one subject in the
    same directory so they sit together in Files.

@@ -48,10 +48,13 @@ test("chime availability distinguishes autoplay suspension, rate limiting and pl
   assert.equal(oscillators, 0, "suspended audio must not queue a delayed duplicate chime");
   unlockAudio();
   assert.equal(starts, 0, "unlock must not replay an alert already handled by the OS");
-  assert.equal(playChime("attention"), "played", "failed attempts must not consume the rate gate");
-  assert.equal(starts, 2);
+  assert.equal(playChime("info"), "played", "failed attempts must not consume the rate gate");
+  assert.equal(starts, 1);
+  now += 400;
+  assert.equal(playChime("attention"), "played", "urgent audio cuts through a recent info chime");
+  assert.equal(starts, 3);
   assert.equal(playChime("attention"), "rate-limited", "throttling must not enable the OS tone");
-  assert.equal(starts, 2);
+  assert.equal(starts, 3);
 
   now += 1_300;
   failStart = true;
@@ -59,7 +62,7 @@ test("chime availability distinguishes autoplay suspension, rate limiting and pl
   failStart = false;
   failStop = true;
   assert.equal(playChime("attention"), "played", "a started note prevents a duplicate fallback");
-  assert.equal(starts, 3);
+  assert.equal(starts, 4);
   assert.equal(playChime("attention"), "rate-limited");
   now += 1_300;
   audioState = "closed";

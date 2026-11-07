@@ -233,3 +233,22 @@ for (const mode of ["live", "reconnect"] as const) {
     });
   }
 }
+
+test("reconnect with Sound on and running audio plays a chime with a silent notification", async ({ dashboard: page, daemon }) => {
+  const session = await dispatch(page, daemon);
+  const saved = await fetch(`${daemon.baseURL}/api/ui/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ alerts: { notifications: true, sound: true } }),
+  });
+  expect(saved.ok).toBe(true);
+  await observeDelivery(page, "running");
+  await page.reload();
+  await expect(page.locator(".rail-row")).toHaveClass(/tone-working/);
+  await disconnect(page);
+  await hook(daemon, session, "Notification");
+  await page.evaluate(() => (window as SoundWindow).soundProbe.reconnect());
+  await expect.poll(async () => (await delivery(page)).toasts.length).toBe(1);
+  expect((await delivery(page)).toasts[0]).toMatchObject({ tag: "reconnect-catchup", silent: true });
+  expect((await delivery(page)).notes).toBe(2);
+});

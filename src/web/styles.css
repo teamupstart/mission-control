@@ -4091,6 +4091,10 @@ body {
    directly beneath the bar, so its own placement clamp is the only thing keeping it out of
    the rectangle - and its whole point is a Launch button the OS must not eat. */
 .is-desktop .bl-planner-pop,
+/* The backlog Filter menu. It is fixed to the viewport and opens ABOVE its button when there
+   is no room below, clamped to the top of the window - which is the bar. Its rows are the
+   only way to set or clear a backlog filter. */
+.is-desktop .bl-filter-pop,
 /* Foreman's recommendation sidecar. It is offset by `--topbar-h`, so today it starts below
    the bar - which is exactly the "the layout keeps it out of the rectangle" assumption the
    entries above were each added after it failed. It is a scrollable panel whose only control
@@ -38353,3 +38357,216 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-state-path { overflow-wrap: anywhere; }
 .resident-state pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
 .resident-state ul { max-height: 240px; overflow: auto; }
+
+/* ---- backlog search and filters ----
+
+   Shared by the Board's Backlog column and the Line's Backlog drawer (BacklogFilterControls).
+   The buttons sit in the host's header so its height does not change while nothing is
+   filtered; the strip below the header appears only while a search or filter is on. The menu
+   is fixed to the viewport because both hosts clip their own overflow. */
+.bl-filter-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Backlog head wraps rather than clipping: its width control keeps its space while
+   invisible, so a minimum-width column has no room for the filter buttons beside the count.
+   They come last, so they are what moves to a second line. */
+.board-backlog > .board-col-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.bl-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 600 11px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.bl-filter-btn.is-on {
+  color: var(--fg);
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 16%, var(--panel));
+}
+.bl-filter-btn:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 1px;
+}
+.bl-filter-badge {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--working);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.bl-filter-pop {
+  position: fixed;
+  z-index: 60;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-deep);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-ink) calc(115 / 255 * 100%), transparent);
+}
+.bl-filter-head {
+  margin: 4px 6px 2px;
+  color: var(--dim);
+  font: 700 10px var(--sans);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.bl-filter-row,
+.bl-filter-reset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.bl-filter-row:hover,
+.bl-filter-row:focus-visible,
+.bl-filter-reset:hover,
+.bl-filter-reset:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+.bl-filter-box {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+}
+.bl-filter-row.is-on .bl-filter-box {
+  border-color: var(--working);
+  background: var(--working);
+  box-shadow: inset 0 0 0 2px var(--panel-deep);
+}
+.bl-filter-label {
+  flex: 1;
+}
+.bl-filter-count {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.bl-filter-reset {
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0 0 6px 6px;
+  color: var(--working);
+}
+.bl-filter-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bl-filter-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--dim);
+}
+.bl-filter-search:focus-within {
+  border-color: var(--working);
+  /* The input drops its own outline, so the field draws the keyboard focus ring instead. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 28%, transparent);
+}
+.bl-filter-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: 12px var(--sans);
+  outline: none;
+}
+.bl-filter-search input::placeholder {
+  color: var(--dim);
+}
+.bl-filter-x {
+  padding: 2px 5px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.bl-filter-x:hover {
+  color: var(--fg);
+}
+.bl-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.bl-filter-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--working);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 14%, var(--panel));
+  color: var(--fg);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+}
+.bl-filter-chip span {
+  margin-left: 3px;
+  color: var(--muted);
+}
+.bl-filter-hidden {
+  margin: 2px 0 0;
+  padding: 7px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--dim);
+  font-size: 11.5px;
+  text-align: center;
+}
+.bl-filter-hidden.line-bl-hidden {
+  margin: 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  border-color: var(--border-soft);
+}
+.bl-filter-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--working);
+  font: inherit;
+  cursor: pointer;
+}
+.bl-hit {
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--find) 40%, transparent);
+  color: inherit;
+}

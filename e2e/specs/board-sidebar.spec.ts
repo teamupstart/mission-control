@@ -70,7 +70,7 @@ test("Board sidebar opts into all state groups, persists, navigates and returns 
   });
   expect(backlog.ok).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  await page.getByRole("radio", { name: /^Board/ }).check();
+  await page.getByRole("radiogroup", { name: "Dashboard layout" }).getByRole("radio", { name: /^Board/ }).check();
   const toggle = page.getByRole("checkbox", { name: "Show all sessions in sidebar" });
   await expect(toggle).not.toBeChecked();
 
@@ -145,7 +145,7 @@ test("filtering an open session restores Board keyboard navigation until Enter o
   await hook(daemon, hidden, "Notification");
   await hook(daemon, attention, "Notification");
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  await page.getByRole("radio", { name: /^Board/ }).check();
+  await page.getByRole("radiogroup", { name: "Dashboard layout" }).getByRole("radio", { name: /^Board/ }).check();
   await page.getByRole("checkbox", { name: "Show all sessions in sidebar" }).check();
   await page.goto(`${daemon.baseURL}/#/fleet`);
   await page.locator(".tile", { hasText: /Hidden routing investigation/i }).locator(".tile-name").click();
@@ -186,7 +186,7 @@ test("filtering an open session restores Board keyboard navigation until Enter o
 
 test("Board-only setting stays hidden in Console and rolls back a failed save", async ({ dashboard: page, daemon }) => {
   await page.goto(`${daemon.baseURL}/#/settings/display`);
-  await page.getByRole("radio", { name: /^Board/ }).check();
+  await page.getByRole("radiogroup", { name: "Dashboard layout" }).getByRole("radio", { name: /^Board/ }).check();
   const toggle = page.getByRole("checkbox", { name: "Show all sessions in sidebar" });
   await expect(toggle).toBeVisible();
   await toggle.hover();
@@ -198,7 +198,7 @@ test("Board-only setting stays hidden in Console and rolls back a failed save", 
   await toggle.uncheck();
   await page.getByRole("radio", { name: /^Console/ }).check();
   await expect(toggle).toHaveCount(0);
-  await page.getByRole("radio", { name: /^Board/ }).check();
+  await page.getByRole("radiogroup", { name: "Dashboard layout" }).getByRole("radio", { name: /^Board/ }).check();
   await page.route("**/api/ui/config", async (route) => {
     if (route.request().method() === "PUT" && "boardSidebarAllSessions" in route.request().postDataJSON()) {
       await route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"test refusal"}' });

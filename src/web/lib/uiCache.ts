@@ -2,6 +2,7 @@ import {
   CONVERSATION_VIEWS,
   LAYOUT_MODES,
   LINE_DENSITIES,
+  RESIDENT_PLACEMENTS,
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
   TASK_KIND_HEADER_STYLES,
@@ -12,6 +13,7 @@ import type {
   ConversationView,
   LayoutMode,
   LineDensity,
+  ResidentPlacement,
   TaskKindCardStyle,
   TaskKindHeaderStyle,
   UiConfig,
@@ -136,9 +138,19 @@ function parseTaskKindCard(raw: string | undefined): TaskKindCardStyle {
     : UI_CONFIG_DEFAULTS.taskKindCard;
 }
 
+/** An unknown or missing placement is the drawer, exactly as `UiConfigSchema` reads it. */
+function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
+  return (RESIDENT_PLACEMENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as ResidentPlacement)
+    : UI_CONFIG_DEFAULTS.residentPlacement;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
+    residentPlacement: parseResidentPlacement(raw?.residentPlacement),
+    // Only a stored `true` pins: anything else is the floating default.
+    residentDrawerPinned: raw?.residentDrawerPinned === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
     skin: parseSkin(raw?.skin),

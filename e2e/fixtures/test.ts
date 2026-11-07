@@ -108,6 +108,11 @@ export const test = base.extend<{
    * with its own PUT. The shipped default is covered through the raw page fixture in
    * `fresh-install-defaults.spec.ts`.
    *
+   * `residentPlacement` is pinned to Board and Console for the same reason. Residents ship in
+   * the Residents drawer, but every resident spec before it was written against residents on
+   * the Board and the Console rail with the dock. `specs/residents-drawer.spec.ts` opts into
+   * the drawer itself, and covers the shipped default through the raw page fixture.
+   *
    * `lineDensity` is the same story and the newest instance of it. The strip SHIPS
    * condensed, which drops each stage's sentence from the row - and `line-strip.spec.ts`
    * asserts those sentences as its proof that the daemon's fold arrived over SSE at all.
@@ -142,6 +147,7 @@ export const test = base.extend<{
           conversationView: "chat",
           lineDensity: "expanded",
           layout: "console",
+          residentPlacement: "fleet",
         }),
       });
       expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
@@ -157,6 +163,7 @@ export const test = base.extend<{
             showToursOnStartup: false,
             conversationView: "chat",
             lineDensity: "expanded",
+            residentPlacement: "fleet",
           }),
         ),
       );

@@ -76,6 +76,7 @@ export const PALETTE_KINDS = [
   "command",
   "setting",
   "panel",
+  "resident",
 ] as const;
 export type PaletteKind = (typeof PALETTE_KINDS)[number];
 
@@ -108,6 +109,8 @@ export const PALETTE_KIND_INFO: Record<PaletteKind, PaletteKindInfo> = {
   command: { id: "command", label: "command", glyph: "▸", group: "do" },
   setting: { id: "setting", label: "setting", glyph: "⚙", group: "settings" },
   panel: { id: "panel", label: "panel", glyph: "⚙", group: "settings" },
+  // The Residents button's own glyph, so a live resident row reads as the drawer it opens from.
+  resident: { id: "resident", label: "resident", glyph: "⌂", group: "jump" },
 };
 
 export function paletteKindGroup(kind: PaletteKind): PaletteGroup {
@@ -138,7 +141,8 @@ export type PaletteTarget =
   | { kind: "start-tour"; tourId: TourId }
   | { kind: "report-product-issue" }
   | { kind: "open-mission"; scheduleId: string }
-  | { kind: "residents-dock" };
+  | { kind: "residents-dock" }
+  | { kind: "open-resident"; sessionId: string };
 
 export interface PaletteRow {
   /** Unique across every provider. Prefixed by kind, so two stores cannot collide on an id. */
@@ -194,7 +198,25 @@ export interface PaletteStores {
    * only by its workflow is indistinguishable from the other three runs of that workflow.
    */
   sessionNames: ReadonlyMap<string, string>;
+  /**
+   * The live residents that have a session to open, in the drawer's order. A projection for
+   * the reason `sessionNames` is one: a resident row needs its name, label and state, never
+   * the session itself.
+   */
+  residents: readonly PaletteResident[];
   settingsBindings: SettingsBindings;
+}
+
+/** One live resident, as the palette names and finds it. */
+export interface PaletteResident {
+  sessionId: string;
+  name: string;
+  /** The marker's short label, which the chip prints. */
+  label: string;
+  /** The state word its card shows. */
+  state: string;
+  /** It needs you, by the same rule the top bar's Need you count uses. */
+  attention: boolean;
 }
 
 export interface PaletteProvider {
@@ -480,6 +502,24 @@ const missionProvider: PaletteProvider = {
 };
 
 /**
+ * Live residents, found by name or label. Opening one lands on its full detail the way the
+ * Residents drawer's Open does, wherever residents live.
+ */
+const residentProvider: PaletteProvider = {
+  id: "residents",
+  rows: ({ residents }) =>
+    residents.map((resident) => ({
+      id: `resident:${resident.sessionId}`,
+      kind: "resident" as const,
+      title: resident.name,
+      detail: `${resident.label} · ${resident.state}`,
+      ...(resident.attention ? { attention: true } : {}),
+      keywords: ["resident", "long-running", resident.label],
+      target: { kind: "open-resident" as const, sessionId: resident.sessionId },
+    })),
+};
+
+/**
  * The ensemble strategy launchers - the Library's Ensembles shelf, as verbs.
  *
  * Through `creatableStrategies()` for the shelf's own reason: a strategy this build has
@@ -537,9 +577,9 @@ const commandProvider: PaletteProvider = {
     {
       id: "command:residents-dock",
       kind: "command",
-      title: "Open the Residents dock",
-      detail: "Live residents and the profiles you can launch, beside Foreman.",
-      keywords: ["resident", "long-running", "standing", "agent", "launch", "dock", "profile"],
+      title: "Open the Residents drawer or dock",
+      detail: "Live residents and the profiles you can launch.",
+      keywords: ["resident", "long-running", "standing", "agent", "launch", "dock", "drawer", "profile"],
       target: { kind: "residents-dock" },
     },
     {
@@ -675,6 +715,7 @@ export const PALETTE_PROVIDERS: readonly PaletteProvider[] = [
   personaProvider,
   actionProvider,
   missionProvider,
+  residentProvider,
   strategyProvider,
   commandProvider,
   settingsProvider,
@@ -736,7 +777,9 @@ export function paletteRowHint(row: PaletteRow): string {
     case "open-mission":
       return "Open Recurring Missions on this schedule's run history.";
     case "residents-dock":
-      return "Open the Residents dock in the top bar.";
+      return "Open the Residents drawer, or the dock in the top bar when residents live on the Board and Console.";
+    case "open-resident":
+      return "Open this resident's conversation.";
   }
 }
 

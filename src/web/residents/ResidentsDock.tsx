@@ -1,22 +1,14 @@
 import { ResidentLoopControls, ResidentLoopStatusLine } from "./ResidentLoopControls.tsx";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { residentProfileChoiceName, type ResidentProfile, type ResidentRunSummary } from "@shared/residents.ts";
+import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
 import { stateDisplay } from "../lib/format.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
-import { launchResident, residentLaunchControlReport } from "./launch.ts";
-import { residentAccentStyle, residentMarkTitle, residentProfileMark, residentSessionMark } from "./marker.ts";
-
-/** How often a still-starting launch is replayed - the same request id - to read its outcome. */
-const PENDING_REPLAY_MS = 1_500;
-/**
- * How long the dock keeps replaying a launch that is still starting before it stops and hands
- * the choice back. A stalled startup must not leave Launch disabled for as long as the dock is
- * mounted; the request id is kept, so the next Launch checks the same launch.
- */
-export const DOCK_PENDING_LIMIT_MS = 60_000;
+import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
+import { useResidentLaunches, type ResidentLaunches } from "./useResidentLaunches.ts";
+import { residentAccentStyle, residentMarkTitle, residentSessionMark } from "./marker.ts";
 
 export interface ResidentsDockProps {
   /** Live runs, oldest launch first - the `residentRuns` collection. */
@@ -35,39 +27,22 @@ export interface ResidentsDockProps {
    */
   defaultOpen?: boolean;
   onOpenSession: (sessionId: string) => void;
+  /**
+   * App's one launch state, shared with the Residents drawer. A static rendering has no App, so
+   * the dock falls back to its own.
+   */
+  launcher?: ResidentLaunches;
+  /**
+   * Drawer placement: the button opens the Residents drawer instead of this dock, and the dock's
+   * popover never opens. The button keeps its element, class and accessible name.
+   */
+  onToggleDrawer?: () => void;
+  /** Whether the drawer the button opens is on screen, for `aria-expanded`. */
+  drawerOpen?: boolean;
   /** Open Dispatch > Resident on a profile, for a launch that needs a repository chosen. */
   onOpenLaunch: (profileId: string) => void;
   /** Open `#/residents`. */
   onManage: () => void;
-}
-
-/** One profile's launch from the dock, kept while the panel is shut so a retry replays it. */
-interface DockLaunch {
-  /** The id the next NEW launch will use. An outstanding launch replays its own instead. */
-  requestId: string;
-  /**
-   * Exactly what an outstanding launch sent - sent, with no definitive answer yet: still
-   * starting, stopped at the replay limit, or its answer lost. Every retry replays this, not the
-   * profile as it reads now. The daemon compares a reused id with the input it recorded, so a
-   * default repository edited mid-launch would turn the replay into a refused "different
-   * launch", and the fresh id that follows could start a second resident. Cleared only by a
-   * definitive answer.
-   */
-  outstanding: { requestId: string; repoRoot: string } | null;
-  busy: boolean;
-  error: string | null;
-  /** The launch reached its session; cleared on the next launch. */
-  launched: boolean;
-  /**
-   * Still starting when the dock stopped replaying it (`DOCK_PENDING_LIMIT_MS`). The request id
-   * is kept, so Launch checks this same launch again rather than starting another.
-   */
-  stillStarting: boolean;
-  /**
-   * The launch reached its session without the session control its profile asks for, or with it
-   * still pending, or null when there is nothing to say.
-   */
-  controlReport: "pending" | "not-granted" | null;
 }
 
 /**
@@ -78,33 +53,35 @@ interface DockLaunch {
  * default repository. A profile with none opens Dispatch > Resident on it instead, because a
  * launch needs a repository and the dock has no room to choose one well.
  *
- * Launch state lives on this component rather than the panel, so closing the dock while a
- * launch is starting keeps its request id: launching again replays that launch, never a second.
+ * Launch state lives in `useResidentLaunches`, owned by App and shared with the Residents
+ * drawer, so closing the dock while a launch is starting keeps its request id: launching again
+ * replays that launch, never a second.
  */
 export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
   const { runs, profiles, sessions, compact = false, openRequest, defaultOpen = false } = props;
   const [open, setOpen] = useState(defaultOpen);
-  const [launches, setLaunches] = useState<Record<string, DockLaunch>>({});
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const handledOpenRequest = useRef(openRequest);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const ownLauncher = useResidentLaunches();
+  const { launches, launch: launchProfile } = props.launcher ?? ownLauncher;
+  const drawer = props.onToggleDrawer !== undefined;
 
   /** Set by a keyboard or palette open, and consumed once the panel has rendered. */
   const focusOnOpen = useRef(false);
   useEffect(() => {
     if (openRequest === handledOpenRequest.current) return;
     handledOpenRequest.current = openRequest;
+    if (drawer) return;
     focusOnOpen.current = true;
     setOpen(true);
-  }, [openRequest]);
+  }, [openRequest, drawer]);
+  // Switching to the drawer placement while the dock is open puts it away: its popover is no
+  // longer drawn, and an `open` left behind would keep claiming Escape.
+  useEffect(() => {
+    if (drawer) setOpen(false);
+  }, [drawer]);
   // Opened from the keyboard: put focus inside, so Tab walks the dock rather than the page.
   // After the render that mounted the panel, which is the first moment it has a button.
   useEffect(() => {
@@ -145,72 +122,10 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
   const live = runs.length;
   const accessibleName = `Residents - ${live} live`;
 
-  const patchLaunch = (profileId: string, patch: Partial<DockLaunch>): void =>
-    setLaunches((prev) => {
-      const current = prev[profileId] ?? freshLaunch();
-      return { ...prev, [profileId]: { ...current, ...patch } };
-    });
-
   async function launch(profile: ResidentProfile): Promise<void> {
-    const current = launches[profile.id];
-    // An outstanding launch is replayed exactly as it was sent, whatever the profile says now.
-    const outstanding = current?.outstanding ?? null;
-    const repoRoot = outstanding?.repoRoot ?? profile.settings.workspace.defaultRepoRoot?.trim();
-    if (!repoRoot) {
-      setOpen(false);
-      props.onOpenLaunch(profile.id);
-      return;
-    }
-    const requestId = outstanding?.requestId ?? current?.requestId ?? crypto.randomUUID();
-    const sent = { requestId, repoRoot };
-    // Recorded BEFORE it is sent: from here until a definitive answer, this is the launch.
-    patchLaunch(profile.id, {
-      requestId,
-      outstanding: sent,
-      busy: true,
-      error: null,
-      launched: false,
-      stillStarting: false,
-      controlReport: null,
-    });
-    const input = { repoRoot, requestId };
-    const startedAt = Date.now();
-    // Still inside the Launch click: the one call that may arm session control for this run.
-    let answer = await launchResident(profile.id, input, { profile });
-    // Still starting: replay the SAME request id until it settles. A replay reads the one run
-    // this id reserved and never starts another. Bounded, so a stalled startup gives Launch
-    // back - with the id kept - instead of holding the row busy indefinitely.
-    while (answer.state === "pending") {
-      if (!mounted.current) return;
-      if (Date.now() - startedAt >= DOCK_PENDING_LIMIT_MS) {
-        patchLaunch(profile.id, { busy: false, error: null, launched: false, stillStarting: true });
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, PENDING_REPLAY_MS));
-      if (!mounted.current) return;
-      answer = await launchResident(profile.id, input);
-    }
-    if (!mounted.current) return;
-    switch (answer.state) {
-      case "launched":
-        patchLaunch(profile.id, {
-          ...freshLaunch(),
-          launched: true,
-          controlReport: residentLaunchControlReport(answer.run, false),
-        });
-        return;
-      case "failed":
-        // Definitive: the next attempt is a new launch.
-        patchLaunch(profile.id, { ...freshLaunch(), error: `Did not start: ${answer.error}` });
-        return;
-      case "refused":
-        // No answer at all keeps the outstanding launch, so a retry replays what the daemon may
-        // hold; a refusal created nothing, and reusing its id would be a conflict.
-        patchLaunch(profile.id, answer.code === "unavailable"
-          ? { busy: false, error: answer.error }
-          : { requestId: crypto.randomUUID(), outstanding: null, busy: false, error: answer.error });
-        return;
-    }
+    if ((await launchProfile(profile)) !== "needs-repository") return;
+    setOpen(false);
+    props.onOpenLaunch(profile.id);
   }
 
   return (
@@ -219,11 +134,11 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
         <button
           ref={buttonRef}
           className={`ghost-btn residents-btn${live > 0 ? " on" : ""}${compact ? " tb-compact" : ""}`}
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => (props.onToggleDrawer ? props.onToggleDrawer() : setOpen((o) => !o))}
           // Named explicitly because the word is a `.tb-label` the narrow ladder takes away;
           // the count survives the collapse and the name has to as well.
           aria-label={accessibleName}
-          aria-expanded={open}
+          aria-expanded={drawer ? props.drawerOpen === true : open}
         >
           <span className="residents-glyph" aria-hidden>⌂</span>
           <span className="tb-label">Residents</span>
@@ -231,7 +146,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
         </button>
       </Tooltip>
 
-      {open && (
+      {open && !drawer && (
         <div className="alert-pop residents-pop" role="dialog" aria-label="Residents" ref={panelRef}>
           <section className="residents-pop-section" aria-labelledby="residents-pop-live">
             <h3 className="alert-sec" id="residents-pop-live">Live</h3>
@@ -293,67 +208,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
             {profiles.length === 0 ? (
               <p className="alert-hint dim">No resident profiles yet. Author one on the Residents page.</p>
             ) : (
-              <ul className="residents-pop-list residents-pop-profiles">
-                {profiles.map((profile) => {
-                  const state = launches[profile.id];
-                  const mark = residentProfileMark(profile);
-                  const repo = profile.settings.workspace.defaultRepoRoot;
-                  return (
-                    <li key={profile.id} className="residents-pop-row">
-                      <ResidentChip mark={mark} />
-                      <span className="residents-pop-name">
-                        <span className="residents-pop-name-text">{profile.name}</span>
-                        {profile.builtin && <em className="resident-builtin-tag">built-in</em>}
-                      </span>
-                      <span className="residents-pop-state" role="status">
-                        {state?.busy
-                          ? "starting…"
-                          : state?.stillStarting ? "still starting" : state?.launched ? "launched" : ""}
-                      </span>
-                      <Tooltip
-                        label={state?.outstanding
-                          ? `Check on the launch of ${profile.name} in ${state.outstanding.repoRoot}`
-                          : repo
-                            ? `Launch ${profile.name} in ${repo}`
-                            : `Choose a repository for ${profile.name} in Dispatch`}
-                      >
-                        <button
-                          type="button"
-                          className="btn residents-pop-action"
-                          aria-label={`Launch ${residentProfileChoiceName(profile)}`}
-                          disabled={state?.busy}
-                          onClick={() => void launch(profile)}
-                        >
-                          {repo || state?.outstanding ? "Launch" : "Launch…"}
-                        </button>
-                      </Tooltip>
-                      {/* Its own line across the row, not the state cell: a reason is a
-                          sentence, and an ellipsized one says nothing. */}
-                      {state?.error && (
-                        <p className="residents-pop-error" role="alert">{state.error}</p>
-                      )}
-                      {state?.stillStarting && (
-                        <p className="residents-pop-note">
-                          Taking longer than usual to start. Launch checks on this same launch; it
-                          never starts a second resident.
-                        </p>
-                      )}
-                      {state?.controlReport === "not-granted" && (
-                        <p className="residents-pop-note" role="status">
-                          Started without session control: only a Launch click in the Mission
-                          Control desktop app grants it.
-                        </p>
-                      )}
-                      {state?.controlReport === "pending" && (
-                        <p className="residents-pop-note" role="status">
-                          Started; session control is not granted yet. It is given once the
-                          session is ready, and its live card shows Control when it is.
-                        </p>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+              <ResidentProfileLaunchList profiles={profiles} launches={launches} onLaunch={(profile) => void launch(profile)} />
             )}
           </section>
           <Tooltip label="Author, edit and archive resident profiles on the Residents page">
@@ -372,16 +227,4 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
       )}
     </div>
   );
-}
-
-function freshLaunch(): DockLaunch {
-  return {
-    requestId: crypto.randomUUID(),
-    outstanding: null,
-    busy: false,
-    error: null,
-    launched: false,
-    stillStarting: false,
-    controlReport: null,
-  };
 }

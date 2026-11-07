@@ -162,8 +162,8 @@ export const ACTIONS: readonly ActionDef[] = [
     // `shift+h`: the dock's glyph is ⌂, home, and the residents page already holds
     // `shift+a`. Every bare letter near it is a session action.
     id: "residentsDock",
-    label: "Open the Residents dock",
-    description: "Show the live residents and the profiles you can launch, beside Foreman in the top bar.",
+    label: "Open the Residents drawer or dock",
+    description: "Show the live residents and the profiles you can launch: the drawer on the right edge, or the dock beside Foreman when residents live on the Board and Console.",
     defaultBinding: "shift+h",
     group: "global",
   },
@@ -475,7 +475,13 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
   if (e.ctrlKey) mods.push("ctrl");
   if (e.altKey) mods.push("alt");
   let key: string;
-  if (k.length === 1 && !isCased(k)) {
+  // Option+digit is spelled by its physical digit. macOS turns it into a symbol (`¡`, `™`, … on
+  // a US layout, something else on others), which would let the Keyboard panel record a chord
+  // the ⌥1…⌥9 resident jumps answer first. Spelled as the digit, it meets their reservation.
+  const digit = e.altKey && !e.shiftKey ? /^Digit([0-9])$/.exec(e.code ?? "")?.[1] : undefined;
+  if (digit !== undefined) {
+    key = digit;
+  } else if (k.length === 1 && !isCased(k)) {
     key = k;
   } else {
     key = k.length === 1 ? k.toLowerCase() : k;
@@ -577,7 +583,40 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
 export function reservedChordReason(chord: string): string | null {
   if (chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key)) return "grid navigation";
   if (CARD_SHORTCUT_CHORDS.includes(chord)) return "the fleet's session jump shortcuts";
+  if (RESIDENT_SHORTCUT_CHORDS.includes(chord)) return "the resident jump shortcuts";
   return null;
+}
+
+/**
+ * ⌥1 … ⌥9: open live resident N, in the order the Residents drawer and the dock both list them.
+ *
+ * Reserved for the reason the ⌘-number jumps are: App's arm runs ahead of the action dispatch,
+ * so an action bound to one of these would be shadowed wherever residents are listed.
+ *
+ * `chordFromEvent` spells Option+digit by its physical digit on every platform, including macOS,
+ * which types a symbol (`¡`, `™`, …) for it, so the Keyboard panel records `alt+1` and this
+ * reservation refuses it. App matches the physical key through `residentShortcutIndex`, so the
+ * shortcut works on every keyboard.
+ */
+export const RESIDENT_SHORTCUT_CHORDS: readonly string[] = [
+  ...Array.from({ length: 9 }, (_, i) => `alt+${i + 1}`),
+  // What a recorder spelled Option+1 … Option+9 as on a US macOS layout before `chordFromEvent`
+  // read the physical digit, so a binding stored then is dropped on read like any reserved chord.
+  ...["¡", "™", "£", "¢", "∞", "§", "¶", "•", "ª"].map((symbol) => `alt+${symbol}`),
+];
+
+/**
+ * Which resident a keydown asks for, as a zero-based index, or null when it is not ⌥1 … ⌥9.
+ *
+ * Matched on `code`, the physical key, because `key` is a symbol under macOS Option. Any other
+ * modifier held with it makes it a different chord, which this leaves alone.
+ */
+export function residentShortcutIndex(
+  e: Pick<KeyboardEvent, "code" | "altKey" | "metaKey" | "ctrlKey" | "shiftKey">,
+): number | null {
+  if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return null;
+  const match = /^Digit([1-9])$/.exec(e.code);
+  return match ? Number(match[1]) - 1 : null;
 }
 
 /**

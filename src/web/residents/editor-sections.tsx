@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
+import { ResidentDrawerInertNote } from "../components/ResidentPlacementPanel.tsx";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -293,6 +294,7 @@ function BoardSection({ draft, update, disabled }: ResidentEditorSectionProps): 
           <span>Pin to top of column</span>
         </label>
       </div>
+      <ResidentDrawerInertNote what="Pin to top of column" />
       <p className="field-hint">
         Preview: <span className="resident-chip" style={residentAccentStyle(colorId)} aria-hidden>
           {board.pin && <span className="resident-chip-pin">⤒</span>}

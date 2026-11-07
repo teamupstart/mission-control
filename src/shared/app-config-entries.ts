@@ -269,6 +269,8 @@ const uiFields = {
   groupBoardByRepo: "setting",
   showEmptyColumnStash: "setting",
   boardSidebarAllSessions: "setting",
+  residentPlacement: "setting",
+  residentDrawerPinned: "setting",
   collapsedBoardColumns: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",

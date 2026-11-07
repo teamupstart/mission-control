@@ -33,6 +33,7 @@ import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleView } from "./ConsoleView.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
+import { ResidentVisitorCard } from "../../residents/ResidentVisitorCard.tsx";
 import { SessionTile } from "./SessionTile.tsx";
 import {
   ensembleSummaryFor,
@@ -188,7 +189,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         return { ...pendingDrop, session, title: task?.title ?? null };
       })()
     : null;
-  const selected = props.sessions.find((s) => s.id === props.detailId) ?? null;
+  // App's one detail lookup, which can name a resident the Drawer placement keeps out of
+  // `sessions`: it opens here while no column or rail row names it.
+  const selected = props.detailSession !== undefined
+    ? props.detailSession
+    : props.sessions.find((s) => s.id === props.detailId) ?? null;
   // The focused column follows the session, not the click: if the open session moves
   // tone (working -> needs input), its column re-scopes with it, and the rail's rows
   // change under a detail that - keyed by id in the aside - stays put.
@@ -237,7 +242,24 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // One spelling of each row, so a session drawn inside a cluster frame and one drawn loose
   // beside it are the SAME element with the same props - the frame is a wrapper, never a
   // second rendering.
+  /** A visitor card in place of a resident's card or rail row, or null for any other session. */
+  const visitor = (s: Session, variant: "tile" | "rail"): React.JSX.Element | null => {
+    const mark = props.residentVisitors?.has(s.id) ? props.residentBySession?.get(s.id) : undefined;
+    if (!mark) return null;
+    return <ResidentVisitorCard
+      key={s.id}
+      session={s}
+      mark={mark}
+      variant={variant}
+      selected={s.id === props.selectedId}
+      registerEl={props.registerEl}
+      onOpenDrawer={(id) => props.onOpenResidentDrawer?.(id)}
+    />;
+  };
+
   const tile = (s: Session): React.JSX.Element => {
+    const asVisitor = visitor(s, "tile");
+    if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
     return <SessionTile
       key={s.id}
@@ -321,6 +343,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   );
 
   const railRow = (s: Session): React.JSX.Element => {
+    const asVisitor = visitor(s, "rail");
+    if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
     const commissionRun = commission?.linkedRun
       ? (props.pipelineRunByKey?.get(pipelineRunKeyOf(commission.linkedRun)) ?? null)

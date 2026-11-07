@@ -343,9 +343,10 @@ export function originOf(sessionId: string, text: string): TurnOrigin | undefine
  * Lifetime is the turn the send belongs to. `turnGeneration` is that turn's work-cycle
  * generation: the conversation's completed generation plus one for an idle session, plus two
  * when a cycle is active at the send, because the driver queues it behind the running turn
- * and Claude fires its prompt hook only once it dequeues it, after that turn's Stop. An entry
- * expires when its own turn completes (`expireHumanEchoes`), never at the end of the turn it
- * was queued behind. Once its turn is the next one it is ELIGIBLE, and from then on it also
+ * and Claude fires its prompt hook only once it dequeues it, after that turn's Stop. An
+ * acknowledged entry expires when its own turn completes (`expireHumanEchoes`), never at the
+ * end of the turn it was queued behind; an unacknowledged one waits for the driver's answer,
+ * because until then the stamp is the registry's guess. Once its turn is the next one it is ELIGIBLE, and from then on it also
  * ages out after `HUMAN_ECHO_TTL_MS`, for a session that never finishes a turn. Age is read
  * lazily on every access, so no timer exists.
  *
@@ -361,6 +362,12 @@ interface ExpectedHumanEcho {
   /** The conversation's completed work-cycle generation when the send was made. */
   readonly baseGeneration: number;
   turnGeneration: number;
+  /**
+   * The latest completed generation seen for this conversation. Recorded even while the entry
+   * is `open`, because a completion can arrive before the driver says which turn the send
+   * belongs to, and the acknowledgement settles the entry against it.
+   */
+  completedGeneration: number;
   /** When this entry started aging: its creation for an idle send, else when the turn ahead of it completed. */
   eligibleAt: number | null;
   state: "open" | "confirmed" | "captured";
@@ -456,6 +463,7 @@ export function expectHumanEcho(
     noteKey: options.noteKey,
     baseGeneration: base,
     turnGeneration: base + (queued ? 2 : 1),
+    completedGeneration: base,
     eligibleAt: queued ? null : now,
     state: "open",
     echoed: false,
@@ -488,13 +496,18 @@ export function confirmHumanEcho(
 ): { captured: boolean } {
   const entry = fromTicket(ticket);
   if (!live(entry, options.now ?? Date.now())) return { captured: entry.state === "captured" };
+  const now = options.now ?? Date.now();
   if (entry.state === "open") entry.state = "confirmed";
   if (options.queued && entry.turnGeneration < entry.baseGeneration + 2) {
     entry.turnGeneration = entry.baseGeneration + 2;
-    entry.eligibleAt = null;
+    // The turn ahead of it may already have completed while this send was unacknowledged;
+    // then it is next, and ages from now.
+    entry.eligibleAt = entry.turnGeneration <= entry.completedGeneration + 1 ? now : null;
   }
   const captured = entry.state === "captured";
-  if (settled(entry)) drop(entry);
+  // Its own turn completed before the driver answered: whatever echo it had has come and gone,
+  // so once this door has its answer nothing is left to wait for.
+  if (settled(entry) || entry.turnGeneration <= entry.completedGeneration) drop(entry);
   return { captured };
 }
 
@@ -554,9 +567,16 @@ export function claimHumanEcho(
 /**
  * A turn of this conversation completed, leaving it at `completedGeneration`.
  *
- * Drops every entry whose own turn that was, and starts the next turn's entries aging. An
- * entry from a conversation a clear has replaced can never be expired by generation, so it
- * starts aging too.
+ * Drops every acknowledged entry whose own turn that was, and starts the next turn's entries
+ * aging. An entry from a conversation a clear has replaced can never be expired by generation,
+ * so it starts aging too.
+ *
+ * An `open` entry is never dropped here, only told about the completion. Until the driver
+ * answers, its turn is a guess: a send stamped against an idle session may be queued behind a
+ * turn the registry has not seen start, and that turn can complete before `handle.send`
+ * resolves `steered`. Dropping it then would let the acknowledgement capture the follow-up and
+ * its later echo capture it again. `confirmHumanEcho` settles it against what it was told, and
+ * an acknowledgement that never comes leaves it to age out.
  */
 export function expireHumanEchoes(
   sessionId: string,
@@ -566,12 +586,17 @@ export function expireHumanEchoes(
 ): void {
   const list = liveEchoes(sessionId, now);
   if (!list) return;
-  const kept = list.filter(
-    (entry) => entry.noteKey !== noteKey || entry.turnGeneration > completedGeneration,
-  );
+  for (const entry of list) {
+    if (entry.noteKey === noteKey) {
+      entry.completedGeneration = Math.max(entry.completedGeneration, completedGeneration);
+    }
+  }
+  const kept = list.filter((entry) => entry.noteKey !== noteKey
+    || entry.state === "open"
+    || entry.turnGeneration > completedGeneration);
   for (const entry of kept) {
     if (entry.eligibleAt === null
-      && (entry.noteKey !== noteKey || entry.turnGeneration === completedGeneration + 1)) {
+      && (entry.noteKey !== noteKey || entry.turnGeneration <= completedGeneration + 1)) {
       entry.eligibleAt = now;
     }
   }

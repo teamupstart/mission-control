@@ -699,6 +699,30 @@ test("a steered follow-up echoed after the running turn ends opens one revision"
   assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
 });
 
+test("a steered follow-up whose running turn completes before the acknowledgement opens one revision", async (t) => {
+  const f = await boundFollowUpSession("agent-follow-up-steered-late-ack");
+  t.after(f.fake.restore);
+  const text = "queued behind a turn that ends before the ack";
+  assert.equal(f.registry.getSession(f.session.id)?.workCycle?.active ?? false, false,
+    "the registry has not seen the running turn, so the send is stamped as idle");
+  f.handle.send = async (turn) => {
+    f.handle.sent.push(turn);
+    // The driver queues the follow-up, and the turn ahead of it completes before `send`
+    // resolves with that answer.
+    f.registry.applyDriverEvent(f.session.id, { kind: "state", state: "working", activity: null });
+    f.registry.applyDriverEvent(f.session.id, { kind: "turn_done", usage: null });
+    return "steered";
+  };
+  const capture = t.mock.method(f.registry, "captureAcceptedPrompt");
+  assert.equal(await f.follow(text), "steered");
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2, "the acknowledgement captured it");
+
+  // Claude dequeues it and its hook reports it.
+  f.echo(text);
+  assert.equal(capture.mock.callCount(), 1, "the echo answered skip");
+  assert.equal(f.registry.getGoal(f.session.id)?.promptRevision, 2);
+});
+
 test("a driver refusal releases the follow-up's expectation", async (t) => {
   const f = await boundFollowUpSession("agent-follow-up-refused");
   t.after(f.fake.restore);

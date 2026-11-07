@@ -175,6 +175,36 @@ test("age is checked lazily on claim, confirm, mark and release", () => {
   assert.equal(claim("aged release", T0).kind, "none");
 });
 
+test("a completion before the acknowledgement never expires an unacknowledged send", () => {
+  // Stamped idle, but the driver queues it behind a turn that completes before `send` returns.
+  const steered = expect("queued behind a quick turn", idle(3));
+  expireHumanEchoes(S, K, 4, T0);
+  assert.equal(claim("queued behind a quick turn").kind, "capture", "still on file while open");
+  assert.deepEqual(confirmHumanEcho(steered, { queued: true, now: T0 }), { captured: false });
+  markHumanEchoCaptured(steered, { now: T0 });
+  assert.equal(claim("queued behind a quick turn").kind, "skip", "its later echo is absorbed");
+
+  const later = expect("queued then its own turn ends", idle(3));
+  expireHumanEchoes(S, K, 4, T0);
+  confirmHumanEcho(later, { queued: true, now: T0 });
+  markHumanEchoCaptured(later, { now: T0 });
+  expireHumanEchoes(S, K, 5, T0);
+  assert.equal(claim("queued then its own turn ends").kind, "none", "it ends with its own turn");
+
+  const aging = expect("queued and eligible at once", idle(3));
+  expireHumanEchoes(S, K, 4, T0);
+  confirmHumanEcho(aging, { queued: true, now: T0 });
+  markHumanEchoCaptured(aging, { now: T0 });
+  assert.equal(claim("queued and eligible at once", T0 + HUMAN_ECHO_TTL_MS + 1).kind, "none",
+    "the turn ahead already completed, so it is aging from the acknowledgement");
+
+  const started = expect("started and finished before the ack", idle(3));
+  expireHumanEchoes(S, K, 4, T0);
+  assert.deepEqual(confirmHumanEcho(started, { now: T0 }), { captured: false });
+  assert.equal(claim("started and finished before the ack").kind, "none",
+    "its own turn already completed, so the acknowledgement settles it");
+});
+
 test("a hook capture survives its entry expiring before the acknowledgement", () => {
   const ticket = expect("captured then expired", idle(3));
   const claimed = claim("captured then expired");

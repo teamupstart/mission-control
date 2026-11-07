@@ -38,7 +38,10 @@ choices, so you can see what each one changes before leaving the page.
 
 **Disabled** is chosen only in Settings. The caret goes with the strip, and <kbd>Shift+L</kbd>
 neither switches the Line off nor back on, so a stray keypress on the fleet cannot undo the
-choice. The See work tour still shows the strip, condensed, for its first stop while the tour
+choice. It is stored as its own preference (`app_config.ui.lineHidden`) beside the density,
+so switching the Line back on returns to the density it was switched off from, and an older
+build reading the same state simply draws the strip rather than failing to load your display
+preferences. The See work tour still shows the strip, condensed, for its first stop while the tour
 runs, without changing the stored preference.
 
 | Stage | The count is | The sentence says | Amber when |

@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LineStrip } from "../src/web/components/LineStrip.tsx";
 import { LineDensityPanel } from "../src/web/components/LineDensityPanel.tsx";
-import { nextLineDensity } from "../src/web/lib/line-density.ts";
+import { lineChoice, lineChoicePatch, nextLineDensity } from "../src/web/lib/line-density.ts";
 import type { LineDensity } from "../src/shared/protocol.ts";
 import { LINE_STAGES, type LineStageSummary, type LineSummary } from "../src/shared/line.ts";
 import { tooltipLabels } from "./helpers/markup.ts";
@@ -308,12 +308,18 @@ test("a Line switched off draws nothing, not even an empty landmark", () => {
   assert.equal(off, "");
 });
 
-test("the fold steps between the drawn densities and never in or out of Disabled", () => {
-  // The caret and Shift+L fold the strip. Switching it off is a Settings choice, and a bare
-  // letter pressed on the fleet must not quietly undo it.
+test("Disabled is stored as its own key, and keeps the density to come back to", () => {
+  // Never a third density: an older daemon fails its whole UI record on an enum member it
+  // has never heard of, and strips a key it does not know (see `LINE_DENSITIES`).
+  assert.deepEqual(lineChoicePatch("hidden"), { lineHidden: true });
+  assert.deepEqual(lineChoicePatch("expanded"), { lineHidden: false, lineDensity: "expanded" });
+  assert.deepEqual(lineChoicePatch("condensed"), { lineHidden: false, lineDensity: "condensed" });
+  // Switched off wins over whatever density is stored; switched on reads the density.
+  assert.equal(lineChoice({ lineHidden: true, lineDensity: "expanded" }), "hidden");
+  assert.equal(lineChoice({ lineHidden: false, lineDensity: "expanded" }), "expanded");
+  // The caret and Shift+L fold between the two drawn densities only.
   assert.equal(nextLineDensity("expanded"), "condensed");
   assert.equal(nextLineDensity("condensed"), "expanded");
-  assert.equal(nextLineDensity("hidden"), "hidden");
 });
 
 test("the settings panel offers all three choices over a live preview of the strip", () => {

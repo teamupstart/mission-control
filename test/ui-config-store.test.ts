@@ -280,6 +280,26 @@ test("keybindings are replaced whole, so an override can actually be dropped", (
   assert.deepEqual(getUiConfig().keybindings, {});
 });
 
+test("Disabled Line is stored as its own key, so a daemon from before it still opens the record", async () => {
+  // A third `lineDensity` member would fail every UI preference on an older daemon - its
+  // `.default()` covers a missing value only - after a downgrade, or a worktree build sharing
+  // this state dir. A separate key is stripped by that daemon instead, and it draws the strip.
+  const { LINE_DENSITIES, UiConfigSchema } = await import("../src/shared/protocol.ts");
+  assert.deepEqual([...LINE_DENSITIES], ["expanded", "condensed"]);
+
+  setUiConfig({ lineDensity: "expanded" });
+  setUiConfig({ lineHidden: true });
+  assert.equal(getUiConfig().lineHidden, true);
+  assert.equal(getUiConfig().lineDensity, "expanded", "switching off kept the density to return to");
+  assert.throws(() => setUiConfig({ lineDensity: "hidden" } as never));
+
+  // What this build wrote, read by the schema of a build that never had `lineHidden`.
+  const written = getAppConfig(APP_CONFIG_ENTRIES.ui);
+  const older = UiConfigSchema.omit({ lineHidden: true }).parse(written);
+  assert.equal(older.lineDensity, "expanded");
+  assert.equal("lineHidden" in older, false);
+});
+
 test("a stored config with an unknown key still parses (schema defaults fill the rest)", () => {
   // Forward-compatibility: a value written by a newer build must not throw an older one.
   openDb()

@@ -153,6 +153,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     residentDrawerPinned: raw?.residentDrawerPinned === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
+    lineHidden: raw?.lineHidden === true,
     skin: parseSkin(raw?.skin),
     taskKindHeader: parseTaskKindHeader(raw?.taskKindHeader),
     taskKindCard: parseTaskKindCard(raw?.taskKindCard),

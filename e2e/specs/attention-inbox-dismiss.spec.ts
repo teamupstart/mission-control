@@ -490,6 +490,80 @@ test.describe("one row dismissed from two windows", () => {
     );
     await other.close();
   });
+
+  test("a click queued behind this window's own write is not upgraded by what another window did meanwhile", async ({
+    dashboard,
+    daemon,
+  }) => {
+    const { beforeOwed } = await parkASession(dashboard, daemon);
+    const other = await dashboard.context().newPage();
+    await other.goto(dashboard.url());
+    await expectDashboardReady(other);
+
+    // This window's FIRST write is held before it reaches the daemon, so its second click on the
+    // same row waits in the queue behind it.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let writes = 0;
+    await dashboard.route("**/api/attention/dismissals", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      if (++writes === 1) await held;
+      await route.continue();
+    });
+
+    const inbox = await openInbox(dashboard);
+    const row = inbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });
+    const dismiss = row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" });
+    await dismiss.click();
+    await expect(row).toHaveCount(0);
+    // The question changes and this window dismisses it again: queued, not yet sent.
+    await notify(daemon, "Claude needs your permission to use Edit");
+    await expect(row.getByText("Waiting on you: Claude needs your permission to use Edit")).toBeVisible();
+    await dismiss.click();
+    await expect(row).toHaveCount(0);
+
+    // Then it changes once more, and the OTHER window dismisses that newest question. This window
+    // hears about it through the change event while its second click is still waiting.
+    await notify(daemon, "Claude needs your permission to use Write");
+    const otherInbox = await openInbox(other);
+    const otherRow = otherInbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });
+    await expect(otherRow.getByText("Waiting on you: Claude needs your permission to use Write")).toBeVisible();
+    await otherRow.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
+    await expect(otherRow).toHaveCount(0);
+    await expect.poll(async () =>
+      ((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: unknown[] }).dismissals.length,
+    ).toBe(1);
+    await expect.poll(async () => await dashboard.evaluate(async () => {
+      const body = await (await fetch("/api/attention/dismissals")).json() as { dismissals: unknown[] };
+      return body.dismissals.length;
+    })).toBe(1);
+
+    // Release this window's writes. Both were clicks made before the other window's dismissal,
+    // so neither may replace it - however much this window learned while they waited.
+    release();
+    await expect.poll(() => writes, { message: "this window sent both of its writes" }).toBe(2);
+
+    const bothHidden = async () =>
+      (await row.count()) === 0 &&
+      (await otherRow.count()) === 0 &&
+      (await pulseCount(dashboard, "to answer")) === beforeOwed &&
+      (await pulseCount(other, "to answer")) === beforeOwed;
+    await holdsSteady(bothHidden, "the newest question came back: a queued older click replaced its dismissal");
+
+    await dashboard.unroute("**/api/attention/dismissals");
+    await dashboard.keyboard.press("Escape");
+    await other.keyboard.press("Escape");
+    await Promise.all([dashboard.reload(), other.reload()]);
+    await expectDashboardReady(dashboard);
+    await expectDashboardReady(other);
+    await holdsSteady(
+      async () =>
+        (await pulseCount(dashboard, "to answer")) === beforeOwed &&
+        (await pulseCount(other, "to answer")) === beforeOwed,
+      "after a reload the newest question is back: the daemon kept an older click",
+    );
+    await other.close();
+  });
 });
 
 test.describe("two rows dismissed back to back", () => {

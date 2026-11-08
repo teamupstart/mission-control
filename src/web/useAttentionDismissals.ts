@@ -4,7 +4,7 @@ import { api } from "./lib/api.ts";
 import {
   applyDismissalRead,
   beginDismissalWrite,
-  createDismissalWriteQueue,
+  createDismissalSender,
   createRevisionLedger,
   effectiveDismissals,
   INITIAL_DISMISSAL_STATE,
@@ -46,7 +46,8 @@ export interface AttentionDismissalsState {
  * one after another, so a row dismissed twice - because it came back reporting something new -
  * is stored with the newer dismissal, never overwritten by the older one landing late. Across
  * windows the daemon keeps that order: each write names the newest revision of its row this
- * window has seen, and one made without seeing another window's newer dismissal is refused.
+ * window had seen when the operator clicked (or its own earlier write's), and one made without
+ * seeing another window's newer dismissal is refused.
  *
  * A failed read keeps what was already known. An empty set is a claim that nothing is
  * dismissed, and on a dropped connection that claim would bring every dismissed row back.
@@ -56,16 +57,10 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
   const readsStarted = useRef(0);
   const writesStarted = useRef(0);
   const [ledger] = useState(createRevisionLedger);
+  // Called at the click, so each write's basis is what this window had seen then - plus its own
+  // earlier write of the row - and never what other windows did while it waited in the queue.
   const [send] = useState(() =>
-    createDismissalWriteQueue(async (keys) => {
-      // The basis is read when the write is SENT, after this row's earlier writes were answered
-      // and learned below - so this window never refuses its own previous dismissal.
-      const result = await api.dismissAttentionItems(
-        keys.map((key) => ({ ...key, basis: ledger.basisFor(key.itemId) })),
-      );
-      if (result.ok && result.accepted) ledger.learn(result.accepted);
-      return result;
-    }),
+    createDismissalSender((writes) => api.dismissAttentionItems(writes), ledger),
   );
 
   const read = useCallback((): void => {

@@ -29,6 +29,7 @@ import type { AttentionDismissal, AttentionDismissalKey } from "../src/shared/pr
 import {
   applyDismissalRead,
   beginDismissalWrite,
+  createDismissalSender,
   createDismissalWriteQueue,
   createRevisionLedger,
   effectiveDismissals,
@@ -249,31 +250,89 @@ test("the ledger keeps the newest revision of each row it has seen, and never lo
   assert.equal(ledger.basisFor("blocked:s-2"), 3);
 });
 
-test("a window's second dismissal of a row is sent with the revision its first one was stored at", async () => {
-  // A daemon enforcing the real rule: refuse a write whose basis is behind the stored revision.
-  const revisions = new Map<string, number>();
+/**
+ * A daemon applying the real rule - refuse a write whose basis is behind the stored revision,
+ * all or nothing, every accepted key taking a fresh revision - that stores each write the
+ * moment it RECEIVES it and answers only when the test says so. That split is what lets another
+ * window act between this window's write being stored and this window hearing back.
+ */
+function revisionDaemon() {
+  const rows = new Map<string, { occurrence: string; revision: number }>();
   let next = 0;
   const bases: number[] = [];
   const answers: (() => void)[] = [];
-  const ledger = createRevisionLedger();
-  const enqueue = createDismissalWriteQueue(async (keys: readonly AttentionDismissalKey[]) => {
-    const writes = keys.map((key) => ({ ...key, basis: ledger.basisFor(key.itemId) }));
+  const receive = (writes: readonly { itemId: string; occurrence: string; basis: number }[]) => {
     bases.push(...writes.map((write) => write.basis));
-    await new Promise<void>((resolve) => answers.push(resolve));
-    if (writes.some((write) => (revisions.get(write.itemId) ?? 0) > write.basis)) return { ok: false };
-    const accepted = writes.map((write) => ({ itemId: write.itemId, revision: ++next }));
-    for (const entry of accepted) revisions.set(entry.itemId, entry.revision);
-    ledger.learn(accepted);
-    return { ok: true };
-  });
-  // Two clicks before either is answered: the basis must be read when each is sent.
-  const first = enqueue([{ itemId: "blocked:s-1", occurrence: "bash" }]);
-  const second = enqueue([{ itemId: "blocked:s-1", occurrence: "edit" }]);
+    if (writes.some((write) => (rows.get(write.itemId)?.revision ?? 0) > write.basis)) {
+      return { ok: false as const };
+    }
+    const accepted = writes.map((write) => {
+      const revision = ++next;
+      rows.set(write.itemId, { occurrence: write.occurrence, revision });
+      return { itemId: write.itemId, revision };
+    });
+    return { ok: true as const, accepted };
+  };
+  /** This window's transport: stored on receipt, answered when `answerNext` is called. */
+  const post = (writes: readonly { itemId: string; occurrence: string; basis: number }[]) => {
+    const answer = receive(writes);
+    return new Promise<typeof answer>((resolve) => answers.push(() => resolve(answer)));
+  };
+  return { rows, bases, receive, post, answerNext: () => answers.shift()!() };
+}
+
+test("a window's second dismissal of a row is sent with the revision its first one was stored at", async () => {
+  const daemon = revisionDaemon();
+  const send = createDismissalSender(daemon.post, createRevisionLedger());
+  // Two clicks before either is answered: the second waits, then claims the first's revision.
+  const first = send([{ itemId: "blocked:s-1", occurrence: "bash" }]);
+  const second = send([{ itemId: "blocked:s-1", occurrence: "edit" }]);
   await settle();
-  answers.shift()!();
-  assert.deepEqual(await first, { ok: true });
+  daemon.answerNext();
+  assert.equal((await first).ok, true);
   await settle();
-  answers.shift()!();
-  assert.deepEqual(await second, { ok: true }, "this window never refuses its own previous dismissal");
-  assert.deepEqual(bases, [0, 1]);
+  daemon.answerNext();
+  assert.equal((await second).ok, true, "this window never refuses its own previous dismissal");
+  assert.deepEqual(daemon.bases, [0, 1]);
+  assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "edit");
+});
+
+test("a queued click is not upgraded by another window's dismissal made while it waited", async () => {
+  // The Inspector's ordering. This window dismisses "bash"; it is stored but not yet answered.
+  // The row changes and this window clicks again ("edit") - queued behind the first. The row
+  // changes once more and ANOTHER window, having read this window's first dismissal, dismisses
+  // "write". This window then reads that newer revision while its second click still waits.
+  const daemon = revisionDaemon();
+  const seen = createRevisionLedger();
+  const send = createDismissalSender(daemon.post, seen);
+  const first = send([{ itemId: "blocked:s-1", occurrence: "bash" }]);
+  const second = send([{ itemId: "blocked:s-1", occurrence: "edit" }]);
+  await settle();
+  const firstRevision = daemon.rows.get("blocked:s-1")!.revision;
+
+  const otherWindow = daemon.receive([{ itemId: "blocked:s-1", occurrence: "write", basis: firstRevision }]);
+  assert.equal(otherWindow.ok, true);
+  seen.learn([{ itemId: "blocked:s-1", revision: daemon.rows.get("blocked:s-1")!.revision }]);
+
+  daemon.answerNext();
+  assert.equal((await first).ok, true);
+  await settle();
+  daemon.answerNext();
+  assert.equal((await second).ok, false, "the older click is refused, not accepted over the newer one");
+  assert.deepEqual(daemon.bases.slice(-1), [firstRevision], "its basis is its own first write, not the other window's");
+  assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "write", "the newer dismissal stands");
+});
+
+test("a click made after seeing another window's dismissal is the newer decision, and is accepted", async () => {
+  const daemon = revisionDaemon();
+  const seen = createRevisionLedger();
+  const send = createDismissalSender(daemon.post, seen);
+  const otherWindow = daemon.receive([{ itemId: "blocked:s-1", occurrence: "write", basis: 0 }]);
+  assert.equal(otherWindow.ok, true);
+  seen.learn(otherWindow.ok ? otherWindow.accepted : []);
+  const mine = send([{ itemId: "blocked:s-1", occurrence: "read" }]);
+  await settle();
+  daemon.answerNext();
+  assert.equal((await mine).ok, true);
+  assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "read");
 });

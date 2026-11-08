@@ -1,4 +1,8 @@
-import type { AttentionDismissal, AttentionDismissalKey } from "@shared/protocol.ts";
+import type {
+  AttentionDismissal,
+  AttentionDismissalKey,
+  AttentionDismissalWrite,
+} from "@shared/protocol.ts";
 
 /**
  * The dashboard's copy of the attention-inbox dismissals, and the one rule that keeps a
@@ -26,9 +30,12 @@ import type { AttentionDismissal, AttentionDismissalKey } from "@shared/protocol
  * again, though the operator had dismissed it.
  *
  * That queue cannot see another WINDOW's writes, so the daemon also refuses a stale write: each
- * one carries the newest revision of its row this window has seen (`createRevisionLedger`), and
- * a write behind the stored revision was made without seeing a newer dismissal. Its row comes
- * back in this window with the reason, as any refusal does, and the newer dismissal stands.
+ * one carries a basis, and a write behind the stored revision was made without seeing a newer
+ * dismissal. Its row comes back in this window with the reason, as any refusal does, and the
+ * newer dismissal stands. The basis is what this window had seen WHEN THE OPERATOR CLICKED,
+ * raised only by this window's own earlier writes (`createDismissalSender`) - never by what it
+ * learned from other windows while the write waited in the queue, which would let an older
+ * click pass for a newer one.
  *
  * Pure and separate from the hook so the orderings can be driven one event at a time in a test.
  */
@@ -131,9 +138,9 @@ export function effectiveDismissals(state: AttentionDismissalState): ReadonlyMap
  * way - and is sent at once when none is outstanding. Writes of different rows never wait for
  * each other. Returns `send`'s own answer.
  */
-export function createDismissalWriteQueue<Answer>(
-  send: (keys: readonly AttentionDismissalKey[]) => Promise<Answer>,
-): (keys: readonly AttentionDismissalKey[]) => Promise<Answer> {
+export function createDismissalWriteQueue<Key extends { itemId: string }, Answer>(
+  send: (keys: readonly Key[]) => Promise<Answer>,
+): (keys: readonly Key[]) => Promise<Answer> {
   /** The newest write of each row that has not been answered yet. */
   const outstanding = new Map<string, Promise<unknown>>();
   return (keys) => {
@@ -175,4 +182,53 @@ export function createRevisionLedger(): RevisionLedger {
     },
     basisFor: (itemId) => newest.get(itemId) ?? 0,
   };
+}
+
+/** What a dismissal write's answer must carry for the sender to learn from it. */
+interface DismissalWriteAnswer {
+  ok: boolean;
+  accepted?: readonly { itemId: string; revision: number }[];
+}
+
+/**
+ * Send this window's dismissals, each with the basis that makes the daemon's ordering honest.
+ *
+ * A write's basis is fixed from two facts and nothing else:
+ *
+ *  - the newest revision of its row this window had seen AT THE CLICK (`seen`, read when the
+ *    returned function is called); and
+ *  - the revision this window's own earlier write of that row was stored at, if one was - read
+ *    when the write is sent, because the queue holds it until that earlier write is answered.
+ *
+ * The larger of the two. Revisions `seen` learns from OTHER windows while a write waits in the
+ * queue are deliberately left out: the operator clicked before those dismissals existed, so the
+ * click is the older decision, and a basis raised to cover them would let the daemon accept it
+ * over a newer one. The window's own preceding write is the one later revision it may claim -
+ * leaving it out would refuse a window's second dismissal of a row because of its first.
+ *
+ * Writes go through `createDismissalWriteQueue`, so a row's writes reach the daemon in click
+ * order. Accepted revisions are taught to both the window's own ledger and to `seen`.
+ */
+export function createDismissalSender<Answer extends DismissalWriteAnswer>(
+  post: (writes: readonly AttentionDismissalWrite[]) => Promise<Answer>,
+  seen: RevisionLedger,
+): (keys: readonly AttentionDismissalKey[]) => Promise<Answer> {
+  /** Revisions this window's own writes were stored at, and nothing else. */
+  const own = createRevisionLedger();
+  type Stamped = AttentionDismissalKey & { seenAtClick: number };
+  const enqueue = createDismissalWriteQueue<Stamped, Answer>(async (stamped) => {
+    const answer = await post(
+      stamped.map(({ itemId, occurrence, seenAtClick }) => ({
+        itemId,
+        occurrence,
+        basis: Math.max(seenAtClick, own.basisFor(itemId)),
+      })),
+    );
+    if (answer.ok && answer.accepted) {
+      own.learn(answer.accepted);
+      seen.learn(answer.accepted);
+    }
+    return answer;
+  });
+  return (keys) => enqueue(keys.map((key) => ({ ...key, seenAtClick: seen.basisFor(key.itemId) })));
 }

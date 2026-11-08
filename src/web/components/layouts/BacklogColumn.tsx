@@ -60,9 +60,9 @@ import { backlogFacetCounts, matchesBacklogFilter } from "../../lib/backlog-filt
  * is still a click away on the card itself, and stays the right answer when no
  * suitable agent is free.
  *
- * The column never shrinks or hides when empty, unlike the tone columns beside it:
- * it is a drop target and an inbox, not a readout, and a target that disappears
- * when it has nothing in it is a target you cannot drop into.
+ * An empty Backlog leaves the board like an empty tone column does (see BoardView and
+ * `backlogColumnMode`). It is a drop target only for its own cards, so with none there is
+ * nothing to drop, and the stash keeps it one click away.
  *
  * A card is also a way back INTO the form that wrote it: clicking one reopens the
  * dispatch modal over that task, where it can be corrected and then dispatched from
@@ -119,6 +119,7 @@ export function BacklogColumn({
   sessions = [],
   workflowSummaries = [],
   stackShipping,
+  onHide,
 }: {
   tasks: Task[];
   /** Every task, not just the backlog - dependencies point at tasks that already left it. */
@@ -159,6 +160,11 @@ export function BacklogColumn({
   workflowSummaries?: WorkflowSummary[];
   /** The Shipping stacking default and depth cap, so a blocked stack card can say why. */
   stackShipping?: StackShipping;
+  /**
+   * Put an empty Backlog the operator pulled out of the stash back into it. Given only while
+   * the board drew an empty Backlog on request, which is the only time it is stashable.
+   */
+  onHide?: () => void;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
   const index = backlogIndex(allTasks, plan);
@@ -461,6 +467,13 @@ export function BacklogColumn({
         </span>
         {/* Last, so on a column too narrow for one line they are what wraps, never the count. */}
         {tasks.length > 0 && <BacklogFilterButtons state={filtering} counts={facetCounts} />}
+        {onHide && (
+          <Tooltip label="Hide the empty Backlog column again">
+            <button className="board-restash" aria-label="Hide the empty Backlog column" onClick={onHide}>
+              ×
+            </button>
+          </Tooltip>
+        )}
       </header>
       {tasks.length > 0 && <BacklogFilterStrip state={filtering} />}
       <div

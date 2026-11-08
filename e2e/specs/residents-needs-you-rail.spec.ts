@@ -11,8 +11,8 @@ import type { ResidentProfile } from "../../src/shared/residents.ts";
  * Residents that need you, in Drawer placement:
  *
  * - While a conversation is open, every resident that needs you is an ordinary row in the Needs
- *   you rail, so opening one drills into a full rail listing everything asking - never the slim
- *   all-clear strip - and the conversation moves between them with a click.
+ *   you rail, so opening one drills into a full rail listing everything asking, and the
+ *   conversation moves between them with a click.
  * - With no conversation open, they stay out of the Needs you column while the drawer is on
  *   screen, and lead the drawer in a Needs you group carrying the review chord's keycap, which
  *   `e` follows.
@@ -179,14 +179,12 @@ test("on the Board, opening a resident that needs you drills into a full Needs y
   const drawer = await threeResidentsBesidePinnedDrawer(page, daemon);
   const needsYouColumn = page.locator(".board-col.tone-attention");
 
-  // Opening one drills the Board into the Needs you rail at full rail width - not the slim
-  // all-clear strip - listing both residents asking, and not the quiet one.
+  // Opening one drills the Board into the Needs you rail at full rail width, listing both
+  // residents asking, and not the quiet one.
   await drawer.getByRole("button", { name: `Open ${ASK_A}` }).click();
   await expect(band(page, ASK_A)).toBeVisible();
   const rail = page.locator(".board-col.is-rail");
   await expect(rail).toHaveClass(/tone-attention/);
-  await expect(rail).not.toHaveClass(/is-calm/);
-  await expect(rail.locator(".board-allclear")).toHaveCount(0);
   await expect(rail.getByRole("heading", { name: "needs you" })).toBeVisible();
   await expect(railRowOf(rail, ASK_A)).toBeVisible();
   await expect(railRowOf(rail, ASK_A)).toHaveAttribute("aria-current", "true");
@@ -212,7 +210,7 @@ test("on the Board, opening a resident that needs you drills into a full Needs y
   await page.locator("body").press("Escape");
   await expect(band(page, ASK_B)).toBeHidden();
   await expect(headOf(drawer, ASK_B)).toBeFocused();
-  for (const name of [QUIET, ASK_A, ASK_B]) await expect(needsYouColumn).not.toContainText(name);
+  for (const name of [QUIET, ASK_A, ASK_B]) await expect(needsYouColumn.filter({ hasText: name })).toHaveCount(0);
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
 });
 
@@ -221,7 +219,7 @@ test("with no conversation open, residents that need you stay out of the Needs y
 
   // The drawer is on screen beside the Board, so no resident is in Needs you, not even a visitor.
   const needsYouColumn = page.locator(".board-col.tone-attention");
-  for (const name of [QUIET, ASK_A, ASK_B]) await expect(needsYouColumn).not.toContainText(name);
+  for (const name of [QUIET, ASK_A, ASK_B]) await expect(needsYouColumn.filter({ hasText: name })).toHaveCount(0);
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
 
   // The drawer leads with a Needs you group holding just the two asking residents, the review

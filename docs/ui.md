@@ -854,10 +854,10 @@ available:
   restores it. Any column can be collapsed, including **Backlog** and **needs you**, and
   several at once. Only one column is expanded at a time, and expanding one returns the
   previous one to normal. Double-clicking a header still expands or restores it. A collapsed
-  column stays collapsed after a reload; an expanded one returns to normal. An empty **needs
-  you** is already the slim all-clear rail, so it has no width control until something needs
-  you. A **needs you** you collapsed stays a strip when it empties, and when a session starts
-  waiting on you the strip stays collapsed and its count pulses. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
+  column stays collapsed after a reload; an expanded one returns to normal. An empty column is not on
+  the board at all, so it has nothing to collapse. A collapsed **needs you** that still holds
+  a card stays a strip when another session starts waiting on you, and its count pulses; one
+  that empties leaves the board like any empty column. The arrow keys and the <kbd>⌘</kbd>-number shortcuts skip the cards a
   collapsed column is hiding. Opening a session from a collapsed column (from the Line or a
   notification, say) shows that column as the drill-in rail in full, and it is collapsed
   again when you come back to the board.
@@ -971,16 +971,16 @@ available:
   and the heading's name is what tells them apart. Arrow keys walk straight past the headings.
   Turn the whole thing off with **Group by repository** in Settings → Display → Layout, and
   every column returns to one flat, tone-ordered list.
-- **Empty columns get out of the way.** An empty **needs you** keeps its place but narrows to
-  a slim rail: its swatch, its name turned on end, a green tick and a `0`. Hover the rail for
-  "All clear. Nothing is waiting on you." The moment a session needs you, the rail widens back
-  into a full column in the same spot, so it keeps its place in the column order. Every other
-  empty column leaves the board and becomes a chip in the **empty** stash beside the last column;
-  click a chip to bring that column back. Uncheck **Show the empty-column stash** in
-  Settings → Display → Layout to hide the stash entirely, so empty columns simply leave. The
-  needs you rail is not in the stash and stays either way. Drilled into **needs you**, the
-  column is the drill-in rail at full rail width with its heading, never the slim all-clear,
-  even when nothing else in it is asking.
+- **Empty columns get out of the way.** A column with no cards in it leaves the board, and
+  the columns that remain widen into the space. That includes **needs you**: when nothing is
+  waiting on you it takes no room at all, and the moment a session needs you it comes back in
+  its place in the column order. It includes the **Backlog** too: with no tasks queued it
+  leaves, and the first task you save to the Backlog brings it back. An empty Backlog has
+  nothing to drag, so hiding it takes no drop target away. Each empty column becomes a chip
+  in the **empty** stash beside the last column; click a chip to bring that column back.
+  Uncheck **Show the empty-column stash** in Settings → Display → Layout to hide the stash
+  entirely, so empty columns simply leave. Drilled into **needs you**, the column is the
+  drill-in rail at full rail width with its heading, even when nothing else in it is asking.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they

@@ -337,8 +337,9 @@ why a repository can appear in more than one column.
 
 The same panel carries **Show the empty-column stash**, which also ships checked. The Board
 folds each empty column into a chip beside its last column, and a chip brings its column
-back. Uncheck it to hide that stash, so empty columns leave the board entirely. An empty
-**needs you** column is never in the stash: it stays as a slim all-clear rail either way.
+back. Uncheck it to hide that stash, so empty columns leave the board entirely. That
+includes an empty **needs you** column and an empty **Backlog**, which leave and return
+like any other.
 
 Display's **Board card** panel is the checklist of every optional item a
 session card draws - goal, live activity, workflow, model, context meter, reasoning effort,

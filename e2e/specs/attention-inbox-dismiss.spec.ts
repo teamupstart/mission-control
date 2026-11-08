@@ -398,6 +398,47 @@ test.describe("a blocked session row", () => {
     await dashboard.unroute("**/api/attention/dismissals");
   });
 
+  test("a window whose refresh fails keeps retrying until it learns another window's dismissal", async ({
+    dashboard,
+    daemon,
+  }) => {
+    const { beforeOwed } = await parkASession(dashboard, daemon);
+    const other = await dashboard.context().newPage();
+    await other.goto(dashboard.url());
+    await expectDashboardReady(other);
+    // This window has read the dismissals (none yet) and counts the row.
+    await expectToAnswer(dashboard, beforeOwed + 1);
+
+    // From here on, this window's next two reads of the dismissals fail - including the one the
+    // other window's dismissal prompts. It must keep trying rather than wait for another event.
+    let failing = 2;
+    let reads = 0;
+    await dashboard.route("**/api/attention/dismissals", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      reads++;
+      if (failing > 0) {
+        failing--;
+        await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"not now"}' });
+        return;
+      }
+      await route.continue();
+    });
+
+    const otherInbox = await openInbox(other);
+    const otherRow = otherInbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });
+    await otherRow.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
+    await expect(otherRow).toHaveCount(0);
+
+    await expect.poll(() => reads, { timeout: 30_000, message: "this window retried its failed refresh" })
+      .toBeGreaterThanOrEqual(3);
+    await holdsSteady(
+      async () => (await pulseCount(dashboard, "to answer")) === beforeOwed,
+      "this window still counts the row the other window dismissed",
+    );
+    await dashboard.unroute("**/api/attention/dismissals");
+    await other.close();
+  });
+
   test("keeps the newer dismissal when the row changes and the older write lands last", async ({
     dashboard,
     daemon,

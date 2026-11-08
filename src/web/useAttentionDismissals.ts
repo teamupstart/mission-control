@@ -7,9 +7,10 @@ import {
   createDismissalSender,
   createRevisionLedger,
   effectiveDismissals,
-  firstReadRetryDelay,
   INITIAL_DISMISSAL_STATE,
+  readRetryDelay,
   settleDismissalWrite,
+  shouldRetryRead,
 } from "./lib/attention-dismissal-state.ts";
 
 export interface AttentionDismissalsState {
@@ -52,8 +53,10 @@ export interface AttentionDismissalsState {
  *
  * A failed read keeps what was already known. An empty set is a claim that nothing is
  * dismissed, and on a dropped connection that claim would bring every dismissed row back. Until
- * the first read succeeds nothing is known at all, so `dismissed` stays null and a failed read
- * is retried with backoff rather than left until some later event happens to ask again.
+ * the first read succeeds nothing is known at all, so `dismissed` stays null. Any failed read -
+ * the first, or a refresh another window's dismissal prompted - is retried with backoff rather
+ * than left until some later event happens to ask again, and the last known set stays in force
+ * meanwhile.
  */
 export function useAttentionDismissals(revision: number): AttentionDismissalsState {
   const [state, setState] = useState(INITIAL_DISMISSAL_STATE);
@@ -66,25 +69,33 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     createDismissalSender((writes) => api.dismissAttentionItems(writes), ledger),
   );
 
-  const loaded = useRef(false);
-  const firstReadFailures = useRef(0);
-  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The newest read applied, mirrored for the read callback, which cannot see `state`. */
+  const newestApplied = useRef(0);
+  const failuresInARow = useRef(0);
+  /** The one waiting retry, and the read whose failure it is repairing. */
+  const retry = useRef<{ timer: ReturnType<typeof setTimeout>; after: number } | null>(null);
 
   const read = useCallback((): void => {
     const number = ++readsStarted.current;
     void api.listAttentionDismissals().then((body) => {
       if (!body) {
-        // Before the first success there is nothing to fall back on, so try again rather than
-        // waiting for a change event that may never come. After it, a later read will.
-        if (loaded.current || retry.current) return;
-        const delay = firstReadRetryDelay(firstReadFailures.current++);
-        retry.current = setTimeout(() => {
+        // A lost read is repaired by reading again, not by waiting for a change event that may
+        // never come - the one that prompted this read has already been spent.
+        if (!shouldRetryRead(number, newestApplied.current, retry.current !== null)) return;
+        const timer = setTimeout(() => {
           retry.current = null;
           read();
-        }, delay);
+        }, readRetryDelay(failuresInARow.current++));
+        retry.current = { timer, after: number };
         return;
       }
-      loaded.current = true;
+      failuresInARow.current = 0;
+      newestApplied.current = Math.max(newestApplied.current, number);
+      // A read that started after the lost one has answered for it.
+      if (retry.current && number > retry.current.after) {
+        clearTimeout(retry.current.timer);
+        retry.current = null;
+      }
       ledger.learn(body.dismissals);
       setState((current) => applyDismissalRead(current, number, body.dismissals));
     });
@@ -92,7 +103,7 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
 
   useEffect(() => read(), [revision, read]);
   useEffect(() => () => {
-    if (retry.current) clearTimeout(retry.current);
+    if (retry.current) clearTimeout(retry.current.timer);
   }, []);
 
   const dismiss = useCallback(async (keys: readonly AttentionDismissalKey[]): Promise<string | null> => {

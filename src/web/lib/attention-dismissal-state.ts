@@ -233,11 +233,21 @@ export function createDismissalSender<Answer extends DismissalWriteAnswer>(
 }
 
 /**
- * How long to wait before retrying the first read of the dismissals after `failures` failed
- * ones: half a second, doubling, never more than fifteen. Until that read succeeds the inbox
- * is held empty, so it is retried rather than left for some later event to ask again - and
- * never hammered, because a local daemon that answers at all answers in milliseconds.
+ * How long to wait before retrying a failed read of the dismissals after `failures` failures in
+ * a row: half a second, doubling, never more than fifteen. A failed read is retried rather than
+ * left for some later event to ask again - before the first success the inbox is held empty,
+ * and after it a missed change would leave another window's dismissal unseen here - and never
+ * hammered, because a local daemon that answers at all answers in milliseconds.
  */
-export function firstReadRetryDelay(failures: number): number {
+export function readRetryDelay(failures: number): number {
   return Math.min(500 * 2 ** failures, 15_000);
+}
+
+/**
+ * Whether read number `failedRead`, which just failed, should be retried. Not when a read that
+ * started after it has already been applied - that answer is at least as fresh as the one that
+ * was lost - and not while a retry is already waiting, which will read afresh when it runs.
+ */
+export function shouldRetryRead(failedRead: number, appliedRead: number, retryPending: boolean): boolean {
+  return !retryPending && appliedRead < failedRead;
 }

@@ -33,9 +33,10 @@ import {
   createDismissalWriteQueue,
   createRevisionLedger,
   effectiveDismissals,
-  firstReadRetryDelay,
   INITIAL_DISMISSAL_STATE,
+  readRetryDelay,
   settleDismissalWrite,
+  shouldRetryRead,
   type AttentionDismissalState,
 } from "../src/web/lib/attention-dismissal-state.ts";
 
@@ -338,6 +339,18 @@ test("a click made after seeing another window's dismissal is the newer decision
   assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "read");
 });
 
-test("a failed first read is retried soon, then less often, and never left for good", () => {
-  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 10].map(firstReadRetryDelay), [500, 1000, 2000, 4000, 8000, 15_000, 15_000, 15_000]);
+test("a failed read is retried soon, then less often, and never left for good", () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 10].map(readRetryDelay), [500, 1000, 2000, 4000, 8000, 15_000, 15_000, 15_000]);
+});
+
+test("a failed read is retried - the first one or a later refresh - unless a newer answer already landed", () => {
+  // The first read failed and nothing is known yet.
+  assert.equal(shouldRetryRead(1, 0, false), true);
+  // A refresh another window's dismissal prompted failed after earlier reads succeeded: retry it,
+  // or this window never learns of that dismissal until some unrelated event.
+  assert.equal(shouldRetryRead(5, 4, false), true);
+  // A read that started after this one has already been applied: nothing was lost.
+  assert.equal(shouldRetryRead(5, 6, false), false);
+  // A retry is already waiting, and it reads afresh when it runs.
+  assert.equal(shouldRetryRead(5, 4, true), false);
 });

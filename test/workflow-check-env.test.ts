@@ -171,3 +171,18 @@ test("credentialShapedName is the name rule on its own", () => {
   // The one that matters most: a variable this repository has never heard of.
   assert.equal(credentialShapedName("SOME_FUTURE_TOOL_TOKEN"), true);
 });
+
+test("a Command never inherits make's recursion state from whatever launched the daemon", () => {
+  // Under `make start` or `make test` the daemon carries MAKELEVEL, so a configured `make test`
+  // would speak as `make[1]:` - read as a sub-make inside a recipe that ran - and a repository
+  // with no `test` target would be reported as a code failure instead of a missing Command.
+  const scrubbed = scrubCheckEnv({
+    PATH: "/usr/bin", HOME: "/home/me", MAKELEVEL: "1", MAKEFLAGS: " -j4 --jobserver-auth=3,4",
+    MFLAGS: "-j4", MAKEOVERRIDES: "${-*-command-variables-*-}", MAKE_CONFIG: "kept",
+  }, TOKEN);
+  for (const name of ["MAKELEVEL", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"]) {
+    assert.equal(scrubbed[name], undefined, name);
+  }
+  assert.equal(scrubbed.HOME, "/home/me");
+  assert.equal(scrubbed.MAKE_CONFIG, "kept", "only make's own recursion variables are removed");
+});

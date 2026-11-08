@@ -346,6 +346,7 @@
   "POST /mcp/v3/tasks": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflow-evidence": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflows/act": "401 {\"error\":\"unauthorized\"}",
+  "POST /mcp/workflows/configure-command": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflows/list": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflows/read": "401 {\"error\":\"unauthorized\"}",
   "POST /mcp/workflows/read-command-output": "401 {\"error\":\"unauthorized\"}",

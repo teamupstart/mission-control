@@ -45,6 +45,7 @@ import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
 import {
+  ConfigureWorkflowCommandSchema,
   GetWorkflowRunSchema,
   ListWorkflowRunsSchema,
   ReadWorkflowCommandOutputMcpSchema,
@@ -269,6 +270,39 @@ server.registerTool("read_workflow_command_output", {
   try {
     const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
     return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("configure_workflow_command", {
+  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot and pass the argv you found. This tool then has Mission Control raise a request_input card on your session - naming this run, the slot, the repository and the exact argv - and BLOCKS until the operator answers. Nothing is configured unless they choose Configure this Command. The machine-wide default is never changed. Executions in which the repository did not provide a different argv are returned to the run budget so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
+  inputSchema: ConfigureWorkflowCommandSchema,
+}, async (input, extra) => {
+  try {
+    const configure = () => http("/mcp/workflows/configure-command", "POST", input, true);
+    const first = await configure();
+    if (first.status !== 403) return textResult(await first.text(), !first.ok);
+    const refusal = await responseResult(first);
+    const card = (refusal.body as { code?: string; confirmationReviewId?: string; confirmation?: {
+      decision: { id: string };
+    } } | null);
+    if (card?.code !== "unconfirmed" || !card.confirmationReviewId || !card.confirmation) {
+      return textResult(JSON.stringify(refusal.body), true);
+    }
+    // The DAEMON raised this card on the session and recorded it on the run; this only waits
+    // for the operator's answer, on the same path request_input waits on.
+    const review = await waitForResolution(card.confirmationReviewId, extra);
+    const chose = review.selections?.find((answer) => answer.decisionId === card.confirmation!.decision.id)?.selected ?? [];
+    if (review.status !== "answered" || chose.length !== 1 || chose[0] !== "configure") {
+      const result = reviewToolResult(review);
+      return textResult(
+        `The operator did not confirm this Command, so nothing was configured. Their answer:\n${result.text}`,
+        false,
+      );
+    }
+    const second = await configure();
+    return textResult(await second.text(), !second.ok);
   } catch (error) {
     return textResult(String(error), true);
   }

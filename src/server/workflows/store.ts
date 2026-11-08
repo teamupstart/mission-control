@@ -3009,6 +3009,12 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
   return episodeKey !== null && stamped !== episodeKey;
 }
 
+/**
+ * Marks a run-budget reservation a session's Command configuration forgave. Not a slot name,
+ * so the budget's `check_run_slot = <slot>` counts skip it; see `forgiveCheckRuns`.
+ */
+const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
+
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
   private mutate<T>(
@@ -8481,6 +8487,58 @@ export class WorkflowStore {
           SET check_run_slot = NULL
         WHERE id = ? AND state = 'running' AND check_run_slot = ?`,
     ).run(attemptId, slot).changes === 1;
+  }
+
+  /**
+   * Re-scope one run's spent executions of one Command after a session configured `command`.
+   *
+   * The run budget bounds re-proving a command, and an execution of an argv the repository
+   * never provided proved nothing about the change. Without this, a session that configures
+   * the right command for its repository resubmits into a gate already skipped as
+   * `budget_spent`, and the command it was asked to fix never runs in this run at all.
+   *
+   * Two rules keep that from becoming a way around `maxRuns`:
+   *
+   * - Only a MISFIT execution is forgiven: one whose outcome recorded `misfitSignal`, the
+   *   launcher refusing a target, script or recipe the repository does not have. A command
+   *   that actually ran is never returned, whatever is configured afterwards.
+   * - Spending stays with the argv that spent it. A forgiven reservation is marked rather than
+   *   erased, and configuring an argv RESTORES its own forgiven reservations. So switching
+   *   A -> B -> A gives A back exactly what it had spent, and re-confirming the command that
+   *   already ran forgives nothing. Each argv gets at most `maxRuns` executions in a run.
+   *
+   * The mark is a `check_run_slot` value no slot can have, so `reserveCheckRun` and
+   * `checkRunsSpent` stop counting it without knowing it exists. Finished attempts only: a
+   * reservation still `running` is an execution in flight.
+   */
+  forgiveCheckRuns(
+    runId: string,
+    slot: string,
+    command: readonly string[],
+  ): { forgiven: number; restored: number } {
+    const forgivenSlot = `${FORGIVEN_CHECK_RUN_PREFIX}${slot}`;
+    const argv = JSON.stringify(command);
+    return transaction(this.db, () => {
+      const inRun = `submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`;
+      const restored = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND ${inRun}
+            AND json_extract(output_json, '$.command') = json(?)`,
+      ).run(slot, forgivenSlot, runId, argv).changes);
+      const forgiven = Number(this.db.prepare(
+        `UPDATE workflow_node_attempts
+            SET check_run_slot = ?
+          WHERE check_run_slot = ?
+            AND state <> 'running'
+            AND ${inRun}
+            AND json_extract(output_json, '$.misfitSignal') IS NOT NULL
+            AND json_extract(output_json, '$.command') IS NOT NULL
+            AND json_extract(output_json, '$.command') <> json(?)`,
+      ).run(forgivenSlot, slot, runId, argv).changes);
+      return { forgiven, restored };
+    });
   }
 
   /**

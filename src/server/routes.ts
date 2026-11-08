@@ -2010,7 +2010,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
   const personaManager = (): PersonaManager | null => personas ?? null;
   const workflowManager = (): WorkflowManager | null => workflows ?? null;
-  registerWorkflowMcpRoutes(app, registry, workflowManager);
+  registerWorkflowMcpRoutes(app, registry, workflowManager, () => workflowCommands ?? null, () => reviews);
   const localPlans = workflows ? workflows.localPlanPublication(tasks) : null;
   app.use("/api/*", workflowActionTelemetry(() => workflowManager()?.store ?? null));
   const ensembleManager = (): EnsembleManager | null => ensembles ?? null;

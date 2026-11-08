@@ -191,6 +191,29 @@ test("one row's several keys land together", async () => {
   assert.deepEqual(ids, ["review:r-1", "review:r-2"]);
 });
 
+test("a row of more questions than any fixed batch is dismissed whole, and still all or nothing", async () => {
+  // A session's row of questions is one key per pending question, and the daemon bounds pending
+  // questions nowhere - so neither may the request that dismisses the row. An earlier cap of 100
+  // refused such a row outright and it could never be dismissed.
+  clear();
+  const { call } = setup();
+  const questions = Array.from({ length: 250 }, (_, i) => ({ itemId: `review:r-${i}`, occurrence: "", basis: 0 }));
+  const whole = await call("POST", { items: questions });
+  assert.equal(whole.status, 200, JSON.stringify(whole.body).slice(0, 200));
+  assert.equal((whole.body.accepted as unknown[]).length, 250);
+  assert.equal(((await call("GET")).body.dismissals as unknown[]).length, 250);
+
+  // One stale key among 250 still refuses the batch, and stores none of the rest.
+  clear();
+  const stored = await call("POST", { items: [{ itemId: "review:r-249", occurrence: "", basis: 0 }] });
+  const batch = await call("POST", {
+    items: questions.map((key) => (key.itemId === "review:r-249" ? { ...key, basis: revisionOf(stored.body) - 1 } : key)),
+  });
+  assert.equal(batch.status, 409);
+  assert.deepEqual(batch.body.superseded, ["review:r-249"]);
+  assert.deepEqual(((await call("GET")).body.dismissals as { itemId: string }[]).map((r) => r.itemId), ["review:r-249"]);
+});
+
 test("a malformed dismissal is refused and stores nothing", async () => {
   clear();
   const { events, call } = setup();

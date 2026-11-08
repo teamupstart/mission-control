@@ -1380,10 +1380,14 @@ export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSche
  * Dismiss attention-inbox rows (`POST /api/attention/dismissals`). A list because one row can
  * stand for several keys - a session's row of questions is one key per question. All or
  * nothing: if any key is stale (see `basis`) none is stored, and the 409 names the stale keys.
- * Bounded as a request body, not as a product limit.
+ *
+ * No length cap, deliberately. One Dismiss sends every key of its row in one request so the
+ * write stays all or nothing, and a row of questions has one key per pending question - which
+ * the daemon bounds nowhere, and already holds and sends in every snapshot. A fixed cap (it was
+ * 100) made any longer row impossible to dismiss; splitting it would make it half dismissable.
  */
 export const DismissAttentionItemsSchema = z
-  .object({ items: z.array(AttentionDismissalWriteSchema).min(1).max(100) })
+  .object({ items: z.array(AttentionDismissalWriteSchema).min(1) })
   .strict();
 
 /**

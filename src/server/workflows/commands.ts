@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { gitInfo } from "../util/git.ts";
 import type { UpdateWorkflowCommand } from "@shared/protocol.ts";
 import type {
@@ -42,55 +43,107 @@ export type ConfigureRepositoryCommandResult =
       ok: false;
       reason: "finished" | "no_repository" | "check_running" | "unconfirmed" | "not_found" | "conflict" | "refused";
       message: string;
+      /** On `unconfirmed`: the card to show the operator, which `configure_workflow_command` does. */
+      confirmation?: CommandConfirmationCard;
     };
 
-/** The argv as an operator reads it on a card: arguments joined by single spaces. */
-export function commandText(command: readonly string[]): string {
-  return command.join(" ");
-}
+/** The option an operator picks on a confirmation card to authorize the write. */
+export const CONFIGURE_COMMAND_OPTION_ID = "configure";
 
-function normalizedAnswer(value: string): string {
-  return value.trim().replace(/^[`'"]+|[`'"]+$/g, "").replace(/\s+/g, " ");
+/** The `request_input` card that authorizes exactly one repository Command change. */
+export interface CommandConfirmationCard {
+  title: string;
+  question: string;
+  decision: {
+    id: string;
+    question: string;
+    options: Array<{ id: string; label: string; detail?: string; recommended?: boolean }>;
+  };
 }
 
 /**
- * The operator's answer that confirms exactly `command`, or null when there is none.
+ * The card an operator answers to authorize one repository Command change, composed by the
+ * daemon and never by the session.
+ *
+ * It names the run, the slot, the repository and the argv as a JSON array. A space-joined
+ * label is not an argv: `["./tools/run checks", "test"]` and `["./tools/run", "checks test"]`
+ * read the same and start different programs. The decision id carries a digest of all four,
+ * and verification recomputes the whole card, so an answer authorizes this change and nothing
+ * else - not another run, slot, repository or argv, and not a card the session phrased itself.
+ */
+export function commandConfirmationCard(input: {
+  runId: string;
+  slot: string;
+  repoRoot: string;
+  command: readonly string[];
+}): CommandConfirmationCard {
+  const argv = JSON.stringify(input.command);
+  const digest = createHash("sha256")
+    .update(JSON.stringify([input.runId, input.slot, input.repoRoot, input.command]))
+    .digest("hex")
+    .slice(0, 32);
+  const question = [
+    `Set the ${input.slot} workflow Command for this repository?`,
+    "",
+    `Repository: ${input.repoRoot}`,
+    `Slot: ${input.slot}`,
+    `Workflow run: ${input.runId}`,
+    `Command (exact argv, one JSON string per argument): ${argv}`,
+    "",
+    `Mission Control will run this argv for the ${input.slot} gate in this repository's workflow `
+      + "checks. It replaces this repository's override in Library › Commands; the machine-wide "
+      + "default is unchanged.",
+  ].join("\n");
+  return {
+    title: `Confirm the ${input.slot} Command for this repository`,
+    question,
+    decision: {
+      id: `configure-command:${digest}`,
+      question,
+      options: [
+        { id: CONFIGURE_COMMAND_OPTION_ID, label: "Configure this Command", detail: argv, recommended: true },
+        { id: "decline", label: "Don't configure it" },
+      ],
+    },
+  };
+}
+
+/**
+ * The operator's answer authorizing `card`, or null when there is none.
  *
  * The daemon's own check, so the repair packet's "confirm it with the operator first" is not
- * only text a misled or prompt-injected session could skip. It looks for a `request_input`
- * card on THIS session that:
+ * text a misled or prompt-injected session could skip. A review counts only when it:
  *
- * - was answered by the human (`resolvedBy: "human"`), not Foreman, a standing approval or
- *   a controlling session;
- * - was answered after this workflow run started, so an old answer cannot authorize a new run;
- * - chose exactly this argv: a selected option label, the "Other" text, or a free-text answer
- *   equal to the arguments joined by single spaces (surrounding backticks or quotes allowed).
- *
- * Text that merely mentions the argv, such as the question itself, confirms nothing, and
- * neither does picking a different option on a card that offered it.
+ * - is a `request_input` card (`kind: "input"`) carrying exactly this card's single decision -
+ *   id, question and options - so it is about this run, slot, repository and argv;
+ * - was answered by the human (`resolvedBy: "human"`), not Foreman, a standing approval or a
+ *   controlling session, after this workflow run started;
+ * - chose "Configure this Command".
  */
 export function operatorConfirmation(
   reviews: readonly ReviewItem[],
-  command: readonly string[],
+  card: CommandConfirmationCard,
   since: number,
 ): ReviewItem | null {
-  const wanted = commandText(command);
+  const expected = JSON.stringify(card.decision);
   for (const review of reviews) {
     if (review.kind !== "input" || review.status !== "answered" || review.resolvedBy !== "human") continue;
     if ((review.resolvedAt ?? 0) < since) continue;
-    const answers: string[] = [];
-    if (review.decisions?.length) {
-      for (const selection of review.selections ?? []) {
-        const decision = review.decisions.find((item) => item.id === selection.decisionId);
-        for (const option of decision?.options ?? []) {
-          if (selection.selected.includes(option.id)) answers.push(option.label);
-        }
-        if (selection.other) answers.push(selection.other);
-      }
-    } else if (review.response) {
-      answers.push(review.response);
-    }
-    if (answers.some((answer) => normalizedAnswer(answer) === wanted)) return review;
+    const decision = review.decisions?.length === 1 ? review.decisions[0]! : null;
+    if (!decision || decision.id !== card.decision.id) continue;
+    const shown = JSON.stringify({
+      id: decision.id,
+      question: decision.question,
+      options: decision.options.map((option) => ({
+        id: option.id,
+        label: option.label,
+        ...(option.detail === undefined ? {} : { detail: option.detail }),
+        ...(option.recommended === undefined ? {} : { recommended: option.recommended }),
+      })),
+    });
+    if (shown !== expected) continue;
+    const answer = review.selections?.find((selection) => selection.decisionId === decision.id);
+    if (answer?.selected.length === 1 && answer.selected[0] === CONFIGURE_COMMAND_OPTION_ID) return review;
   }
   return null;
 }
@@ -190,8 +243,9 @@ export class WorkflowCommandManager {
    * - refused for a finished run, a run with no repository, and while a check for this slot is
    *   still running in the run (its outcome decides whether its reservation is forgiven, and
    *   nothing awaits between this test and the write, so no check can start in between);
-   * - refused unless the operator picked exactly this argv on one of the session's
-   *   `request_input` cards (`operatorConfirmation`);
+   * - refused unless the operator chose "Configure this Command" on the daemon-composed
+   *   confirmation card for exactly this run, slot, repository and argv (`operatorConfirmation`);
+   *   the refusal carries that card so the tool can show it;
    * - writes that repository's override, never the machine-wide default, and writes nothing
    *   when the override already equals the argv; one retry absorbs a concurrent save;
    * - then re-scopes the run budget through `forgiveCheckRuns` and records the change.
@@ -215,13 +269,15 @@ export class WorkflowCommandManager {
         message: `A ${slot} check is still running in this workflow run; configure the Command after it finishes`,
       };
     }
-    const confirmation = operatorConfirmation(input.reviews, command, run.startedAt);
+    const card = commandConfirmationCard({ runId: run.id, slot, repoRoot, command });
+    const confirmation = operatorConfirmation(input.reviews, card, run.startedAt);
     if (!confirmation) {
       return {
         ok: false,
         reason: "unconfirmed",
-        message: `The operator has not confirmed \`${commandText(command)}\`. Ask with request_input, `
-          + `offering exactly "${commandText(command)}" as an option, and configure it only after they pick it.`,
+        message: `The operator has not confirmed ${JSON.stringify(command)} as the ${slot} Command for `
+          + "this repository. configure_workflow_command shows them the confirmation card and waits.",
+        confirmation: card,
       };
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {

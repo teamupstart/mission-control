@@ -156,7 +156,11 @@ export function registerWorkflowMcpRoutes(
     });
     if (!result.ok) {
       const status = result.reason === "unconfirmed" ? 403 : result.reason === "not_found" ? 404 : 409;
-      return c.json({ error: result.message, code: result.reason }, status);
+      return c.json({
+        error: result.message,
+        code: result.reason,
+        ...(result.confirmation ? { confirmation: result.confirmation } : {}),
+      }, status);
     }
     logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot: result.repoRoot });
     return c.json({

@@ -24,11 +24,13 @@ KiB. The same owning-session and **Control other sessions** authorization applie
 
 `configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
 `typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. The
-daemon accepts the argv only when the operator picked exactly that command on one of the session's
-`request_input` cards: answered by the human (not Foreman, a standing approval, or a controlling
-session), after the run started, choosing an option label, "Other" text, or free-text answer equal
-to the arguments joined by single spaces. Otherwise it refuses with 403 and stores nothing, so a
-session that skips the confirmation cannot write an executable command. It
+operator confirms it on a `request_input` card that Mission Control writes, not the session: the
+card names the run, the slot, the repository, and the argv as a JSON array, so arguments that read
+the same when joined with spaces stay distinct. The tool shows that card and blocks until it is
+answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
+controlling session) chose **Configure this Command** on exactly that card, after the run started;
+it recomputes the card from the run, slot, repository, and argv rather than trusting a card the
+session phrased. Otherwise it refuses with 403 and stores nothing. It
 writes that repository's override in Library › Commands, replacing any override the repository
 already had, and never touches the machine-wide default. The repository comes from the run's
 binding, not from the request. **Control other sessions** does not extend to it: it changes the
@@ -914,10 +916,10 @@ therefore an ordinary failure. When the refusal matches, the requested change be
 
 1. not create a Makefile, script, or any other file to satisfy the command;
 2. inspect the repository to learn how it runs that slot;
-3. confirm the exact argv with the operator through `request_input`, configuring nothing the
-   operator did not confirm;
-4. call `configure_workflow_command` with the confirmed argv;
-5. resubmit with `trigger_workflow_action` `resubmit` and `resubmitUnchanged: true`, because a
+3. call `configure_workflow_command` with the argv it found, which asks the operator to confirm
+   that exact change on a `request_input` card and configures nothing unless they choose
+   **Configure this Command**;
+4. resubmit with `trigger_workflow_action` `resubmit` and `resubmitUnchanged: true`, because a
    configuration-only repair changes no files and the engine would refuse it as unchanged.
 
 A failed global default whose output is not recognized keeps the ordinary **Fix the failing check**

@@ -91,9 +91,9 @@ workflow name `typecheck` on a machine that has never configured one.
 
 An override can also arrive from a reviewed session. When a global default such as `make test`
 fails because the repository has no Makefile or no such target, the repair packet asks the
-session to find the repository's own command, confirm it with you through `request_input`, and
-set it with `configure_workflow_command`. The daemon stores it only when you picked that exact
-command on the session's card. The result is an ordinary override for that repository,
+session to find the repository's own command and set it with `configure_workflow_command`. That
+tool shows you a `request_input` card naming the run, the slot, the repository and the exact argv,
+and the daemon stores the command only when you choose **Configure this Command** on it. The result is an ordinary override for that repository,
 listed here, which you can edit or remove like any other. [Workflows](workflows.md#command-nodes)
 describes the repair.
 

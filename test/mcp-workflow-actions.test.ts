@@ -39,7 +39,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
-const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
+const { WorkflowCommandManager, commandConfirmationCard } = await import("../src/server/workflows/commands.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -115,14 +115,14 @@ async function fixture(
     return { run, submission, version };
   }
   const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
-  /** The operator picking exactly `command` on one of the caller's `request_input` cards. */
-  function confirm(command: string[]) {
-    const label = command.join(" ");
-    const card = reviews.create(caller.id, "input", "Confirm the Command", `Use ${label}?`,
-      [{ id: "q", question: `Use ${label}?`, options: [{ id: "o0", label }, { id: "o1", label: "Something else" }] }]);
-    reviews.resolve(card.id, "answer", `Answered:\n\n• Use ${label}?\n  → ${label}`, "human",
-      [{ decisionId: "q", selected: ["o0"], other: null }]);
-    return card.id;
+  /** The operator choosing Configure on the daemon's own confirmation card for this change. */
+  function confirm(runId: string, command: string[], slot = "test") {
+    const binding = store.getBinding(store.getRun(runId)!.bindingId)!;
+    const card = commandConfirmationCard({ runId, slot, repoRoot: binding.sessionRepoRoot!, command });
+    const review = reviews.create(caller.id, "input", card.title, card.question, [card.decision]);
+    reviews.resolve(review.id, "answer", "Answered", "human",
+      [{ decisionId: card.decision.id, selected: ["configure"], other: null }]);
+    return review.id;
   }
   return {
     client, call, seed, requests, store, workflows, registry, caller, app, credential,
@@ -392,13 +392,20 @@ test("MCP configures the Command for its own run's repository and frees the slot
     misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
 
   f.registry.setSessionControlEnabled(f.caller.id, false);
-  // Without the operator picking this argv, the daemon stores nothing.
+  // Without the operator's answer on the daemon's card, the route stores nothing and hands
+  // back that card for the tool to show.
   const unconfirmedRevision = f.workflowCommands.get("test")!.revision;
-  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"] },
-    /The operator has not confirmed `npm run test:unit`/);
+  const unconfirmed = await f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"] }) });
+  assert.equal(unconfirmed.status, 403);
+  const refusal = await unconfirmed.json() as { code: string; confirmation: { decision: { id: string; question: string } } };
+  assert.equal(refusal.code, "unconfirmed");
+  assert.match(refusal.confirmation.decision.question, /\["npm","run","test:unit"\]/);
   assert.equal(f.workflowCommands.get("test")!.revision, unconfirmedRevision);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "an unconfirmed call forgives nothing");
-  const confirmationId = f.confirm(["npm", "run", "test:unit"]);
+  const confirmationId = f.confirm(own.run.id, ["npm", "run", "test:unit"]);
   const result = await f.call("configure_workflow_command", {
     runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
   });
@@ -431,7 +438,7 @@ test("MCP configures the Command for its own run's repository and frees the slot
 
   // A second answer replaces this repository's override rather than adding a duplicate. The
   // corrected command actually ran, so switching away from it forgives nothing either.
-  f.confirm(["pytest", "-q"]);
+  f.confirm(own.run.id, ["pytest", "-q"]);
   const switched = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
   assert.deepEqual([switched.forgivenRuns, switched.restoredRuns], [0, 0]);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "a real execution is never returned");
@@ -507,7 +514,7 @@ test("the Command a session configures over MCP is the argv the resubmitted chec
   assert.match((failed.verdict as { requestedChanges: Array<{ title: string }> }).requestedChanges[0]!.title,
     /^Configure the test Command for this repository/);
 
-  f.confirm(["npm", "test"]);
+  f.confirm(runId, ["npm", "test"]);
   const configured = await f.call("configure_workflow_command", { runId, slot: "test", command: ["npm", "test"] });
   assert.equal(configured.forgivenRuns, 1);
   const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
@@ -599,7 +606,7 @@ test("a session inspects a repository without a Makefile, confirms its command t
   // 1. The session reads its repair packet.
   const packet = f.store.listDeliveries(runId)[0]!.payload;
   assert.match(packet, /Configure the test Command for this repository; do not add files to satisfy it/);
-  assert.match(packet, /Call request_input to ask the operator to confirm the exact command/);
+  assert.match(packet, /asks the operator to confirm through a request_input card that Mission Control writes/);
   say("session received: \"Configure the test Command for this repository; do not add files to satisfy it\"");
 
   // 2. It inspects the repository for how tests run, and writes no Makefile.
@@ -608,42 +615,44 @@ test("a session inspects a repository without a Makefile, confirms its command t
   const proposed = ["npm", "test"];
   say(`session inspected the repository: no Makefile; package.json scripts.test is ${JSON.stringify(manifest.scripts.test)}; proposes ${JSON.stringify(proposed)}`);
 
-  // 3. It asks the operator through request_input and blocks for the answer.
-  const question = "This repository has no Makefile, so the workflow's default `make test` cannot run. "
-    + `package.json defines scripts.test (${manifest.scripts.test}). Set \`npm test\` as this repository's test Command?`;
-  const asking = f.client.callTool({ name: "request_input", arguments: { question, options: [
-    { label: "npm test", detail: "package.json scripts.test", recommended: true },
-    { label: "Use a different command" },
-  ] } });
+  // 3. It calls configure_workflow_command with that argv. The tool asks the operator through a
+  // request_input card Mission Control writes for exactly this change, and blocks for the answer.
+  const configuring = f.client.callTool({ name: "configure_workflow_command",
+    arguments: { runId, slot: "test", command: proposed } });
   await waitFor(() => f.registry.pendingReviews(f.caller.id).length === 1, "the confirmation card should be pending");
   const card = f.registry.pendingReviews(f.caller.id)[0]!;
   assert.equal(card.kind, "input");
-  assert.deepEqual(card.decisions?.[0]?.options.map((option) => option.label), ["npm test", "Use a different command"]);
-  say(`session called request_input; the operator's card asks: ${JSON.stringify(card.decisions?.[0]?.question ?? card.body)}`);
+  const decision = card.decisions![0]!;
+  assert.match(decision.id, /^configure-command:[0-9a-f]{32}$/);
+  assert.match(decision.question, new RegExp(`Repository: ${repo.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`));
+  assert.match(decision.question, new RegExp(`Workflow run: ${runId}`));
+  assert.match(decision.question, /Command \(exact argv, one JSON string per argument\): \["npm","test"\]/);
+  assert.deepEqual(decision.options.map((option) => option.label), ["Configure this Command", "Don't configure it"]);
+  say(`session called configure_workflow_command; the operator's request_input card asks: ${JSON.stringify(decision.question)}`);
   // Nothing is configured while the operator has not answered.
   assert.deepEqual(f.workflowCommands.get("test")!.overrides, []);
 
-  // 4. The operator confirms the recommended command from the card, sending exactly what the
-  // dashboard's review form sends: the selections and the shared formatted response.
-  const selections = [{ decisionId: "q", selected: ["o0"], other: null }];
+  // 4. The operator chooses Configure on the card, sending exactly what the dashboard's review
+  // form sends: the selections and the shared formatted response.
+  const selections = [{ decisionId: decision.id, selected: ["configure"], other: null }];
   const resolved = await f.app.request(`/api/reviews/${encodeURIComponent(card.id)}/resolve`, { method: "POST",
     headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ action: "answer", by: "human", selections,
       response: formatResponse(card.decisions!, selections, decisionLead(card.kind)) }) });
   assert.equal(resolved.status, 200, await resolved.clone().text());
-  const answer = await asking;
+  say("operator chose \"Configure this Command\" on the card");
+
+  // 5. Only then is the confirmed argv written for this repository.
+  const answer = await configuring;
   const answerText = (answer.content as Array<{ type: string; text: string }>).map((item) => item.text).join("\n");
   assert.equal(Boolean(answer.isError), false, answerText);
-  assert.match(answerText, /npm test/);
-  say(`operator answered the card; request_input returned: ${JSON.stringify(answerText)}`);
-
-  // 5. Only then does it configure the confirmed argv for this repository.
-  const configured = await f.call("configure_workflow_command", { runId, slot: "test", command: proposed });
+  const configured = JSON.parse(answerText) as { repoRoot: string; forgivenRuns: number; confirmationReviewId: string };
   assert.equal(configured.repoRoot, repo);
+  assert.equal(configured.confirmationReviewId, card.id);
   const view = f.workflowCommands.get("test")!;
   assert.deepEqual(view.overrides, [{ repoRoot: repo, command: ["npm", "test"] }]);
   assert.deepEqual(view.defaultCommand, ["make", "test"]);
-  say(`session called configure_workflow_command -> override ${JSON.stringify(view.overrides[0])}; machine-wide default still ${JSON.stringify(view.defaultCommand)}; forgivenRuns ${configured.forgivenRuns}`);
+  say(`configure_workflow_command returned: override ${JSON.stringify(view.overrides[0])}; machine-wide default still ${JSON.stringify(view.defaultCommand)}; forgivenRuns ${configured.forgivenRuns}; confirmed by card ${card.id === configured.confirmationReviewId ? "answered above" : "?"}`);
 
   // 6. It resubmits the unchanged work, and the confirmed command is what the gate runs.
   const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
@@ -697,8 +706,8 @@ test("MCP defers configuring a Command while a check for that slot is still runn
   assert.equal(f.workflowCommands.get("test")!.revision, before.revision);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "the running reservation is untouched");
   // Another slot is not held up by it.
-  f.confirm(["npm", "run", "lint"]);
-  f.confirm(["npm", "test"]);
+  f.confirm(own.run.id, ["npm", "run", "lint"], "lint");
+  f.confirm(own.run.id, ["npm", "test"]);
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: ["npm", "run", "lint"] });
 
   // Once the check finishes and records its misfit, configuring proceeds and forgives it.

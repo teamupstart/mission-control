@@ -11,8 +11,8 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *
  * The operator sets one global `test` Command for every checkout. In a repository with no
  * Makefile it fails before reaching the change, and the packet the run shows - the exact text
- * the session receives - must ask the session to find the repository's own command, confirm it
- * through `request_input`, and set it with `configure_workflow_command`, never to "fix the
+ * the session receives - must ask the session to find the repository's own command and set it
+ * with `configure_workflow_command`, which confirms it through `request_input`, never to "fix the
  * failing test check" by writing the missing build file.
  *
  * The Command is the real `make test`, run in the fixture repository, which holds only a
@@ -151,7 +151,7 @@ test("a machine-wide default the repository does not provide shows a configurati
   await expect(packet).toContainText("The test gate ran `make test`, which is Mission Control's machine-wide default for this slot");
   await expect(packet).toContainText(MAKE_REFUSAL);
   await expect(packet).toContainText("Do not create a Makefile");
-  await expect(packet).toContainText("Call request_input to ask the operator to confirm the exact command");
+  await expect(packet).toContainText("asks the operator to confirm through a request_input card that Mission Control writes");
   await expect(packet).toContainText(`configure_workflow_command({ runId: "${runId}", slot: "test"`);
   await expect(packet).toContainText("resubmitUnchanged: true");
   // And what it is no longer asked to do.

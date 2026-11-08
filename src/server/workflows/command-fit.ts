@@ -285,13 +285,14 @@ export function misfitCommandRepair(
       "1. Inspect the repository to learn how it runs its "
         + `${input.slot}: package.json scripts, Makefile, justfile, Taskfile, pyproject.toml, tox.ini, `
         + "Cargo.toml, go.mod, Gradle or Maven files, CI workflows, README and CONTRIBUTING.",
-      "2. Call request_input to ask the operator to confirm the exact command. Say where you found "
-        + "it and offer it as the recommended option, labeled exactly as its arguments separated by "
-        + "single spaces (for example `npm test`); accept a corrected command as the answer. "
-        + "configure_workflow_command refuses any argv the operator did not pick.",
-      `3. Call ${configureCall(input)}. It sets this repository's override in Library › Commands, `
-        + "never the machine-wide default, and lets the corrected command run again in this workflow run.",
-      "4. A configuration-only repair changes no files, so the engine cannot see it and would "
+      `2. Call ${configureCall(input)} with the argv you found. It asks the operator to confirm `
+        + "through a request_input card that Mission Control writes, naming this run, the slot, the "
+        + "repository and the exact argv, and waits for their answer; nothing is configured unless "
+        + "they choose Configure this Command. It sets this repository's override in Library › "
+        + "Commands, never the machine-wide default, and lets the corrected command run again in "
+        + "this workflow run. If they decline, ask them with request_input which command to use, "
+        + "then call it again with that argv.",
+      "3. A configuration-only repair changes no files, so the engine cannot see it and would "
         + "refuse the round as unchanged. This is the one case where you resubmit yourself: "
         + `${resubmitCall(input.runId)}. If you also changed files for other requested changes, `
         + "finish those first and let the engine resubmit instead. If the operator declines, stop and say so.",
@@ -311,8 +312,8 @@ export function defaultCommandFailureNote(input: CommandFitInput): string {
     `Note: \`${argvText(input.command)}\` is Mission Control's machine-wide default for the `
       + `${input.slot} slot, not a command configured for this repository.`,
     "If the output shows the command does not apply here rather than a defect in your change, "
-      + "do not add files to satisfy it. Find how the repository runs this slot, confirm the "
-      + `command with the operator through request_input, call ${configureCall(input)}, and, `
+      + "do not add files to satisfy it. Find how the repository runs this slot and call "
+      + `${configureCall(input)}, which asks the operator to confirm through request_input; then, `
       + `because a configuration-only repair changes no files the engine can see, resubmit with `
       + `${resubmitCall(input.runId)}.`,
   ].join("\n");

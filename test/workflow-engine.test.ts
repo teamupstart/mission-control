@@ -1692,7 +1692,7 @@ test("a machine-wide default the repository does not provide asks for configurat
   assert.match(change.rationale, /`make test`, which is Mission Control's machine-wide default/);
   assert.match(change.rationale, /No rule to make target 'test'/);
   assert.match(change.rationale, /Do not create a Makefile/);
-  assert.match(change.rationale, /request_input to ask the operator to confirm the exact command/);
+  assert.match(change.rationale, /asks the operator to confirm through a request_input card that Mission Control writes/);
   assert.match(change.rationale, /configure_workflow_command\(\{ runId: "run-check-misfit", slot: "test"/);
   assert.match(change.rationale, /resubmitUnchanged: true/);
   // The procedure reaches the Session intact, ahead of the command output it explains.

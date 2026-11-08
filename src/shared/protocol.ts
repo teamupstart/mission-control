@@ -1333,25 +1333,14 @@ export const DismissLaunchFailuresSchema = z
   .strict();
 
 /**
- * How long a dismissal outlives its row. A dismissal is forgotten only once every dashboard
- * that looked has seen its row ABSENT from the inbox, continuously, for this long - so it never
- * expires while the item it hides is still unresolved, a row that flickers out for a frame or
- * across a daemon restart keeps its dismissal, and the table holds only the dismissals that are
- * still hiding something plus a week's worth of resolved ones. There is deliberately no count
- * cap: dropping the oldest dismissal by count would bring back an item nobody resolved.
- */
-export const ATTENTION_DISMISSAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
  * One attention-inbox row the operator dismissed without resolving it.
  *
  * `itemId` names the row (`blocked:<session>`, `pipeline-commission:<id>`, `review:<id>`).
  * `occurrence` names WHAT the row said when it was dismissed, as the fold in
  * `src/web/lib/attention.ts` fingerprints it. The row stays hidden while it still says the
  * same thing, and comes back when it says something new - a different halt reason, a
- * different lifecycle problem - because that is a new obligation, not the dismissed one. It
- * also comes back, unchanged, if it recurs after the dismissal was retired for a week of
- * absence (`ATTENTION_DISMISSAL_RETENTION_MS`).
+ * different lifecycle problem - because that is a new obligation, not the dismissed one.
+ * A dismissal never expires and is never pruned, so nothing else brings the row back.
  */
 export const AttentionDismissalKeySchema = z
   .object({
@@ -1395,20 +1384,6 @@ export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSche
  */
 export const DismissAttentionItemsSchema = z
   .object({ items: z.array(AttentionDismissalWriteSchema).min(1).max(100) })
-  .strict();
-
-/**
- * What one dashboard's inbox is hiding right now (`POST /api/attention/dismissals/sightings`):
- * the item id of every dismissal its fold actually applied. Every stored dismissal NOT listed is
- * one whose row that fold did not show at all, which starts (or continues) its absence clock;
- * every one listed has its clock cleared. Sent only from a fold built on a full snapshot.
- *
- * Empty is a real answer - nothing is hidden - so it is allowed. The bound is far above any
- * fleet's open obligations, and an over-long report is refused whole: refusing retires nothing,
- * which is the safe direction to fail in.
- */
-export const AttentionDismissalSightingsSchema = z
-  .object({ itemIds: z.array(z.string().min(1).max(512)).max(10_000) })
   .strict();
 
 /**

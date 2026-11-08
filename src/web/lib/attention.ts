@@ -178,17 +178,6 @@ export interface AttentionFold {
    * operator did not choose to hide. The invariant holds for every row nobody dismissed.
    */
   total: number;
-  /**
-   * The dismissal item ids this fold actually APPLIED: every dismissed row it left out because
-   * the row is still there saying what it said when it was dismissed. Empty when nothing was
-   * dismissed.
-   *
-   * This is the dashboard's sighting report (`POST /api/attention/dismissals/sightings`). A
-   * stored dismissal missing from it had no row to hide, which is the only evidence the daemon
-   * accepts for eventually forgetting one - so a dismissal whose item is still unresolved keeps
-   * appearing here, and is never forgotten.
-   */
-  hidden: string[];
 }
 
 /**
@@ -346,7 +335,6 @@ function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>
 export function foldAttention(input: AttentionInput): AttentionFold {
   const items: AttentionItem[] = [];
   const dismissed = input.dismissed ?? NOTHING_DISMISSED;
-  const hidden: string[] = [];
   const sessionById = new Map(input.sessions.map((s) => [s.id, s]));
   const summaryByRun = new Map(input.ensembles.map((e) => [e.id, e]));
   /** Sessions that already own a row, so the section (4) backstop cannot double-count them. */
@@ -388,7 +376,6 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     if (!session || isSettling(session)) continue;
     if (dismissed.get(reviewDismissalId(review.id)) === QUESTION_OCCURRENCE) {
       represented.add(session.id);
-      hidden.push(reviewDismissalId(review.id));
       continue;
     }
     const group = bySession.get(review.sessionId);
@@ -530,16 +517,12 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   const visible =
     dismissed.size === 0
       ? items
-      : items.filter((item) => {
-          if (item.kind === "session_reviews" || !isDismissed(item, dismissed)) return true;
-          for (const key of attentionDismissalKeys(item)) hidden.push(key.itemId);
-          return false;
-        });
+      : items.filter((item) => item.kind === "session_reviews" || !isDismissed(item, dismissed));
   const total = visible.reduce(
     (sum, item) => sum + (item.kind === "session_reviews" ? item.reviews.length : 1),
     0,
   );
-  return { items: visible, total, hidden };
+  return { items: visible, total };
 }
 
 const NOTHING_DISMISSED: ReadonlyMap<string, string> = new Map();

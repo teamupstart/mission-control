@@ -102,7 +102,7 @@ test("an older write's answer does not settle a newer dismissal of the same row"
   assert.equal(effectiveDismissals(s).get(A.itemId), "cccccccc", "the newer click still holds");
 });
 
-test("a dismissal the daemon has forgotten leaves with the read that no longer carries it", () => {
+test("a read replaces the stored copy whole: a row it no longer carries is no longer hidden", () => {
   let s = applyDismissalRead(INITIAL_DISMISSAL_STATE, 1, [row(A), row(B)]);
   s = applyDismissalRead(s, 2, [row(B)]);
   assert.deepEqual(hidden(s), [B.itemId]);

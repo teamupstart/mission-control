@@ -17,10 +17,9 @@ import type { TaskManager } from "../src/server/tasks.ts";
 // daemon stores it, a database written before the table existed gains it on open, and every
 // write tells every open dashboard to re-read.
 //
-// And it is never forgotten while the item it hides is unresolved. An earlier cut dropped the
-// oldest dismissal once 500 had accumulated, which brought back an item that had reported
-// nothing new. A dismissal now leaves only after dashboards have reported its row absent for a
-// whole week without a break, so the table is bounded by what is still hidden, not by a count.
+// And it is never forgotten. A row comes back only when it reports something new, so nothing
+// may drop a dismissal by age or by count: an earlier cut dropped the oldest once 500 had
+// accumulated, which brought back an item that had reported nothing new.
 //
 // And it is never overwritten by an older decision from another window. Each write names the
 // newest revision of its row the window had seen; a window whose dismissal was delayed past
@@ -38,7 +37,6 @@ const { openDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const store = await import("../src/server/attention-dismissals.ts");
-const { ATTENTION_DISMISSAL_RETENTION_MS } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -66,7 +64,6 @@ function setup() {
 const clear = () => openDb().exec("DELETE FROM attention_dismissals");
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = 1_800_000_000_000;
-const stored = () => store.listAttentionDismissals().map((row) => row.itemId).sort();
 
 test("a database from before dismissals gains the table on open", () => {
   const d = openDb();
@@ -166,19 +163,18 @@ test("a refused batch stores none of its keys", async () => {
   assert.deepEqual(ids, ["review:r-2"], "a row of questions is never left half dismissed");
 });
 
-test("revisions only grow, so a retired row's old number can never pass for a newer write", () => {
+test("rewriting the only row never reissues the revision it just deleted", () => {
+  // A dismissal is rewritten (deleted and inserted) to take a fresh revision. With a plain rowid
+  // the new row would get the number just freed whenever it was the highest, and a window still
+  // holding that number would pass the stale check against a dismissal it never saw.
   clear();
   const first = store.dismissAttentionItems([{ itemId: "blocked:s-1", occurrence: "a", basis: 0 }], T0);
   assert.ok(first.stored);
   const old = first.accepted[0]!.revision;
-  store.recordAttentionSightings([], T0);
-  assert.equal(store.recordAttentionSightings([], T0 + 8 * DAY), 1, "retired");
-  // A retired row accepts any basis, and its new revision is above every one issued before.
-  const again = store.dismissAttentionItems([{ itemId: "blocked:s-1", occurrence: "b", basis: old }], T0 + 9 * DAY);
+  const again = store.dismissAttentionItems([{ itemId: "blocked:s-1", occurrence: "b", basis: old }], T0 + 1);
   assert.ok(again.stored);
-  assert.ok(again.accepted[0]!.revision > old);
-  // So a window still holding the pre-retirement number is behind the new dismissal.
-  const stale = store.dismissAttentionItems([{ itemId: "blocked:s-1", occurrence: "c", basis: old }], T0 + 9 * DAY);
+  assert.ok(again.accepted[0]!.revision > old, "a fresh number, not the one the rewrite freed");
+  const stale = store.dismissAttentionItems([{ itemId: "blocked:s-1", occurrence: "c", basis: old }], T0 + 2);
   assert.deepEqual(stale, { stored: false, superseded: ["blocked:s-1"] });
 });
 
@@ -214,77 +210,16 @@ test("a malformed dismissal is refused and stores nothing", async () => {
   assert.equal(events.filter((e) => e.type === "attention_dismissals_changed").length, 0);
 });
 
-test("a dismissal still hiding its row is never forgotten, however many pile up or however long", () => {
+test("a dismissal never expires and is never pruned, however many pile up or however old", () => {
   clear();
+  // A year of dismissals, more than the 500 an earlier cut kept.
   const ids = Array.from({ length: 600 }, (_, i) => `blocked:s-${i}`);
-  for (const [i, id] of ids.entries()) store.dismissAttentionItems([{ itemId: id, occurrence: "", basis: 0 }], T0 + i);
-  // Every row is still there, unresolved: each report sees all of them hidden.
-  for (const at of [T0 + DAY, T0 + 30 * DAY, T0 + 365 * DAY]) {
-    assert.equal(store.recordAttentionSightings(ids, at), 0);
+  for (const [i, id] of ids.entries()) {
+    store.dismissAttentionItems([{ itemId: id, occurrence: "", basis: 0 }], T0 - 365 * DAY + i * 12 * 60 * 60 * 1000);
   }
-  assert.equal(store.listAttentionDismissals().length, 600, "no count cap brings an unresolved item back");
-});
-
-test("a dismissal is forgotten only after its row has been absent for the whole retention window", () => {
-  clear();
-  assert.equal(ATTENTION_DISMISSAL_RETENTION_MS, 7 * DAY);
-  store.dismissAttentionItems([{ itemId: "kept", occurrence: "", basis: 0 }, { itemId: "resolved", occurrence: "", basis: 0 }], T0);
-  // "resolved" stops being hidden: its row is gone. Its clock starts at the first such report.
-  assert.equal(store.recordAttentionSightings(["kept"], T0 + DAY), 0);
-  assert.equal(store.recordAttentionSightings(["kept"], T0 + 7 * DAY), 0, "six days absent is not a week");
-  assert.deepEqual(stored(), ["kept", "resolved"]);
-  assert.equal(store.recordAttentionSightings(["kept"], T0 + 8 * DAY), 1);
-  assert.deepEqual(stored(), ["kept"]);
-});
-
-test("one report that sees the row again clears its clock, so a flicker never retires it", () => {
-  clear();
-  store.dismissAttentionItems([{ itemId: "blocked:restored", occurrence: "", basis: 0 }], T0);
-  // Absent once - say the session was not adopted yet after a restart - then back.
-  store.recordAttentionSightings([], T0);
-  store.recordAttentionSightings(["blocked:restored"], T0 + 3 * DAY);
-  // Absent again from day 8: a fresh clock, not one that started on day 0.
-  assert.equal(store.recordAttentionSightings([], T0 + 8 * DAY), 0);
-  assert.equal(store.recordAttentionSightings([], T0 + 14 * DAY), 0);
-  assert.deepEqual(stored(), ["blocked:restored"]);
-  assert.equal(store.recordAttentionSightings([], T0 + 15 * DAY), 1);
-});
-
-test("dismissing a row again clears its clock", () => {
-  clear();
-  const first = store.dismissAttentionItems([{ itemId: "pipeline-commission:c-1", occurrence: "aaaaaaaa", basis: 0 }], T0);
-  assert.ok(first.stored);
-  store.recordAttentionSightings([], T0);
-  const again = store.dismissAttentionItems(
-    [{ itemId: "pipeline-commission:c-1", occurrence: "bbbbbbbb", basis: first.accepted[0]!.revision }],
-    T0 + 6 * DAY,
-  );
-  assert.ok(again.stored);
-  assert.equal(store.recordAttentionSightings([], T0 + 8 * DAY), 0, "the clock restarted, it did not carry over");
-  assert.deepEqual(stored(), ["pipeline-commission:c-1"]);
-});
-
-test("the sightings route refuses a malformed report, and announces only a real retirement", async () => {
-  clear();
-  const { events, call } = setup();
-  const sightings = (body: unknown) => call("POST", body, "/api/attention/dismissals/sightings");
-  await call("POST", { items: [{ itemId: "blocked:old", occurrence: "", basis: 0 }, { itemId: "blocked:live", occurrence: "", basis: 0 }] });
-  const changed = () => events.filter((e) => e.type === "attention_dismissals_changed").length;
-  const before = changed();
-
-  for (const body of [{}, { itemIds: "blocked:live" }, { itemIds: [""] }, { itemIds: [], extra: 1 }]) {
-    assert.equal((await sightings(body)).status, 400, JSON.stringify(body));
-  }
-  // A report retiring nothing changes nothing any window holds, so it raises no frame.
-  const quiet = await sightings({ itemIds: ["blocked:live", "blocked:old"] });
-  assert.deepEqual(quiet.body, { ok: true, retired: 0 });
-  assert.equal(changed(), before);
-
-  // "blocked:old" has been reported absent since well over a week ago.
-  openDb().prepare("UPDATE attention_dismissals SET absent_since = ? WHERE item_id = ?")
-    .run(Date.now() - ATTENTION_DISMISSAL_RETENTION_MS - DAY, "blocked:old");
-  const retired = await sightings({ itemIds: ["blocked:live"] });
-  assert.deepEqual(retired.body, { ok: true, retired: 1 });
-  assert.equal(changed(), before + 1, "every window re-reads after a retirement");
-  assert.deepEqual(stored(), ["blocked:live"]);
+  assert.equal(store.listAttentionDismissals().length, 600, "nothing ages out and no count cap applies");
+  // And the table keeps nothing an expiry would need.
+  const columns = (openDb().prepare("PRAGMA table_info(attention_dismissals)").all() as { name: string }[])
+    .map((column) => column.name);
+  assert.deepEqual(columns, ["revision", "item_id", "occurrence", "dismissed_at"]);
 });

@@ -45,9 +45,8 @@ you have read and cannot or will not act on from here, such as a Pipeline lifecy
 provider has to clear.
 
 The daemon keeps the dismissal, so the row stays gone after a reload, in every open window and
-across a restart. It comes back in one of two ways: it reports something new while it is still
-there, or it goes away for at least a week and later returns, even saying the same thing (see
-below). What counts as something new depends on the row:
+across a restart. It comes back only when it reports something new, and what counts as new
+depends on the row:
 
 | Row | Comes back when |
 | --- | --- |
@@ -65,12 +64,9 @@ dismissed row leaves the count while the session it names may still be blocked, 
 read higher than **to answer**, and the difference is rows you chose to hide. Alerts are
 unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
 
-A dismissal never expires while the item it hides is still there, however many you make. Open
-dashboards tell the daemon which dismissals are still hiding a row; one is forgotten only after
-its row has been gone from the inbox for a full week without coming back. So an item that was
-resolved, or stopped needing you, for a week and then recurs is shown again, even if it reports
-exactly what it did when you dismissed it. A row gone for less than a week that returns saying
-the same thing stays dismissed.
+A dismissal never expires and is never pruned, however many you make or however long ago. A
+row that goes away and later returns saying exactly what it said when you dismissed it stays
+dismissed; the same session asking for the same permission again is one example.
 
 When the same row is dismissed more than once - it came back reporting something new and was
 dismissed again, in this window or another - the newest dismissal is the one kept. A window that

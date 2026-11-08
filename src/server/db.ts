@@ -4481,22 +4481,18 @@ function migrate(d: DatabaseSync): void {
 
   // Attention-inbox rows the operator dismissed without resolving them (schema 23). One row per
   // inbox item id; `occurrence` is the fold's fingerprint of what that row said when it was
-  // dismissed, so the row comes back when it says something new (or, unchanged, if it recurs
-  // after this dismissal has been retired, below). `revision` is assigned afresh
-  // on every write and AUTOINCREMENT never reuses one, even after a row is retired, so a write
-  // that names an older revision than the one stored was made without seeing the newer
-  // dismissal and is refused rather than allowed to overwrite it. `absent_since` is when a
-  // dashboard's fold first stopped showing the row, NULL while it is still hidden by this
-  // dismissal; a row is deleted only once that has held for `ATTENTION_DISMISSAL_RETENTION_MS`
-  // (`src/server/attention-dismissals.ts`), never by count, so an unresolved item never comes
-  // back on its own. A new table, so it is created here beside its upgrade path.
+  // dismissed, so the row comes back only when it says something new. Rows never expire and are
+  // never pruned (`src/server/attention-dismissals.ts`). `revision` is assigned afresh on every
+  // write, which rewrites the row, and AUTOINCREMENT never reuses a number - not even the one
+  // that rewrite just deleted - so a write that names an older revision than the one stored was
+  // made without seeing the newer dismissal and is refused rather than allowed to overwrite it.
+  // A new table, so it is created here beside its upgrade path.
   d.exec(`
     CREATE TABLE IF NOT EXISTS attention_dismissals (
       revision     INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id      TEXT NOT NULL UNIQUE,
       occurrence   TEXT NOT NULL,
-      dismissed_at INTEGER NOT NULL,
-      absent_since INTEGER
+      dismissed_at INTEGER NOT NULL
     );
   `);
 

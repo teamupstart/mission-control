@@ -19,11 +19,6 @@ export interface AttentionDismissalsState {
    */
   dismissed: ReadonlyMap<string, string>;
   /**
-   * True once the daemon's stored set has been read at least once. Until then `dismissed` holds
-   * only this window's own clicks, so a fold over it cannot say what is still hidden.
-   */
-  loaded: boolean;
-  /**
    * Dismiss one row's keys (`attentionDismissalKeys`). The row leaves at once; the promise
    * resolves to null once the daemon stored it, or to an error, in which case the row is back.
    */
@@ -94,37 +89,5 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
   }, [read, send]);
 
   const dismissed = useMemo(() => effectiveDismissals(state), [state]);
-  return { dismissed, loaded: state.appliedRead > 0, dismiss };
-}
-
-/**
- * How often an open dashboard repeats an unchanged sighting report. Far shorter than the
- * daemon's one-week retention, so a dismissal that is still hiding its row is re-confirmed many
- * times before it could ever expire, and a resolved one is retired within an hour of its week.
- */
-const SIGHTING_HEARTBEAT_MS = 60 * 60 * 1000;
-
-/**
- * Tell the daemon which dismissals this dashboard's inbox is hiding right now - the fold's
- * `hidden` - whenever that set changes and once an hour while it does not.
- *
- * This is the only way a dismissal is ever forgotten (`recordAttentionSightings`), so it is
- * sent only from a fold that can be trusted to show everything: `ready` must say the event
- * stream has delivered its full snapshot AND the stored dismissals have been read. A fold built
- * before either would hide nothing and so report every dismissal absent. Even then a single
- * wrong report retires nothing - a dismissal goes only after a week of being reported absent,
- * and the next report that sees its row clears that clock.
- */
-export function useReportAttentionSightings(hidden: readonly string[], ready: boolean): void {
-  // The set, not the array: the fold rebuilds the array on every frame, and only a change in
-  // what is hidden is worth a request.
-  const key = useMemo(() => [...new Set(hidden)].sort().join("\n"), [hidden]);
-  useEffect(() => {
-    if (!ready) return;
-    const itemIds = key === "" ? [] : key.split("\n");
-    const report = (): void => void api.reportAttentionSightings(itemIds);
-    report();
-    const heartbeat = setInterval(report, SIGHTING_HEARTBEAT_MS);
-    return () => clearInterval(heartbeat);
-  }, [ready, key]);
+  return { dismissed, dismiss };
 }

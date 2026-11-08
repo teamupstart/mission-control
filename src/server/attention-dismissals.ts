@@ -1,8 +1,4 @@
-import {
-  ATTENTION_DISMISSAL_RETENTION_MS,
-  type AttentionDismissal,
-  type AttentionDismissalWrite,
-} from "@shared/protocol.ts";
+import type { AttentionDismissal, AttentionDismissalWrite } from "@shared/protocol.ts";
 import { inTransaction, openDb } from "./db.ts";
 
 /**
@@ -18,12 +14,11 @@ import { inTransaction, openDb } from "./db.ts";
  * storage is keyed by origin and Electron profile, both of which have moved before, and a
  * dismissal that silently resets is exactly the "it popped back up" this exists to stop.
  *
- * NEVER PRUNED BY COUNT. Dropping the oldest dismissal once some number accumulated would bring
- * back an item that is still unresolved and has reported nothing new - the very thing a
- * dismissal promises not to do. A dismissal leaves only through `recordAttentionSightings`:
- * after dashboards have reported its row absent from the inbox, continuously, for
- * `ATTENTION_DISMISSAL_RETENTION_MS`. So the table holds what is still hidden plus about a week
- * of resolved rows, and is bounded by the operator's open obligations rather than by a number.
+ * NEVER EXPIRED AND NEVER PRUNED. A dismissal lasts until its row reports something new, which
+ * is the only thing that brings a dismissed row back. Dropping one by age or by count would
+ * bring back an item that has reported nothing new - the very thing a dismissal promises not to
+ * do. The table grows by one small row per inbox row the operator ever dismissed, and a row
+ * dismissed again is rewritten in place of the old one, never added beside it.
  *
  * NEVER OVERWRITTEN BY AN OLDER DECISION. Each write carries the newest revision of its row the
  * dismissing window had seen; a write behind the stored revision is refused whole
@@ -66,12 +61,11 @@ export type AttentionDismissalWriteResult =
  * the sending window never saw was made since, by another window or by an earlier write from
  * this one the window had not heard back about. The newer dismissal is the operator's latest
  * word on the row, so the write is refused - all of it, so a row of several questions is never
- * left half dismissed - and the stale keys are named. A row with no stored dismissal, including
- * one retired since, accepts any basis.
+ * left half dismissed - and the stale keys are named. A row with no stored dismissal accepts any
+ * basis.
  *
  * Accepted keys are rewritten rather than updated in place, which is what takes a fresh
- * AUTOINCREMENT revision, and a fresh dismissal starts with its absence clock cleared. One
- * transaction, so a reader never sees a batch half applied.
+ * AUTOINCREMENT revision. One transaction, so a reader never sees a batch half applied.
  */
 export function dismissAttentionItems(
   items: readonly AttentionDismissalWrite[],
@@ -81,8 +75,7 @@ export function dismissAttentionItems(
   const current = d.prepare("SELECT revision FROM attention_dismissals WHERE item_id = ?");
   const remove = d.prepare("DELETE FROM attention_dismissals WHERE item_id = ?");
   const insert = d.prepare(
-    `INSERT INTO attention_dismissals (item_id, occurrence, dismissed_at, absent_since)
-       VALUES (?, ?, ?, NULL)`,
+    `INSERT INTO attention_dismissals (item_id, occurrence, dismissed_at) VALUES (?, ?, ?)`,
   );
   return inTransaction((): AttentionDismissalWriteResult => {
     const superseded = items
@@ -98,46 +91,5 @@ export function dismissAttentionItems(
       return { itemId: item.itemId, revision: Number(written.lastInsertRowid) };
     });
     return { stored: true, accepted };
-  });
-}
-
-/**
- * Apply one dashboard's report of which dismissals its inbox is hiding right now, and retire
- * the ones whose rows have been gone for the whole retention window.
- *
- * `hiding` is every item id the fold's filter actually applied. A dismissal listed there is
- * still doing its job: its absence clock is cleared, whatever it said before. One NOT listed
- * had no row to hide in that fold - resolved, or reporting something new - and its clock
- * starts if it was not already running. Only a clock that has run for
- * `ATTENTION_DISMISSAL_RETENTION_MS` deletes the row.
- *
- * Which is what makes a wrong "absent" harmless. A row missing from one fold - a session not
- * adopted yet after a restart, a window holding a set read just before another window
- * dismissed something - is seen again by the next report and its clock is cleared; nothing is
- * deleted on the strength of a single sighting, because the clock must have started at least
- * a full window before the report that deletes it.
- *
- * Returns how many dismissals were retired, so the route announces only a real change.
- */
-export function recordAttentionSightings(hiding: readonly string[], now: number): number {
-  const d = openDb();
-  const seen = new Set(hiding);
-  const clear = d.prepare("UPDATE attention_dismissals SET absent_since = NULL WHERE item_id = ?");
-  const start = d.prepare("UPDATE attention_dismissals SET absent_since = ? WHERE item_id = ?");
-  const retire = d.prepare(
-    "DELETE FROM attention_dismissals WHERE absent_since IS NOT NULL AND absent_since <= ?",
-  );
-  return inTransaction(() => {
-    const rows = d
-      .prepare("SELECT item_id, absent_since FROM attention_dismissals")
-      .all() as unknown as { item_id: string; absent_since: number | null }[];
-    for (const row of rows) {
-      if (seen.has(row.item_id)) {
-        if (row.absent_since !== null) clear.run(row.item_id);
-      } else if (row.absent_since === null) {
-        start.run(now, row.item_id);
-      }
-    }
-    return Number(retire.run(now - ATTENTION_DISMISSAL_RETENTION_MS).changes);
   });
 }

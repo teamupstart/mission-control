@@ -63,7 +63,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
-import { dismissAttentionItems, listAttentionDismissals, recordAttentionSightings } from "./attention-dismissals.ts";
+import { dismissAttentionItems, listAttentionDismissals } from "./attention-dismissals.ts";
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -96,7 +96,6 @@ import {
   DispatchSchema,
   DismissLaunchFailuresSchema,
   DismissAttentionItemsSchema,
-  AttentionDismissalSightingsSchema,
   ReportLaunchFailureSchema,
   RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
@@ -8476,16 +8475,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     registry.emitAttentionDismissalsChanged();
     // The revisions just stored, and nothing more: each window reads the whole set through GET.
     return c.json({ ok: true, accepted: written.accepted });
-  });
-  // A dashboard reporting which dismissals its inbox is hiding right now. This is the ONLY way a
-  // dismissal is forgotten - once its row has been reported absent for the whole retention
-  // window - so one is never dropped while the item it hides is still unresolved.
-  app.post("/api/attention/dismissals/sightings", async (c) => {
-    const parsed = await parseBody(c, AttentionDismissalSightingsSchema);
-    if (!parsed.ok) return parsed.res;
-    const retired = recordAttentionSightings(parsed.data.itemIds, Date.now());
-    if (retired > 0) registry.emitAttentionDismissalsChanged();
-    return c.json({ ok: true, retired });
   });
 
   // Start the session that catalogs one failure and drafts its public bug report. The brief

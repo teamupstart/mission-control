@@ -151,7 +151,6 @@
   "PATCH /api/workflows/:id": "503 {\"error\":\"Workflow manager unavailable\"}",
   "POST /api/archives/:archiveKey/artifacts/:artifactId/open": "503 {\"error\":\"archive library unavailable\"}",
   "POST /api/attention/dismissals": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"array\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"items\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
-  "POST /api/attention/dismissals/sightings": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"array\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"itemIds\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "POST /api/ensembles": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "POST /api/ensembles/:id/actions": "503 {\"error\":\"Ensemble manager unavailable\"}",
   "POST /api/ensembles/:id/members/:memberId/submit": "503 {\"error\":\"Ensemble manager unavailable\"}",

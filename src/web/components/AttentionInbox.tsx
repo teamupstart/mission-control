@@ -45,9 +45,8 @@ import { requestComposerFocus } from "../lib/composer-focus.ts";
  * clears - and a queue that could only be drained by fixing everything in it kept showing them
  * on every open. Dismiss removes the row from this list and from the `to answer` count, and the
  * daemon remembers it, so it stays gone across reloads and windows until the row says something
- * new (`attentionDismissalKeys` decides what "new" means for each kind) or, once the row has been
- * gone for a full week and the dismissal is forgotten, until it recurs at all. Nothing is sent to
- * an agent and nothing is resolved: a question's own Dismiss, on its card, is the one that answers.
+ * new (`attentionDismissalKeys` decides what "new" means for each kind). Nothing is sent to an
+ * agent and nothing is resolved: a question's own Dismiss, on its card, is the one that answers.
  */
 
 /** The heading each kind of obligation sits under. The fold groups them; this names them. */
@@ -202,7 +201,7 @@ function DismissButton({ item, onDismiss }: { item: AttentionItem; onDismiss: ()
   const tip =
     item.kind === "session_reviews"
       ? "Remove these questions from the inbox without answering them. The agent keeps waiting; a new question from it still shows here"
-      : "Remove this from the inbox without resolving it. It comes back if it reports something new, or if it goes away for a week and then recurs";
+      : "Remove this from the inbox without resolving it. It stays dismissed until it reports something new";
   return (
     <Tooltip label={tip}>
       <button

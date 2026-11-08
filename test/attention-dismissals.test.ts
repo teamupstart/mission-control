@@ -150,28 +150,6 @@ test("every row kind can be dismissed, and a dismissed row leaves the list and t
   assert.equal(none.total, 0);
 });
 
-test("the fold reports exactly the dismissals it applied, which is what keeps them alive", () => {
-  // `hidden` is the dashboard's sighting report: a stored dismissal missing from it is one whose
-  // row is gone, and only a week of that lets the daemon forget it. So an unresolved row has to
-  // be listed on every fold, and a row that now says something new must not be.
-  const before = foldAttention(everyKind());
-  const dismissed = dismissedFor(...before.items);
-  const keys = [...dismissed.keys()].sort();
-  assert.deepEqual([...foldAttention({ ...everyKind(), dismissed }).hidden].sort(), keys);
-
-  // The same fleet, re-derived with a resolved question and a halt that reports a new reason.
-  const later = everyKind();
-  later.reviews = [];
-  later.pipelineRuns = [mkRun({ halt: { class: "needs-human", reason: "a different defect" } })];
-  const after = foldAttention({ ...later, dismissed });
-  assert.deepEqual(
-    [...after.hidden].sort(),
-    keys.filter((id) => id !== "review:r-1" && !id.startsWith("pipeline-halt:")),
-  );
-  assert.ok(after.items.some((item) => item.kind === "pipeline_halt"), "the new halt is shown");
-  assert.deepEqual(foldAttention(everyKind()).hidden, [], "nothing dismissed, nothing hidden");
-});
-
 test("no dismissals folds exactly as before dismissal existed", () => {
   assert.deepEqual(foldAttention({ ...everyKind(), dismissed: new Map() }), foldAttention(everyKind()));
 });
@@ -293,11 +271,8 @@ test("the inbox draws a Dismiss on every row kind, named after the row it remove
     assert.match(html, new RegExp(`aria-label="Dismiss ${subject} from the inbox"[^>]*>Dismiss</button>`), `no Dismiss for ${subject}`);
   }
   assert.equal((html.match(/from the inbox"/g) ?? []).length, 7, "one row Dismiss per row");
-  // The row Dismiss says BOTH ways a dismissed row comes back, as the attention guide does.
-  assert.match(
-    html,
-    /It comes back if it reports something new, or if it goes away for a week and then recurs/,
-  );
+  // The row Dismiss says the one way a dismissed row comes back, as the attention guide does.
+  assert.match(html, /It stays dismissed until it reports something new/);
   // The one question in this fleet still draws its OWN Dismiss - the one that answers the agent -
   // and it is told apart from every row's by carrying no "from the inbox" name of its own.
   const questionDismiss = [...html.matchAll(/<button(?![^>]*aria-label=)[^>]*>Dismiss<\/button>/g)];

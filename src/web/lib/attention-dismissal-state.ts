@@ -165,8 +165,7 @@ export function createDismissalWriteQueue<Key extends { itemId: string }, Answer
  *
  * Only ever raised, never lowered: revisions are the daemon's AUTOINCREMENT, so a larger one is
  * always the later write, and a read that started before this window's own write was stored
- * (and so carries an older revision, or none) must not make its next write look stale. A row
- * the daemon has since retired accepts any basis, so an old number left here is harmless.
+ * (and so carries an older revision, or none) must not make its next write look stale.
  */
 export interface RevisionLedger {
   learn(rows: readonly { itemId: string; revision: number }[]): void;

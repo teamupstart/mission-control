@@ -2003,9 +2003,6 @@ export const api = {
       accepted?: { itemId: string; revision: number }[];
       superseded?: string[];
     }>(`/api/attention/dismissals`, { items }),
-  // Which dismissals this dashboard's inbox is hiding right now; the only way one is forgotten.
-  reportAttentionSightings: (itemIds: readonly string[]) =>
-    post<ActionResult & { retired?: number }>(`/api/attention/dismissals/sightings`, { itemIds }),
   reportLaunchFailure: (taskId: string, repoRoot: string) =>
     post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
   retryLaunchFailure: (taskId: string) =>

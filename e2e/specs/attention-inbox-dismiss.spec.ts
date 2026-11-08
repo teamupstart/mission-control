@@ -5,7 +5,6 @@ import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { writeConductorProjects } from "../fixtures/conductor.ts";
-import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { dispatchedSdkHookIdentity } from "../fixtures/sdk-hook-identity.ts";
@@ -217,9 +216,9 @@ test.describe("a Pipeline lifecycle row", () => {
     await expect(row.getByRole("button", { name: "Open Pipeline" })).toBeVisible();
     const dismiss = row.getByRole("button", { name: /^Dismiss .+ from the inbox$/ });
     await expect(dismiss).toHaveText("Dismiss");
-    // Both ways a dismissed row comes back, in the words the attention guide uses.
+    // The one way a dismissed row comes back, in the words the attention guide uses.
     await expect(dismiss).toHaveAccessibleDescription(
-      "Remove this from the inbox without resolving it. It comes back if it reports something new, or if it goes away for a week and then recurs",
+      "Remove this from the inbox without resolving it. It stays dismissed until it reports something new",
     );
     // The new control sits in the row's header: it must clear the modal's border like the rest.
     await expectContentClearsBorder(inbox);
@@ -239,28 +238,18 @@ test.describe("a Pipeline lifecycle row", () => {
     const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{ kind: string; status: string }>;
     expect(tasks.find((task) => task.kind === "pipeline")?.status).toBe("running");
 
+    // The daemon keeps it under the row's own id.
+    const stored = await (await request(daemon, "/api/attention/dismissals")).json() as {
+      dismissals: { itemId: string }[];
+    };
+    expect(stored.dismissals.map((entry) => entry.itemId)).toEqual([`pipeline-commission:${commissionId}`]);
+
     // And it does not pop back up. A reload re-reads everything: the commission frame, the
     // fold, and the dismissal the daemon kept.
-    //
-    // It must not expire either. The daemon forgets a dismissal only after dashboards have
-    // reported its row absent for a week, so give this one a clock six days in: if the reloaded
-    // dashboard does not report the row as still hidden, nothing stops it from being forgotten.
-    const itemId = `pipeline-commission:${commissionId}`;
-    const absentSince = () =>
-      withDaemonDb(daemon, (db) =>
-        (db.prepare("SELECT absent_since FROM attention_dismissals WHERE item_id = ?").get(itemId) as
-          | { absent_since: number | null }
-          | undefined)?.absent_since,
-      );
-    expect(absentSince(), "the dismissal was stored under the row's id").toBeNull();
     await dashboard.keyboard.press("Escape");
     await expect(inbox).toBeHidden();
-    withDaemonDb(daemon, (db) =>
-      db.prepare("UPDATE attention_dismissals SET absent_since = ? WHERE item_id = ?")
-        .run(Date.now() - 6 * 24 * 60 * 60 * 1000, itemId));
     await dashboard.reload();
     await expectDashboardReady(dashboard);
-    await expect.poll(absentSince, { message: "the reloaded dashboard reported the row still hidden" }).toBeNull();
     await expectToAnswer(dashboard, owed - 1);
     if (owed - 1 > 0) {
       const reopened = await openInbox(dashboard);

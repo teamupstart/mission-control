@@ -3561,10 +3561,8 @@ export type ServerEvent =
    * inbox and the `to answer` count in every other.
    *
    * CONTENT-FREE and out of the reconnect snapshot, like `worktrees_changed`: the set is an
-   * HTTP read bounded by what is still dismissed plus a week of resolved rows
-   * (`ATTENTION_DISMISSAL_RETENTION_MS`), and the hook that holds it re-reads on every
-   * (re)connect, which covers a dismissal made while this stream was down. Also raised when a
-   * sighting retires dismissals, so no window keeps one the daemon has forgotten.
+   * HTTP read of one small row per inbox row ever dismissed, and the hook that holds it
+   * re-reads on every (re)connect, which covers a dismissal made while this stream was down.
    */
   | { type: "attention_dismissals_changed" }
   /**

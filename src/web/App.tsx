@@ -22,7 +22,7 @@ import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
-import { useAttentionDismissals, useReportAttentionSightings } from "./useAttentionDismissals.ts";
+import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
@@ -2588,10 +2588,6 @@ export function App(): React.JSX.Element {
       attentionDismissals.dismissed,
     ],
   );
-  // What the inbox is hiding, reported back so the daemon can tell a dismissal still doing its
-  // job from one whose row is gone. Only once the fold is built on a full snapshot and the
-  // stored dismissals: before that it hides nothing and would report every dismissal absent.
-  useReportAttentionSightings(attention.hidden, hasSnapshot && attentionDismissals.loaded);
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
   const scheduleAttentionCount = useMemo(

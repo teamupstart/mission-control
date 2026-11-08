@@ -305,8 +305,8 @@ test("the stylesheet still answers the classes, and only off the drill-in", () =
   assert.match(wide, /flex-grow:\s*2\b/);
   assert.match(rules, /--board-col-wide:/, "the width is a token, not a number in a rule");
 
-  // Collapsed is a FIXED track in both the basis and the floor: the Backlog and an all-clear
-  // column are sized by basis, and would keep 232px / 250px if only one of the two moved.
+  // Collapsed is a FIXED track in both the basis and the floor: the Backlog is sized by
+  // basis, and would keep 232px if only one of the two moved.
   const collapsed = /\.board\[data-focus="none"\]\s+\.board-col\.is-collapsed\s*\{([^}]*)\}/.exec(rules)?.[1];
   assert.ok(collapsed, "`.is-collapsed` needs a rule, scoped so the drill-in morph still wins");
   assert.match(collapsed, /flex-grow:\s*0\b/);

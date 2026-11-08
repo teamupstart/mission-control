@@ -43,3 +43,44 @@ export function reviewShortcutTarget(
   const asking = visible.find((s) => s.pendingReviews > 0);
   return asking ? { sessionId: asking.id, refocus: true } : null;
 }
+
+/**
+ * What the review chord does, once the Residents drawer's Needs you group is counted too.
+ *
+ * - `fleet`: a fleet session's review queue, by `reviewShortcutTarget`'s rule, over `visible`
+ *   less every resident in the drawer's group. The fleet always comes first: the drawer sits to
+ *   its right, and a fleet session asking is what the chord has always meant. A resident in the
+ *   group is the drawer step's even while it is also a rail row, and even while it is the
+ *   selected session, so its review never jumps ahead of a fleet session's.
+ * - `resident`: otherwise the first resident in the drawer's Needs you group, in the order it is
+ *   drawn. One asking through a review opens that review queue (`opens: "review"`). One that needs
+ *   you any other way - parked on a menu, or waiting on a reply - has no queue to open, so the
+ *   chord opens its conversation instead (`opens: "conversation"`), where every kind of ask can be
+ *   answered. The resident whose conversation is already open is passed over while another is
+ *   asking, unless it has a review, since opening its queue is still something to do. Either way
+ *   the group's `e` keycap never names a resident the key would leave alone.
+ *
+ * `drawerAsking` is every resident in the group, including one that is also a row in the Needs
+ * you rail because a conversation is open; empty while the drawer is not on screen, when the
+ * fleet step sees every row in `visible` as it always has. `openDetailId` is the session whose
+ * conversation is open.
+ */
+export type ReviewChordTarget =
+  | ({ kind: "fleet" } & ReviewShortcutTarget)
+  | { kind: "resident"; sessionId: string; opens: "review" | "conversation" };
+
+export function reviewChordTarget(
+  visible: readonly Pick<Session, "id" | "pendingReviews">[],
+  selectedId: string | null,
+  drawerAsking: readonly Pick<Session, "id" | "pendingReviews">[],
+  openDetailId: string | null = null,
+): ReviewChordTarget | null {
+  const inGroup = new Set(drawerAsking.map((session) => session.id));
+  const fleetRows = inGroup.size > 0 ? visible.filter((session) => !inGroup.has(session.id)) : visible;
+  const fleet = reviewShortcutTarget(fleetRows, selectedId);
+  if (fleet) return { kind: "fleet", ...fleet };
+  const resident = drawerAsking.find((session) => session.id !== openDetailId || session.pendingReviews > 0)
+    ?? drawerAsking[0];
+  if (!resident) return null;
+  return { kind: "resident", sessionId: resident.id, opens: resident.pendingReviews > 0 ? "review" : "conversation" };
+}

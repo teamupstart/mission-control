@@ -78,14 +78,15 @@ export type ColumnMode =
  * Horizontal room on the board is scarce, and a slim placeholder for an empty column
  * spends it on a column with nothing in it.
  *
- * `focused` is whether a session is open - during the drill-in NOTHING is stashed,
- * because the morph animates every column's width and they must all stay mounted
- * across it. See BoardView.
+ * `focused` is the tone of the drill-in rail while a session is open, else null. During the
+ * drill-in NOTHING is stashed, because the morph animates every column's width and they must
+ * all stay mounted across it. An empty column that is itself the rail is drawn as a revealed
+ * column - its head and "Nothing here" - like any other. See BoardView.
  */
 export function boardColumnModes(
   groups: readonly ToneGroup[],
   revealed: ReadonlySet<Tone>,
-  focused: boolean,
+  focused: Tone | null,
   /** Provisioning tasks whose placeholders live in the Working column. */
   pending = 0,
 ): Map<Tone, ColumnMode> {
@@ -93,7 +94,7 @@ export function boardColumnModes(
   for (const g of groups) {
     if (g.sessions.length > 0) out.set(g.tone, "sessions");
     else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else if (revealed.has(g.tone) || focused) out.set(g.tone, "revealed");
+    else if (revealed.has(g.tone) || focused !== null) out.set(g.tone, "revealed");
     else out.set(g.tone, "stashed");
   }
   return out;

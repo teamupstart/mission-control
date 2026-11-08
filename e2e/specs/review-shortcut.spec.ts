@@ -233,7 +233,7 @@ test("the Board's Needs you column prints e while a review waits, and e opens it
 
   const needsYou = dashboard.locator(".board-col.tone-attention");
   const heading = needsYou.locator(".board-col-head");
-  // Nothing waiting: the column is the all-clear, and no key is offered.
+  // Nothing waiting: the column is not drawn, so no key is offered.
   await expect(heading.locator("kbd.kb-hint")).toHaveCount(0);
 
   await ask(daemon, session.cwd);

@@ -11,7 +11,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * three-stop control in its head.
  *
  * Only a browser settles these claims. That the collapsed track is actually 40px once the
- * stylesheet, the Backlog's own basis, and the all-clear column's basis have all had their say.
+ * stylesheet and the Backlog's own basis have both had their say.
  * That a click on a stop reaches the daemon and comes back as a fold that survives a reload,
  * while the expanded column does not. That a collapsed Needs you still reacts when a session
  * starts waiting on you, which is a server event arriving at a column that has no cards drawn.

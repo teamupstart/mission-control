@@ -135,14 +135,18 @@ for (const kind of ["source", "binary"] as const) {
       await dashboard.screenshot({path: join(directory, `${kind}-${stage}.png`), fullPage: true});
     };
     try {
-      await expect(banner).toContainText("1.2.5");
-      await expect(banner).toContainText("pending or unavailable");
-      await expect(banner.getByRole("button", {name: "Update Now"})).toBeDisabled();
-      await expect(banner.getByRole("button", {name: "Check again"})).toBeEnabled();
+      // 1.2.5 has no ready manifest yet, so it is still publishing, and nothing newer than the
+      // installed 1.2.4 can be installed: up to date, naming 1.2.5, rather than a blocked offer.
+      await dashboard.getByRole("button", {name: "Settings"}).click();
+      await dashboard.getByRole("tab", {name: "Setup"}).click();
+      const updates = dashboard.getByRole("region", {name: "Application updates"});
+      await expect(updates).toContainText("You are running the newest signed release. 1.2.4");
+      await expect(updates).toContainText("Mission Control 1.2.5 is still being built and signed.");
+      await expect(banner).toHaveCount(0);
       expect(handoffs).toBe(0); expect(quits).toBe(0);
       await capture("pending");
       published = true;
-      await banner.getByRole("button", {name: "Check again"}).click();
+      await updates.getByRole("button", {name: "Check for updates"}).click();
       await banner.getByRole("button", {name: "Update Now"}).click();
       await expect(banner).toContainText("Agent Mission Control.app");
       await expect(banner).toContainText("1.2.5 is ready to install");
@@ -266,6 +270,11 @@ for (const [alpha, availability] of [
       unavailable: !ready && availability === "blocked-descriptor" ? "The signed binary is pending or unavailable. Check again later." : undefined });
     port.latestMainCommit = async () => ({ sha: "b".repeat(40), message: "A quieter update experience.", committedAt: "2026-10-31T00:00:00Z" });
     port.binaryForCommit = async commit => discoveredOffer("alpha", commit) ?? null;
+    // Scripted like the rest of the transport, so no real GitHub request is made. The fixture's
+    // installed commit is not a real one, which the canonical repository answers with a 404, and
+    // an installation that cannot be verified keeps the blocked offer this matrix is about. The
+    // verified still-publishing case is covered by alpha-pending-build.spec.ts.
+    port.latestReadyAlpha = async () => ({ result: "unverified" });
     const controller = new UpdateController(port);
     const banner = dashboard.getByRole("status", { name: "Mission Control update" });
     const capture = async (name: string) => {

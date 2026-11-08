@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { mcpServerPath } from "../src/server/config.ts";
 import { OPERATOR_SATELLITES } from "../src/shared/owned-runtime.mjs";
 
@@ -45,6 +46,26 @@ function satelliteBuilds(): Map<string, string[]> {
   }
   return builds;
 }
+
+function dynamicImports(text: string): string[] {
+  const source = ts.createSourceFile("satellite.mjs", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const imports: string[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      imports.push(node.getText(source));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return imports;
+}
+
+test("the satellite dynamic-import guard distinguishes executable imports from comments and strings", () => {
+  assert.deepEqual(dynamicImports('// inline `import()` of an ESM path\nconst example = "import(target)";'), []);
+  for (const expression of ['import("./sibling.mjs")', "import(target)", "import /* late load */ (target)", '`value: ${await import(target)}`']) {
+    assert.equal(dynamicImports(expression).length, 1, `${expression} still loads a module`);
+  }
+});
 
 test("every satellite entry point the build emits is either operator-registered or daemon-launched", () => {
   const emitted = [...satelliteBuilds().keys()].sort();
@@ -87,7 +108,8 @@ test("each operator satellite bundles to one file that imports only Node builtin
       const text = readFileSync(outfile, "utf8");
       // The metafile records only imports esbuild resolves statically; `import(variable)` and a
       // created `require` never appear there, and either could load a file from the bundle.
-      assert.doesNotMatch(text, /\bimport\s*\(/, `${path} has no dynamic import of any kind`);
+      // Dependency comments and examples can spell `import()` without loading anything.
+      assert.deepEqual(dynamicImports(text), [], `${path} has no dynamic import of any kind`);
       assert.doesNotMatch(text, /\bcreateRequire\b/, `${path} creates no require that could load a sibling module`);
       // A path resolved from the bundle's own location would read a sibling file the same way.
       assert.doesNotMatch(text, /import\.meta\.(?:url|dirname|filename)/, `${path} resolves nothing beside itself`);

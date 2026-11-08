@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import { ATTENTION_DISMISSAL_LIMITS, type AttentionDismissalKey } from "@shared/protocol.ts";
 import { api } from "./lib/api.ts";
 import {
   applyDismissalRead,
@@ -107,6 +107,10 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
   }, []);
 
   const dismiss = useCallback(async (keys: readonly AttentionDismissalKey[]): Promise<string | null> => {
+    // Said here, plainly, rather than as the daemon's validation error: the row stays, and why.
+    if (keys.length > ATTENTION_DISMISSAL_LIMITS.keysPerRequest) {
+      return `Could not dismiss: this row holds more than ${ATTENTION_DISMISSAL_LIMITS.keysPerRequest} questions - answer or dismiss some of them on their cards first`;
+    }
     const write = ++writesStarted.current;
     setState((current) => beginDismissalWrite(current, keys, write));
     const result = await send(keys);

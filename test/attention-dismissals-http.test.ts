@@ -37,6 +37,7 @@ const { openDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const store = await import("../src/server/attention-dismissals.ts");
+const { ATTENTION_DISMISSAL_LIMITS } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -50,11 +51,11 @@ function setup() {
     tasks: {} as unknown as TaskManager,
     queues: {} as unknown as QueueManager,
   });
-  const call = async (method: "GET" | "POST", body?: unknown, path = "/api/attention/dismissals") => {
+  const call = async (method: "GET" | "POST", body?: unknown, path = "/api/attention/dismissals", raw?: string) => {
     const res = await app.request(path, {
       method,
       headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(raw !== undefined ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   };
@@ -191,10 +192,9 @@ test("one row's several keys land together", async () => {
   assert.deepEqual(ids, ["review:r-1", "review:r-2"]);
 });
 
-test("a row of more questions than any fixed batch is dismissed whole, and still all or nothing", async () => {
-  // A session's row of questions is one key per pending question, and the daemon bounds pending
-  // questions nowhere - so neither may the request that dismisses the row. An earlier cap of 100
-  // refused such a row outright and it could never be dismissed.
+test("a row of hundreds of questions is dismissed whole, and still all or nothing", async () => {
+  // A session's row of questions is one key per pending question, sent in one request. An
+  // earlier cap of 100 refused such a row outright and it could never be dismissed.
   clear();
   const { call } = setup();
   const questions = Array.from({ length: 250 }, (_, i) => ({ itemId: `review:r-${i}`, occurrence: "", basis: 0 }));
@@ -212,6 +212,35 @@ test("a row of more questions than any fixed batch is dismissed whole, and still
   assert.equal(batch.status, 409);
   assert.deepEqual(batch.body.superseded, ["review:r-249"]);
   assert.deepEqual(((await call("GET")).body.dismissals as { itemId: string }[]).map((r) => r.itemId), ["review:r-249"]);
+});
+
+test("one request is bounded: the largest row is dismissed whole, one key more is refused", async () => {
+  // Bounded on purpose (`ATTENTION_DISMISSAL_LIMITS`): an unbounded array is what Zod 3 parses
+  // element by element before any length check, so the cap stays - far above any real row.
+  clear();
+  const { events, call } = setup();
+  const keys = (n: number) => Array.from({ length: n }, (_, i) => ({ itemId: `review:r-${i}`, occurrence: "", basis: 0 }));
+  const largest = await call("POST", { items: keys(ATTENTION_DISMISSAL_LIMITS.keysPerRequest) });
+  assert.equal(largest.status, 200);
+  assert.equal((largest.body.accepted as unknown[]).length, ATTENTION_DISMISSAL_LIMITS.keysPerRequest);
+
+  clear();
+  const before = events.length;
+  const tooMany = await call("POST", { items: keys(ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1) });
+  assert.equal(tooMany.status, 400);
+  assert.deepEqual((await call("GET")).body, { dismissals: [] }, "nothing stored");
+  assert.equal(events.length, before, "nothing announced");
+});
+
+test("an absurd body is refused by its size before the schema parses any of it", async () => {
+  clear();
+  const { call } = setup();
+  // Far past what the largest valid request could ever weigh, in tiny elements - the shape that
+  // makes per-element parsing expensive.
+  const items = "{},".repeat(8_000_000);
+  const res = await call("POST", undefined, "/api/attention/dismissals", `{"items":[${items}{}]}`);
+  assert.equal(res.status, 413);
+  assert.deepEqual((await call("GET")).body, { dismissals: [] });
 });
 
 test("a malformed dismissal is refused and stores nothing", async () => {

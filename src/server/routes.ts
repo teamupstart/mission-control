@@ -96,6 +96,7 @@ import {
   DispatchSchema,
   DismissLaunchFailuresSchema,
   DismissAttentionItemsSchema,
+  ATTENTION_DISMISSAL_LIMITS,
   ReportLaunchFailureSchema,
   RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
@@ -757,6 +758,21 @@ const SESSION_ACTION_BODY_MAX_BYTES = WORKFLOW_LIMITS.sessionActionPromptBytes *
  * schema is the real bound here. This is a cheap pre-parse guard against an absurd body, not a
  * second opinion about what a valid catalog looks like.
  */
+/**
+ * One attention-inbox Dismiss at its largest: every key a request may carry, each at its longest.
+ *
+ * Derived from `ATTENTION_DISMISSAL_LIMITS` so a body the schema accepts is never refused here,
+ * with `JSON_UTF8_MAX_BYTES_PER_CHAR` because the schema counts characters and `bodyLimit` counts
+ * bytes. The 256 per key covers the field names, the integer basis and the punctuation. Its job
+ * is the one the schema cannot do under Zod 3: stop an absurd body before every element of it is
+ * parsed (GHSA-mrhx-c7xc-m3w5).
+ */
+const ATTENTION_DISMISSAL_BODY_MAX_BYTES =
+  ATTENTION_DISMISSAL_LIMITS.keysPerRequest
+    * ((ATTENTION_DISMISSAL_LIMITS.itemIdLength + ATTENTION_DISMISSAL_LIMITS.occurrenceLength)
+        * JSON_UTF8_MAX_BYTES_PER_CHAR
+      + 256)
+  + 1024;
 const WORKFLOW_COMMAND_BODY_MAX_BYTES =
   (WORKFLOW_LIMITS.commandOverrides + 1)
     * ((WORKFLOW_LIMITS.checkRepoRoot + WORKFLOW_LIMITS.checkCommandLength)
@@ -8462,20 +8478,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // dashboard's fold (`src/web/lib/attention.ts`); this remembers what was dismissed so a
   // reload, a restart or a second window does not bring it back.
   app.get("/api/attention/dismissals", (c) => c.json({ dismissals: listAttentionDismissals() }));
-  app.post("/api/attention/dismissals", async (c) => {
-    const parsed = await parseBody(c, DismissAttentionItemsSchema);
-    if (!parsed.ok) return parsed.res;
-    const written = dismissAttentionItems(parsed.data.items, Date.now());
-    if (!written.stored) {
-      return c.json({
-        error: "another window dismissed this since this one last looked - check it and dismiss again",
-        superseded: written.superseded,
-      }, 409);
-    }
-    registry.emitAttentionDismissalsChanged();
-    // The revisions just stored, and nothing more: each window reads the whole set through GET.
-    return c.json({ ok: true, accepted: written.accepted });
-  });
+  app.post(
+    "/api/attention/dismissals",
+    bodyLimit({
+      maxSize: ATTENTION_DISMISSAL_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Too many rows to dismiss in one request" }, 413),
+    }),
+    async (c) => {
+      const parsed = await parseBody(c, DismissAttentionItemsSchema);
+      if (!parsed.ok) return parsed.res;
+      const written = dismissAttentionItems(parsed.data.items, Date.now());
+      if (!written.stored) {
+        return c.json({
+          error: "another window dismissed this since this one last looked - check it and dismiss again",
+          superseded: written.superseded,
+        }, 409);
+      }
+      registry.emitAttentionDismissalsChanged();
+      // The revisions just stored, and nothing more: each window reads the whole set through GET.
+      return c.json({ ok: true, accepted: written.accepted });
+    },
+  );
 
   // Start the session that catalogs one failure and drafts its public bug report. The brief
   // is built here from the task, never sent by the browser; publication stays behind the

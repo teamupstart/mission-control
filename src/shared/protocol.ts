@@ -1333,6 +1333,24 @@ export const DismissLaunchFailuresSchema = z
   .strict();
 
 /**
+ * The bounds on one dismissal request, shared by its schema, the route's byte ceiling and the
+ * dashboard's own check before it sends.
+ *
+ * `keysPerRequest` is a real bound, and has to be. One Dismiss sends every key of its row in a
+ * single all-or-nothing request, and a row of questions is one key per pending question, so it
+ * is set far above any row a person could work through: the inbox draws every question as its
+ * own card. An unbounded array is not an option - Zod 3 parses every element of an oversized
+ * array before a length check runs (GHSA-mrhx-c7xc-m3w5), so the route also refuses an
+ * oversized body by bytes before the schema sees it. The earlier cap of 100 was low enough for
+ * a busy session to reach, and left its row undismissable.
+ */
+export const ATTENTION_DISMISSAL_LIMITS = {
+  keysPerRequest: 5_000,
+  itemIdLength: 512,
+  occurrenceLength: 64,
+} as const;
+
+/**
  * One attention-inbox row the operator dismissed without resolving it.
  *
  * `itemId` names the row (`blocked:<session>`, `pipeline-commission:<id>`, `review:<id>`).
@@ -1344,8 +1362,8 @@ export const DismissLaunchFailuresSchema = z
  */
 export const AttentionDismissalKeySchema = z
   .object({
-    itemId: z.string().min(1).max(512),
-    occurrence: z.string().max(64),
+    itemId: z.string().min(1).max(ATTENTION_DISMISSAL_LIMITS.itemIdLength),
+    occurrence: z.string().max(ATTENTION_DISMISSAL_LIMITS.occurrenceLength),
   })
   .strict();
 export type AttentionDismissalKey = z.infer<typeof AttentionDismissalKeySchema>;
@@ -1380,14 +1398,12 @@ export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSche
  * Dismiss attention-inbox rows (`POST /api/attention/dismissals`). A list because one row can
  * stand for several keys - a session's row of questions is one key per question. All or
  * nothing: if any key is stale (see `basis`) none is stored, and the 409 names the stale keys.
- *
- * No length cap, deliberately. One Dismiss sends every key of its row in one request so the
- * write stays all or nothing, and a row of questions has one key per pending question - which
- * the daemon bounds nowhere, and already holds and sends in every snapshot. A fixed cap (it was
- * 100) made any longer row impossible to dismiss; splitting it would make it half dismissable.
+ * Bounded by `ATTENTION_DISMISSAL_LIMITS`, which says why the bound is what it is.
  */
 export const DismissAttentionItemsSchema = z
-  .object({ items: z.array(AttentionDismissalWriteSchema).min(1) })
+  .object({
+    items: z.array(AttentionDismissalWriteSchema).min(1).max(ATTENTION_DISMISSAL_LIMITS.keysPerRequest),
+  })
   .strict();
 
 /**

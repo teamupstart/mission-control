@@ -1403,6 +1403,38 @@ async function runReportBug(prompt) {
   });
 }
 
+/**
+ * The repair packet the DAEMON writes when a workflow Command is one the repository does not
+ * provide (`src/server/workflows/command-fit.ts`). Recognised from the daemon's own words, so
+ * the packet's delivery is part of what a spec proves.
+ */
+const CONFIGURE_COMMAND_MARKER = "Configure the test Command for this repository; do not add files to satisfy it";
+
+/**
+ * What a session does with that packet, without a model: inspect its own checkout for how the
+ * repository runs its tests, call the real `configure_workflow_command` (which waits on the
+ * operator's confirmation card), then resubmit the unchanged work.
+ */
+async function runConfigureCommand(prompt) {
+  const runId = /^Run: (\S+)$/m.exec(prompt)?.[1];
+  let script = null;
+  try {
+    script = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")).scripts?.test ?? null;
+  } catch { /* no manifest: nothing to propose */ }
+  if (!runId || !script || existsSync(join(process.cwd(), "Makefile"))) {
+    return "Inspected the checkout and found no package.json test script to propose.";
+  }
+  return withMissionMcp(async (request) => {
+    const text = (called) => called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
+    const configured = await request("tools/call", { name: "configure_workflow_command",
+      arguments: { runId, slot: "test", command: ["npm", "test"] } });
+    if (configured.result?.isError || configured.error) return `configure_workflow_command failed: ${text(configured)}`;
+    const resubmitted = await request("tools/call", { name: "trigger_workflow_action", arguments: { request: {
+      action: "resubmit", runId, parameters: { requestId: `e2e-configured-${runId}`, resubmitUnchanged: true } } } });
+    return `configure_workflow_command answered: ${text(configured)}; resubmit answered: ${text(resubmitted)}`;
+  });
+}
+
 /** A resident records its pacing, then waits inside the real review tool. */
 async function runResidentReview() {
   return withMissionMcp(async (request) => {
@@ -1620,6 +1652,13 @@ rl.on("line", (line) => {
 
     if (prompt.includes(REPORT_BUG_MARKER)) {
       beginHeldTurn(runReportBug(prompt));
+      return;
+    }
+
+    // A workflow repair asking for the repository's own test Command, recognised by the
+    // daemon's packet. Held open while the real tool waits on the operator's card.
+    if (prompt.includes(CONFIGURE_COMMAND_MARKER)) {
+      beginHeldTurn(runConfigureCommand(prompt));
       return;
     }
 

@@ -24,14 +24,17 @@ obligation:
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
-   time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
+   time anybody looks. Nothing here clears a halt: that stays with the engine's own CLI. The
+   row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
 6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
 7. **Stuck finalizations** - a promotion that stopped on an error.
 
-The count is **answers owed**, not rows: a session holding three questions is one row and
-three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
-no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-mode) still own
+The count is the obligations the inbox is showing you, not its rows: a session holding three
+questions is one row and three. A row you dismissed is not in it, even while what it reports is
+still unresolved, so the count can be lower than what is actually owed. It is a rendering of
+state the dashboard already has - it subscribes to nothing, decides no severity, and is not a
+second notifier; [Alerts and Away mode](#alerts--away-mode) still own
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.

@@ -45,6 +45,7 @@ import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 import { PlanPublicationContextSchema } from "@shared/plan-publication.ts";
 import { PlanContextInputSchema, SavePlanInputSchema, ReadPlanInputSchema } from "@shared/managed-plans.ts";
 import {
+  ConfigureWorkflowCommandSchema,
   GetWorkflowRunSchema,
   ListWorkflowRunsSchema,
   ReadWorkflowCommandOutputMcpSchema,
@@ -268,6 +269,18 @@ server.registerTool("read_workflow_command_output", {
 }, async (input) => {
   try {
     const res = await http("/mcp/workflows/read-command-output", "POST", input, true);
+    return textResult(await res.text(), !res.ok);
+  } catch (error) {
+    return textResult(String(error), true);
+  }
+});
+
+server.registerTool("configure_workflow_command", {
+  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot, then confirm the exact argv with the operator through request_input; never call this with a command the operator did not confirm. The repository comes from the run; the machine-wide default is never changed. The run's spent executions of that slot are returned so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
+  inputSchema: ConfigureWorkflowCommandSchema,
+}, async (input) => {
+  try {
+    const res = await http("/mcp/workflows/configure-command", "POST", input, true);
     return textResult(await res.text(), !res.ok);
   } catch (error) {
     return textResult(String(error), true);

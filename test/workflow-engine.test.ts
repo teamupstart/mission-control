@@ -1651,6 +1651,110 @@ test("a failing check returns a repair packet to the Session, citing its own out
   assert.equal(delivery.state, "prepared");
   assert.match(delivery.payload, /## Command · test/);
   assert.match(delivery.payload, /TS2345/);
+  // A repository override was written for this checkout, so no configuration note is added.
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "override");
+  assert.doesNotMatch(delivery.payload, /configure_workflow_command/);
+});
+
+async function failingDefaultPacket(name: string, output: string, truncatedBytes = 0) {
+  const store = seedSubmission(name, checkGraph);
+  const manager = new WorkflowManager(new Registry(), store, {
+    engine: {
+      concurrency: 3,
+      runnerFor: passingRunner,
+      resolveExecution: passingExecution,
+      retryBaseMs: 1,
+      workflowPolicy: () => checkPolicy(),
+      workflowCommand: checkCatalog({}, { test: ["make", "test"] }),
+      checkDeps: () => ({
+        execute: async () => ({ kind: "exited", exitCode: 2, output, truncatedBytes }),
+      }),
+    },
+  });
+  manager.engine.start();
+  manager.engine.activateSubmission(`submission-${name}`);
+  await waitFor(() => store.listDeliveries(`run-${name}`).length === 1);
+  await manager.stop();
+  const attempt = store.listAttempts(`submission-${name}`).find((item) => item.nodeId === "gate")!;
+  const change = (attempt.verdict as { requestedChanges: Array<{ title: string; rationale: string }> })
+    .requestedChanges[0]!;
+  return { attempt, change, payload: store.listDeliveries(`run-${name}`)[0]!.payload };
+}
+
+test("a machine-wide default the repository does not provide asks for configuration, never a Makefile", async () => {
+  const { attempt, change, payload } = await failingDefaultPacket(
+    "check-misfit",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.equal((attempt.output as Record<string, unknown>).commandSource, "default");
+  assert.equal(change.title, "Configure the test Command for this repository; do not add files to satisfy it");
+  assert.doesNotMatch(change.title, /Fix the failing/);
+  assert.match(change.rationale, /`make test`, which is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  assert.match(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /request_input to ask the operator to confirm the exact command/);
+  assert.match(change.rationale, /configure_workflow_command\(\{ runId: "run-check-misfit", slot: "test"/);
+  assert.match(change.rationale, /resubmitUnchanged: true/);
+  // The procedure reaches the Session intact, ahead of the command output it explains.
+  assert.match(payload, /Configure the test Command for this repository/);
+  assert.match(payload, /configure_workflow_command/);
+  assert.ok(payload.indexOf("request_input") < payload.indexOf("Command output:"));
+});
+
+test("a nested make failing inside a real `make test` target stays an ordinary failure", async () => {
+  // The repository provides `make test`; its recipe runs a sub-make that cannot find its own
+  // target. That is a failure inside a real test command, never a missing workflow Command.
+  const { change } = await failingDefaultPacket(
+    "check-nested-make",
+    "make -C fixtures build\nmake[1]: *** No rule to make target 'build'.  Stop.\nmake: *** [Makefile:4: test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make\[1\]: \*\*\* No rule to make target 'build'/);
+});
+
+test("an independent nested make refusing `test` inside a real `make test` recipe stays an ordinary failure", async () => {
+  // Captured from GNU make 3.81: the recipe `cd sub && env -u MAKELEVEL make test` starts a
+  // SEPARATE make, so its refusal speaks as `make:` and names `test` exactly like the outer
+  // make refusing would. The echoed recipe and the outer `*** [test] Error 2` show the
+  // configured target ran, so this is a failure inside the repository's own test command.
+  const { change } = await failingDefaultPacket(
+    "check-independent-make",
+    "cd sub && env -u MAKELEVEL make test\nmake: *** No rule to make target `test'.  Stop.\nmake: *** [test] Error 2\n",
+  );
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /make: \*\*\* \[test\] Error 2/);
+});
+
+test("a refusal in the tail of truncated output stays an ordinary failure", async () => {
+  // A launcher's refusal is a few lines. Output large enough to be truncated came from a
+  // command that ran, so a matching refusal in its retained tail is something that command
+  // ran - never the configured command being missing - whatever the tail happens to hold.
+  const { attempt, change } = await failingDefaultPacket(
+    "check-truncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+    50_000,
+  );
+  assert.ok(((attempt.output as Record<string, unknown>).truncatedBytes as number) > 0);
+  assert.equal(change.title, "Fix the failing test check");
+  assert.doesNotMatch(change.rationale, /Do not create a Makefile/);
+  assert.match(change.rationale, /No rule to make target 'test'/);
+  // The same bytes untruncated are the configuration repair, so truncation alone decided it.
+  const { change: whole } = await failingDefaultPacket(
+    "check-untruncated",
+    "make: *** No rule to make target 'test'.  Stop.\n",
+  );
+  assert.match(whole.title, /^Configure the test Command for this repository/);
+});
+
+test("an unrecognized failure of a machine-wide default keeps the code repair and adds the configuration note", async () => {
+  const { change } = await failingDefaultPacket("check-default-fail", "1 failing\n  AssertionError: expected 2\n");
+  assert.equal(change.title, "Fix the failing test check");
+  assert.match(change.rationale, /AssertionError/);
+  assert.match(change.rationale, /Note: `make test` is Mission Control's machine-wide default/);
+  assert.match(change.rationale, /do not add files to satisfy it/);
+  assert.match(change.rationale, /configure_workflow_command/);
 });
 
 test("startup recovery retries a persisted Check infrastructure error", async () => {

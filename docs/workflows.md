@@ -6,7 +6,7 @@ Mission Control's MCP exposes the same workflow runtime controls as the dashboar
 can read and control its own workflow without delegation. Reading or controlling another
 session's workflows requires the operator to enable **Control other sessions** on the calling
 session, using the desktop dashboard. The grant is transient and revocable; the MCP cannot enable it.
-All three tools require a current signed Registry session credential alongside the machine token.
+Every one of these tools requires a current signed Registry session credential alongside the machine token.
 Caller identity comes from that credential, never from a supplied session id or working directory.
 Bindings must match both the current session and its conversation identity. Reattachment checks
 both the source binding and destination; delivery actions also check the packet's original destination.
@@ -21,6 +21,16 @@ Read one stream with
 `read_workflow_command_output({runId, attemptId, artifactId, cursor?, limit?})`, using the
 opaque ids from run detail and following `nextCursor` until it is null. A page is at most 64
 KiB. The same owning-session and **Control other sessions** authorization applies.
+
+`configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
+`typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. It
+writes that repository's override in Library › Commands, replacing any override the repository
+already had, and never touches the machine-wide default. The repository comes from the run's
+binding, not from the request. **Control other sessions** does not extend to it: it changes the
+operator's Command catalog, so only the session that owns the run may call it, and only while the
+run has not finished. After the write it returns the run's finished executions of that slot to its
+run budget, so the corrected command runs on the next submission instead of being skipped as
+already spent. [Command nodes](#command-nodes) describes when a repair packet asks for it.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:
@@ -867,6 +877,41 @@ without an automatic infrastructure retry, a repair round, or a code-fix packet.
 authorization, executable, platform, or allowance and use the run's Retry action. Both
 policies default to **Skip with a note**, preserving existing Command behavior. An
 unconfigured slot and an operator-disabled node remain skips regardless of these policies.
+
+**A Command the repository does not provide is a configuration repair, not a code one.** A
+global default is repository-neutral, so an operator who sets `make test` once will meet a
+repository with no Makefile, or one whose Makefile has no `test` target. That failure is about the
+workflow's configuration, not the change under review, and the repair packet says so instead of
+asking the session to fix a failing check. Otherwise the cheapest way to turn the gate green is to
+write the missing Makefile, which would force a build file on every repository that runs its tests
+another way.
+
+Each check outcome records whether its command came from a repository override or from the global
+default. The failure is classified against the configured argv, not against the output alone: it
+counts only when the launcher the argv names refuses, at the top level, exactly the target, script,
+recipe, or program the argv asked for. That covers GNU or BSD make with no such target or no
+makefile, npm, pnpm or Yarn with no such script, just or go-task with no such recipe, and
+`sh -c '<program> ...'` whose shell cannot find that first program. Every line of the complete
+output must also be something that launcher prints before it starts any work, so a nested command
+that refuses the same name is told apart from the configured one by the evidence that the
+configured one ran: an npm, pnpm or Yarn script banner (`> pkg@1.0.0 test`), an echoed recipe, a
+sub-make's `make[1]:`, an outer make's `*** [test] Error 2`, or any other program's output.
+Truncated output always counts as a command that ran. A repository that provides `make test` or
+`npm test` whose recipe or script runs a nested command that cannot find its own target is
+therefore an ordinary failure. When the refusal matches, the requested change becomes
+**Configure the `<slot>` Command for this repository** and the packet tells the session to:
+
+1. not create a Makefile, script, or any other file to satisfy the command;
+2. inspect the repository to learn how it runs that slot;
+3. confirm the exact argv with the operator through `request_input`, configuring nothing the
+   operator did not confirm;
+4. call `configure_workflow_command` with the confirmed argv;
+5. resubmit with `trigger_workflow_action` `resubmit` and `resubmitUnchanged: true`, because a
+   configuration-only repair changes no files and the engine would refuse it as unchanged.
+
+A failed global default whose output is not recognized keeps the ordinary **Fix the failing check**
+request and adds a note naming the default and the same procedure, in case the repository runs that
+slot some other way. A failed repository override with unrecognized output is an ordinary failure.
 
 An infrastructure problem is never a fail either. A timeout, a kill, a pool with no worktree to
 give: none of them is a statement about the change under review, so they retry and then block

@@ -540,3 +540,27 @@ test("a hand-edited budget degrades the field toward running, not the slot towar
   assert.deepEqual(view.defaultCommand, ["npm", "run", "build"], "the slot must still be readable");
   assert.equal(view.maxRuns, WORKFLOW_COMMAND_DEFAULT_MAX_RUNS);
 });
+
+test("configuring a Command returns the finished runs that slot spent, never one in flight", () => {
+  // The misconfigured `make test` spent the run's one allowance proving nothing about the
+  // change. Without forgiveness the corrected command would be skipped as `budget_spent` on
+  // the very resubmission that configured it.
+  const store = new WorkflowStore(db);
+  seedRun(store, "forgive", 1);
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-a", "test", 1, null).granted, true);
+  store.finishAttempt("attempt-forgive-1-a", { state: "completed" }, 10);
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-b", "lint", 1, null).granted, true);
+  store.finishAttempt("attempt-forgive-1-b", { state: "completed" }, 10);
+  // A sibling execution still running keeps its claim.
+  assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-c", "test", 2, null).granted, true);
+  assert.equal(store.checkRunsSpent("run-forgive", "test", null), 2);
+
+  assert.equal(store.forgiveCheckRuns("run-forgive", "test"), 1);
+  assert.equal(store.checkRunsSpent("run-forgive", "test", null), 1, "the running claim stays");
+  assert.equal(store.checkRunsSpent("run-forgive", "lint", null), 1, "another slot is untouched");
+  assert.equal(
+    store.reserveCheckRun("run-forgive", "attempt-forgive-1-r1", "test", 2, null).granted,
+    true,
+    "the corrected command can run again in this run",
+  );
+});

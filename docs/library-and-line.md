@@ -89,6 +89,13 @@ against any repository. This shelf is where *this machine* says what each slot r
 A slot with neither passes with a note rather than failing, which is what lets a shipped
 workflow name `typecheck` on a machine that has never configured one.
 
+An override can also arrive from a reviewed session. When a global default such as `make test`
+fails because the repository has no Makefile or no such target, the repair packet asks the
+session to find the repository's own command, confirm it with you through `request_input`, and
+set it with `configure_workflow_command`. The result is an ordinary override for that repository,
+listed here, which you can edit or remove like any other. [Workflows](workflows.md#command-nodes)
+describes the repair.
+
 Saving replaces a slot's default, complete override list, run budget, timeout, and both
 skip-or-block policies in one compare-and-swap, so the parts can never be stored apart, and a second window's save is refused
 rather than silently overwriting your unsaved typing. Commands are stored as argv and executed without a

@@ -3288,9 +3288,15 @@ export interface WorkflowCommandResolution {
    * submission's commit rather than standing in the operator's own directory.
    */
   workingSubpath: string;
-  /** Which rung of the ladder answered. Diagnostic only; execution treats both alike. */
-  source: "override" | "default";
+  /**
+   * Which rung of the ladder answered. Execution treats both alike; the repair packet does
+   * not, because a failing global default may simply not apply to this repository.
+   */
+  source: WorkflowCommandSource;
 }
+
+export const WORKFLOW_COMMAND_SOURCES = ["override", "default"] as const;
+export type WorkflowCommandSource = (typeof WORKFLOW_COMMAND_SOURCES)[number];
 
 /**
  * Resolve one slot for one location: longest matching override, else the global default.
@@ -3558,6 +3564,15 @@ export interface WorkflowCheckOutcome {
    * decide whether the cap is set where they want it.
    */
   command: string[] | null;
+  /**
+   * Which catalog rung supplied `command`: a repository override or the machine-wide default.
+   * Absent on outcomes recorded before it was captured and on every outcome with no command.
+   *
+   * Recorded because the two fail for different reasons. A repository override was written for
+   * this checkout; a global default was not, so its failure may mean the repository runs that
+   * slot some other way, and the repair is to configure the Command rather than to change code.
+   */
+  commandSource?: WorkflowCommandSource | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
   output: string;

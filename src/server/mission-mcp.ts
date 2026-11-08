@@ -62,6 +62,7 @@ export const MISSION_MCP_TOOLS = [
   "list_workflow_runs",
   "get_workflow_run",
   "read_workflow_command_output",
+  "configure_workflow_command",
   "trigger_workflow_action",
   "read_sessions",
   "control_session",

@@ -8484,6 +8484,27 @@ export class WorkflowStore {
   }
 
   /**
+   * Return every finished execution one run spent on one Command, after its command changed.
+   *
+   * The run budget bounds re-proving the SAME command, and an execution of an argv the
+   * repository never provided proved nothing about the change. Without this, a session that
+   * configures the right command for its repository resubmits into a gate already skipped as
+   * `budget_spent`, and the command it was asked to fix never runs in this run at all.
+   *
+   * Finished attempts only: a reservation still `running` is an execution in flight, and
+   * releasing it would let a sibling gate start a second one under the same allowance.
+   */
+  forgiveCheckRuns(runId: string, slot: string): number {
+    return Number(this.db.prepare(
+      `UPDATE workflow_node_attempts
+          SET check_run_slot = NULL
+        WHERE check_run_slot = ?
+          AND state <> 'running'
+          AND submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+    ).run(slot, runId).changes);
+  }
+
+  /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
    * Exists for tests and diagnostics. The engine never asks: a caller that counted and then

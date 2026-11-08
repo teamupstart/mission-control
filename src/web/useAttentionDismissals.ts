@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ATTENTION_DISMISSAL_LIMITS, type AttentionDismissalKey } from "@shared/protocol.ts";
+import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { api } from "./lib/api.ts";
 import {
   applyDismissalRead,
   beginDismissalWrite,
   createDismissalSender,
   createRevisionLedger,
+  dismissalBatches,
   effectiveDismissals,
   INITIAL_DISMISSAL_STATE,
   readRetryDelay,
@@ -32,8 +33,9 @@ export interface AttentionDismissalsState {
    */
   unreadable: boolean;
   /**
-   * Dismiss one row's keys (`attentionDismissalKeys`). The row leaves at once; the promise
-   * resolves to null once the daemon stored it, or to an error, in which case the row is back.
+   * Dismiss one row's keys (`attentionDismissalKeys`), in as many bounded requests as the row
+   * needs. The row leaves at once; the promise resolves to null once the daemon stored all of
+   * it, or to an error, in which case whatever the daemon did not store is back.
    */
   dismiss: (keys: readonly AttentionDismissalKey[]) => Promise<string | null>;
 }
@@ -116,26 +118,31 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
   }, []);
 
   const dismiss = useCallback(async (keys: readonly AttentionDismissalKey[]): Promise<string | null> => {
-    // Said here, plainly, rather than as the daemon's validation error: the row stays, and why.
-    if (keys.length > ATTENTION_DISMISSAL_LIMITS.keysPerRequest) {
-      return `Could not dismiss: this row holds more than ${ATTENTION_DISMISSAL_LIMITS.keysPerRequest} questions - answer or dismiss some of them on their cards first`;
-    }
-    const write = ++writesStarted.current;
-    setState((current) => beginDismissalWrite(current, keys, write));
-    const result = await send(keys);
-    // Captured before the read below starts: that read, and any later one, began after the
-    // daemon stored this write, so applying it is what lets the overlay let go.
-    const readsAtAck = readsStarted.current;
-    setState((current) => settleDismissalWrite(current, keys, write, result.ok, readsAtAck));
-    if (!result.ok) {
-      // Superseded by another window: catch up now rather than waiting on its change event.
-      if (result.status === 409) read();
-      return `Could not dismiss: ${result.error ?? "the daemon refused"}`;
-    }
+    // A row of more questions than one request may carry goes out in several. Every batch is
+    // started here, at the click, so each is hidden at once and sent with the basis this window
+    // had seen when the operator clicked - the same as a row that fits in one.
+    const writes = dismissalBatches(keys).map((batch) => ({ batch, write: ++writesStarted.current }));
+    setState((current) =>
+      writes.reduce((next, { batch, write }) => beginDismissalWrite(next, batch, write), current),
+    );
+    const answers = await Promise.all(
+      writes.map(async ({ batch, write }) => {
+        const result = await send(batch);
+        // Captured before the read below starts: that read, and any later one, began after the
+        // daemon stored this write, so applying it is what lets the overlay let go.
+        const readsAtAck = readsStarted.current;
+        // Settled batch by batch: a stored batch stays dismissed even when another is refused,
+        // and only the refused batch's questions come back - which a second click then sends.
+        setState((current) => settleDismissalWrite(current, batch, write, result.ok, readsAtAck));
+        return result;
+      }),
+    );
     // Not left to the change event alone: a dropped stream would otherwise keep this window's
-    // overlay until the next reconnect.
-    read();
-    return null;
+    // overlay until the next reconnect. And a write superseded by another window catches up now
+    // rather than waiting on that window's change event.
+    if (answers.some((answer) => answer.ok || answer.status === 409)) read();
+    const refused = answers.find((answer) => !answer.ok);
+    return refused ? `Could not dismiss: ${refused.error ?? "the daemon refused"}` : null;
   }, [read, send]);
 
   const dismissed = useMemo(

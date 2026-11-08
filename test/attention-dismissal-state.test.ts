@@ -25,13 +25,18 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AttentionDismissal, AttentionDismissalKey } from "../src/shared/protocol.ts";
+import {
+  ATTENTION_DISMISSAL_LIMITS,
+  type AttentionDismissal,
+  type AttentionDismissalKey,
+} from "../src/shared/protocol.ts";
 import {
   applyDismissalRead,
   beginDismissalWrite,
   createDismissalSender,
   createDismissalWriteQueue,
   createRevisionLedger,
+  dismissalBatches,
   effectiveDismissals,
   INITIAL_DISMISSAL_STATE,
   readRetryDelay,
@@ -353,4 +358,37 @@ test("a failed read is retried - the first one or a later refresh - unless a new
   assert.equal(shouldRetryRead(5, 6, false), false);
   // A retry is already waiting, and it reads afresh when it runs.
   assert.equal(shouldRetryRead(5, 4, true), false);
+});
+
+const questions = (count: number): AttentionDismissalKey[] =>
+  Array.from({ length: count }, (_, i) => ({ itemId: `review:r-${i + 1}`, occurrence: "" }));
+
+test("a row that fits in one request goes out whole; a longer one in bounded requests, every key once", () => {
+  const limit = ATTENTION_DISMISSAL_LIMITS.keysPerRequest;
+  const fits = questions(limit);
+  assert.deepEqual(dismissalBatches(fits), [fits], "the largest row one request carries is one write");
+
+  const over = questions(2 * limit + 1);
+  const batches = dismissalBatches(over);
+  assert.deepEqual(batches.map((batch) => batch.length), [limit, limit, 1]);
+  assert.deepEqual(batches.flat(), over, "in click order, nothing dropped and nothing repeated");
+
+  assert.deepEqual(dismissalBatches([]), [], "a row with no keys sends nothing");
+  assert.throws(() => dismissalBatches(over, 0), RangeError, "a zero batch size would never finish");
+});
+
+test("a row dismissed in batches: a refused batch brings back only its own questions", () => {
+  const [first, second] = dismissalBatches(questions(5), 3);
+  let s = applyDismissalRead(INITIAL_DISMISSAL_STATE, 1, []);
+  s = beginDismissalWrite(s, first!, 1);
+  s = beginDismissalWrite(s, second!, 2);
+  assert.equal(hidden(s).length, 5, "the whole row leaves at the click");
+
+  s = settleDismissalWrite(s, first!, 1, true, 1);
+  s = settleDismissalWrite(s, second!, 2, false, 1);
+  assert.deepEqual(
+    hidden(s),
+    first!.map((key) => key.itemId).sort(),
+    "the stored batch stays dismissed; the refused one is back to be dismissed again",
+  );
 });

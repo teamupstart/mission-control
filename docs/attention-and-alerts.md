@@ -60,9 +60,10 @@ back only when it reports something new, and what counts as new depends on the r
 | Stuck finalizations | the finalization stops on a different error |
 
 A question's own **Dismiss**, on its card, is a different button: it resolves the question and
-tells the agent it was dismissed. The row's **Dismiss** only hides the questions, up to 5,000 of
-them in one go. Because a
-dismissed row leaves the count while the session it names may still be blocked, **need you** can
+tells the agent it was dismissed. The row's **Dismiss** only hides the questions, however many
+the row holds. A row of more than 5,000 questions goes to the daemon in several requests; if one
+is refused, only its questions come back, with the reason, and **Dismiss** sends them again.
+Because a dismissed row leaves the count while the session it names may still be blocked, **need you** can
 read higher than **to answer**, and the difference is rows you chose to hide. Alerts are
 unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
 

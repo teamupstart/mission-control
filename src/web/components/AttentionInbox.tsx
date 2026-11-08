@@ -90,10 +90,15 @@ export function AttentionInbox({
   // A refused dismissal, by row: the row comes back as soon as the write fails, and this says
   // why beneath it rather than leaving the operator to wonder whether the click registered.
   //
-  // Kept with WHAT the row said when it was refused, and drawn only while it still says that.
+  // Kept with WHAT the row said when it was refused, and drawn only while it says nothing more.
   // Keyed by row alone, the reason outlived the problem it was about: a row that went on to
   // report something new showed "Could not dismiss" under a problem nobody had tried to dismiss.
-  const [refused, setRefused] = useState<ReadonlyMap<string, { error: string; said: string }>>(new Map());
+  // Not "says exactly the same", though: a row of questions too long for one request is
+  // dismissed in batches, and when one batch is refused the row comes back holding only that
+  // batch's questions - still things the operator tried to dismiss, and still owed the reason.
+  const [refused, setRefused] = useState<
+    ReadonlyMap<string, { error: string; said: ReadonlySet<string> }>
+  >(new Map());
   const dismiss = (item: AttentionItem) => () => {
     setRefused((current) => {
       if (!current.has(item.id)) return current;
@@ -101,7 +106,7 @@ export function AttentionInbox({
       next.delete(item.id);
       return next;
     });
-    const said = rowSays(item);
+    const said = new Set(rowSays(item));
     void onDismiss(attentionDismissalKeys(item)).then((error) => {
       if (error) setRefused((current) => new Map(current).set(item.id, { error, said }));
     });
@@ -161,7 +166,7 @@ export function AttentionInbox({
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onLeave={onClose}
               />
-              {refused.get(item.id)?.said === rowSays(item) && (
+              {saysNothingNew(item, refused.get(item.id)?.said) && (
                 <p className="inbox-line inbox-error" role="alert">
                   {refused.get(item.id)!.error}
                 </p>
@@ -176,11 +181,19 @@ export function AttentionInbox({
 
 /**
  * What a row says, as dismissing it would record it: every key it would dismiss, each with the
- * occurrence it is at now. Two readings of one row are equal exactly when it reports the same
- * thing - for a row of questions, the same questions.
+ * occurrence it is at now - for a row of questions, one entry per question.
  */
-function rowSays(item: AttentionItem): string {
-  return attentionDismissalKeys(item).map((key) => `${key.itemId}=${key.occurrence}`).join("\n");
+function rowSays(item: AttentionItem): string[] {
+  return attentionDismissalKeys(item).map((key) => `${key.itemId}=${key.occurrence}`);
+}
+
+/**
+ * Whether a row reports nothing it did not report when `said` was taken: no new question, and
+ * no single-key row at a new occurrence. Fewer is fine - that is a partly stored dismissal, or
+ * questions answered since.
+ */
+function saysNothingNew(item: AttentionItem, said: ReadonlySet<string> | undefined): boolean {
+  return said !== undefined && rowSays(item).every((entry) => said.has(entry));
 }
 
 /**

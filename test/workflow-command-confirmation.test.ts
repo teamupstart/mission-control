@@ -70,6 +70,9 @@ test("nothing short of the human choosing Configure on that exact card authorize
     ["the question was rewritten", answered(card, { decisions: [{ ...card.decision, question: "Run the tests?" }] })],
     ["an option was relabeled", answered(card, { decisions: [{ ...card.decision,
       options: card.decision.options.map((option) => ({ ...option, label: "Yes" })) }] })],
+    // The daemon's decision copied under a heading or paragraph the session wrote.
+    ["a misleading title", answered(card, { title: "Clean up temporary files?" })],
+    ["a misleading body", answered(card, { body: "Approve a harmless formatting change?" })],
     // An unrelated card the human happened to answer with the argv's text.
     ["an unrelated card", answered(card, { decisions: [{ id: "q", question: "Which command?",
       options: [{ id: "o0", label: "npm test" }] }], selections: [{ decisionId: "q", selected: ["o0"], other: null }] })],

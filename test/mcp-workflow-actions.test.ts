@@ -40,6 +40,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
 const { WorkflowCommandManager, commandConfirmationCard } = await import("../src/server/workflows/commands.ts");
+const { scrubCheckEnv } = await import("../src/server/workflows/check-env.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -558,8 +559,10 @@ test("a session inspects a repository without a Makefile, confirms its command t
       // The real argv, spawned in the real repository: `make` and `npm` answer for themselves.
       execute: async (request) => {
         executed.push([...request.command]);
+        // The environment the daemon gives a Command: scrubbed, which drops make's recursion
+        // state even when this suite itself runs under `make test`.
         const ran = spawnSync(request.command[0]!, request.command.slice(1), {
-          cwd: request.repoRoot, encoding: "utf8", timeout: 60_000,
+          cwd: request.repoRoot, encoding: "utf8", timeout: 60_000, env: scrubCheckEnv(process.env, ""),
         });
         if (ran.error) throw ran.error;
         const output = `${ran.stdout}${ran.stderr}`;

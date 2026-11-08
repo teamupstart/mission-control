@@ -30,7 +30,10 @@ the same when joined with spaces stay distinct. The tool shows that card and blo
 answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
 controlling session) chose **Configure this Command** on exactly that card, after the run started;
 it recomputes the card from the run, slot, repository, and argv rather than trusting a card the
-session phrased. Otherwise it refuses with 403 and stores nothing. It
+session phrased, and the card's title and body must be the daemon's own text too. Otherwise it
+refuses with 403 and stores nothing. Like every dashboard answer, this rests on the dashboard
+API's trust boundary: a local process that can answer a card through `/api/reviews` could equally
+write the catalog through `/api/workflow-commands`. It
 writes that repository's override in Library › Commands, replacing any override the repository
 already had, and never touches the machine-wide default. The repository comes from the run's
 binding, not from the request. **Control other sessions** does not extend to it: it changes the
@@ -902,7 +905,9 @@ Each check outcome records whether its command came from a repository override o
 default. The failure is classified against the configured argv, not against the output alone: it
 counts only when the launcher the argv names refuses, at the top level, exactly the target, script,
 recipe, or program the argv asked for, skipping option values such as `pnpm --dir packages/app
-test` or `task -d packages/app lint`. That covers GNU or BSD make with no such target or no
+test` or `task -d packages/app lint`. For make only the first goal counts, because make stops at
+the first goal it cannot make before building a later one, and `-k`/`--keep-going` disables the
+classification. That covers GNU or BSD make with no such target or no
 makefile, npm, pnpm or Yarn with no such script, just or go-task with no such recipe, and
 `sh -c '<program> ...'` whose shell cannot find that first program. Every line of the complete
 output must also be something that launcher prints before it starts any work, so a nested command

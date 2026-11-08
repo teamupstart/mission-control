@@ -154,7 +154,14 @@ function launcherRefusal(command: readonly string[]): LauncherRefusal | null {
   if (["make", "gmake", "bmake"].includes(tool)) {
     // The top-level make only: `make[1]:` is a sub-make inside a recipe that did run.
     const prefix = `^(?:\\S*/)?${escape(tool)}: `;
-    const targets = makeTargets(args);
+    // `-k`/`--keep-going` keeps building other goals after one fails, so a refusal no longer
+    // proves nothing ran. Short options may be clustered (`-sk`); long ones other than
+    // `--keep-going` never spell it.
+    if (args.some((arg) => arg === "--keep-going" || /^-[^-]*k/.test(arg))) return null;
+    // Only the FIRST goal. make stops at the first goal it cannot make, before building any
+    // later one, so a refusal of goal one proves nothing ran - while a refusal of goal two may
+    // follow a silent goal one that did (`make test lint`).
+    const targets = makeTargets(args).slice(0, 1);
     const refusal = targets.length === 0
       ? any([new RegExp(`${prefix}\\*\\*\\* No targets specified and no makefile found\\.`, "i"),
         new RegExp(`${prefix}\\*\\*\\* No targets\\.\\s+Stop\\.`, "i")])
@@ -290,12 +297,12 @@ export function misfitCommandRepair(
         + "repository and the exact argv, and waits for their answer; nothing is configured unless "
         + "they choose Configure this Command. It sets this repository's override in Library › "
         + "Commands, never the machine-wide default, and lets the corrected command run again in "
-        + "this workflow run. If they decline, ask them with request_input which command to use, "
-        + "then call it again with that argv.",
+        + "this workflow run. If they decline, ask them with request_input which command to use; "
+        + "if they name one, call it again with that argv, and otherwise stop and say so.",
       "3. A configuration-only repair changes no files, so the engine cannot see it and would "
         + "refuse the round as unchanged. This is the one case where you resubmit yourself: "
         + `${resubmitCall(input.runId)}. If you also changed files for other requested changes, `
-        + "finish those first and let the engine resubmit instead. If the operator declines, stop and say so.",
+        + "finish those first and let the engine resubmit instead.",
     ].join("\n"),
   };
 }

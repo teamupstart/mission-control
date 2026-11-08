@@ -42,6 +42,18 @@ test("recognizes the configured launcher refusing the target, script or recipe i
   }
 });
 
+test("make with several goals or --keep-going counts only a refusal that proves nothing ran", () => {
+  // make stops at the first goal it cannot make, before building any later one.
+  assert.ok(commandMisfitSignal(["make", "test", "lint"], "make: *** No rule to make target 'test'.  Stop."));
+  // A refusal of goal two may follow a silent goal one that did run.
+  assert.equal(commandMisfitSignal(["make", "test", "lint"], "make: *** No rule to make target 'lint'.  Stop."), null);
+  // With -k make keeps building other goals after one fails, so no refusal proves anything.
+  for (const flag of ["-k", "-sk", "--keep-going"]) {
+    assert.equal(commandMisfitSignal(["make", flag, "test"], "make: *** No rule to make target 'test'.  Stop."), null, flag);
+  }
+  assert.ok(commandMisfitSignal(["make", "-j4", "test"], "make: *** No rule to make target 'test'.  Stop."));
+});
+
 test("an option's value is never mistaken for the requested script, task or recipe", () => {
   const cases: Array<[string[], string]> = [
     [["pnpm", "--dir", "packages/app", "test"], " ERR_PNPM_NO_SCRIPT  Missing script: test\n\nCommand \"test\" not found."],

@@ -114,8 +114,9 @@ export function commandConfirmationCard(input: {
  * The daemon's own check, so the repair packet's "confirm it with the operator first" is not
  * text a misled or prompt-injected session could skip. A review counts only when it:
  *
- * - is a `request_input` card (`kind: "input"`) carrying exactly this card's single decision -
- *   id, question and options - so it is about this run, slot, repository and argv;
+ * - is a `request_input` card (`kind: "input"`) whose title, body and single decision - id,
+ *   question and options - are exactly this card's, so it is about this run, slot, repository
+ *   and argv and says nothing else to the operator;
  * - was answered by the human (`resolvedBy: "human"`), not Foreman, a standing approval or a
  *   controlling session, after this workflow run started;
  * - chose "Configure this Command".
@@ -129,6 +130,9 @@ export function operatorConfirmation(
   for (const review of reviews) {
     if (review.kind !== "input" || review.status !== "answered" || review.resolvedBy !== "human") continue;
     if ((review.resolvedAt ?? 0) < since) continue;
+    // The heading and paragraph the operator read must be the daemon's too, so a session that
+    // copies the decision under a misleading title or body has authorized nothing.
+    if (review.title !== card.title || review.body !== card.question) continue;
     const decision = review.decisions?.length === 1 ? review.decisions[0]! : null;
     if (!decision || decision.id !== card.decision.id) continue;
     const shown = JSON.stringify({

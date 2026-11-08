@@ -423,7 +423,9 @@ What a Command gets:
   locale and proxy variables and everything else a build needs are passed through. This stops a
   credential being *handed* to a check; it does not hide the daemon's default state directory,
   which sits in your home folder and which anything running as you can find whatever the
-  environment says.
+  environment says. make's recursion state (`MAKELEVEL`, `MAKEFLAGS`, `MFLAGS`, `MAKEOVERRIDES`)
+  is removed too, so a daemon started under `make start` still runs each Command as a top-level
+  make rather than as a sub-make carrying the parent's flags and jobserver descriptors.
 - **A closed stdin**, so a command that stops to ask a question fails immediately instead of
   hanging until its timeout.
 - **Bounded output.** The combined last 4,000 bytes remain inline because a failing build's

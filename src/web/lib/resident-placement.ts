@@ -29,32 +29,55 @@ export interface ResidentPlacementResult {
   excluded: ReadonlySet<string>;
   /** Residents drawn as a visitor card in Needs you, standing in for the drawer while it is shut. */
   visitors: ReadonlySet<string>;
+  /**
+   * Residents that need you, drawn as ordinary rows in the Needs you rail while a detail is
+   * open, so a click or an arrow key swaps the conversation between them like any other session.
+   */
+  asking: ReadonlySet<string>;
 }
 
 const NONE: ReadonlySet<string> = new Set();
 
 /**
  * In `fleet` placement nothing moves. In `drawer` placement every resident leaves the fleet,
- * except one that needs you while the drawer is closed: it stays as a visitor card. Its own open
- * detail already shows its ask, so that resident is not a visitor while its detail is open.
+ * except one that needs you:
+ *
+ * - While a detail is open - the Board drill-in or a Console selection - it is an ordinary row
+ *   in the Needs you rail, the open resident included, so the rail lists everything asking and
+ *   the conversation can move between them. The drawer being on screen does not change that: the
+ *   rail is where the operator is answering from.
+ * - With no detail open, it leaves for the drawer's Needs you group while the drawer is on
+ *   screen, and stands in Needs you as a visitor card while the drawer is closed.
  */
 export function residentPlacement(input: ResidentPlacementInput): ResidentPlacementResult {
-  if (input.placement === "fleet") return { excluded: NONE, visitors: NONE };
+  if (input.placement === "fleet") return { excluded: NONE, visitors: NONE, asking: NONE };
   const excluded = new Set<string>();
   const visitors = new Set<string>();
+  const asking = new Set<string>();
+  const detailOpen = input.openDetailId !== null;
   for (const id of input.residentIds) {
-    const visitor = !input.drawerOpen
-      && id !== input.openDetailId
-      && input.toneOf(id) === "attention";
-    (visitor ? visitors : excluded).add(id);
+    if (input.toneOf(id) !== "attention") excluded.add(id);
+    else if (detailOpen) asking.add(id);
+    else (input.drawerOpen ? excluded : visitors).add(id);
   }
-  return { excluded, visitors };
+  return { excluded, visitors, asking };
+}
+
+/**
+ * Residents the ⌘-numbers step over: a visitor card and a resident asking in the rail. Residents
+ * have `⌥1`…`⌥9` of their own, and skipping them keeps the fleet's numbers from shifting while an
+ * ask is open or as a detail opens and closes. `residentPlacement` fills at most one of the two
+ * sets, by whether a detail is open, so the populated one is the answer.
+ */
+export function unnumberedResidents(result: ResidentPlacementResult): ReadonlySet<string> {
+  return result.asking.size > 0 ? result.asking : result.visitors;
 }
 
 /**
  * The session whose detail is open: the fleet list first, and otherwise, in Drawer placement,
- * the live resident with that id. An open resident is read from here and never added to a fleet
- * list, so the detail pane shows it while the Board columns and rails stay fleet-only.
+ * the live resident with that id. A resident that needs you is on the fleet while its detail is
+ * open (see `residentPlacement`); any other open resident is read from here and never added to a
+ * fleet list, so the detail pane shows it while the Board columns and rails stay fleet-only.
  */
 export function detailSessionLookup(input: {
   id: string | null;

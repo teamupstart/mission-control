@@ -234,7 +234,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   });
   const starters = pending.length + failed.length;
 
-  const modes = boardColumnModes(groups, revealed, focusedTone != null, starters);
+  const modes = boardColumnModes(groups, revealed, focusedTone, starters);
   // Hidden stash, empty list: the columns are still stashed (not drawn), there is just no
   // chip to bring them back from.
   const stashed = showEmptyColumnStash

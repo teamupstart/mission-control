@@ -103,7 +103,7 @@ import {
 import { updateUiConfig, useUiConfig, useUiConfigHydrated } from "./lib/uiConfig.ts";
 import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
-import { reviewShortcutTarget } from "./lib/review-shortcut.ts";
+import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
 import { foldAttention } from "./lib/attention.ts";
 import {
@@ -154,9 +154,9 @@ import { AppPageShell } from "./components/AppPageShell.tsx";
 import { ExecutionPage } from "./workflows/ExecutionPage.tsx";
 import { ResidentsPage } from "./residents/ResidentsPage.tsx";
 import { pinnedResidentSessions, residentMarksBySession, residentReplacementsBySession } from "./residents/marker.ts";
-import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries } from "./residents/ResidentsDrawer.tsx";
+import { ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } from "./residents/ResidentsDrawer.tsx";
 import { useResidentLaunches } from "./residents/useResidentLaunches.ts";
-import { detailSessionLookup, residentPlacement as placeResidents } from "./lib/resident-placement.ts";
+import { detailSessionLookup, residentPlacement as placeResidents, unnumberedResidents } from "./lib/resident-placement.ts";
 import { WorkflowConfirmModal } from "./workflows/WorkflowConfirmModal.tsx";
 import {
   WorkflowBindingDialogHost,
@@ -2400,7 +2400,8 @@ export function App(): React.JSX.Element {
   // Which residents are placed on the fleet (Settings → Display → Residents). Decided here,
   // once, from the open detail rather than from `visible`, so the rule never reads its own
   // output; the fleet memo below applies it before ordering, so the Board columns, both rails,
-  // the arrow keys and the ⌘-numbers all inherit it and no view branches on placement.
+  // the arrow keys and the ⌘-numbers all inherit it and no view branches on placement. While a
+  // detail is open, every resident that needs you is a row in the Needs you rail.
   const placement = useMemo(
     () => placeResidents({
       placement: residentPlacement,
@@ -2444,12 +2445,32 @@ export function App(): React.JSX.Element {
   /** An open resident's detail: on screen while no fleet list names it. */
   const openResident = detailSession && !visible.includes(detailSession) ? detailSession : null;
   /**
+   * The open detail's resident in Drawer placement, whether or not a rail row names it: a
+   * resident asking in the Needs you rail is on the fleet, and the Escape that leaves its detail
+   * still hands the keyboard back to its drawer card.
+   */
+  const detailResidentId = residentsInDrawer && detailSession && residentBySession.has(detailSession.id)
+    ? detailSession.id
+    : null;
+  /**
+   * The drawer's Needs you group while the drawer is on screen, residents asking in the Needs you
+   * rail included: the group prints the review chord's keycap, so the chord reaches every resident
+   * it lists, after every fleet session with a review (see `reviewChordTarget`).
+   */
+  const drawerAsking = useMemo(() => {
+    if (!residentDrawerShown) return [];
+    return residentDrawerGroups(residentEntries).needsYou.flatMap((entry) => (entry.session ? [entry.session] : []));
+  }, [residentDrawerShown, residentEntries]);
+  /**
    * What the global key handler needs about residents, read through a ref so the listener does
    * not re-subscribe on every resident or drawer change.
    */
   const residentKeysRef = useRef({
     entries: residentEntries,
     openResident,
+    detailResidentId,
+    drawerAsking,
+    detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
     leftDetail: (_sessionId: string): void => {},
@@ -2458,6 +2479,9 @@ export function App(): React.JSX.Element {
   residentKeysRef.current = {
     entries: residentEntries,
     openResident,
+    detailResidentId,
+    drawerAsking,
+    detailId,
     visitors: placement.visitors,
     openDetail: openResidentDetail,
     // The Escape that left a resident's detail. With the drawer on screen beside it, the
@@ -2695,12 +2719,15 @@ export function App(): React.JSX.Element {
   // on a Console that draws twelve keycaps.
   const cardShortcutsOn = route.page === "fleet" && shownDisplayItem("cardShortcut");
   const cardShortcuts = useMemo(
-    // Visitor cards are skipped, so the numbers do not shift while a resident's ask is open.
-    () => (cardShortcutsOn
-      ? assignCardShortcuts(placement.visitors.size > 0
-        ? boardColumns.map((column) => column.filter((id) => !placement.visitors.has(id)))
-        : boardColumns)
-      : NO_CARD_SHORTCUTS),
+    // Visitor cards and residents asking in the rail are skipped, so the numbers do not shift
+    // while a resident's ask is open or as a detail opens and closes.
+    () => {
+      if (!cardShortcutsOn) return NO_CARD_SHORTCUTS;
+      const skipped = unnumberedResidents(placement);
+      return assignCardShortcuts(skipped.size > 0
+        ? boardColumns.map((column) => column.filter((id) => !skipped.has(id)))
+        : boardColumns);
+    },
     [cardShortcutsOn, boardColumns, placement],
   );
   // Read by the keydown handler through a ref, and synced in a LAYOUT effect - which is the
@@ -3618,7 +3645,11 @@ export function App(): React.JSX.Element {
       const ids = visible.filter((s) => !foldedIds.has(s.id)).map((s) => s.id);
       // An open resident is on screen with no fleet row, so an empty fleet still has Escape.
       const residentOpen = residentKeysRef.current.openResident;
-      if (ids.length === 0 && !residentOpen) return;
+      // Any open resident, rail row or not: leaving its detail goes back to its drawer card.
+      const detailResident = residentKeysRef.current.detailResidentId;
+      // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
+      const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
+      if (ids.length === 0 && !residentOpen && !drawerReview) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -3654,14 +3685,14 @@ export function App(): React.JSX.Element {
           if (layout === "board" && boardOpen) {
             e.preventDefault();
             setBoardOpen(false);
-            if (residentOpen) residentKeysRef.current.leftDetail(residentOpen.id);
+            if (detailResident) residentKeysRef.current.leftDetail(detailResident);
             return;
           }
           if (!selectedId) return;
           e.preventDefault();
           handle()?.cancel();
           setSelectedId(null);
-          if (residentOpen) residentKeysRef.current.leftDetail(residentOpen.id);
+          if (detailResident) residentKeysRef.current.leftDetail(detailResident);
           return;
         case "ArrowRight":
         case "ArrowLeft":
@@ -3843,11 +3874,22 @@ export function App(): React.JSX.Element {
       // asking, otherwise the first session in fleet order that is. Unclaimed - no
       // `preventDefault` - when nothing anywhere is waiting, so a bare `e` on a quiet
       // fleet stays the browser's.
+      // After the fleet, the first resident in the drawer's Needs you group: its review queue, with
+      // its card selected, or - asking without a review - its conversation with the cursor in the
+      // reply box, which is also what the chord does when that conversation is already the one
+      // open. See `reviewChordTarget`.
       if (chord === bindings.review) {
-        const target = reviewShortcutTarget(visible, selectedId);
+        const keys = residentKeysRef.current;
+        const target = reviewChordTarget(visible, selectedId, keys.drawerAsking, keys.detailId);
         if (!target) return;
         e.preventDefault();
-        if (target.refocus) focusSession(target.sessionId);
+        if (target.kind === "resident" && target.opens === "conversation") {
+          if (target.sessionId !== keys.detailId) keys.openDetail(target.sessionId);
+          requestComposerFocus(target.sessionId);
+          return;
+        }
+        if (target.kind === "resident") setResidentDrawerSelected(target.sessionId);
+        else if (target.refocus) focusSession(target.sessionId);
         setReviewSessionId(target.sessionId);
         return;
       }

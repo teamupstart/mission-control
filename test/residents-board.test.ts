@@ -405,7 +405,7 @@ test("in Drawer placement the Residents button keeps its name and opens the draw
 
 // ---- the Residents drawer: ⌥-number boundary and the empty state ----
 
-const { ResidentDrawerCardBody, ResidentsDrawer, ResidentsEdgeTab, residentDrawerEntries } = await import("../src/web/residents/ResidentsDrawer.tsx");
+const { ResidentDrawerCardBody, ResidentsDrawer, ResidentsEdgeTab, defaultResidentSelection, residentDrawerEntries, residentDrawerGroups } = await import("../src/web/residents/ResidentsDrawer.tsx");
 const { residentShortcutIndex } = await import("../src/web/lib/keybindings.ts");
 const { useResidentLaunches } = await import("../src/web/residents/useResidentLaunches.ts");
 
@@ -687,6 +687,57 @@ test("a card carries the Board column it sits in: working, needs you, or neither
   assert.match(classOf("s2"), /\bneeds-you\b/);
   assert.doesNotMatch(classOf("s2"), /\bis-working\b/);
   assert.doesNotMatch(classOf("s3"), /\bis-working\b|\bneeds-you\b/);
+});
+
+test("residents that need you lead the drawer under a Needs you heading, keeping their ⌥-numbers", () => {
+  const runs = [1, 2, 3, 4].map((n) => summary({ taskId: `t${n}`, createdAt: n }));
+  const sessions = [
+    mkSession({ id: "s1", state: "working", task: mkTaskSummary({ id: "t1", kind: "resident" }) }),
+    mkSession({ id: "s2", pendingReviews: 1, task: mkTaskSummary({ id: "t2", kind: "resident" }) }),
+    mkSession({ id: "s3", state: "idle", task: mkTaskSummary({ id: "t3", kind: "resident" }) }),
+    mkSession({ id: "s4", pendingReviews: 2, task: mkTaskSummary({ id: "t4", kind: "resident" }) }),
+  ];
+  const entries = residentDrawerEntries(runs, [profile()], sessions);
+  const groups = residentDrawerGroups(entries);
+  assert.deepEqual(groups.needsYou.map((entry) => entry.session!.id), ["s2", "s4"]);
+  assert.deepEqual(groups.others.map((entry) => entry.session!.id), ["s1", "s3"]);
+  assert.equal(defaultResidentSelection(entries), "s2");
+
+  const html = drawerMarkup(runs, sessions);
+  // Drawn in group order, the Needs you group first; each card keeps the ⌥-number ⌥N opens.
+  const order = [...html.matchAll(/data-resident-card="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ["s2", "s4", "s1", "s3"]);
+  const keycaps = [...html.matchAll(/class="residents-drawer-key"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  assert.deepEqual(keycaps, ["⌥2", "⌥4", "⌥1", "⌥3"]);
+  // The heading carries the review chord's keycap, as the Board's Needs you column does.
+  const group = html.slice(html.indexOf('class="residents-drawer-group is-needs-you"'), html.indexOf('aria-label="Live residents"'));
+  assert.match(group, /<h3 class="residents-drawer-group-head" id="residents-drawer-needs-you">Needs you<span class="residents-drawer-group-key"><kbd class="kb-hint" aria-hidden="true">e<\/kbd><\/span>/);
+  assert.match(group, /<span class="residents-drawer-group-n" aria-hidden="true">2<\/span>/);
+  assert.match(group, /aria-label="Residents that need you"/);
+  assert.match(group, /data-resident-card="s2"/);
+  assert.doesNotMatch(group, /data-resident-card="s1"/);
+});
+
+test("the drawer draws no Needs you group while no resident needs you", () => {
+  const { runs, sessions } = twoResidents();
+  const html = drawerMarkup(runs, sessions);
+  assert.doesNotMatch(html, /residents-drawer-group/);
+  assert.doesNotMatch(html, /Residents that need you/);
+  assert.deepEqual([...html.matchAll(/data-resident-card="([^"]+)"/g)].map((m) => m[1]), ["s1", "s2"]);
+});
+
+test("the Needs you heading carries the review keycap for a resident awaiting input without a review", () => {
+  const runs = [summary({ taskId: "t1", createdAt: 1 })];
+  // Parked on a menu, no review queue: `e` opens its conversation (`reviewChordTarget`), so the
+  // heading still names the key.
+  const sessions = [mkSession({
+    id: "s1",
+    state: "awaiting_input",
+    task: mkTaskSummary({ id: "t1", kind: "resident" }),
+  })];
+  const html = drawerMarkup(runs, sessions);
+  assert.match(html, /class="residents-drawer-group is-needs-you"/);
+  assert.match(html, /<span class="residents-drawer-group-key"><kbd class="kb-hint" aria-hidden="true">e<\/kbd><\/span>/);
 });
 
 test("the edge tab lights for working, for needs you, and for both at once", () => {

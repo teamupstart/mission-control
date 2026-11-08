@@ -978,7 +978,9 @@ available:
   empty column leaves the board and becomes a chip in the **empty** stash beside the last column;
   click a chip to bring that column back. Uncheck **Show the empty-column stash** in
   Settings → Display → Layout to hide the stash entirely, so empty columns simply leave. The
-  needs you rail is not in the stash and stays either way.
+  needs you rail is not in the stash and stays either way. Drilled into **needs you**, the
+  column is the drill-in rail at full rail width with its heading, never the slim all-clear,
+  even when nothing else in it is asking.
 - **An [ensemble](ensembles.md#multi-agent-ensembles)'s members are drawn together, in every layout.**
   Sibling candidates of one run used to scatter through the fleet like unrelated work; now one
   ordering decides where every session goes, and it puts them adjacent. On the **Board** they
@@ -1789,7 +1791,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog), or **Scouts** search while on that page | Anywhere |
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions, live residents and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
-| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there | Any session with a pending review |
+| <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. With no fleet session asking, it addresses the first resident in the Residents drawer's **Needs you** group, including one that is also a row in the **Needs you** rail: its review queue, or its conversation with the cursor in the reply box when it needs you without a review. While the drawer is on screen, its residents count only in that second step, even when one is the selected session, so a fleet session's review always comes first. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge. With keycaps on, the Board's **Needs you** column prints it beside its name while a review is waiting there, and the drawer's **Needs you** group prints it whenever the group is shown | Any session with a pending review, or a resident in the drawer's Needs you group |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |

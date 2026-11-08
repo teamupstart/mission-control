@@ -1389,13 +1389,20 @@ server.registerTool(
     title: "Submit a scout report",
     description:
       "When your scout report is written, submit it. Mission Control captures the report " +
-      "directory and the additional files you name into a durable local archive that outlives " +
-      "this session, its checkout and its task card. Any session may publish when instructed. " +
+      "files you explicitly select with files, even if Git ignores them, into a durable local archive that outlives " +
+      "this session, its checkout and its task card. Include reportPath in files; only selected files are copied. " +
+      "Omit files for legacy directory capture. Any session may publish when instructed. " +
       "Call once per report using a unique directory. Reusing the directory returns the existing " +
       "immutable report; use a new slug for a revision. Submission does not complete your task. The report must " +
       `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
       "external requests. Do not open a pull request for the report.",
     inputSchema: {
+      files: z.array(z.object({
+        repoSlot: z.string().describe("An issued repository slot, e.g. repo-01"),
+        path: z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+          .describe("Checkout-relative file path"),
+      })).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional()
+        .describe("Complete explicit selection, including reportPath and each evidence file. Accepts Git-ignored files. No automatic neighbors. Do not combine with supporting."),
       title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
         .describe("Optional display title for this report."),
       reportPath: z
@@ -1432,13 +1439,18 @@ server.registerTool(
         ),
     },
   },
-  async ({ title, reportPath, summary, tags, supporting }) => {
+  async ({ title, reportPath, summary, tags, supporting, files }) => {
     try {
       const health = await http("/api/health", "GET");
-      if (!health.ok || !daemonHealthSupports(await health.json(), DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
+      const healthBody: unknown = health.ok ? await health.json() : null;
+      if (!daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.multipleScoutReports)) {
         return textResult("The running Mission Control daemon does not support multiple scout reports. Update/restart the daemon before submitting; no report was sent.", true);
       }
+      if (files !== undefined && !daemonHealthSupports(healthBody, DAEMON_PROTOCOL_CAPABILITIES.explicitScoutFiles)) {
+        return textResult("The running Mission Control daemon does not support explicit report files. Update/restart the daemon before submitting; no report was sent.", true);
+      }
       const res = await http("/mcp/scouts/submit", "POST", {
+        files,
         title,
         reportPath,
         summary,
@@ -1456,11 +1468,11 @@ server.registerTool(
         replayed?: boolean;
         archive?: { key?: string; artifactCount?: number; captureStatus?: string };
       };
-      const files = body.archive?.artifactCount ?? 0;
+      const fileCount = body.archive?.artifactCount ?? 0;
       return textResult(
         body.replayed
-          ? `Already submitted; the existing immutable archive of ${files} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
-          : `Submitted. This report and ${Math.max(0, files - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
+          ? `Already submitted; the existing immutable archive of ${fileCount} file(s) still stands. Edited source bytes were not republished. Report: #/scouts/${body.archive?.key ?? ""}. Continue the requested work.`
+          : `Submitted. This report and ${Math.max(0, fileCount - 1)} supporting file(s) were archived. Report: #/scouts/${body.archive?.key ?? ""}. This does not complete your task; continue the requested work.`,
       );
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);

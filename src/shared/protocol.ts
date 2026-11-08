@@ -8208,6 +8208,7 @@ const ScoutSupportingLocatorSchema = z.object({
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
 export const SubmitScoutArtifactsSchema = z.object({
+  files: z.array(ScoutSupportingLocatorSchema).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional(),
   title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
   reportPath: z
     .string()

@@ -350,3 +350,17 @@ test("both delivery seams compose the contract, not just the dispatcher", () => 
 function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+test("the explicit file list is bounded and preserved by the daemon submission schema", () => {
+  const base = { reportPath: "docs/reports/example/report.html", summary: "Finding" };
+  const files = [{ repoSlot: "repo-01", path: base.reportPath }];
+  assert.deepEqual(SubmitScoutArtifactsSchema.parse({ ...base, files }).files, files);
+  const maximumFiles = Array.from({ length: 512 }, (_, index) => ({
+    repoSlot: "repo-01",
+    path: index === 0 ? base.reportPath : `evidence/file-${index}.txt`,
+  }));
+  assert.deepEqual(SubmitScoutArtifactsSchema.parse({ ...base, files: maximumFiles }).files, maximumFiles);
+  for (const invalid of [[], Array.from({ length: 513 }, () => files[0]), [{ repoSlot: "unissued", path: "file" }]]) {
+    assert.equal(SubmitScoutArtifactsSchema.safeParse({ ...base, files: invalid }).success, false);
+  }
+});

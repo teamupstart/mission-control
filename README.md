@@ -229,6 +229,8 @@ Not every valuable result is a code change. A Scout investigates a question and 
 limitations. Any session can publish requested scout reports, with a separate archive for each
 report directory. Normal Scout completion requires at least one complete report and verifies
 every report submitted in that work episode. Other task kinds keep their existing completion rules.
+Explicit file lists can publish Git-ignored reports and evidence without collecting unlisted
+neighbors or changing Git state.
 
 The archive makes reports and plans searchable by their question and content. They outlive the
 temporary task, agent, branch, and worktree that produced them, while preserving an honest record

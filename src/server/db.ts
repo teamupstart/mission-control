@@ -4464,6 +4464,8 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+  // Null preserves legacy directory capture; [] is an explicit (invalid) selection, never discovery.
+  addColumn(d, "archive_capture_jobs", "files_json", "TEXT");
 
   // Prompt context is additive in both places. The capture row is immutable recovery
   // coordination; the archive row is a disposable projection rebuilt from manifests.

@@ -4,6 +4,7 @@ import {
   ARCHIVE_ARTIFACTS_DIR,
   ARCHIVE_LIMITS,
   ARCHIVE_PRIMARY_REPORT_PATH,
+  ARCHIVE_REPORT_DIR,
   validateArchivePath,
 } from "@shared/archives.ts";
 import {
@@ -51,7 +52,7 @@ export async function planScoutCapture(
 }
 
 /**
- * The plan for a scout that submitted: its report directory, plus the files it named.
+ * Explicit submissions capture only their selected files; legacy calls capture the directory.
  *
  * Every refusal collects rather than short-circuits, so an agent correcting its submission
  * learns about all four bad paths at once instead of one per round trip.
@@ -82,7 +83,7 @@ async function planSubmitted(
     problems.push(`${submission.reportPath}: ${report.reason}`);
   } else if (report.bytes > ARCHIVE_LIMITS.primaryReportBytes) {
     problems.push(`${submission.reportPath} exceeds the ${ARCHIVE_LIMITS.primaryReportBytes}-byte report limit`);
-  } else if (await isIgnored(primary.realRoot, submission.reportPath)) {
+  } else if (submission.files === undefined && await isIgnored(primary.realRoot, submission.reportPath)) {
     problems.push(
       `${submission.reportPath} is ignored by git - a report under an ignored path is not archived`,
     );
@@ -97,19 +98,21 @@ async function planSubmitted(
       originalPath: submission.reportPath,
       bytes: report.bytes,
     });
-    const companions = await planCapturedDirectory(
-      primary,
-      reportDir,
-      report.path,
-      deps.beforeCompanionDirectory,
-    );
-    if (!companions.ok) return companions;
-    problems.push(
-      ...companions.missing.map(
-        (entry) => `${entry.expectedSource}: ${entry.reason}`,
-      ),
-    );
-    files.push(...companions.files);
+    if (submission.files === undefined) {
+      const companions = await planCapturedDirectory(
+        primary,
+        reportDir,
+        report.path,
+        deps.beforeCompanionDirectory,
+      );
+      if (!companions.ok) return companions;
+      problems.push(
+        ...companions.missing.map(
+          (entry) => `${entry.expectedSource}: ${entry.reason}`,
+        ),
+      );
+      files.push(...companions.files);
+    }
   }
 
   const supporting = await planSupporting(job, roots, reportDir, primary.slot);
@@ -274,7 +277,7 @@ async function discoverReports(realRoot: string): Promise<string[]> {
   return found.sort();
 }
 
-/** The additional files a scout explicitly named, each through the same defences. */
+/** Selected evidence (or legacy additional files), each through the same path defences. */
 async function planSupporting(
   job: ArchiveCaptureJob,
   roots: ResolvedRoot[],
@@ -285,7 +288,14 @@ async function planSupporting(
   const problems: string[] = [];
   const claimed = new Set<string>();
 
-  for (const locator of job.submission?.supporting ?? []) {
+  const submission = job.submission!;
+  const explicit = submission.files !== undefined;
+  let selectedPrimary = false;
+  if (explicit && submission.supporting.length > 0) {
+    return { ok: false, problems: ["files and supporting cannot be combined; put every selected file in files"] };
+  }
+
+  for (const locator of submission.files ?? submission.supporting) {
     const root = roots.find((entry) => entry.slot === locator.repoSlot);
     if (!root) {
       problems.push(`${locator.repoSlot} is not a repository slot this task issued`);
@@ -306,15 +316,17 @@ async function planSupporting(
       continue;
     }
     const relative = path.relative(root.realRoot, resolved.path).split(path.sep).join("/");
-    // Files beside the report arrive with the directory. Naming one here would archive it
-    // twice under two ids, which is a manifest that describes the same bytes as two artifacts.
-    if (root.slot === primarySlot && relative.startsWith(`${reportDir}/`)) {
+    // Legacy calls collect neighbors with the directory; explicit calls must name them.
+    const besideReport = root.slot === primarySlot && relative.startsWith(`${reportDir}/`);
+    if (!explicit && besideReport) {
       problems.push(
         `${locator.path} is already captured with the report directory - do not list files beside the report`,
       );
       continue;
     }
-    const archivePath = `${ARCHIVE_ARTIFACTS_DIR}/${root.slot}/${relative}`;
+    const archivePath = explicit && besideReport
+      ? `${ARCHIVE_REPORT_DIR}/${relative.slice(reportDir.length + 1)}`
+      : `${ARCHIVE_ARTIFACTS_DIR}/${root.slot}/${relative}`;
     if (!validateArchivePath(archivePath)) {
       problems.push(`${locator.path} cannot be represented inside an archive`);
       continue;
@@ -323,26 +335,33 @@ async function planSupporting(
       problems.push(`${locator.path} was submitted twice for ${root.slot}`);
       continue;
     }
+    claimed.add(archivePath);
+    if (explicit && root.slot === primarySlot && relative === submission.reportPath) {
+      selectedPrimary = true;
+      continue; // The primary entry above owns its stricter size limit and role.
+    }
     if (resolved.bytes > ARCHIVE_LIMITS.supportingFileBytes) {
       problems.push(`${locator.path} exceeds the ${ARCHIVE_LIMITS.supportingFileBytes}-byte supporting-file limit`);
       continue;
     }
-    if (await isIgnored(root.realRoot, relative)) {
+    if (!explicit && await isIgnored(root.realRoot, relative)) {
       problems.push(`${locator.path} is ignored by git and was not archived`);
       continue;
     }
-    claimed.add(archivePath);
     files.push({
       source: resolved.path,
       sourceDev: resolved.dev,
       sourceIno: resolved.ino,
       archivePath,
-      role: "supporting",
+      role: explicit && besideReport ? "report_companion" : "supporting",
       repoSlot: root.slot,
       originalPath: relative,
       bytes: resolved.bytes,
     });
   }
 
+  if (explicit && !selectedPrimary) {
+    problems.push(`files must include the primary report ${submission.reportPath} in ${primarySlot}`);
+  }
   return problems.length > 0 ? { ok: false, problems } : { ok: true, files };
 }

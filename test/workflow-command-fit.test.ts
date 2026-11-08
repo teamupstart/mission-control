@@ -42,6 +42,27 @@ test("recognizes the configured launcher refusing the target, script or recipe i
   }
 });
 
+test("an option's value is never mistaken for the requested script, task or recipe", () => {
+  const cases: Array<[string[], string]> = [
+    [["pnpm", "--dir", "packages/app", "test"], " ERR_PNPM_NO_SCRIPT  Missing script: test\n\nCommand \"test\" not found."],
+    [["pnpm", "-C", "packages/app", "run", "lint"], " ERR_PNPM_NO_SCRIPT  Missing script: lint"],
+    [["pnpm", "--filter", "web", "test"], " ERR_PNPM_NO_SCRIPT  Missing script: test"],
+    [["npm", "--prefix", "packages/app", "test"], "npm error Missing script: \"test\""],
+    [["npm", "-w", "web", "run", "lint"], "npm error Missing script: \"lint\""],
+    [["yarn", "--cwd", "packages/app", "test"], "yarn run v1.22.19\nerror Command \"test\" not found."],
+    [["task", "-d", "packages/app", "lint"], "task: Task \"lint\" does not exist"],
+    [["task", "--taskfile", "ci/Taskfile.yml", "test"], "task: Task \"test\" does not exist"],
+    [["just", "-f", "ci/justfile", "test"], "error: Justfile does not contain recipe `test`."],
+    [["just", "--working-directory", "packages/app", "lint"], "error: Justfile does not contain recipe `lint`."],
+  ];
+  for (const [command, output] of cases) {
+    assert.ok(commandMisfitSignal(command, output), `${command.join(" ")}: ${output}`);
+  }
+  // And the directory itself is not a name the refusal can match.
+  assert.equal(commandMisfitSignal(["pnpm", "--dir", "test", "lint"], " ERR_PNPM_NO_SCRIPT  Missing script: test"), null);
+  assert.equal(commandMisfitSignal(["task", "-d", "lint", "test"], "task: Task \"lint\" does not exist"), null);
+});
+
 test("a nested command failing inside a real target stays an ordinary failure", () => {
   const nested: Array<[string[], string]> = [
     // `make test` exists and its recipe runs a sub-make that cannot find ITS target.

@@ -28,7 +28,8 @@ writes that repository's override in Library › Commands, replacing any overrid
 already had, and never touches the machine-wide default. The repository comes from the run's
 binding, not from the request. **Control other sessions** does not extend to it: it changes the
 operator's Command catalog, so only the session that owns the run may call it, and only while the
-run has not finished. After the write it returns to the run budget only the run's finished
+run has not finished. While a check for that slot is still running in the run, the call is refused
+until it finishes, because that check's outcome decides whether its run is returned to the budget. After the write it returns to the run budget only the run's finished
 executions of that slot in which the repository did not provide a different argv, so the corrected
 command runs on the next submission instead of being skipped as already spent. A command that
 actually ran is never returned, and spending stays with the argv that spent it: configuring an argv
@@ -893,7 +894,8 @@ another way.
 Each check outcome records whether its command came from a repository override or from the global
 default. The failure is classified against the configured argv, not against the output alone: it
 counts only when the launcher the argv names refuses, at the top level, exactly the target, script,
-recipe, or program the argv asked for. That covers GNU or BSD make with no such target or no
+recipe, or program the argv asked for, skipping option values such as `pnpm --dir packages/app
+test` or `task -d packages/app lint`. That covers GNU or BSD make with no such target or no
 makefile, npm, pnpm or Yarn with no such script, just or go-task with no such recipe, and
 `sh -c '<program> ...'` whose shell cannot find that first program. Every line of the complete
 output must also be something that launcher prints before it starts any work, so a nested command

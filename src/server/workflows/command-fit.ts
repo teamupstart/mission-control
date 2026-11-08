@@ -86,10 +86,37 @@ function makeTargets(args: readonly string[]): string[] {
   return targets;
 }
 
+/**
+ * Positional arguments, skipping each option's value when it is a separate argument.
+ *
+ * `pnpm --dir packages/app test` asks for `test`, not `packages/app`. An attached value
+ * (`--dir=packages/app`) is one argument that starts with `-` and is skipped with its option.
+ */
+function positionals(args: readonly string[], valueOptions: ReadonlySet<string>): string[] {
+  const found: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (valueOptions.has(arg)) { index += 1; continue; }
+    if (!arg.startsWith("-")) found.push(arg);
+  }
+  return found;
+}
+
+/** Options whose value is the next argument, per launcher. */
+const VALUE_OPTIONS: Record<"npm" | "pnpm" | "yarn" | "just" | "task", ReadonlySet<string>> = {
+  npm: new Set(["--prefix", "-w", "--workspace", "--loglevel", "--userconfig", "--cache", "--registry"]),
+  pnpm: new Set(["-C", "--dir", "-F", "--filter", "--filter-prod", "--loglevel", "--reporter",
+    "--test-pattern", "--changed-files-ignore-pattern"]),
+  yarn: new Set(["--cwd", "--modules-folder", "--cache-folder", "--mutex", "--network-timeout"]),
+  just: new Set(["-f", "--justfile", "-d", "--working-directory", "--shell", "--shell-arg",
+    "--dotenv-filename", "--dotenv-path", "--color", "--chooser"]),
+  task: new Set(["-d", "--dir", "-t", "--taskfile", "-o", "--output", "-c", "--concurrency",
+    "--output-group-begin", "--output-group-end", "--interval"]),
+};
+
 /** The script an npm, pnpm or Yarn invocation asks for, or null when it names none. */
-function packageScript(tool: string, args: readonly string[]): string | null {
-  const positional = args.filter((arg) => !arg.startsWith("-"));
-  const [first, second] = positional;
+function packageScript(tool: "npm" | "pnpm" | "yarn", args: readonly string[]): string | null {
+  const [first, second] = positionals(args, VALUE_OPTIONS[tool]);
   if (!first) return null;
   if (["run", "run-script", "rum", "urn"].includes(first)) return second ?? null;
   if (tool === "npm") {
@@ -99,8 +126,8 @@ function packageScript(tool: string, args: readonly string[]): string | null {
   return first;
 }
 
-function firstPositional(args: readonly string[]): string | null {
-  return args.find((arg) => !arg.startsWith("-")) ?? null;
+function firstPositional(tool: "just" | "task", args: readonly string[]): string | null {
+  return positionals(args, VALUE_OPTIONS[tool])[0] ?? null;
 }
 
 /** The program a `sh -c` script starts, skipping leading environment assignments. */
@@ -179,7 +206,7 @@ function launcherRefusal(command: readonly string[]): LauncherRefusal | null {
   }
 
   if (tool === "just") {
-    const recipe = firstPositional(args);
+    const recipe = firstPositional("just", args);
     const tests = [/^error: no justfile found\b/i];
     if (recipe) tests.push(new RegExp(`^error: justfile does not contain recipe ${quoted(recipe)}`, "i"));
     return {
@@ -189,7 +216,7 @@ function launcherRefusal(command: readonly string[]): LauncherRefusal | null {
   }
 
   if (tool === "task") {
-    const name = firstPositional(args) ?? "default";
+    const name = firstPositional("task", args) ?? "default";
     return {
       refusal: any([/^task: no taskfile found\b/i, new RegExp(`^task: task "${escape(name)}" does not exist`, "i")]),
       // `task: [test] <cmd>` is go-task announcing a command it is running.

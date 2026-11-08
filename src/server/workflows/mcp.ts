@@ -167,6 +167,19 @@ export function registerWorkflowMcpRoutes(
     if (!repoRoot) {
       return c.json({ error: "This workflow run reported no repository to configure" }, 409);
     }
+    // Deferred while a check for this slot is still running in this run. Its outcome is not
+    // known yet, so neither is whether its reservation proved nothing; configuring now would
+    // leave a misfit it later records counted against the corrected command. Nothing awaits
+    // between this test and the write below, so no check can start in between, and a queued
+    // check reads the catalog when it starts.
+    const slotNodes = new Set((manager.store.getWorkflowVersionById(run.workflowVersionId)?.graph.nodes ?? [])
+      .filter((node) => node.kind === "check" && node.slot === slot).map((node) => node.id));
+    if (manager.store.listAttemptsForRun(run.id).some((attempt) =>
+      attempt.state === "running" && slotNodes.has(attempt.nodeId))) {
+      return c.json({
+        error: `A ${slot} check is still running in this workflow run; configure the Command after it finishes`,
+      }, 409);
+    }
     // One retry absorbs a concurrent unrelated save; a second conflict is reported, not looped.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const view = commands.get(slot);

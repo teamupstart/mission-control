@@ -653,6 +653,33 @@ test("MCP refuses to configure a Command for a finished run and leaves the catal
   }
 });
 
+test("MCP defers configuring a Command while a check for that slot is still running", async (t) => {
+  // The running check's outcome is unknown, so whether its reservation proved nothing is too.
+  // Configuring now would leave a misfit it later records counted against the new command.
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = f.seed(f.caller.id);
+  const gate = own.version.graph.nodes.find((node) => node.kind === "check" && node.slot === "test")!;
+  f.store.insertAttempt({ id: `running-${own.run.id}`, submissionId: own.submission.id, nodeId: gate.id,
+    attempt: 1, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
+  assert.equal(f.store.reserveCheckRun(own.run.id, `running-${own.run.id}`, "test", 1, null).granted, true);
+  const before = f.workflowCommands.get("test")!;
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] },
+    /A test check is still running in this workflow run; configure the Command after it finishes/);
+  assert.equal(f.workflowCommands.get("test")!.revision, before.revision);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "the running reservation is untouched");
+  // Another slot is not held up by it.
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: ["npm", "run", "lint"] });
+
+  // Once the check finishes and records its misfit, configuring proceeds and forgives it.
+  f.store.finishAttempt(`running-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2.",
+    misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
+  const configured = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] });
+  assert.equal(configured.forgivenRuns, 1);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 0);
+});
+
 test("MCP refuses to configure a Command for a run that reported no repository", async (t) => {
   const f = await fixture(t);
   f.registry.setSessionControlEnabled(f.caller.id, false);

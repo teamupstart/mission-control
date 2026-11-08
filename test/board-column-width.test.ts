@@ -208,7 +208,9 @@ test("a collapsed Backlog is the shared strip, holding its count, with no cards 
 
 test("a collapsed tone column is the shared strip, and the rest of the board is untouched", async () => {
   const working = mkSession({ id: "w1", state: "working" });
-  const html = await boardWithCollapsed(["working"], props([working]));
+  // A task in the Backlog, so the Backlog is drawn at all: an empty one waits in the stash.
+  const task = mkTask({ id: "t1", title: "Ship it" });
+  const html = await boardWithCollapsed(["working"], { ...props([working]), backlog: [task], tasks: [task] });
   assert.match(html, /class="board-col tone-working is-collapsed"/);
   assert.ok(containsMarkup(html, strip("working", 1)), "a tone column must draw the shared strip");
   assert.match(html, /aria-label="Restore working, 1 card"/);
@@ -217,18 +219,31 @@ test("a collapsed tone column is the shared strip, and the rest of the board is 
   assert.match(html, /aria-label="Backlog width"/);
 });
 
-test("an empty Needs you is the all-clear rail with no width control, unless it was collapsed", async () => {
-  // Empty and not collapsed: the slim all-clear rail, which has nothing to read wider.
+test("an empty Needs you takes no room on the board, collapsed or not", async () => {
+  // Empty and not collapsed: no column at all, not even a slim placeholder - only a stash chip.
   const working = mkSession({ id: "w1", state: "working" });
-  const calm = renderToStaticMarkup(createElement(BoardView, props([working])));
-  const rail = /<section class="board-col tone-attention[^"]*">.*?<\/section>/s.exec(calm)?.[0] ?? "";
-  assert.match(rail, /is-calm/);
-  assert.ok(!rail.includes("board-col-width"), "the all-clear rail must not offer a width");
+  const html = renderToStaticMarkup(createElement(BoardView, props([working])));
+  assert.ok(!/<section class="board-col tone-attention/.test(html), "an empty Needs you must not draw a column");
+  assert.ok(!html.includes("board-allclear"), "the all-clear rail is gone");
+  assert.match(html, /class="board-stash-chip tone-attention"/);
 
-  // Collapsed wins over calm, so the strip stays mounted to pulse when a session arrives.
-  const html = await boardWithCollapsed(["attention"], props([working]));
-  assert.match(html, /class="board-col tone-attention is-collapsed"/);
-  assert.match(html, /aria-label="Restore needs you, 0 cards"/);
+  // Collapsed and empty: an empty strip is still an empty column, so it leaves too.
+  const collapsed = await boardWithCollapsed(["attention"], props([working]));
+  assert.ok(!/<section class="board-col tone-attention/.test(collapsed),
+    "a collapsed empty Needs you must not draw a strip");
+});
+
+test("an empty Backlog takes no room on the board, and waits in the stash", () => {
+  const working = mkSession({ id: "w1", state: "working" });
+  const html = renderToStaticMarkup(createElement(BoardView, props([working])));
+  assert.ok(!/<section class="board-col board-backlog/.test(html), "an empty Backlog must not draw a column");
+  assert.match(html, /class="board-stash-chip board-stash-backlog"/);
+
+  // With a task in it, it is an ordinary column again and has no chip.
+  const task = mkTask({ id: "t1", title: "Ship it" });
+  const full = renderToStaticMarkup(createElement(BoardView, { ...props([working]), backlog: [task], tasks: [task] }));
+  assert.match(full, /<section class="board-col board-backlog/);
+  assert.ok(!full.includes("board-stash-backlog"), "a Backlog with cards is not in the stash");
 });
 
 test("the Backlog leaves the tab order during a drill-in, collapsed or not", async () => {

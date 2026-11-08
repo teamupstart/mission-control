@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { ATTENTION_DISMISSAL_LIMITS } from "../../src/shared/protocol.ts";
 import { writeConductorProjects } from "../fixtures/conductor.ts";
 import { expectDashboardReady } from "../fixtures/dashboard-ready.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -166,16 +167,8 @@ async function holdsSteady(holds: () => Promise<boolean>, message: string): Prom
   }, { intervals: [100], timeout: 10_000, message }).toBeGreaterThanOrEqual(10);
 }
 
-/**
- * Dispatch a session and park it on a permission prompt through the real Notification hook,
- * so the inbox holds one more `Waiting on you` row. Returns both figures as they stood before
- * the prompt: deltas, not absolutes, because process discovery is machine-wide and a developer
- * box running real agents adds its own sessions to both.
- */
-async function parkASession(
-  dashboard: Page,
-  daemon: DaemonHandle,
-): Promise<{ beforeAmber: number; beforeOwed: number }> {
+/** Dispatch the one session these tests use, "Check the Linter Config", and wait for its card. */
+async function dispatchASession(dashboard: Page, daemon: DaemonHandle): Promise<void> {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
@@ -190,6 +183,71 @@ async function parkASession(
   await expect(
     dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: "Check the Linter Config" }),
   ).toBeVisible();
+}
+
+/** The checkout of this daemon's one dispatched SDK session, which a question is bound to. */
+async function dispatchedCheckout(daemon: DaemonHandle): Promise<string> {
+  let cwd: string | null = null;
+  await expect.poll(async () => {
+    const sessions = await (await request(daemon, "/api/sessions")).json() as {
+      runtime: string;
+      cwd: string | null;
+    }[];
+    cwd = sessions.find((session) => session.runtime === "sdk")?.cwd ?? null;
+    return cwd;
+  }, { message: "the dispatched session has a checkout to bind questions to" }).toBeTruthy();
+  return cwd!;
+}
+
+/**
+ * Raise `titles.length` open questions on that session the way the agent's MCP child does -
+ * `POST /mcp/reviews`, bound by checkout - `inFlight` at a time. Returns their review ids.
+ */
+async function askQuestions(
+  daemon: DaemonHandle,
+  cwd: string,
+  titles: readonly string[],
+  inFlight = 1,
+): Promise<string[]> {
+  const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
+  const ids: string[] = Array.from({ length: titles.length }, () => "");
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < titles.length) {
+      const index = next++;
+      const res = await fetch(`${daemon.baseURL}/mcp/reviews`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-harness-token": token },
+        body: JSON.stringify({ env: {}, cwd, kind: "input", title: titles[index], body: titles[index] }),
+      });
+      expect(res.status, `the review channel accepted question ${index}`).toBe(200);
+      ids[index] = ((await res.json()) as { id: string }).id;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(inFlight, titles.length) }, worker));
+  return ids;
+}
+
+/** How many questions the dispatched session is still waiting on: answered ones leave this. */
+async function pendingQuestions(daemon: DaemonHandle): Promise<number> {
+  const sessions = await (await request(daemon, "/api/sessions")).json() as {
+    runtime: string;
+    pendingReviews: number;
+  }[];
+  return sessions.find((session) => session.runtime === "sdk")?.pendingReviews ?? -1;
+}
+
+/**
+ * Dispatch a session and park it on a permission prompt through the real Notification hook,
+ * so the inbox holds one more `Waiting on you` row. Returns both figures as they stood before
+ * the prompt: deltas, not absolutes, because process discovery is machine-wide and a developer
+ * box running real agents adds its own sessions to both.
+ */
+async function parkASession(
+  dashboard: Page,
+  daemon: DaemonHandle,
+): Promise<{ beforeAmber: number; beforeOwed: number }> {
+  await dispatchASession(dashboard, daemon);
 
   const beforeAmber = await pulseCount(dashboard, "need you");
   const beforeOwed = await pulseCount(dashboard, "to answer");
@@ -717,5 +775,87 @@ test.describe("two rows dismissed back to back", () => {
       "a dismissed row came back when the older answer landed",
     );
     expect(await stored()).toHaveLength(2);
+  });
+});
+
+test.describe("a row of agent questions", () => {
+  test.use({ daemonEnv: { MC_E2E_HOLD_FIRST_TURN: "1" } });
+
+  test("its one Dismiss hides every question, leaves them unanswered, and keeps them out after a reload", async ({
+    dashboard,
+    daemon,
+  }) => {
+    await dispatchASession(dashboard, daemon);
+    const beforeOwed = await pulseCount(dashboard, "to answer");
+    const ids = await askQuestions(daemon, await dispatchedCheckout(daemon), [
+      "Which parser should I use?",
+      "Which lexer should I use?",
+      "Which printer should I use?",
+    ]);
+    // A row of questions counts every question it holds.
+    await expectToAnswer(dashboard, beforeOwed + 3);
+
+    const inbox = await openInbox(dashboard);
+    const row = inbox.locator(".inbox-reviews").filter({ hasText: "Check the Linter Config" });
+    await expect(row.locator("section.review")).toHaveCount(3);
+    // The row's own Dismiss, named for the row - not a question card's Dismiss, which answers.
+    await row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
+
+    await expect(row).toHaveCount(0);
+    await expectToAnswer(dashboard, beforeOwed);
+    // One key per question, all stored by that one click.
+    await expect.poll(async () =>
+      ((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: { itemId: string }[] })
+        .dismissals.map((entry) => entry.itemId).sort(),
+    ).toEqual(ids.map((id) => `review:${id}`).sort());
+    // Hidden, not answered: the agent is still waiting on all three.
+    expect(await pendingQuestions(daemon)).toBe(3);
+
+    await dashboard.keyboard.press("Escape");
+    await dashboard.reload();
+    await expectDashboardReady(dashboard);
+    await holdsSteady(
+      async () => (await pulseCount(dashboard, "to answer")) === beforeOwed,
+      "a dismissed question came back after the reload",
+    );
+    expect(await pendingQuestions(daemon)).toBe(3);
+  });
+
+  test("a row of more questions than one dismissal can carry says so, sends nothing, and stays", async ({
+    dashboard,
+    daemon,
+  }) => {
+    // Five thousand and one real questions: the browser is parked off the dashboard while they
+    // are raised, so it loads them once from the snapshot instead of one frame at a time.
+    test.setTimeout(240_000);
+    await dispatchASession(dashboard, daemon);
+    const beforeOwed = await pulseCount(dashboard, "to answer");
+    const cwd = await dispatchedCheckout(daemon);
+    const over = ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1;
+    const dashboardUrl = dashboard.url();
+    await dashboard.goto("about:blank");
+    await askQuestions(daemon, cwd, Array.from({ length: over }, (_, i) => `Question ${i + 1}?`), 25);
+    await dashboard.goto(dashboardUrl);
+    await expectDashboardReady(dashboard);
+    await expectToAnswer(dashboard, beforeOwed + over);
+
+    let writes = 0;
+    dashboard.on("request", (req) => {
+      if (req.method() === "POST" && new URL(req.url()).pathname === "/api/attention/dismissals") writes++;
+    });
+    const inbox = await openInbox(dashboard);
+    const row = inbox.locator(".inbox-reviews").filter({ hasText: "Check the Linter Config" });
+    await row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
+
+    // The dashboard refuses it itself, says why beneath the row, and keeps the row.
+    await expect(inbox.getByRole("alert")).toHaveText(
+      `Could not dismiss: this row holds more than ${ATTENTION_DISMISSAL_LIMITS.keysPerRequest} questions - answer or dismiss some of them on their cards first`,
+    );
+    await expect(row).toBeVisible();
+    await expectToAnswer(dashboard, beforeOwed + over);
+    expect(writes, "the refusal never reached the daemon").toBe(0);
+    expect(((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: unknown[] }).dismissals)
+      .toEqual([]);
+    expect(await pendingQuestions(daemon)).toBe(over);
   });
 });

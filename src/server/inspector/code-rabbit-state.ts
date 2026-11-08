@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 const FindingSchema = z.object({
   id: z.string(), rootId: z.string(), url: z.string(), path: z.string().nullable(),

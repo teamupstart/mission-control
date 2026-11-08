@@ -4,7 +4,7 @@ import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";

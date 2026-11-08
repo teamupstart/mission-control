@@ -16,7 +16,7 @@ import { ANALYTICAL_METRICS } from "./telemetry-projections/index.ts";
  * Browser-safe: no `node:` imports. Phase 7's dashboard manifest reads these definitions to
  * check that every panel's query names an instrument that exists.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   AUDIENCE_ALL,
   AUDIENCE_OPERATOR,

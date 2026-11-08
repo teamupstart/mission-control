@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 import type { SetupServicePrerequisite, SetupStatus } from "@shared/setup-catalog.ts";
 import { claudeSettingsPath } from "@shared/claude-settings.ts";

@@ -364,3 +364,15 @@ test("the explicit file list is bounded and preserved by the daemon submission s
     assert.equal(SubmitScoutArtifactsSchema.safeParse({ ...base, files: invalid }).success, false);
   }
 });
+
+test("oversized explicit selections are refused before parsing any element", () => {
+  let reads = 0;
+  const element = { get repoSlot() { reads++; return "repo-01"; }, path: "evidence.txt" };
+  const result = SubmitScoutArtifactsSchema.safeParse({
+    reportPath: "docs/reports/example/report.html", summary: "Finding",
+    files: Array.from({ length: 513 }, () => element),
+  });
+  assert.equal(result.success, false);
+  assert.equal(reads, 0, "oversized arrays must not allocate validation work per element");
+  if (!result.success) assert.equal(result.error.issues.length, 1);
+});

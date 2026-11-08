@@ -16,7 +16,7 @@
  * Phase 2 owns this boundary; Phase 5 adds the callers that use it, by declaring more
  * browser-eligible catalog entries rather than by adding a second endpoint.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   TELEMETRY_ACTOR_KINDS,
   type TelemetryActor,

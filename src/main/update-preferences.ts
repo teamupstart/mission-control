@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 // Desktop-owned, like the receipt and outcome. Updating must work without a healthy daemon.
 export const UpdatePreferencesSchema = z.object({

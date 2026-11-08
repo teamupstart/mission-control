@@ -1,5 +1,5 @@
 import { isActiveTask } from "./task-status.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 import { capabilitiesFor, supportsSdkSkillInvocation } from "./harness-capabilities.ts";
 import type { LlmSpendRole } from "./llm-spend.ts";

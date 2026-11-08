@@ -67,6 +67,11 @@ test("the scout MCP tool gates older daemons, refreshes session authority, and n
     const empty = await client.callTool({ name: "submit_scout_artifacts", arguments: { ...args, files: [] } });
     assert.equal(empty.isError, true);
     assert.equal(submissions.length, 2, "invalid selection never reaches HTTP");
+    const oversized = await client.callTool({ name: "submit_scout_artifacts",
+      arguments: { ...args, files: Array.from({ length: 513 }, () => ({})) } });
+    assert.equal(oversized.isError, true);
+    assert.ok(JSON.stringify(oversized.content).length < 2000, "oversized selections return a bounded error, not per-element issues");
+    assert.equal(submissions.length, 2, "oversized selection never reaches HTTP");
     provisionSessionScoutCredential({ ...authority, episodeId: "episode-two" });
     const retry = await client.callTool({ name: "submit_scout_artifacts", arguments: args });
     assert.notEqual(submissions[0]?.authority, submissions[2]?.authority);

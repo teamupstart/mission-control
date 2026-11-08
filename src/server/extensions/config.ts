@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { acquireHelperLock, releaseHelperLock, realHelperLockOperations } from "../../../scripts/update-lock.mjs";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { assertTestStateIsolation } from "../state/isolation.ts";

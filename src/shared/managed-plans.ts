@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Versioned independently of publication authority. Phase 2 extends this policy union. */
 const RepositoryPlanPolicySchema = z.object({

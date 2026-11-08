@@ -15,7 +15,7 @@
  * WorkflowStore closes that window for its own mutations with a telemetry savepoint in the
  * source transaction. Other sources retain their declared gap; see `telemetry_gaps`.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   SYSTEM_ACTOR,
   TELEMETRY_ENVELOPE_VERSION,

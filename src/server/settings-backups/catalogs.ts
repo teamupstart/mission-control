@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import {
   PersonaGuidanceSchema,

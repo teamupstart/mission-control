@@ -1340,7 +1340,8 @@ export const DismissLaunchFailuresSchema = z
  * single all-or-nothing request, and a row of questions is one key per pending question, so it
  * is set far above any row a person could work through: the inbox draws every question as its
  * own card. An unbounded array is not an option - Zod 3 parses every element of an oversized
- * array before a length check runs (GHSA-mrhx-c7xc-m3w5), so the route also refuses an
+ * array before a length check runs (GHSA-mrhx-c7xc-m3w5) - so `DismissAttentionItemsSchema`
+ * checks this bound itself before it parses a single element, and the route also refuses an
  * oversized body by bytes before the schema sees it. The earlier cap of 100 was low enough for
  * a busy session to reach, and left its row undismissable.
  */
@@ -1394,17 +1395,59 @@ export const AttentionDismissalWriteSchema = AttentionDismissalKeySchema.extend(
 }).strict();
 export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSchema>;
 
+/** The request's envelope. `items` is checked by hand below, never by `z.array`. */
+const DismissAttentionEnvelopeSchema = z.object({ items: z.unknown() }).strict();
+
 /**
  * Dismiss attention-inbox rows (`POST /api/attention/dismissals`). A list because one row can
  * stand for several keys - a session's row of questions is one key per question. All or
  * nothing: if any key is stale (see `basis`) none is stored, and the 409 names the stale keys.
  * Bounded by `ATTENTION_DISMISSAL_LIMITS`, which says why the bound is what it is.
+ *
+ * WITHOUT `z.array`, on purpose. Zod 3 parses every element of an array schema and records an
+ * issue per invalid one before any length check runs (GHSA-mrhx-c7xc-m3w5), so a bound on a
+ * `z.array` does not limit the work an oversized request causes. This checks the shape and the
+ * bound first, before a single element is parsed, then validates each element with the element
+ * schema and stops at the first that fails - what Zod 4.6.6 does for a bounded array. Issues are
+ * ordinary Zod issues, so a refusal reads exactly as it would from `z.array`.
  */
-export const DismissAttentionItemsSchema = z
-  .object({
-    items: z.array(AttentionDismissalWriteSchema).min(1).max(ATTENTION_DISMISSAL_LIMITS.keysPerRequest),
-  })
-  .strict();
+export const DismissAttentionItemsSchema = DismissAttentionEnvelopeSchema.transform((envelope, ctx) => {
+  const { items } = envelope;
+  const refuse = (issue: z.IssueData): typeof z.NEVER => {
+    ctx.addIssue(issue);
+    return z.NEVER;
+  };
+  if (!Array.isArray(items)) {
+    return refuse({
+      code: z.ZodIssueCode.invalid_type,
+      expected: z.ZodParsedType.array,
+      received: items === undefined ? z.ZodParsedType.undefined : z.getParsedType(items),
+      path: ["items"],
+      ...(items === undefined ? { message: "Required" } : {}),
+    });
+  }
+  if (items.length < 1 || items.length > ATTENTION_DISMISSAL_LIMITS.keysPerRequest) {
+    const tooFew = items.length < 1;
+    return refuse({
+      code: tooFew ? z.ZodIssueCode.too_small : z.ZodIssueCode.too_big,
+      ...(tooFew ? { minimum: 1 } : { maximum: ATTENTION_DISMISSAL_LIMITS.keysPerRequest }),
+      type: "array",
+      inclusive: true,
+      exact: false,
+      path: ["items"],
+    } as z.IssueData);
+  }
+  const parsed: AttentionDismissalWrite[] = [];
+  for (const [index, item] of items.entries()) {
+    const one = AttentionDismissalWriteSchema.safeParse(item);
+    if (!one.success) {
+      for (const issue of one.error.issues) ctx.addIssue({ ...issue, path: ["items", index, ...issue.path] });
+      return z.NEVER;
+    }
+    parsed.push(one.data);
+  }
+  return { items: parsed };
+});
 
 /**
  * Start a report session for one launch failure (`POST /api/launch-failures/report`).

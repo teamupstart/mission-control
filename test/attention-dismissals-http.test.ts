@@ -37,7 +37,7 @@ const { openDb, CURRENT_DATABASE_SCHEMA_VERSION } = await import("../src/server/
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const store = await import("../src/server/attention-dismissals.ts");
-const { ATTENTION_DISMISSAL_LIMITS } = await import("../src/shared/protocol.ts");
+const { ATTENTION_DISMISSAL_LIMITS, DismissAttentionItemsSchema } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -230,6 +230,30 @@ test("one request is bounded: the largest row is dismissed whole, one key more i
   assert.equal(tooMany.status, 400);
   assert.deepEqual((await call("GET")).body, { dismissals: [] }, "nothing stored");
   assert.equal(events.length, before, "nothing announced");
+});
+
+test("the request schema refuses an oversized array without parsing its elements, and stops at the first bad one", () => {
+  // GHSA-mrhx-c7xc-m3w5: a Zod 3 `z.array` parses every element - one issue per bad one - before
+  // its length check. This schema checks the bound first, so an oversized request of garbage is
+  // ONE issue, not one per element.
+  const oversized = DismissAttentionItemsSchema.safeParse({
+    items: Array.from({ length: ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1 }, () => ({ garbage: true })),
+  });
+  assert.equal(oversized.success, false);
+  assert.deepEqual(
+    oversized.error!.issues.map((issue) => [issue.code, issue.path.join(".")]),
+    [["too_big", "items"]],
+  );
+  // Within the bound, validation stops at the first element that fails.
+  const bad = DismissAttentionItemsSchema.safeParse({ items: [{ garbage: 1 }, { garbage: 2 }, { garbage: 3 }] });
+  assert.equal(bad.success, false);
+  assert.ok(bad.error!.issues.length > 0);
+  assert.ok(bad.error!.issues.every((issue) => issue.path[0] === "items" && issue.path[1] === 0), "only the first element");
+  // And a good request parses to exactly what was sent.
+  const good = DismissAttentionItemsSchema.safeParse({ items: [{ itemId: "review:r-1", occurrence: "", basis: 3 }] });
+  assert.deepEqual(good.success && good.data, { items: [{ itemId: "review:r-1", occurrence: "", basis: 3 }] });
+  // Unknown fields are still refused, as `.strict()` always did.
+  assert.equal(DismissAttentionItemsSchema.safeParse({ items: [], extra: 1 }).success, false);
 });
 
 test("an absurd body is refused by its size before the schema parses any of it", async () => {

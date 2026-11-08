@@ -189,9 +189,7 @@ export function LayoutPanel({
           <span className="settings-toggle-desc">
             An empty Board column folds into a chip in the "empty" stash beside the last column,
             and clicking the chip brings the column back. Unchecking this hides the stash, so an
-            empty column simply leaves the board. An empty needs you column is not in the stash:
-            it always stays as a slim all-clear strip and widens in place the moment a session
-            needs you.
+            empty column simply leaves the board.
           </span>
         </span>
       </label>

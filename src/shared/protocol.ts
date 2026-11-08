@@ -3933,9 +3933,8 @@ export const UiConfigSchema = z.object({
   /**
    * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
    * which puts that column back. Off hides the stash and every chip in it, so an empty column
-   * simply leaves the board. It does not govern the empty "needs you" rail, which is not in
-   * the stash: that column stays as a slim all-clear strip so it can widen in place the moment
-   * something needs you.
+   * simply leaves the board. Every empty column folds the same way, the Backlog and "needs
+   * you" included.
    */
   showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),

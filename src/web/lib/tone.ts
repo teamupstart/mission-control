@@ -61,8 +61,6 @@ export function groupByTone(
 export type ColumnMode =
   /** Has sessions in it: an ordinary column. */
   | "sessions"
-  /** Empty "needs you": kept, but narrowed, and reading as an all-clear. */
-  | "calm"
   /** Empty and stowed in the rail; the board doesn't render it at all. */
   | "stashed"
   /** Empty, but pulled back out of the rail by the operator. */
@@ -73,14 +71,17 @@ export type ColumnMode =
  *
  * Pulled out of BoardView because it's the one genuinely rule-bound part of the
  * board's shape, and the rules are the sort that read as obviously right while being
- * wrong in exactly one state (a drill-in, an "attention" column that empties while
- * you're inside it). Pure, so those states can be asserted without a dashboard.
+ * wrong in exactly one state (a drill-in, a dispatch whose session does not exist yet).
+ * Pure, so those states can be asserted without a dashboard.
+ *
+ * Every tone follows the same rule, "needs you" included: an empty column is stashed.
+ * Horizontal room on the board is scarce, and a slim placeholder for an empty column
+ * spends it on a column with nothing in it.
  *
  * `focused` is the tone of the drill-in rail while a session is open, else null. During the
  * drill-in NOTHING is stashed, because the morph animates every column's width and they must
- * all stay mounted across it. And the rail itself is never the slim all-clear: it is a
- * console fixture with a fixed width, so an empty Needs you rail is drawn as a revealed
- * column - its head and "Nothing here" - like any other tone's. See BoardView.
+ * all stay mounted across it. An empty column that is itself the rail is drawn as a revealed
+ * column - its head and "Nothing here" - like any other. See BoardView.
  */
 export function boardColumnModes(
   groups: readonly ToneGroup[],
@@ -93,9 +94,26 @@ export function boardColumnModes(
   for (const g of groups) {
     if (g.sessions.length > 0) out.set(g.tone, "sessions");
     else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else if (g.tone === "attention" && focused !== "attention") out.set(g.tone, "calm");
     else if (revealed.has(g.tone) || focused !== null) out.set(g.tone, "revealed");
     else out.set(g.tone, "stashed");
   }
   return out;
+}
+
+/**
+ * The Backlog column's treatment, by the same rule as the tone columns: drawn while it has
+ * cards, stashed when it has none, and pulled back out by the operator or by a drill-in.
+ *
+ * Hiding it costs no drop target. A Backlog card can only be dragged out of the Backlog
+ * itself, so an empty Backlog has nothing that could be dropped into it, and a new task
+ * arrives through the dispatch dialog, which brings the column straight back.
+ */
+export function backlogColumnMode(
+  count: number,
+  revealed: boolean,
+  focused: boolean,
+): ColumnMode {
+  if (count > 0) return "sessions";
+  if (revealed || focused) return "revealed";
+  return "stashed";
 }

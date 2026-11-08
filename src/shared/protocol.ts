@@ -1420,7 +1420,7 @@ export const DismissAttentionItemsSchema = DismissAttentionEnvelopeSchema.transf
   if (!Array.isArray(items)) {
     return refuse({
       code: z.ZodIssueCode.invalid_type,
-      expected: z.ZodParsedType.array,
+      expected: "array",
       received: items === undefined ? z.ZodParsedType.undefined : z.getParsedType(items),
       path: ["items"],
       ...(items === undefined ? { message: "Required" } : {}),

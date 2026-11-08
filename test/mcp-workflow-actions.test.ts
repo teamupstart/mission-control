@@ -377,7 +377,8 @@ test("MCP configures the Command for its own run's repository and frees the slot
   f.store.insertAttempt({ id: `spent-${own.run.id}`, submissionId: own.submission.id, nodeId: "gate",
     attempt: 1, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
   assert.equal(f.store.reserveCheckRun(own.run.id, `spent-${own.run.id}`, "test", 1, null).granted, true);
-  f.store.finishAttempt(`spent-${own.run.id}`, { state: "completed" }, Date.now());
+  f.store.finishAttempt(`spent-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2." } }, Date.now());
 
   f.registry.setSessionControlEnabled(f.caller.id, false);
   const result = await f.call("configure_workflow_command", {
@@ -391,6 +392,23 @@ test("MCP configures the Command for its own run's repository and frees the slot
   assert.deepEqual(view.overrides, [kept, { repoRoot: "/repo", command: ["npm", "run", "test:unit"] }]);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 0);
   assert.ok(f.store.listEvents(own.run.id).some((event) => event.kind === "workflow_command_configured"));
+
+  // The corrected command then spends the allowance again. Re-confirming that same argv - any
+  // number of times - neither rewrites the catalog nor hands it another execution.
+  f.store.insertAttempt({ id: `rerun-${own.run.id}`, submissionId: own.submission.id, nodeId: "gate",
+    attempt: 2, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
+  assert.equal(f.store.reserveCheckRun(own.run.id, `rerun-${own.run.id}`, "test", 1, null).granted, true);
+  f.store.finishAttempt(`rerun-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
+    command: ["npm", "run", "test:unit"], exitCode: 1, output: "", truncatedBytes: 0, note: "exited 1." } }, Date.now());
+  const revision = f.workflowCommands.get("test")!.revision;
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    const again = await f.call("configure_workflow_command", {
+      runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
+    });
+    assert.equal(again.forgivenRuns, 0);
+  }
+  assert.equal(f.workflowCommands.get("test")!.revision, revision, "an unchanged override is not rewritten");
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "maxRuns still bounds the same command");
 
   // A second answer replaces this repository's override rather than adding a duplicate.
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });

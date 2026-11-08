@@ -547,15 +547,16 @@ test("configuring a Command returns the finished runs that slot spent, never one
   // the very resubmission that configured it.
   const store = new WorkflowStore(db);
   seedRun(store, "forgive", 1);
+  const ran = (command: string[]) => ({ status: "failed", slot: "test", command, exitCode: 2, output: "", truncatedBytes: 0, note: "x" });
   assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-a", "test", 1, null).granted, true);
-  store.finishAttempt("attempt-forgive-1-a", { state: "completed" }, 10);
+  store.finishAttempt("attempt-forgive-1-a", { state: "completed", output: ran(["make", "test"]) }, 10);
   assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-b", "lint", 1, null).granted, true);
-  store.finishAttempt("attempt-forgive-1-b", { state: "completed" }, 10);
+  store.finishAttempt("attempt-forgive-1-b", { state: "completed", output: ran(["make", "lint"]) }, 10);
   // A sibling execution still running keeps its claim.
   assert.equal(store.reserveCheckRun("run-forgive", "attempt-forgive-1-c", "test", 2, null).granted, true);
   assert.equal(store.checkRunsSpent("run-forgive", "test", null), 2);
 
-  assert.equal(store.forgiveCheckRuns("run-forgive", "test"), 1);
+  assert.equal(store.forgiveCheckRuns("run-forgive", "test", ["npm", "test"]), 1);
   assert.equal(store.checkRunsSpent("run-forgive", "test", null), 1, "the running claim stays");
   assert.equal(store.checkRunsSpent("run-forgive", "lint", null), 1, "another slot is untouched");
   assert.equal(
@@ -564,3 +565,27 @@ test("configuring a Command returns the finished runs that slot spent, never one
     "the corrected command can run again in this run",
   );
 });
+
+test("configuring the command that already ran forgives nothing, so maxRuns still bounds it", () => {
+  // Re-confirming the argv the run already spent its allowance on must not hand that same
+  // command another execution - otherwise repeating the call would run it without limit.
+  const store = new WorkflowStore(db);
+  seedRun(store, "same-argv", 1);
+  assert.equal(store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-a", "test", 1, null).granted, true);
+  store.finishAttempt("attempt-same-argv-1-a", { state: "completed",
+    output: { status: "failed", slot: "test", command: ["npm", "test"], exitCode: 1, output: "", truncatedBytes: 0, note: "x" } }, 10);
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    assert.equal(store.forgiveCheckRuns("run-same-argv", "test", ["npm", "test"]), 0);
+  }
+  assert.equal(store.checkRunsSpent("run-same-argv", "test", null), 1);
+  assert.deepEqual(
+    store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-b", "test", 1, null),
+    { granted: false, spent: 1 },
+    "the budget is still spent",
+  );
+  // An attempt that recorded no command never reached one, and is left alone too.
+  assert.equal(store.reserveCheckRun("run-same-argv", "attempt-same-argv-1-c", "lint", 1, null).granted, true);
+  store.finishAttempt("attempt-same-argv-1-c", { state: "completed" }, 10);
+  assert.equal(store.forgiveCheckRuns("run-same-argv", "lint", ["npm", "run", "lint"]), 0);
+});
+

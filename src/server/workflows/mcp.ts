@@ -49,6 +49,10 @@ function actionIsOwned(
     && delivery.noteKey === noteKeyFor(registry.getSession(caller)!));
 }
 
+function sameArgv(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((arg, index) => arg === right[index]);
+}
+
 const denied = (c: Context) => c.json({
   error: "Enable Control other sessions on the calling session to access another session's workflow",
 }, 403);
@@ -167,9 +171,13 @@ export function registerWorkflowMcpRoutes(
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const view = commands.get(slot);
       if (!view) return c.json({ error: "no such command slot" }, 404);
+      const existing = view.overrides.find((entry) => entry.repoRoot === repoRoot);
+      const unchanged = existing !== undefined && sameArgv(existing.command, command);
       const overrides = view.overrides.filter((entry) => entry.repoRoot !== repoRoot);
       overrides.push({ repoRoot, command: [...command] });
-      const result = commands.replace(slot, {
+      // Re-confirming the override already stored writes nothing: a revision bump would tell
+      // every open window a slot moved when it did not.
+      const result = unchanged ? { ok: true as const, view } : commands.replace(slot, {
         expectedRevision: view.revision,
         defaultCommand: view.defaultCommand,
         overrides,
@@ -182,7 +190,9 @@ export function registerWorkflowMcpRoutes(
       if (!result.ok) {
         return c.json({ error: result.reason.replaceAll("_", " ") }, 409);
       }
-      const forgiven = manager.store.forgiveCheckRuns(run.id, slot);
+      // Only executions of a DIFFERENT argv are returned. Naming the command that already ran
+      // forgives nothing, so this tool can never be used to run one command past `maxRuns`.
+      const forgiven = manager.store.forgiveCheckRuns(run.id, slot, command);
       manager.store.appendEvent(run.id, "workflow_command_configured", {
         slot, repoRoot, command: [...command], forgivenRuns: forgiven, sessionId: caller,
       });

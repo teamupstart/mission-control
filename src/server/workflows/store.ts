@@ -8484,24 +8484,31 @@ export class WorkflowStore {
   }
 
   /**
-   * Return every finished execution one run spent on one Command, after its command changed.
+   * Return the finished executions one run spent on one Command whose argv was NOT `command`.
    *
    * The run budget bounds re-proving the SAME command, and an execution of an argv the
    * repository never provided proved nothing about the change. Without this, a session that
    * configures the right command for its repository resubmits into a gate already skipped as
    * `budget_spent`, and the command it was asked to fix never runs in this run at all.
    *
+   * Keyed on the argv each attempt recorded, so configuring the command that already ran -
+   * once, or again and again - forgives nothing: `maxRuns` keeps bounding that command. Only
+   * an execution of a different argv is returned. An attempt that recorded no command never
+   * reached one and is left as it is.
+   *
    * Finished attempts only: a reservation still `running` is an execution in flight, and
    * releasing it would let a sibling gate start a second one under the same allowance.
    */
-  forgiveCheckRuns(runId: string, slot: string): number {
+  forgiveCheckRuns(runId: string, slot: string, command: readonly string[]): number {
     return Number(this.db.prepare(
       `UPDATE workflow_node_attempts
           SET check_run_slot = NULL
         WHERE check_run_slot = ?
           AND state <> 'running'
-          AND submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
-    ).run(slot, runId).changes);
+          AND submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)
+          AND json_extract(output_json, '$.command') IS NOT NULL
+          AND json_extract(output_json, '$.command') <> json(?)`,
+    ).run(slot, runId, JSON.stringify(command)).changes);
   }
 
   /**

@@ -32,7 +32,7 @@ import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
 import { readUpdatePreferences, writeUpdatePreferences, type UpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readSettledUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
-import { latestStableBinary, latestReadyAlpha, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type BinaryOffer, type ReadyAlpha, type UnavailableBinary } from "./update-binary-release.ts";
+import { latestStableBinary, latestReadyAlpha, binaryForCommit, BINARY_PENDING, BinaryUpdateError, type AlphaFallback, type BinaryOffer, type UnavailableBinary } from "./update-binary-release.ts";
 import { pendingBuildNotice } from "../shared/update-copy.ts";
 import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff, cleanupSettledBinaryDownloads, type BinaryStageRequest, type BinaryStageOutcome } from "./update-binary.ts";
 import type { UpdateTransfer } from "../shared/update.ts";
@@ -167,8 +167,11 @@ export interface UpdaterPort {
   latestMainCommit(): Promise<MainCommitInfo>;
   /** Null while the commit's signed build is still publishing; unavailable when it never can be installed. */
   binaryForCommit(commit: string): Promise<BinaryOffer | UnavailableBinary | null>;
-  /** The newest complete alpha strictly between the installed commit and main's tip. */
-  latestReadyAlpha?(installedCommit: string, headCommit: string): Promise<ReadyAlpha | null>;
+  /**
+   * The newest complete alpha strictly between the installed commit and main's tip. Without it
+   * the installed commit is never verified, so a still-publishing tip keeps its blocked offer.
+   */
+  latestReadyAlpha?(installedCommit: string, headCommit: string): Promise<AlphaFallback>;
   discard?(descriptor: StagedInstallDescriptor): Promise<void>;
   helperSource(): string;
   stateDirectory(): string;
@@ -755,11 +758,13 @@ export class UpdateController {
           // newer than this installation it is a real upgrade, offered now rather than after
           // the build. With no installed identity there is nothing to compare, so that case
           // keeps the plain pending offer below.
-          pendingVersion = alphaVersion(head.sha);
-          const prior = await this.port.latestReadyAlpha?.(installedCommit, head.sha) ?? null;
-          if (prior) {
-            commit = prior.commit;
-            binary = retained(prior.commit.sha) ?? prior.binary;
+          const fallback = await this.port.latestReadyAlpha?.(installedCommit, head.sha);
+          // Up to date is claimed only once the installed commit is verified behind the tip. A
+          // commit the repository cannot place keeps the blocked offer, like a missing identity.
+          if (fallback && fallback.result !== "unverified") pendingVersion = alphaVersion(head.sha);
+          if (fallback?.result === "upgrade") {
+            commit = fallback.prior.commit;
+            binary = retained(fallback.prior.commit.sha) ?? fallback.prior.binary;
           }
         }
         if (!binary && pendingVersion) {

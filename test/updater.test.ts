@@ -427,7 +427,7 @@ for (const alpha of [false, true]) {
       readAlpha: () => alpha, now: Date.now, currentCommit: () => "a".repeat(40),
       latestRelease: async () => { queries++; return release(ready ? {} : { binary: undefined, building: true }); },
       binaryForCommit: async commit => ready ? binaryOffer(commit, "alpha") : null,
-      latestReadyAlpha: async () => null,
+      latestReadyAlpha: async () => ({ result: "none" }),
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
@@ -467,7 +467,7 @@ for (const alpha of [false, true]) {
       readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
       latestRelease: async () => release({ binary: undefined, building: true, unavailable: "The signed binary for this exact build is pending or unavailable." }),
       binaryForCommit: async () => null,
-      latestReadyAlpha: async () => null,
+      latestReadyAlpha: async () => ({ result: "none" }),
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
@@ -491,6 +491,7 @@ for (const alpha of [false, true]) {
       readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
       latestRelease: async () => { if (!alpha) await discovery; return release({ binary: undefined, building: true }); },
       binaryForCommit: async () => { await discovery; return null; },
+      latestReadyAlpha: async () => ({ result: "none" }),
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
@@ -573,7 +574,7 @@ for (const alpha of [false, true]) {
       readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
       latestRelease: async () => release({ binary: undefined, unavailable: "The signed binary for this exact build is pending or unavailable." }),
       binaryForCommit: async () => ({ unavailable: "The signed binary for this exact build is pending or unavailable." }),
-      latestReadyAlpha: async () => { lookups++; return null; },
+      latestReadyAlpha: async () => { lookups++; return { result: "none" }; },
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
@@ -620,7 +621,7 @@ test("alpha offers the newest complete build when main's tip is still being sign
     binaryForCommit: async () => null,
     latestReadyAlpha: async (from, to) => {
       lookups.push([from, to]);
-      return { commit: { sha: prior, message: "Signed work", committedAt: "2026-11-07T11:00:00Z" }, binary: binaryOffer(prior, "alpha", "1.2.3") };
+      return { result: "upgrade", prior: { commit: { sha: prior, message: "Signed work", committedAt: "2026-11-07T11:00:00Z" }, binary: binaryOffer(prior, "alpha", "1.2.3") } };
     },
     stagedBundleIdentity: () => ({ version: "1.2.3", revision: "staged-1", commit: prior }),
   });
@@ -644,13 +645,41 @@ test("alpha offers the newest complete build when main's tip is still being sign
   assert.equal(f.handoffs[0]?.targetTag, prior);
 });
 
+test("alpha never reports an installed commit it could not verify as up to date", async (t) => {
+  // The comparison could not place the installed commit on main - for example, the canonical
+  // repository answers 404 for it - so nothing established that the app is current.
+  for (const port of [{ latestReadyAlpha: async () => ({ result: "unverified" as const }) }, {}]) {
+    const f = fixture({
+      readAlpha: () => true,
+      currentCommit: () => "f".repeat(40),
+      latestMainCommit: async () => ({ sha: "d".repeat(40), message: "Still building", committedAt: "2026-11-07T12:00:00Z" }),
+      binaryForCommit: async () => null,
+      ...port,
+    });
+    t.after(() => f.controller.stop());
+    await f.controller.start();
+    const phases: string[] = [];
+    f.controller.subscribe(snapshot => phases.push(snapshot.phase));
+    assert.equal((await f.controller.check(false)).phase, "idle");
+    const manual = await f.controller.checkForUpdates();
+    assert.equal(manual.phase, "available");
+    if (manual.phase === "available") {
+      assert.equal(manual.newVersion, "alpha ddddddd");
+      assert.match(manual.blocker!, /pending or unavailable/);
+    }
+    assert.equal(phases.includes("up-to-date"), false);
+    assert.ok(!f.events.some(event => event.startsWith("up-to-date-dialog")));
+    assert.equal(await f.controller.apply(), false);
+  }
+});
+
 test("alpha reports up to date, not an error, when no complete build is newer than the installation", async (t) => {
   const f = fixture({
     readAlpha: () => true,
     currentCommit: () => "c".repeat(40),
     latestMainCommit: async () => ({ sha: "d".repeat(40), message: "Still building", committedAt: "2026-11-07T12:00:00Z" }),
     binaryForCommit: async () => null,
-    latestReadyAlpha: async () => null,
+    latestReadyAlpha: async () => ({ result: "none" }),
   });
   t.after(() => f.controller.stop());
   await f.controller.start();

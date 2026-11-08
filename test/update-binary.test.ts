@@ -214,11 +214,14 @@ test("alpha falls back to the newest complete build between the installation and
       {sha: c, ready: true, published: dates[1]!},
       {sha: d, ready: false, published: "2026-11-07T12:00:00Z"},
     ]);
-    const prior = await latestReadyAlpha(f.run, a, d);
-    assert.equal(prior?.commit.sha, c);
-    assert.equal(prior?.commit.message, "Work at ccccccc");
-    assert.equal(prior?.binary.manifest.commit, c);
-    assert.equal(prior?.binary.manifest.channel, "alpha");
+    const fallback = await latestReadyAlpha(f.run, a, d);
+    assert.equal(fallback.result, "upgrade");
+    if (fallback.result !== "upgrade") return;
+    const { prior } = fallback;
+    assert.equal(prior.commit.sha, c);
+    assert.equal(prior.commit.message, "Work at ccccccc");
+    assert.equal(prior.binary.manifest.commit, c);
+    assert.equal(prior.binary.manifest.channel, "alpha");
     assert.ok(!f.calls.some(path => path.startsWith("releases/12/")), "the still-building tip is not probed again");
   });
 });
@@ -229,22 +232,32 @@ test("alpha offers nothing when no complete build is newer than the installation
     {sha: b, ready: true, published: "2026-11-07T10:00:00Z"},
     {sha: c, ready: true, published: "2026-11-07T11:00:00Z"},
   ]);
-  assert.equal(await latestReadyAlpha(f.run, c, d), null);
+  assert.deepEqual(await latestReadyAlpha(f.run, c, d), {result: "none"}, "verified behind the tip, with nothing newer ready");
   assert.ok(!f.calls.some(path => path.startsWith("releases/10/") || path.startsWith("releases/11/")),
     "an older build is rejected by ancestry before its assets are read");
 });
 
-test("alpha never falls back to a build off main, an incomplete or historical-layout build, or an unknown installation", async () => {
+test("alpha never falls back to a build off main, or to an incomplete or historical-layout build", async () => {
   const offMain = "e".repeat(40);
   const f = alphaGithub([a, b, c, d], [
     {sha: offMain, ready: true, published: "2026-11-07T11:00:00Z"},
     {sha: c, ready: true, legacy: true, published: "2026-11-07T10:30:00Z"},
     {sha: b, ready: false, published: "2026-11-07T10:00:00Z"},
   ]);
-  assert.equal(await latestReadyAlpha(f.run, a, d), null);
-  const fork = "f".repeat(40);
-  assert.equal(await latestReadyAlpha(alphaGithub([a, b, c, d], [{sha: b, ready: true, published: "2026-11-07T10:00:00Z"}]).run, fork, d), null);
+  assert.deepEqual(await latestReadyAlpha(f.run, a, d), {result: "none"});
   await assert.rejects(latestReadyAlpha(f.run, "main", d), /Invalid alpha commit identity/);
+});
+
+test("alpha reports an installation it cannot place on main as unverified, never as having nothing newer", async () => {
+  const offMain = "e".repeat(40);
+  const unknown = "f".repeat(40);
+  const ready = [{sha: b, ready: true, published: "2026-11-07T10:00:00Z"}, {sha: offMain, ready: true, published: "2026-11-07T09:00:00Z"}];
+  // Unknown to the canonical repository: the very first comparison is a 404.
+  const missing = alphaGithub([a, b, c, d], ready);
+  assert.deepEqual(await latestReadyAlpha(missing.run, unknown, d), {result: "unverified"});
+  assert.deepEqual(missing.calls, [`compare/${unknown}...${d}`], "nothing else is read for an installation it cannot place");
+  // Known, but not behind the tip on main.
+  assert.deepEqual(await latestReadyAlpha(alphaGithub([a, b, c, d], ready).run, offMain, d), {result: "unverified"});
 });
 
 test("stable scans past 300 ineligible releases and orders eligible releases across pages", async () => {

@@ -482,9 +482,10 @@ manifest, or assets still uploading), the check therefore looks for the
 newest complete `alpha-<full SHA>` that strictly follows the installed commit and strictly precedes
 the tip on main, and offers it; its notes say which build is still being signed. When no complete
 build is newer than the installation, the check reports up to date and names the build in
-progress instead of an error. An installation without source metadata has nothing to compare
-against, and a tip published complete for an app layout this installation cannot take is not in
-progress; both keep the blocked offer with **Check again**. Preparation and installation carry
+progress instead of an error. That answer is given only after the installed commit is verified
+on main behind the tip. An installation without source metadata, an installed commit the
+canonical repository cannot place on main, and a tip published complete for an app layout this
+installation cannot take all keep the blocked offer with **Check again**. Preparation and installation carry
 the offered SHA even if main advances while downloading. The
 staged bundle and installed app must match it. The detached helper also compares source
 identity during rollback, so two alpha builds with the same version remain distinguishable.

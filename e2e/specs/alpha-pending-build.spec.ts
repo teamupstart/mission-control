@@ -45,7 +45,7 @@ test("a check while main's signed build is running offers the newest complete al
     latestMainCommit: async () => ({ sha: head, message: "Merged moments ago.", committedAt: "2026-11-07T18:40:00Z" }),
     // The tip's signed build is still running: its exact alpha is not published yet.
     binaryForCommit: async () => null,
-    latestReadyAlpha: async (from, to) => { lookups.push(`${from}..${to}`); return ready; },
+    latestReadyAlpha: async (from, to) => { lookups.push(`${from}..${to}`); return ready ? { result: "upgrade", prior: ready } : { result: "none" }; },
     stage: async (request) => {
       stagedCommit = request.targetTag;
       return binaryStaged(request, join(daemon.home, "staged.app"), "fixture");

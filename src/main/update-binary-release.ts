@@ -139,6 +139,18 @@ export interface ReadyAlpha {
   binary: BinaryOffer;
 }
 
+/**
+ * What the alpha fallback established while main's tip is still publishing.
+ *
+ * `none` is returned only after the installed commit was verified on main behind the tip, so
+ * "up to date" is never claimed for an installation nothing was compared against. A commit the
+ * canonical repository does not know, or one that is not behind the tip, is `unverified`.
+ */
+export type AlphaFallback =
+  | {result: "upgrade"; prior: ReadyAlpha}
+  | {result: "none"}
+  | {result: "unverified"};
+
 /** Whether `descendant` is strictly newer than `ancestor` on one line of canonical history. */
 async function strictlyFollows(run: GhRunner, ancestor: string, descendant: string): Promise<boolean> {
   // Only two fields cross back: a full comparison carries every changed file and patch.
@@ -158,8 +170,11 @@ async function strictlyFollows(run: GhRunner, ancestor: string, descendant: stri
  * installed commit and strictly precede the observed tip, so an offer never leaves canonical
  * main and never moves an installation sideways or backwards.
  */
-export async function latestReadyAlpha(run: GhRunner, installed: string, head: string): Promise<ReadyAlpha | null> {
+export async function latestReadyAlpha(run: GhRunner, installed: string, head: string): Promise<AlphaFallback> {
   if (!SHA.test(installed) || !SHA.test(head)) throw new BinaryUpdateError("Invalid alpha commit identity.");
+  // Every later answer compares against the installation, so place it first: unknown to the
+  // repository (a 404), diverged, or not behind the tip, and nothing can be said about it.
+  if (!await strictlyFollows(run, installed, head)) return {result: "unverified"};
   const releases = (await pages<Release>(run, "releases", {maxPages: 100,
     include: release => Boolean(release && !release.draft && release.prerelease === true && typeof release.tag_name === "string" && ALPHA_TAG.test(release.tag_name))}))
     .filter(release => release.tag_name !== `alpha-${installed}` && release.tag_name !== `alpha-${head}`)
@@ -177,5 +192,5 @@ export async function latestReadyAlpha(run: GhRunner, installed: string, head: s
     best = {binary: ready.binary, commit: {sha, message: typeof message === "string" ? message : "",
       committedAt: typeof date === "string" && Number.isFinite(Date.parse(date)) ? date : release.published_at}};
   }
-  return best;
+  return best ? {result: "upgrade", prior: best} : {result: "none"};
 }

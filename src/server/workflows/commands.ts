@@ -27,6 +27,11 @@ export interface ConfigureRepositoryCommandInput {
   sessionId: string;
   /** The calling session's reviews, answered ones included; see `operatorConfirmation`. */
   reviews: readonly ReviewItem[];
+  /**
+   * Raise the confirmation card on the calling session and return its review id. The DAEMON
+   * creates it, so its id - recorded on the run - is the provenance a session cannot forge.
+   */
+  requestConfirmation?: (card: CommandConfirmationCard) => string;
   now?: number;
 }
 
@@ -46,6 +51,8 @@ export type ConfigureRepositoryCommandResult =
       message: string;
       /** On `unconfirmed`: the card to show the operator, which `configure_workflow_command` does. */
       confirmation?: CommandConfirmationCard;
+      /** On `unconfirmed`: the daemon-created review carrying that card, for the tool to wait on. */
+      confirmationReviewId?: string;
     };
 
 /** The option an operator picks on a confirmation card to authorize the write. */
@@ -248,9 +255,10 @@ export class WorkflowCommandManager {
    * - refused for a finished run, a run with no repository, and while a check for this slot is
    *   still running in the run (its outcome decides whether its reservation is forgiven, and
    *   nothing awaits between this test and the write, so no check can start in between);
-   * - refused unless the operator chose "Configure this Command" on the daemon-composed
-   *   confirmation card for exactly this run, slot, repository and argv (`operatorConfirmation`);
-   *   the refusal carries that card so the tool can show it;
+   * - refused unless the operator chose "Configure this Command" on the confirmation card the
+   *   daemon itself raised for exactly this run, slot, repository and argv; the refusal raises
+   *   that card through `requestConfirmation`, records its review id on the run as provenance,
+   *   and returns the id for the tool to wait on;
    * - writes that repository's override, never the machine-wide default; when the override
    *   already equals the argv it writes nothing and needs no answer; each answer authorizes
    *   one write and is spent by it; one retry absorbs a concurrent save;
@@ -294,18 +302,34 @@ export class WorkflowCommandManager {
       .filter((event) => event.kind === "workflow_command_configured")
       .map((event) => (event.payload as { confirmationReviewId?: unknown } | null)?.confirmationReviewId)
       .filter((id): id is string => typeof id === "string"));
+    // Only a card the DAEMON raised for exactly this change counts: its review id is recorded on
+    // the run when it is created, and a session has no way to append run events. A session that
+    // copies the card into a `request_input` review of its own has authorized nothing.
+    const events = runs.listEvents(run.id);
+    const issued = new Set(events
+      .filter((event) => event.kind === "workflow_command_confirmation_requested")
+      .map((event) => event.payload as { reviewId?: unknown; decisionId?: unknown } | null)
+      .filter((payload) => payload?.decisionId === card.decision.id && typeof payload.reviewId === "string")
+      .map((payload) => payload!.reviewId as string));
     const confirmation = operatorConfirmation(
-      input.reviews.filter((review) => !spent.has(review.id)),
+      input.reviews.filter((review) => issued.has(review.id) && !spent.has(review.id)),
       card,
       run.startedAt,
     );
     if (!confirmation) {
+      const reviewId = input.requestConfirmation?.(card);
+      if (reviewId && !issued.has(reviewId)) {
+        runs.appendEvent(run.id, "workflow_command_confirmation_requested", {
+          reviewId, decisionId: card.decision.id, slot, repoRoot, command: [...command], sessionId: input.sessionId,
+        }, now);
+      }
       return {
         ok: false,
         reason: "unconfirmed",
         message: `The operator has not confirmed ${JSON.stringify(command)} as the ${slot} Command for `
           + "this repository. configure_workflow_command shows them the confirmation card and waits.",
         confirmation: card,
+        ...(reviewId ? { confirmationReviewId: reviewId } : {}),
       };
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {

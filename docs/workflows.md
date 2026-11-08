@@ -24,10 +24,12 @@ KiB. The same owning-session and **Control other sessions** authorization applie
 
 `configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
 `typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. The
-operator confirms it on a `request_input` card that Mission Control writes, not the session: the
-card names the run, the slot, the repository, and the argv as a JSON array, so arguments that read
-the same when joined with spaces stay distinct. The tool shows that card and blocks until it is
-answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
+operator confirms it on a `request_input` card that Mission Control itself raises on the session,
+not one the session writes: the card names the run, the slot, the repository, and the argv as a
+JSON array, so arguments that read the same when joined with spaces stay distinct. The daemon
+records the card's review id on the run when it creates it, and only an answer on a card it
+recorded counts, so a session that copies the card into a review of its own authorizes nothing.
+The tool waits on that card until it is answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
 controlling session) chose **Configure this Command** on exactly that card, after the run started;
 it recomputes the card from the run, slot, repository, and argv rather than trusting a card the
 session phrased, and the card's title and body must be the daemon's own text too. Each answer

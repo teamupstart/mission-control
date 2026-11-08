@@ -14,6 +14,7 @@ import { parseBody } from "../http-body.ts";
 import { noteKeyFor, type Registry } from "../registry.ts";
 import { sessionControlCaller } from "../session-control.ts";
 import type { WorkflowCommandManager } from "./commands.ts";
+import type { ReviewManager } from "../reviews.ts";
 import type { WorkflowManager } from "./manager.ts";
 import { decodeWorkflowRunCursor } from "./store.ts";
 
@@ -56,6 +57,7 @@ const denied = (c: Context) => c.json({
 export function registerWorkflowMcpRoutes(
   app: Hono, registry: Registry, getManager: () => WorkflowManager | null,
   getCommands: () => WorkflowCommandManager | null = () => null,
+  getReviews: () => ReviewManager | null = () => null,
 ): void {
   app.post("/mcp/workflows/list", async (c) => {
     const auth = callerFor(c, registry);
@@ -151,8 +153,12 @@ export function registerWorkflowMcpRoutes(
     if (!run || !binding || !ownsBinding(registry, caller, binding)) {
       return c.json({ error: "Only the session that owns this workflow run can configure its Command" }, 403);
     }
+    const reviews = getReviews();
     const result = commands.configureRepositoryCommand({
       runs: manager.store, run, binding, slot, command, sessionId: caller, reviews: registry.reviewsFor(caller),
+      requestConfirmation: reviews
+        ? (card) => reviews.create(caller, "input", card.title, card.question, [card.decision]).id
+        : undefined,
     });
     if (!result.ok) {
       const status = result.reason === "unconfirmed" ? 403 : result.reason === "not_found" ? 404 : 409;
@@ -160,6 +166,7 @@ export function registerWorkflowMcpRoutes(
         error: result.message,
         code: result.reason,
         ...(result.confirmation ? { confirmation: result.confirmation } : {}),
+        ...(result.confirmationReviewId ? { confirmationReviewId: result.confirmationReviewId } : {}),
       }, status);
     }
     logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot: result.repoRoot });

@@ -39,7 +39,7 @@ const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
-const { WorkflowCommandManager, commandConfirmationCard } = await import("../src/server/workflows/commands.ts");
+const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
 const { scrubCheckEnv } = await import("../src/server/workflows/check-env.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { buildApp } = await import("../src/server/routes.ts");
@@ -116,14 +116,21 @@ async function fixture(
     return { run, submission, version };
   }
   const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
-  /** The operator choosing Configure on the daemon's own confirmation card for this change. */
-  function confirm(runId: string, command: string[], slot = "test") {
-    const binding = store.getBinding(store.getRun(runId)!.bindingId)!;
-    const card = commandConfirmationCard({ runId, slot, repoRoot: binding.sessionRepoRoot!, command });
-    const review = reviews.create(caller.id, "input", card.title, card.question, [card.decision]);
-    reviews.resolve(review.id, "answer", "Answered", "human",
-      [{ decisionId: card.decision.id, selected: ["configure"], other: null }]);
-    return review.id;
+  /**
+   * The operator choosing Configure on the confirmation card the DAEMON raises for this change:
+   * an unconfirmed call creates it and returns its id, which is the only card that counts.
+   */
+  async function confirm(runId: string, command: string[], slot = "test") {
+    const credentialText = readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
+    const refused = await app.request("/mcp/workflows/configure-command", { method: "POST",
+      headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+        "x-mission-scout-credential": credentialText },
+      body: JSON.stringify({ runId, slot, command }) });
+    const body = await refused.json() as { code?: string; confirmationReviewId?: string; confirmation?: { decision: { id: string } } };
+    assert.equal(body.code, "unconfirmed", JSON.stringify(body));
+    reviews.resolve(body.confirmationReviewId!, "answer", "Answered", "human",
+      [{ decisionId: body.confirmation!.decision.id, selected: ["configure"], other: null }]);
+    return body.confirmationReviewId!;
   }
   return {
     client, call, seed, requests, store, workflows, registry, caller, app, credential,
@@ -406,7 +413,7 @@ test("MCP configures the Command for its own run's repository and frees the slot
   assert.match(refusal.confirmation.decision.question, /\["npm","run","test:unit"\]/);
   assert.equal(f.workflowCommands.get("test")!.revision, unconfirmedRevision);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "an unconfirmed call forgives nothing");
-  const confirmationId = f.confirm(own.run.id, ["npm", "run", "test:unit"]);
+  const confirmationId = await f.confirm(own.run.id, ["npm", "run", "test:unit"]);
   const result = await f.call("configure_workflow_command", {
     runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
   });
@@ -439,7 +446,7 @@ test("MCP configures the Command for its own run's repository and frees the slot
 
   // A second answer replaces this repository's override rather than adding a duplicate. The
   // corrected command actually ran, so switching away from it forgives nothing either.
-  f.confirm(own.run.id, ["pytest", "-q"]);
+  await f.confirm(own.run.id, ["pytest", "-q"]);
   const switched = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
   assert.deepEqual([switched.forgivenRuns, switched.restoredRuns], [0, 0]);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "a real execution is never returned");
@@ -515,7 +522,7 @@ test("the Command a session configures over MCP is the argv the resubmitted chec
   assert.match((failed.verdict as { requestedChanges: Array<{ title: string }> }).requestedChanges[0]!.title,
     /^Configure the test Command for this repository/);
 
-  f.confirm(runId, ["npm", "test"]);
+  await f.confirm(runId, ["npm", "test"]);
   const configured = await f.call("configure_workflow_command", { runId, slot: "test", command: ["npm", "test"] });
   assert.equal(configured.forgivenRuns, 1);
   const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
@@ -710,8 +717,26 @@ test("an operator's answer authorizes one write, and a Command already in place 
       "x-mission-scout-credential": f.credential() },
     body: JSON.stringify({ runId: own.run.id, slot: "test", command }) });
 
-  // The operator confirms A and the session writes it.
-  const answerA = f.confirm(own.run.id, ["npm", "test"]);
+  // A session that copies the daemon's card into a review of its own, which the human answers,
+  // has authorized nothing: only a card the daemon raised and recorded on the run counts.
+  const refused = await configure(["npm", "test"]);
+  const offered = await refused.json() as { confirmationReviewId: string;
+    confirmation: { title: string; question: string; decision: { id: string; question: string; options: Array<{ id: string; label: string }> } } };
+  // Byte-identical to the daemon's card - title, body and decision - so only provenance can tell
+  // them apart. The daemon's own card is dismissed first so the copy is not de-duplicated into it.
+  f.reviews.resolve(offered.confirmationReviewId, "dismiss", null, "human");
+  const copy = f.reviews.create(f.caller.id, "input", offered.confirmation.title, offered.confirmation.question,
+    [offered.confirmation.decision]);
+  assert.notEqual(copy.id, offered.confirmationReviewId);
+  assert.equal(copy.body, offered.confirmation.question);
+  f.reviews.resolve(copy.id, "answer", "Answered", "human",
+    [{ decisionId: offered.confirmation.decision.id, selected: ["configure"], other: null }]);
+  const byCopy = await configure(["npm", "test"]);
+  assert.equal(byCopy.status, 403, "an answer on a session-made copy is not authorization");
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"), original.find((entry) => entry.repoRoot === "/repo"));
+
+  // The operator confirms A on the daemon's own card and the session writes it.
+  const answerA = await f.confirm(own.run.id, ["npm", "test"]);
   const first = await configure(["npm", "test"]);
   assert.equal(first.status, 200);
   assert.equal((await first.json() as { confirmationReviewId: string }).confirmationReviewId, answerA);
@@ -736,7 +761,7 @@ test("an operator's answer authorizes one write, and a Command already in place 
     { repoRoot: "/repo", command: ["pnpm", "test"] });
 
   // A fresh answer authorizes it again.
-  const answerAgain = f.confirm(own.run.id, ["npm", "test"]);
+  const answerAgain = await f.confirm(own.run.id, ["npm", "test"]);
   const again = await configure(["npm", "test"]);
   assert.equal(again.status, 200);
   assert.equal((await again.json() as { confirmationReviewId: string }).confirmationReviewId, answerAgain);
@@ -760,14 +785,14 @@ test("MCP defers configuring a Command while a check for that slot is still runn
   assert.equal(f.workflowCommands.get("test")!.revision, before.revision);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "the running reservation is untouched");
   // Another slot is not held up by it.
-  f.confirm(own.run.id, ["npm", "run", "lint"], "lint");
-  f.confirm(own.run.id, ["npm", "test"]);
+  await f.confirm(own.run.id, ["npm", "run", "lint"], "lint");
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: ["npm", "run", "lint"] });
 
   // Once the check finishes and records its misfit, configuring proceeds and forgives it.
   f.store.finishAttempt(`running-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
     command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2.",
     misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
+  await f.confirm(own.run.id, ["npm", "test"]);
   const configured = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "test"] });
   assert.equal(configured.forgivenRuns, 1);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 0);

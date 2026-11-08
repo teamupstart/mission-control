@@ -276,7 +276,7 @@ server.registerTool("read_workflow_command_output", {
 });
 
 server.registerTool("configure_workflow_command", {
-  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot and pass the argv you found. This tool then asks the operator through a request_input card that Mission Control writes - naming this run, the slot, the repository and the exact argv - and BLOCKS until they answer. Nothing is configured unless they choose Configure this Command. The machine-wide default is never changed. Executions in which the repository did not provide a different argv are returned to the run budget so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
+  description: "Set the Command one workflow slot (test, lint, typecheck, build, documentation) runs for the repository of YOUR OWN workflow run, as an override in Library > Commands. Use it when a repair packet says the configured Command does not apply to this repository - for example the machine-wide default is `make test` and there is no Makefile - instead of adding files to make that command pass. First inspect how the repository runs that slot and pass the argv you found. This tool then has Mission Control raise a request_input card on your session - naming this run, the slot, the repository and the exact argv - and BLOCKS until the operator answers. Nothing is configured unless they choose Configure this Command. The machine-wide default is never changed. Executions in which the repository did not provide a different argv are returned to the run budget so the corrected command runs on resubmission; then resubmit with trigger_workflow_action (resubmitUnchanged: true when no files changed).",
   inputSchema: ConfigureWorkflowCommandSchema,
 }, async (input, extra) => {
   try {
@@ -284,18 +284,16 @@ server.registerTool("configure_workflow_command", {
     const first = await configure();
     if (first.status !== 403) return textResult(await first.text(), !first.ok);
     const refusal = await responseResult(first);
-    const card = (refusal.body as { code?: string; confirmation?: {
-      title: string; question: string; decision: { id: string; question: string; options: unknown[] };
+    const card = (refusal.body as { code?: string; confirmationReviewId?: string; confirmation?: {
+      decision: { id: string };
     } } | null);
-    if (card?.code !== "unconfirmed" || !card.confirmation) {
+    if (card?.code !== "unconfirmed" || !card.confirmationReviewId || !card.confirmation) {
       return textResult(JSON.stringify(refusal.body), true);
     }
-    // The daemon composed this card; it is shown through the same review path request_input
-    // uses, and the daemon recomputes it before accepting the answer as authorization.
-    const { title, question, decision } = card.confirmation;
-    const reviewId = await createReview("input", titleLine(title), question, [decision]);
-    const review = await waitForResolution(reviewId, extra);
-    const chose = review.selections?.find((answer) => answer.decisionId === decision.id)?.selected ?? [];
+    // The DAEMON raised this card on the session and recorded it on the run; this only waits
+    // for the operator's answer, on the same path request_input waits on.
+    const review = await waitForResolution(card.confirmationReviewId, extra);
+    const chose = review.selections?.find((answer) => answer.decisionId === card.confirmation!.decision.id)?.selected ?? [];
     if (review.status !== "answered" || chose.length !== 1 || chose[0] !== "configure") {
       const result = reviewToolResult(review);
       return textResult(

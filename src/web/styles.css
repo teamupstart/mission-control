@@ -12705,6 +12705,46 @@ select:not([multiple]) option:focus-visible {
   padding: 0;
   list-style: none;
 }
+/* The Needs you group at the head of the drawer: framed and tinted in the Needs you column's
+   color (`--attention`, which every skin sets), with the review chord's keycap on its heading
+   the way the Board column carries it. The rest of the drawer's cards follow below it. */
+.residents-drawer-group.is-needs-you {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--attention) 6%, transparent);
+}
+.residents-drawer-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--attention);
+}
+.residents-drawer-group-key {
+  display: inline-flex;
+  align-items: center;
+  /* The heading is uppercase; the keycap prints the key as typed, as the Board column's does. */
+  text-transform: none;
+  letter-spacing: normal;
+}
+.residents-drawer-group-key:empty {
+  display: none;
+}
+.residents-drawer-group-n {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
 .residents-drawer-card {
   display: flex;
   flex-direction: column;

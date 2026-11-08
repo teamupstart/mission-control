@@ -76,14 +76,16 @@ export type ColumnMode =
  * wrong in exactly one state (a drill-in, an "attention" column that empties while
  * you're inside it). Pure, so those states can be asserted without a dashboard.
  *
- * `focused` is whether a session is open - during the drill-in NOTHING is stashed,
- * because the morph animates every column's width and they must all stay mounted
- * across it. See BoardView.
+ * `focused` is the tone of the drill-in rail while a session is open, else null. During the
+ * drill-in NOTHING is stashed, because the morph animates every column's width and they must
+ * all stay mounted across it. And the rail itself is never the slim all-clear: it is a
+ * console fixture with a fixed width, so an empty Needs you rail is drawn as a revealed
+ * column - its head and "Nothing here" - like any other tone's. See BoardView.
  */
 export function boardColumnModes(
   groups: readonly ToneGroup[],
   revealed: ReadonlySet<Tone>,
-  focused: boolean,
+  focused: Tone | null,
   /** Provisioning tasks whose placeholders live in the Working column. */
   pending = 0,
 ): Map<Tone, ColumnMode> {
@@ -91,8 +93,8 @@ export function boardColumnModes(
   for (const g of groups) {
     if (g.sessions.length > 0) out.set(g.tone, "sessions");
     else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else if (g.tone === "attention") out.set(g.tone, "calm");
-    else if (revealed.has(g.tone) || focused) out.set(g.tone, "revealed");
+    else if (g.tone === "attention" && focused !== "attention") out.set(g.tone, "calm");
+    else if (revealed.has(g.tone) || focused !== null) out.set(g.tone, "revealed");
     else out.set(g.tone, "stashed");
   }
   return out;

@@ -60,7 +60,7 @@ function session(over: Partial<Session> = {}): Session {
 
 const NONE: ReadonlySet<Tone> = new Set();
 
-function modesFor(sessions: Session[], revealed: ReadonlySet<Tone> = NONE, focused = false) {
+function modesFor(sessions: Session[], revealed: ReadonlySet<Tone> = NONE, focused: Tone | null = null) {
   return boardColumnModes(groupByTone(sessions), revealed, focused);
 }
 
@@ -98,7 +98,7 @@ test("a drill-in stashes nothing: every column stays mounted across the morph", 
   // Opening a session animates all five columns' widths into a rail plus a detail
   // pane. Stashing one mid-morph would unmount it under its own animation, so while
   // focused they are all rendered (collapsed to nothing) instead.
-  const modes = modesFor([session({ state: "working" })], NONE, true);
+  const modes = modesFor([session({ state: "working" })], NONE, "working");
   for (const { tone } of TONE_GROUPS) {
     assert.notEqual(modes.get(tone), "stashed", tone);
   }
@@ -106,11 +106,22 @@ test("a drill-in stashes nothing: every column stays mounted across the morph", 
   assert.equal(modes.get("attention"), "calm");
 });
 
+test("an empty 'needs you' that IS the drill-in rail is a rail, never the slim all-clear", () => {
+  // The open session asks for the Needs you rail but nothing else is in it. The rail is a
+  // fixed-width console fixture, so it keeps its head and body rather than narrowing to the
+  // vertical all-clear strip beside the open conversation.
+  const modes = modesFor([session({ state: "working" })], NONE, "attention");
+  assert.equal(modes.get("attention"), "revealed");
+  for (const { tone } of TONE_GROUPS) {
+    assert.notEqual(modes.get(tone), "stashed", tone);
+  }
+});
+
 test("a dispatch with no sessions yet keeps the working column, and only that one", () => {
   const before = modesFor([]);
   assert.equal(before.get("working"), "stashed");
 
-  const modes = boardColumnModes(groupByTone([]), NONE, false, 1);
+  const modes = boardColumnModes(groupByTone([]), NONE, null, 1);
   assert.equal(modes.get("working"), "sessions");
   assert.equal(modes.get("attention"), "calm");
   for (const tone of ["idle", "neutral", "exited"] as const) {

@@ -124,7 +124,7 @@ drawn. The choice is stored per machine beside **Layout** and applies live.
 
 | Where residents live | What you see |
 |---|---|
-| **Drawer** (default) | Residents leave the Board columns and the Console rail and live in [the Residents drawer](#the-residents-drawer) on the right edge. A fresh install, and any install that never chose, gets the drawer. |
+| **Drawer** (default) | Residents leave the Board columns and the Console rail and live in [the Residents drawer](#the-residents-drawer) on the right edge. While a conversation is open, a resident that needs you is also a row in the **Needs you** rail. A fresh install, and any install that never chose, gets the drawer. |
 | **Board and Console** | Residents sit in the Board columns and the Console rail beside every other session, with their marker, and the top bar's **Residents** button opens [the Residents dock](#the-residents-dock). |
 
 Either way a resident opens on the same full detail - Conversation, Work queue, Workflows,
@@ -198,6 +198,18 @@ and count.
   in the color of the Board's **Working** column; while it needs you, in the color of **Needs
   you**. Both colors come from the current skin, so they match that skin's columns. Otherwise
   the card wears its marker color.
+- **Needs you group.** Residents that need you move to the top of the drawer, into a group
+  framed in the **Needs you** color under a **Needs you** heading with how many are asking.
+  With keycaps on, the heading prints <kbd>e</kbd>. <kbd>e</kbd> opens the review queue of the
+  first fleet session asking, as it always has, and otherwise addresses the first resident in
+  this group: its review queue, with its card selected, when it asked through a review, or its
+  conversation with the cursor in the reply box when it needs you some other way, such as a menu
+  it is parked on. That holds while a conversation is open and the resident is also a row in the
+  **Needs you** rail. <kbd>e</kbd> passes over the resident whose conversation is already open
+  while another is asking; when that one is the only resident asking, it puts the cursor back in
+  its reply box. The rest of the residents follow below the group.
+  A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
+  shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
 - **Compressing a card.** Every card starts open. Clicking a resident's title, or
   <kbd>Space</kbd> on it, compresses the card the way a Board repository group folds: it keeps
   the title, one line of what the resident is doing, which follows its activity as it changes,
@@ -234,13 +246,26 @@ drill-in or the Console detail pane, and the drawer stays on screen with that re
 The Escape that leaves the detail moves focus to that resident's card. A resident opened by
 **⌥N** or the palette with the drawer closed leaves the usual way.
 
-**Visitor card.** While the drawer is closed, a resident that needs you shows a visitor card in
-the Board's **Needs you** column, or among the Console rail's sessions that need you: a dashed
-outline in its marker color with the chip, the name and *Resident · opens its conversation*.
-Clicking it, or <kbd>Enter</kbd> on it, opens that resident's conversation, as **⌥N** does, and
-leaves the drawer closed. The arrow keys reach it; the <kbd>⌘</kbd>-numbers skip it, so they
-don't shift while its ask is open. It disappears while the drawer is open or pinned, while that
-resident's own detail is open, and once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
+**In the Needs you rail while a conversation is open.** While any session's detail is open -
+the Board drill-in, or a selected row in Console - every resident that needs you is an ordinary
+row in the **Needs you** rail, with its chip, its state and what it is asking, the open resident
+included. Opening a resident that needs you drills the Board into a full **Needs you** rail
+listing everything asking, so a click or an arrow key moves the conversation from one to the
+next. The rows carry no <kbd>⌘</kbd>-number, so the fleet's numbers don't shift as a detail
+opens and closes, and they stay in the rail whether or not the drawer is on screen. Escape out of
+a resident's detail still moves focus to its drawer card while the drawer is open. A resident
+that does not need you never joins the rail. Close the detail and the residents leave the rail
+again: for the drawer's **Needs you** group while the drawer is on screen, or for a visitor card
+while it is closed.
+
+**Visitor card.** While the drawer is closed and no detail is open, a resident that needs you
+shows a visitor card in the Board's **Needs you** column, or among the Console rail's sessions
+that need you: a dashed outline in its marker color with the chip, the name and *Resident ·
+opens its conversation*. Clicking it, or <kbd>Enter</kbd> on it, opens that resident's
+conversation, as **⌥N** does, and leaves the drawer closed. The arrow keys reach it; the
+<kbd>⌘</kbd>-numbers skip it, so they don't shift while its ask is open. It disappears while the
+drawer is open or pinned, while any detail is open (the resident is a row in the rail then), and
+once the resident no longer needs you. In Console, where selecting a row opens it, an arrow key
 landing on the visitor card opens the resident's detail.
 
 ### The Residents dock

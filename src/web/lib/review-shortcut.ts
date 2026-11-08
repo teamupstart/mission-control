@@ -43,3 +43,38 @@ export function reviewShortcutTarget(
   const asking = visible.find((s) => s.pendingReviews > 0);
   return asking ? { sessionId: asking.id, refocus: true } : null;
 }
+
+/**
+ * What the review chord does, once the Residents drawer's Needs you group is counted too.
+ *
+ * - `fleet`: a fleet session's review queue, by `reviewShortcutTarget`'s rule. The fleet always
+ *   comes first: the drawer sits to its right, and a fleet session asking is what the chord has
+ *   always meant.
+ * - `resident`: otherwise the first resident in the drawer's Needs you group, in the order it is
+ *   drawn, passing over the one whose conversation is already open while another is asking. One
+ *   asking through a review opens that review queue (`opens: "review"`). One that needs you any
+ *   other way - parked on a menu, or waiting on a reply - has no queue to open, so the chord opens
+ *   its conversation instead (`opens: "conversation"`), where every kind of ask can be answered.
+ *   Either way the group's `e` keycap never names a resident the key would leave alone.
+ *
+ * `drawerAsking` is every resident in the group, including one that is also a row in the Needs
+ * you rail because a conversation is open; empty while the drawer is not on screen. A resident
+ * there with a review is already found by the fleet step, so the drawer step only ever adds the
+ * residents asking without one. `openDetailId` is the session whose conversation is open.
+ */
+export type ReviewChordTarget =
+  | ({ kind: "fleet" } & ReviewShortcutTarget)
+  | { kind: "resident"; sessionId: string; opens: "review" | "conversation" };
+
+export function reviewChordTarget(
+  visible: readonly Pick<Session, "id" | "pendingReviews">[],
+  selectedId: string | null,
+  drawerAsking: readonly Pick<Session, "id" | "pendingReviews">[],
+  openDetailId: string | null = null,
+): ReviewChordTarget | null {
+  const fleet = reviewShortcutTarget(visible, selectedId);
+  if (fleet) return { kind: "fleet", ...fleet };
+  const resident = drawerAsking.find((session) => session.id !== openDetailId) ?? drawerAsking[0];
+  if (!resident) return null;
+  return { kind: "resident", sessionId: resident.id, opens: resident.pendingReviews > 0 ? "review" : "conversation" };
+}

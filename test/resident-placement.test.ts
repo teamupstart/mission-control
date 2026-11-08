@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Tone } from "../src/web/lib/format.ts";
-import { detailSessionLookup, residentPlacement } from "../src/web/lib/resident-placement.ts";
+import { detailSessionLookup, residentPlacement, unnumberedResidents } from "../src/web/lib/resident-placement.ts";
 import { RESIDENT_SHORTCUT_CHORDS, chordFromEvent, isReservedChord, residentShortcutIndex } from "../src/web/lib/keybindings.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
@@ -11,7 +11,7 @@ const toneOf = (id: string): Tone | null => tones[id] ?? null;
 const residentIds = ["calm", "busy", "asking"];
 
 function place(over: Partial<Parameters<typeof residentPlacement>[0]> = {}) {
-  const { excluded, visitors } = residentPlacement({
+  const { excluded, visitors, asking } = residentPlacement({
     placement: "drawer",
     residentIds,
     toneOf,
@@ -19,27 +19,48 @@ function place(over: Partial<Parameters<typeof residentPlacement>[0]> = {}) {
     openDetailId: null,
     ...over,
   });
-  return { excluded: [...excluded].sort(), visitors: [...visitors].sort() };
+  return { excluded: [...excluded].sort(), visitors: [...visitors].sort(), asking: [...asking].sort() };
 }
 
 test("Board and Console placement leaves every resident on the fleet", () => {
-  assert.deepEqual(place({ placement: "fleet" }), { excluded: [], visitors: [] });
+  assert.deepEqual(place({ placement: "fleet" }), { excluded: [], visitors: [], asking: [] });
   // Whatever the drawer or the open detail say: the fleet placement has no drawer to defer to.
-  assert.deepEqual(place({ placement: "fleet", drawerOpen: true, openDetailId: "asking" }), { excluded: [], visitors: [] });
+  assert.deepEqual(place({ placement: "fleet", drawerOpen: true, openDetailId: "asking" }), { excluded: [], visitors: [], asking: [] });
 });
 
 test("Drawer placement takes every resident off the fleet except one that needs you", () => {
-  assert.deepEqual(place(), { excluded: ["busy", "calm"], visitors: ["asking"] });
+  assert.deepEqual(place(), { excluded: ["busy", "calm"], visitors: ["asking"], asking: [] });
 });
 
-test("an open or pinned drawer already shows the ask, so there is no visitor card", () => {
-  assert.deepEqual(place({ drawerOpen: true }), { excluded: ["asking", "busy", "calm"], visitors: [] });
+test("with no detail open, an open or pinned drawer shows the ask, so it leaves Needs you", () => {
+  assert.deepEqual(place({ drawerOpen: true }), { excluded: ["asking", "busy", "calm"], visitors: [], asking: [] });
 });
 
-test("a resident whose own detail is open is not its own visitor, and leaves the fleet", () => {
-  assert.deepEqual(place({ openDetailId: "asking" }), { excluded: ["asking", "busy", "calm"], visitors: [] });
-  // Another resident's open detail does not withhold this one's card.
-  assert.deepEqual(place({ openDetailId: "calm" }), { excluded: ["busy", "calm"], visitors: ["asking"] });
+test("while a detail is open, every resident that needs you is a row in the Needs you rail", () => {
+  // Its own detail: the rail lists it beside anything else asking, so the operator can swap.
+  assert.deepEqual(place({ openDetailId: "asking" }), { excluded: ["busy", "calm"], visitors: [], asking: ["asking"] });
+  // Another session's detail, resident or fleet: still a row, never a visitor card.
+  assert.deepEqual(place({ openDetailId: "calm" }), { excluded: ["busy", "calm"], visitors: [], asking: ["asking"] });
+  assert.deepEqual(place({ openDetailId: "task-1" }), { excluded: ["busy", "calm"], visitors: [], asking: ["asking"] });
+  // The drawer on screen beside the detail does not take it back out of the rail.
+  assert.deepEqual(
+    place({ openDetailId: "asking", drawerOpen: true }),
+    { excluded: ["busy", "calm"], visitors: [], asking: ["asking"] },
+  );
+});
+
+test("an open resident that does not need you stays off the rail", () => {
+  assert.deepEqual(place({ openDetailId: "busy" }).excluded, ["busy", "calm"]);
+  assert.deepEqual(place({ openDetailId: "busy", drawerOpen: true }).excluded, ["busy", "calm"]);
+});
+
+test("the ⌘-numbers skip visitor cards and residents asking in the rail alike", () => {
+  const closed = residentPlacement({ placement: "drawer", residentIds, toneOf, drawerOpen: false, openDetailId: null });
+  assert.deepEqual([...unnumberedResidents(closed)], ["asking"]);
+  const open = residentPlacement({ placement: "drawer", residentIds, toneOf, drawerOpen: true, openDetailId: "asking" });
+  assert.deepEqual([...unnumberedResidents(open)], ["asking"]);
+  const fleet = residentPlacement({ placement: "fleet", residentIds, toneOf, drawerOpen: false, openDetailId: "asking" });
+  assert.equal(unnumberedResidents(fleet).size, 0);
 });
 
 test("the card returns once the detail closes, and leaves once the ask is answered", () => {
@@ -56,7 +77,8 @@ test("the card returns once the detail closes, and leaves once the ask is answer
 });
 
 test("a resident whose session is gone is simply kept off the fleet", () => {
-  assert.deepEqual(place({ residentIds: ["missing"] }), { excluded: ["missing"], visitors: [] });
+  assert.deepEqual(place({ residentIds: ["missing"] }), { excluded: ["missing"], visitors: [], asking: [] });
+  assert.deepEqual(place({ residentIds: ["missing"], openDetailId: "missing" }), { excluded: ["missing"], visitors: [], asking: [] });
 });
 
 const fleetSession = mkSession({ id: "task-1", name: "Fleet task" });

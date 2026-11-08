@@ -317,10 +317,12 @@ test("a resident that needs you is a visitor card while the drawer is closed, an
   await expect(band(page)).toBeHidden();
   await expect(visitor).toBeVisible();
 
+  // While its conversation is open the resident is an ordinary row in the Needs you rail, not a
+  // visitor card, so it can be swapped to and from like any session asking.
   await page.keyboard.press("Alt+Digit1");
   await expect(band(page)).toBeVisible();
   await expect(page.locator(".resident-visitor")).toHaveCount(0);
-  await expectOffFleet(page);
+  await expect(page.locator(".board-col.is-rail.tone-attention button.rail-row", { hasText: NAME })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(band(page)).toBeHidden();
   await expect(visitor).toBeVisible();

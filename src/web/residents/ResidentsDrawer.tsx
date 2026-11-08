@@ -3,6 +3,7 @@ import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { ReviewItem, Session } from "@shared/types.ts";
 import { PaneDialogPrompt } from "../components/PaneDialogPrompt.tsx";
+import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { stateDisplay } from "../lib/format.ts";
@@ -26,8 +27,9 @@ export interface ResidentDrawerEntry {
 }
 
 /**
- * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` all share: `runs` order,
- * oldest launch first. One derivation, so the keycap a card prints is the key that opens it.
+ * The live residents in the order the dock and `⌥1`…`⌥9` share, and the drawer keeps within each
+ * of its groups: `runs` order, oldest launch first. One derivation, so the keycap a card prints
+ * is the key that opens it.
  */
 export function residentDrawerEntries(
   runs: readonly ResidentRunSummary[],
@@ -45,13 +47,33 @@ export function residentDrawerEntries(
   }));
 }
 
+/** A listed resident whose session has started and needs you: the Board's Needs you tone. */
+function entryNeedsYou(entry: ResidentDrawerEntry): boolean {
+  return entry.session !== null && stateDisplay(entry.session).tone === "attention";
+}
+
+/**
+ * The drawer's two groups, each in the dock's order: residents that need you, drawn first under a
+ * Needs you heading, then every other live resident. The `⌥`-numbers stay with the launch order,
+ * so a resident that starts asking moves up without renumbering anyone.
+ */
+export function residentDrawerGroups(entries: readonly ResidentDrawerEntry[]): {
+  needsYou: ResidentDrawerEntry[];
+  others: ResidentDrawerEntry[];
+} {
+  const needsYou: ResidentDrawerEntry[] = [];
+  const others: ResidentDrawerEntry[] = [];
+  for (const entry of entries) (entryNeedsYou(entry) ? needsYou : others).push(entry);
+  return { needsYou, others };
+}
+
 /**
  * Which card the drawer selects when it opens with no live selection: the first resident that
  * needs you, else the first that has a session to open.
  */
 export function defaultResidentSelection(entries: readonly ResidentDrawerEntry[]): string | null {
   const live = entries.filter((entry) => entry.session !== null);
-  const pick = live.find((entry) => stateDisplay(entry.session!).tone === "attention") ?? live[0];
+  const pick = live.find(entryNeedsYou) ?? live[0];
   return pick?.session?.id ?? null;
 }
 
@@ -105,7 +127,8 @@ export interface ResidentsDrawerProps {
 
 /**
  * The Residents drawer: every live resident as a card in its marker color, each open or
- * compressed by a click on its title, and the profiles with Launch underneath.
+ * compressed by a click on its title, and the profiles with Launch underneath. Residents that
+ * need you lead it, grouped under a Needs you heading.
  *
  * Always a non-modal column beside the fleet, so the Board or Console narrows instead of being
  * covered or dimmed, and the fleet's keys stay live. Pinned or not, it looks and behaves the same;
@@ -163,7 +186,10 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
     };
   }, [focusRequest]);
 
-  const openable = entries.filter((entry): entry is ResidentDrawerEntry & { session: Session } => entry.session !== null);
+  const groups = residentDrawerGroups(entries);
+  // The arrow keys walk the cards in the order they are drawn: the Needs you group first.
+  const openable = [...groups.needsYou, ...groups.others]
+    .filter((entry): entry is ResidentDrawerEntry & { session: Session } => entry.session !== null);
 
   /**
    * The arrow keys walk the cards and Enter opens the selected one. On the drawer element, so
@@ -198,6 +224,18 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
 
   const live = entries.length;
   const closeChord = formatChord(bindings.residentsDock);
+  const renderCard = (entry: ResidentDrawerEntry): React.JSX.Element => (
+    <ResidentDrawerCard
+      key={entry.run.id}
+      entry={entry}
+      selected={entry.session !== null && entry.session.id === selectedId}
+      collapsed={entry.session !== null && collapsed.has(entry.session.id)}
+      onSelect={props.onSelect}
+      onOpen={props.onOpen}
+      reviews={props.reviews}
+      renderReview={props.renderReview}
+    />
+  );
   return (
     <aside
       ref={(el) => {
@@ -244,20 +282,29 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
         {entries.length === 0 ? (
           <p className="residents-drawer-empty">No residents are running. Launch one from a profile below.</p>
         ) : (
-          <ul className="residents-drawer-list" aria-label="Live residents">
-            {entries.map((entry) => (
-              <ResidentDrawerCard
-                key={entry.run.id}
-                entry={entry}
-                selected={entry.session !== null && entry.session.id === selectedId}
-                collapsed={entry.session !== null && collapsed.has(entry.session.id)}
-                onSelect={props.onSelect}
-                onOpen={props.onOpen}
-                reviews={props.reviews}
-                renderReview={props.renderReview}
-              />
-            ))}
-          </ul>
+          <>
+            {/* Residents that need you lead the drawer, in the Board's Needs you color, with the
+                review chord's keycap on the heading: after any fleet session asking, `e` addresses
+                the first of them - its review queue, or its conversation (`reviewChordTarget`). */}
+            {groups.needsYou.length > 0 && (
+              <section className="residents-drawer-group is-needs-you" aria-labelledby="residents-drawer-needs-you">
+                <h3 className="residents-drawer-group-head" id="residents-drawer-needs-you">
+                  Needs you
+                  <span className="residents-drawer-group-key"><Keycap action="review" /></span>
+                  {/* The list below announces how many; the number is for the eye. */}
+                  <span className="residents-drawer-group-n" aria-hidden>{groups.needsYou.length}</span>
+                </h3>
+                <ul className="residents-drawer-list" aria-label="Residents that need you">
+                  {groups.needsYou.map(renderCard)}
+                </ul>
+              </section>
+            )}
+            {groups.others.length > 0 && (
+              <ul className="residents-drawer-list" aria-label="Live residents">
+                {groups.others.map(renderCard)}
+              </ul>
+            )}
+          </>
         )}
       </div>
       <footer className="residents-drawer-foot">

@@ -294,10 +294,22 @@ test("with a fleet session and a drawer resident both asking, `e` opens the flee
   await page.keyboard.press("Escape");
   await expect(reviewDialog).toHaveCount(0);
 
+  // Still first with the resident's own conversation open and selected, when the resident is a
+  // row in the Needs you rail: its review does not jump ahead of the fleet session's.
+  await drawer.getByRole("button", { name: `Open ${ASK_A}` }).click();
+  await expect(band(page, ASK_A)).toBeVisible();
+  await expect(railRowOf(page.locator(".board-col.is-rail.tone-attention"), ASK_A)).toHaveAttribute("aria-current", "true");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("e");
+  await expect(reviewDialog).toContainText("Fleet neighbour: ship it?");
+  await expect(reviewDialog).not.toContainText(`${ASK_A}: ship it?`);
+  await page.keyboard.press("Escape");
+  await expect(reviewDialog).toHaveCount(0);
+
   // Once the fleet session's question is answered, `e` reaches the resident in the drawer.
   await request(daemon, `/api/reviews/${fleetReview}/resolve`, { action: "dismiss" });
   await expect(page.locator(".board-col.tone-attention")).not.toContainText("Fleet neighbour");
-  await page.locator("body").click({ position: { x: 5, y: 400 } });
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("e");
   await expect(reviewDialog).toContainText(`${ASK_A}: ship it?`);
   await expect(headOf(drawer, ASK_A)).toHaveAttribute("aria-current", "true");

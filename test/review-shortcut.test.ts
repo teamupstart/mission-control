@@ -110,11 +110,38 @@ test("a resident asking without a review in the Needs you rail is still reached 
     sessionId: "menu",
     opens: "conversation",
   });
-  // The same resident with a review is the fleet step's: it is on the rail, in fleet order.
+  // The same resident with a review is still the drawer step's: it opens its review queue.
   assert.deepEqual(reviewChordTarget([session("fleet", 0), session("asks", 1)], "fleet", [session("asks", 1)], "fleet"), {
-    kind: "fleet",
+    kind: "resident",
     sessionId: "asks",
+    opens: "review",
+  });
+});
+
+test("a selected rail resident with a review never jumps ahead of a fleet session's review", () => {
+  // A conversation is open, so the resident is a rail row in `visible`, and it is the selection.
+  // The fleet step skips the drawer group's residents, so the fleet session asking comes first.
+  const visible = [session("resident", 1), session("fleet", 1)];
+  assert.deepEqual(reviewChordTarget(visible, "resident", [session("resident", 1)], "resident"), {
+    kind: "fleet",
+    sessionId: "fleet",
     refocus: true,
+  });
+  // With the drawer closed there is no group, and the selected session wins as it always has.
+  assert.deepEqual(reviewChordTarget(visible, "resident", [], "resident"), {
+    kind: "fleet",
+    sessionId: "resident",
+    refocus: false,
+  });
+});
+
+test("the open resident with a review keeps the chord in drawn order", () => {
+  // Its review queue is still something to open, so it is not passed over for the next resident.
+  const drawer = [session("open", 1), session("next", 1)];
+  assert.deepEqual(reviewChordTarget(drawer, "open", drawer, "open"), {
+    kind: "resident",
+    sessionId: "open",
+    opens: "review",
   });
 });
 

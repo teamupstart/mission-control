@@ -205,9 +205,11 @@ and count.
   this group: its review queue, with its card selected, when it asked through a review, or its
   conversation with the cursor in the reply box when it needs you some other way, such as a menu
   it is parked on. That holds while a conversation is open and the resident is also a row in the
-  **Needs you** rail. <kbd>e</kbd> passes over the resident whose conversation is already open
-  while another is asking; when that one is the only resident asking, it puts the cursor back in
-  its reply box. The rest of the residents follow below the group.
+  **Needs you** rail, and a fleet session's review still comes first even when that resident is
+  the one selected. <kbd>e</kbd> passes over the resident whose conversation is already open
+  while another is asking, unless it has a review to open; when that one is the only resident
+  asking, it puts the cursor back in its reply box. The rest of the residents follow below the
+  group.
   A card keeps its **⌥**-number when it moves into or out of the group, so the numbers never
   shift while an ask is open, and <kbd>↑</kbd>/<kbd>↓</kbd> walk the cards in the order drawn.
 - **Compressing a card.** Every card starts open. Clicking a resident's title, or

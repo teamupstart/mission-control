@@ -384,6 +384,12 @@ test.describe("a blocked session row", () => {
     await dashboard.reload();
     await expectDashboardReady(dashboard);
 
+    // Held, not hidden in silence: while the reads fail the pulse says the inbox is unavailable,
+    // so an empty pulse is never mistaken for nothing waiting.
+    const unavailable = dashboard.locator(".pulse-seg", { hasText: "inbox unavailable" });
+    await expect(unavailable).toBeVisible();
+    await shoot(dashboard, "inbox-unavailable-while-retrying", dashboard.locator(".pulse"));
+
     let counted = false;
     await expect.poll(async () => {
       if ((await pulseCount(dashboard, "to answer")) === beforeOwed + 1) counted = true;
@@ -391,6 +397,7 @@ test.describe("a blocked session row", () => {
     }, { intervals: [100], timeout: 30_000, message: "the dashboard retried until a read succeeded" })
       .toBeGreaterThanOrEqual(4);
     expect(counted, "the dismissed row was counted while its dismissal was unknown").toBe(false);
+    await expect(unavailable).toHaveCount(0);
     await holdsSteady(
       async () => (await pulseCount(dashboard, "to answer")) === beforeOwed,
       "after the retried read the dismissed row is still out of the count",

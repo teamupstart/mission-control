@@ -4233,6 +4233,7 @@ export function App(): React.JSX.Element {
           attention={counts.attention}
           working={counts.working}
           inbox={attention.total}
+          inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {

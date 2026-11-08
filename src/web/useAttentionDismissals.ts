@@ -26,6 +26,12 @@ export interface AttentionDismissalsState {
    */
   dismissed: ReadonlyMap<string, string> | null;
   /**
+   * True while `dismissed` is null BECAUSE a read failed - not merely because the first one is
+   * still on its way - so the caller can say the inbox is unavailable rather than imply it is
+   * clear. Cleared by the first read that succeeds.
+   */
+  unreadable: boolean;
+  /**
    * Dismiss one row's keys (`attentionDismissalKeys`). The row leaves at once; the promise
    * resolves to null once the daemon stored it, or to an error, in which case the row is back.
    */
@@ -60,6 +66,7 @@ export interface AttentionDismissalsState {
  */
 export function useAttentionDismissals(revision: number): AttentionDismissalsState {
   const [state, setState] = useState(INITIAL_DISMISSAL_STATE);
+  const [unreadable, setUnreadable] = useState(false);
   const readsStarted = useRef(0);
   const writesStarted = useRef(0);
   const [ledger] = useState(createRevisionLedger);
@@ -79,6 +86,7 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     const number = ++readsStarted.current;
     void api.listAttentionDismissals().then((body) => {
       if (!body) {
+        if (newestApplied.current === 0) setUnreadable(true);
         // A lost read is repaired by reading again, not by waiting for a change event that may
         // never come - the one that prompted this read has already been spent.
         if (!shouldRetryRead(number, newestApplied.current, retry.current !== null)) return;
@@ -91,6 +99,7 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
       }
       failuresInARow.current = 0;
       newestApplied.current = Math.max(newestApplied.current, number);
+      setUnreadable(false);
       // A read that started after the lost one has answered for it.
       if (retry.current && number > retry.current.after) {
         clearTimeout(retry.current.timer);
@@ -133,5 +142,5 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     () => (state.appliedRead > 0 ? effectiveDismissals(state) : null),
     [state],
   );
-  return { dismissed, dismiss };
+  return { dismissed, unreadable, dismiss };
 }

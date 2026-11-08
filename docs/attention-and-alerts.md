@@ -66,9 +66,11 @@ A question's own **Dismiss**, on its card, is a different button: it resolves th
 tells the agent it was dismissed. The row's **Dismiss** only hides the questions, however many
 the row holds. A row of more than 5,000 questions goes to the daemon in several requests; if one
 is refused, only its questions come back, with the reason, and **Dismiss** sends them again.
-Because a dismissed row leaves the count while the session it names may still be blocked, **need you** can
-read higher than **to answer**, and the difference is rows you chose to hide. Alerts are
-unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
+A dismissed row leaves **to answer** while the session it names may still be blocked, so after
+a dismissal **need you** can read higher than **to answer**, which without one it never does.
+The two count different things - **need you** counts sessions, **to answer** counts each thing the
+inbox is showing, one per question - so the gap between them is not the number of rows you hid.
+Alerts are unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
 
 A dismissal never expires and is never pruned, however many you make or however long ago. A
 row that goes away and later returns saying exactly what it said when you dismissed it stays

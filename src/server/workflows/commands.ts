@@ -37,7 +37,8 @@ export type ConfigureRepositoryCommandResult =
       repoRoot: string;
       forgiven: number;
       restored: number;
-      confirmationReviewId: string;
+      /** The answer this write spent, or null when nothing was written. */
+      confirmationReviewId: string | null;
     }
   | {
       ok: false;
@@ -250,8 +251,9 @@ export class WorkflowCommandManager {
    * - refused unless the operator chose "Configure this Command" on the daemon-composed
    *   confirmation card for exactly this run, slot, repository and argv (`operatorConfirmation`);
    *   the refusal carries that card so the tool can show it;
-   * - writes that repository's override, never the machine-wide default, and writes nothing
-   *   when the override already equals the argv; one retry absorbs a concurrent save;
+   * - writes that repository's override, never the machine-wide default; when the override
+   *   already equals the argv it writes nothing and needs no answer; each answer authorizes
+   *   one write and is spent by it; one retry absorbs a concurrent save;
    * - then re-scopes the run budget through `forgiveCheckRuns` and records the change.
    */
   configureRepositoryCommand(input: ConfigureRepositoryCommandInput): ConfigureRepositoryCommandResult {
@@ -273,8 +275,30 @@ export class WorkflowCommandManager {
         message: `A ${slot} check is still running in this workflow run; configure the Command after it finishes`,
       };
     }
+    const isArgv = (candidate: readonly string[]) => candidate.length === command.length
+      && candidate.every((arg, index) => arg === command[index]);
+    const already = (view: WorkflowCommandView) =>
+      view.overrides.some((entry) => entry.repoRoot === repoRoot && isArgv(entry.command));
+    const current = this.get(slot);
+    if (!current) return { ok: false, reason: "not_found", message: "no such command slot" };
+    // Already this repository's Command: there is nothing to write, so nothing to authorize and
+    // nothing to re-scope. Answering it costs no confirmation and spends none.
+    if (already(current)) {
+      return { ok: true, view: current, repoRoot, forgiven: 0, restored: 0, confirmationReviewId: null };
+    }
     const card = commandConfirmationCard({ runId: run.id, slot, repoRoot, command });
-    const confirmation = operatorConfirmation(input.reviews, card, run.startedAt);
+    // Each answer authorizes ONE write. An answer an earlier write in this run already used is
+    // spent, so if the operator later changes the override in Library, re-proposing the old argv
+    // needs a fresh answer rather than silently undoing their edit.
+    const spent = new Set(runs.listEvents(run.id)
+      .filter((event) => event.kind === "workflow_command_configured")
+      .map((event) => (event.payload as { confirmationReviewId?: unknown } | null)?.confirmationReviewId)
+      .filter((id): id is string => typeof id === "string"));
+    const confirmation = operatorConfirmation(
+      input.reviews.filter((review) => !spent.has(review.id)),
+      card,
+      run.startedAt,
+    );
     if (!confirmation) {
       return {
         ok: false,
@@ -287,10 +311,11 @@ export class WorkflowCommandManager {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const view = this.get(slot);
       if (!view) return { ok: false, reason: "not_found", message: "no such command slot" };
-      const existing = view.overrides.find((entry) => entry.repoRoot === repoRoot);
-      const unchanged = existing !== undefined && existing.command.length === command.length
-        && existing.command.every((arg, index) => arg === command[index]);
-      const result: WorkflowCommandMutation = unchanged ? { ok: true, view } : this.replace(slot, {
+      // A concurrent save already made it so: nothing written, so the answer is not spent.
+      if (already(view)) {
+        return { ok: true, view, repoRoot, forgiven: 0, restored: 0, confirmationReviewId: null };
+      }
+      const result = this.replace(slot, {
         expectedRevision: view.revision,
         defaultCommand: view.defaultCommand,
         overrides: [...view.overrides.filter((entry) => entry.repoRoot !== repoRoot), { repoRoot, command: [...command] }],

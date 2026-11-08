@@ -52,6 +52,10 @@ test("make with several goals or --keep-going counts only a refusal that proves 
     assert.equal(commandMisfitSignal(["make", flag, "test"], "make: *** No rule to make target 'test'.  Stop."), null, flag);
   }
   assert.ok(commandMisfitSignal(["make", "-j4", "test"], "make: *** No rule to make target 'test'.  Stop."));
+  // A separate numeric value belongs to -j or -l, never the first goal.
+  for (const argv of [["make", "-j", "4", "test"], ["make", "--jobs", "8", "test"], ["make", "-l", "2.5", "test"], ["make", "-j", "test"]]) {
+    assert.ok(commandMisfitSignal(argv, "make: *** No rule to make target 'test'.  Stop."), argv.join(" "));
+  }
 });
 
 test("an option's value is never mistaken for the requested script, task or recipe", () => {

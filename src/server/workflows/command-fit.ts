@@ -75,11 +75,18 @@ const MAKE_VALUE_OPTIONS = new Set(["-C", "-f", "-I", "-o", "-W", "--directory",
   "--makefile", "--include-dir", "--old-file", "--assume-old", "--what-if", "--new-file",
   "--assume-new"]);
 
+/** make options whose value is OPTIONAL and, when given separately, numeric (`-j 4`, `-l 2.5`). */
+const MAKE_OPTIONAL_NUMBER_OPTIONS = new Set(["-j", "--jobs", "-l", "--load-average", "--max-load"]);
+
 function makeTargets(args: readonly string[]): string[] {
   const targets: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (MAKE_VALUE_OPTIONS.has(arg)) { index += 1; continue; }
+    if (MAKE_OPTIONAL_NUMBER_OPTIONS.has(arg)) {
+      if (/^\d+(?:\.\d+)?$/.test(args[index + 1] ?? "")) index += 1;
+      continue;
+    }
     if (arg.startsWith("-") || arg.includes("=")) continue;
     targets.push(arg);
   }

@@ -693,6 +693,57 @@ test("MCP refuses to configure a Command for a finished run and leaves the catal
   }
 });
 
+test("an operator's answer authorizes one write, and a Command already in place needs none", async (t) => {
+  const f = await fixture(t);
+  f.registry.setSessionControlEnabled(f.caller.id, false);
+  const own = f.seed(f.caller.id);
+  // Every test in this file shares one catalog and `/repo`; leave the overrides as found.
+  const original = f.workflowCommands.get("test")!.overrides;
+  t.after(() => {
+    const view = f.workflowCommands.get("test")!;
+    f.workflowCommands.replace("test", { expectedRevision: view.revision, defaultCommand: view.defaultCommand,
+      overrides: original, maxRuns: view.maxRuns, timeoutMs: view.timeoutMs,
+      onUnavailable: view.onUnavailable, onBudgetExhausted: view.onBudgetExhausted });
+  });
+  const configure = (command: string[]) => f.app.request("/mcp/workflows/configure-command", { method: "POST",
+    headers: { host: "localhost", "content-type": "application/json", "x-harness-token": ensureToken(),
+      "x-mission-scout-credential": f.credential() },
+    body: JSON.stringify({ runId: own.run.id, slot: "test", command }) });
+
+  // The operator confirms A and the session writes it.
+  const answerA = f.confirm(own.run.id, ["npm", "test"]);
+  const first = await configure(["npm", "test"]);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json() as { confirmationReviewId: string }).confirmationReviewId, answerA);
+
+  // Already A: nothing to write, so no answer is needed and none is spent.
+  const noop = await configure(["npm", "test"]);
+  assert.equal(noop.status, 200);
+  const noopBody = await noop.json() as { confirmationReviewId: string | null; forgivenRuns: number };
+  assert.deepEqual([noopBody.confirmationReviewId, noopBody.forgivenRuns], [null, 0]);
+
+  // The operator then changes the override to B in Library while the run is still active.
+  const view = f.workflowCommands.get("test")!;
+  assert.ok(f.workflowCommands.replace("test", { expectedRevision: view.revision, defaultCommand: view.defaultCommand,
+    overrides: [...view.overrides.filter((entry) => entry.repoRoot !== "/repo"), { repoRoot: "/repo", command: ["pnpm", "test"] }], maxRuns: view.maxRuns, timeoutMs: view.timeoutMs,
+    onUnavailable: view.onUnavailable, onBudgetExhausted: view.onBudgetExhausted }).ok);
+
+  // Re-proposing A cannot reuse the spent answer to undo the operator's edit.
+  const reused = await configure(["npm", "test"]);
+  assert.equal(reused.status, 403);
+  assert.equal((await reused.json() as { code: string }).code, "unconfirmed");
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"),
+    { repoRoot: "/repo", command: ["pnpm", "test"] });
+
+  // A fresh answer authorizes it again.
+  const answerAgain = f.confirm(own.run.id, ["npm", "test"]);
+  const again = await configure(["npm", "test"]);
+  assert.equal(again.status, 200);
+  assert.equal((await again.json() as { confirmationReviewId: string }).confirmationReviewId, answerAgain);
+  assert.deepEqual(f.workflowCommands.get("test")!.overrides.find((entry) => entry.repoRoot === "/repo"),
+    { repoRoot: "/repo", command: ["npm", "test"] });
+});
+
 test("MCP defers configuring a Command while a check for that slot is still running", async (t) => {
   // The running check's outcome is unknown, so whether its reservation proved nothing is too.
   // Configuring now would leave a misfit it later records counted against the new command.

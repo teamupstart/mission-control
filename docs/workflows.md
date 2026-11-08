@@ -30,7 +30,10 @@ the same when joined with spaces stay distinct. The tool shows that card and blo
 answered. The daemon accepts the write only when the human (not Foreman, a standing approval, or a
 controlling session) chose **Configure this Command** on exactly that card, after the run started;
 it recomputes the card from the run, slot, repository, and argv rather than trusting a card the
-session phrased, and the card's title and body must be the daemon's own text too. Otherwise it
+session phrased, and the card's title and body must be the daemon's own text too. Each answer
+authorizes one write and is spent by it, so re-proposing an argv after the operator changed the
+override in Library needs a fresh answer; a call naming the argv the override already holds writes
+nothing and needs none. Otherwise it
 refuses with 403 and stores nothing. Like every dashboard answer, this rests on the dashboard
 API's trust boundary: a local process that can answer a card through `/api/reviews` could equally
 write the catalog through `/api/workflow-commands`. It

@@ -64,8 +64,9 @@ async function fixture(
   const workflows = new WorkflowManager(registry, undefined, { ...options, commandArtifacts });
   const store = workflows.store;
   const workflowCommands = new WorkflowCommandManager(registry, store);
+  const reviews = new ReviewManager(registry);
   const app = buildApp({ registry, workflows, workflowCommands, tasks: new TaskManager(registry),
-    queues: new QueueManager(registry), reviews: new ReviewManager(registry) });
+    queues: new QueueManager(registry), reviews });
   const requests: Array<{ path: string; method: string; body: unknown; actor: string | null; surface: string | null }> = [];
   const server = serve({ hostname: "127.0.0.1", port, fetch: async (req) => {
     requests.push({ path: new URL(req.url).pathname, method: req.method,
@@ -114,9 +115,18 @@ async function fixture(
     return { run, submission, version };
   }
   const credential = () => readFileSync(sessionScoutCredentialPath(`session:${sessionScoutCredentialLocator(caller.id)}`), "utf8").trim();
+  /** The operator picking exactly `command` on one of the caller's `request_input` cards. */
+  function confirm(command: string[]) {
+    const label = command.join(" ");
+    const card = reviews.create(caller.id, "input", "Confirm the Command", `Use ${label}?`,
+      [{ id: "q", question: `Use ${label}?`, options: [{ id: "o0", label }, { id: "o1", label: "Something else" }] }]);
+    reviews.resolve(card.id, "answer", `Answered:\n\n• Use ${label}?\n  → ${label}`, "human",
+      [{ decisionId: "q", selected: ["o0"], other: null }]);
+    return card.id;
+  }
   return {
     client, call, seed, requests, store, workflows, registry, caller, app, credential,
-    commandArtifacts, workflowCommands,
+    commandArtifacts, workflowCommands, reviews, confirm,
   };
 }
 
@@ -382,9 +392,17 @@ test("MCP configures the Command for its own run's repository and frees the slot
     misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
 
   f.registry.setSessionControlEnabled(f.caller.id, false);
+  // Without the operator picking this argv, the daemon stores nothing.
+  const unconfirmedRevision = f.workflowCommands.get("test")!.revision;
+  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"] },
+    /The operator has not confirmed `npm run test:unit`/);
+  assert.equal(f.workflowCommands.get("test")!.revision, unconfirmedRevision);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "an unconfirmed call forgives nothing");
+  const confirmationId = f.confirm(["npm", "run", "test:unit"]);
   const result = await f.call("configure_workflow_command", {
     runId: own.run.id, slot: "test", command: ["npm", "run", "test:unit"],
   });
+  assert.equal(result.confirmationReviewId, confirmationId);
   assert.equal(result.repoRoot, "/repo");
   assert.deepEqual(result.command, ["npm", "run", "test:unit"]);
   assert.equal(result.forgivenRuns, 1);
@@ -413,6 +431,7 @@ test("MCP configures the Command for its own run's repository and frees the slot
 
   // A second answer replaces this repository's override rather than adding a duplicate. The
   // corrected command actually ran, so switching away from it forgives nothing either.
+  f.confirm(["pytest", "-q"]);
   const switched = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
   assert.deepEqual([switched.forgivenRuns, switched.restoredRuns], [0, 0]);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "a real execution is never returned");
@@ -488,6 +507,7 @@ test("the Command a session configures over MCP is the argv the resubmitted chec
   assert.match((failed.verdict as { requestedChanges: Array<{ title: string }> }).requestedChanges[0]!.title,
     /^Configure the test Command for this repository/);
 
+  f.confirm(["npm", "test"]);
   const configured = await f.call("configure_workflow_command", { runId, slot: "test", command: ["npm", "test"] });
   assert.equal(configured.forgivenRuns, 1);
   const resubmitted = await f.act("resubmit", { runId }, { resubmitUnchanged: true });
@@ -507,6 +527,12 @@ test("a session inspects a repository without a Makefile, confirms its command t
   // a model, so it spends no tokens: the packet, the inspection, the operator's confirmation,
   // the repository override, the resubmission, and the real commands spawned in a real
   // repository that has no Makefile. Every step is reported as a diagnostic line.
+  for (const bin of ["make", "npm"]) {
+    if (spawnSync(bin, ["--version"], { encoding: "utf8" }).error) {
+      t.skip(`${bin} is not installed`);
+      return;
+    }
+  }
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-no-makefile-")));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   writeFileSync(join(repo, "package.json"), `${JSON.stringify({
@@ -566,7 +592,9 @@ test("a session inspects a repository without a Makefile, confirms its command t
   const first = await f.act("submit", { bindingId: binding.id });
   const runId = first.run.id as string;
   await waitFor(() => f.store.listDeliveries(runId).length === 1, "the failed default should prepare a repair packet");
-  assert.match(outputs[0]!, /make: \*\*\* No rule to make target [`']test'\.\s+Stop\./);
+  // Whatever make implementation answered, it refused before running anything; the packet
+  // below is what proves the refusal was classified as the repository not providing `test`.
+  assert.match(outputs[0]!, /\btest\b/);
 
   // 1. The session reads its repair packet.
   const packet = f.store.listDeliveries(runId)[0]!.payload;
@@ -669,6 +697,8 @@ test("MCP defers configuring a Command while a check for that slot is still runn
   assert.equal(f.workflowCommands.get("test")!.revision, before.revision);
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "the running reservation is untouched");
   // Another slot is not held up by it.
+  f.confirm(["npm", "run", "lint"]);
+  f.confirm(["npm", "test"]);
   await f.call("configure_workflow_command", { runId: own.run.id, slot: "lint", command: ["npm", "run", "lint"] });
 
   // Once the check finishes and records its misfit, configuring proceeds and forgives it.

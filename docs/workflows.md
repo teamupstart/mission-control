@@ -23,7 +23,12 @@ opaque ids from run detail and following `nextCursor` until it is null. A page i
 KiB. The same owning-session and **Control other sessions** authorization applies.
 
 `configure_workflow_command({runId, slot, command})` sets the argv one slot (`test`, `lint`,
-`typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. It
+`typecheck`, `build`, or `documentation`) runs for the repository of the caller's **own** run. The
+daemon accepts the argv only when the operator picked exactly that command on one of the session's
+`request_input` cards: answered by the human (not Foreman, a standing approval, or a controlling
+session), after the run started, choosing an option label, "Other" text, or free-text answer equal
+to the arguments joined by single spaces. Otherwise it refuses with 403 and stores nothing, so a
+session that skips the confirmation cannot write an executable command. It
 writes that repository's override in Library › Commands, replacing any override the repository
 already had, and never touches the machine-wide default. The repository comes from the run's
 binding, not from the request. **Control other sessions** does not extend to it: it changes the

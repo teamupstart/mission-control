@@ -133,7 +133,8 @@ test("the configuration repair names the default, the signal and every guarded s
   assert.match(repair.guidance, /Do not create a Makefile/);
   assert.match(repair.guidance, /1\. Inspect the repository/);
   assert.match(repair.guidance, /2\. Call request_input/);
-  assert.match(repair.guidance, /Configure nothing the operator did not confirm/);
+  assert.match(repair.guidance, /labeled exactly as its arguments separated by single spaces/);
+  assert.match(repair.guidance, /configure_workflow_command refuses any argv the operator did not pick/);
   assert.match(repair.guidance, /3\. Call configure_workflow_command\(\{ runId: "run-1", slot: "lint"/);
   assert.match(repair.guidance, /never the machine-wide default/);
   assert.match(repair.guidance, /4\. .*resubmitUnchanged: true/);

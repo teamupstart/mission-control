@@ -285,9 +285,10 @@ export function misfitCommandRepair(
       "1. Inspect the repository to learn how it runs its "
         + `${input.slot}: package.json scripts, Makefile, justfile, Taskfile, pyproject.toml, tox.ini, `
         + "Cargo.toml, go.mod, Gradle or Maven files, CI workflows, README and CONTRIBUTING.",
-      "2. Call request_input to ask the operator to confirm the exact command. Name the argv you "
-        + "propose and where you found it, offer it as the recommended option, and accept a "
-        + "corrected command as the answer. Configure nothing the operator did not confirm.",
+      "2. Call request_input to ask the operator to confirm the exact command. Say where you found "
+        + "it and offer it as the recommended option, labeled exactly as its arguments separated by "
+        + "single spaces (for example `npm test`); accept a corrected command as the answer. "
+        + "configure_workflow_command refuses any argv the operator did not pick.",
       `3. Call ${configureCall(input)}. It sets this repository's override in Library › Commands, `
         + "never the machine-wide default, and lets the corrected command run again in this workflow run.",
       "4. A configuration-only repair changes no files, so the engine cannot see it and would "

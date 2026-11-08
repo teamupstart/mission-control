@@ -49,10 +49,6 @@ function actionIsOwned(
     && delivery.noteKey === noteKeyFor(registry.getSession(caller)!));
 }
 
-function sameArgv(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((arg, index) => arg === right[index]);
-}
-
 const denied = (c: Context) => c.json({
   error: "Enable Control other sessions on the calling session to access another session's workflow",
 }, 403);
@@ -134,14 +130,9 @@ export function registerWorkflowMcpRoutes(
    *
    * Own runs only, with no delegated path: this writes the operator's Command catalog, which
    * `control_session` is documented never to alter, so the Control other sessions grant does
-   * not stretch to it. The repository comes from the run's binding, never from the request,
-   * and the machine-wide default is never touched. The session is told to confirm the argv
-   * with its operator through `request_input` first; the write itself is what Library ›
-   * Commands shows, and an operator can edit or remove it there like any other override.
-   *
-   * After the commit the run's spent executions of that slot are returned, so the corrected
-   * command runs in this run rather than being skipped as `budget_spent` for an execution of
-   * a command the repository never provided.
+   * not stretch to it. Identity and ownership are this route's; every rule about whether the
+   * write may happen - operator confirmation included - and what it does to the run belongs
+   * to `WorkflowCommandManager.configureRepositoryCommand`.
    */
   app.post("/mcp/workflows/configure-command", async (c) => {
     const auth = callerFor(c, registry);
@@ -157,71 +148,27 @@ export function registerWorkflowMcpRoutes(
     const { runId, slot, command } = parsed.data;
     const run = manager.store.getRun(runId);
     const binding = run ? manager.store.getBinding(run.bindingId) : null;
-    if (!run || !ownsBinding(registry, caller, binding)) {
+    if (!run || !binding || !ownsBinding(registry, caller, binding)) {
       return c.json({ error: "Only the session that owns this workflow run can configure its Command" }, 403);
     }
-    if (["completed", "cancelled", "failed"].includes(run.status)) {
-      return c.json({ error: "This workflow run has finished; configure the Command in Library › Commands" }, 409);
+    const result = commands.configureRepositoryCommand({
+      runs: manager.store, run, binding, slot, command, sessionId: caller, reviews: registry.reviewsFor(caller),
+    });
+    if (!result.ok) {
+      const status = result.reason === "unconfirmed" ? 403 : result.reason === "not_found" ? 404 : 409;
+      return c.json({ error: result.message, code: result.reason }, status);
     }
-    const repoRoot = binding!.sessionRepoRoot;
-    if (!repoRoot) {
-      return c.json({ error: "This workflow run reported no repository to configure" }, 409);
-    }
-    // Deferred while a check for this slot is still running in this run. Its outcome is not
-    // known yet, so neither is whether its reservation proved nothing; configuring now would
-    // leave a misfit it later records counted against the corrected command. Nothing awaits
-    // between this test and the write below, so no check can start in between, and a queued
-    // check reads the catalog when it starts.
-    const slotNodes = new Set((manager.store.getWorkflowVersionById(run.workflowVersionId)?.graph.nodes ?? [])
-      .filter((node) => node.kind === "check" && node.slot === slot).map((node) => node.id));
-    if (manager.store.listAttemptsForRun(run.id).some((attempt) =>
-      attempt.state === "running" && slotNodes.has(attempt.nodeId))) {
-      return c.json({
-        error: `A ${slot} check is still running in this workflow run; configure the Command after it finishes`,
-      }, 409);
-    }
-    // One retry absorbs a concurrent unrelated save; a second conflict is reported, not looped.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const view = commands.get(slot);
-      if (!view) return c.json({ error: "no such command slot" }, 404);
-      const existing = view.overrides.find((entry) => entry.repoRoot === repoRoot);
-      const unchanged = existing !== undefined && sameArgv(existing.command, command);
-      const overrides = view.overrides.filter((entry) => entry.repoRoot !== repoRoot);
-      overrides.push({ repoRoot, command: [...command] });
-      // Re-confirming the override already stored writes nothing: a revision bump would tell
-      // every open window a slot moved when it did not.
-      const result = unchanged ? { ok: true as const, view } : commands.replace(slot, {
-        expectedRevision: view.revision,
-        defaultCommand: view.defaultCommand,
-        overrides,
-        maxRuns: view.maxRuns,
-        timeoutMs: view.timeoutMs,
-        onUnavailable: view.onUnavailable,
-        onBudgetExhausted: view.onBudgetExhausted,
-      });
-      if (!result.ok && result.reason === "revision_conflict") continue;
-      if (!result.ok) {
-        return c.json({ error: result.reason.replaceAll("_", " ") }, 409);
-      }
-      // Only executions in which the repository did not provide a DIFFERENT argv are returned,
-      // and this argv gets back whatever it had already spent, so no sequence of
-      // configurations runs any one command past `maxRuns`.
-      const { forgiven, restored } = manager.store.forgiveCheckRuns(run.id, slot, command);
-      manager.store.appendEvent(run.id, "workflow_command_configured", {
-        slot, repoRoot, command: [...command], forgivenRuns: forgiven, restoredRuns: restored, sessionId: caller,
-      });
-      logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot });
-      return c.json({
-        slot,
-        repoRoot,
-        command,
-        revision: result.view.revision,
-        forgivenRuns: forgiven,
-        restoredRuns: restored,
-        next: "Resubmit the run with trigger_workflow_action resubmit; pass resubmitUnchanged: true when no files changed.",
-      });
-    }
-    return c.json({ error: "The Command changed concurrently; read it again and retry" }, 409);
+    logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot: result.repoRoot });
+    return c.json({
+      slot,
+      repoRoot: result.repoRoot,
+      command,
+      revision: result.view.revision,
+      forgivenRuns: result.forgiven,
+      restoredRuns: result.restored,
+      confirmationReviewId: result.confirmationReviewId,
+      next: "Resubmit the run with trigger_workflow_action resubmit; pass resubmitUnchanged: true when no files changed.",
+    });
   });
 
   app.post("/mcp/workflows/act", async (c) => {

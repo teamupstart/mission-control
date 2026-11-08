@@ -6854,6 +6854,19 @@ export class Registry extends EventEmitter {
     return out;
   }
 
+  /**
+   * Every review this daemon holds for one session, settled ones included.
+   *
+   * A read for the one caller that must see an ANSWER rather than an open question: a
+   * session-configured workflow Command is accepted only when its operator picked that exact
+   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   */
+  reviewsFor(sessionId: string): ReviewItem[] {
+    const out: ReviewItem[] = [];
+    for (const r of this.reviews.values()) if (r.sessionId === sessionId) out.push(r);
+    return out;
+  }
+
   private refreshPendingCount(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (!s) return;

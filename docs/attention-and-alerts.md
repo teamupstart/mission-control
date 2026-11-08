@@ -56,7 +56,7 @@ back only when it reports something new, and what counts as new depends on the r
 | --- | --- |
 | Decisions | never, for that run |
 | Questions from agents | the agent asks a new question; only the new one is shown |
-| Parked on a menu | the menu's question or options change |
+| Parked on a menu | the menu's question or options change, including the same options renumbered |
 | Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
 | Pipeline halts | the halt's class or reason changes |
 | Waiting on you | the session's state, or what it says it is waiting on, changes |

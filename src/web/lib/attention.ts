@@ -263,10 +263,17 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
     case "ensemble_decision":
       return [{ itemId: item.id, occurrence: "" }];
     case "session_dialog": {
+      // Each option's number with its label, as `dialogIdentity` reads a menu: the same labels
+      // renumbered pick different rows, so that is a different menu. Not `dialogIdentity`
+      // itself, which also counts a driver dialog's request id - a new id for the same
+      // question asked again would bring back a menu the operator dismissed.
       const dialog = activePaneDialog(item.session);
       return [{
         itemId: item.id,
-        occurrence: occurrenceOf(item.prompt, ...(dialog?.options.map((option) => option.label) ?? [])),
+        occurrence: occurrenceOf(
+          item.prompt,
+          ...(dialog?.options.flatMap((option) => [String(option.number), option.label]) ?? []),
+        ),
       }];
     }
     case "pipeline_commission":

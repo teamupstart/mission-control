@@ -69,7 +69,7 @@ import {
   type CheckScheduler,
 } from "./checks.ts";
 import { killLiveCheckGroups } from "./check-group.ts";
-import { commandMisfitSignal, defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
+import { defaultCommandFailureNote, misfitCommandRepair } from "./command-fit.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
 
 const MAX_INFRA_ATTEMPTS = 3;
@@ -369,12 +369,10 @@ function checkVerdict(
   const coderabbit = outcome.slot === "coderabbit";
   const fit = { slot: outcome.slot, command: outcome.command, commandSource: outcome.commandSource, runId };
   // A Command the repository does not provide is a configuration repair, never a code one.
-  // Classified against the argv that ran and its complete output, so a nested command failing
-  // inside a real target stays an ordinary failure; truncated output came from a command that
-  // ran. Its output tail is shortened so the procedure, which comes first, always fits.
-  const signal = coderabbit || outcome.truncatedBytes > 0
-    ? null
-    : commandMisfitSignal(outcome.command, outcome.output);
+  // `runCheck` classified it against the argv that ran and its complete output, so a nested
+  // command failing inside a real target stays an ordinary failure. The output tail is
+  // shortened so the procedure, which comes first, always fits.
+  const signal = coderabbit ? null : outcome.misfitSignal ?? null;
   const misfit = signal ? misfitCommandRepair({ ...fit, signal }) : null;
   const tail = tailBounded(
     outcome.output,

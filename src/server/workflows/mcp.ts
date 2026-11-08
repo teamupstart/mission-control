@@ -190,11 +190,12 @@ export function registerWorkflowMcpRoutes(
       if (!result.ok) {
         return c.json({ error: result.reason.replaceAll("_", " ") }, 409);
       }
-      // Only executions of a DIFFERENT argv are returned. Naming the command that already ran
-      // forgives nothing, so this tool can never be used to run one command past `maxRuns`.
-      const forgiven = manager.store.forgiveCheckRuns(run.id, slot, command);
+      // Only executions in which the repository did not provide a DIFFERENT argv are returned,
+      // and this argv gets back whatever it had already spent, so no sequence of
+      // configurations runs any one command past `maxRuns`.
+      const { forgiven, restored } = manager.store.forgiveCheckRuns(run.id, slot, command);
       manager.store.appendEvent(run.id, "workflow_command_configured", {
-        slot, repoRoot, command: [...command], forgivenRuns: forgiven, sessionId: caller,
+        slot, repoRoot, command: [...command], forgivenRuns: forgiven, restoredRuns: restored, sessionId: caller,
       });
       logEvent(caller, Date.now(), "workflow_mcp_command_configured", { runId: run.id, slot, repoRoot });
       return c.json({
@@ -203,6 +204,7 @@ export function registerWorkflowMcpRoutes(
         command,
         revision: result.view.revision,
         forgivenRuns: forgiven,
+        restoredRuns: restored,
         next: "Resubmit the run with trigger_workflow_action resubmit; pass resubmitUnchanged: true when no files changed.",
       });
     }

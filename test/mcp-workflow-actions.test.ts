@@ -378,7 +378,8 @@ test("MCP configures the Command for its own run's repository and frees the slot
     attempt: 1, state: "running", persona: null, inputFingerprint: "fingerprint", now: Date.now() });
   assert.equal(f.store.reserveCheckRun(own.run.id, `spent-${own.run.id}`, "test", 1, null).granted, true);
   f.store.finishAttempt(`spent-${own.run.id}`, { state: "completed", output: { status: "failed", slot: "test",
-    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2." } }, Date.now());
+    command: ["make", "test"], exitCode: 2, output: "", truncatedBytes: 0, note: "make test exited 2.",
+    misfitSignal: "make: *** No rule to make target 'test'.  Stop." } }, Date.now());
 
   f.registry.setSessionControlEnabled(f.caller.id, false);
   const result = await f.call("configure_workflow_command", {
@@ -410,8 +411,11 @@ test("MCP configures the Command for its own run's repository and frees the slot
   assert.equal(f.workflowCommands.get("test")!.revision, revision, "an unchanged override is not rewritten");
   assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "maxRuns still bounds the same command");
 
-  // A second answer replaces this repository's override rather than adding a duplicate.
-  await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
+  // A second answer replaces this repository's override rather than adding a duplicate. The
+  // corrected command actually ran, so switching away from it forgives nothing either.
+  const switched = await f.call("configure_workflow_command", { runId: own.run.id, slot: "test", command: ["pytest", "-q"] });
+  assert.deepEqual([switched.forgivenRuns, switched.restoredRuns], [0, 0]);
+  assert.equal(f.store.checkRunsSpent(own.run.id, "test", null), 1, "a real execution is never returned");
   assert.deepEqual(f.workflowCommands.get("test")!.overrides,
     [kept, { repoRoot: "/repo", command: ["pytest", "-q"] }]);
 

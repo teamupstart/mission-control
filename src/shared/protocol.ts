@@ -6927,6 +6927,7 @@ export const WorkflowCheckOutcomeSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: z.array(z.string()).nullable(),
   commandSource: z.enum(WORKFLOW_COMMAND_SOURCES).nullable().optional(),
+  misfitSignal: z.string().max(400).nullable().optional(),
   exitCode: z.number().int().nullable(),
   output: z.string().max(WORKFLOW_EXECUTION_LIMITS.checkOutput),
   truncatedBytes: z.number().int().min(0),

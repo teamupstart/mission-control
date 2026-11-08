@@ -1,4 +1,5 @@
 import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
+import { commandMisfitSignal } from "./command-fit.ts";
 import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
 import { createLimiter } from "../llm/structured.ts";
 import { resolveRepoPath } from "../repos.ts";
@@ -445,6 +446,8 @@ export async function runCheck(
     : outcome(slot, "failed", checkOutcomeNote(command, ` exited ${result.exitCode}.`), {
         command,
         commandSource,
+        // Truncated output came from a command that ran: a launcher's refusal is a few lines.
+        misfitSignal: truncatedBytes > 0 ? null : commandMisfitSignal(command, bounded.text),
         exitCode: result.exitCode,
         output: bounded.text,
         truncatedBytes,

@@ -3573,6 +3573,16 @@ export interface WorkflowCheckOutcome {
    * slot some other way, and the repair is to configure the Command rather than to change code.
    */
   commandSource?: WorkflowCommandSource | null;
+  /**
+   * The configured launcher's own refusal when a failed command was one the repository does
+   * not provide (no such make target, package script or recipe) - see `command-fit.ts`. Null
+   * or absent for every other outcome, including a failure inside a command that did run.
+   *
+   * Recorded with the outcome because two readers need the same answer: the repair packet,
+   * which asks for configuration instead of a code fix, and the run budget, which returns
+   * only an execution that proved nothing about the change.
+   */
+  misfitSignal?: string | null;
   exitCode: number | null;
   /** Bounded and tail-biased: a failure's last lines are the useful ones. */
   output: string;

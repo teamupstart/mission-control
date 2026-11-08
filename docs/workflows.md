@@ -29,9 +29,12 @@ already had, and never touches the machine-wide default. The repository comes fr
 binding, not from the request. **Control other sessions** does not extend to it: it changes the
 operator's Command catalog, so only the session that owns the run may call it, and only while the
 run has not finished. After the write it returns to the run budget only the run's finished
-executions of that slot that ran a different argv, so the corrected command runs on the next
-submission instead of being skipped as already spent. Naming the command that already ran
-forgives nothing and rewrites nothing, so the tool cannot run one command past its limit. [Command nodes](#command-nodes) describes when a repair packet asks for it.
+executions of that slot in which the repository did not provide a different argv, so the corrected
+command runs on the next submission instead of being skipped as already spent. A command that
+actually ran is never returned, and spending stays with the argv that spent it: configuring an argv
+gives back whatever it had already spent, so switching from A to B and back to A cannot run A again.
+Each argv runs at most its run budget in one workflow run, and naming the command that already ran
+changes nothing. [Command nodes](#command-nodes) describes when a repair packet asks for it.
 
 `trigger_workflow_action` takes a `request` containing `action`, the appropriate target ID,
 and `parameters` using the dashboard's existing request body schema:

@@ -90,6 +90,8 @@ import type {
   StandingInstructionsView,
   WorktreesConfig,
   WorktreesConfigPatch,
+  AttentionDismissal,
+  AttentionDismissalWrite,
 } from "@shared/protocol.ts";
 import {
   HarnessModelCatalogsSchema,
@@ -1990,6 +1992,20 @@ export const api = {
   // backlog kind again as the same task, and files a chat again as a new one.
   dismissLaunchFailures: (taskIds: readonly string[]) =>
     post<ActionResult & { dismissed?: number }>(`/api/launch-failures/dismiss`, { taskIds }),
+  // Attention-inbox rows dismissed without resolving them (`src/server/attention-dismissals.ts`).
+  // Null from the read means "not known", never "nothing dismissed".
+  listAttentionDismissals: () =>
+    fetchJsonWithSignal<{ dismissals: AttentionDismissal[] }>("/api/attention/dismissals"),
+  // Refused with 409 and `superseded` when another window dismissed one of these rows since this
+  // window last saw it (see `AttentionDismissalWriteSchema`).
+  dismissAttentionItems: (items: readonly AttentionDismissalWrite[]) =>
+    post<ActionResult & {
+      accepted?: { itemId: string; revision: number }[];
+      superseded?: string[];
+    }>(`/api/attention/dismissals`, { items }),
+  // Which dismissals this dashboard's inbox is hiding right now; the only way one is forgotten.
+  reportAttentionSightings: (itemIds: readonly string[]) =>
+    post<ActionResult & { retired?: number }>(`/api/attention/dismissals/sightings`, { itemIds }),
   reportLaunchFailure: (taskId: string, repoRoot: string) =>
     post<ActionResult & { task?: Task; existing?: boolean }>(`/api/launch-failures/report`, { taskId, repoRoot }),
   retryLaunchFailure: (taskId: string) =>

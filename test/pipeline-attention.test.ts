@@ -264,6 +264,7 @@ test("the inbox row states the class, the reason, the runbook and a link to the 
       createElement(AttentionInbox, {
         fold: fold([mkRun()]),
         onClose: () => {},
+        onDismiss: async () => null,
         onOpenEnsemble: () => {},
         onOpenSession: () => {},
       }),
@@ -290,6 +291,7 @@ test("a halt row offers the verbs its own class calls for, and no repository-wid
         createElement(AttentionInbox, {
           fold: fold([mkRun({ halt: { class: haltClass, reason: "stopped" } })]),
           onClose: () => {},
+          onDismiss: async () => null,
           onOpenEnsemble: () => {},
           onOpenSession: () => {},
         }),

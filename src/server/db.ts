@@ -210,7 +210,9 @@ let db: DatabaseSync | undefined;
 //     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
 // 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
 //     task that launches with no Persona, which is what every older task did.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 22;
+// 23: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
+//     dismissed before the inbox could dismiss.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 23;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4476,6 +4478,27 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
+  // Attention-inbox rows the operator dismissed without resolving them (schema 23). One row per
+  // inbox item id; `occurrence` is the fold's fingerprint of what that row said when it was
+  // dismissed, so the row comes back when it says something new (or, unchanged, if it recurs
+  // after this dismissal has been retired, below). `revision` is assigned afresh
+  // on every write and AUTOINCREMENT never reuses one, even after a row is retired, so a write
+  // that names an older revision than the one stored was made without seeing the newer
+  // dismissal and is refused rather than allowed to overwrite it. `absent_since` is when a
+  // dashboard's fold first stopped showing the row, NULL while it is still hidden by this
+  // dismissal; a row is deleted only once that has held for `ATTENTION_DISMISSAL_RETENTION_MS`
+  // (`src/server/attention-dismissals.ts`), never by count, so an unresolved item never comes
+  // back on its own. A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS attention_dismissals (
+      revision     INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id      TEXT NOT NULL UNIQUE,
+      occurrence   TEXT NOT NULL,
+      dismissed_at INTEGER NOT NULL,
+      absent_since INTEGER
+    );
+  `);
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

@@ -1333,6 +1333,85 @@ export const DismissLaunchFailuresSchema = z
   .strict();
 
 /**
+ * How long a dismissal outlives its row. A dismissal is forgotten only once every dashboard
+ * that looked has seen its row ABSENT from the inbox, continuously, for this long - so it never
+ * expires while the item it hides is still unresolved, a row that flickers out for a frame or
+ * across a daemon restart keeps its dismissal, and the table holds only the dismissals that are
+ * still hiding something plus a week's worth of resolved ones. There is deliberately no count
+ * cap: dropping the oldest dismissal by count would bring back an item nobody resolved.
+ */
+export const ATTENTION_DISMISSAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * One attention-inbox row the operator dismissed without resolving it.
+ *
+ * `itemId` names the row (`blocked:<session>`, `pipeline-commission:<id>`, `review:<id>`).
+ * `occurrence` names WHAT the row said when it was dismissed, as the fold in
+ * `src/web/lib/attention.ts` fingerprints it. The row stays hidden while it still says the
+ * same thing, and comes back when it says something new - a different halt reason, a
+ * different lifecycle problem - because that is a new obligation, not the dismissed one. It
+ * also comes back, unchanged, if it recurs after the dismissal was retired for a week of
+ * absence (`ATTENTION_DISMISSAL_RETENTION_MS`).
+ */
+export const AttentionDismissalKeySchema = z
+  .object({
+    itemId: z.string().min(1).max(512),
+    occurrence: z.string().max(64),
+  })
+  .strict();
+export type AttentionDismissalKey = z.infer<typeof AttentionDismissalKeySchema>;
+
+/**
+ * A stored dismissal, as `GET /api/attention/dismissals` returns it. `revision` is the daemon's
+ * own number for this write of the row, larger than every revision it has assigned before.
+ */
+export interface AttentionDismissal extends AttentionDismissalKey {
+  dismissedAt: number;
+  revision: number;
+}
+
+/**
+ * One row to dismiss, with the newest `revision` of that row the dismissing window has seen -
+ * 0 when it has seen none.
+ *
+ * `basis` is what orders dismissals made in DIFFERENT windows. A window that dismissed a row
+ * and whose request was delayed can arrive after another window dismissed what the row says
+ * NOW; without a basis the daemon kept whichever arrived last, so the older dismissal replaced
+ * the newer and the unresolved newer problem came back in every window. The daemon refuses a
+ * write whose basis is older than the stored revision: it was made without seeing that
+ * dismissal, so it cannot be the operator's latest word on the row. No browser clock is
+ * involved; every revision is the daemon's.
+ */
+export const AttentionDismissalWriteSchema = AttentionDismissalKeySchema.extend({
+  basis: z.number().int().nonnegative(),
+}).strict();
+export type AttentionDismissalWrite = z.infer<typeof AttentionDismissalWriteSchema>;
+
+/**
+ * Dismiss attention-inbox rows (`POST /api/attention/dismissals`). A list because one row can
+ * stand for several keys - a session's row of questions is one key per question. All or
+ * nothing: if any key is stale (see `basis`) none is stored, and the 409 names the stale keys.
+ * Bounded as a request body, not as a product limit.
+ */
+export const DismissAttentionItemsSchema = z
+  .object({ items: z.array(AttentionDismissalWriteSchema).min(1).max(100) })
+  .strict();
+
+/**
+ * What one dashboard's inbox is hiding right now (`POST /api/attention/dismissals/sightings`):
+ * the item id of every dismissal its fold actually applied. Every stored dismissal NOT listed is
+ * one whose row that fold did not show at all, which starts (or continues) its absence clock;
+ * every one listed has its clock cleared. Sent only from a fold built on a full snapshot.
+ *
+ * Empty is a real answer - nothing is hidden - so it is allowed. The bound is far above any
+ * fleet's open obligations, and an over-long report is refused whole: refusing retires nothing,
+ * which is the safe direction to fail in.
+ */
+export const AttentionDismissalSightingsSchema = z
+  .object({ itemIds: z.array(z.string().min(1).max(512)).max(10_000) })
+  .strict();
+
+/**
  * Start a report session for one launch failure (`POST /api/launch-failures/report`).
  *
  * The daemon builds the session's brief from `taskId` alone, so the browser never carries the

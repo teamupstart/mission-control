@@ -16,15 +16,18 @@ obligation:
    [option menu](sessions.md#answer-a-sessions-menu-from-the-dashboard). Listed, not answered in the
    inbox: it deep-links to the session detail, while an ensemble member's live lane in the run
    detail also renders the verified pane dialog in place.
-4. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
+4. **Pipeline lifecycle** - a [Pipeline](pipelines.md) commission whose provider lifecycle needs
+   you: a launch blocked on readiness, a failure, lifecycle evidence that conflicts with the task,
+   a missing workspace, or a held Engineer. **Open Pipeline** opens the commission.
+5. **Pipeline halts** - a [pipeline](pipelines.md) an external SDLC engine stopped and will not
    resume on its own. Each row names the feature, the [halt class](pipelines.md#a-halted-pipeline-in-the-inbox)
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
    time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
-5. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
+6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
-6. **Stuck finalizations** - a promotion that stopped on an error.
+7. **Stuck finalizations** - a promotion that stopped on an error.
 
 The count is **answers owed**, not rows: a session holding three questions is one row and
 three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
@@ -32,6 +35,49 @@ no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
+
+### Dismiss a row without resolving it
+
+Every row ends its header with **Dismiss**. It takes the row out of the inbox and out of the
+**to answer** count without resolving anything: no answer is sent, the agent keeps waiting, a
+halted pipeline stays halted, and the session keeps its colour on the board. Use it for something
+you have read and cannot or will not act on from here, such as a Pipeline lifecycle problem the
+provider has to clear.
+
+The daemon keeps the dismissal, so the row stays gone after a reload, in every open window and
+across a restart. It comes back in one of two ways: it reports something new while it is still
+there, or it goes away for at least a week and later returns, even saying the same thing (see
+below). What counts as something new depends on the row:
+
+| Row | Comes back when |
+| --- | --- |
+| Decisions | never, for that run |
+| Questions from agents | the agent asks a new question; only the new one is shown |
+| Parked on a menu | the menu's question or options change |
+| Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
+| Pipeline halts | the halt's class or reason changes |
+| Waiting on you | the session's state, or what it says it is waiting on, changes |
+| Stuck finalizations | the finalization stops on a different error |
+
+A question's own **Dismiss**, on its card, is a different button: it resolves the question and
+tells the agent it was dismissed. The row's **Dismiss** only hides the questions. Because a
+dismissed row leaves the count while the session it names may still be blocked, **need you** can
+read higher than **to answer**, and the difference is rows you chose to hide. Alerts are
+unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
+
+A dismissal never expires while the item it hides is still there, however many you make. Open
+dashboards tell the daemon which dismissals are still hiding a row; one is forgotten only after
+its row has been gone from the inbox for a full week without coming back. So an item that was
+resolved, or stopped needing you, for a week and then recurs is shown again, even if it reports
+exactly what it did when you dismissed it. A row gone for less than a week that returns saying
+the same thing stays dismissed.
+
+When the same row is dismissed more than once - it came back reporting something new and was
+dismissed again, in this window or another - the newest dismissal is the one kept. A window that
+dismisses a row without having seen a newer dismissal made in another window has its dismissal
+refused, and the newer dismissal stands. If the row is still showing in that window, the reason
+appears beneath it ("another window dismissed this since this one last looked"); if the newer
+dismissal already hides the row there, there is nothing left to show and no message appears.
 
 ## Roundup
 

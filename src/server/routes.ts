@@ -63,6 +63,7 @@ import {
   markLaunchFailureReport,
   recordLaunchFailureReport,
 } from "./launch-failures.ts";
+import { dismissAttentionItems, listAttentionDismissals, recordAttentionSightings } from "./attention-dismissals.ts";
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -94,6 +95,8 @@ import {
   DispatchBacklogTaskSchema,
   DispatchSchema,
   DismissLaunchFailuresSchema,
+  DismissAttentionItemsSchema,
+  AttentionDismissalSightingsSchema,
   ReportLaunchFailureSchema,
   RetryLaunchFailureSchema,
   PipelineAdoptSuccessorSchema,
@@ -8452,6 +8455,37 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, DismissLaunchFailuresSchema);
     if (!parsed.ok) return parsed.res;
     return c.json({ ok: true, dismissed: dismissLaunchFailures(registry, parsed.data.taskIds, Date.now()) });
+  });
+
+  // ---- attention inbox: rows the operator dismissed without resolving them ----
+
+  // The stored decisions only. Which rows exist, and what each one currently says, is the
+  // dashboard's fold (`src/web/lib/attention.ts`); this remembers what was dismissed so a
+  // reload, a restart or a second window does not bring it back.
+  app.get("/api/attention/dismissals", (c) => c.json({ dismissals: listAttentionDismissals() }));
+  app.post("/api/attention/dismissals", async (c) => {
+    const parsed = await parseBody(c, DismissAttentionItemsSchema);
+    if (!parsed.ok) return parsed.res;
+    const written = dismissAttentionItems(parsed.data.items, Date.now());
+    if (!written.stored) {
+      return c.json({
+        error: "another window dismissed this since this one last looked - check it and dismiss again",
+        superseded: written.superseded,
+      }, 409);
+    }
+    registry.emitAttentionDismissalsChanged();
+    // The revisions just stored, and nothing more: each window reads the whole set through GET.
+    return c.json({ ok: true, accepted: written.accepted });
+  });
+  // A dashboard reporting which dismissals its inbox is hiding right now. This is the ONLY way a
+  // dismissal is forgotten - once its row has been reported absent for the whole retention
+  // window - so one is never dropped while the item it hides is still unresolved.
+  app.post("/api/attention/dismissals/sightings", async (c) => {
+    const parsed = await parseBody(c, AttentionDismissalSightingsSchema);
+    if (!parsed.ok) return parsed.res;
+    const retired = recordAttentionSightings(parsed.data.itemIds, Date.now());
+    if (retired > 0) registry.emitAttentionDismissalsChanged();
+    return c.json({ ok: true, retired });
   });
 
   // Start the session that catalogs one failure and drafts its public bug report. The brief

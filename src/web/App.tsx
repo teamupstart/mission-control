@@ -22,6 +22,7 @@ import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useAttentionDismissals, useReportAttentionSightings } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
@@ -334,6 +335,7 @@ export function App(): React.JSX.Element {
     keepAwakeStatus,
     harnessesRevision,
     worktreesRevision,
+    attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
@@ -2558,6 +2560,11 @@ export function App(): React.JSX.Element {
   // questions that agree until they don't. Folded here because every input is already in this
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
+  //
+  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
+  // popping back up on the next frame, the next reload or in a second window. The fold applies
+  // them, so the figure and the list still cannot disagree.
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   const attention = useMemo(
     () =>
       foldAttention({
@@ -2568,9 +2575,23 @@ export function App(): React.JSX.Element {
         pipelineRuns,
         pipelineCommissions,
         tasks,
+        dismissed: attentionDismissals.dismissed,
       }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, residentRuns],
+    [
+      sessions,
+      answerableReviews,
+      ensembleSummaries,
+      pipelineRuns,
+      pipelineCommissions,
+      tasks,
+      residentRuns,
+      attentionDismissals.dismissed,
+    ],
   );
+  // What the inbox is hiding, reported back so the daemon can tell a dismissal still doing its
+  // job from one whose row is gone. Only once the fold is built on a full snapshot and the
+  // stored dismissals: before that it hides nothing and would report every dismissal absent.
+  useReportAttentionSightings(attention.hidden, hasSnapshot && attentionDismissals.loaded);
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
   const scheduleAttentionCount = useMemo(
@@ -4801,6 +4822,7 @@ export function App(): React.JSX.Element {
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
+                  onDismiss={attentionDismissals.dismiss}
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}

@@ -210,7 +210,8 @@ let db: DatabaseSync | undefined;
 //     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
 // 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
 //     task that launches with no Persona, which is what every older task did.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 22;
+// 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 23;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3347,7 +3348,29 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   createTelemetryTables(d);
   migrateTelemetry(d);
   migrate(d);
+  migrateMockupsSkill(d);
   markDatabaseSchemaCurrent(d);
+}
+
+/** One rollout, not a default applied again whenever the app is upgraded. */
+function migrateMockupsSkill(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 23) return;
+  const entry = APP_CONFIG_ENTRIES.skills;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  try {
+    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+  } catch {
+    return;
+  }
+  // Preserve all other values, including sparse-map policy and reload generation.
+  // Startup reconciliation owns symlinks and advances the generation if they change.
+  d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
+    .run(entry.key);
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */

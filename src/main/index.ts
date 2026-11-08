@@ -176,8 +176,8 @@ const updateDialogs: UpdateDialogs = {
     showWindow(paths.preload);
     return "apply";
   },
-  async upToDate(version) {
-    await askUpdate(UPDATE_DIALOGS.upToDate(version));
+  async upToDate(version, pendingVersion) {
+    await askUpdate(UPDATE_DIALOGS.upToDate(version, pendingVersion));
   },
   async preparing(version, stage) {
     // Unchanged from the flow this replaced: this phase revealed the window before it said

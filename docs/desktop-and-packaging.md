@@ -389,18 +389,24 @@ Electron-only preload capability: the plain browser dashboard has no update brid
 update banner, and starts no update check.
 
 Stable discovery selects the newest complete eligible release within a bounded canonical
-inventory. If a newer release is pending and every complete release is at or below the installed
-version, automatic checks stay quiet and retry on the existing schedule (about six hours for
-stable updates, five minutes for alpha). Explicit **Check for Updates** commands show the pending
-release with **Check again**. An older complete release is offered only when it is still newer
-than the installed version.
+inventory. An older complete release is offered only when it is still newer than the installed
+version. A newer release is still publishing when it has no ready manifest yet or its assets are
+still uploading; an older complete offer then names it in its notes. If a newer release is still
+publishing and every complete release is at or below the installed version, the check reports up
+to date and names the release still being built and signed: in Settings, and in the notice an
+explicit **Check for Updates** opens. It is not an error, and the existing schedule (about six
+hours for stable updates, five minutes for alpha) offers the release once its binary is
+published. A newer release that is published and complete but cannot update this installation,
+such as one for the historical app layout, is not treated as in progress: automatic checks stay
+quiet, and an explicit check shows it with **Update Now** disabled and **Check again**.
 A ready manifest must name both published ZIP and DMG assets with the expected IDs,
 names and byte counts. A release object alone is not readiness. The offer pins the manifest
 digest, channel, tag, full commit and asset identity. Stable and exact-SHA alpha offers require
 the Agent Mission Control.app layout. Historical Mission Control.app manifests remain readable
 for existing receipts and recovery, but cannot become actionable update offers.
-On a manual check, missing assets or an unsupported app layout leave **Update Now** disabled
-with **Check again**; retry refreshes discovery. Automatic stable and alpha checks do not show
+On a manual check, an unsupported app layout, or missing assets for an alpha installation
+without source metadata, leave **Update Now** disabled with **Check again**; retry refreshes
+discovery. Automatic stable and alpha checks do not show
 an update offer until a usable binary is available. No desktop path probes host Node/npm, creates a
 source checkout, or falls back to compilation. Canonical schema-1 source receipts and schema-2
 binary receipts both use this path. Forks and source development retain explicit source commands.
@@ -469,8 +475,17 @@ selected main commit. A release-news lookup failure does not block a main update
 main lookup failure never substitutes a stable release. After installing the current tip,
 checking again reports that it is up to date.
 
-The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete; otherwise the offer says pending or
-unavailable. Preparation and installation carry that SHA even if main advances while downloading. The
+The offer pins a full SHA from the canonical repository's `commits/main` endpoint. The exact `alpha-<full SHA>` publication must be complete.
+Every merge to main starts a signed build, and the publisher retires the previous alpha only after
+its replacement is verified. While main's tip is still building (it has no release yet, no ready
+manifest, or assets still uploading), the check therefore looks for the
+newest complete `alpha-<full SHA>` that strictly follows the installed commit and strictly precedes
+the tip on main, and offers it; its notes say which build is still being signed. When no complete
+build is newer than the installation, the check reports up to date and names the build in
+progress instead of an error. An installation without source metadata has nothing to compare
+against, and a tip published complete for an app layout this installation cannot take is not in
+progress; both keep the blocked offer with **Check again**. Preparation and installation carry
+the offered SHA even if main advances while downloading. The
 staged bundle and installed app must match it. The detached helper also compares source
 identity during rollback, so two alpha builds with the same version remain distinguishable.
 

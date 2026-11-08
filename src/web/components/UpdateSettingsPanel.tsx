@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { UpdateSnapshot } from "@shared/update.ts";
+import { pendingBuildNotice } from "@shared/update-copy.ts";
 import { subscribeToDesktopUpdates } from "../useDesktopUpdates.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { BINARY_RECOVERY_URL, BINARY_UPDATE_UNAVAILABLE, type BinaryEnrollment } from "@shared/binary-enrollment.ts";
@@ -63,9 +64,12 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
           onClick={() => { void check(); }}>Check for updates</button>
       </Tooltip>
       {snapshot?.phase === "up-to-date" && <p role="status">
-        {snapshot.alpha ? "You are running the latest main commit." : "You are running the latest release."}
+        {snapshot.pendingVersion
+          ? (snapshot.alpha ? "You are running the newest signed main build." : "You are running the newest signed release.")
+          : (snapshot.alpha ? "You are running the latest main commit." : "You are running the latest release.")}
         {" "}{snapshot.currentVersion}
       </p>}
+      {snapshot?.phase === "up-to-date" && snapshot.pendingVersion && <p className="settings-hint">{pendingBuildNotice(snapshot.pendingVersion)}</p>}
       {snapshot?.phase === "disabled" && <p className="settings-hint">{snapshot.reason}</p>}
       {enrollment && <div>
         <p className="settings-hint">{enrollment.message}</p>

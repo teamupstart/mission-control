@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { crc32, deflateRawSync } from "node:zlib";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { latestStableBinary, binaryForCommit } from "../src/main/update-binary-release.ts";
+import { latestStableBinary, binaryForCommit, latestReadyAlpha } from "../src/main/update-binary-release.ts";
 import { downloadBinaryAsset } from "../src/main/update-binary-download.ts";
 import { extractBinaryArchive } from "../src/main/update-binary-archive.ts";
 import { stageBinaryUpdate, discardBinaryUpdate, retainBinaryHandoff } from "../src/main/update-binary.ts";
@@ -50,6 +50,7 @@ test("stable skips a newer incomplete release and pins the complete manifest dig
   const f = fakeGithub();
   const release = await latestStableBinary(f.run, "1.2.3");
   assert.equal(release?.tagName, "v1.2.4");
+  assert.equal(release?.pending, "v1.2.5", "the offer names the newer release still being signed");
   assert.equal(release?.binary?.manifestSha256, digest(f.text));
   assert.deepEqual(release?.binary?.manifest, f.offer.manifest);
 });
@@ -61,6 +62,7 @@ for (const installed of ["1.2.3", "1.2.4"]) {
     assert.equal(selected?.tagName, "v1.2.5");
     assert.match(selected?.unavailable ?? "", /pending or unavailable/);
     assert.equal(selected?.binary, undefined);
+    assert.equal(selected?.building, true, "no ready manifest yet: still publishing");
   });
 }
 
@@ -69,6 +71,8 @@ test("stable still offers complete 1.2.3 above installed 1.2.2 while 1.2.5 is pe
   const selected = await latestStableBinary(f.run, "1.2.2");
   assert.equal(selected?.tagName, "v1.2.3");
   assert.deepEqual(selected?.binary?.manifest, f.offer.manifest);
+  assert.equal(selected?.pending, "v1.2.5");
+  assert.equal((await latestStableBinary(fakeGithub({pendingNewer: false}).run, "1.2.3"))?.pending, undefined);
 });
 
 for (const legacyNewest of [false, true]) test(`stable selects the newest complete supported layout when newest legacy is ${legacyNewest}`, async t => {
@@ -103,6 +107,8 @@ for (const legacyNewest of [false, true]) test(`stable selects the newest comple
         return {code: 0, stdout: JSON.stringify(responses.get(path)), stderr: ""};
       }, "1.2.3");
       assert.equal(selected?.tagName, newest.tag);
+      // A newer release that is published for the historical layout is not "still being signed".
+      assert.equal(selected?.pending, undefined);
       assert.deepEqual(selected?.binary, {
         manifest: newest.manifest, manifestText: newest.text, manifestSha256: digest(newest.text),
       });
@@ -122,25 +128,123 @@ for (const alpha of [false, true]) test(`${alpha ? "exact-SHA alpha" : "stable"}
   receipt.installedAt = "2026-10-25T00:00:00.000Z";
   assert.equal(validateReceipt(receipt), null, "historical receipt provenance remains valid");
   if (alpha) {
-    assert.equal(await binaryForCommit(f.run, f.offer.manifest.commit), null);
+    // Published and complete, so never reported as still publishing (which would be null).
+    const historical = await binaryForCommit(f.run, f.offer.manifest.commit);
+    assert.ok(historical && "unavailable" in historical);
+    assert.match(historical.unavailable, /pending or unavailable/);
     assert.ok(f.calls.every(args => !args[3]!.includes("releases?")), "no stable fallback for an exact SHA");
     const supported = fakeGithub({alpha: true, commit: "d".repeat(40)});
-    assert.deepEqual((await binaryForCommit(supported.run, supported.offer.manifest.commit))?.manifest, supported.offer.manifest);
+    const offer = await binaryForCommit(supported.run, supported.offer.manifest.commit);
+    assert.ok(offer && !("unavailable" in offer));
+    assert.deepEqual(offer.manifest, supported.offer.manifest);
   } else {
     const selected = await latestStableBinary(f.run, "1.2.3");
     assert.equal(selected?.tagName, "v1.2.4");
     assert.equal(selected?.binary, undefined);
     assert.match(selected?.unavailable ?? "", /pending or unavailable/);
+    assert.equal(selected?.building, undefined, "a complete historical-layout release is not a build in progress");
   }
 });
 
 test("alpha resolves only the exact observed main SHA; pending and retired identities do not fall back", async () => {
   const f = fakeGithub({alpha: true});
-  assert.equal((await binaryForCommit(f.run, "b".repeat(40)))?.manifest.commit, "b".repeat(40));
+  const exact = await binaryForCommit(f.run, "b".repeat(40));
+  assert.ok(exact && !("unavailable" in exact));
+  assert.equal(exact.manifest.commit, "b".repeat(40));
   assert.equal(await binaryForCommit(f.run, "c".repeat(40)), null);
   const incomplete = fakeGithub({alpha: true, incomplete: true});
   assert.equal(await binaryForCommit(incomplete.run, "b".repeat(40)), null);
   assert.ok(f.calls.every(args => !args[3]!.startsWith("repos/teamupstart/mission-control/releases?")));
+});
+
+/**
+ * A fake canonical repository for the alpha fallback: `history` is main from oldest to newest,
+ * and each alpha either has its ready manifest published or is still being built.
+ */
+function alphaGithub(history: string[], alphas: {sha: string; ready: boolean; published: string; legacy?: boolean}[]) {
+  const prefix = "repos/teamupstart/mission-control/";
+  const responses = new Map<string, unknown>([
+    ["releases?per_page=30&page=1", [release("v1.2.4", 1), ...alphas.map((alpha, index) => ({...release(`alpha-${alpha.sha}`, 10 + index), published_at: alpha.published}))]],
+  ]);
+  alphas.forEach((alpha, index) => {
+    const id = 10 + index;
+    const offer = binaryOffer(alpha.sha, "alpha", "1.2.3");
+    if (alpha.legacy) delete offer.manifest.appBundleName;
+    offer.manifest.assets = offer.manifest.assets.map((asset, offset) => ({...asset, id: String(id * 10 + offset + 1)}));
+    const text = JSON.stringify(offer.manifest);
+    responses.set(`releases/${id}/assets?per_page=30&page=1`, alpha.ready ? [
+      {id: id * 10, name: "mission-control-manifest.json", state: "uploaded", size: Buffer.byteLength(text)},
+      ...offer.manifest.assets.map(asset => ({id: Number(asset.id), name: asset.name, size: asset.bytes, state: "uploaded"})),
+    ] : []);
+    responses.set(`releases/assets/${id * 10}`, text);
+    responses.set(`commits/alpha-${alpha.sha}`, {sha: alpha.sha, commit: {message: `Work at ${alpha.sha.slice(0, 7)}`, committer: {date: alpha.published}}});
+  });
+  const calls: string[] = [];
+  const run: GhRunner = async args => {
+    assert.deepEqual(args.slice(0, 3), ["api", "--hostname", "github.com"]);
+    assert.ok(args[3]!.startsWith(prefix));
+    const path = args[3]!.slice(prefix.length);
+    calls.push(path);
+    const compare = /^compare\/([a-f0-9]{40})\.\.\.([a-f0-9]{40})$/.exec(path);
+    if (compare) {
+      // Two fields, never the full comparison with every changed file.
+      assert.deepEqual(args.slice(4), ["--jq", "{status: .status, base: .merge_base_commit.sha}"]);
+      // A commit the repository has never seen is a 404; a published alpha off main diverges.
+      const known = new Set([...history, ...alphas.map(alpha => alpha.sha)]);
+      if (!known.has(compare[1]!) || !known.has(compare[2]!)) return {code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)"};
+      const [base, head] = [history.indexOf(compare[1]!), history.indexOf(compare[2]!)];
+      const status = base < 0 || head < 0 ? "diverged" : base === head ? "identical" : base < head ? "ahead" : "behind";
+      const merged = status === "diverged" ? "0".repeat(40) : history[Math.min(base, head)];
+      return {code: 0, stdout: JSON.stringify({status, base: merged}), stderr: ""};
+    }
+    if (path.startsWith("releases/assets/") && responses.has(path)) return {code: 0, stdout: String(responses.get(path)), stderr: ""};
+    if (!responses.has(path)) return {code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)"};
+    return {code: 0, stdout: JSON.stringify(responses.get(path)), stderr: ""};
+  };
+  return {run, calls};
+}
+
+const [a, b, c, d] = ["a", "b", "c", "d"].map(letter => letter.repeat(40)) as [string, string, string, string];
+
+test("alpha falls back to the newest complete build between the installation and a still-building tip", async t => {
+  for (const order of ["published", "reversed"] as const) await t.test(`inventory ${order}`, async () => {
+    const dates = order === "published" ? ["2026-11-07T10:00:00Z", "2026-11-07T11:00:00Z"] : ["2026-11-07T11:00:00Z", "2026-11-07T10:00:00Z"];
+    const f = alphaGithub([a, b, c, d], [
+      {sha: b, ready: true, published: dates[0]!},
+      {sha: c, ready: true, published: dates[1]!},
+      {sha: d, ready: false, published: "2026-11-07T12:00:00Z"},
+    ]);
+    const prior = await latestReadyAlpha(f.run, a, d);
+    assert.equal(prior?.commit.sha, c);
+    assert.equal(prior?.commit.message, "Work at ccccccc");
+    assert.equal(prior?.binary.manifest.commit, c);
+    assert.equal(prior?.binary.manifest.channel, "alpha");
+    assert.ok(!f.calls.some(path => path.startsWith("releases/12/")), "the still-building tip is not probed again");
+  });
+});
+
+test("alpha offers nothing when no complete build is newer than the installation", async () => {
+  // b is complete but older than the installed c; c itself is not an upgrade.
+  const f = alphaGithub([a, b, c, d], [
+    {sha: b, ready: true, published: "2026-11-07T10:00:00Z"},
+    {sha: c, ready: true, published: "2026-11-07T11:00:00Z"},
+  ]);
+  assert.equal(await latestReadyAlpha(f.run, c, d), null);
+  assert.ok(!f.calls.some(path => path.startsWith("releases/10/") || path.startsWith("releases/11/")),
+    "an older build is rejected by ancestry before its assets are read");
+});
+
+test("alpha never falls back to a build off main, an incomplete or historical-layout build, or an unknown installation", async () => {
+  const offMain = "e".repeat(40);
+  const f = alphaGithub([a, b, c, d], [
+    {sha: offMain, ready: true, published: "2026-11-07T11:00:00Z"},
+    {sha: c, ready: true, legacy: true, published: "2026-11-07T10:30:00Z"},
+    {sha: b, ready: false, published: "2026-11-07T10:00:00Z"},
+  ]);
+  assert.equal(await latestReadyAlpha(f.run, a, d), null);
+  const fork = "f".repeat(40);
+  assert.equal(await latestReadyAlpha(alphaGithub([a, b, c, d], [{sha: b, ready: true, published: "2026-11-07T10:00:00Z"}]).run, fork, d), null);
+  await assert.rejects(latestReadyAlpha(f.run, "main", d), /Invalid alpha commit identity/);
 });
 
 test("stable scans past 300 ineligible releases and orders eligible releases across pages", async () => {
@@ -170,6 +274,7 @@ test("incomplete stable sets remain visibly unavailable and substituted tag/prot
   const unavailable = await latestStableBinary(fakeGithub({incomplete: true}).run, "1.2.3");
   assert.match(unavailable?.unavailable ?? "", /pending or unavailable/);
   assert.equal(unavailable?.binary, undefined);
+  assert.equal(unavailable?.building, true, "assets still uploading");
   await assert.rejects(latestStableBinary(fakeGithub({wrongCommit: true}).run, "1.2.3"), /tag no longer matches/);
   await assert.rejects(latestStableBinary(fakeGithub({badManifest: true}).run, "1.2.3"), /incompatible protocol, platform/);
 });

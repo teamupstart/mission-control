@@ -252,8 +252,8 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     log: (line) => events.push(`log:${line}`),
     dialogs: {
       available: async () => "defer",
-      upToDate: async () => {
-        events.push("up-to-date-dialog");
+      upToDate: async (_version, pendingVersion) => {
+        events.push(pendingVersion ? `up-to-date-dialog:${pendingVersion}` : "up-to-date-dialog");
       },
       preparing: async (version, stage) => {
         events.push(`preparing-dialog:${version}:${stage}`);
@@ -416,14 +416,18 @@ test("pending alpha assets block apply and retry refreshes the same exact identi
 for (const alpha of [false, true]) {
   const channel = alpha ? "alpha" : "stable";
 
-  test(`${channel} scheduled checks stay quiet until the binary becomes available`, async (t) => {
+  // Every merge to main, and every release tag, starts a signed build that takes a while.
+  const pendingVersion = alpha ? "alpha bbbbbbb" : "1.2.4";
+
+  test(`${channel} scheduled checks report up to date while the newer binary is still being signed`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.parse("2026-10-31T12:00:00Z") });
     let ready = false;
     let queries = 0;
     const f = fixture({
-      readAlpha: () => alpha, now: Date.now,
-      latestRelease: async () => { queries++; return release({ binary: ready ? binaryOffer("b".repeat(40)) : undefined }); },
+      readAlpha: () => alpha, now: Date.now, currentCommit: () => "a".repeat(40),
+      latestRelease: async () => { queries++; return release(ready ? {} : { binary: undefined, building: true }); },
       binaryForCommit: async commit => ready ? binaryOffer(commit, "alpha") : null,
+      latestReadyAlpha: async () => null,
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
@@ -433,9 +437,13 @@ for (const alpha of [false, true]) {
     await flush();
     assert.equal(queries, 1);
     const pending = f.controller.getSnapshot();
-    assert.equal(pending.phase, "idle");
-    if (pending.phase === "idle") assert.equal(pending.lastCheckedAt, Date.now());
+    assert.equal(pending.phase, "up-to-date");
+    if (pending.phase === "up-to-date") {
+      assert.equal(pending.checkedAt, Date.now());
+      assert.equal(pending.pendingVersion, pendingVersion);
+    }
     assert.equal(phases.includes("available"), false, "never publishes a blocked offer, even transiently");
+    assert.equal(phases.includes("error"), false);
     assert.deepEqual(f.events, []);
     assert.equal(await f.controller.apply(), false);
     assert.equal(f.stageRequests.length, 0);
@@ -444,7 +452,7 @@ for (const alpha of [false, true]) {
     t.mock.timers.tick(interval);
     await flush();
     assert.equal(queries, 2);
-    assert.equal(f.controller.getSnapshot().phase, "idle");
+    assert.equal(f.controller.getSnapshot().phase, "up-to-date");
     ready = true;
     t.mock.timers.tick(interval);
     await flush();
@@ -454,18 +462,19 @@ for (const alpha of [false, true]) {
     if (available.phase === "available") assert.equal(available.blocker, undefined);
   });
 
-  test(`${channel} manual checks explain a missing binary and can retry later`, async (t) => {
+  test(`${channel} manual checks report up to date instead of an error while the newer binary is signed`, async (t) => {
     const f = fixture({
-      readAlpha: () => alpha,
-      latestRelease: async () => release({ binary: undefined }),
+      readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
+      latestRelease: async () => release({ binary: undefined, building: true, unavailable: "The signed binary for this exact build is pending or unavailable." }),
       binaryForCommit: async () => null,
+      latestReadyAlpha: async () => null,
     });
     t.after(() => f.controller.stop());
     await f.controller.start();
     const pending = await f.controller.checkForUpdates();
-    assert.equal(pending.phase, "available");
-    if (pending.phase === "available") assert.match(pending.blocker!, /pending or unavailable/);
-    assert.match(f.events[0]!, /error-dialog:.*pending or unavailable/);
+    assert.equal(pending.phase, "up-to-date");
+    if (pending.phase === "up-to-date") assert.equal(pending.pendingVersion, pendingVersion);
+    assert.deepEqual(f.events, [`up-to-date-dialog:${pendingVersion}`]);
     assert.equal(await f.controller.apply(), false);
     assert.equal(f.stageRequests.length, 0);
     f.port.latestRelease = async () => release();
@@ -475,12 +484,12 @@ for (const alpha of [false, true]) {
     if (ready.phase === "available") assert.equal(ready.blocker, undefined);
   });
 
-  test(`${channel} manual checks joining background discovery reveal the missing binary`, async (t) => {
+  test(`${channel} manual checks joining background discovery name the build still being signed`, async (t) => {
     let finish!: () => void;
     const discovery = new Promise<void>(resolve => { finish = resolve; });
     const f = fixture({
-      readAlpha: () => alpha,
-      latestRelease: async () => { if (!alpha) await discovery; return release({ binary: undefined }); },
+      readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
+      latestRelease: async () => { if (!alpha) await discovery; return release({ binary: undefined, building: true }); },
       binaryForCommit: async () => { await discovery; return null; },
     });
     t.after(() => f.controller.stop());
@@ -489,11 +498,11 @@ for (const alpha of [false, true]) {
     await flush();
     const manual = f.controller.checkForUpdates();
     finish();
-    assert.equal((await background).phase, "available");
+    assert.equal((await background).phase, "up-to-date");
     const pending = await manual;
-    assert.equal(pending.phase, "available");
-    if (pending.phase === "available") assert.match(pending.blocker!, /pending or unavailable/);
-    assert.match(f.events[0]!, /error-dialog:.*pending or unavailable/);
+    assert.equal(pending.phase, "up-to-date");
+    if (pending.phase === "up-to-date") assert.equal(pending.pendingVersion, pendingVersion);
+    assert.deepEqual(f.events, [`up-to-date-dialog:${pendingVersion}`]);
   });
 }
 
@@ -552,6 +561,104 @@ test("an empty availability message cannot make a missing binary actionable", as
   assert.equal(manual.phase, "available");
   if (manual.phase === "available") assert.match(manual.blocker!, /pending or unavailable/);
   assert.equal(await f.controller.apply(), false);
+});
+
+// A release that is published and complete, but for an app layout this installation cannot
+// become, is not a build in progress. Reporting it as "up to date, still being signed" would
+// hide it for good, so it keeps the blocked offer and its manual retry.
+for (const alpha of [false, true]) {
+  test(`${alpha ? "alpha" : "stable"} keeps the blocked offer for a published release this installation cannot take`, async (t) => {
+    let lookups = 0;
+    const f = fixture({
+      readAlpha: () => alpha, currentCommit: () => "a".repeat(40),
+      latestRelease: async () => release({ binary: undefined, unavailable: "The signed binary for this exact build is pending or unavailable." }),
+      binaryForCommit: async () => ({ unavailable: "The signed binary for this exact build is pending or unavailable." }),
+      latestReadyAlpha: async () => { lookups++; return null; },
+    });
+    t.after(() => f.controller.stop());
+    await f.controller.start();
+    const phases: string[] = [];
+    f.controller.subscribe(snapshot => phases.push(snapshot.phase));
+    assert.equal((await f.controller.check(false)).phase, "idle");
+    const manual = await f.controller.checkForUpdates();
+    assert.equal(manual.phase, "available");
+    if (manual.phase === "available") {
+      assert.equal(manual.newVersion, alpha ? "alpha bbbbbbb" : "1.2.4");
+      assert.match(manual.blocker!, /pending or unavailable/);
+    }
+    assert.equal(phases.includes("up-to-date"), false, "never reported as up to date");
+    assert.match(f.events[0]!, /error-dialog:.*pending or unavailable/);
+    assert.equal(lookups, 0, "only a build still publishing looks for an earlier one");
+    assert.equal(await f.controller.apply(), false);
+    assert.equal(f.stageRequests.length, 0);
+  });
+}
+
+test("a stable offer of an older complete release names the newer one still being signed", async (t) => {
+  const f = fixture({ latestRelease: async () => release({ pending: "v1.2.5" }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const offer = await f.controller.check(true);
+  assert.equal(offer.phase, "available");
+  if (offer.phase !== "available") return;
+  assert.equal(offer.newVersion, "1.2.4");
+  assert.equal(offer.blocker, undefined);
+  assert.match(offer.releaseNotes, /^Mission Control 1\.2\.5 is still being built and signed\./);
+  assert.match(offer.releaseNotes, /Safer updates/);
+});
+
+test("alpha offers the newest complete build when main's tip is still being signed, and pins it", async (t) => {
+  const installed = "a".repeat(40);
+  const head = "d".repeat(40);
+  const prior = "c".repeat(40);
+  const lookups: [string, string][] = [];
+  const f = fixture({
+    readAlpha: () => true,
+    currentCommit: () => installed,
+    latestRelease: async () => null,
+    latestMainCommit: async () => ({ sha: head, message: "Still building", committedAt: "2026-11-07T12:00:00Z" }),
+    binaryForCommit: async () => null,
+    latestReadyAlpha: async (from, to) => {
+      lookups.push([from, to]);
+      return { commit: { sha: prior, message: "Signed work", committedAt: "2026-11-07T11:00:00Z" }, binary: binaryOffer(prior, "alpha", "1.2.3") };
+    },
+    stagedBundleIdentity: () => ({ version: "1.2.3", revision: "staged-1", commit: prior }),
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const background = await f.controller.check(false);
+  assert.equal(background.phase, "available", "a real upgrade reaches the banner without a manual check");
+  if (background.phase !== "available") return;
+  assert.deepEqual(lookups, [[installed, head]]);
+  assert.equal(background.newVersion, "alpha ccccccc");
+  assert.equal(background.releaseTag, prior);
+  assert.equal(background.commitSha, prior);
+  assert.equal(background.publishedAt, "2026-11-07T11:00:00Z");
+  assert.equal(background.blocker, undefined);
+  assert.match(background.releaseNotes, /^Main commit ccccccc is the newest signed build\. Mission Control alpha ddddddd is still being built and signed\./);
+  assert.match(background.releaseNotes, /Signed work/);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.stageRequests[0]?.targetTag, prior);
+  assert.equal(f.stageRequests[0]?.offer.manifest.commit, prior);
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.targetTag, prior);
+});
+
+test("alpha reports up to date, not an error, when no complete build is newer than the installation", async (t) => {
+  const f = fixture({
+    readAlpha: () => true,
+    currentCommit: () => "c".repeat(40),
+    latestMainCommit: async () => ({ sha: "d".repeat(40), message: "Still building", committedAt: "2026-11-07T12:00:00Z" }),
+    binaryForCommit: async () => null,
+    latestReadyAlpha: async () => null,
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const result = await f.controller.checkForUpdates();
+  assert.equal(result.phase, "up-to-date");
+  if (result.phase === "up-to-date") assert.equal(result.pendingVersion, "alpha ddddddd");
+  assert.deepEqual(f.events, ["up-to-date-dialog:alpha ddddddd"]);
+  assert.ok(!f.events.some(event => event.startsWith("error-dialog")));
 });
 
 test("an intact deferred alpha remains usable after its remote asset expires", async () => {

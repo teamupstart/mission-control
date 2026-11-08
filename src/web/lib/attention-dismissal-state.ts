@@ -231,3 +231,13 @@ export function createDismissalSender<Answer extends DismissalWriteAnswer>(
   });
   return (keys) => enqueue(keys.map((key) => ({ ...key, seenAtClick: seen.basisFor(key.itemId) })));
 }
+
+/**
+ * How long to wait before retrying the first read of the dismissals after `failures` failed
+ * ones: half a second, doubling, never more than fifteen. Until that read succeeds the inbox
+ * is held empty, so it is retried rather than left for some later event to ask again - and
+ * never hammered, because a local daemon that answers at all answers in milliseconds.
+ */
+export function firstReadRetryDelay(failures: number): number {
+  return Math.min(500 * 2 ** failures, 15_000);
+}

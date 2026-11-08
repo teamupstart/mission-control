@@ -7,6 +7,7 @@ import {
   createDismissalSender,
   createRevisionLedger,
   effectiveDismissals,
+  firstReadRetryDelay,
   INITIAL_DISMISSAL_STATE,
   settleDismissalWrite,
 } from "./lib/attention-dismissal-state.ts";
@@ -16,8 +17,13 @@ export interface AttentionDismissalsState {
    * Dismissed attention-inbox rows, item id to the occurrence each was dismissed at: what the
    * daemon has stored, plus this window's own dismissals a read has not confirmed yet. Feed it
    * to `foldAttention` as `dismissed`.
+   *
+   * NULL until the first read succeeds, which means UNKNOWN, not "nothing dismissed". After a
+   * reload the snapshot usually lands before that read, and folding over an empty map in that
+   * gap drew every dismissed row - and counted it - until the read caught up, or for good when
+   * that read failed. The caller shows no inbox rows while this is null.
    */
-  dismissed: ReadonlyMap<string, string>;
+  dismissed: ReadonlyMap<string, string> | null;
   /**
    * Dismiss one row's keys (`attentionDismissalKeys`). The row leaves at once; the promise
    * resolves to null once the daemon stored it, or to an error, in which case the row is back.
@@ -45,7 +51,9 @@ export interface AttentionDismissalsState {
  * seeing another window's newer dismissal is refused.
  *
  * A failed read keeps what was already known. An empty set is a claim that nothing is
- * dismissed, and on a dropped connection that claim would bring every dismissed row back.
+ * dismissed, and on a dropped connection that claim would bring every dismissed row back. Until
+ * the first read succeeds nothing is known at all, so `dismissed` stays null and a failed read
+ * is retried with backoff rather than left until some later event happens to ask again.
  */
 export function useAttentionDismissals(revision: number): AttentionDismissalsState {
   const [state, setState] = useState(INITIAL_DISMISSAL_STATE);
@@ -58,16 +66,34 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     createDismissalSender((writes) => api.dismissAttentionItems(writes), ledger),
   );
 
+  const loaded = useRef(false);
+  const firstReadFailures = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const read = useCallback((): void => {
     const number = ++readsStarted.current;
     void api.listAttentionDismissals().then((body) => {
-      if (!body) return;
+      if (!body) {
+        // Before the first success there is nothing to fall back on, so try again rather than
+        // waiting for a change event that may never come. After it, a later read will.
+        if (loaded.current || retry.current) return;
+        const delay = firstReadRetryDelay(firstReadFailures.current++);
+        retry.current = setTimeout(() => {
+          retry.current = null;
+          read();
+        }, delay);
+        return;
+      }
+      loaded.current = true;
       ledger.learn(body.dismissals);
       setState((current) => applyDismissalRead(current, number, body.dismissals));
     });
   }, [ledger]);
 
   useEffect(() => read(), [revision, read]);
+  useEffect(() => () => {
+    if (retry.current) clearTimeout(retry.current);
+  }, []);
 
   const dismiss = useCallback(async (keys: readonly AttentionDismissalKey[]): Promise<string | null> => {
     const write = ++writesStarted.current;
@@ -88,6 +114,9 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     return null;
   }, [read, send]);
 
-  const dismissed = useMemo(() => effectiveDismissals(state), [state]);
+  const dismissed = useMemo(
+    () => (state.appliedRead > 0 ? effectiveDismissals(state) : null),
+    [state],
+  );
   return { dismissed, dismiss };
 }

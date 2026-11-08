@@ -33,6 +33,7 @@ import {
   createDismissalWriteQueue,
   createRevisionLedger,
   effectiveDismissals,
+  firstReadRetryDelay,
   INITIAL_DISMISSAL_STATE,
   settleDismissalWrite,
   type AttentionDismissalState,
@@ -335,4 +336,8 @@ test("a click made after seeing another window's dismissal is the newer decision
   daemon.answerNext();
   assert.equal((await mine).ok, true);
   assert.equal(daemon.rows.get("blocked:s-1")?.occurrence, "read");
+});
+
+test("a failed first read is retried soon, then less often, and never left for good", () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 10].map(firstReadRetryDelay), [500, 1000, 2000, 4000, 8000, 15_000, 15_000, 15_000]);
 });

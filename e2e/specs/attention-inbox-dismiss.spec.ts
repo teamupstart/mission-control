@@ -357,6 +357,47 @@ test.describe("a blocked session row", () => {
     expect(kept.dismissals.map((entry) => entry.itemId)).toEqual([expect.stringMatching(/^blocked:/)]);
   });
 
+  test("a reload never shows a dismissed row, even when the first reads of the dismissals fail", async ({
+    dashboard,
+    daemon,
+  }) => {
+    const { beforeOwed } = await parkASession(dashboard, daemon);
+    const inbox = await openInbox(dashboard);
+    const row = inbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });
+    await row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
+    await expect(row).toHaveCount(0);
+    await expectToAnswer(dashboard, beforeOwed);
+    await dashboard.keyboard.press("Escape");
+
+    // After the reload the snapshot arrives at once, but the dashboard's first three reads of the
+    // stored dismissals fail. Until one succeeds the dashboard does not know the row is dismissed,
+    // and must not count it - nor give up after the first failure.
+    let reads = 0;
+    await dashboard.route("**/api/attention/dismissals", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      if (++reads <= 3) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"not yet"}' });
+        return;
+      }
+      await route.continue();
+    });
+    await dashboard.reload();
+    await expectDashboardReady(dashboard);
+
+    let counted = false;
+    await expect.poll(async () => {
+      if ((await pulseCount(dashboard, "to answer")) === beforeOwed + 1) counted = true;
+      return reads;
+    }, { intervals: [100], timeout: 30_000, message: "the dashboard retried until a read succeeded" })
+      .toBeGreaterThanOrEqual(4);
+    expect(counted, "the dismissed row was counted while its dismissal was unknown").toBe(false);
+    await holdsSteady(
+      async () => (await pulseCount(dashboard, "to answer")) === beforeOwed,
+      "after the retried read the dismissed row is still out of the count",
+    );
+    await dashboard.unroute("**/api/attention/dismissals");
+  });
+
   test("keeps the newer dismissal when the row changes and the older write lands last", async ({
     dashboard,
     daemon,
@@ -517,15 +558,23 @@ test.describe("one row dismissed from two windows", () => {
     const otherInbox = await openInbox(other);
     const otherRow = otherInbox.locator(".inbox-blocked").filter({ hasText: "Check the Linter Config" });
     await expect(otherRow.getByText("Waiting on you: Claude needs your permission to use Write")).toBeVisible();
+    // This window's OWN read of the other window's dismissal - the one its hook learns the newer
+    // revision from - registered before the click so it cannot be missed. A fetch made from the
+    // test instead would prove the daemon has it, not that this window's ledger does, and a
+    // regression that raised the basis at send time could then pass on timing alone.
+    const learned = dashboard.waitForResponse(async (response) =>
+      new URL(response.url()).pathname === "/api/attention/dismissals" &&
+      response.request().method() === "GET" &&
+      ((await response.json()) as { dismissals: unknown[] }).dismissals.length === 1,
+    );
     await otherRow.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
     await expect(otherRow).toHaveCount(0);
     await expect.poll(async () =>
       ((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: unknown[] }).dismissals.length,
     ).toBe(1);
-    await expect.poll(async () => await dashboard.evaluate(async () => {
-      const body = await (await fetch("/api/attention/dismissals")).json() as { dismissals: unknown[] };
-      return body.dismissals.length;
-    })).toBe(1);
+    await (await learned).finished();
+    // One turn of the page's own event loop, so the hook has applied the body it just received.
+    await dashboard.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
     // Release this window's writes. Both were clicks made before the other window's dismissal,
     // so neither may replace it - however much this window learned while they waited.

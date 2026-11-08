@@ -45,8 +45,9 @@ you have read and cannot or will not act on from here, such as a Pipeline lifecy
 provider has to clear.
 
 The daemon keeps the dismissal, so the row stays gone after a reload, in every open window and
-across a restart. It comes back only when it reports something new, and what counts as new
-depends on the row:
+across a restart. After a reload the inbox and its **to answer** count wait until the dashboard
+has read your dismissals, so a dismissed row never flashes back while the page loads. It comes
+back only when it reports something new, and what counts as new depends on the row:
 
 | Row | Comes back when |
 | --- | --- |

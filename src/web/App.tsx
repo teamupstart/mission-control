@@ -105,7 +105,7 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention } from "./lib/attention.ts";
+import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import {
   useKeybindings,
   chordFromEvent,
@@ -2588,19 +2588,25 @@ export function App(): React.JSX.Element {
   // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
   // popping back up on the next frame, the next reload or in a second window. The fold applies
   // them, so the figure and the list still cannot disagree.
+  //
+  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
+  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
+  // count after a reload, which is the pop-back dismissing exists to prevent.
   const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   const attention = useMemo(
     () =>
-      foldAttention({
-        sessions,
-        reviews: answerableReviews,
-        residentRuns,
-        ensembles: ensembleSummaries,
-        pipelineRuns,
-        pipelineCommissions,
-        tasks,
-        dismissed: attentionDismissals.dismissed,
-      }),
+      attentionDismissals.dismissed === null
+        ? NO_ATTENTION_YET
+        : foldAttention({
+            sessions,
+            reviews: answerableReviews,
+            residentRuns,
+            ensembles: ensembleSummaries,
+            pipelineRuns,
+            pipelineCommissions,
+            tasks,
+            dismissed: attentionDismissals.dismissed,
+          }),
     [
       sessions,
       answerableReviews,
@@ -5087,6 +5093,9 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
+
+/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
+const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

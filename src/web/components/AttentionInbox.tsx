@@ -89,7 +89,11 @@ export function AttentionInbox({
   };
   // A refused dismissal, by row: the row comes back as soon as the write fails, and this says
   // why beneath it rather than leaving the operator to wonder whether the click registered.
-  const [refused, setRefused] = useState<ReadonlyMap<string, string>>(new Map());
+  //
+  // Kept with WHAT the row said when it was refused, and drawn only while it still says that.
+  // Keyed by row alone, the reason outlived the problem it was about: a row that went on to
+  // report something new showed "Could not dismiss" under a problem nobody had tried to dismiss.
+  const [refused, setRefused] = useState<ReadonlyMap<string, { error: string; said: string }>>(new Map());
   const dismiss = (item: AttentionItem) => () => {
     setRefused((current) => {
       if (!current.has(item.id)) return current;
@@ -97,8 +101,9 @@ export function AttentionInbox({
       next.delete(item.id);
       return next;
     });
+    const said = rowSays(item);
     void onDismiss(attentionDismissalKeys(item)).then((error) => {
-      if (error) setRefused((current) => new Map(current).set(item.id, error));
+      if (error) setRefused((current) => new Map(current).set(item.id, { error, said }));
     });
   };
   let section: AttentionItem["kind"] | null = null;
@@ -156,9 +161,9 @@ export function AttentionInbox({
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onLeave={onClose}
               />
-              {refused.has(item.id) && (
+              {refused.get(item.id)?.said === rowSays(item) && (
                 <p className="inbox-line inbox-error" role="alert">
-                  {refused.get(item.id)}
+                  {refused.get(item.id)!.error}
                 </p>
               )}
             </div>
@@ -167,6 +172,15 @@ export function AttentionInbox({
       </div>
     </Overlay>
   );
+}
+
+/**
+ * What a row says, as dismissing it would record it: every key it would dismiss, each with the
+ * occurrence it is at now. Two readings of one row are equal exactly when it reports the same
+ * thing - for a row of questions, the same questions.
+ */
+function rowSays(item: AttentionItem): string {
+  return attentionDismissalKeys(item).map((key) => `${key.itemId}=${key.occurrence}`).join("\n");
 }
 
 /**

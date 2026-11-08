@@ -345,7 +345,14 @@ test.describe("a blocked session row", () => {
     };
     expect(stored.dismissals).toEqual([]);
 
-    // A retry once the daemon accepts clears the reason and dismisses for real.
+    // The session moves on to a new question. That reason was about the refused dismissal of
+    // the OLD question, which the operator has not tried to dismiss again, so it must not sit
+    // beneath the new one.
+    await notify(daemon, "Claude needs your permission to use Edit");
+    await expect(row.getByText("Waiting on you: Claude needs your permission to use Edit")).toBeVisible();
+    await expect(inbox.getByRole("alert")).toHaveCount(0);
+
+    // A retry once the daemon accepts dismisses for real.
     await dashboard.unroute("**/api/attention/dismissals");
     await dismiss.click();
     await expect(row).toHaveCount(0);

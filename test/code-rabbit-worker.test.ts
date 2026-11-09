@@ -27,8 +27,28 @@ const { setShippingConfig } = await import("../src/server/shipping/config.ts");
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
 const { adoptPr, startInspector } = await import("../src/server/inspector/worker.ts");
 const { readCodeRabbit, getInspectorPr } = await import("../src/server/db.ts");
-const { fetchPr, fetchIssueCommentPage } = await import("../src/server/inspector/github.ts");
+const { fetchPr, fetchIssueCommentPage, fetchThreadPage } = await import("../src/server/inspector/github.ts");
 after(() => rmSync(dir, { force: true, recursive: true }));
+
+test("GitHub connection collections refuse more than the requested page size", async (t) => {
+  t.after(() => writeFileSync(calls, ""));
+  const pageInfo = { hasNextPage: false, endCursor: null };
+  const comment = preMergeComment(undefined, "https://github.com/a/b/pull/1#issuecomment-70");
+  const comments = { nodes: Array.from({ length: 100 }, () => comment), pageInfo };
+  const root = { id: "root", url: comment.url, body: "Finding", updatedAt: "2026-01-01T00:00:00Z", author: { __typename: "Bot", login: "coderabbitai" } };
+  const thread = { id: "thread", isResolved: false, path: "a.ts", comments: { nodes: [root, ...Array.from({ length: 99 }, () => ({ author: null }))] } };
+  const reviewThreads = { nodes: Array.from({ length: 100 }, () => thread), pageInfo };
+  const respond = (pr: unknown) => writeFileSync(snapshot, JSON.stringify({ data: { repository: { pullRequest: pr } } }));
+  respond({ comments, reviewThreads });
+  assert.equal((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).value?.comments.length, 100);
+  assert.equal((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error, null);
+  respond({ comments: { ...comments, nodes: [...comments.nodes, null] } });
+  assert.ok((await fetchIssueCommentPage(dir, "a", "b", 1, "next")).value?.error);
+  respond({ reviewThreads: { ...reviewThreads, nodes: [...reviewThreads.nodes, thread] } });
+  assert.ok((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error);
+  respond({ reviewThreads: { ...reviewThreads, nodes: [{ ...thread, comments: { nodes: [...thread.comments.nodes, null] } }] } });
+  assert.ok((await fetchThreadPage(dir, "a", "b", 1, "next")).value?.error);
+});
 const pause = () => new Promise((r) => setTimeout(r, 20));
 async function until(check: () => boolean) { const end = Date.now() + 5000; while (!check() && Date.now() < end) await pause(); assert.ok(check()); }
 

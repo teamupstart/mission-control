@@ -172,6 +172,20 @@ test("the validators a request is handed on to bound every collection too", asyn
   assert.deepEqual(unbounded, []);
 });
 
+test("external model replies and backup JSON also bound every collection", async () => {
+  const { BacklogReportSchema } = await import("../src/server/foreman/backlog-plan.ts");
+  const { QueueVerdictSchema } = await import("../src/server/foreman/queue-verify.ts");
+  const { VerdictSchema } = await import("../src/server/foreman/verdict.ts");
+  const { SettingsBackupJsonValueSchema } = await import("../src/shared/settings-backups.ts");
+  const { SETTINGS_BACKUP_CATALOGS } = await import("../src/server/settings-backups/catalogs.ts");
+  const schemas: [string, Schema][] = [
+    ["backlog reply", BacklogReportSchema], ["queue reply", QueueVerdictSchema],
+    ["Foreman reply", VerdictSchema], ["backup JSON", SettingsBackupJsonValueSchema],
+    ...SETTINGS_BACKUP_CATALOGS.map((entry): [string, Schema] => [`backup ${entry.domain}`, entry.schema]),
+  ];
+  assert.deepEqual(schemas.flatMap(([name, schema]) => unboundedCollections(schema).map(at => `${name}: ${at}`)), []);
+});
+
 /** One `initialize` + `tools/list` against the MCP server, run from source. */
 async function listMcpTools(): Promise<{ name: string; inputSchema: unknown }[]> {
   const child = spawn(process.execPath, ["--import", "tsx", join(ROOT, "src/mcp/server.ts")], {

@@ -2,12 +2,13 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { HARNESS_MODEL_CATALOG_LIMITS } from "@shared/protocol.ts";
 
 const ModelWindow = z.object({
   slug: z.string(), context_window: z.number().int().positive(),
   effective_context_window_percent: z.number().positive().max(100),
 });
-const ModelCatalog = z.object({ models: z.array(z.unknown()) });
+const ModelCatalog = z.object({ models: z.array(z.unknown()).max(HARNESS_MODEL_CATALOG_LIMITS.choices) });
 /** Read the native model catalog, never guess a window from a model's name. */
 export function codexResidentCompactionLimit(model: string | null, threshold: number,
   path = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "models_cache.json")): number {

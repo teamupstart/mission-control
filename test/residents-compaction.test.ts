@@ -6,6 +6,19 @@ import test from "node:test";
 import { codexResidentCompactionArgs } from "../src/server/harness/codex/compaction.ts";
 import { composeResidentLaunch } from "../src/server/residents/launch.ts";
 import { ResidentProfileRevisionSchema, type ResidentRun } from "../src/shared/residents.ts";
+import { HARNESS_MODEL_CATALOG_LIMITS } from "../src/shared/protocol.ts";
+
+test("Codex compaction refuses an oversized native model catalog", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "resident-model-window-bound-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const path = join(home, "models_cache.json");
+  const entry = { slug: "test-model", context_window: 100_000, effective_context_window_percent: 100 };
+  const models = Array.from({ length: HARNESS_MODEL_CATALOG_LIMITS.choices }, () => entry);
+  writeFileSync(path, JSON.stringify({ models }));
+  assert.deepEqual(codexResidentCompactionArgs("test-model", 70, path), ["-c", "model_auto_compact_token_limit=70000"]);
+  writeFileSync(path, JSON.stringify({ models: [...models, null] }));
+  assert.throws(() => codexResidentCompactionArgs("test-model", 70, path), /context window is unavailable/);
+});
 
 test("Codex's backstop uses the native effective window and refuses absent or malformed metadata", (t) => {
   const home = mkdtempSync(join(tmpdir(), "resident-model-window-"));

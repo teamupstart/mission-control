@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import {
   SETTINGS_BACKUP_DOMAIN_IDS,
   type SettingsBackupDomainId,
@@ -51,8 +52,8 @@ export const SettingsBackupJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.
   z.boolean(),
   z.number().finite(),
   z.string(),
-  z.array(SettingsBackupJsonValueSchema),
-  z.record(z.string(), SettingsBackupJsonValueSchema),
+  z.array(SettingsBackupJsonValueSchema).max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
+  boundedRecord(z.string(), SettingsBackupJsonValueSchema, SETTINGS_BACKUP_LIMITS.entriesPerCatalog),
 ]));
 
 export const SettingsBackupDomainEntrySchema = z.object({

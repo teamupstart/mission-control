@@ -20,7 +20,8 @@ import {
   SettingsBackupCountsSchema,
 } from "@shared/settings-backups.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
-import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
+import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "@shared/workflow.ts";
+import { boundedRecord } from "@shared/zod-shapes.ts";
 import { RESIDENT_LIMITS, ResidentProfileRevisionSchema } from "@shared/residents.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import {
@@ -73,7 +74,7 @@ export const SettingsBackupSessionActionSchema = z.object({
 export const SettingsBackupWorkflowCommandSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   defaultCommand: WorkflowCommandArgvSchema.nullable(),
-  overrides: z.array(WorkflowCommandOverrideSchema),
+  overrides: z.array(WorkflowCommandOverrideSchema).max(WORKFLOW_LIMITS.commandOverrides),
   maxRuns: z.number().int().positive(),
   timeoutMs: z.number().int().nullable().default(null),
   onUnavailable: z.enum(["skip", "block"]).default("skip"),
@@ -129,7 +130,7 @@ export const SettingsBackupResidentProfileSchema = z.object({
   updatedAt: timestamp,
   // The revision as stored, validated against this build's schema but NOT reduced to it: a
   // section or field a newer build wrote travels through the snapshot unchanged.
-  settings: z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
+  settings: boundedRecord(z.string(), z.unknown(), SETTINGS_BACKUP_LIMITS.entriesPerCatalog).superRefine((value, ctx) => {
     const parsed = ResidentProfileRevisionSchema.safeParse(value);
     if (!parsed.success) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error.issues[0]?.message ?? "invalid resident settings" });

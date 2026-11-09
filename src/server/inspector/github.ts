@@ -675,7 +675,7 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
 
 function issueCommentPage(raw: unknown): IssueCommentPage {
   const parsed = z.object({
-    nodes: z.array(IssueCommentSchema),
+    nodes: z.array(IssueCommentSchema).max(100),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
   }).safeParse(raw);
   return parsed.success
@@ -683,19 +683,29 @@ function issueCommentPage(raw: unknown): IssueCommentPage {
     : { comments: [], pageInfo: { hasNextPage: false, endCursor: null }, error: "Incomplete issue-comment connection or identity" };
 }
 
+const ThreadRootCommentSchema = z.object({
+  id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
+  author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
+});
 const ThreadConnectionSchema = z.object({
   nodes: z.array(z.object({
     id: z.string().min(1), isResolved: z.boolean(), path: z.string().nullable(),
-    comments: z.object({ nodes: z.tuple([z.object({
-      id: z.string().min(1), url: z.string().url(), body: z.string(), updatedAt: z.string().datetime(),
-      author: z.object({ __typename: z.string().min(1), login: z.string().min(1) }),
-    })]).rest(z.unknown()) }),
-  })),
+    // The first snapshot requests 100 comments; later pages request only the root.
+    // Later comments may have deleted authors, so only root identity is required.
+    comments: z.object({ nodes: z.array(z.unknown()).min(1).max(100)
+      .refine(nodes => ThreadRootCommentSchema.safeParse(nodes[0]).success, "Invalid review-thread root identity") }),
+  })).max(100),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
 });
 
 function threadPage(raw: unknown): ThreadPage {
   const connection = (raw ?? {}) as { nodes?: unknown[] };
+  const parsed = ThreadConnectionSchema.safeParse(raw);
+  // Refuse oversized pages before the tolerant history projection copies their entries.
+  // Other malformed pages still retain partial history, with an explicit read error.
+  if (!parsed.success && parsed.error.issues.some(issue => issue.code === "too_big")) {
+    return { threads: [], pageInfo: threadPageInfo(connection), error: "Incomplete review-thread connection or root identity" };
+  }
   const threads = (connection.nodes ?? []).filter(Boolean).map((rawThread) => {
     const thread = rawThread as Record<string, unknown>;
     const comments = ((thread.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
@@ -719,7 +729,7 @@ function threadPage(raw: unknown): ThreadPage {
       }),
     } satisfies ThreadSnapshot;
   });
-  return { threads, pageInfo: threadPageInfo(connection), error: ThreadConnectionSchema.safeParse(raw).success ? null : "Incomplete review-thread connection or root identity" };
+  return { threads, pageInfo: threadPageInfo(connection), error: parsed.success ? null : "Incomplete review-thread connection or root identity" };
 }
 
 function toReviewPage(raw: unknown): ReviewPage {

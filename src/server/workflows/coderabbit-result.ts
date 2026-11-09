@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { CODERABBIT_SEVERITIES, type CodeRabbitSeverity } from "@shared/workflow.ts";
 
-export const CODERABBIT_RESULT_LIMITS = { recordBytes: 256 * 1024, findings: 1000, findingsBytes: 4 * 1024 * 1024 } as const;
+export const CODERABBIT_RESULT_LIMITS = { recordBytes: 256 * 1024, findings: 1000, findingsBytes: 4 * 1024 * 1024, suggestions: 1000, reviewedFiles: 10_000 } as const;
 const severities = [...CODERABBIT_SEVERITIES, "none"] as const;
 const Finding = z.object({
   type: z.literal("finding"), severity: z.enum(severities), fileName: z.string().min(1).max(4000),
   title: z.string().optional(), comment: z.string().optional(), codegenInstructions: z.string().optional(),
-  suggestions: z.union([z.string(), z.array(z.unknown())]).optional(),
+  suggestions: z.union([z.string(), z.array(z.unknown()).max(CODERABBIT_RESULT_LIMITS.suggestions)]).optional(),
   startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional(),
 }).refine((v) => Boolean(v.title || v.comment || v.codegenInstructions), "Finding has no content");
 // Coverage arrives in one of two shapes: an `unreviewedFileCount` (CLI 0.9.1), or the list
@@ -16,7 +16,7 @@ const Complete = z.object({
   type: z.literal("complete"), status: z.enum(["review_completed", "review_skipped"]),
   outcome: z.enum(["completed", "success", "completed_with_warnings", "failed"]).optional(),
   unreviewedFileCount: z.number().int().nonnegative().optional(),
-  reviewedFiles: z.array(z.string().min(1).max(4000)).optional(), reused: z.boolean().optional(),
+  reviewedFiles: z.array(z.string().min(1).max(4000)).max(CODERABBIT_RESULT_LIMITS.reviewedFiles).optional(), reused: z.boolean().optional(),
   findings: z.number().int().nonnegative().optional(),
   gate: z.object({ threshold: z.enum(CODERABBIT_SEVERITIES), status: z.enum(["passed", "blocked", "incomplete"]), blockingFindings: z.number().int().nonnegative() }),
 });

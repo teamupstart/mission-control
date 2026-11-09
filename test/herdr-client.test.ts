@@ -55,6 +55,20 @@ const SNAPSHOT = {
   },
 };
 
+test("discovery refuses an oversized terminal snapshot before requesting process info", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => reply(socket, request.id, {
+    ...SNAPSHOT,
+    snapshot: { ...SNAPSHOT.snapshot, workspaces: Array.from({ length: 10_001 }, () => ({ workspace_id: "w", label: "Workspace" })) },
+  }));
+  try {
+    const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
+    assert.equal(result.ok, false);
+    assert.equal(fake.requests.length, 1, "the invalid snapshot must not fan out into process requests");
+  } finally {
+    await fake.close();
+  }
+});
+
 test("snapshot and pane process info use stable one-request connections and correlate out-of-order responses", async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") {
@@ -716,6 +730,38 @@ test("a single pane's process details answer for that pane, and a missing pane a
 
     const elsewhere = await client.processInfo("w1:elsewhere");
     assert.equal(elsewhere.ok, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("pane process responses accept 512 entries and refuse 513", async () => {
+  const processes = Array.from({ length: 512 }, (_, i) => ({ pid: i + 1, name: `process-${i}`, cwd: "/repo" }));
+  let foreground: unknown[] = processes;
+  const fake = await fakeHerdrSocket((request, socket) => {
+    reply(socket, request.id, {
+      type: "pane_process_info",
+      process_info: { pane_id: request.params.pane_id, foreground_processes: foreground },
+    });
+  });
+  try {
+    const client = createHerdrClient(execStatus(fake.path), HERDR_BIN);
+    const atLimit = await client.processInfo("w1:p1");
+    assert.equal(atLimit.ok, true);
+    if (atLimit.ok) assert.deepEqual(atLimit.value?.foreground_processes, processes);
+
+    // Valid entries isolate the size refusal from all other validation rules.
+    foreground = [...processes, { pid: 513, name: "process-512", cwd: "/repo" }];
+    const oversized = await client.processInfo("w1:p1");
+    assert.equal(oversized.ok, false);
+    if (!oversized.ok) assert.match(oversized.error, /invalid response/);
+
+    // Invalid entries are refused through the same real socket response path.
+    foreground = Array.from({ length: 513 }, () => null);
+    const invalidOversized = await client.processInfo("w1:p1");
+    assert.equal(invalidOversized.ok, false);
+    if (!invalidOversized.ok) assert.match(invalidOversized.error, /invalid response/);
+    assert.deepEqual(fake.requests.map(request => request.method), ["pane.process_info", "pane.process_info", "pane.process_info"]);
   } finally {
     await fake.close();
   }

@@ -193,6 +193,9 @@ test("the drawer opens three ways as a column beside the Board, dims nothing, an
   await expect(edgeTab(page)).toBeVisible();
   await expect(drawer).toHaveCount(0);
 
+  // The tab draws before the reloaded page has heard from the resident, and ⌥1 opens the
+  // first LIVE resident - pressed while the tab still reads "0 live", it has nothing to open.
+  await expect(edgeTab(page)).toHaveAccessibleName("Open the Residents drawer - 1 live");
   await page.keyboard.press("Alt+Digit1");
   await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${NAME}` })).toBeVisible();
   await expectOffFleet(page);

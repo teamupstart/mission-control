@@ -158,7 +158,14 @@ test("a reported blocker draws a red Idle card, a detail band, survives a restar
 
   // Clear it: the band goes, and the card is an ordinary idle card again.
   await idle.locator(".tile.is-blocked .tile-name").click();
-  await dashboard.getByRole("region", { name: "Session blocker" }).getByRole("button", { name: "Clear blocker" }).click();
+  const restored = dashboard.getByRole("region", { name: "Session blocker" });
+  // A request that never reaches the daemon reports why and leaves the controls usable.
+  await dashboard.route("**/api/sessions/*/blocker/clear", (route) => route.abort("connectionreset"), { times: 1 });
+  await restored.getByRole("button", { name: "Clear blocker" }).click();
+  await expect(restored.getByRole("alert")).toBeVisible();
+  await expect(restored.getByRole("button", { name: "Clear blocker" })).toBeEnabled();
+  await expect(restored.getByRole("button", { name: "Flag reply" })).toBeEnabled();
+  await restored.getByRole("button", { name: "Clear blocker" }).click();
   await expect(dashboard.getByRole("region", { name: "Session blocker" })).toHaveCount(0);
   await dashboard.keyboard.press("Escape");
   await expect(idle.locator(".tile.is-blocked")).toHaveCount(0);

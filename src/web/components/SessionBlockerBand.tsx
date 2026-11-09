@@ -31,10 +31,16 @@ function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: Sessi
   async function run(action: () => Promise<{ ok: boolean; error?: string }>, after?: () => void) {
     setBusy(true);
     setError(null);
-    const r = await action();
-    setBusy(false);
-    if (!r.ok) setError(r.error ?? "Mission Control refused the change");
-    else after?.();
+    try {
+      const r = await action();
+      if (!r.ok) setError(r.error ?? "Mission Control refused the change");
+      else after?.();
+    } catch (err) {
+      // A dropped connection or a restarting daemon must not leave the controls disabled.
+      setError(err instanceof Error ? err.message : "Mission Control could not be reached");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

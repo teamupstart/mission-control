@@ -975,12 +975,6 @@ function foremanWriteRefusal(
 }
 
 /**
- * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
- * delivery. Every route reads its session before awaiting the request body, and delivery waits
- * on a write lock after that; a blocker reported meanwhile replaces the registry's session
- * object, so only a fresh read inside the delivery guard sees it.
- */
-/**
  * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
  * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
  * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
@@ -992,6 +986,12 @@ function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string 
   return "The blocker changed since you last looked; reread it before acting.";
 }
 
+/**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
 export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
   if (origin !== "foreman") return null;
   const live = registry.getSession(sessionId);

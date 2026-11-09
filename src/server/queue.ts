@@ -22,7 +22,7 @@ import { nextQueueSeq } from "./db.ts";
 /**
  * Work-item states that move an item forward on the session's behalf. While the item's note
  * key stands on a session blocker these are refused here, at the one boundary both queue state
- * routes and the sent stamp share, as a backstop to the worker's own hold: a Foreman worker
+ * routes share, as a backstop to the worker's own hold: a Foreman worker
  * from before blockers existed can outlive a daemon restart and would otherwise verify or send
  * an item for a session that is waiting on someone else. Cancelling, escalating and
  * re-queueing stay open, so a human, the exit path and the orphan sweep can still tidy it.
@@ -337,7 +337,8 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
-    if (this.registry.hasBlockerForKey(item.noteKey)) return { ok: false, error: BLOCKER_HELD_ERROR };
+    // Not held: this stamp records a delivery that already left (only `setState`, which is
+    // held, can put an item into `sending`), and refusing it would strand the item there.
     const acknowledged = item.deliveryRuntime === "sdk";
     // The worker calls this only after delivery resolves. SDK delivery is an acceptance
     // acknowledgement, even when the whole turn completed before this HTTP write arrived.

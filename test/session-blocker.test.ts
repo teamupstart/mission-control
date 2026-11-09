@@ -360,13 +360,46 @@ test("the daemon refuses to advance a blocked session's queue items, as a backst
   const putByKey = (state: string) => app.request(`/api/queues/${encodeURIComponent(item.noteKey)}/items/${item.id}/state`, {
     method: "PUT", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify({ state }),
   });
+  // A delivery already in flight when the blocker arrives is still recorded: the stamp is
+  // bookkeeping for text that left, and refusing it would strand the item in `sending`.
+  assert.equal((await put("sending")).status, 200);
   registry.reportBlocker(d.syntheticId, BODY);
+  assert.equal((await sent()).status, 200, "an in-flight delivery's acknowledgement was refused");
   for (const state of ["sending", "awaiting_pickup", "in_progress", "verifying", "verified"]) {
     assert.equal((await put(state)).status, 409, `${state} advanced a blocked session's item`);
     assert.equal((await putByKey(state)).status, 409, `${state} advanced a blocked session's item through the keyed route`);
   }
-  assert.equal((await sent()).status, 409);
   // Tidying the queue stays open while blocked, through either route.
   assert.equal((await putByKey("escalated")).status, 200);
   assert.equal((await put("cancelled")).status, 200);
+});
+
+test("the daemon refuses Foreman's automated writes and wrap-up ask into a blocked idle session", async () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  const app = buildApp({ registry, reviews: new ReviewManager(registry) as ReviewManagerT, tasks: {} as TaskManager, queues });
+  const d = mkDiscovered({ agentSessionId: `agent-foreman-${++seq}` } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([d]);
+  Object.assign(registry.getSession(d.syntheticId)!, { hooksSeen: true, instrumented: true });
+  registry.setForemanInvite(d.syntheticId, "dispatch");
+  const post = (path: string, body: unknown) => app.request(`/api/sessions/${d.syntheticId}${path}`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  registry.reportBlocker(d.syntheticId, BODY);
+
+  const injected = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });
+  assert.equal(injected.status, 409);
+  const body = await injected.json() as { error: string; pasted: boolean };
+  assert.match(body.error, /blocked/);
+  assert.equal(body.pasted, false, "the refusal must say nothing reached the pane, so the worker re-queues cleanly");
+  const typed = await post("/send", { text: "draft", submit: false, origin: "foreman" });
+  assert.equal(typed.status, 409);
+
+  assert.equal((await post("/queue/wrapup/asked", {})).status, 409, "a blocked session was asked to ship");
+  assert.equal((await post("/queue/wrapup/asked", { clearAnswer: true })).status, 200, "the reset must stay open");
+
+  // Cleared, the same Foreman write is no longer refused for the blocker.
+  registry.clearBlocker(d.syntheticId, "operator");
+  const after = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });
+  assert.doesNotMatch(((await after.json()) as { error?: string }).error ?? "", /blocked/);
 });

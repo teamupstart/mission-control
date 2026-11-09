@@ -329,7 +329,7 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -907,6 +907,7 @@ async function parseBoundedBody<S extends ZodTypeAny>(
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
 const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+const FOREMAN_SESSION_BLOCKED = "The session is blocked on someone else; Foreman holds until the blocker is cleared";
 
 interface ForemanWriteRefusal {
   error: string;
@@ -955,6 +956,13 @@ function foremanWriteRefusal(
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  // The daemon's half of the blocker hold, for a worker that predates it and outlives a
+  // daemon restart: no automated write (wrap-up, recovery, follow-up, queue send) reaches a
+  // session waiting on someone else. A blocked session that is ASKING you is not idle, so
+  // triage may still answer it, which is what the session-side gates leave open too.
+  if (hasBlocker(session) && reportBucket(session) !== "needs-you") {
+    return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
+  }
   return null;
 }
 
@@ -6846,6 +6854,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
+    // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
+    // Clearing a stored answer is a reset, not an ask, and stays open.
+    if (hasBlocker(session) && !parsed.data.clearAnswer) {
+      return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });

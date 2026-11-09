@@ -270,6 +270,27 @@ test("a stranded key is pruned after the window, while a resumed one keeps its b
   assert.equal(second.getSession(live.syntheticId)?.blocker?.startedAt, 100);
 });
 
+test("an exited session no longer holds its blocker for pruning, though its card lingers", () => {
+  const key = `agent-exited-hold-${++seq}`;
+  const d = mkDiscovered({ agentSessionId: key } as Partial<DiscoveredSession>);
+  const registry = new Registry();
+  registry.applyDiscovery([d]);
+  registry.reportBlocker(d.syntheticId, BODY, 1_000);
+  // Live: a tick refreshes the hold.
+  registry.pruneBlockers(500, 2_000);
+  assert.equal(loadSessionBlockers().find((b) => b.noteKey === key)?.lastHeldAt, 2_000);
+
+  // The pane goes away. The exited card stays in the registry until eviction.
+  registry.applyDiscovery([]);
+  assert.equal(registry.getSession(d.syntheticId)?.state, "exited");
+  registry.pruneBlockers(1_500, 9_000);
+  assert.equal(loadSessionBlockers().find((b) => b.noteKey === key)?.lastHeldAt, 2_000,
+    "an exited session kept refreshing the hold");
+  // The window counts from when it was last held, not from the latest tick.
+  assert.ok(registry.pruneBlockers(2_001, 10_000) >= 1);
+  assert.ok(!loadSessionBlockers().some((b) => b.noteKey === key), "an exited session's stale blocker never aged out");
+});
+
 test("the prune cutoff is inclusive: a blocker last held exactly at the cutoff is kept", () => {
   const CUTOFF = 50_000;
   const keys = { before: `agent-cutoff-before-${++seq}`, at: `agent-cutoff-at-${seq}`, after: `agent-cutoff-after-${seq}` };

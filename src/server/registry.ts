@@ -8536,11 +8536,15 @@ export class Registry extends EventEmitter {
    * clock is the later of its last report and `lastHeldAt` - the last tick a live session was
    * seen holding the key. That is stored, so a restart does not reset it: a session briefly
    * missing from the first sweep after a restart keeps a blocker it held before the restart.
+   * An exited session does not hold its key: its card lingers in the map until eviction, and
+   * counting it would keep refreshing the clock for a blocker nobody is holding any more.
    * Every write to the table goes through this map, so the map decides which rows go.
    */
   pruneBlockers(olderThan: number, now = Date.now()): number {
     if (!this.sweptSessions) return 0;
-    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const liveKeys = new Set(
+      [...this.sessions.values()].filter((s) => s.state !== "exited").map((s) => noteKeyFor(s)),
+    );
     const held: string[] = [];
     let removed = 0;
     for (const [key, record] of this.blockers) {

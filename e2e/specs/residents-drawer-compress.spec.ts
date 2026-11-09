@@ -184,7 +184,7 @@ test("a click on a resident's title compresses its card to the live status line 
   await expect(headOf(drawer, SECOND)).toHaveAttribute("aria-expanded", "true");
 });
 
-test("a click on an open card's latest message opens the resident's conversation", async ({ dashboard: page, daemon }) => {
+test("a click anywhere between a card's title and its actions opens the resident's conversation", async ({ dashboard: page, daemon }) => {
   await launch(daemon, FIRST);
   await useDrawer(page, daemon);
 
@@ -193,19 +193,15 @@ test("a click on an open card's latest message opens the resident's conversation
   await reportStatus(daemon, await sessionIdOf(first), "Reading the nightly build log");
   const latest = first.getByLabel(`Latest from ${FIRST}`);
   await expect(latest).toHaveText("Reading the nightly build log");
+  const detail = page.locator(".board-detail").getByRole("group", { name: `Resident ${FIRST}` });
+  /** Leave the conversation; the keyboard goes back to the card, as it does after Open. */
+  const leave = async (): Promise<void> => {
+    await page.locator("body").press("Escape");
+    await expect(detail).toHaveCount(0);
+    await expect(headOf(drawer, FIRST)).toBeFocused();
+  };
 
-  // Compressed, the status line is only a status line: a click on it opens nothing.
-  await headOf(drawer, FIRST).click();
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "false");
-  await latest.click();
-  await expect(drawer).toBeVisible();
-  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${FIRST}` })).toHaveCount(0);
-
-  // Open, the same text is the way into the conversation, as Open is.
-  await headOf(drawer, FIRST).click();
-  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "true");
-
-  // But a drag that selects some of the text is reading it, not opening it: the press and the
+  // A drag that selects some of the text is reading it, not opening it: the press and the
   // release both land on the message, so a click still fires, and the conversation stays shut.
   const box = await latest.boundingBox();
   expect(box).not.toBeNull();
@@ -215,18 +211,55 @@ test("a click on an open card's latest message opens the resident's conversation
   await page.mouse.move(box!.x + 90, y, { steps: 6 });
   await page.mouse.up();
   expect((await page.evaluate(() => window.getSelection()?.toString() ?? "")).length).toBeGreaterThan(0);
-  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${FIRST}` })).toHaveCount(0);
+  await expect(detail).toHaveCount(0);
   await expect(drawer).toBeVisible();
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
 
-  // An ordinary click opens it.
+  // An ordinary click on the latest message opens it, beside the drawer.
   await latest.click();
-  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${FIRST}` })).toBeVisible();
+  await expect(detail).toBeVisible();
   await expect(drawer).toBeVisible();
   await capture(page, "04-latest-opens-conversation");
+  await leave();
 
-  // Escape leaves the conversation and puts the keyboard back on the card, as it does after Open.
-  await page.locator("body").press("Escape");
-  await expect(page.locator(".board-detail").getByRole("group", { name: `Resident ${FIRST}` })).toHaveCount(0);
-  await expect(headOf(drawer, FIRST)).toBeFocused();
+  // So does a click on the loop facts above it: the whole body is the way in, not one line.
+  await first.getByLabel("Resident loop status").getByText(/^iteration \d+$/).click();
+  await expect(detail).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await capture(page, "05-loop-facts-open-conversation");
+  await leave();
+
+  // And so does the gap between that region and the actions: it is inside the body, above the
+  // buttons, so it is the way in too rather than a dead strip.
+  const mainBox = await first.locator(".residents-drawer-card-main").boundingBox();
+  const actionsBox = await first.locator(".residents-drawer-actions").boundingBox();
+  expect(mainBox).not.toBeNull();
+  expect(actionsBox).not.toBeNull();
+  const gapTop = mainBox!.y + mainBox!.height;
+  expect(actionsBox!.y - gapTop, "a gap separates the region from the actions").toBeGreaterThan(2);
+  await page.mouse.click(mainBox!.x + mainBox!.width / 2, (gapTop + actionsBox!.y) / 2);
+  await expect(detail).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await capture(page, "07-gap-above-actions-opens-conversation");
+  await leave();
+
+  // The actions under the body keep their own clicks: the empty stretch of the actions row
+  // between the controls opens nothing.
+  const actions = first.locator(".residents-drawer-actions");
+  const row = await actions.boundingBox();
+  const spacer = await actions.locator(".residents-pop-spacer").boundingBox();
+  expect(row).not.toBeNull();
+  expect(spacer).not.toBeNull();
+  await page.mouse.click(spacer!.x + spacer!.width / 2, row!.y + row!.height / 2);
+  await expect(detail).toHaveCount(0);
+
+  // Compressed, the one status line left is still the way in.
+  await headOf(drawer, FIRST).click();
+  await expect(headOf(drawer, FIRST)).toHaveAttribute("aria-expanded", "false");
+  await expect(first.getByLabel("Resident loop status")).toHaveCount(0);
+  await latest.click();
+  await expect(detail).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await capture(page, "06-compressed-status-line-opens-conversation");
+  await leave();
 });

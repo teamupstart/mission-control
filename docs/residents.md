@@ -222,18 +222,22 @@ and count.
 - **Selection.** <kbd>↑</kbd>/<kbd>↓</kbd> move the selection without opening or compressing
   any card, and <kbd>Enter</kbd> opens the selected resident; a double-click on a title opens
   a resident too.
-- **Answering from the drawer.** Above its actions, an open card shows what the resident
-  is asking, or else its latest message, clamped to three lines (the line the Console rail
-  prints under its name). Clicking that message opens the resident's conversation, as **Open**
-  does; selecting some of its text does not. A question it asked through `request_input` with
-  one set of options shows each option as a button: one press answers it, beside **Chat about
-  it** and **Dismiss**.
-  A question that needs more (several questions, several picks, or an answer of your own) shows
-  the same form the attention inbox draws. A menu the session is parked on shows its rows as
-  buttons, as the Conversation tab does. Either way the answer goes back the way the inbox sends
-  it. The card lists every question the resident has pending; once none is left, the amber
-  state and the visitor card clear.
-- **No reply box.** A card answers the resident's questions but has no free-form reply box.
+- **Opening the conversation.** Clicking anywhere in a card between its title and its actions -
+  the loop tags, the status lines, or what the resident is asking or last said - opens the
+  resident's conversation, as **Open** does. Selecting some of the text does not, and the
+  actions keep their own clicks. A compressed card's one status line opens it too. Its latest
+  message is clamped to three lines (the line the Console rail prints under its name).
+- **What a resident is asking.** Above its actions, an open card shows what the resident is
+  asking in place of its latest message: one row per pending review, in the **Needs you**
+  color, with its kind as the review modal names it (input, decisions, plan or diff), its
+  title and a line on what answering takes, such as a question's options. The card never
+  draws the form itself.
+  Clicking a row selects the card and opens the review modal on that resident's queue, the same
+  modal <kbd>e</kbd> opens, where the question is answered, dismissed or moved to chat. A menu
+  the session is parked on is one such row too, and clicking it opens the same review modal,
+  which shows the menu's rows as the Conversation tab does, so pressing one answers it. Once
+  nothing is left pending, the modal closes and the amber state and the visitor card clear.
+- **No reply box.** A card has no free-form reply box.
   To write to a resident, open its conversation and use the Conversation tab's reply box.
 - **Footer.** **Profiles** lists every live profile with **Launch** or **Launch…**, with the
   same launch behavior the dock has (see below). The dock and the drawer share one launch

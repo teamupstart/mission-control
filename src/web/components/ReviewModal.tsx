@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
+import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { ChatGlyph, DecisionForm, decisionChoiceKey } from "./PlanDecisions.tsx";
 import { CHAT_ABOUT_IT, decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
-import { quickDecision, reviewDecisions, showsBody } from "../lib/reviews.ts";
-import { QuickDecisionButtons } from "./QuickDecisionButtons.tsx";
+import { reviewDecisions, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
+import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import {
   ForemanRecommendationButton,
@@ -38,20 +38,27 @@ import { clearReviewDraft, useReviewDraft } from "../lib/review-drafts.ts";
 export function ReviewModal({
   session,
   reviews,
+  dialog = null,
   onClose,
   onMovedToChat,
 }: {
   session: Session;
   reviews: ReviewItem[];
+  /**
+   * A menu the session is parked on (`activePaneDialog`), answered here by the Conversation's
+   * own `PaneDialogPrompt`, so a resident's every requested decision opens in this one modal.
+   */
+  dialog?: PaneDialog | null;
   onClose: () => void;
   /** A question was moved to the conversation; the caller takes the operator there. */
   onMovedToChat?: (sessionId: string) => void;
 }): React.JSX.Element {
   const tourTargetRef = useTourTaskTargetRef<HTMLElement>("see-work:review-modal", session.task?.id);
-  // Close automatically once the session has no more pending reviews.
+  const pending = reviews.length + (dialog ? 1 : 0);
+  // Close automatically once the session has nothing left pending: no review and no menu.
   useEffect(() => {
-    if (reviews.length === 0) onClose();
-  }, [reviews.length, onClose]);
+    if (pending === 0) onClose();
+  }, [pending, onClose]);
 
   return (
     <Overlay
@@ -66,7 +73,7 @@ export function ReviewModal({
         <div>
           <AgentDot agent={session.agent} />
           <strong>{session.name}</strong>
-          <span className="dim"> · {reviews.length} pending</span>
+          <span className="dim"> · {pending} pending</span>
         </div>
         <Tooltip label="Close the review queue - nothing is resolved">
           <button className="btn btn-ghost" onClick={onClose}>
@@ -75,6 +82,7 @@ export function ReviewModal({
         </Tooltip>
       </header>
       <div className="modal-body">
+        {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
         {reviews.map((r) => (
           <ReviewCard key={r.id} review={r} note={session.note} onMovedToChat={onMovedToChat} />
         ))}
@@ -95,16 +103,9 @@ export function ReviewCard({
   review,
   note: sessionNote,
   onMovedToChat,
-  quickAnswers = false,
 }: {
   review: ReviewItem;
   note?: SessionNoteSummary | null;
-  /**
-   * Answer a one-question ask by pressing an option, for a surface with no room for the form
-   * (the Residents drawer's card). Only questions `quickDecision` admits are drawn this way;
-   * anything richer keeps the full form. Either way the answer goes through `resolve` below.
-   */
-  quickAnswers?: boolean;
   /**
    * Called once an answer that moved at least one question to chat has been delivered, so the
    * surface can close and focus the session's message box: the conversation is where the
@@ -124,7 +125,6 @@ export function ReviewCard({
   const [foremanOpen, setForemanOpen] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
-  const quick = quickAnswers ? quickDecision(review) : null;
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
   const finalBundle = review.standingApprovalEligible === true
     && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
@@ -253,16 +253,7 @@ export function ReviewCard({
         `plan-decisions` with no decisions cannot be created (the schema forbids it); an
         `input` with none is the open-ended ask, and still gets the textarea.
       */}
-      {quick ? (
-        <QuickDecisionButtons
-          decision={quick}
-          busy={busy}
-          recommended={recommendedKeys}
-          onDismiss={() => void resolve("dismiss", null)}
-          onAnswer={(selections) =>
-            void resolve("answer", formatResponse([quick], selections, decisionLead(review.kind)), selections)}
-        />
-      ) : decisions ? (
+      {decisions ? (
         <DecisionForm
           decisions={decisions}
           busy={busy}

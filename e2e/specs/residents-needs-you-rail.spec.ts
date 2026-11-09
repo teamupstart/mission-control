@@ -345,7 +345,7 @@ test("a drawer resident that needs you without a review: `e` still addresses it,
 test("with another conversation open, `e` still reaches a resident awaiting input from the Needs you rail", async ({ dashboard: page, daemon }) => {
   const resident = await launch(daemon, ASK_A);
   // A fleet session that is NOT asking: the conversation the operator has open.
-  await request(daemon, "/api/tasks", {
+  const neighbour = await request<{ id: string }>(daemon, "/api/tasks", {
     repoRoot: daemon.repo, title: "Fleet neighbour", intent: "settle and wait", workflowId: null,
   });
   await useDrawer(page, daemon, "board");
@@ -359,7 +359,11 @@ test("with another conversation open, `e` still reaches a resident awaiting inpu
 
   // Open the fleet session's conversation. The resident is on the fleet now, as a Needs you row,
   // and no review is pending anywhere.
-  const fleetTile = page.locator("section.board-col .tile").filter({ hasText: "Fleet neighbour" });
+  // The session's own tile, never the provisioning placeholder (`.pend-tile`) the Board draws
+  // with the same title while the task starts: that placeholder opens nothing, and under suite
+  // load the task was still starting when the click landed on it.
+  await sessionOfTask(daemon, neighbour.id);
+  const fleetTile = page.locator("section.board-col .tile:not(.pend-tile)").filter({ hasText: "Fleet neighbour" });
   await expect(fleetTile).toBeVisible({ timeout: 60_000 });
   // The tile's pointer half is the card itself, as a person clicks it.
   await fleetTile.click();

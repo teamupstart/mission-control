@@ -853,6 +853,8 @@ test.describe("a row of agent questions", () => {
     );
     await expect(row).toBeVisible();
     await expectToAnswer(dashboard, beforeOwed + over);
+    await inbox.getByRole("alert").scrollIntoViewIfNeeded();
+    await shoot(dashboard, "question-row-over-dismissal-limit");
     expect(writes, "the refusal never reached the daemon").toBe(0);
     expect(((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: unknown[] }).dismissals)
       .toEqual([]);

@@ -129,7 +129,7 @@ export const SettingsBackupResidentProfileSchema = z.object({
   updatedAt: timestamp,
   // The revision as stored, validated against this build's schema but NOT reduced to it: a
   // section or field a newer build wrote travels through the snapshot unchanged.
-  settings: z.record(z.unknown()).superRefine((value, ctx) => {
+  settings: z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
     const parsed = ResidentProfileRevisionSchema.safeParse(value);
     if (!parsed.success) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error.issues[0]?.message ?? "invalid resident settings" });

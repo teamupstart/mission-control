@@ -15,6 +15,7 @@
  * projections through the registration seams without changing what is written here.
  */
 import { z } from "zod";
+import { partialPatch } from "./zod-shapes.ts";
 import type { TelemetryOrganizationStatus } from "./organizations.ts";
 
 /**
@@ -228,7 +229,7 @@ export const TelemetryEnvelopeSchema = z.object({
   contextId: z.string().min(1),
   actor: TelemetryActorSchema,
   /** Opaque correlation ids. Translated to destination-scoped ids before export. */
-  refs: z.record(z.string()).default({}),
+  refs: z.record(z.string(), z.string()).default({}),
   /** How many refs were dropped to stay inside `maxRefs`. */
   refsOmitted: z.number().int().min(0).default(0),
   /**
@@ -240,7 +241,7 @@ export const TelemetryEnvelopeSchema = z.object({
    */
   contextOmitted: z.number().int().min(0).default(0),
   /** The event-specific facts, validated by that entry's own schema. */
-  facts: z.record(z.unknown()).default({}),
+  facts: z.record(z.string(), z.unknown()).default({}),
 });
 export type TelemetryEnvelope = z.infer<typeof TelemetryEnvelopeSchema>;
 
@@ -372,7 +373,7 @@ export const TelemetryConfigSchema = z.object({
    * Independent of `product` in every way that matters: separate opt-in, separate identity,
    * separate queue, separate consent epoch and separate failure handling.
    */
-  user: TelemetryDestinationSchema.default({}),
+  user: TelemetryDestinationSchema.prefault({}),
   /**
    * The minimized product audience.
    *
@@ -388,7 +389,7 @@ export const TelemetryConfigSchema = z.object({
    * nothing behind it would claim to be sharing while queueing for an address that cannot
    * answer.
    */
-  product: TelemetryDestinationSchema.default({}),
+  product: TelemetryDestinationSchema.prefault({}),
   /**
    * How many times this configuration has actually CHANGED.
    *
@@ -405,8 +406,8 @@ export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
 export const TelemetryConfigPatchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    user: TelemetryDestinationSchema.partial().optional(),
-    product: TelemetryDestinationSchema.partial().optional(),
+    user: partialPatch(TelemetryDestinationSchema).optional(),
+    product: partialPatch(TelemetryDestinationSchema).optional(),
     /**
      * The operator's credential for their own backend, or the empty string to clear it.
      *

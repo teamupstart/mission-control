@@ -478,7 +478,7 @@ function rowId(value: unknown): string {
 // absent after they have already been defaulted.
 function parseShape<T>(
   table: (typeof WORKFLOW_TABLES)[number],
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T, unknown>,
   value: unknown,
 ): T {
   const parsed = schema.safeParse(value);

@@ -626,7 +626,7 @@ const ManifestV1Schema = z.object({
         .max(64)
         .default([]),
     })
-    .default({ repositories: [] }),
+    .prefault({ repositories: [] }),
   content: z.object({
     primary_artifact_id: z.string().max(64).nullish(),
     artifacts: z

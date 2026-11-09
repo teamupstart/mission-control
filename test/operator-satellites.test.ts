@@ -87,7 +87,10 @@ test("each operator satellite bundles to one file that imports only Node builtin
       const text = readFileSync(outfile, "utf8");
       // The metafile records only imports esbuild resolves statically; `import(variable)` and a
       // created `require` never appear there, and either could load a file from the bundle.
-      assert.doesNotMatch(text, /\bimport\s*\(/, `${path} has no dynamic import of any kind`);
+      // Matched against code, not the comment lines esbuild carries over from dependencies:
+      // Zod 4 ships one that describes an `import()` in its type declarations.
+      const code = text.split("\n").filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line)).join("\n");
+      assert.doesNotMatch(code, /\bimport\s*\(/, `${path} has no dynamic import of any kind`);
       assert.doesNotMatch(text, /\bcreateRequire\b/, `${path} creates no require that could load a sibling module`);
       // A path resolved from the bundle's own location would read a sibling file the same way.
       assert.doesNotMatch(text, /import\.meta\.(?:url|dirname|filename)/, `${path} resolves nothing beside itself`);

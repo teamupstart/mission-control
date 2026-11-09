@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   assertStrictJsonSchema,
   nullOptionalsPayload,
@@ -16,7 +15,7 @@ import {
 // `codex exec --output-schema` hands the rendered schema to strict Structured Outputs, which
 // rejects any object that does not list every key of `properties` in `required` - the whole
 // CALL fails with `invalid_json_schema`, so the feature stops rather than degrades. That is
-// what took the Inspector down on every open pull request, and `zodToJsonSchema` produces the
+// what took the Inspector down on every open pull request, and `renderJsonSchema` produces the
 // rejected shape for any `.optional()` or `.default()` field, which is to say for most of them.
 //
 // Two halves are asserted here, and they only mean something together:
@@ -32,7 +31,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 // Dynamic, AFTER HARNESS_HOME is pinned: `workflows/context.ts` reaches `db.ts`, which
 // resolves the state dir at import time, and a static import would be hoisted above the line
 // above and lock in the machine's real one.
-const { providerJsonSchema, nullAsAbsent } = await import("../src/server/llm/json-schema.ts");
+const { providerJsonSchema, renderJsonSchema, nullAsAbsent } = await import("../src/server/llm/json-schema.ts");
 const { InspectorVerdictSchema, InspectorReplySchema } = await import(
   "../src/server/inspector/verdict.ts"
 );
@@ -248,7 +247,7 @@ for (const { identifier, schema } of CONTROLS) {
     // every key in `required` at every depth - the workflow one demonstrably so, with 72
     // successful live Codex compactions behind it - so the fix must be a no-op on them. If
     // this drifts, the strictifier started rewriting schemas that were already correct.
-    const raw = zodToJsonSchema(schema, { $refStrategy: "none" });
+    const raw = renderJsonSchema(schema);
     assert.deepEqual(providerJsonSchema(schema), raw);
   });
 }
@@ -299,7 +298,7 @@ test("objects inside array items are strictified", () => {
 // of pinning them is that the first one to arrive must FAIL LOUDLY rather than be quietly
 // rewritten into something that validates but means less than the author wrote.
 test("a record's catchall is left alone rather than replaced with a closed object", () => {
-  const rendered = providerJsonSchema(z.object({ bag: z.record(z.string()) }));
+  const rendered = providerJsonSchema(z.object({ bag: z.record(z.string(), z.string()) }));
   const bag = at(rendered, "bag");
   // Forcing `additionalProperties: false` here would leave a map that can hold nothing.
   assert.deepEqual(bag.additionalProperties, { type: "string" });

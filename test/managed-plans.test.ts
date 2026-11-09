@@ -569,7 +569,7 @@ for (const excess of [0, 1]) {
   test(`bundle limits: ${excess ? "rejects 65" : "accepts 64"} files`, async () => {
     const files = [...minimalBundle(), ...Array.from({ length: 62 + excess }, (_, i) => ({ name: `review-${i}.txt`, content: "Review" }))];
     assert.equal(files.length, 64 + excess);
-    await checkBundleLimit(files, excess ? /Array must contain at most 64 element/ : undefined);
+    await checkBundleLimit(files, excess ? /Too big: expected array to have <=64 items/ : undefined);
   });
 
   test(`bundle limits: ${excess ? "rejects 1 MiB plus one byte" : "accepts 1 MiB"} of multibyte UTF-8`, async () => {

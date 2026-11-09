@@ -907,7 +907,7 @@ test("run criteria freeze once, and a second writer adopts the first", () => {
       ...first,
       compaction: { ...first.compaction, status: "fallback" as unknown as "model" },
     }),
-    /invalid_literal/,
+    /invalid_value/,
     "a fallback compaction must never become durable run criteria",
   );
   assert.deepEqual(store.getRun("intent-run")?.criteria, first, "the refusal wrote nothing");

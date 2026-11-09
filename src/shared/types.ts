@@ -501,6 +501,54 @@ export interface RestoringSession {
   createdAt: number;
 }
 
+/**
+ * What a session blocker is waiting on. There is deliberately no `user` / `operator` kind: a
+ * decision the operator can make goes through `request_input`, which already blocks the turn.
+ */
+export const SESSION_BLOCKER_KINDS = ["question", "dependency", "service", "other"] as const;
+export type SessionBlockerKind = (typeof SESSION_BLOCKER_KINDS)[number];
+
+/** Field limits a blocker is validated against, shared by the MCP tool and the daemon. */
+export const SESSION_BLOCKER_LIMITS = {
+  reason: 200,
+  waitingOn: 120,
+  resumeWhen: 200,
+  details: 4000,
+  note: 500,
+  resolution: 200,
+  url: 2048,
+} as const;
+
+/** A likely answer someone flagged on a blocker. It never clears the blocker by itself. */
+export interface SessionBlockerReply {
+  flaggedAt: number;
+  /** `"operator"` or `"session:<controller-id>"`. */
+  flaggedBy: string;
+  note: string | null;
+  referenceUrl: string | null;
+}
+
+/**
+ * A session waiting on someone or something other than the operator. Durable session state
+ * keyed by the note key, so it survives turn completion, daemon restarts and `/clear`; it ends
+ * when someone clears it or the session's task reaches a terminal status.
+ */
+export interface SessionBlocker {
+  kind: SessionBlockerKind;
+  reason: string;
+  waitingOn: string;
+  resumeWhen: string;
+  details: string | null;
+  referenceUrl: string | null;
+  /** First report; kept across re-reports. */
+  startedAt: number;
+  /** Last report. */
+  updatedAt: number;
+  /** Last re-report after a reply flag ("checked, still blocked"). */
+  checkedAt: number | null;
+  reply: SessionBlockerReply | null;
+}
+
 export interface Session {
   /**
    * Stable identity and Registry map key for the life of this entry. Discovery mints
@@ -756,6 +804,12 @@ export interface Session {
    * key. Null when the session has no queue.
    */
   queue: SessionQueueSummary | null;
+  /**
+   * What this session is waiting on outside the operator, or null. Denormalized like `goal`
+   * and keyed on the same note key. While it stands every idle-triggered automation leaves
+   * the session alone (`hasBlocker` in `session.ts`).
+   */
+  blocker: SessionBlocker | null;
   /** Human-authored turns Mission Control still owns, in FIFO delivery order. */
   pendingTurns: PendingTurn[];
   /**

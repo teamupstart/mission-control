@@ -195,6 +195,46 @@ export const DISPLAY_ITEMS = [
       "A glowing outline and label chip, in its profile's color, on every resident's card and Console rail row - the quickest way to find a long-running agent on a busy board. Hidden, a resident looks like any other session, though a pinned one still sorts to the top of its column and the Residents dock still lists it.",
   },
   /**
+   * A blocked card's own facts. The red tone and the `Blocked · age` flag are the card's STATE
+   * and stay on whatever these say; these five are what the card says about the blocker, and
+   * each draws nothing on a session that has none.
+   */
+  {
+    id: "blockerKind",
+    group: "card",
+    label: "Blocker kind",
+    description:
+      "Whether a blocked card waits on a question, a dependency, a service or something else. Unchecked, the card still says it is blocked and for how long.",
+  },
+  {
+    id: "blockerReason",
+    group: "card",
+    label: "Blocker reason",
+    description:
+      "The one line saying what the session cannot do yet. Unchecked, you open the session to read it.",
+  },
+  {
+    id: "blockerWaitingOn",
+    group: "card",
+    label: "Waiting on",
+    description:
+      "Who owns the answer a blocked session is waiting for, without opening the session.",
+  },
+  {
+    id: "blockerLink",
+    group: "card",
+    label: "Blocker link",
+    description:
+      "One click from a blocked card to the thread, pull request or status page its blocker points at.",
+  },
+  {
+    id: "blockerReply",
+    group: "card",
+    label: "Reply flagged",
+    description:
+      "The pill saying a resident or you saw a likely answer to a blocked session's question. It is never an alert and never counts as something you owe.",
+  },
+  /**
    * The console detail's `PATH`/`BRANCH` band.
    *
    * Deliberately NOT the same switches as the card's `branch` and `worktree` above. An

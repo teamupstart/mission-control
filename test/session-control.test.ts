@@ -992,3 +992,43 @@ test("delegated effort changes publish the accepted level and preserve it when t
   assert.deepEqual(await refused.json(), { ok: false, error: "driver refused effort", effort: null });
   assert.equal(f.registry.getSession(f.target.id)?.meta?.thinkingLevel, "max");
 });
+
+test("residents list blocked sessions, flag a reply without clearing, and clear through the dashboard routes", async () => {
+  const f = fixture(); await f.grant(true);
+  const reported = f.registry.reportBlocker(f.target.id, {
+    kind: "question", reason: "Needs the retention window", waitingOn: "Dana (platform)",
+    resumeWhen: "Platform answers", referenceUrl: "https://example.com/t/1", details: "Long **markdown**",
+  });
+  assert.equal(reported.ok, true);
+
+  // The list form carries a compact summary on every row, and `blocked: true` narrows to it.
+  const listed = await (await f.request("/mcp/session-control/read", {})).json() as { sessions: Array<{ id: string; blocker: unknown }> };
+  const row = listed.sessions.find((s) => s.id === f.target.id)!;
+  assert.deepEqual(Object.keys(row.blocker as object).sort(), ["kind", "reason", "referenceUrl", "reply", "startedAt", "waitingOn"]);
+  assert.equal(listed.sessions.find((s) => s.id === f.other.id)?.blocker, null);
+  const blocked = await (await f.request("/mcp/session-control/read", { blocked: true })).json() as { sessions: Array<{ id: string }> };
+  assert.deepEqual(blocked.sessions.map((s) => s.id), [f.target.id]);
+
+  // The single-session form already returns the whole Session, details included.
+  const detail = await (await f.request("/mcp/session-control/read", { sessionId: f.target.id })).json() as { session: { blocker: { details: string } } };
+  assert.equal(detail.session.blocker.details, "Long **markdown**");
+
+  // flag_blocker_reply maps onto the dashboard route, records the controller, and keeps the blocker.
+  const flagged = await f.act({ action: "flag_blocker_reply", note: "Dana answered at 14:02", referenceUrl: "https://example.com/t/1#r" });
+  assert.equal(flagged.status, 200);
+  const afterFlag = f.registry.getSession(f.target.id)!.blocker!;
+  assert.equal(afterFlag.reply?.flaggedBy, `session:${f.caller.id}`);
+  assert.equal(afterFlag.reply?.note, "Dana answered at 14:02");
+  assert.equal(f.messages.length, 0, "a flag sends nothing to the session");
+
+  const cleared = await f.act({ action: "clear_blocker", resolution: "Dana chose 400 days" });
+  assert.equal(cleared.status, 200);
+  assert.equal(f.registry.getSession(f.target.id)!.blocker, null);
+  const { openDb } = await import("../src/server/db.ts");
+  const kinds = (openDb().prepare(`SELECT kind, payload FROM session_events WHERE session_id = ? ORDER BY id`).all(f.target.id) as Array<{ kind: string; payload: string }>);
+  assert.deepEqual(kinds.filter((e) => e.kind.startsWith("session_blocker_")).map((e) => e.kind), [
+    "session_blocker_set", "session_blocker_reply_flagged", "session_blocker_cleared",
+  ]);
+  const actions = kinds.filter((e) => e.kind === "session_control_action").map((e) => JSON.parse(e.payload).action);
+  assert.deepEqual(actions.slice(-2), ["flag_blocker_reply", "clear_blocker"]);
+});

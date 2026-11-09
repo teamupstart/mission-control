@@ -44,6 +44,7 @@ const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("har
 /** An embedded session over `cwd`: no pane, no tty, bound to a harness session id. */
 function sdkSess(cwd: string | null, over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: `${SDK_SESSION_ID_PREFIX}11111111-1111-4111-8111-111111111111`,
     agent: "claude",
     name: "embedded",

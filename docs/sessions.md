@@ -2037,14 +2037,16 @@ forged browser headers.
 
 The session uses two Mission Control tools:
 
-- `read_sessions` lists other live sessions. Supply `sessionId` to inspect a target's state,
+- `read_sessions` lists other live sessions, each with a compact `blocker` summary (`null`
+  when it has none). Pass `blocked: true` to list only blocked sessions. Supply `sessionId` to inspect a target's state,
   pending review prompts, native approval/question dialog, outbox and work queue. The top-level
   `queue` contains full items with their ids, revisions and proposed payloads, or is `null`
   when the target has no queue. Set `transcript: true` to include a bounded recent conversation window.
 - `control_session` takes that target's `sessionId` and a typed `command`. It supports
   messages, interruption, native menu/form answers, review approval/rejection/answers/dismissal,
   outbox delivery/recall/retry/mark-sent, work queue add/edit/remove/approve/reorder, renaming,
-  and model, effort and permission-mode changes. Use current request ids, option labels and
+  model, effort and permission-mode changes, and the two blocker actions
+  `flag_blocker_reply` and `clear_blocker` (see [Blocked sessions](#blocked-sessions)). Use current request ids, option labels and
   revisions from `read_sessions`; stale choices and unsupported runtime controls still refuse.
   `queue_approve` requires the inspected item revision. A changed proposal invalidates that
   revision and any earlier approval, so read the new text before approving it.
@@ -2080,6 +2082,48 @@ records the controller, target, action and HTTP outcome without recording the me
 These tools cannot change the controller grant, global settings, delete sessions, or reset
 worktrees. The target's normal runtime and resource guards continue to apply. See
 [Security](security.md#delegated-session-control) for the caller identity and local trust boundary.
+
+### Blocked sessions
+
+A session that cannot go on because it is waiting on **someone or something other than you**
+records a **blocker** with `report_blocker`: what it is waiting for (`reason`), who owns the
+answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`question`,
+`dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
+lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
+through `request_input`, and `report_blocker` is refused while the session has a
+`request_input` of its own pending.
+
+The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
+an exit, a daemon restart and a `/clear`. It ends when the session calls `clear_blocker`, when
+you or a controlling session clear it, when the task it was reported for reaches a terminal status
+(merge settlement, Mark done, cancel, fail), or when no session has held its key for the goal
+pruning window. A later `report_blocker` updates it and keeps its start time; after a reply was
+flagged, it means "I checked, still blocked", clears the flag and records the check.
+
+While it stands, every idle-triggered automation leaves the session alone without marking
+anything complete: prompted completion (the work-cycle generation is not consumed, so it can
+still complete after the blocker clears), queue drain and the wrap-up ask, pre-PR ship
+recovery, review follow-through, backlog autopilot assignment, stack readiness for dependents,
+workflow resumption and evidence-preparation recovery, and the stuck-session alerts. Your own
+queued turns, delegated messages, restart continuations and merge settlement still run.
+
+On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
+flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional
+[Board card items](ui.md). For now a blocked idle session stays in the Idle column.
+The Conversation tab opens with a red band showing every field, the collapsible details, any
+flagged reply, and two buttons: **Flag reply** marks a likely answer (with an optional note and
+link) without clearing anything or messaging the session, and **Clear blocker** ends the hold.
+
+Residents and other controlling sessions use `read_sessions` with `blocked: true` to find
+blocked sessions, `control_session` with `{"action":"flag_blocker_reply","note":"...",
+"referenceUrl":"..."}` to flag a likely reply, a `message` to tell the session to check, and
+`{"action":"clear_blocker","resolution":"..."}` to clear it. Every set, re-report, flag and
+clear writes one `session_events` row naming its actor: `session`, `operator`,
+`session:<controller-id>`, `task` for a terminal task, or `prune` for the pruning window.
+`session_blocker_set` also records the kind and reason. `session_blocker_updated` records the
+kind, reason, time since the blocker started (`sinceMs`) and whether it followed a flagged reply
+(`checked`). `session_blocker_reply_flagged` records `sinceMs`. `session_blocker_cleared` records
+how long the blocker stood (`durationMs`) and any one-line `resolution`.
 
 ### Review channel (MCP)
 
@@ -2218,6 +2262,11 @@ The MCP tools are:
   attachment failure without that matching URL is unknown and blocks retry; only a text-only
   refusal without a URL says retrying is safe
 - `report_status(activity)` - update the session's activity line
+- `report_blocker(kind, reason, waitingOn, resumeWhen, referenceUrl?, details?)` - record that
+  this session is waiting on someone or something other than the operator. See
+  [Blocked sessions](#blocked-sessions)
+- `clear_blocker(resolution?)` - clear this session's own blocker. A session with none is a
+  no-op success
 - `respond_to_file_comments(commentId, body, addressed?)` - answer one line comment a human
   left on a file, in the thread it was written in (non-blocking). `commentId` is the handle
   the delivered message printed - `MC-a41f.2`, the comment's per-session short id plus which

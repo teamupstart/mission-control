@@ -28609,6 +28609,94 @@ span.line-run-prov {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+/* The session blocker band (SessionBlockerBand.tsx): the launch-failure danger treatment,
+   at its natural height so the transcript keeps the rest of the pane. */
+.detail-conv > .blocker-band {
+  flex: none;
+}
+.blocker-band {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--border));
+  border-left: 3px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+  font-size: 12.5px;
+}
+.blocker-band-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.blocker-band-flag {
+  font-weight: 750;
+  color: var(--danger);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 11px;
+}
+.blocker-band-kind {
+  font-weight: 650;
+}
+.blocker-band-since {
+  color: var(--muted);
+}
+.blocker-band-reason {
+  margin: 0;
+  font-weight: 600;
+}
+.blocker-band-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 0;
+}
+.blocker-band-facts dt {
+  color: var(--muted);
+}
+.blocker-band-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.blocker-band-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.blocker-band-reply {
+  margin: 0;
+}
+.blocker-band-reply-pill {
+  padding: 1px 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+.blocker-band-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.blocker-band-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 200px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.blocker-band-actions {
+  display: flex;
+  gap: 8px;
+}
+.blocker-band-error {
+  margin: 0;
+  color: var(--danger);
+}
 .detail-conv > .transcript {
   flex: 1 1 auto;
   min-height: 120px;
@@ -31208,6 +31296,61 @@ span.line-run-prov {
   border-color: color-mix(in oklab, var(--held) 30%, var(--border));
   background: linear-gradient(color-mix(in oklab, var(--held) 7%, var(--panel)), var(--panel-2));
 }
+/* A tile standing on a durable session blocker: waiting on someone other than you. The
+   launch-failure tile's danger treatment (`.lf-tile`), so no new colour token: every skin
+   already defines `--danger`. Declared after `.is-held` so blocked wins the spine. */
+.tile.is-blocked {
+  --tone-color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: linear-gradient(color-mix(in srgb, var(--danger) 7%, var(--panel)), var(--panel-2));
+}
+.tile-flag.tf-blocked {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  color: var(--danger);
+  cursor: help;
+}
+.tile-blocker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  font-size: 11.5px;
+  color: var(--fg);
+  min-width: 0;
+}
+.tile-blocker-kind {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.tile-blocker-reason {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-blocker-waiting {
+  color: var(--muted);
+}
+.tile-blocker-link {
+  position: relative;
+  z-index: 1;
+  color: var(--danger);
+  text-decoration: none;
+}
+.tile-blocker-reply {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+
 /* `.is-held.can-drop` has no rule because the combination cannot arise: `canAcceptTask`
    (BacklogColumn.tsx) takes the tile's workflow run and refuses a session an open run holds,
    so a held tile never lights up, never hints, and never accepts a backlog drop. The drop is

@@ -23,6 +23,7 @@ import { SessionWorkflowsPane } from "../SessionWorkflowsPane.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
+import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -879,7 +880,10 @@ export function ConsoleDetail({
                 conversation its height whether or not anything was running, and that
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
-                child combinators that select through this container. */}
+                child combinators that select through this container. The blocker band
+                is the one exception, and it is `flex: none` so it never takes the
+                transcript's or the dialog's share of the height. */}
+            <SessionBlockerBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip

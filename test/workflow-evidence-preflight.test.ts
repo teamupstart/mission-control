@@ -1886,6 +1886,28 @@ test("capture repair delivers once across restart, excludes stale reservations a
   assert.equal(h.store.listSubmissions(h.run.id).length, 2);
 });
 
+test("capture repair holds a blocked session and resumes once its blocker is cleared", async (t) => {
+  const id = "capture-repair-blocked";
+  const h = await captureFailureHarness(t, id);
+  await waitFor(() => h.store.listDeliveries(h.run.id).some((d) => d.state === "delivered"), "repair was not delivered");
+  h.registry.getSession(id)!.state = "idle";
+  await h.register("replacement-handoff");
+  const reported = h.registry.reportBlocker(id, {
+    kind: "service", reason: "Staging is down", waitingOn: "Infra on-call", resumeWhen: "Staging is back",
+    referenceUrl: null, details: null,
+  });
+  assert.equal(reported.ok, true);
+  await h.manager.sweepResumptions(Date.now() + 120_000);
+  assert.equal(h.store.listSubmissions(h.run.id).length, 1, "a blocked session's corrected proof was resubmitted");
+
+  h.registry.clearBlocker(id, "operator");
+  await h.manager.sweepResumptions(Date.now() + 180_000);
+  await waitFor(() => h.store.getRun(h.run.id)?.status === "completed", "clearing the blocker did not release recovery");
+  const child = h.store.latestSubmission(h.run.id)!;
+  assert.equal(child.refinementReason, "evidence_capture_repair");
+  assert.equal(h.store.listSubmissions(h.run.id).length, 2);
+});
+
 for (const options of [{ resumptionPolicy: "manual" as const }, { deliveryMode: "preview" as const }]) {
   test(`capture repair respects ${JSON.stringify(options)}`, async (t) => {
     const id = `capture-boundary-${Object.values(options)[0]}`;

@@ -43,6 +43,18 @@ If a session is blocked on a product or feature decision only a human can make, 
 operator. If the session already asked through `request_input`, the operator has been told,
 so do not ask again.
 
+## Sessions blocked on someone else
+
+A session waiting on someone other than the operator records a blocker. List them with
+`read_sessions` and `blocked: true`; each row carries what it waits on, who owns the answer
+and a link to where the question lives.
+
+- Read the thread or page at the blocker's link. When it holds a likely answer, flag it with
+  `control_session` and `flag_blocker_reply`, then send the session a `message` telling it
+  to check. The session clears the blocker itself or reports it again.
+- Never clear a blocker without evidence that its `resumeWhen` condition is met. Prefer
+  flag-then-message over clearing.
+
 ## Each iteration
 
 Check what has changed since your last iteration, act on it, and end with a one-line status.

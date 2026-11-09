@@ -82,6 +82,8 @@ export const MISSION_MCP_TOOLS = [
   "request_input",
   "report_product_issue",
   "report_status",
+  "report_blocker",
+  "clear_blocker",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`
   // scrapes `registerTool("...")` out of the server and compares the two lists by value, and
   // `scripts/smoke-bundles.mjs` resolves any CONSTANT here through a hand-written name-to-module

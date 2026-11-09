@@ -8,6 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ReviewItem, Task } from "@shared/types.ts";
+import { SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS } from "@shared/scouts.ts";
@@ -324,7 +325,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions; supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -336,7 +337,7 @@ server.registerTool(
   "control_session",
   {
     title: "Steer another session on the operator's behalf",
-    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort and permission mode. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
+    description: "Requires an explicit per-session controller grant. Read the target with read_sessions first. Supports messages, interruption, approval/form answers, review decisions, queued input and work queue management, rename, model, effort, permission mode, and blockers: flag_blocker_reply marks a likely answer without clearing the blocker or messaging the session, and clear_blocker clears it. Never clear a blocker without evidence its resumeWhen condition is met; prefer flag_blocker_reply then message. Review ids must belong to the target. Queue approval requires the item revision returned by read_sessions; reread changed proposals before approving. Permissions and lifecycle checks still apply. Cannot enable control, alter global configuration, reset worktrees or kill sessions. An action already accepted may finish after revocation. Check returned delivery state before retrying a message.",
     inputSchema: SessionControlRequestSchema.shape,
   },
   async (args) => {
@@ -879,6 +880,82 @@ server.registerTool(
     try {
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+// The blocked session's own record. Validated here AND in `McpReportBlockerSchema`, the
+// project's rule for MCP arguments (see docs/agent-guides/change-contracts.md).
+const blockerLine = (max: number, what: string) =>
+  z.string().trim().min(1).max(max).refine((v) => !/[\r\n]/.test(v), { message: "must be one line" }).describe(what);
+
+server.registerTool(
+  "report_blocker",
+  {
+    title: "Report that this session is blocked",
+    description:
+      "Use only when you are waiting on someone or something other than the operator. For a " +
+      "decision the operator can make, call request_input instead. Ask your question where its " +
+      "owner will see it first (for example Commonroom), then report the blocker with a link " +
+      "to that question, and end your turn. Mission Control keeps the blocker across turns and " +
+      "restarts and holds automatic completion while it stands. Calling it again updates the " +
+      "blocker and keeps its start time.",
+    inputSchema: {
+      kind: z.enum(SESSION_BLOCKER_KINDS).describe(
+        "question: asked someone else, somewhere else; dependency: waiting on a PR, task or " +
+          "another team; service: a service, environment or credential is unavailable; other.",
+      ),
+      reason: blockerLine(SESSION_BLOCKER_LIMITS.reason, "One line: what you cannot do yet"),
+      waitingOn: blockerLine(SESSION_BLOCKER_LIMITS.waitingOn, "Who owns the answer, e.g. 'Dana (platform) in #data-platform'"),
+      resumeWhen: blockerLine(SESSION_BLOCKER_LIMITS.resumeWhen, "One line: the condition that unblocks you"),
+      referenceUrl: z.string().trim().url().max(SESSION_BLOCKER_LIMITS.url)
+        .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" })
+        .optional()
+        .describe("http(s) link to the question, PR or status page"),
+      details: z.string().trim().max(SESSION_BLOCKER_LIMITS.details).optional()
+        .describe("Markdown for the operator to review: options considered, context"),
+    },
+  },
+  async (input) => {
+    try {
+      const res = await http("/mcp/blocker", "POST", { env: ENV, sessionId: SESSION_ID, ...input });
+      const body = (await res.json()) as { created?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this blocker (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(
+        `${body.created ? "Blocker recorded" : "Blocker updated"}. End your turn now. Mission Control will ` +
+          "not run automatic completion while it stands. When you are told to check again, check: if it " +
+          "is resolved, call clear_blocker and continue the work; otherwise call report_blocker again " +
+          "and end your turn.",
+      );
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "clear_blocker",
+  {
+    title: "Clear this session's blocker",
+    description:
+      "Call when what you reported with report_blocker is resolved, then continue the work. " +
+      "Clearing a session with no blocker does nothing.",
+    inputSchema: {
+      resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution, "One line: what resolved it").optional(),
+    },
+  },
+  async ({ resolution }) => {
+    try {
+      const res = await http("/mcp/blocker/clear", "POST", { env: ENV, sessionId: SESSION_ID, resolution });
+      const body = (await res.json()) as { cleared?: boolean; error?: string };
+      if (!res.ok) {
+        return textResult(`Mission Control refused this clear (${res.status}): ${body.error ?? "unknown refusal"}`, true);
+      }
+      return textResult(body.cleared ? "Blocker cleared. Continue the work." : "There was no blocker to clear.");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

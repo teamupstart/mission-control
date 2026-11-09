@@ -225,6 +225,10 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  McpReportBlockerSchema,
+  McpClearBlockerSchema,
+  FlagBlockerReplySchema,
+  ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
@@ -5152,6 +5156,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.body(null, 204);
   });
 
+  // The blocked session's own report: bound to the caller like `/mcp/status` (pane key or
+  // Mission session id), never to a body-named target. Refused while the session has a pending
+  // `request_input` of its own - it is already waiting on the operator.
+  app.post("/mcp/blocker", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportBlocker(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session clearing its own blocker. Clearing a session with none is a no-op success.
+  app.post("/mcp/blocker/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearBlocker(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
+  });
+
   app.post("/mcp/pipelines/adopt", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpAdoptPipelineRunSchema);
@@ -5875,6 +5905,31 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // the same - `{name}` in, the card renamed out - which is what keeps the title click, the
   // command bar's keycap and Shift+R on one code path instead of branching per runtime in the
   // browser, where the runtime is the least interesting thing about the session being named.
+  // A likely answer to this session's blocker, flagged by the operator or (through
+  // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
+  // sends anything to the session; the flag is a card pill, not an alert.
+  app.post("/api/sessions/:id/blocker/reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FlagBlockerReplySchema);
+    if (!parsed.ok) return parsed.res;
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
+    if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
+    return c.json({ ok: true, blocker });
+  });
+
+  // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
+  app.post("/api/sessions/:id/blocker/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
+  });
+
   app.post("/api/sessions/:id/rename", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

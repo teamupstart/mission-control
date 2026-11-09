@@ -1,4 +1,6 @@
 import { isActiveTask } from "@shared/task-status.ts";
+import { hasBlocker } from "@shared/session.ts";
+import type { SessionBlocker } from "@shared/types.ts";
 import type { Context, Hono } from "hono";
 import {
   SessionControlGrantSchema, SessionControlReadSchema, SessionControlRequestSchema,
@@ -41,6 +43,13 @@ export function sessionController(registry: Registry, credential: string | undef
   return caller && registry.sessionControlEnabled(caller) ? caller : null;
 }
 
+/** The list form's compact blocker: enough to correlate, without the Markdown details. */
+export function blockerSummary(blocker: SessionBlocker | null | undefined) {
+  if (!blocker) return null;
+  const { kind, reason, waitingOn, referenceUrl, startedAt, reply } = blocker;
+  return { kind, reason, waitingOn, referenceUrl, startedAt, reply };
+}
+
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
 export function controlRequest(target: string, command: SessionControlAction): {
   path: string; method: string; body?: unknown;
@@ -66,6 +75,8 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_model": return post("model", { model: command.model });
     case "set_effort": return post("effort", { effort: command.effort });
     case "set_permission_mode": return post("mode", { mode: command.mode });
+    case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl });
+    case "clear_blocker": return post("blocker/clear", { resolution: command.resolution });
   }
 }
 
@@ -128,8 +139,12 @@ export function registerSessionControlRoutes(
     const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
     if (!parsed.data.sessionId) {
-      const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping");
-      return c.json({ sessions: sessions.map((s) => ({ id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity })) });
+      const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
+        && (!parsed.data.blocked || hasBlocker(s)));
+      return c.json({ sessions: sessions.map((s) => ({
+        id: s.id, name: s.name, agent: s.agent, runtime: s.runtime, state: s.state, cwd: s.cwd, activity: s.activity,
+        blocker: blockerSummary(s.blocker),
+      })) });
     }
     const session = registry.getSession(parsed.data.sessionId);
     if (!session || session.id === caller || session.state === "exited" || session.state === "stopping") return c.json({ error: "No such other live session" }, 404);

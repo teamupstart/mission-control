@@ -1,5 +1,6 @@
 import type { Session, Task, TaskDependency } from "@shared/types.ts";
 import type { ShippingConfig } from "@shared/protocol.ts";
+import { hasBlocker } from "@shared/session.ts";
 import {
   effectiveEdgeMode,
   stackEligibility,
@@ -186,6 +187,8 @@ export class StackReadiness {
     if (parent.status !== "running" || !parent.sessionId) return null;
     const session = this.registry.getSession(parent.sessionId);
     if (!session || session.state !== "idle") return null;
+    // Blocked on someone else: the episode is parked, not finished, so no dependent stacks on it.
+    if (hasBlocker(session)) return null;
     if (session.queue && session.queue.openCount > 0) return null;
     const binding = this.registry.workEpisodeForTask(parent.id);
     if (!binding || binding.sessionId !== session.id || !binding.prUrl) return null;

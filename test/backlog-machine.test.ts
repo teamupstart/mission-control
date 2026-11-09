@@ -53,6 +53,7 @@ let sessionSeq = 0;
 function mkSession(over: Partial<Session> = {}): Session {
   const n = ++sessionSeq;
   return {
+    blocker: null,
     id: `s${n}`,
     agent: "claude",
     name: `agent-${n}`,
@@ -985,4 +986,12 @@ test("a stack-released task is dispatched, never assigned to a free agent", () =
   assert.notEqual(action.kind, "assign");
   assert.equal(action.kind, "dispatch");
   assert.equal("task" in action ? action.task.id : null, stacked.id);
+});
+
+test("a blocked agent is not free for another task until its blocker clears", () => {
+  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocked = mkSession({ blocker });
+  assert.equal(agentIsFree(blocked, [blocked], [], CFG, NOW), false);
+  const cleared = mkSession({ blocker: null });
+  assert.equal(agentIsFree(cleared, [cleared], [], CFG, NOW), true);
 });

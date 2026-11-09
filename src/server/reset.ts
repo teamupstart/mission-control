@@ -135,6 +135,8 @@ export async function resetSession(
         // survives a context clear. The text is still governing the agent, so the record of
         // it has to still be reachable under the key the session now holds.
         registry.moveStandingInstructionsKey(pendingTurnKey, currentPendingTurnKey);
+        // A blocker belongs to the task, not the conversation: the reset does not answer it.
+        registry.moveBlockerKey(pendingTurnKey, currentPendingTurnKey);
         registry.clearQueue(noteKeyFor(session));
         registry.clearWorkflowState(noteKeyFor(session));
       }

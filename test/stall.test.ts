@@ -20,6 +20,7 @@ import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s",
     agent: "claude",
     name: "sess",
@@ -535,4 +536,11 @@ test("an empty run list is the pre-workflow behaviour exactly", () => {
 test("forMs reports how long it has been stuck", () => {
   const s = mkSession({ state: "working", lastActivity: 0 });
   assert.equal(one(s, 42 * MIN)?.forMs, 42 * MIN);
+});
+
+test("a blocked session raises no unfinished-work stall: its blocker explains the silence", () => {
+  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const s = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ status: "running" }), blocker });
+  assert.equal(one(s, TH.unfinishedMs), null);
+  assert.equal(one({ ...s, blocker: null }, TH.unfinishedMs)?.kind, "unfinished-work");
 });

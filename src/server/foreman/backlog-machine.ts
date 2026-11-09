@@ -5,7 +5,7 @@ import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } f
 import { stackStartEdge } from "@shared/stacking.ts";
 import { cwdAllowlisted, foremanAllowlisted, taskReposAllowlisted } from "@shared/foreman.ts";
 import { hasPane } from "./queue-machine.ts";
-import { settledIdle } from "@shared/session.ts";
+import { hasBlocker, settledIdle } from "@shared/session.ts";
 import { allowsBacklogAutopilot } from "@shared/task.ts";
 
 // The backlog autopilot's decision core: given the fleet, the backlog and the stored
@@ -216,6 +216,8 @@ export function agentIsFree(
   now: number,
 ): boolean {
   if (reportBucket(s, sessions) !== "idle") return false;
+  // A blocked session is still working its own task; it is not free for another.
+  if (hasBlocker(s)) return false;
   if (!settledIdle(s, now, cfg.settleMs)) return false;
   if (!s.hooksSeen) return false;
   // Only sessions Mission Control created. Note this is the SELECTION side only: the

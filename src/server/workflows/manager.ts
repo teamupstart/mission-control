@@ -14,7 +14,7 @@ import { samePlanPublicationContext, type PlanPublicationContext } from "@shared
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
-import { agentActive, reportBucket, settledIdle } from "@shared/session.ts";
+import { agentActive, hasBlocker, reportBucket, settledIdle } from "@shared/session.ts";
 import { taskRepoStatuses, type TaskRepoRef } from "@shared/task-repos.ts";
 import type {
   CreateWorkflow,
@@ -5085,7 +5085,8 @@ export class WorkflowManager {
     const session = binding.sessionId ? this.registry.getSession(binding.sessionId) : null;
     const eligible = this.automaticEvidencePreparation(binding, latest) && !this.captureLocks.has(binding.noteKey)
       && session && settledIdle(session, now, this.options.resumptionSettleMs ?? WORKFLOW_RESUMPTION_SETTLE_MS)
-      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you";
+      && reportBucket(session, this.registry.snapshot().sessions) !== "needs-you"
+      && !hasBlocker(session);
     if (!eligible) {
       if (recovery.kind === "capture" && this.store.observeEvidenceCaptureRepairIdle({ runId, now, settledSince: null })) {
         this.publishRun(runId);
@@ -7795,6 +7796,7 @@ export class WorkflowManager {
     // on you". A session parked on a permission prompt reads as idle and is the last thing
     // that should be handed another round of work.
     if (reportBucket(session, sessions) === "needs-you") return held("session_needs_you");
+    if (hasBlocker(session)) return held("session_blocked");
     if (!latest) return { run, latest: null, withheld: null };
     // An undelivered or uncertain packet means the agent has not been told what to repair.
     // Resuming there would submit the same evidence back into the same review, which is a

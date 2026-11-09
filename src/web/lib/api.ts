@@ -1754,6 +1754,11 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/launch`, { backend, payload }),
   rename: (id: string, name: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
+  /** Flag a likely answer on this session's blocker. Never clears it, never messages it. */
+  flagBlockerReply: (id: string, input: { note?: string; referenceUrl?: string }) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/reply`, input),
+  clearBlocker: (id: string, resolution?: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/blocker/clear`, resolution ? { resolution } : {}),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   /**
    * Stop what the session is doing right now and drop what was queued behind it, leaving

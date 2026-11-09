@@ -113,6 +113,7 @@ function seedCheckout(name: string, ahead: number, withRemote = true): string {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "session",
     agent: "claude",
     name: "sess",

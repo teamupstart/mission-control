@@ -293,7 +293,7 @@ test("a launch preserves developer instructions and routes discrete choices thro
   const start = server.calls("thread/start")[0]?.params as Record<string, unknown>;
   assert.equal(
     String(start.developerInstructions),
-    "Keep this operator instruction.\n\nWhenever the operator chooses among discrete options, call the Mission Control request_input MCP tool. Pass the choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available.",
+    "Keep this operator instruction.\n\nWhenever the operator chooses among discrete options, call the Mission Control request_input MCP tool. Pass the choices through the tool's options field and wait for the structured response before continuing. Never end a turn by asking for a numbered or prose reply when the MCP tool is available. If you are waiting on someone or something other than the operator, call the Mission Control report_blocker MCP tool instead; for a decision the operator can make, call request_input. Ask your question where its owner will see it first (for example Commonroom), then report the blocker with a link to that question, and end your turn.",
   );
 });
 

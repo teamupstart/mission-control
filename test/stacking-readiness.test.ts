@@ -858,3 +858,23 @@ test("stopping readiness cancels its pending re-checks", async () => {
   r.stop();
   assert.deepEqual(cleared, ["timer-1"]);
 });
+
+test("a blocked prerequisite stamps no dependent until its blocker is cleared", async () => {
+  const blocker = {
+    kind: "dependency" as const, reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+  };
+  const w = world();
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", blocker }));
+  const s = script();
+  const r = readiness(w, s);
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "a parked, blocked episode is not finished");
+  assert.equal(s.reads, 0, "no GitHub read for a prerequisite that is blocked");
+
+  w.sessions.set("sA", mkSession({ id: "sA", state: "idle", blocker: null }));
+  r.reconcile();
+  await settle();
+  assert.equal(childEdge(w).stackReadyAt, 1_000, "clearing the blocker releases the stamp");
+});

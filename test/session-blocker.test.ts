@@ -507,7 +507,7 @@ test("a blocker reported while a Foreman write or wrap-up ask is in flight still
   assert.equal(asked.status, 409, "the wrap-up ask read a session snapshot from before the blocker");
 });
 
-test("a Flag reply or Clear aimed at an earlier blocker cannot act on its replacement", async () => {
+test("a Flag reply or Clear aimed at an earlier blocker cannot act on its replacement, even in the same millisecond", async () => {
   const registry = new Registry();
   const app = mkApp(registry);
   const d = mkDiscovered();
@@ -515,23 +515,31 @@ test("a Flag reply or Clear aimed at an earlier blocker cannot act on its replac
   const api = (path: string, body: unknown) => app.request(`/api/sessions/${d.syntheticId}${path}`, {
     method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify(body),
   });
-  // The operator opens blocker A; the session clears it and reports B before the click lands.
+  // The operator opens blocker A; the session clears it and reports B in the SAME millisecond,
+  // so the two share a start time and only their ids tell them apart.
   registry.reportBlocker(d.syntheticId, BODY, 1_000);
-  const shownA = registry.getBlocker(d.syntheticId)!.startedAt;
-  registry.clearBlocker(d.syntheticId, "session");
-  registry.reportBlocker(d.syntheticId, { ...BODY, reason: "A different wait" }, 2_000);
+  const shownA = registry.getBlocker(d.syntheticId)!;
+  registry.clearBlocker(d.syntheticId, "session", undefined, 1_000);
+  registry.reportBlocker(d.syntheticId, { ...BODY, reason: "A different wait" }, 1_000);
+  const b = registry.getBlocker(d.syntheticId)!;
+  assert.equal(b.startedAt, shownA.startedAt, "the fixture needs both blockers in one millisecond");
+  assert.notEqual(b.id, shownA.id, "a replacement blocker reused the earlier one's id");
 
-  const staleFlag = await api("/blocker/reply", { blockerStartedAt: shownA, note: "answered" });
+  const staleFlag = await api("/blocker/reply", { blockerId: shownA.id, note: "answered" });
   assert.equal(staleFlag.status, 409);
   assert.equal(registry.getBlocker(d.syntheticId)?.reply, null, "a stale flag marked the replacement blocker");
-  const staleClear = await api("/blocker/clear", { blockerStartedAt: shownA });
+  const staleClear = await api("/blocker/clear", { blockerId: shownA.id });
   assert.equal(staleClear.status, 409);
   assert.equal(registry.getBlocker(d.syntheticId)?.reason, "A different wait", "a stale clear removed the replacement blocker");
 
-  // A re-report keeps startedAt, so the blocker the operator is looking at is still the same one.
-  const shownB = registry.getBlocker(d.syntheticId)!.startedAt;
+  // A re-report keeps the id, so the blocker the operator is looking at is still the same one,
+  // and the id survives a daemon restart.
   registry.reportBlocker(d.syntheticId, { ...BODY, reason: "Still waiting" }, 3_000);
-  assert.equal((await api("/blocker/reply", { blockerStartedAt: shownB })).status, 200);
-  assert.equal((await api("/blocker/clear", { blockerStartedAt: shownB })).status, 200);
+  assert.equal(registry.getBlocker(d.syntheticId)!.id, b.id);
+  const restarted = new Registry();
+  restarted.applyDiscovery([d]);
+  assert.equal(restarted.getBlocker(d.syntheticId)!.id, b.id, "the blocker id did not survive a restart");
+  assert.equal((await api("/blocker/reply", { blockerId: b.id })).status, 200);
+  assert.equal((await api("/blocker/clear", { blockerId: b.id })).status, 200);
   assert.equal(registry.getBlocker(d.syntheticId), null);
 });

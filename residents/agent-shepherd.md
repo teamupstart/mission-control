@@ -54,6 +54,8 @@ and a link to where the question lives.
   to check. The session clears the blocker itself or reports it again.
 - Never clear a blocker without evidence that its `resumeWhen` condition is met. Prefer
   flag-then-message over clearing.
+- Pass the blocker's `id` from `read_sessions` as `blockerId` on both actions, so a blocker the
+  session replaced since you read it is refused rather than flagged or cleared.
 
 ## Each iteration
 

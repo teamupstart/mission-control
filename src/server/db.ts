@@ -4206,13 +4206,17 @@ function migrate(d: DatabaseSync): void {
       updated_at    INTEGER NOT NULL,
       checked_at    INTEGER,
       reply         TEXT,
-      last_held_at  INTEGER
+      last_held_at  INTEGER,
+      blocker_id    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_session_blockers_task ON session_blockers(task_id);
   `);
   // When a live session was last seen holding the key, so pruning measures OBSERVED absence
   // across restarts rather than restarting the clock from an empty process.
   addColumn(d, "session_blockers", "last_held_at", "INTEGER");
+  // Each blocker's identity, kept across re-reports. A row written before it existed reads
+  // back with an id derived from its key and start (see `rowToSessionBlocker`).
+  addColumn(d, "session_blockers", "blocker_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -11686,10 +11690,11 @@ interface SessionBlockerRow {
   checked_at: number | null;
   reply: string | null;
   last_held_at: number | null;
+  blocker_id: string | null;
 }
 
 const SESSION_BLOCKER_COLUMNS = `note_key, task_id, kind, reason, waiting_on, resume_when, details,
-  reference_url, started_at, updated_at, checked_at, reply, last_held_at`;
+  reference_url, started_at, updated_at, checked_at, reply, last_held_at, blocker_id`;
 
 function parseBlockerReply(raw: string | null): SessionBlockerReply | null {
   if (!raw) return null;
@@ -11717,6 +11722,7 @@ function rowToSessionBlocker(r: SessionBlockerRow): SessionBlockerRecord {
     noteKey: r.note_key,
     taskId: r.task_id,
     blocker: {
+      id: r.blocker_id ?? `legacy:${r.note_key}:${r.started_at}`,
       kind,
       reason: r.reason,
       waitingOn: r.waiting_on,
@@ -11746,18 +11752,19 @@ export function upsertSessionBlocker(record: SessionBlockerRecord): void {
   openDb()
     .prepare(
       `INSERT INTO session_blockers (${SESSION_BLOCKER_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          task_id=excluded.task_id, kind=excluded.kind, reason=excluded.reason,
          waiting_on=excluded.waiting_on, resume_when=excluded.resume_when,
          details=excluded.details, reference_url=excluded.reference_url,
          started_at=excluded.started_at, updated_at=excluded.updated_at,
-         checked_at=excluded.checked_at, reply=excluded.reply, last_held_at=excluded.last_held_at`,
+         checked_at=excluded.checked_at, reply=excluded.reply, last_held_at=excluded.last_held_at,
+         blocker_id=excluded.blocker_id`,
     )
     .run(
       record.noteKey, record.taskId, b.kind, b.reason, b.waitingOn, b.resumeWhen, b.details,
       b.referenceUrl, b.startedAt, b.updatedAt, b.checkedAt,
-      b.reply ? JSON.stringify(b.reply) : null, record.lastHeldAt,
+      b.reply ? JSON.stringify(b.reply) : null, record.lastHeldAt, b.id,
     );
 }
 

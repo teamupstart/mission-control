@@ -8409,6 +8409,8 @@ export class Registry extends EventEmitter {
     const key = noteKeyFor(s);
     const prev = this.blockers.get(key)?.blocker ?? null;
     const blocker: SessionBlocker = {
+      // A re-report keeps the blocker's identity; a first report mints one.
+      id: prev?.id ?? randomUUID(),
       kind: body.kind,
       reason: body.reason,
       waitingOn: body.waitingOn,

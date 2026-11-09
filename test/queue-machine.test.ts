@@ -1624,7 +1624,7 @@ test("a gap carrying an injected instruction lands as framed data, not as an ord
 });
 
 test("a blocked session holds its queue whole: no wrap-up ask until the blocker clears", () => {
-  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   assert.deepEqual(tick({ session: { blocker }, items: [mkItem({ state: "verified" })] }), { kind: "none" });
   assert.equal(tick({ session: { blocker: null }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
 });

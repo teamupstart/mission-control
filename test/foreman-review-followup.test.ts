@@ -707,7 +707,7 @@ test("two repositories holding the same pull request NUMBER do not share a mark"
 });
 
 test("a blocked session is not nudged about review feedback until the blocker clears", () => {
-  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
   assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
   assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");

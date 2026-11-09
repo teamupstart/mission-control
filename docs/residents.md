@@ -334,7 +334,7 @@ The exact rule, and what cannot create a grant, is in [security](security.md#res
 
 A resident with session control can work the [blockers](sessions.md#blocked-sessions) other
 sessions record when they wait on someone other than you. `read_sessions` adds a `blocker`
-summary (`kind`, `reason`, `waitingOn`, `referenceUrl`, `startedAt`, `reply`) to every row of
+summary (`id`, `kind`, `reason`, `waitingOn`, `referenceUrl`, `startedAt`, `reply`) to every row of
 its list and accepts `blocked: true` to list only blocked sessions; reading one session returns
 its whole blocker, Markdown details included. `control_session` adds two actions:
 
@@ -343,10 +343,12 @@ its whole blocker, Markdown details included. `control_session` adds two actions
   **Reply flagged** pill and nothing else.
 - `{"action":"clear_blocker","resolution":"..."}` clears it.
 
-Both actions accept the `startedAt` the read returned as `blockerStartedAt`. With it, the action
-is refused when the session has since cleared that blocker and reported a different one, so a
-resident never flags or clears a blocker it did not read. The dashboard's Flag reply and Clear
-blocker always send it.
+Both actions take an optional `blockerId`. Pass the `id` that `read_sessions` returned: when it
+is supplied and the session has since cleared that blocker and reported a different one (even
+within the same millisecond), the action is refused with 409 instead of touching the
+replacement. A re-report keeps the id. Without `blockerId` the action applies to whatever
+blocker stands at that moment, so a resident that omits it can flag or clear a blocker it never
+read. The dashboard's Flag reply and Clear blocker always send it.
 
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.

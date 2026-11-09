@@ -33,7 +33,7 @@ test("a schema 24 database gains an empty session_blockers table and is stamped 
   const columns = (d.prepare(`PRAGMA table_info(session_blockers)`).all() as { name: string }[]).map((c) => c.name);
   assert.deepEqual(columns, [
     "note_key", "task_id", "kind", "reason", "waiting_on", "resume_when", "details",
-    "reference_url", "started_at", "updated_at", "checked_at", "reply", "last_held_at",
+    "reference_url", "started_at", "updated_at", "checked_at", "reply", "last_held_at", "blocker_id",
   ]);
   assert.equal((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 25);
   assert.deepEqual(loadSessionBlockers(), []);
@@ -41,7 +41,7 @@ test("a schema 24 database gains an empty session_blockers table and is stamped 
 
 test("the upgrade is idempotent and keeps a stored blocker", () => {
   const blocker = {
-    kind: "service" as const, reason: "Staging DB is down", waitingOn: "Infra on-call", resumeWhen: "Staging is back",
+    id: "blk-fixture", kind: "service" as const, reason: "Staging DB is down", waitingOn: "Infra on-call", resumeWhen: "Staging is back",
     details: null, referenceUrl: null, startedAt: 5, updatedAt: 5, checkedAt: null, reply: null,
   };
   upsertSessionBlocker({ noteKey: "k1", taskId: "t1", blocker, lastHeldAt: 9 });
@@ -52,4 +52,12 @@ test("the upgrade is idempotent and keeps a stored blocker", () => {
 test("a kind written by a newer build reads as other rather than dropping the hold", () => {
   openDb().prepare(`UPDATE session_blockers SET kind = 'future-kind' WHERE note_key = 'k1'`).run();
   assert.equal(loadSessionBlockers()[0]?.blocker.kind, "other");
+});
+
+test("a row stored without an id reads back with a stable derived one", () => {
+  openDb().prepare(`UPDATE session_blockers SET blocker_id = NULL WHERE note_key = 'k1'`).run();
+  const [first] = loadSessionBlockers();
+  const [again] = loadSessionBlockers();
+  assert.equal(first?.blocker.id, "legacy:k1:5");
+  assert.equal(again?.blocker.id, first?.blocker.id);
 });

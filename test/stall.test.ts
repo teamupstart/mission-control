@@ -539,7 +539,7 @@ test("forMs reports how long it has been stuck", () => {
 });
 
 test("a blocked session raises no unfinished-work stall: its blocker explains the silence", () => {
-  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   const s = mkSession({ state: "idle", lastActivity: 0, task: mkTask({ status: "running" }), blocker });
   assert.equal(one(s, TH.unfinishedMs), null);
   assert.equal(one({ ...s, blocker: null }, TH.unfinishedMs)?.kind, "unfinished-work");

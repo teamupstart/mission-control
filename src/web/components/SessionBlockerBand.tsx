@@ -16,7 +16,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export function SessionBlockerBand({ session }: { session: Session }): React.JSX.Element | null {
   const blocker = session.blocker ?? null;
   if (!blocker) return null;
-  return <BlockerBand key={blocker.startedAt} sessionId={session.id} blocker={blocker} />;
+  return <BlockerBand key={blocker.id} sessionId={session.id} blocker={blocker} />;
 }
 
 function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: SessionBlocker }): React.JSX.Element {
@@ -105,7 +105,7 @@ function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: Sessi
             e.preventDefault();
             void run(
               () => api.flagBlockerReply(sessionId, {
-                blockerStartedAt: blocker.startedAt,
+                blockerId: blocker.id,
                 ...(note.trim() ? { note: note.trim() } : {}),
                 ...(link.trim() ? { referenceUrl: link.trim() } : {}),
               }),
@@ -161,7 +161,7 @@ function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: Sessi
               type="button"
               className="btn btn-danger"
               disabled={busy}
-              onClick={() => void run(() => api.clearBlocker(sessionId, blocker.startedAt))}
+              onClick={() => void run(() => api.clearBlocker(sessionId, blocker.id))}
             >
               Clear blocker
             </button>

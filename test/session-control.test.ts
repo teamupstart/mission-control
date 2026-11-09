@@ -1004,7 +1004,7 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   // The list form carries a compact summary on every row, and `blocked: true` narrows to it.
   const listed = await (await f.request("/mcp/session-control/read", {})).json() as { sessions: Array<{ id: string; blocker: unknown }> };
   const row = listed.sessions.find((s) => s.id === f.target.id)!;
-  assert.deepEqual(Object.keys(row.blocker as object).sort(), ["kind", "reason", "referenceUrl", "reply", "startedAt", "waitingOn"]);
+  assert.deepEqual(Object.keys(row.blocker as object).sort(), ["id", "kind", "reason", "referenceUrl", "reply", "startedAt", "waitingOn"]);
   assert.equal(listed.sessions.find((s) => s.id === f.other.id)?.blocker, null);
   const blocked = await (await f.request("/mcp/session-control/read", { blocked: true })).json() as { sessions: Array<{ id: string }> };
   assert.deepEqual(blocked.sessions.map((s) => s.id), [f.target.id]);
@@ -1022,10 +1022,10 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   assert.equal(f.messages.length, 0, "a flag sends nothing to the session");
 
   // A resident that names the blocker it read is refused once a different one stands.
-  const shown = f.registry.getSession(f.target.id)!.blocker!.startedAt;
-  assert.equal((await f.act({ action: "clear_blocker", blockerStartedAt: shown + 1 })).status, 409);
+  const shown = f.registry.getSession(f.target.id)!.blocker!.id;
+  assert.equal((await f.act({ action: "clear_blocker", blockerId: "a-blocker-that-was-replaced" })).status, 409);
   assert.ok(f.registry.getSession(f.target.id)!.blocker, "a stale resident clear removed the blocker");
-  const cleared = await f.act({ action: "clear_blocker", resolution: "Dana chose 400 days", blockerStartedAt: shown });
+  const cleared = await f.act({ action: "clear_blocker", resolution: "Dana chose 400 days", blockerId: shown });
   assert.equal(cleared.status, 200);
   assert.equal(f.registry.getSession(f.target.id)!.blocker, null);
   const { openDb } = await import("../src/server/db.ts");

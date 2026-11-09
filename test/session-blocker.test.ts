@@ -270,6 +270,31 @@ test("a stranded key is pruned after the window, while a resumed one keeps its b
   assert.equal(second.getSession(live.syntheticId)?.blocker?.startedAt, 100);
 });
 
+test("the prune cutoff is inclusive: a blocker last held exactly at the cutoff is kept", () => {
+  const CUTOFF = 50_000;
+  const keys = { before: `agent-cutoff-before-${++seq}`, at: `agent-cutoff-at-${seq}`, after: `agent-cutoff-after-${seq}` };
+  const sessions = {
+    before: mkDiscovered({ agentSessionId: keys.before } as Partial<DiscoveredSession>),
+    at: mkDiscovered({ agentSessionId: keys.at } as Partial<DiscoveredSession>),
+    after: mkDiscovered({ agentSessionId: keys.after } as Partial<DiscoveredSession>),
+  };
+  const first = new Registry();
+  first.applyDiscovery(Object.values(sessions));
+  // A report stamps both the last report and the last hold, so each row's clock is exactly this.
+  first.reportBlocker(sessions.before.syntheticId, BODY, CUTOFF - 1);
+  first.reportBlocker(sessions.at.syntheticId, BODY, CUTOFF);
+  first.reportBlocker(sessions.after.syntheticId, BODY, CUTOFF + 1);
+
+  // A restart where none of the three is held any more.
+  const second = new Registry();
+  second.applyDiscovery([]);
+  second.pruneBlockers(CUTOFF, CUTOFF + 100);
+  const stored = new Set(loadSessionBlockers().map((b) => b.noteKey));
+  assert.equal(stored.has(keys.before), false, "a blocker last held one millisecond before the cutoff was kept");
+  assert.equal(stored.has(keys.at), true, "a blocker last held exactly at the cutoff was pruned");
+  assert.equal(stored.has(keys.after), true, "a blocker last held after the cutoff was pruned");
+});
+
 test("prompted completion is refused while blocked, and the same generation is consumed once cleared", () => {
   const registry = new Registry();
   const noteKey = `agent-prompted-${++seq}`;

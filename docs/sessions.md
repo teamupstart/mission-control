@@ -2091,7 +2091,8 @@ answer (`waitingOn`), the condition that unblocks it (`resumeWhen`), a `kind` (`
 `dependency`, `service` or `other`), an optional http(s) `referenceUrl` to where the question
 lives, and optional Markdown `details`. There is no operator kind: a decision you can make goes
 through `request_input`, and `report_blocker` is refused while the session has a
-`request_input` of its own pending.
+`request_input` of its own pending. It is also refused once the session's task has finished,
+since nothing would clear a blocker stored against a done, failed or cancelled task.
 
 The blocker is stored in SQLite under the session's note key, so it survives the turn ending,
 an exit, a daemon restart and a `/clear`. It ends when the session calls `clear_blocker`, when

@@ -19,7 +19,7 @@ const {
   openDb, loadSessionBlockers, markWorkCycleActive, completeWorkCycle, workCycleFor, getQueueRow,
 } = await import("../src/server/db.ts");
 const { resolvedSessionIntent } = await import("../src/shared/goal.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
@@ -171,6 +171,21 @@ test("a task reaching a terminal status ends its session's blocker", () => {
   const events = openDb().prepare(`SELECT payload FROM session_events WHERE session_id = ? AND kind = 'session_blocker_cleared'`)
     .all(d.syntheticId) as Array<{ payload: string }>;
   assert.equal(JSON.parse(events.at(-1)!.payload).actor, "task");
+});
+
+test("a session whose task already finished cannot report a blocker", () => {
+  const registry = new Registry();
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const task = mkTask({ id: `task-finished-${seq}`, sessionId: d.syntheticId, status: "running", worktreePath: d.cwd });
+  registry.upsertTask(task);
+  registry.upsertTask({ ...task, status: "done" });
+  assert.equal(registry.getSession(d.syntheticId)?.task?.id, task.id, "the session still names its finished task");
+  const refused = registry.reportBlocker(d.syntheticId, BODY);
+  assert.equal(refused.ok, false);
+  assert.ok(!refused.ok && refused.status === 409 && /already done/.test(refused.error));
+  assert.equal(registry.getBlocker(d.syntheticId), null, "a blocker was stored against a terminal task");
+  assert.ok(!loadSessionBlockers().some((b) => b.noteKey === noteKeyFor(registry.getSession(d.syntheticId)!)));
 });
 
 test("a late terminal write for an earlier task leaves the blocker of the session's current task", () => {

@@ -8387,6 +8387,17 @@ export class Registry extends EventEmitter {
   ): { ok: true; blocker: SessionBlocker; created: boolean } | { ok: false; status: 404 | 409; error: string } {
     const s = this.sessions.get(sessionId);
     if (!s || s.state === "exited") return { ok: false, status: 404, error: "no matching session" };
+    // A terminal task already ran its blocker clear, and nothing would ever clear one stored
+    // against it. Read from the task map at the report itself, so a report racing the terminal
+    // write lands on whichever side of it the daemon processed first, never in between.
+    const task = s.task ? this.tasks.get(s.task.id) : undefined;
+    if (task && isTerminalTask(task.status)) {
+      return {
+        ok: false,
+        status: 409,
+        error: `This session's task is already ${task.status}, so there is nothing for it to wait on.`,
+      };
+    }
     const asking = this.pendingReviews(s.id).some((r) => r.kind === "input");
     if (asking) {
       return {

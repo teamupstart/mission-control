@@ -8,18 +8,6 @@ import type { Registry } from "./registry.ts";
 import { nextQueueSeq } from "./db.ts";
 
 /**
- * Owns the session work-queue lifecycle: the batch of work you load up for one
- * agent to do next, one item at a time, in the order you authored. The registry
- * is the single store; this is the policy layer routes call into - the queue
- * analog of ReviewManager.
- *
- * Deliberately NOT built on SessionNote. There is one note per key with one
- * `disposition`, and `putNote` is a patch-merge, so a triage write would clobber
- * the queue's brief and a queue write would skew foremanStatus's disposition
- * tallies. The note is triage's audit record for a *prompt episode*; an item's
- * lifecycle is not one.
- */
-/**
  * Work-item states that move an item forward on the session's behalf. While the item's note
  * key stands on a session blocker these are refused here, at the one boundary both queue state
  * routes share, as a backstop to the worker's own hold: a Foreman worker
@@ -32,6 +20,18 @@ const BLOCKER_HELD_ITEM_STATES: ReadonlySet<WorkItem["state"]> = new Set<WorkIte
 ]);
 const BLOCKER_HELD_ERROR = "the session is blocked on someone else; its queue is held until the blocker is cleared";
 
+/**
+ * Owns the session work-queue lifecycle: the batch of work you load up for one
+ * agent to do next, one item at a time, in the order you authored. The registry
+ * is the single store; this is the policy layer routes call into - the queue
+ * analog of ReviewManager.
+ *
+ * Deliberately NOT built on SessionNote. There is one note per key with one
+ * `disposition`, and `putNote` is a patch-merge, so a triage write would clobber
+ * the queue's brief and a queue write would skew foremanStatus's disposition
+ * tallies. The note is triage's audit record for a *prompt episode*; an item's
+ * lifecycle is not one.
+ */
 export class QueueManager {
   constructor(private registry: Registry) {}
 

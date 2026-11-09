@@ -998,7 +998,6 @@ export const McpReportBlockerSchema = ReportBlockerBodySchema.extend({
   sessionId: z.string().nullable().optional().default(null),
 });
 
-/** `POST /api/sessions/:id/blocker/clear`, and the session-control action that maps to it. */
 /**
  * The `id` of the blocker the caller was looking at. A re-report keeps it, so it names one
  * blocker across updates; a different blocker reported since has a different one, and the
@@ -1006,6 +1005,7 @@ export const McpReportBlockerSchema = ReportBlockerBodySchema.extend({
  */
 const ExpectedBlockerSchema = z.string().min(1).max(64);
 
+/** `POST /api/sessions/:id/blocker/clear`, and the session-control action that maps to it. */
 export const ClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
   blockerId: ExpectedBlockerSchema.optional(),

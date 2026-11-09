@@ -114,12 +114,18 @@ test("a Persona with no effort, and a pre-effort version, snapshot and parse exa
 });
 
 test("create refuses an effort the stored provider and model do not offer", () => {
-  const base = { name: "R", guidanceMarkdown: "# R" };
-  assert.equal(CreatePersonaSchema.safeParse({ ...base, runner: "claude", effort: "max" }).success, true);
-  assert.equal(CreatePersonaSchema.safeParse({ ...base, runner: "codex", model: "gpt-5.6-luna", effort: "max" }).success, false);
+  const manager = new PersonaManager(new Registry(), store);
+  const base = { description: "", guidanceMarkdown: "# R", model: null };
+  const reason = (result: ReturnType<typeof manager.create>) => result.ok ? "ok" : result.reason;
+  assert.equal(reason(manager.create({ ...base, name: "R claude max", runner: "claude", effort: "max" })), "ok");
+  assert.equal(
+    reason(manager.create({ ...base, name: "R luna max", runner: "codex", model: "gpt-5.6-luna", effort: "max" })),
+    "unsupported_effort",
+  );
   // Inheriting the provider: refused, because the app provider may be one that lacks `max`.
-  assert.equal(CreatePersonaSchema.safeParse({ ...base, effort: "max" }).success, false);
-  assert.equal(CreatePersonaSchema.safeParse({ ...base, effort: "ultra" }).success, false);
+  assert.equal(reason(manager.create({ ...base, name: "R inherited max", runner: null, effort: "max" })), "unsupported_effort");
+  assert.deepEqual(store.listPersonas().map((persona) => persona.name).filter((name) => name.startsWith("R ")), ["R claude max"]);
+  assert.equal(CreatePersonaSchema.safeParse({ name: "R", guidanceMarkdown: "# R", effort: "ultra" }).success, false);
 });
 
 test("an update is checked against the MERGED provider and model, and stored when valid", () => {

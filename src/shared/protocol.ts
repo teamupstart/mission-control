@@ -141,7 +141,6 @@ import {
   WORKFLOW_TRIGGER_MODES,
   WORKFLOW_TRIGGER_SOURCES,
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
-  personaEffortLevels,
   workflowCommandEvidenceContent,
 } from "./workflow.ts";
 import type {
@@ -5442,10 +5441,9 @@ export const CreatePersonaSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model: ModelIdSchema.nullable().optional().default(null),
+  // Checked against the provider and model by `PersonaManager.create`, so a refusal carries the
+  // same `persona_unsupported_effort` code an update's does.
   effort: EffortLevelSchema.nullable().optional().default(null),
-}).refine((value) => !value.effort || personaEffortLevels(value.runner, value.model).includes(value.effort), {
-  message: "reasoning effort is not supported by this provider and model",
-  path: ["effort"],
 });
 export type CreatePersona = z.infer<typeof CreatePersonaSchema>;
 

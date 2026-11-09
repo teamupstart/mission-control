@@ -303,12 +303,18 @@ test("an effort the merged provider and model cannot run is a 400 that leaves th
     { revision: 1, runner: "claude", model: null, effort: "max" },
   );
 
-  // The create path refuses the same combination at the schema, also as a 400.
   const createRefused = await request("/api/personas", {
     method: "POST",
     body: JSON.stringify({ name: "Bad effort", guidanceMarkdown: "# B", runner: "codex", model: "gpt-5.6-luna", effort: "max" }),
   });
   assert.equal(createRefused.status, 400);
+  assert.deepEqual(await createRefused.json(), {
+    error: "reasoning effort is not supported by this provider and model",
+    code: "persona_unsupported_effort",
+    current: null,
+  });
+  const listed = (await (await request("/api/personas")).json()) as Array<{ name: string }>;
+  assert.equal(listed.some((persona) => persona.name === "Bad effort"), false);
 });
 
 test("an effort-only patch on an unknown stored provider is checked as inherited and keeps the id", async () => {

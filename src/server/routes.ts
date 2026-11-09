@@ -2196,8 +2196,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         current: result.current,
       }, 409);
     }
-    // A 400: the request itself names a combination that cannot run, exactly like a create
-    // body the schema refuses for the same reason.
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
     if (result.reason === "unsupported_effort") {
       return c.json({
         error: "reasoning effort is not supported by this provider and model",

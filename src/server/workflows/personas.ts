@@ -190,6 +190,9 @@ export class PersonaManager {
     input: Omit<CreatePersona, "effort"> & { effort?: CreatePersona["effort"] },
     now = Date.now(),
   ): PersonaMutation {
+    if (input.effort && !personaEffortLevels(input.runner, input.model).includes(input.effort)) {
+      return { ok: false, reason: "unsupported_effort", current: null };
+    }
     return this.publish(
       this.store.insertPersona({
         ...input,

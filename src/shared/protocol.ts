@@ -1000,15 +1000,15 @@ export const McpReportBlockerSchema = ReportBlockerBodySchema.extend({
 
 /** `POST /api/sessions/:id/blocker/clear`, and the session-control action that maps to it. */
 /**
- * The `startedAt` of the blocker the caller was looking at. A re-report keeps it, so it names
- * one blocker across updates; a different blocker reported since has a different one, and the
+ * The `id` of the blocker the caller was looking at. A re-report keeps it, so it names one
+ * blocker across updates; a different blocker reported since has a different one, and the
  * daemon refuses rather than act on a blocker the caller never saw.
  */
-const ExpectedBlockerSchema = z.number().int().nonnegative();
+const ExpectedBlockerSchema = z.string().min(1).max(64);
 
 export const ClearBlockerSchema = z.object({
   resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
-  blockerStartedAt: ExpectedBlockerSchema.optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type ClearBlocker = z.infer<typeof ClearBlockerSchema>;
 
@@ -1023,7 +1023,7 @@ export const McpClearBlockerSchema = z.object({
 export const FlagBlockerReplySchema = z.object({
   note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
   referenceUrl: BlockerUrlSchema.optional(),
-  blockerStartedAt: ExpectedBlockerSchema.optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
 }).strict();
 export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
 

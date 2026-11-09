@@ -46,8 +46,8 @@ export function sessionController(registry: Registry, credential: string | undef
 /** The list form's compact blocker: enough to correlate, without the Markdown details. */
 export function blockerSummary(blocker: SessionBlocker | null | undefined) {
   if (!blocker) return null;
-  const { kind, reason, waitingOn, referenceUrl, startedAt, reply } = blocker;
-  return { kind, reason, waitingOn, referenceUrl, startedAt, reply };
+  const { id, kind, reason, waitingOn, referenceUrl, startedAt, reply } = blocker;
+  return { id, kind, reason, waitingOn, referenceUrl, startedAt, reply };
 }
 
 /** Translate only supported actions to the existing dashboard handlers and their guards. */
@@ -75,8 +75,8 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_model": return post("model", { model: command.model });
     case "set_effort": return post("effort", { effort: command.effort });
     case "set_permission_mode": return post("mode", { mode: command.mode });
-    case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerStartedAt: command.blockerStartedAt });
-    case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerStartedAt: command.blockerStartedAt });
+    case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerId: command.blockerId });
+    case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerId: command.blockerId });
   }
 }
 

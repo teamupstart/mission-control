@@ -861,7 +861,7 @@ test("stopping readiness cancels its pending re-checks", async () => {
 
 test("a blocked prerequisite stamps no dependent until its blocker is cleared", async () => {
   const blocker = {
-    kind: "dependency" as const, reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
     details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
   };
   const w = world();
@@ -887,7 +887,7 @@ test("a blocker reported while the parent pull request is read stamps nothing", 
     w.sessions.set("sA", mkSession({
       id: "sA", state: "idle",
       blocker: {
-        kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+        id: "blk-fixture", kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
         details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
       },
     }));

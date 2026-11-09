@@ -534,6 +534,12 @@ export interface SessionBlockerReply {
  * when someone clears it or the session's task reaches a terminal status.
  */
 export interface SessionBlocker {
+  /**
+   * This blocker's identity: minted when it is first reported and kept across re-reports, so
+   * a replacement is always distinguishable from the blocker a control was opened on, even
+   * within the same millisecond. Flag reply and Clear name it to refuse stale actions.
+   */
+  id: string;
   kind: SessionBlockerKind;
   reason: string;
   waitingOn: string;

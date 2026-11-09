@@ -765,7 +765,7 @@ test("bugfix shares ship recovery and its live-delivery boundaries", () => {
 });
 
 test("a blocked session gets no pre-PR recovery send until the blocker clears", () => {
-  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   assert.deepEqual(decideShipShepherd(input({ session: session({ blocker }) })), { kind: "skip", why: "the session is blocked" });
   assert.equal(decideShipShepherd(input()).kind, "recover");
 });

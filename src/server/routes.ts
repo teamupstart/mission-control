@@ -982,12 +982,13 @@ function foremanWriteRefusal(
  */
 /**
  * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
- * A caller that names the blocker it saw (its `startedAt`) is refused when a different blocker
- * now stands, so a button left open on blocker A cannot clear blocker B. No current blocker is
- * not a mismatch: the routes treat that as their own no-op or 409.
+ * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
+ * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
+ * same millisecond. No current blocker is not a mismatch: the routes treat that as their own
+ * no-op or 409.
  */
-function staleBlockerRefusal(current: SessionBlocker | null, expectedStartedAt: number | undefined): string | null {
-  if (expectedStartedAt === undefined || !current || current.startedAt === expectedStartedAt) return null;
+function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string | undefined): string | null {
+  if (expectedId === undefined || !current || current.id === expectedId) return null;
   return "The blocker changed since you last looked; reread it before acting.";
 }
 
@@ -5952,7 +5953,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, FlagBlockerReplySchema);
     if (!parsed.ok) return parsed.res;
-    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerStartedAt);
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
     if (stale) return c.json({ error: stale }, 409);
     const actor = sessionControlActor(c.req.raw) ?? "operator";
     const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
@@ -5966,7 +5967,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, ClearBlockerSchema);
     if (!parsed.ok) return parsed.res;
-    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerStartedAt);
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
     if (stale) return c.json({ error: stale }, 409);
     const actor = sessionControlActor(c.req.raw) ?? "operator";
     const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);

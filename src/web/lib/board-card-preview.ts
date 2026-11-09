@@ -124,6 +124,7 @@ export function previewSession(now: number): Session {
     queue: null,
     // A blocker, so each of the five blocker card items governs something the preview draws.
     blocker: {
+      id: "board-card-preview-blocker",
       kind: "question",
       reason: "Needs the audit-log retention window",
       waitingOn: "Dana (platform)",

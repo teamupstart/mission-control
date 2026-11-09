@@ -939,7 +939,7 @@ test("PromptedFailureTracker: strikes are per logical session", () => {
 
 test("a blocked session is skipped, and the same session is a candidate once the blocker clears", () => {
   const blocker = {
-    kind: "question" as const, reason: "Needs the retention window", waitingOn: "Dana", resumeWhen: "Dana answers",
+    id: "blk-fixture", kind: "question" as const, reason: "Needs the retention window", waitingOn: "Dana", resumeWhen: "Dana answers",
     details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
   };
   const held = decide({ session: mkSession({ blocker }) });

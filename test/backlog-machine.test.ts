@@ -989,7 +989,7 @@ test("a stack-released task is dispatched, never assigned to a free agent", () =
 });
 
 test("a blocked agent is not free for another task until its blocker clears", () => {
-  const blocker = { kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
   const blocked = mkSession({ blocker });
   assert.equal(agentIsFree(blocked, [blocked], [], CFG, NOW), false);
   const cleared = mkSession({ blocker: null });

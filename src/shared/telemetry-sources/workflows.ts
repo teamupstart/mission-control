@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AUDIENCE_ALL } from "../telemetry.ts";
 import type { TelemetryEnvelope } from "../telemetry.ts";
 import type { TelemetryEventDefinition, TelemetryMetricDefinition } from "../telemetry-catalog.ts";

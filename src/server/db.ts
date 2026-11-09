@@ -7,7 +7,7 @@ import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } fro
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
@@ -4487,6 +4487,8 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+  // Null preserves legacy directory capture; [] is an explicit (invalid) selection, never discovery.
+  addColumn(d, "archive_capture_jobs", "files_json", "TEXT");
 
   // Prompt context is additive in both places. The capture row is immutable recovery
   // coordination; the archive row is a disposable projection rebuilt from manifests.

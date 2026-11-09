@@ -182,7 +182,7 @@ Every task whose kind is **scout** is told, in its own prompt, that its delivera
 
 > Write the report to `docs/reports/<slug>/report.html` ... Answer first ... Self-contained and
 > static ... call the `submit_scout_artifacts` tool with the report path, a short plain-text
-> summary of the finding, optional tags, and only the additional files worth preserving. Do not
+> summary of the finding, optional tags, and a `files` list including the primary report and each evidence file. Do not
 > commit the report or other scout output unless the operator's task explicitly requests a commit.
 
 That instruction is appended by the daemon, not by a skill, so it arrives whether Skills are
@@ -236,7 +236,7 @@ time is unknown the two cannot be ordered, and the disk check stands on its own.
 | Submitted | Captured as |
 |---|---|
 | `reportPath` | `report/report.html`, byte for byte |
-| every file beside it, recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
+| selected files beside it (or every neighbor when `files` is omitted), recursively | `report/…`, keeping its relative layout so the page's own links still resolve |
 | `supporting: [{ repoSlot, path }]` | `artifacts/<repo-slot>/…` |
 
 The optional submission `title` names the report. Its fallback is the session name followed
@@ -247,14 +247,31 @@ clipped. Later entries are positively delivered human user turns in conversation
 
 `repoSlot` is a generated name (`repo-01`) that the task's own prompt hands out, one per
 attached checkout. An absolute path, a path that leaves the checkout, a path that resolves
-through a symbolic link, a path git ignores, and a file that changes while it is being read are
+through a symbolic link, and a file that changes while it is being read are
 each refused **by name** - a submission fails with every offending path listed, and the task
 stays exactly where it was so the agent can correct all of them at once.
 
-Files beside the report are captured automatically and must not be listed as supporting files.
-Hidden entries (`.DS_Store`, an editor swap file) cannot be represented inside a bundle at all,
-so they are skipped; if the report actually links to one, the whole capture is refused rather
-than published with a dead link.
+Use `files: [{ repoSlot, path }]` for explicit publication. Include `reportPath` itself in
+the primary repository slot and every evidence file to preserve. Selected files are accepted
+even when repository or global Git ignore rules exclude the whole directory. Only selected
+files are copied; other neighbors are not inspected or captured. Selected files beneath the
+report directory retain their relative layout under `report/`; selected files elsewhere use
+`artifacts/<repo-slot>/…`. Every local report reference must name a selected report file or
+capture fails with the missing target. The selection is persisted for retries and recovery.
+The HTTP route forwards that selection unchanged to the archive manager. Both the daemon
+and MCP submission schemas use patched Zod 4 (`zod/v4`), so oversized
+collections are refused before their elements are parsed. Other schemas retain their
+existing Zod 3 contracts through `zod/v3`; the shared HTTP parser accepts either safe-parse result.
+
+Do not combine `files` with nonempty `supporting`. Existing callers that omit `files` keep
+automatic directory capture, additional `supporting` files, and Git-ignore filtering. In
+that legacy mode, files beside the report must not also be listed as supporting files.
+Hidden entries cannot be represented inside a bundle: explicit selection refuses them;
+legacy discovery skips them, but refuses a report that links to one.
+
+All path, symlink, size, static-HTML, and integrity checks still apply. Publication never
+stages files, creates commits, or modifies Git ignore rules. Ignored working copies remain
+outside the Files tab's discovery; published reports are readable through the archive.
 
 ### Normal completion waits for the archive
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { TypeOf, ZodTypeAny } from "zod";
+import type { TypeOf, ZodTypeAny } from "zod/v3";
 import {
   ensemblePayload,
   ENSEMBLE_HARD_LIMITS,

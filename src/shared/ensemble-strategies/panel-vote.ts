@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AGENT_TYPES, THINKING_LEVELS } from "../types.ts";
 import { supportsEffort } from "../harness-capabilities.ts";
 import { LLM_RUNNER_IDS } from "../llm.ts";

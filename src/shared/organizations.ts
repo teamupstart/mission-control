@@ -10,7 +10,7 @@
  *
  * Design source: docs/plans/upstart-datadog-telemetry/phase-3-recognize-upstart.md.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import { TelemetryDestinationSchema, type TelemetryExportShapeId } from "./telemetry.ts";
 
 /**

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Executable identity for Mission-owned code, never an arbitrary command or argv. */
 export const OwnedRuntimeContextSchema = z.object({

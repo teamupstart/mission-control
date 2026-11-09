@@ -68,7 +68,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { TypeOf, ZodTypeAny } from "zod";
+import type { TypeOf, ZodTypeAny } from "zod/v3";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -5394,6 +5394,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = await library.submit({
       authority,
       submission: {
+        files: parsed.data.files,
         title: parsed.data.title,
         reportPath: parsed.data.reportPath,
         summary: parsed.data.summary,

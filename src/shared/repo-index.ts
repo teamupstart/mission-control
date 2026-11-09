@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Shipped roots for a machine that has never saved repository-index settings. */
 export const DEFAULT_INDEXED_DIRECTORIES = [

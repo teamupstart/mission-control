@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export const RESIDENT_SKILL_RESCAN_COOLDOWN_MS = 1_000;
 

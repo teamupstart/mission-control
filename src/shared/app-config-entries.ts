@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
 import { ResidentMcpServersDocumentSchema } from "./resident-mcp.ts";
 import {

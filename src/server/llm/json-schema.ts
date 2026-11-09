@@ -1,5 +1,5 @@
-import { z } from "zod";
-import type { ZodTypeAny } from "zod";
+import { z } from "zod/v3";
+import type { ZodTypeAny } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 /**

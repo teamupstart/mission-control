@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 const ModelWindow = z.object({
   slug: z.string(), context_window: z.number().int().positive(),

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   APP_CONFIG_ENTRY_LIST,
   appConfigEntryHasSettings,

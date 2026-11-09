@@ -1,4 +1,4 @@
-import type { ZodTypeAny, TypeOf } from "zod";
+import type { ZodTypeAny, TypeOf } from "zod/v3";
 import { providerFailureKind, type ProviderFailureKind } from "./provider-failure.ts";
 
 // Asking a model for a VALUE rather than for text, and the two helpers every caller that

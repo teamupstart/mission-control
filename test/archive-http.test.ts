@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { rename as renamePath } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,7 +36,7 @@ const { provisionScoutSubmissionCredential } = await import(
 const { SCOUT_SUBMISSION_CREDENTIAL_HEADER } = await import(
   "../src/shared/harness-runtime.mjs"
 );
-import type { ArchiveTaskGateway } from "../src/server/archives/task-gateway.ts";
+import type { ArchiveSubject, ArchiveTaskGateway } from "../src/server/archives/task-gateway.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
@@ -1099,4 +1100,45 @@ test("Phase 5: archive cleanup records one owner outcome without title or file c
   assert.equal(facts.length, 1);
   assert.equal(facts[0]!.facts.outcome, "applied");
   assert.ok(!JSON.stringify(facts).includes("PRIVATE_SENTINEL"));
+});
+
+test("explicit HTTP submissions publish only selected ignored files and remain readable from the archive", async () => {
+  const checkout = realpathSync(mkdtempSync(join(home, "explicit-http-")));
+  execFileSync("git", ["init", "-q", checkout]);
+  writeFileSync(join(checkout, ".gitignore"), "docs/reports/\n");
+  const reportPath = "docs/reports/resume/report.html";
+  const directory = join(checkout, "docs/reports/resume");
+  mkdirSync(directory, { recursive: true });
+  const html = '<!doctype html><html><body><a href="evidence.csv">Evidence</a></body></html>';
+  writeFileSync(join(checkout, reportPath), html);
+  writeFileSync(join(directory, "evidence.csv"), "value\n42\n");
+  writeFileSync(join(directory, "unlisted.txt"), "leave this behind");
+  execFileSync("git", ["check-ignore", "-q", "--", reportPath], { cwd: checkout });
+  const subject: ArchiveSubject = {
+    taskId: "explicit-http-task", sessionId: "explicit-http-session", episodeId: "episode",
+    title: "Explicit HTTP report", question: null, prompts: null,
+    origin: { agent: "codex", model: null, source: "manual" },
+    repos: [{ slot: "repo-01", root: checkout, head: null, primary: true, label: "fixture" }],
+  };
+  const { app, root, manager } = harness({ tasks: {
+    subjectForSubmission: () => ({ ok: true, subject }),
+    subjectForTask: () => subject, subjectForExitingSession: () => null,
+    scoutPromptTrailFor: () => null, captureKind: () => "scout", awaitsAgent: () => true,
+  } });
+  const headers = submissionHeaders(subject.taskId!, checkout);
+  // Omitting files must retain legacy ignore filtering at the same real HTTP boundary.
+  const legacy = await app.request(SUBMIT, { method: "POST", headers, body: submitBody() });
+  assert.equal(legacy.status, 409);
+  assert.match(await legacy.text(), /ignored by git/);
+  const files = [reportPath, "docs/reports/resume/evidence.csv"].map((path) => ({ repoSlot: "repo-01", path }));
+  const res = await app.request(SUBMIT, { method: "POST", headers, body: submitBody({ files }) });
+  assert.equal(res.status, 200, await res.clone().text());
+  const { archive } = await res.json() as { archive: { key: string; relativePath: string; artifactCount: number } };
+  assert.equal(archive.artifactCount, 2);
+  assert.equal(existsSync(join(root, archive.relativePath, "report/unlisted.txt")), false);
+  await settle(manager);
+  const report = await app.request(`/api/archives/${archive.key}/artifacts/report`, { headers: LOOPBACK });
+  assert.equal(report.status, 200);
+  assert.equal(await report.text(), html);
+  assert.equal(readFileSync(join(root, archive.relativePath, "report/evidence.csv"), "utf8"), "value\n42\n");
 });

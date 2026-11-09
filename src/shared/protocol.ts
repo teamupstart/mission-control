@@ -1,6 +1,7 @@
 import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { z as z4 } from "zod/v4";
 import { ModelIdSchema } from "./model-id.ts";
 import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
@@ -8184,9 +8185,9 @@ export type OpenArchiveArtifactBody = z.infer<typeof OpenArchiveArtifactSchema>;
  * `artifacts/` in the published bundle, and every other component below it comes from the
  * checkout-relative path after its own containment check.
  */
-const ScoutSupportingLocatorSchema = z.object({
-  repoSlot: z.string().refine(isArchiveRepoSlot, "not a repository slot issued for this task"),
-  path: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars),
+const ScoutSupportingLocatorSchema = z4.object({
+  repoSlot: z4.string().refine(isArchiveRepoSlot, "not a repository slot issued for this task"),
+  path: z4.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars),
 });
 
 /**
@@ -8207,27 +8208,29 @@ const ScoutSupportingLocatorSchema = z.object({
  * The zod in `src/mcp/server.ts` is a hand-written mirror of this. They are duplicated
  * deliberately and change together; `test/mission-mcp.test.ts` catches a rename.
  */
-export const SubmitScoutArtifactsSchema = z.object({
-  title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
-  reportPath: z
+// Patched Zod 4 rejects oversized arrays before parsing their elements (GHSA-mrhx-c7xc-m3w5).
+export const SubmitScoutArtifactsSchema = z4.object({
+  files: z4.array(ScoutSupportingLocatorSchema).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional(),
+  title: z4.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional(),
+  reportPath: z4
     .string()
     .trim()
     .min(1)
     .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
     .refine((value) => scoutReportSlug(value) !== null, `the report must be at ${SCOUT_REPORT_PATH_SHAPE}`),
-  summary: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.summary),
-  tags: z
-    .array(z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
+  summary: z4.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.summary),
+  tags: z4
+    .array(z4.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
     .max(SCOUT_SUBMISSION_LIMITS.tags)
     .optional()
     .default([]),
-  supporting: z
+  supporting: z4
     .array(ScoutSupportingLocatorSchema)
     .max(SCOUT_SUBMISSION_LIMITS.supportingFiles)
     .optional()
     .default([]),
 });
-export type SubmitScoutArtifactsInput = z.infer<typeof SubmitScoutArtifactsSchema>;
+export type SubmitScoutArtifactsInput = z4.infer<typeof SubmitScoutArtifactsSchema>;
 
 // ---- line comments in the Files workspace ----
 //

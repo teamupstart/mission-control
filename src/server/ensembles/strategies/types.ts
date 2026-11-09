@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import type { EnsembleStrategyInfo } from "@shared/ensemble-strategies/types.ts";
 import type { CompiledEnsemblePlan, EnsembleJson, EnsembleReviewPersona } from "@shared/ensemble.ts";
 

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { WORKFLOW_TRIGGER_MODES } from "./workflow.ts";
 
 /** A read of current binding authority, never an authorization to merge or ignore a handoff. */

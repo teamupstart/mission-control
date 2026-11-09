@@ -14,7 +14,7 @@
  * p1-durable-export/plan.md. Phase 1 implements the contract; later phases add sources and
  * projections through the registration seams without changing what is written here.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { TelemetryOrganizationStatus } from "./organizations.ts";
 
 /**

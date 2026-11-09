@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ghBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 import type { RunResult } from "../util/exec.ts";

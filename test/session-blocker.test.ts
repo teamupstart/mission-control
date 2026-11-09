@@ -464,9 +464,17 @@ test("the daemon refuses Foreman's automated writes and wrap-up ask into a block
   Object.assign(registry.getSession(d.syntheticId)!, { state: "awaiting_input", stateConfirmed: true });
   const whileAsking = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });
   assert.equal(whileAsking.status, 409, "a blocked session that is asking took a free-text Foreman write");
-  const menuAnswer = await post("/select-option", { requestId: "r1", number: 1, label: "Yes", by: "foreman" });
-  assert.doesNotMatch(((await menuAnswer.json()) as { error?: string }).error ?? "", /blocked on someone else/,
-    "a structured triage answer was refused for the blocker");
+  // A real pending question, answered by Foreman while the session is blocked: accepted.
+  const reviews = new ReviewManager(registry);
+  const appWithReviews = buildApp({ registry, reviews, tasks: {} as TaskManager, queues });
+  const review = reviews.create(d.syntheticId, "plan", "Which retention window?", "Pick one");
+  const answered = await appWithReviews.request(`/api/reviews/${review.id}/resolve`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ action: "approve", response: "30 days", by: "foreman" }),
+  });
+  assert.equal(answered.status, 200, `a structured Foreman answer was refused while blocked: ${await answered.clone().text()}`);
+  assert.equal(registry.getReview(review.id)?.status, "approved");
+  assert.ok(registry.getBlocker(d.syntheticId), "answering the question cleared the blocker");
   Object.assign(registry.getSession(d.syntheticId)!, { state: "idle" });
 
   // Cleared, the same Foreman write is no longer refused for the blocker.

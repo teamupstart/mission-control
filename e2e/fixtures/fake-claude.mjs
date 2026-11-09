@@ -1538,6 +1538,12 @@ rl.on("line", (line) => {
     // CLI reports `needs-auth`. A remote entry whose URL does not parse is reported `failed`, as
     // the real CLI cannot connect to it, so a malformed direct entry refuses the launch rather
     // than passing as connected. A server with no URL (stdio, a launcher entry) is connected.
+    //
+    // Without `--strict-mcp-config`, and without `disableClaudeAiConnectors` in its `--settings`,
+    // the real CLI also loads the account's claude.ai connectors and reports them beside what
+    // `--mcp-config` named. Two stand for them: one connected, and one that needs a login, which a
+    // resident on all native sources must start despite - it is Claude Code's to report, not a
+    // server Mission Control put in the set.
     if (frame.request?.subtype === "mcp_status") {
       const configured = JSON.parse(argvValue("--mcp-config") ?? "{}").mcpServers ?? {};
       const status = (server) => {
@@ -1545,7 +1551,15 @@ rl.on("line", (line) => {
         if (!URL.canParse(server.url)) return { status: "failed", error: "the MCP server URL is not a valid URL" };
         return { status: new URL(server.url).hostname.startsWith("needs-login.") ? "needs-auth" : "connected" };
       };
-      ok(frame.request_id, { mcpServers: Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })) });
+      // `--settings` may also name a file; only inline JSON can carry the switch here.
+      const settings = argvValue("--settings") ?? "{}";
+      const flags = settings.trimStart().startsWith("{") ? JSON.parse(settings) : {};
+      const connectors = process.argv.includes("--strict-mcp-config") || flags.disableClaudeAiConnectors === true
+        ? []
+        : [{ name: "claude.ai Slack", status: "connected" }, { name: "claude.ai Gmail", status: "needs-auth" }];
+      ok(frame.request_id, {
+        mcpServers: [...Object.entries(configured).map(([name, server]) => ({ name, ...status(server) })), ...connectors],
+      });
       return;
     }
     ok(frame.request_id, frame.request?.subtype === "get_usage" ? { rate_limits_available: false } : {});

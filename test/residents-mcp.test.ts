@@ -413,12 +413,12 @@ function globalsOf(agent: "claude" | "codex", servers: Record<string, unknown>):
   return { agent, servers: Object.entries(servers).map(([name, entry]) => parse(name, entry)), problem: null, readAt: 1 };
 }
 
-function profile(over: { agent?: "claude" | "codex"; inheritDefaults?: boolean; selected?: unknown[] } = {}) {
+function profile(over: { agent?: "claude" | "codex"; inheritDefaults?: boolean; selected?: unknown[]; nativeSources?: "pinned" | "all" } = {}) {
   return ResidentProfileRevisionSchema.parse({
     identity: { name: "MCP Bot" },
     persona: { personaId: "p" },
     execution: { agent: over.agent ?? "claude" },
-    mcp: { inheritDefaults: over.inheritDefaults ?? true, selected: over.selected ?? [] },
+    mcp: { inheritDefaults: over.inheritDefaults ?? true, selected: over.selected ?? [], ...(over.nativeSources ? { nativeSources: over.nativeSources } : {}) },
   });
 }
 
@@ -457,6 +457,57 @@ test("an inherited server residents cannot represent refuses the launch, naming 
   const disabled = globalsOf("codex", { off: { command: "x", enabled: false } });
   const skipped = await resolve(profile({ agent: "codex" }), disabled);
   assert.ok(skipped.ok && skipped.servers?.length === 0, "a natively disabled server is not a default");
+});
+
+test("a profile saved before the choice existed, and a new one, keep the pinned set", () => {
+  assert.equal(profile().mcp.nativeSources, "pinned");
+  const stored = ResidentProfileRevisionSchema.parse({
+    identity: { name: "Older" }, persona: { personaId: "p" }, mcp: { inheritDefaults: false, selected: [] },
+  });
+  assert.equal(stored.mcp.nativeSources, "pinned");
+  assert.throws(() => ResidentProfileRevisionSchema.parse({ identity: { name: "Bad" }, persona: { personaId: "p" }, mcp: { nativeSources: "some" } }));
+});
+
+test("importing all native sources snapshots only the custom servers: global servers load natively and never refuse the launch", async () => {
+  const linear = create({ name: "linear", harnesses: ["claude"], transport: { type: "stdio", command: "l", env: [{ name: "K", secret: true, value: "custom-value" }] } });
+  const globals = globalsOf("claude", {
+    github: { command: "gh-mcp", env: { T: "1" } },
+    // Pinned, an inherited server residents cannot carry refuses the launch; natively it is Claude Code's.
+    helper: { type: "http", url: "https://x", headersHelper: "h" },
+  });
+  let reads = 0;
+  const settle = (settings: ReturnType<typeof profile>) => launch.resolveResidentMcpSet(settings, {
+    globals: async () => { reads += 1; return globals; },
+    custom: mcpStore.listResidentMcpServers,
+    customSecrets: mcpStore.customSecretValues,
+  });
+  const pinned = await settle(profile({ selected: [{ source: "custom", id: linear.id }] }));
+  assert.ok(!pinned.ok && /helper is inherited but residents cannot use it/.test(pinned.error), JSON.stringify(pinned));
+
+  const all = await settle(profile({
+    nativeSources: "all",
+    selected: [{ source: "global", agent: "claude", name: "github" }, { source: "custom", id: linear.id }],
+  }));
+  assert.ok(all.ok && all.servers, JSON.stringify(all));
+  assert.deepEqual(all.servers.map((server) => [server.source, server.name]), [["custom", "linear"]]);
+  assert.equal(all.servers[0]!.secrets.get("env:K"), "custom-value", "a custom server's secret still rides the launcher");
+
+  // Nothing but natively loaded servers: an empty snapshot, which keeps the run off the old
+  // pre-snapshot path, and no global read at all.
+  reads = 0;
+  const bare = await settle(profile({ nativeSources: "all", inheritDefaults: false, selected: [{ source: "global", agent: "claude", name: "gone" }] }));
+  assert.ok(bare.ok && bare.servers && bare.servers.length === 0, JSON.stringify(bare));
+  assert.equal(reads, 0);
+
+  // Both would load under one name, so the custom server's name is still checked.
+  const clash = create({ name: "GitHub", harnesses: ["claude"], transport: { type: "stdio", command: "g" } });
+  const refused = await settle(profile({ nativeSources: "all", selected: [{ source: "custom", id: clash.id }] }));
+  assert.ok(!refused.ok && /same name as Claude Code's global server/.test(refused.error), JSON.stringify(refused));
+});
+
+test("a harness that offers no all-sources launch refuses the choice at launch", async () => {
+  const result = await resolve(profile({ agent: "codex", nativeSources: "all" }), globalsOf("codex", {}));
+  assert.ok(!result.ok && /Codex cannot start a resident on all of its native MCP sources/.test(result.error), JSON.stringify(result));
 });
 
 test("secrets under one field name stay bound to their own (source, name)", async () => {
@@ -855,6 +906,65 @@ test("a profile cannot save a selection another harness owns or a custom server 
     mcp: { selected: [{ source: "custom", id: codexOnly.id }] },
   }));
   assert.ok(!notApplicable.ok && /does not apply to Claude Code/.test(notApplicable.error));
+});
+
+test("a profile on all native sources launches with its pinned revision's choice, and Codex cannot save it", async () => {
+  const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" }, helper: { type: "http", url: "https://x", headersHelper: "h" } }));
+  const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
+    identity: { name: "All Sources" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
+  }));
+  assert.ok(created.ok, JSON.stringify(created));
+  const outcome = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-all-sources" });
+  if (!("result" in outcome) || outcome.result.state !== "launched") assert.fail(JSON.stringify(outcome));
+  const resident = residents.mcpLaunchForTask(registry.getTask(outcome.result.taskId)!);
+  assert.equal(resident?.nativeSources, "all");
+  assert.deepEqual(resident?.names, [], "Mission's server only: the harness loads its own");
+  assert.equal(mcpStore.runMcpSnapshot(outcome.result.run.id)?.length, 0, "a real, empty snapshot");
+
+  const codex = residents.createProfile(ResidentProfileRevisionSchema.parse({
+    identity: { name: "Codex All" }, persona: { personaId: PERSONA.id }, execution: { agent: "codex" }, mcp: { nativeSources: "all" },
+    // No spend cap, so the MCP check is the one that answers.
+    loop: { spendCapUsd: null },
+  }));
+  assert.ok(!codex.ok && /Codex cannot start a resident on all of its native MCP sources, so a profile on it must keep a pinned set/.test(codex.error), JSON.stringify(codex));
+});
+
+test("a running resident keeps its launch revision's source mode after the profile is edited back to pinned", async () => {
+  const { registry, residents } = manager(async (agent) => globalsOf(agent, { github: { command: "gh" } }));
+  const created = residents.createProfile(ResidentProfileRevisionSchema.parse({
+    identity: { name: "Mode Keeper" }, persona: { personaId: PERSONA.id }, mcp: { nativeSources: "all" },
+  }));
+  assert.ok(created.ok, JSON.stringify(created));
+  const launched = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-mode-keeper" });
+  if (!("result" in launched) || launched.result.state !== "launched") assert.fail(JSON.stringify(launched));
+  assert.equal(launched.result.run.profileRevision, 1);
+  const task = registry.getTask(launched.result.taskId)!;
+  assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");
+
+  // The operator edits the profile back to a pinned set while the resident runs.
+  const revised = residents.updateProfile(created.profile.id, 1, {
+    ...created.profile.settings,
+    mcp: { ...created.profile.settings.mcp, nativeSources: "pinned" },
+  });
+  assert.ok(revised.ok && revised.profile.revision === 2, JSON.stringify(revised));
+  assert.equal(revised.profile.settings.mcp.nativeSources, "pinned");
+
+  // After the edit, the running resident's launch options - what `mcpLaunchForTask` gives every
+  // start and resume - still come from revision 1, its pin: all native sources, Mission's server
+  // only, never the edited setting.
+  const next = residents.mcpLaunchForTask(task);
+  assert.equal(next?.nativeSources, "all");
+  assert.deepEqual(next?.names, []);
+
+  // The edit reaches the next launch, which pins revision 2 and its inherited global server.
+  const relaunched = await residents.launch(created.profile.id, { repoRoot: null, requestId: "mcp-mode-keeper-2" });
+  if (!("result" in relaunched) || relaunched.result.state !== "launched") assert.fail(JSON.stringify(relaunched));
+  assert.equal(relaunched.result.run.profileRevision, 2);
+  const pinned = residents.mcpLaunchForTask(registry.getTask(relaunched.result.taskId)!);
+  assert.equal(pinned?.nativeSources, "pinned");
+  assert.deepEqual(pinned?.names, ["github"]);
+  // And the first run still has not moved.
+  assert.equal(residents.mcpLaunchForTask(task)?.nativeSources, "all");
 });
 
 test("a custom server's name is checked against global servers as they are now, not as cached", async () => {

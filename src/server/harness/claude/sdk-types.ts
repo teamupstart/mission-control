@@ -188,11 +188,12 @@ export interface ClaudeSdkQueryOptions {
   mcpServers?: Record<string, unknown>;
   /**
    * Only `mcpServers` - no user, local, project or plugin MCP configuration. Set for a resident
-   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch.
+   * run, whose set is its snapshot (`--strict-mcp-config`); absent on every other launch,
+   * including a resident whose profile imports all native sources.
    */
   strictMcpConfig?: boolean;
   /**
-   * Launch-scoped flag settings, merged over the operator's. A resident run sets
+   * Launch-scoped flag settings, merged over the operator's. A pinned resident run sets
    * `disableClaudeAiConnectors`, so claude.ai's cloud connectors cannot join its MCP set; a
    * task's advisor pin sets `advisorModel`. One object carries both when both apply.
    */

@@ -38547,6 +38547,15 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-mcp-selected > li > button { margin-left: auto; }
 .resident-mcp-add { display: flex; gap: 12px; align-items: end; }
 .resident-mcp-add .field { flex: 1; min-width: 0; }
+/* Pinned at launch or all native sources: a bare fieldset, so the two radios read as the
+   section's other checkbox rows do. */
+.resident-mcp-sources { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.resident-mcp-sources > legend { margin-bottom: 4px; padding: 0; }
+.resident-mcp-sources input[type="radio"] { accent-color: var(--working); }
+.resident-mcp-all-confirm { width: min(520px, 100%); }
+.resident-mcp-all-body p { margin: 8px 0 0; font-size: 12.5px; line-height: 1.55; }
+.resident-mcp-all-body ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.resident-mcp-all-body strong { color: var(--fg); font-weight: 600; }
 
 .resident-state { font-size: 12px; }
 .resident-state-path { overflow-wrap: anywhere; }

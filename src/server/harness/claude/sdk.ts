@@ -1341,6 +1341,10 @@ function claudeResidentServer(entry: ResidentMcpEntry): Record<string, unknown> 
  * Mission's server, and for a resident run its snapshot under `strictMcpConfig`, so the CLI
  * reads no user, local, project or plugin MCP configuration. Called once per process start,
  * because a resident's launcher entries carry that start's single-use credentials.
+ *
+ * A resident whose profile imports all native sources gives the pin up on purpose
+ * (`allNativeSources: "lift-strict-mcp-config"`): its snapshot is rendered the same way, but
+ * without either switch, so Claude Code also loads its own configuration and connectors.
  */
 function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "mcpServers" | "strictMcpConfig" | "settings"> {
   // No prototype, so every server name - whatever a configuration used - is an own entry.
@@ -1348,10 +1352,11 @@ function claudeMcpOptions(opts: SdkLaunchOptions): Pick<ClaudeSdkQueryOptions, "
   if (opts.mcp) {
     servers[opts.mcp.serverName] = { type: "stdio", command: opts.mcp.command, args: opts.mcp.args, env: opts.mcp.env };
   }
-  if (!opts.residentMcp) return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
-  for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  if (opts.residentMcp) for (const entry of opts.residentMcp.forStart()) servers[entry.name] = claudeResidentServer(entry);
+  const listed = Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
+  if (!opts.residentMcp || opts.residentMcp.nativeSources === "all") return listed;
   return {
-    ...(Object.keys(servers).length > 0 ? { mcpServers: servers } : {}),
+    ...listed,
     strictMcpConfig: true,
     // `strictMcpConfig` names configuration files; claude.ai's cloud connectors are fetched
     // for an account instead, and this is the setting that keeps them out.
@@ -1417,7 +1422,8 @@ const RESIDENT_MCP_POLL_MS = 200;
 /**
  * What is wrong with the servers Claude reports for a resident's start, or null. Every server in
  * the set must be configured and must not have failed, be switched off, or wait on a login: a
- * resident never runs silently without one of its servers.
+ * resident never runs silently without one of its servers. With `exact`, a server outside the set
+ * is wrong too; a resident on all native sources has those by design, and they are not checked.
  *
  * A remote server Claude Code connects to itself presents the operator's stored OAuth login. With
  * no usable login - never signed in, or a token it could not refresh - Claude reports it
@@ -1428,8 +1434,9 @@ const RESIDENT_MCP_POLL_MS = 200;
 function residentMcpStatusProblem(
   statuses: ReadonlyArray<{ name: string; status: string }>,
   allowed: ReadonlySet<string>,
+  exact: boolean,
 ): string | null {
-  const extra = statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled");
+  const extra = exact ? statuses.find((status) => !allowed.has(status.name) && status.status !== "disabled") : undefined;
   if (extra) return `configured the MCP server ${extra.name}, which is not in its snapshot`;
   const reported = new Map(statuses.map((status) => [status.name, status.status]));
   for (const name of allowed) {
@@ -1466,7 +1473,12 @@ async function statusesBefore(query: ClaudeSdkQuery, deadline: number): Promise<
  * status call, a rejected or unanswered one, or a server still starting at the deadline - is a
  * refusal: a resident never starts without knowing it has the servers its profile selected.
  */
-async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySet<string>, settleMs: number): Promise<string | null> {
+async function residentMcpUnconfirmed(
+  query: ClaudeSdkQuery,
+  allowed: ReadonlySet<string>,
+  exact: boolean,
+  settleMs: number,
+): Promise<string | null> {
   if (!query.mcpServerStatus) return "cannot report its MCP servers, so their set cannot be confirmed";
   const whole = Math.max(1, Math.round(settleMs / 1000));
   const seconds = `${whole} second${whole === 1 ? "" : "s"}`;
@@ -1475,7 +1487,7 @@ async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySe
     const answer = await statusesBefore(query, deadline);
     if (answer === "rejected") return "could not report its MCP servers, so their set cannot be confirmed";
     if (answer === "timeout") return `did not report its MCP servers within ${seconds}`;
-    const problem = residentMcpStatusProblem(answer, allowed);
+    const problem = residentMcpStatusProblem(answer, allowed, exact);
     if (problem) return problem;
     const pending = answer.find((status) => allowed.has(status.name) && status.status === "pending");
     if (!pending) return null;
@@ -1488,10 +1500,15 @@ async function residentMcpUnconfirmed(query: ClaudeSdkQuery, allowed: ReadonlySe
  * Confirm the CLI configured exactly Mission's server and the run's snapshot, and that each one
  * connected - the direct check behind `strictMcpConfig`, which also covers sources no fixture can
  * reach, such as managed configuration. A start that cannot be confirmed is refused.
+ *
+ * A resident on all native sources is not pinned, so only what Mission Control put in its set -
+ * its own server and the profile's custom servers - must connect. A native server or connector
+ * that fails or waits on a login is left to Claude Code, as in a terminal session.
  */
 async function verifyResidentMcp(query: ClaudeSdkQuery, opts: SdkLaunchOptions, settleMs: number): Promise<void> {
   const allowed = new Set([...(opts.residentMcp?.names ?? []), ...(opts.mcp ? [opts.mcp.serverName] : [])]);
-  const problem = await residentMcpUnconfirmed(query, allowed, settleMs);
+  const exact = opts.residentMcp?.nativeSources !== "all";
+  const problem = await residentMcpUnconfirmed(query, allowed, exact, settleMs);
   if (!problem) return;
   await query.return(undefined).catch(() => {});
   throw new Error(`this resident's Claude Code session ${problem}`);

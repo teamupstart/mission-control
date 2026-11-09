@@ -121,6 +121,27 @@ export interface SkillSelectionSpec {
 export interface McpSelectionSpec {
   mechanism: "strict-mcp-config" | "codex-home-overlay";
   secrets: "scoped-launcher";
+  /**
+   * Whether a profile may give the pinned set up for everything the harness loads natively
+   * (`ResidentMcpSection.nativeSources: "all"`). Null where only the pinned set is offered: the
+   * editor does not show the choice and a profile that makes it is refused at save and launch.
+   */
+  allNativeSources: AllNativeMcpSourcesSpec | null;
+}
+
+/**
+ * How a harness starts a resident on all of its native MCP sources instead of a pinned set.
+ *
+ * - `lift-strict-mcp-config`: the launch leaves out `strictMcpConfig` and
+ *   `disableClaudeAiConnectors`, so Claude Code loads its own configuration and connectors at
+ *   every start, as a terminal session does, beside Mission's server and the snapshot of the
+ *   profile's custom servers in `mcpServers`. That is the MCP launch every other Agent SDK
+ *   session already makes, so there is no isolation to probe.
+ */
+export interface AllNativeMcpSourcesSpec {
+  mechanism: "lift-strict-mcp-config";
+  /** What the harness then loads on its own, as the editor and its confirmation name it. */
+  sources: string;
 }
 
 /**
@@ -692,7 +713,14 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skillSelection: null, // 2.1.310: overlay and launch settings still expose project skills.
     // 2.1.310 and SDK 0.3.310: `strictMcpConfig` excluded user, local, project and plugin
     // fixtures; only the passed servers started, each with exactly its passed definition.
-    mcpSelection: { mechanism: "strict-mcp-config", secrets: "scoped-launcher" },
+    mcpSelection: {
+      mechanism: "strict-mcp-config",
+      secrets: "scoped-launcher",
+      allNativeSources: {
+        mechanism: "lift-strict-mcp-config",
+        sources: "user, local, project and plugin MCP servers and claude.ai connectors",
+      },
+    },
     workQueue: {
       uninstrumentedWhy:
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
@@ -855,7 +883,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     skillSelection: null, // 0.160.0: native sources admit additions beyond a path-disable list.
     // 0.160.0: an overlay alone still loads a trusted project's servers and merges its fields,
     // so every start also verifies the layers and disables foreign servers before they load.
-    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher" },
+    // No `allNativeSources`: Codex has no account connectors, and skipping the overlay would
+    // load a trusted project's servers unverified, which nothing has measured yet.
+    mcpSelection: { mechanism: "codex-home-overlay", secrets: "scoped-launcher", allNativeSources: null },
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,

@@ -215,14 +215,31 @@ export function residentMcpRefKey(ref: ResidentMcpServerRef): string {
 }
 
 /**
+ * Where a run's MCP servers come from. Append-only: a value is the JSON every stored revision
+ * carries.
+ *
+ * - `pinned`: the exact set a launch resolves and snapshots, which every start and resume reads.
+ * - `all`: everything the harness loads natively - on Claude Code its user, local, project and
+ *   plugin servers and claude.ai connectors - read afresh at every start, plus Mission Control's
+ *   server and the profile's custom servers. Not pinned, and offered only where
+ *   `HARNESS_CAPABILITIES[agent].mcpSelection.allNativeSources` is set.
+ */
+export const RESIDENT_MCP_NATIVE_SOURCES = ["pinned", "all"] as const;
+export type ResidentMcpNativeSources = (typeof RESIDENT_MCP_NATIVE_SOURCES)[number];
+
+/**
  * Which MCP servers a run starts with, besides Mission Control's own, which is always attached.
  *
- * `inheritDefaults` adds every global server the harness configures at launch; the selection is
- * added either way. A run snapshots the resulting set at launch and never reads the native
- * configuration again, so a later edit there reaches the next launch only.
+ * With `nativeSources` pinned, `inheritDefaults` adds every global server the harness configures
+ * at launch, and the selection is added either way. A run snapshots the resulting set at launch
+ * and never reads the native configuration again, so a later edit there reaches the next launch
+ * only. With `nativeSources` all, the harness loads its own servers itself, so `inheritDefaults`
+ * and a selected global server have nothing to add; only the selected custom servers are
+ * snapshotted. Both stay stored, so switching back to pinned restores them.
  */
 export const ResidentMcpSectionSchema = z
   .object({
+    nativeSources: z.enum(RESIDENT_MCP_NATIVE_SOURCES).default("pinned"),
     inheritDefaults: z.boolean().default(true),
     selected: z
       .array(ResidentMcpServerRefSchema)
@@ -681,13 +698,22 @@ export type ResidentLaunchResult =
   | { state: "failed"; run: ResidentRun; error: string };
 
 /**
- * The MCP part of the launch summary: whether the harness defaults ride along, and what is
- * selected. `labels` names the selection in order when the caller can resolve it (a custom
- * server's name lives in the custom-server catalog, not the profile); otherwise it is counted.
+ * The MCP part of the launch summary: whether the set is pinned, whether the harness defaults
+ * ride along, and what is selected. `labels` names the selection in order when the caller can
+ * resolve it (a custom server's name lives in the custom-server catalog, not the profile);
+ * otherwise it is counted. Importing all native sources says plainly that the set is not pinned,
+ * and names only the custom servers, because a selected global server loads natively anyway.
  */
 export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[]): string {
+  const resolved = labels && labels.length === mcp.selected.length ? labels : null;
+  if (mcp.nativeSources === "all") {
+    const base = "MCP: all native sources (not pinned)";
+    const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
+    if (custom.length === 0) return base;
+    return `${base} + ${resolved ? custom.map((at) => resolved[at]).join(", ") : `${custom.length} custom`}`;
+  }
   const count = mcp.selected.length;
-  const named = labels && labels.length === count ? labels.join(", ") : `${count} selected`;
+  const named = resolved ? resolved.join(", ") : `${count} selected`;
   if (mcp.inheritDefaults) return count === 0 ? "MCP: defaults" : `MCP: defaults + ${named}`;
   return count === 0 ? "MCP: Mission only" : `MCP: only ${named}`;
 }

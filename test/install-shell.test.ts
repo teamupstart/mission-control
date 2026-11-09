@@ -107,7 +107,12 @@ else {process.exit(99);}
   // rather than as an empty-stderr mismatch that reads like a refusal that never happened.
   return {log, run: (args: string[] = [], {timeoutMs = BOOTSTRAP_BOUND_MS}: {timeoutMs?: number} = {}) => {
     const result = spawnSync('/bin/bash', ['-s', '--', ...args], {input, env: {...process.env, PATH: bin, PROBE_LOG: log}, encoding: 'utf8', timeout: timeoutMs});
-    if (result.error) throw new Error(`bootstrap did not finish within ${timeoutMs / 1000}s (${result.signal ?? result.error.message})`, {cause: result.error});
+    // The code is always there; the signal only where the platform reports one (macOS does,
+    // Linux CI leaves it null for a timed-out spawnSync).
+    if (result.error) {
+      const code = (result.error as NodeJS.ErrnoException).code ?? result.error.message;
+      throw new Error(`bootstrap did not finish within ${timeoutMs / 1000}s (${code}${result.signal ? `, ${result.signal}` : ''})`, {cause: result.error});
+    }
     return result;
   }};
 }
@@ -168,7 +173,7 @@ test('a fixture run that outlives its bound fails as a timeout, not as a missing
   // tests then reported an empty stderr - which reads exactly like a refusal that never fired.
   const f = fixture(t, 'hang');
   assert.throws(() => f.run([], {timeoutMs: 500}), (error: Error) => {
-    assert.match(error.message, /^bootstrap did not finish within 0\.5s \(SIGTERM\)$/);
+    assert.match(error.message, /^bootstrap did not finish within 0\.5s \(ETIMEDOUT(, SIGTERM)?\)$/);
     assert.equal((error.cause as NodeJS.ErrnoException | undefined)?.code, 'ETIMEDOUT');
     return true;
   });

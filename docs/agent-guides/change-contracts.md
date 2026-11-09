@@ -68,6 +68,12 @@ A new MCP **tool** carries two more obligations, and skipping either is silent. 
 
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
+Every collection a request can make Zod parse carries an upper bound: `.max()` on a `z.array`, `z.set` or `z.map`, and `boundedRecord` (`src/shared/zod-shapes.ts`) instead of a bare `z.record`, which has no `.max()`. Zod checks the bound before it parses an element, so an oversized request is one issue rather than one per element (GHSA-mrhx-c7xc-m3w5); a count checked in a refinement runs only after every entry has been parsed. This covers MCP tool input too. `test/request-collection-bounds.test.ts` walks every schema the route files parse and every MCP tool's listed input, and fails on an unbounded collection.
+
+MCP tool input must render as JSON Schema: the MCP SDK renders it with `z.toJSONSchema`, which refuses `z.custom`, and one such field fails the whole `tools/list`. Use a representable schema (a pattern, an enum) instead.
+
+A config PATCH schema is `partialPatch(StoredSchema)`, never `StoredSchema.partial()`. Zod 4's `.optional()` fills an inner `.default()`, so a plain `.partial()` hands back every default the caller did not send, and the merged patch resets those settings. `partialPatch` keeps an absent key absent.
+
 ## Executable and child-process changes
 
 A new configurable subprocess integration is incomplete until all of these move together:

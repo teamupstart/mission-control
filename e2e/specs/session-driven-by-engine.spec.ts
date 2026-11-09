@@ -408,7 +408,11 @@ test.describe("a session an external engine is driving", () => {
     // about one of them. `e2e/specs/pipeline-controls.spec.ts` owns what pressing one does.
     await expect(row.getByRole("button", { name: "Unpark" })).toBeVisible();
     await expect(row.getByRole("button", { name: "Grant DECIDE re-entry" })).toBeVisible();
-    await expect(row.getByRole("button")).toHaveCount(2);
+    // Every inbox row also carries its own Dismiss, which hides the row and acts on nothing in
+    // the engine - so it is named and set aside, and the class's verbs are still exactly two.
+    const dismiss = row.getByRole("button", { name: "Dismiss fix-the-thing from the inbox" });
+    await expect(dismiss).toBeVisible();
+    await expect(row.getByRole("button").filter({ hasNotText: "Dismiss" })).toHaveCount(2);
     await shoot(dashboard, inbox, "04-halt-in-the-inbox");
 
     // The link lands on the run's own detail, which is where the evidence is - and it closes

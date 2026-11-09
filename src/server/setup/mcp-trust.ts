@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { applyEdits, modify, parse as parseJson } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 import type { SetupServicePrerequisite, SetupStatus } from "@shared/setup-catalog.ts";
 import { claudeSettingsPath } from "@shared/claude-settings.ts";
@@ -23,7 +23,7 @@ const ClaudeSettings = z.object({
   }).passthrough().optional(),
 }).passthrough();
 const CodexSettings = z.object({
-  mcp_servers: z.record(z.object({
+  mcp_servers: z.record(z.string(), z.object({
     command: z.string().optional(),
     url: z.string().optional(),
     default_tools_approval_mode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),

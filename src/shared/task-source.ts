@@ -1,4 +1,5 @@
-import { z } from "zod/v3";
+import { z } from "zod";
+import { boundedRecord } from "./zod-shapes.ts";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -355,7 +356,7 @@ export interface TaskSourceKindInfo<C = unknown> {
    * which is a value an older build wrote and every field of which the schema may since
    * have made optional. A schema that only accepted its own output could not read it.
    */
-  configSchema: z.ZodType<C, z.ZodTypeDef, unknown>;
+  configSchema: z.ZodType<C, unknown>;
 }
 
 /**
@@ -462,7 +463,7 @@ export const GithubIssuesConfigSchema = z
     unassignedOnly: z.boolean().default(false),
     milestone: z.string().max(200).nullable().default(null),
     /** GitHub label -> task priority, e.g. {"P0": "blocker", "P1": "high"}. */
-    priorityFrom: z.record(z.string(), z.enum(TASK_PRIORITIES)).default({}),
+    priorityFrom: boundedRecord(z.string(), z.enum(TASK_PRIORITIES), 100).default({}),
     /** Copy the issue's GitHub labels onto the task. */
     copyLabels: z.boolean().default(true),
     limit: z.number().int().min(1).max(200).default(50),
@@ -629,7 +630,7 @@ export function clampSweepInterval(ms: number): number {
 export const TaskSourceDefaultsSchema = z.object({
   kind: z
     .enum(TASK_KINDS)
-    .refine(taskKindAllowsBacklog, (kind) => ({ message: taskKindBacklogRefusal(kind) }))
+    .refine(taskKindAllowsBacklog, { error: (issue) => taskKindBacklogRefusal(issue.input as TaskKind) })
     .default("ship"),
   /**
    * `null` inherits the kind's agent from Settings -> Models, resolved as each swept row is
@@ -675,7 +676,7 @@ const TaskSourceInstanceBase = z.object({
     .transform(clampSweepInterval),
   /** Refresh imported backlog content; never changes scheduling or writes upstream. */
   keepUpdated: z.boolean().default(false),
-  defaults: TaskSourceDefaultsSchema.default({}),
+  defaults: TaskSourceDefaultsSchema.prefault({}),
   maxPerSweep: z.number().int().min(1).max(MAX_PER_SWEEP_CEILING).default(DEFAULT_MAX_PER_SWEEP),
   /**
    * Whether this source may write back onto the items it swept, and how far.
@@ -684,7 +685,7 @@ const TaskSourceInstanceBase = z.object({
    * three `false`s on read and needs no migration - the same way every other field here
    * arrived.
    */
-  writeback: TaskSourceWritebackSchema.default({}),
+  writeback: TaskSourceWritebackSchema.prefault({}),
   /** Kind-specific, validated below by that kind's own `configSchema`. */
   config: z.unknown().default({}),
 });

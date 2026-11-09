@@ -259,9 +259,8 @@ report directory retain their relative layout under `report/`; selected files el
 `artifacts/<repo-slot>/…`. Every local report reference must name a selected report file or
 capture fails with the missing target. The selection is persisted for retries and recovery.
 The HTTP route forwards that selection unchanged to the archive manager. Both the daemon
-and MCP submission schemas use patched Zod 4 (`zod/v4`), so oversized
-collections are refused before their elements are parsed. Other schemas retain their
-existing Zod 3 contracts through `zod/v3`; the shared HTTP parser accepts either safe-parse result.
+and MCP submission schemas bound every collection, so an oversized one is refused before its
+elements are parsed.
 
 Do not combine `files` with nonempty `supporting`. Existing callers that omit `files` keep
 automatic directory capture, additional `supporting` files, and Git-ignore filtering. In

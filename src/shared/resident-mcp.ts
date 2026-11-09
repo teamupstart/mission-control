@@ -12,7 +12,7 @@
 // metadata (`ResidentMcpGlobalServer`): its name, transport, the command's basename or the URL's
 // origin, and the NAMES of its environment variables and headers.
 
-import { z } from "zod/v3";
+import { z } from "zod";
 import { RESIDENT_AGENTS, type ResidentAgent } from "./residents.ts";
 
 /** Mission Control's own server: always attached, never selectable, never a custom name. */
@@ -107,7 +107,7 @@ export type ResidentMcpStoredTransport = z.infer<typeof ResidentMcpStoredTranspo
 
 /** A custom server definition, as stored in `app_config` and carried by settings snapshots. */
 export const ResidentMcpCustomServerSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   name: z.string().min(1).max(RESIDENT_MCP_LIMITS.nameLength),
   harnesses: Harnesses,
   transport: ResidentMcpStoredTransportSchema,
@@ -206,7 +206,7 @@ export const RefreshResidentMcpCatalogSchema = z.object({}).strict();
 export const RedeemResidentMcpTicketSchema = z
   .object({
     ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/, "a launch ticket is 32 random bytes"),
-    runId: z.string().uuid(),
+    runId: z.string().guid(),
     server: z.string().min(1).max(RESIDENT_MCP_LIMITS.nameLength),
   })
   .strict();

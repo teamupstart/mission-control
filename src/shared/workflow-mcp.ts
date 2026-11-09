@@ -1,5 +1,5 @@
 /** Shared request contracts for the MCP client and its daemon-owned authorization boundary. */
-import { z } from "zod/v3";
+import { z } from "zod";
 import {
   CancelWorkflowRunSchema,
   GrantWorkflowRepairRoundsSchema,

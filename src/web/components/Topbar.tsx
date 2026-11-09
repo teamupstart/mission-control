@@ -56,6 +56,12 @@ export interface TopbarProps {
   inbox: number;
   onOpenInbox: () => void;
   /**
+   * The attention inbox cannot be shown yet: the dashboard's read of the operator's dismissals
+   * has failed and is being retried. `inbox` is then 0 by design, because unknown dismissals are
+   * not "nothing dismissed", so this is what keeps the pulse from implying all clear.
+   */
+  inboxUnavailable?: boolean;
+  /**
    * Open launch failures, counted by group - the failed tiles and notices waiting on the
    * operator. Optional so the Display preview, which has no fleet behind it, draws none.
    */
@@ -189,6 +195,7 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         attention={isTopbarItemShown(layout, "needYou") ? props.attention : 0}
         working={isTopbarItemShown(layout, "working") ? props.working : 0}
         inbox={props.inbox}
+        inboxUnavailable={props.inboxUnavailable ?? false}
         onOpenInbox={props.onOpenInbox}
         didNotStart={props.didNotStart ?? 0}
         onShowDidNotStart={props.onShowDidNotStart ?? (() => {})}
@@ -354,7 +361,8 @@ function PulseStat({
   tone,
   onClick,
 }: {
-  n: number;
+  /** Omitted for a segment that states a condition rather than a count. */
+  n?: number;
   label: string;
   tip: string;
   /** A session tone, or `failed` for the one segment that counts work that never started. */
@@ -365,7 +373,7 @@ function PulseStat({
   const body = (
     <>
       <span className="pulse-dot" aria-hidden />
-      <span className="pulse-n">{n}</span>
+      {n !== undefined && <span className="pulse-n">{n}</span>}
       <span className="tb-label">{label}</span>
     </>
   );
@@ -404,6 +412,7 @@ function FleetPulse({
   attention,
   working,
   inbox,
+  inboxUnavailable,
   onOpenInbox,
   didNotStart,
   onShowDidNotStart,
@@ -431,6 +440,8 @@ function FleetPulse({
    * produced no inbox row - which put `1 need you` next to a click that opened an empty list.
    */
   inbox: number;
+  /** See `TopbarProps.inboxUnavailable`. */
+  inboxUnavailable: boolean;
   onOpenInbox: () => void;
   /**
    * Dispatches that never started, by group. Like `to answer`, not an optional item: it renders
@@ -468,6 +479,13 @@ function FleetPulse({
           label="working"
           tone="working"
           tip={`${working} session${working === 1 ? " is" : "s are"} working`}
+        />
+      )}
+      {inboxUnavailable && (
+        <PulseStat
+          label="inbox unavailable"
+          tone="attention"
+          tip="Your inbox dismissals could not be read yet, so the inbox is held rather than showing rows you dismissed. Retrying"
         />
       )}
       {inbox > 0 && (

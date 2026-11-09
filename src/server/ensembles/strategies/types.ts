@@ -1,4 +1,4 @@
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import type { EnsembleStrategyInfo } from "@shared/ensemble-strategies/types.ts";
 import type { CompiledEnsemblePlan, EnsembleJson, EnsembleReviewPersona } from "@shared/ensemble.ts";
 
@@ -125,8 +125,8 @@ export interface TypedStrategySpec<C> extends EnsembleStrategyInfo<C> {
 }
 
 /** Zod's issue paths carry numbers for array indices; the form addresses fields by string. */
-function issuePath(path: (string | number)[]): string {
-  return path.join(".");
+function issuePath(path: PropertyKey[]): string {
+  return path.map(String).join(".");
 }
 
 /**
@@ -144,7 +144,7 @@ export function defineStrategy<C>(spec: TypedStrategySpec<C>): StrategyDescripto
     blurb: spec.blurb,
     explanation: spec.explanation,
     capabilities: spec.capabilities,
-    configSchema: spec.configSchema as z.ZodType<unknown, z.ZodTypeDef, unknown>,
+    configSchema: spec.configSchema as z.ZodType<unknown, unknown>,
     form: spec.form,
     estimate: spec.estimate,
     enabled: spec.enabled,

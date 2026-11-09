@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 116 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 117 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>116</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>117</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -551,7 +551,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>17 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>18 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
                 <div class="table-row"><code>session_events</code><p>An append-only session event log written by hook ingestion. It also proves whether precise hooks have ever been observed for a session.</p></div>
@@ -567,6 +567,7 @@ LIMIT 20;
                 <div class="table-row"><code>session_runtime_transfers</code><p>Durable reservations for Continue in terminal: expected task and pinned workflow ownership, source process lifetime, prepared resume lease, launch proof, revision and recovery outcome. An unresolved row holds ownership across source removal and daemon restart until a proven successor is adopted or absence permits safe settlement. It contains neither credentials nor copied workflow evidence.</p></div>
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>
                 <div class="table-row"><code>skills_acks</code><p>The last skill catalog generation acknowledged by each stable session note key.</p></div>
+                <div class="table-row"><code>attention_dismissals</code><p>Attention-inbox items the operator dismissed without resolving them, one record per dismissal key: the key's item id, a short fingerprint of what it said when dismissed, when, and a never-reused revision that orders writes. When a dismissed row comes back is set out in <a href="attention-and-alerts.md#dismiss-a-row-without-resolving-it">Dismiss a row without resolving it</a>.</p></div>
                 <div class="table-row"><code>app_config</code><p>Generic JSON-encoded application settings stored as key and value text.</p></div>
                 <div class="table-row"><code>personas</code><p>Reusable, revisioned model-review definitions with exact operator-authored Markdown guidance and optional provider/model choices.</p></div>
                 <div class="table-row"><code>session_actions</code><p>Reusable workflow instructions with exact Markdown prompts, required skill capabilities, and server-owned completion proof kinds.</p></div>

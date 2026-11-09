@@ -1,4 +1,4 @@
-import type { ZodTypeAny, TypeOf } from "zod/v3";
+import type { ZodTypeAny, TypeOf } from "zod";
 import { providerFailureKind, type ProviderFailureKind } from "./provider-failure.ts";
 
 // Asking a model for a VALUE rather than for text, and the two helpers every caller that
@@ -97,14 +97,16 @@ export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) =>
  * existing extractor (with its envelope/fence handling) stays the single source of that
  * logic.
  */
-export async function runStructured<S extends ZodTypeAny>(
+// `S` only names the reply's type when a caller states it (`runStructured<typeof Schema>`);
+// otherwise `T` is inferred from `extract`, which is the one argument that carries it.
+export async function runStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   run: (prompt: string) => Promise<string>,
   prompt: string,
-  extract: (raw: string) => TypeOf<S> | null,
+  extract: (raw: string) => T | null,
   label = "The model",
   observer?: StructuredAttemptObserver,
   opts?: { shapeGuaranteed?: boolean; maxAttempts?: 1 | 2 },
-): Promise<StructuredResult<TypeOf<S>>> {
+): Promise<StructuredResult<T>> {
   // A provider-guaranteed INPUT shape makes a JSON-syntax re-prompt redundant. Extraction
   // still runs below on every path: callers consume Zod's OUTPUT type, including transforms
   // and refinements no provider-side JSON Schema can execute.

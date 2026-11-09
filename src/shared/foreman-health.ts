@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 
 export const FOREMAN_HEALTH_OPERATIONS = [

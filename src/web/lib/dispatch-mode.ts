@@ -25,7 +25,7 @@
  * covered in `test/` in milliseconds instead of through a DOM. Zod already reaches the
  * dashboard through `@shared/protocol.ts`, so this costs the bundle nothing.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 
 import type { Task } from "@shared/types.ts";
 import { ENSEMBLE_STRATEGY_IDS, type EnsembleStrategyId } from "@shared/ensemble.ts";
@@ -170,7 +170,8 @@ function problemWith(what: string, schema: AnyDispatchUnion, value: unknown): st
   if (issue.code === z.ZodIssueCode.invalid_type && issue.path.length === 0) {
     return `a ${what} that is not an object`;
   }
-  if (issue.code === z.ZodIssueCode.invalid_union_discriminator) {
+  // A discriminated union that matched no option by its discriminator tried none of them.
+  if (issue.code === z.ZodIssueCode.invalid_union && issue.errors.length === 0) {
     const kind = isRecord(value) ? (value as { kind?: unknown }).kind : undefined;
     const kinds = schema.options.map((option) => option.shape.kind.value).join(", ");
     return `an unsupported ${what} ${JSON.stringify(kind ?? null)}; expected one of ${kinds}`;

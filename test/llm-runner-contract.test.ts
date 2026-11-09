@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { assertStrictJsonSchema } from "./helpers/strict-json-schema.ts";
 import { PNG_IMAGE, writeImageDescriptor } from "./helpers/llm-image-fixtures.ts";
 import type {

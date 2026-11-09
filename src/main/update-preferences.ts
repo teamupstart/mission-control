@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 // Desktop-owned, like the receipt and outcome. Updating must work without a healthy daemon.
 export const UpdatePreferencesSchema = z.object({
   alpha: z.boolean().default(false),
   // Exact release tags or full alpha commit IDs, never shortened display labels.
-  snoozedUntil: z.record(z.number().int().nonnegative().finite()).default({}),
+  snoozedUntil: z.record(z.string(), z.number().int().nonnegative().finite()).default({}),
 });
 export type UpdatePreferences = z.infer<typeof UpdatePreferencesSchema>;
 

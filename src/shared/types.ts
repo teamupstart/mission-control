@@ -3556,6 +3556,16 @@ export type ServerEvent =
    */
   | { type: "worktrees_changed" }
   /**
+   * The operator dismissed attention-inbox rows. An invalidation signal: each open dashboard
+   * re-reads `GET /api/attention/dismissals`, so a row dismissed in one window leaves the
+   * inbox and the `to answer` count in every other.
+   *
+   * CONTENT-FREE and out of the reconnect snapshot, like `worktrees_changed`: the set is an
+   * HTTP read of one small row per inbox row ever dismissed, and the hook that holds it
+   * re-reads on every (re)connect, which covers a dismissal made while this stream was down.
+   */
+  | { type: "attention_dismissals_changed" }
+  /**
    * The Keep Awake observation moved - a transition was requested, the OS assertion was
    * acquired or released, or a transition failed. Carries the whole status so every open dashboard
    * converges without a fetch; emitted only when an observable field changed (see

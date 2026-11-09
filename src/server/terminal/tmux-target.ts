@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 
 /** A tmux id is stable only within the server which allocated it. */
 const AddressSchema = z.object({

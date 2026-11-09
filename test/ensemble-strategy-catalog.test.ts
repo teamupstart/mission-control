@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 import { ENSEMBLE_PLAN_VERSION, ENSEMBLE_STRATEGY_IDS } from "../src/shared/ensemble.ts";
 import {

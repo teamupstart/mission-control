@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { CODERABBIT_SEVERITIES, type CodeRabbitSeverity } from "@shared/workflow.ts";
 
 export const CODERABBIT_RESULT_LIMITS = { recordBytes: 256 * 1024, findings: 1000, findingsBytes: 4 * 1024 * 1024 } as const;

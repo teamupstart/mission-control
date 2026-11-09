@@ -1,7 +1,7 @@
 import { getPipelineCommission, getTask } from "../db.ts";
 import { observePipelineCommission } from "./automation.ts";
 import { randomUUID } from "node:crypto";
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { MiddlewareHandler } from "hono";
 import { resolveOperationContext } from "@shared/telemetry-ingress.ts";
 import { matchPrimaryAction, primaryActionVariant, type PrimaryAction } from "@shared/telemetry-sources/primary-actions.ts";

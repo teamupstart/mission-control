@@ -2,7 +2,7 @@ import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { ReviewItem, Session, TranscriptMessage } from "@shared/types.ts";
 import { WorkflowContextSnapshotSchema } from "@shared/protocol.ts";
 import type {

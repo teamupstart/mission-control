@@ -1355,6 +1355,11 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "worktrees_changed" });
   }
 
+  /** Announce that the attention-inbox dismissals changed, so every dashboard re-reads them. */
+  emitAttentionDismissalsChanged(): void {
+    this.emitEvent({ type: "attention_dismissals_changed" });
+  }
+
   /**
    * Announce that the local archive library moved.
    *

@@ -14,7 +14,7 @@ import { EnsembleEngine } from "../src/server/ensembles/engine.ts";
 import type { StrategyDescriptor, StrategyCatalog } from "../src/server/ensembles/strategies/index.ts";
 import { defineStrategy } from "../src/server/ensembles/strategies/index.ts";
 import { ensembleStrategyCatalog } from "../src/server/ensembles/strategies/index.ts";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { fakeSha, FakeGateway, FakeFinalize, ARTIFACT_ADAPTERS } from "./ensemble-fixture.ts";
 
 /**

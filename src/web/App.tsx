@@ -22,6 +22,7 @@ import { sessionTransferUnresolved } from "@shared/session-transfer.ts";
 import { api, acknowledgeTelemetryOrganizationNotice, fetchRepos } from "./lib/api.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
@@ -104,7 +105,7 @@ import { hiddenSessionIds, useRepoCollapsed } from "./lib/repo-collapse.ts";
 import { collapsedColumnSessionIds, setColumnWidth } from "./lib/column-width.ts";
 import { reviewChordTarget } from "./lib/review-shortcut.ts";
 import { heldSessionIds, ownBindingBySession } from "./lib/held.ts";
-import { foldAttention } from "./lib/attention.ts";
+import { foldAttention, type AttentionFold } from "./lib/attention.ts";
 import {
   useKeybindings,
   chordFromEvent,
@@ -334,6 +335,7 @@ export function App(): React.JSX.Element {
     keepAwakeStatus,
     harnessesRevision,
     worktreesRevision,
+    attentionDismissalsRevision,
     // One counter, bumped per reconciled batch of archives and once per reconnect. It is
     // how the Scouts page learns to refetch its current window without the browser polling
     // and without unbounded history entering the SSE snapshot.
@@ -2582,18 +2584,39 @@ export function App(): React.JSX.Element {
   // questions that agree until they don't. Folded here because every input is already in this
   // scope - and NOT through `detectAlerts`, which answers a different question (what deserves
   // an OS notification while you are away) and deliberately excludes reviews.
+  //
+  // Rows the operator dismissed in the inbox are left out of both, which is what keeps one from
+  // popping back up on the next frame, the next reload or in a second window. The fold applies
+  // them, so the figure and the list still cannot disagree.
+  //
+  // Until the dismissals have been read once they are UNKNOWN, and the fold is held empty: drawn
+  // over "nothing dismissed" instead, every dismissed row flashed back into the inbox and the
+  // count after a reload, which is the pop-back dismissing exists to prevent.
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
   const attention = useMemo(
     () =>
-      foldAttention({
-        sessions,
-        reviews: answerableReviews,
-        residentRuns,
-        ensembles: ensembleSummaries,
-        pipelineRuns,
-        pipelineCommissions,
-        tasks,
-      }),
-    [sessions, answerableReviews, ensembleSummaries, pipelineRuns, pipelineCommissions, tasks, residentRuns],
+      attentionDismissals.dismissed === null
+        ? NO_ATTENTION_YET
+        : foldAttention({
+            sessions,
+            reviews: answerableReviews,
+            residentRuns,
+            ensembles: ensembleSummaries,
+            pipelineRuns,
+            pipelineCommissions,
+            tasks,
+            dismissed: attentionDismissals.dismissed,
+          }),
+    [
+      sessions,
+      answerableReviews,
+      ensembleSummaries,
+      pipelineRuns,
+      pipelineCommissions,
+      tasks,
+      residentRuns,
+      attentionDismissals.dismissed,
+    ],
   );
   // The topbar badge: enabled schedules the daemon flagged as needing attention. Health is
   // the server's derivation (`schedule.health`); this only counts it, never recomputes it.
@@ -4210,6 +4233,7 @@ export function App(): React.JSX.Element {
           attention={counts.attention}
           working={counts.working}
           inbox={attention.total}
+          inboxUnavailable={attentionDismissals.dismissed === null && attentionDismissals.unreadable}
           onOpenInbox={() => setInboxOpen(true)}
           didNotStart={launchFailureGroups.length}
           onShowDidNotStart={() => {
@@ -4843,6 +4867,7 @@ export function App(): React.JSX.Element {
               {inboxOpen && (
                 <AttentionInbox
                   fold={attention}
+                  onDismiss={attentionDismissals.dismiss}
                   onClose={() => setInboxOpen(false)}
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
@@ -5069,6 +5094,9 @@ function taskLaunchStopped(task: Task | null): boolean {
         (task.status === "backlog" && task.error !== null)),
   );
 }
+
+/** The inbox while the dismissals are still unknown: nothing listed, nothing counted. */
+const NO_ATTENTION_YET: AttentionFold = { items: [], total: 0 };
 
 function summarize(sessions: Session[]): { attention: number; working: number } {
   let attention = 0;

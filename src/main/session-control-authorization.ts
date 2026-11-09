@@ -1,5 +1,5 @@
 import type { UtilityProcess } from "electron";
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import {
   ResidentLaunchAuthorizationSchema, SessionControlAuthorizationSchema,
   type ResidentLaunchAuthorizationReply, type SessionControlAuthorizationReply,

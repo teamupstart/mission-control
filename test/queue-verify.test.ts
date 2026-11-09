@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import { QueueVerdictSchema } from "../src/server/foreman/queue-verify.ts";
 
 // The verdict schema's bounds are a DEFENCE on text that ends up typed into a

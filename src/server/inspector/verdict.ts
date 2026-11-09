@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
 import { nullAsAbsent } from "../llm/json-schema.ts";
 import type { CommentableLines } from "./diff-lines.ts";

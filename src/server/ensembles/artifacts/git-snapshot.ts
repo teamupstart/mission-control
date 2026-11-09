@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { run } from "../../util/exec.ts";
 import {
   DEFAULT_MAX_PATCH_BYTES,

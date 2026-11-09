@@ -14,7 +14,7 @@
  * difference at the moment it happens, so it writes this record then, and nothing else infers
  * one later.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { Task } from "./types.ts";
 import { TASK_KIND_BEHAVIOR, taskHasRepository } from "./task.ts";
 import { dispatchPhase } from "./session.ts";

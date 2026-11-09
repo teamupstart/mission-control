@@ -7,7 +7,7 @@ import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } fro
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
@@ -211,7 +211,9 @@ let db: DatabaseSync | undefined;
 // 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
 //     task that launches with no Persona, which is what every older task did.
 // 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 23;
+// 24: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
+//     dismissed before the inbox could dismiss.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 24;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4501,6 +4503,24 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "archives", "source_session_json", "TEXT");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
+
+  // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
+  // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
+  // each question's own `review:<id>`. `occurrence` is the fold's fingerprint of what it said
+  // when it was dismissed, so it comes back only when it says something new. Rows never expire and are
+  // never pruned (`src/server/attention-dismissals.ts`). `revision` is assigned afresh on every
+  // write, which rewrites the row, and AUTOINCREMENT never reuses a number - not even the one
+  // that rewrite just deleted - so a write that names an older revision than the one stored was
+  // made without seeing the newer dismissal and is refused rather than allowed to overwrite it.
+  // A new table, so it is created here beside its upgrade path.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS attention_dismissals (
+      revision     INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id      TEXT NOT NULL UNIQUE,
+      occurrence   TEXT NOT NULL,
+      dismissed_at INTEGER NOT NULL
+    );
+  `);
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

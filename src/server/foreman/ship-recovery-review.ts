@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { workflowEvidenceRequirement, type TaskCompletionContract } from "@shared/task-completion.ts";
 import type { TranscriptMessage } from "@shared/types.ts";

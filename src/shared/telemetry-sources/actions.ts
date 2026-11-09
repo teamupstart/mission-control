@@ -1,5 +1,5 @@
 import { PRIMARY_ACTION_IDS, PRIMARY_FEATURES, isPrimaryUseAction } from "./primary-actions.ts";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { AUDIENCE_ALL } from "../telemetry.ts";
 import { TELEMETRY_OPERATION_SURFACES } from "../telemetry-ingress.ts";
 import { WORKFLOW_ACTION_ROUTES } from "../workflow-actions.ts";

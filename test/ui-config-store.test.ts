@@ -83,7 +83,7 @@ test("the skin defaults to Default, round-trips, and only a shipped id can be wr
   assert.equal(getUiConfig().skin, "daylight", "a refused skin changed the store");
   // Tolerant on read: a skin written by a newer build (a downgrade) opens as Default, and the
   // rest of the record survives it.
-  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build", layout: "console" });
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { skin: "from-a-newer-build" as never, layout: "console" });
   assert.equal(getUiConfig().skin, "default");
   assert.equal(getUiConfig().layout, "console", "an unknown skin failed the whole ui record");
   assert.equal(UiConfigSchema.parse({ skin: 42 }).skin, "default");

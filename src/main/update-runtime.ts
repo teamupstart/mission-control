@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { delimiter, dirname, isAbsolute } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../scripts/init-prerequisites.mjs";
 import { locateExecutable, refreshExecutableEnvironment } from "../server/executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";

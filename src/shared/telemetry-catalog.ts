@@ -16,7 +16,7 @@ import { ANALYTICAL_METRICS } from "./telemetry-projections/index.ts";
  * Browser-safe: no `node:` imports. Phase 7's dashboard manifest reads these definitions to
  * check that every panel's query names an instrument that exists.
  */
-import { z } from "zod/v3";
+import { z } from "zod";
 import {
   AUDIENCE_ALL,
   AUDIENCE_OPERATOR,
@@ -1665,9 +1665,9 @@ export function telemetryCatalogProblems(): string[] {
     }
     if (event.audience.length === 0) problems.push(`event ${event.name} has no audience`);
     // Strictness is the rule that stops an internal object being spread into an envelope, so
-    // it is checked rather than trusted. Zod records the mode on the def.
-    const def = (event.facts as unknown as { _def?: { unknownKeys?: string } })._def;
-    if (def?.unknownKeys !== "strict") {
+    // it is checked rather than trusted. Zod records `.strict()` as a `never` catchall.
+    const facts: z.ZodTypeAny = event.facts;
+    if (!(facts instanceof z.ZodObject) || facts._zod.def.catchall?._zod.def.type !== "never") {
       problems.push(`event ${event.name} facts schema is not strict`);
     }
     if (event.ingress === "browser") {

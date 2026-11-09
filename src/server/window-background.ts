@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 // The colour the desktop window paints before the dashboard has loaded, remembered across
 // launches in the state home, beside the database.

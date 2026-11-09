@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 export const PI_INTEGRATION_PROTOCOL = 1;
 export const PI_INTEGRATION_FILES = ["extension.js", "mcp-server.mjs", "manifest.json"] as const;

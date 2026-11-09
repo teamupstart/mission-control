@@ -105,6 +105,7 @@ function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: Sessi
             e.preventDefault();
             void run(
               () => api.flagBlockerReply(sessionId, {
+                blockerStartedAt: blocker.startedAt,
                 ...(note.trim() ? { note: note.trim() } : {}),
                 ...(link.trim() ? { referenceUrl: link.trim() } : {}),
               }),
@@ -160,7 +161,7 @@ function BlockerBand({ sessionId, blocker }: { sessionId: string; blocker: Sessi
               type="button"
               className="btn btn-danger"
               disabled={busy}
-              onClick={() => void run(() => api.clearBlocker(sessionId))}
+              onClick={() => void run(() => api.clearBlocker(sessionId, blocker.startedAt))}
             >
               Clear blocker
             </button>

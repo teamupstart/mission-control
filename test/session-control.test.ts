@@ -1021,7 +1021,11 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
   assert.equal(afterFlag.reply?.note, "Dana answered at 14:02");
   assert.equal(f.messages.length, 0, "a flag sends nothing to the session");
 
-  const cleared = await f.act({ action: "clear_blocker", resolution: "Dana chose 400 days" });
+  // A resident that names the blocker it read is refused once a different one stands.
+  const shown = f.registry.getSession(f.target.id)!.blocker!.startedAt;
+  assert.equal((await f.act({ action: "clear_blocker", blockerStartedAt: shown + 1 })).status, 409);
+  assert.ok(f.registry.getSession(f.target.id)!.blocker, "a stale resident clear removed the blocker");
+  const cleared = await f.act({ action: "clear_blocker", resolution: "Dana chose 400 days", blockerStartedAt: shown });
   assert.equal(cleared.status, 200);
   assert.equal(f.registry.getSession(f.target.id)!.blocker, null);
   const { openDb } = await import("../src/server/db.ts");
@@ -1030,5 +1034,6 @@ test("residents list blocked sessions, flag a reply without clearing, and clear 
     "session_blocker_set", "session_blocker_reply_flagged", "session_blocker_cleared",
   ]);
   const actions = kinds.filter((e) => e.kind === "session_control_action").map((e) => JSON.parse(e.payload).action);
-  assert.deepEqual(actions.slice(-2), ["flag_blocker_reply", "clear_blocker"]);
+  // The refused stale clear is logged too, like every delegated action.
+  assert.deepEqual(actions.slice(-3), ["flag_blocker_reply", "clear_blocker", "clear_blocker"]);
 });

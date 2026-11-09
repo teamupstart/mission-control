@@ -343,6 +343,11 @@ its whole blocker, Markdown details included. `control_session` adds two actions
   **Reply flagged** pill and nothing else.
 - `{"action":"clear_blocker","resolution":"..."}` clears it.
 
+Both actions accept the `startedAt` the read returned as `blockerStartedAt`. With it, the action
+is refused when the session has since cleared that blocker and reported a different one, so a
+resident never flags or clears a blocker it did not read. The dashboard's Flag reply and Clear
+blocker always send it.
+
 "Check again" is the ordinary `message` action. The built-in Agent Shepherd flags, then
 messages, and never clears a blocker without evidence that its `resumeWhen` condition is met.
 

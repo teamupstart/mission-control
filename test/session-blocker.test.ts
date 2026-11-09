@@ -481,3 +481,32 @@ test("a blocker reported while a Foreman write or wrap-up ask is in flight still
   } as RequestInit));
   assert.equal(asked.status, 409, "the wrap-up ask read a session snapshot from before the blocker");
 });
+
+test("a Flag reply or Clear aimed at an earlier blocker cannot act on its replacement", async () => {
+  const registry = new Registry();
+  const app = mkApp(registry);
+  const d = mkDiscovered();
+  registry.applyDiscovery([d]);
+  const api = (path: string, body: unknown) => app.request(`/api/sessions/${d.syntheticId}${path}`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  // The operator opens blocker A; the session clears it and reports B before the click lands.
+  registry.reportBlocker(d.syntheticId, BODY, 1_000);
+  const shownA = registry.getBlocker(d.syntheticId)!.startedAt;
+  registry.clearBlocker(d.syntheticId, "session");
+  registry.reportBlocker(d.syntheticId, { ...BODY, reason: "A different wait" }, 2_000);
+
+  const staleFlag = await api("/blocker/reply", { blockerStartedAt: shownA, note: "answered" });
+  assert.equal(staleFlag.status, 409);
+  assert.equal(registry.getBlocker(d.syntheticId)?.reply, null, "a stale flag marked the replacement blocker");
+  const staleClear = await api("/blocker/clear", { blockerStartedAt: shownA });
+  assert.equal(staleClear.status, 409);
+  assert.equal(registry.getBlocker(d.syntheticId)?.reason, "A different wait", "a stale clear removed the replacement blocker");
+
+  // A re-report keeps startedAt, so the blocker the operator is looking at is still the same one.
+  const shownB = registry.getBlocker(d.syntheticId)!.startedAt;
+  registry.reportBlocker(d.syntheticId, { ...BODY, reason: "Still waiting" }, 3_000);
+  assert.equal((await api("/blocker/reply", { blockerStartedAt: shownB })).status, 200);
+  assert.equal((await api("/blocker/clear", { blockerStartedAt: shownB })).status, 200);
+  assert.equal(registry.getBlocker(d.syntheticId), null);
+});

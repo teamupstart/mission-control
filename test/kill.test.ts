@@ -17,6 +17,7 @@ import type { Session, SessionState } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s",
     agent: "claude",
     name: "sess",

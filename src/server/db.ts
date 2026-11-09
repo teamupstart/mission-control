@@ -97,10 +97,14 @@ import type {
   WorkItemState,
   WorkCycleSummary,
   WorktreeProvider,
+  SessionBlocker,
+  SessionBlockerKind,
+  SessionBlockerReply,
 } from "@shared/types.ts";
 import {
   DEFAULT_TASK_KIND,
   PROMPTED_COMPLETION_OUTCOMES,
+  SESSION_BLOCKER_KINDS,
   TASK_KINDS,
 } from "@shared/types.ts";
 import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
@@ -213,7 +217,9 @@ let db: DatabaseSync | undefined;
 // 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
 // 24: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
 //     dismissed before the inbox could dismiss.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 24;
+// 25: durable session blockers (`session_blockers`), keyed by note key. Additive: an
+//     upgraded database gains an empty table and no session reads as blocked.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 25;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -4181,6 +4187,36 @@ function migrate(d: DatabaseSync): void {
   // `persona_id`: the Library Persona a task launches with. NULL launches with none, which is
   // exactly what every task filed before a dispatch could name a Persona did.
   addColumn(d, "tasks", "persona_id", "TEXT");
+  // Schema 25: what a session is waiting on outside the operator. Keyed like
+  // session_standing_instructions (noteKeyFor = agentSessionId ?? synthetic id), so a resumed
+  // conversation comes back blocked; `task_id` is recorded for reference and for the
+  // terminal-task clear. `reply` is a JSON object or NULL. Created here, beside its upgrade
+  // path, so a database from before schema 25 gains the table on its next open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS session_blockers (
+      note_key      TEXT PRIMARY KEY,
+      task_id       TEXT,
+      kind          TEXT NOT NULL,
+      reason        TEXT NOT NULL,
+      waiting_on    TEXT NOT NULL,
+      resume_when   TEXT NOT NULL,
+      details       TEXT,
+      reference_url TEXT,
+      started_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      checked_at    INTEGER,
+      reply         TEXT,
+      last_held_at  INTEGER,
+      blocker_id    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_blockers_task ON session_blockers(task_id);
+  `);
+  // When a live session was last seen holding the key, so pruning measures OBSERVED absence
+  // across restarts rather than restarting the clock from an empty process.
+  addColumn(d, "session_blockers", "last_held_at", "INTEGER");
+  // Each blocker's identity, kept across re-reports. A row written before it existed reads
+  // back with an id derived from its key and start (see `rowToSessionBlocker`).
+  addColumn(d, "session_blockers", "blocker_id", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -11627,6 +11663,140 @@ export function pruneStandingInstructions(liveKeys: Iterable<string>, olderThan:
     )
     .run(olderThan, ...keys);
   return Number(r.changes);
+}
+
+// ---- session blockers ----
+
+/** A stored blocker and the two columns the wire record does not carry. */
+export interface SessionBlockerRecord {
+  noteKey: string;
+  taskId: string | null;
+  blocker: SessionBlocker;
+  /** When a live session was last seen holding this key; null until first observed. */
+  lastHeldAt: number | null;
+}
+
+interface SessionBlockerRow {
+  note_key: string;
+  task_id: string | null;
+  kind: string;
+  reason: string;
+  waiting_on: string;
+  resume_when: string;
+  details: string | null;
+  reference_url: string | null;
+  started_at: number;
+  updated_at: number;
+  checked_at: number | null;
+  reply: string | null;
+  last_held_at: number | null;
+  blocker_id: string | null;
+}
+
+const SESSION_BLOCKER_COLUMNS = `note_key, task_id, kind, reason, waiting_on, resume_when, details,
+  reference_url, started_at, updated_at, checked_at, reply, last_held_at, blocker_id`;
+
+function parseBlockerReply(raw: string | null): SessionBlockerReply | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<SessionBlockerReply> | null;
+    if (!v || typeof v.flaggedAt !== "number" || typeof v.flaggedBy !== "string") return null;
+    return {
+      flaggedAt: v.flaggedAt,
+      flaggedBy: v.flaggedBy,
+      note: typeof v.note === "string" ? v.note : null,
+      referenceUrl: typeof v.referenceUrl === "string" ? v.referenceUrl : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rowToSessionBlocker(r: SessionBlockerRow): SessionBlockerRecord {
+  // An unknown kind (a newer build appended one) reads as `other` rather than dropping the
+  // blocker: the hold is the part that must survive a downgrade, not the label.
+  const kind = (SESSION_BLOCKER_KINDS as readonly string[]).includes(r.kind)
+    ? (r.kind as SessionBlockerKind)
+    : "other";
+  return {
+    noteKey: r.note_key,
+    taskId: r.task_id,
+    blocker: {
+      id: r.blocker_id ?? `legacy:${r.note_key}:${r.started_at}`,
+      kind,
+      reason: r.reason,
+      waitingOn: r.waiting_on,
+      resumeWhen: r.resume_when,
+      details: r.details,
+      referenceUrl: r.reference_url,
+      startedAt: r.started_at,
+      updatedAt: r.updated_at,
+      checkedAt: r.checked_at,
+      reply: parseBlockerReply(r.reply),
+    },
+    lastHeldAt: r.last_held_at,
+  };
+}
+
+/** Every stored blocker, reloaded into the registry on start. */
+export function loadSessionBlockers(): SessionBlockerRecord[] {
+  const rows = openDb()
+    .prepare(`SELECT ${SESSION_BLOCKER_COLUMNS} FROM session_blockers ORDER BY started_at`)
+    .all() as unknown as SessionBlockerRow[];
+  return rows.map(rowToSessionBlocker);
+}
+
+/** Write a blocker whole: a first report, a re-report, a reply flag. */
+export function upsertSessionBlocker(record: SessionBlockerRecord): void {
+  const b = record.blocker;
+  openDb()
+    .prepare(
+      `INSERT INTO session_blockers (${SESSION_BLOCKER_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         task_id=excluded.task_id, kind=excluded.kind, reason=excluded.reason,
+         waiting_on=excluded.waiting_on, resume_when=excluded.resume_when,
+         details=excluded.details, reference_url=excluded.reference_url,
+         started_at=excluded.started_at, updated_at=excluded.updated_at,
+         checked_at=excluded.checked_at, reply=excluded.reply, last_held_at=excluded.last_held_at,
+         blocker_id=excluded.blocker_id`,
+    )
+    .run(
+      record.noteKey, record.taskId, b.kind, b.reason, b.waitingOn, b.resumeWhen, b.details,
+      b.referenceUrl, b.startedAt, b.updatedAt, b.checkedAt,
+      b.reply ? JSON.stringify(b.reply) : null, record.lastHeldAt, b.id,
+    );
+}
+
+/** Record that a live session holds each of these keys right now. */
+export function touchSessionBlockersHeld(noteKeys: readonly string[], now: number): void {
+  if (!noteKeys.length) return;
+  openDb()
+    .prepare(`UPDATE session_blockers SET last_held_at = ? WHERE note_key IN (${noteKeys.map(() => "?").join(",")})`)
+    .run(now, ...noteKeys);
+}
+
+export function deleteSessionBlocker(noteKey: string): void {
+  openDb().prepare(`DELETE FROM session_blockers WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Carry a blocker across a note-key rotation - every rotation, as standing instructions move:
+ * a `/clear` inside the same task does not resolve what the task is waiting on.
+ */
+export function moveSessionBlocker(fromKey: string, toKey: string): void {
+  if (fromKey === toKey) return;
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_blockers WHERE note_key = ? AND EXISTS
+      (SELECT 1 FROM session_blockers WHERE note_key = ?)`).run(toKey, fromKey);
+    d.prepare(`UPDATE session_blockers SET note_key = ? WHERE note_key = ?`).run(toKey, fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 // ---- usage ledger (API-equivalent estimates and token usage) ----

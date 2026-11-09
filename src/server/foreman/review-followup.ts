@@ -4,7 +4,7 @@ import type { ReportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { hasPane } from "./queue-machine.ts";
-import { settledIdle } from "@shared/session.ts";
+import { hasBlocker, settledIdle } from "@shared/session.ts";
 import { buildStackPrompt, type StackPromptRequest } from "@shared/stacking.ts";
 
 // The review follow-through trigger's decision core: a session's work has become an
@@ -395,6 +395,8 @@ function followupOwnershipBlocker({ session: s, bucket, workflowOwnsSession }: F
   //    is stopped ON that, not free to be handed the PR - triage owns it until it doesn't.
   if (bucket === "needs-you") return "the session needs a human";
   if (s.state === "awaiting_input") return "the session is waiting on input";
+  // 4b. A durable blocker: the session is waiting on someone else, so nothing is typed into it.
+  if (hasBlocker(s)) return "the session is blocked";
 
   // 5. THE OVERLAP RULE, the same shape prompted-wrapup states: a checkout with live work
   //    queue items belongs to the drain path. Gated on open ITEMS, via the card summary

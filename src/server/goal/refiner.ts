@@ -183,6 +183,10 @@ export function startGoalRefiner(registry: Registry): () => void {
         const standing = registry.pruneStandingInstructions(now - GOAL_PRUNE_AGE_MS);
         if (standing > 0)
           console.log(`[goal] pruned ${standing} orphaned standing-instruction snapshot(s)`);
+        // And session blockers, which ride the same note key. An exit alone never ends one, so
+        // only a key no session has held for the window goes.
+        const blockers = registry.pruneBlockers(now - GOAL_PRUNE_AGE_MS, now);
+        if (blockers > 0) console.log(`[goal] pruned ${blockers} orphaned session blocker(s)`);
       }
     } catch (err) {
       console.error("[goal] poll failed:", err);

@@ -138,6 +138,17 @@ export function finishedTasks(tasks: Task[]): Task[] {
 }
 
 /**
+ * Whether this session stands on a durable blocker: it is waiting on someone or something
+ * other than the operator. The ONE predicate every idle-triggered automation holds on.
+ *
+ * Deliberately not folded into `reportBucket`. A blocked session is not asking you, so it
+ * must not reach Foreman triage, raise attention alerts or count as an answer you owe.
+ */
+export function hasBlocker(s: Pick<Session, "blocker">): boolean {
+  return s.blocker != null;
+}
+
+/**
  * True while the agent is (or is presumed to be) actively driving its own work.
  * This intentionally reads the raw lifecycle state rather than its confidence: a
  * confirmed hook or transcript reading may report `starting`/`working`, while the

@@ -8,6 +8,19 @@ import type { Registry } from "./registry.ts";
 import { nextQueueSeq } from "./db.ts";
 
 /**
+ * Work-item states that move an item forward on the session's behalf. While the item's note
+ * key stands on a session blocker these are refused here, at the one boundary both queue state
+ * routes share, as a backstop to the worker's own hold: a Foreman worker
+ * from before blockers existed can outlive a daemon restart and would otherwise verify or send
+ * an item for a session that is waiting on someone else. Cancelling, escalating and
+ * re-queueing stay open, so a human, the exit path and the orphan sweep can still tidy it.
+ */
+const BLOCKER_HELD_ITEM_STATES: ReadonlySet<WorkItem["state"]> = new Set<WorkItem["state"]>([
+  "sending", "awaiting_pickup", "in_progress", "verifying", "verified",
+]);
+const BLOCKER_HELD_ERROR = "the session is blocked on someone else; its queue is held until the blocker is cleared";
+
+/**
  * Owns the session work-queue lifecycle: the batch of work you load up for one
  * agent to do next, one item at a time, in the order you authored. The registry
  * is the single store; this is the policy layer routes call into - the queue
@@ -225,6 +238,9 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    if (patch.state && BLOCKER_HELD_ITEM_STATES.has(patch.state) && this.registry.hasBlockerForKey(item.noteKey)) {
+      return { ok: false, error: BLOCKER_HELD_ERROR };
+    }
     const state = patch.state ?? item.state;
     const draftChanged = patch.proposedPayload !== undefined && patch.proposedPayload !== item.proposedPayload;
     const next: WorkItem = {
@@ -321,6 +337,8 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    // Not held: this stamp records a delivery that already left (only `setState`, which is
+    // held, can put an item into `sending`), and refusing it would strand the item there.
     const acknowledged = item.deliveryRuntime === "sdk";
     // The worker calls this only after delivery resolves. SDK delivery is an acceptance
     // acknowledgement, even when the whole turn completed before this HTTP write arrived.

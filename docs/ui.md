@@ -886,6 +886,16 @@ available:
   is two cells sharing one line. The choice is per browser and stored through the daemon, so
   it survives a reload; a second dashboard tab already open picks it up on its next load
   rather than live, which is true of every Display preference.
+- **A blocked session is red.** A session waiting on someone other than you records a
+  [blocker](sessions.md#blocked-sessions), and its card takes the danger tone on its spine
+  and border with a **Blocked · 3h** flag among the attention flags. Like the **held** tag,
+  the tone and the flag are the card's state and cannot be switched off. Five Board card items
+  say what it is blocked on, all on by default: **Blocker kind** (Question, Dependency,
+  Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
+  the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
+  saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
+  opens with a red band that always shows every field, the collapsible details and any flagged
+  reply, with **Flag reply** and **Clear blocker** buttons.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -
   ship, bugfix, scout, plan, pipeline, chat or document - on both surfaces, `ship` included. Each kind
   has its own icon and colour. Every style prints the kind's word beside the icon except the

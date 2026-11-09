@@ -2515,6 +2515,8 @@ export const WORKFLOW_RESUMPTION_WITHHELD_REASONS = [
   "session_needs_you",
   "packet_undelivered",
   "repository_unchanged",
+  // Appended: the bound session reported a durable blocker (waiting on someone else).
+  "session_blocked",
 ] as const;
 
 export type WorkflowResumptionWithheldReason =
@@ -2552,6 +2554,9 @@ export function workflowResumptionWithheldSentence(
     case "repository_unchanged":
       return `Waiting on the session: the repository has not changed since round ${round}.`
         + " Reviewing it again would return the same verdicts, so no round has been spent.";
+    case "session_blocked":
+      return "The session is blocked on someone other than you, so it has not been handed another"
+        + " round. The next round opens once its blocker is cleared.";
     default:
       return null;
   }

@@ -76,6 +76,7 @@ function queue(openCount: number): SessionQueueSummary {
 /** A session parked idle on an OPEN PR - the base case a nudge fires on. Override per test. */
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1",
     agent: "claude",
     name: "atlas",
@@ -703,4 +704,11 @@ test("two repositories holding the same pull request NUMBER do not share a mark"
     ]),
   );
   assert.equal(new Set(prs.map((pr) => pr.prKey)).size, 2, "one key per pull request");
+});
+
+test("a blocked session is not nudged about review feedback until the blocker clears", () => {
+  const blocker = { id: "blk-fixture", kind: "dependency" as const, reason: "Needs #1402", waitingOn: "Platform", resumeWhen: "#1402 merges", details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null };
+  const held = decide({ session: mkSession({ blocker, inspector: inspector({ open: 2 }) }) });
+  assert.deepEqual(held, { kind: "skip", why: "the session is blocked" });
+  assert.equal(decide({ session: mkSession({ inspector: inspector({ open: 2 }) }) }).kind, "nudge");
 });

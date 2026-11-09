@@ -123,7 +123,13 @@ NEVER ask a question as ordinary prose and end your turn. A prose question reach
 the turn simply ends and your human never learns you were stuck. If a question is worth
 asking, it is worth calling the tool for. If you would rather proceed on a reasonable
 assumption than ask, that is fine - say which assumption you made and keep going. What is
-not fine is stopping to ask where no one can hear you.`;
+not fine is stopping to ask where no one can hear you.
+
+If you are waiting on someone or something other than your human operator, call the MCP
+tool \`${missionMcpToolName("report_blocker")}\` instead; for a decision the operator can make, call
+\`${ASK_TOOL}\`.
+Ask your question where its owner will see it first (for example Commonroom), then report
+the blocker with a link to that question, and end your turn.`;
 
 /**
  * Build the argv fragment that routes a dispatched session's questions to the dashboard.

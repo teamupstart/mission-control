@@ -135,6 +135,11 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
 
+A session standing on a [blocker](sessions.md#blocked-sessions) is exempt from the two idle
+rules (open work and a parked run): it is waiting on someone other than you, and its blocker
+already explains the silence, with its age on the card. A blocker raises no alert of its own,
+a flagged reply is a card pill only, and neither counts as an answer you owe.
+
 The parked-run rule is the backstop for a review loop that quietly stopped. A run
 waiting in `waiting_for_session` or `waiting_for_new_head` is waiting on *that session's
 next turn*, so a session that took the repair packet, made the fix and went idle has

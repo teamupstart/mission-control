@@ -414,6 +414,7 @@ test("classifyDivergence: agree, over-eager, too-cautious, minor", () => {
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: "s1", agent: "claude", name: "sess", runtime: "terminal", foremanInvite: "dispatch", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, pid: 1, tty: null, permissionMode: null,
     terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], agentSessionId: null,

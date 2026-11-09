@@ -79,6 +79,8 @@ import {
   PROMPTED_DIRECT_HANDOFF_KINDS,
   PROMPTED_RECOVERY_DELIVERY_STATES,
   PROMPTED_RECOVERY_REASONS,
+  SESSION_BLOCKER_KINDS,
+  SESSION_BLOCKER_LIMITS,
   SESSION_RUNTIMES,
   TASK_KINDS,
   TASK_STATUSES,
@@ -963,6 +965,67 @@ export const StatusSchema = z.object({
   activity: z.string().min(1),
 });
 export type StatusReport = z.infer<typeof StatusSchema>;
+
+// ---- session blockers ----
+
+/** One line of operator-readable text: trimmed, non-empty, no line breaks. */
+const blockerLine = (max: number) =>
+  z.string().trim().min(1).max(max).refine((v) => !/[\r\n]/.test(v), { message: "must be one line" });
+
+/** An http(s) link, or null. Anything else would be a link the dashboard refuses to open. */
+const BlockerUrlSchema = z
+  .string()
+  .trim()
+  .max(SESSION_BLOCKER_LIMITS.url)
+  .url()
+  .refine((v) => /^https?:\/\//i.test(v), { message: "must be an http(s) URL" });
+
+/** What a session reports about itself through `report_blocker`. */
+export const ReportBlockerBodySchema = z.object({
+  kind: z.enum(SESSION_BLOCKER_KINDS),
+  reason: blockerLine(SESSION_BLOCKER_LIMITS.reason),
+  waitingOn: blockerLine(SESSION_BLOCKER_LIMITS.waitingOn),
+  resumeWhen: blockerLine(SESSION_BLOCKER_LIMITS.resumeWhen),
+  referenceUrl: BlockerUrlSchema.nullable().optional().default(null),
+  details: z.string().trim().max(SESSION_BLOCKER_LIMITS.details).nullable().optional()
+    .transform((v) => (v ? v : null)),
+});
+export type ReportBlockerBody = z.infer<typeof ReportBlockerBodySchema>;
+
+/** `POST /mcp/blocker`: bound to the caller the way `/mcp/status` is. */
+export const McpReportBlockerSchema = ReportBlockerBodySchema.extend({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+});
+
+/**
+ * The `id` of the blocker the caller was looking at. A re-report keeps it, so it names one
+ * blocker across updates; a different blocker reported since has a different one, and the
+ * daemon refuses rather than act on a blocker the caller never saw.
+ */
+const ExpectedBlockerSchema = z.string().min(1).max(64);
+
+/** `POST /api/sessions/:id/blocker/clear`, and the session-control action that maps to it. */
+export const ClearBlockerSchema = z.object({
+  resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
+}).strict();
+export type ClearBlocker = z.infer<typeof ClearBlockerSchema>;
+
+/** `POST /mcp/blocker/clear`: the session clearing its own blocker. */
+export const McpClearBlockerSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  resolution: blockerLine(SESSION_BLOCKER_LIMITS.resolution).optional(),
+});
+
+/** `POST /api/sessions/:id/blocker/reply`: flag a likely answer without clearing anything. */
+export const FlagBlockerReplySchema = z.object({
+  note: z.string().trim().max(SESSION_BLOCKER_LIMITS.note).optional(),
+  referenceUrl: BlockerUrlSchema.optional(),
+  blockerId: ExpectedBlockerSchema.optional(),
+}).strict();
+export type FlagBlockerReply = z.infer<typeof FlagBlockerReplySchema>;
 
 /**
  * The two optional triage fields every task-writing schema shares, spread into both
@@ -8648,6 +8711,8 @@ const ControlIdSchema = z.string().min(1).max(256);
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),
   transcript: z.boolean().optional().default(false),
+  /** List form only: true lists only sessions that stand on a blocker. */
+  blocked: z.boolean().optional(),
 }).strict();
 
 /** Fixed operations, never arbitrary URLs or caller-supplied actor attribution. */
@@ -8673,6 +8738,8 @@ export const SessionControlActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set_model"), model: SetSessionModelSchema.shape.model }).strict(),
   z.object({ action: z.literal("set_effort"), effort: SetSessionEffortSchema.shape.effort }).strict(),
   z.object({ action: z.literal("set_permission_mode"), mode: SetPermissionModeSchema.shape.mode }).strict(),
+  z.object({ action: z.literal("flag_blocker_reply"), ...FlagBlockerReplySchema.shape }).strict(),
+  z.object({ action: z.literal("clear_blocker"), ...ClearBlockerSchema.shape }).strict(),
 ]);
 export const SessionControlRequestSchema = z.object({
   sessionId: ControlIdSchema,

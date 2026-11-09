@@ -44,6 +44,7 @@ const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("har
 /** An embedded session over `cwd`: no pane, no tty, bound to a harness session id. */
 function sdkSess(cwd: string | null, over: Partial<Session> = {}): Session {
   return {
+    blocker: null,
     id: `${SDK_SESSION_ID_PREFIX}11111111-1111-4111-8111-111111111111`,
     agent: "claude",
     name: "embedded",
@@ -361,4 +362,30 @@ test("an unproven rotation leaves the episode awaiting, and says so", async () =
     false,
     "an unproven identity must not inherit what the reset was giving up",
   );
+});
+
+test("a reset that observes a rotation the registry did not carries the session's blocker with it", async () => {
+  const { loadSessionBlockers } = await import("../src/server/db.ts");
+  const registry = new Registry();
+  const id = `${SDK_SESSION_ID_PREFIX}99999999-9999-4999-8999-999999999999`;
+  const cwd = "/reset-blocker-move";
+  registerBound(registry, id, cwd);
+  assert.equal(registry.reportBlocker(id, {
+    kind: "dependency", reason: "Needs #1402 merged", waitingOn: "Platform", resumeWhen: "#1402 merges",
+    referenceUrl: null, details: null,
+  }).ok, true);
+  const blockerId = registry.getBlocker(id)!.id;
+  const before = registry.getSession(id)!;
+  const result = await resetSession(registry, before, false, async () => {
+    // A rotation none of the registry's own rotation sites saw: only the reset's move can
+    // carry the blocker to the key the session holds afterwards.
+    Object.assign(registry.getSession(id)!, { agentSessionId: "agent-reset-blocker" });
+    return { ok: true, error: null, root: cwd, cleared: false, detached: false, clearIssuedAt: Date.now() };
+  });
+  assert.equal(result.ok, true);
+  const keys = loadSessionBlockers().map((b) => b.noteKey);
+  assert.ok(keys.includes("agent-reset-blocker"), "the blocker was not moved to the post-reset key");
+  assert.ok(!keys.includes("agent-old"), "the blocker stranded under the pre-reset key");
+  assert.equal(registry.getBlocker(id)?.id, blockerId, "the session lost its blocker across the reset");
+  assert.equal(registry.getSession(id)?.blocker?.id, blockerId, "Session.blocker was not re-projected after the reset");
 });

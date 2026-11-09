@@ -225,6 +225,10 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  McpReportBlockerSchema,
+  McpClearBlockerSchema,
+  FlagBlockerReplySchema,
+  ClearBlockerSchema,
   TRANSCRIPT_DEFAULT_TAIL_TURNS,
   TRANSCRIPT_HEAD_TURNS,
   UpdateTaskSchema,
@@ -290,6 +294,7 @@ import type {
   LlmStatus,
   ReviewActor,
   Session,
+  SessionBlocker,
   SkillsView,
   Task,
   WorkItem,
@@ -325,7 +330,7 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -903,6 +908,7 @@ async function parseBoundedBody<S extends ZodTypeAny>(
 /** What a refused Foreman write says, on every route that refuses one. */
 const FOREMAN_UNINVITED = "Foreman is not invited into this session";
 const FOREMAN_COMPOSER_BUSY = "Foreman is waiting while the user composes a reply";
+const FOREMAN_SESSION_BLOCKED = "The session is blocked on someone else; Foreman holds until the blocker is cleared";
 
 interface ForemanWriteRefusal {
   error: string;
@@ -947,11 +953,49 @@ function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
+  /**
+   * The write answers the question on screen (a review decision, a menu row, a form). These
+   * are the triage responses a blocked session may still take: they can only answer what
+   * the session is asking, so they cannot carry a stale wrap-up or recovery payload.
+   */
+  structuredAnswer = false,
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
+  // The daemon's half of the blocker hold, for a worker that predates it and outlives a
+  // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
+  // reaches a session waiting on someone else, whatever bucket it is in: the route cannot tell
+  // a prose triage answer from a stale automated payload, so a blocked session's prose
+  // question is left to the operator.
+  if (!structuredAnswer && hasBlocker(session)) {
+    return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
+  }
   return null;
+}
+
+/**
+ * Why a Flag reply or Clear aimed at one blocker must not act on the current one, or null.
+ * A caller that names the blocker it saw (its `id`) is refused when a different blocker now
+ * stands, so a button left open on blocker A cannot clear blocker B, even one reported in the
+ * same millisecond. No current blocker is not a mismatch: the routes treat that as their own
+ * no-op or 409.
+ */
+function staleBlockerRefusal(current: SessionBlocker | null, expectedId: string | undefined): string | null {
+  if (expectedId === undefined || !current || current.id === expectedId) return null;
+  return "The blocker changed since you last looked; reread it before acting.";
+}
+
+/**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
+export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+  if (origin !== "foreman") return null;
+  const live = registry.getSession(sessionId);
+  return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
 }
 
 /**
@@ -5152,6 +5196,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.body(null, 204);
   });
 
+  // The blocked session's own report: bound to the caller like `/mcp/status` (pane key or
+  // Mission session id), never to a body-named target. Refused while the session has a pending
+  // `request_input` of its own - it is already waiting on the operator.
+  app.post("/mcp/blocker", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpReportBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const { env, sessionId, ...body } = parsed.data;
+    const session = registry.findSessionByEnv(env, sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const result = registry.reportBlocker(session.id, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
+    return c.json({ sessionId: session.id, created: result.created, blocker: result.blocker });
+  });
+
+  // The session clearing its own blocker. Clearing a session with none is a no-op success.
+  app.post("/mcp/blocker/clear", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, McpClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId);
+    if (!session) return c.json({ error: "no matching session" }, 404);
+    const cleared = registry.clearBlocker(session.id, "session", parsed.data.resolution);
+    return c.json({ sessionId: session.id, cleared });
+  });
+
   app.post("/mcp/pipelines/adopt", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpAdoptPipelineRunSchema);
@@ -5617,7 +5687,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -5682,7 +5752,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -5703,7 +5773,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         parsed.data.text,
-        undefined,
+        origin === "foreman" ? () => foremanBlockedNow(registry, session.id, origin) : undefined,
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
@@ -5732,7 +5802,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       parsed.data.submit,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
     observeSessionOperation({
       session,
@@ -5762,7 +5832,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5804,7 +5874,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5865,6 +5935,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  // A likely answer to this session's blocker, flagged by the operator or (through
+  // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
+  // sends anything to the session; the flag is a card pill, not an alert.
+  app.post("/api/sessions/:id/blocker/reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, FlagBlockerReplySchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const blocker = registry.flagBlockerReply(session.id, actor, parsed.data);
+    if (!blocker) return c.json({ error: "this session has no blocker" }, 409);
+    return c.json({ ok: true, blocker });
+  });
+
+  // Clear this session's blocker, from the dashboard or `control_session clear_blocker`.
+  app.post("/api/sessions/:id/blocker/clear", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ClearBlockerSchema);
+    if (!parsed.ok) return parsed.res;
+    const stale = staleBlockerRefusal(registry.getBlocker(session.id), parsed.data.blockerId);
+    if (stale) return c.json({ error: stale }, 409);
+    const actor = sessionControlActor(c.req.raw) ?? "operator";
+    const cleared = registry.clearBlocker(session.id, actor, parsed.data.resolution);
+    return c.json({ ok: true, cleared });
+  });
+
   // Rename the session. On the terminal runtime that means the session's handle - discovery
   // reads the new name back onto the card - and on the embedded one it means the durable row,
   // which is the only place an SDK session's name can live. Either way the registry echoes it
@@ -5922,7 +6021,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
@@ -6064,7 +6163,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       text,
       undefined,
-      () => codeRabbitGuard() ?? stackGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+        ?? registry.promptResourceBlockerForSession(session.id),
       origin,
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => {
@@ -6791,6 +6891,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
+    // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
+    // Clearing a stored answer is a reset, not an ask, and stays open.
+    // The live session, not the one read before the body: a blocker reported while the
+    // request was in flight must still refuse the ask.
+    if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
+      return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
     queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
@@ -6889,6 +6996,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    // The session can report a blocker while the diff runs; the decision below reads the
+    // object taken before the await, so ask the live one first.
+    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,

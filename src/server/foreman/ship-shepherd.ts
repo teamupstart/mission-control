@@ -1,7 +1,7 @@
 import { isActiveTask } from "@shared/task-status.ts";
 import { isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { settledIdle } from "@shared/session.ts";
+import { hasBlocker, settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
 import { workflowEvidenceRequirement } from "@shared/task-completion.ts";
 import type {
@@ -140,6 +140,7 @@ function decideShipRecovery(
   if (input.humanOwnsSession || s.state === "awaiting_input" || s.state === "awaiting_review") {
     return skip("the session needs a human");
   }
+  if (hasBlocker(s)) return skip("the session is blocked");
   if ((queue?.items.length ?? 0) > 0 || s.pendingTurns.length > 0) {
     return skip("a queue item or pending turn owns the session");
   }

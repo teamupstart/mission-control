@@ -1,13 +1,13 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { ResidentProfile, ResidentRunSummary } from "@shared/residents.ts";
 import { activePaneDialog } from "@shared/session.ts";
-import type { ReviewItem, Session } from "@shared/types.ts";
-import { PaneDialogPrompt } from "../components/PaneDialogPrompt.tsx";
+import type { PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { Keycap } from "../components/Keycap.tsx";
 import { RepoGroupCaret } from "../components/session-bits.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { stateDisplay } from "../lib/format.ts";
 import { formatChord, isTypingTarget, useKeybindings } from "../lib/keybindings.ts";
+import { reviewAskSummary } from "../lib/reviews.ts";
 import { toggleResidentCardCollapsed, useResidentCardsCollapsed } from "./card-fold.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
 import { ResidentControlStatus } from "./ResidentControlStatus.tsx";
@@ -115,14 +115,13 @@ export interface ResidentsDrawerProps {
   focusRequest?: { sessionId: string | null; nonce: number } | null;
   /** The request above has been applied; App clears it so a remount does not replay it. */
   onFocusRequestHandled?: () => void;
-  /** Every pending review; the selected card answers the ones its resident raised. */
+  /** Every pending review; each card names the ones its resident raised. */
   reviews: readonly ReviewItem[];
   /**
-   * Draw one pending review through the app's `ReviewCard`. Injected rather than imported:
-   * `ReviewModal.tsx` pulls in react-diff-view's stylesheet, which Node cannot load, and this
-   * drawer is rendered by unit tests.
+   * Open the review modal on a resident's pending reviews, or the menu it is parked on. The drawer
+   * never answers either itself: a card names what is being asked, and the modal answers it.
    */
-  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
+  onOpenReview: (sessionId: string) => void;
 }
 
 /**
@@ -232,8 +231,8 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
       collapsed={entry.session !== null && collapsed.has(entry.session.id)}
       onSelect={props.onSelect}
       onOpen={props.onOpen}
+      onOpenReview={props.onOpenReview}
       reviews={props.reviews}
-      renderReview={props.renderReview}
     />
   );
   return (
@@ -330,17 +329,17 @@ export function ResidentsDrawer(props: ResidentsDrawerProps): React.JSX.Element 
  * selects the card and folds it, open to compressed and back, the way a Board repository frame
  * folds; Enter or a double-click opens the resident. Open, the card carries its loop facts and
  * `ResidentDrawerCardBody` in full. Compressed, it keeps the live status line and the controls
- * and drops the rest - the question and the loop tags - so more residents fit.
+ * and drops the rest - what it is asking and the loop tags - so more residents fit.
  */
-function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, reviews, renderReview }: {
+function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOpenReview, reviews }: {
   entry: ResidentDrawerEntry;
   selected: boolean;
   /** Compressed by a click on its title. Never true for a card whose session has not started. */
   collapsed: boolean;
   onSelect: (sessionId: string) => void;
   onOpen: (sessionId: string) => void;
+  onOpenReview: (sessionId: string) => void;
   reviews: readonly ReviewItem[];
-  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
@@ -348,6 +347,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, revi
   // The tone the Board files this session under, so a working resident's card is edged in the
   // Working column's color and one that needs you in the Needs you column's, in every theme.
   const working = state.tone === "working";
+  const status = collapsed ? null : <ResidentLoopStatusLine loop={run} session={session} tags />;
   return (
     <li
       className={`residents-drawer-card${selected ? " is-selected" : ""}${collapsed ? " is-collapsed" : ""}${working ? " is-working" : ""}${needsYou ? " needs-you" : ""}`}
@@ -383,15 +383,18 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, revi
           {session && <RepoGroupCaret />}
         </button>
       </Tooltip>
-      {!collapsed && <ResidentLoopStatusLine loop={run} session={session} tags />}
-      {session && (
+      {session ? (
         <ResidentDrawerCardBody
           session={session}
           name={mark.name}
           compressed={collapsed}
+          status={status}
           onOpen={() => onOpen(session.id)}
+          onOpenReview={() => {
+            onSelect(session.id);
+            onOpenReview(session.id);
+          }}
           reviews={reviews.filter((review) => review.sessionId === session.id && review.status === "pending")}
-          renderReview={renderReview}
         >
           <div className="residents-drawer-actions">
             <Tooltip label={`Open ${mark.name}'s conversation${shortcut !== null ? ` (${residentShortcutLabel(shortcut)})` : ""}`}>
@@ -411,84 +414,153 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, revi
             )}
           </div>
         </ResidentDrawerCardBody>
-      )}
+      ) : status}
     </li>
   );
 }
 
 /**
- * A card's region under its title: what the resident is asking or last said, and the card's
- * actions (`children`) under it. There is no reply box: a free-form reply is written in the
- * resident's Conversation, which a click on the latest message opens.
+ * Whether a click inside a card's body is a request to open the conversation. A click on a
+ * control inside it is that control's, and a drag that selected some of the text is reading.
+ */
+function bodyClickOpens(e: React.MouseEvent<HTMLElement>): boolean {
+  const target = e.target as Element;
+  const control = target.closest?.("button, a[href], input, select, textarea, summary");
+  if (control && e.currentTarget.contains(control)) return false;
+  const selection = window.getSelection();
+  return !(selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode));
+}
+
+/**
+ * A card's body under its title: the loop facts (`status`), then what the resident is asking or
+ * else its latest message, then the card's actions (`children`). A click anywhere between the
+ * title and the actions opens the resident's conversation, as **Open** does; the keyboard's way
+ * there is Enter on the card's title. There is no reply box: a free-form reply is written in the
+ * resident's Conversation.
+ *
+ * Nothing the resident asks is answered on the card. Each pending review is one row in the Needs
+ * you color naming the question, and a click on it opens the review modal, where it is answered.
+ * A menu the session is parked on is one such row too, and opens the same modal, which draws the
+ * menu with the Conversation's own `PaneDialogPrompt`.
  *
  * `compressed` keeps only the live status line - one line of what the resident is doing, which
- * follows its activity as it changes - and the actions. The question waits for the card to be
- * opened again.
- *
- * Nothing here is a second answering mechanism. A pending review is drawn through the app's
- * `ReviewCard` (`renderReview`), exactly as the attention inbox draws it, and a menu the session
- * is parked on is drawn through `PaneDialogPrompt`, the component the Conversation tab leads with.
+ * follows its activity as it changes - and the actions. What it is asking waits for the card to
+ * be opened again.
  */
-export function ResidentDrawerCardBody({ session, name, compressed = false, onOpen, reviews, renderReview, children }: {
+export function ResidentDrawerCardBody({ session, name, compressed = false, status = null, onOpen, onOpenReview, reviews, children }: {
   session: Session;
   name: string;
   /** The card is compressed: the status line and the actions only. */
   compressed?: boolean;
-  /**
-   * Open the resident's conversation: a click on an open card's latest message, which is the
-   * text the Conversation continues. The keyboard's way there is Enter on the card's title.
-   */
+  /** The loop facts, drawn first inside the region a click opens. */
+  status?: React.ReactNode;
+  /** Open the resident's conversation. Without it, the region is not a way in. */
   onOpen?: () => void;
+  /** Open the review modal on this resident's pending reviews or the menu it is parked on. */
+  onOpenReview?: () => void;
   /** This resident's pending reviews, oldest first. */
   reviews: readonly ReviewItem[];
-  renderReview: (review: ReviewItem, session: Session) => React.ReactNode;
   children: React.ReactNode;
 }): React.JSX.Element {
   const dialog = activePaneDialog(session);
   // The line the Console rail prints under a session's name: the last thing it reported.
   const latest = session.activity ?? session.goal?.text ?? null;
-  if (compressed) {
-    return (
-      <div className="residents-drawer-card-body is-compressed">
-        <p className="residents-drawer-latest is-compressed" aria-label={`Latest from ${name}`}>
-          {latest ?? stateDisplay(session).label}
-        </p>
-        {children}
-      </div>
-    );
-  }
+  const asks = compressed ? null : reviews.length > 0 ? (
+    <ul className="residents-drawer-asks" aria-label={`${name} is asking`}>
+      {reviews.map((review) => {
+        const summary = reviewAskSummary(review);
+        return (
+          <li key={review.id}>
+            <ResidentAskRow
+              kind={summary.kind}
+              title={review.title}
+              detail={summary.detail}
+              tooltip={`Open the review to answer ${name}`}
+              onClick={onOpenReview}
+            />
+          </li>
+        );
+      })}
+    </ul>
+  ) : dialog ? (
+    <ul className="residents-drawer-asks" aria-label={`${name} is asking`}>
+      <li>
+        <ResidentAskRow
+          kind="menu"
+          title={dialog.prompt ?? "Waiting at a menu"}
+          detail={paneDialogDetail(dialog)}
+          tooltip={`Open the review to answer ${name}`}
+          onClick={onOpenReview}
+        />
+      </li>
+    </ul>
+  ) : null;
+  // Compressed, the line falls back to the state, so the card always says something.
+  const text = compressed ? (latest ?? stateDisplay(session).label) : asks ? null : latest;
+  const latestLine = text === null ? null : (
+    <p className={`residents-drawer-latest${compressed ? " is-compressed" : ""}`} aria-label={`Latest from ${name}`}>{text}</p>
+  );
   return (
-    <div className="residents-drawer-card-body">
-      {reviews.length > 0 ? (
-        <div className="residents-drawer-ask" aria-label={`${name} is asking`}>
-          {reviews.map((review) => <div key={review.id}>{renderReview(review, session)}</div>)}
-        </div>
-      ) : dialog ? (
-        <div className="residents-drawer-ask" aria-label={`${name} is asking`}>
-          <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />
-        </div>
-      ) : latest ? (
-        onOpen ? (
-          <Tooltip label={`Open ${name}'s conversation`}>
-            <p
-              className="residents-drawer-latest is-openable"
-              aria-label={`Latest from ${name}`}
-              onClick={(e) => {
-                // A drag that selected some of the text is reading, not opening.
-                const selection = window.getSelection();
-                if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return;
-                onOpen();
-              }}
-            >
-              {latest}
-            </p>
-          </Tooltip>
-        ) : (
-          <p className="residents-drawer-latest" aria-label={`Latest from ${name}`}>{latest}</p>
-        )
-      ) : null}
+    <div className={`residents-drawer-card-body${compressed ? " is-compressed" : ""}`}>
+      <div
+        className={`residents-drawer-card-main${onOpen ? " is-openable" : ""}`}
+        onClick={onOpen ? (e) => {
+          if (bodyClickOpens(e)) onOpen();
+        } : undefined}
+      >
+        {status}
+        {(asks || latestLine) && (
+          <div className="residents-drawer-card-text">
+            {asks}
+            {latestLine && onOpen ? <Tooltip label={`Open ${name}'s conversation`}>{latestLine}</Tooltip> : latestLine}
+          </div>
+        )}
+      </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * A menu's rows as one line under its prompt, or, for a form of several questions, how many it
+ * asks - the same line a review row prints for a question with options, or for several.
+ */
+function paneDialogDetail(dialog: PaneDialog): string | null {
+  const questions = dialog.questions ?? [];
+  if (questions.length > 1) return `${questions.length} questions`;
+  const rows = questions.length === 1 ? questions[0]!.options : dialog.options;
+  const labels = rows.map((option) => option.label).filter((label) => label.length > 0);
+  return labels.length > 0 ? labels.join(" · ") : null;
+}
+
+/**
+ * One thing a resident is asking: its kind, its title and a line on what answering it takes, in
+ * the Needs you color. A click opens where it is answered; nothing is answered on the card.
+ */
+function ResidentAskRow({ kind, title, detail, tooltip, onClick }: {
+  kind: string;
+  title: string;
+  detail: string | null;
+  tooltip: string;
+  onClick?: () => void;
+}): React.JSX.Element {
+  return (
+    <Tooltip label={tooltip}>
+      <button
+        type="button"
+        className="residents-drawer-ask"
+        aria-label={`${kind}: ${title}${detail ? ` - ${detail}` : ""}`}
+        disabled={!onClick}
+        onClick={onClick}
+      >
+        <span className="residents-drawer-ask-kind" aria-hidden>{kind}</span>
+        <span className="residents-drawer-ask-text" aria-hidden>
+          <span className="residents-drawer-ask-title">{title}</span>
+          {detail && <span className="residents-drawer-ask-detail">{detail}</span>}
+        </span>
+        <span className="residents-drawer-ask-go" aria-hidden>→</span>
+      </button>
+    </Tooltip>
   );
 }
 

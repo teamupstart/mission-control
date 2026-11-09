@@ -12834,6 +12834,34 @@ select:not([multiple]) option:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+}
+/* Everything between the title and the actions: the loop facts, then what the resident is
+   asking or last said. One target - a click anywhere in it opens the conversation. */
+.residents-drawer-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.residents-drawer-card-main.is-openable {
+  cursor: pointer;
+  border-radius: 6px;
+  margin-inline: -4px;
+  padding-inline: 4px;
+}
+.residents-drawer-card-main.is-openable:hover {
+  background: color-mix(in oklab, var(--card-tone, var(--resident)) 8%, transparent);
+}
+.residents-drawer-card-main.is-openable:hover .residents-drawer-latest {
+  color: var(--fg);
+}
+/* What the resident says, ruled off from the loop facts above it. */
+.residents-drawer-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
   padding-top: 6px;
   border-top: 1px solid color-mix(in oklab, var(--resident) 18%, var(--border-soft));
 }
@@ -12856,7 +12884,7 @@ select:not([multiple]) option:focus-visible {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
-/* The selected card's latest message: at most three lines, the rest a click away in Open. */
+/* The card's latest message: at most three lines, the rest a click away in its conversation. */
 .residents-drawer-latest {
   margin: 0;
   color: var(--muted);
@@ -12869,20 +12897,11 @@ select:not([multiple]) option:focus-visible {
   -webkit-line-clamp: 3;
   overflow: hidden;
 }
-/* An open card's latest message is a way into the conversation it continues. */
-.residents-drawer-latest.is-openable {
-  cursor: pointer;
-  border-radius: 6px;
-  margin-inline: -4px;
-  padding-inline: 4px;
-}
-.residents-drawer-latest.is-openable:hover {
-  color: var(--fg);
-  background: color-mix(in oklab, var(--resident) 8%, transparent);
-}
 /* Compressed: one line of what the resident is doing, then its controls. */
 .residents-drawer-card-body.is-compressed {
   gap: 5px;
+}
+.residents-drawer-card-body.is-compressed .residents-drawer-card-text {
   padding-top: 5px;
 }
 .residents-drawer-latest.is-compressed {
@@ -12890,67 +12909,81 @@ select:not([multiple]) option:focus-visible {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The open question, drawn by `ReviewCard` or `PaneDialogPrompt` at the card's width. They are
-   sized for a modal and the Conversation; inside a 330px card they take less air. */
+/* What the resident is asking, one row per pending review (or the menu it is parked on), in the
+   Needs you color. A row only names the question; a click opens where it is answered. */
+.residents-drawer-asks {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .residents-drawer-ask {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.residents-drawer-ask .review {
-  padding: 2px 0 6px;
-}
-.residents-drawer-ask .review-head {
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.residents-drawer-ask .review-head h3 {
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
-.residents-drawer-ask .answer-box,
-.residents-drawer-ask .note-input {
-  min-width: 0;
-}
-.residents-drawer-ask .pane-dialog {
-  margin-top: 0;
-}
-/* A one-question ask answered by one press (`QuickDecisionButtons`): the options as buttons,
-   then Dismiss and Chat about it. */
-.review-quick {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.review-quick-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.review-quick-option {
-  max-width: 100%;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 560;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
-}
-.review-quick-option.is-recommended,
-.review-quick-option.is-foreman-pick {
-  border-color: var(--attention);
-}
-.review-quick-actions {
-  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel));
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.review-quick-actions .btn {
-  padding: 2px 8px;
+.residents-drawer-ask:hover:not(:disabled) {
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 18%, var(--panel));
+}
+.residents-drawer-ask:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 1px;
+}
+.residents-drawer-ask:disabled {
+  cursor: default;
+}
+.residents-drawer-ask-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--attention) 16%, transparent);
+  color: var(--attention);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.residents-drawer-ask-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.residents-drawer-ask-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.residents-drawer-ask-detail {
+  overflow: hidden;
+  color: var(--muted);
   font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.residents-drawer-ask-go {
+  flex: none;
+  color: var(--attention);
 }
 .residents-drawer-foot {
   flex: none;

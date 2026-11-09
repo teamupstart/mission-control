@@ -5,12 +5,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   AGENT_TYPES,
   type RestoringSession,
-  type ReviewItem,
   type Session,
   type Task,
 } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
 import {
+  activePaneDialog,
   backlogTasks,
   canCycleMode,
   canInterruptSession,
@@ -30,7 +30,7 @@ import type {
   TranscriptFindHandle,
   TranscriptScrollDistance,
 } from "./components/TranscriptPanel.tsx";
-import { ReviewCard, ReviewModal } from "./components/ReviewModal.tsx";
+import { ReviewModal } from "./components/ReviewModal.tsx";
 import { requestComposerFocus } from "./lib/composer-focus.ts";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
@@ -1913,24 +1913,14 @@ export function App(): React.JSX.Element {
     }
   }, [route.page, pendingRoute, focusResidentCard]);
   /**
-   * How the drawer's selected card answers a resident's question: the attention inbox's own
-   * `ReviewCard`, with a one-question ask's options as buttons. A question moved to chat opens the resident's conversation, from the drawer,
-   * with the cursor in its reply box.
+   * A drawer card's ask row: the review modal on that resident's pending reviews, or the menu it
+   * is parked on, with its card selected. The drawer names a requested decision; the modal is
+   * where it is answered.
    */
-  const renderResidentReview = useCallback(
-    (review: ReviewItem, session: Session): React.ReactNode => (
-      <ReviewCard
-        review={review}
-        note={session.note}
-        quickAnswers
-        onMovedToChat={(sessionId) => {
-          openResidentDetail(sessionId);
-          requestComposerFocus(sessionId);
-        }}
-      />
-    ),
-    [openResidentDetail],
-  );
+  const openResidentReview = useCallback((sessionId: string): void => {
+    setResidentDrawerSelected(sessionId);
+    setReviewSessionId(sessionId);
+  }, []);
   /** Close the drawer, pinned or not: a pinned drawer closed is no longer pinned. */
   const closeResidentDrawer = useCallback((): void => {
     setResidentDrawerOpen(false);
@@ -2799,6 +2789,9 @@ export function App(): React.JSX.Element {
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
     : [];
+  // A menu the session is parked on is answered in the same modal as its reviews: a resident
+  // card's menu row opens it, as its review rows do.
+  const modalDialog = modalSession ? activePaneDialog(modalSession) : null;
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
@@ -4682,7 +4675,7 @@ export function App(): React.JSX.Element {
                 focusRequest={residentCardFocus}
                 onFocusRequestHandled={() => setResidentCardFocus(null)}
                 reviews={pendingReviews}
-                renderReview={renderResidentReview}
+                onOpenReview={openResidentReview}
               />
             </div>
           );
@@ -4875,10 +4868,11 @@ export function App(): React.JSX.Element {
                 />
               )}
 
-              {modalSession && modalReviews.length > 0 && (
+              {modalSession && (modalReviews.length > 0 || modalDialog) && (
                 <ReviewModal
                   session={modalSession}
                   reviews={modalReviews}
+                  dialog={modalDialog}
                   onClose={() => {
                     delete document.documentElement.dataset.mcTourReview;
                     setReviewSessionId(null);

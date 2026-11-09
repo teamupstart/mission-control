@@ -8,16 +8,6 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("session-blocker");
 
-/**
- * A durable session blocker, end to end: a dispatched session reports it through the same
- * `/mcp/blocker` route the `report_blocker` tool posts, and the dashboard draws a red card in
- * the default placement - the Blocked lane under Needs you - with its fields, honours a hidden
- * card item, opens the detail band, flags a reply without raising anything, keeps the blocker
- * across a daemon restart, and clears it back into Idle.
- *
- * The other two placements are walked by `board-blocked-placement.spec.ts`.
- */
-
 const BLOCKER = {
   kind: "question",
   reason: "Need the retention window for audit logs",
@@ -89,6 +79,15 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/session-blocker/${name}.png`);
 }
 
+/**
+ * A durable session blocker, end to end: a dispatched session reports it through the same
+ * `/mcp/blocker` route the `report_blocker` tool posts, and the dashboard draws a red card in
+ * the default placement - the Blocked lane under Needs you - with its fields, honours a hidden
+ * card item, opens the detail band, flags a reply without raising anything, keeps the blocker
+ * across a daemon restart, and clears it back into Idle.
+ *
+ * The other two placements are walked by `board-blocked-placement.spec.ts`.
+ */
 test("a reported blocker draws a red card in the Blocked lane, a detail band, survives a restart, and clears", async ({
   dashboard,
   daemon,

@@ -5935,16 +5935,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // Rename the session. On the terminal runtime that means the session's handle - discovery
-  // reads the new name back onto the card - and on the embedded one it means the durable row,
-  // which is the only place an SDK session's name can live. Either way the registry echoes it
-  // immediately so the card doesn't lag a poll. A name the backing handle can't accept, or one
-  // a task's teardown still aims at, is a 400 the editor can show; a failure to land it a 500.
-  //
-  // ONE route for both runtimes rather than a second endpoint: everything the caller sees is
-  // the same - `{name}` in, the card renamed out - which is what keeps the title click, the
-  // command bar's keycap and Shift+R on one code path instead of branching per runtime in the
-  // browser, where the runtime is the least interesting thing about the session being named.
   // A likely answer to this session's blocker, flagged by the operator or (through
   // `control_session flag_blocker_reply`) by a controller. Never clears the blocker and never
   // sends anything to the session; the flag is a card pill, not an alert.
@@ -5974,6 +5964,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ ok: true, cleared });
   });
 
+  // Rename the session. On the terminal runtime that means the session's handle - discovery
+  // reads the new name back onto the card - and on the embedded one it means the durable row,
+  // which is the only place an SDK session's name can live. Either way the registry echoes it
+  // immediately so the card doesn't lag a poll. A name the backing handle can't accept, or one
+  // a task's teardown still aims at, is a 400 the editor can show; a failure to land it a 500.
+  //
+  // ONE route for both runtimes rather than a second endpoint: everything the caller sees is
+  // the same - `{name}` in, the card renamed out - which is what keeps the title click, the
+  // command bar's keycap and Shift+R on one code path instead of branching per runtime in the
+  // browser, where the runtime is the least interesting thing about the session being named.
   app.post("/api/sessions/:id/rename", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

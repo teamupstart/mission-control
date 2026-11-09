@@ -20,6 +20,7 @@ import {
   SettingsBackupCountsSchema,
 } from "@shared/settings-backups.ts";
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
 import { WORKFLOW_CHECK_SLOTS, WORKFLOW_LIMITS } from "@shared/workflow.ts";
 import { boundedRecord } from "@shared/zod-shapes.ts";
 import { RESIDENT_LIMITS, ResidentProfileRevisionSchema } from "@shared/residents.ts";
@@ -48,6 +49,9 @@ export const SettingsBackupPersonaSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable(),
   model: model.nullable(),
+  // Defaulted, not required: a backup written before Persona effort existed has no key, and
+  // it restores as what that Persona ran at - the provider default.
+  effort: z.enum(THINKING_LEVELS).nullable().default(null),
   revision: z.number().int().positive(),
   archivedAt,
   createdAt: timestamp,

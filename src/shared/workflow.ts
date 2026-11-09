@@ -1,5 +1,5 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
-import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
@@ -12,6 +12,8 @@ import type {
   SessionIntentGuard,
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
+import type { ThinkingLevel } from "./types.ts";
 import { repoAllowlisted } from "./allowlist.ts";
 import {
   NO_MISTAKES_REVIEW_WORKFLOW_ID,
@@ -997,6 +999,11 @@ export interface Persona {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The reasoning effort this Persona's calls ask for, or null for the provider's default.
+   * One vocabulary with sessions and tasks (`THINKING_LEVELS`); see `personaEffortLevels`.
+   */
+  effort: ThinkingLevel | null;
   revision: number;
   archivedAt: number | null;
   createdAt: number;
@@ -1016,6 +1023,84 @@ export interface Persona {
 export interface PersonaExecutionView {
   runner: ResolvedLlmRunner;
   model: ResolvedModel;
+  /** Absent reads exactly as `{ level: null, unsupported: null }`: the provider default. */
+  effort?: ResolvedPersonaEffort;
+}
+
+/**
+ * The effort one Persona call runs at.
+ *
+ * `level` is what is actually passed to the provider; null means no effort flag at all, so the
+ * provider's own default applies. `unsupported` is a stored level the resolved provider and
+ * model do not offer - reported rather than dropped, so the surface showing the model can say
+ * that the configured effort did not apply. It is only ever non-null when `level` is null.
+ */
+export interface ResolvedPersonaEffort {
+  level: ThinkingLevel | null;
+  unsupported: ThinkingLevel | null;
+}
+
+/**
+ * The effort levels a Persona call may name, for one provider/model choice.
+ *
+ * The launch-time capability table sessions and tasks already use (`launchEffortLevels`), read
+ * through the headless runner id, which names the same provider as the harness of that id. A
+ * Persona that inherits its provider (`runner === null`) can land on any runner, so it is
+ * offered only the levels EVERY runner offers for that model - the same reasoning
+ * `portableEffortLevels` applies to a task that inherits its agent.
+ */
+export function personaEffortLevels(
+  runner: LlmRunnerId | null,
+  model: string | null,
+): readonly ThinkingLevel[] {
+  if (runner !== null) return launchEffortLevels(runner, model);
+  const [first, ...rest] = LLM_RUNNER_IDS;
+  return launchEffortLevels(first, model).filter((level) =>
+    rest.every((id) => launchEffortLevels(id, model).includes(level)));
+}
+
+/**
+ * Resolve a stored effort against the provider and model a call will actually use.
+ *
+ * Capability-checked at run time as well as at write time: a Persona that inherits its
+ * provider was validated against every runner, but an app-wide model environment override can
+ * still narrow the levels after the fact. An effort the call cannot honour is surfaced as
+ * `unsupported` rather than passed to a CLI that would reject it.
+ */
+export function resolvePersonaEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+  effort: ThinkingLevel | null | undefined,
+): ResolvedPersonaEffort {
+  if (!effort) return { level: null, unsupported: null };
+  return launchEffortLevels(runner, model).includes(effort)
+    ? { level: effort, unsupported: null }
+    : { level: null, unsupported: effort };
+}
+
+/**
+ * The effort half of a routing line, or null when the provider default applies by choice.
+ *
+ * Null rather than "default effort" so every routing line written before effort existed reads
+ * exactly as it did. An unsupported level is never null: it is the one case where the
+ * configured effort and the effort that runs differ, and that has to be readable.
+ */
+export function personaEffortLabel(effort: ResolvedPersonaEffort | undefined): string | null {
+  if (effort?.level) return `${effort.level} effort`;
+  if (effort?.unsupported) return `${effort.unsupported} effort unsupported, provider default`;
+  return null;
+}
+
+/** `runner · model`, plus ` · <effort>` when one is configured. One spelling for every surface. */
+export function routingLine(
+  runner: string,
+  model: string,
+  effort: ResolvedPersonaEffort | ThinkingLevel | null | undefined,
+): string {
+  const label = typeof effort === "string" || effort == null
+    ? effort ? `${effort} effort` : null
+    : personaEffortLabel(effort);
+  return label ? `${runner} · ${model} · ${label}` : `${runner} · ${model}`;
 }
 
 export interface PersonaDefaultsView {
@@ -1950,6 +2035,14 @@ export interface WorkflowNodeExecutionOverride {
   runner: LlmRunnerId;
   /** Never empty. An empty box is an INCOMPLETE override, never a silent fallback. */
   model: string;
+  /**
+   * Optional, and part of the pair rather than a third independently inherited field, for the
+   * pair's own reason: which levels exist depends on the provider and model, so an effort
+   * chosen here is validated against THIS runner and model (`personaEffortLevels`). Absent
+   * means the provider's default, never the Persona's effort - the override replaces the
+   * Persona's whole execution choice. Graphs written before the field existed carry no key.
+   */
+  effort?: ThinkingLevel;
 }
 
 export type WorkflowDraftNode =
@@ -1992,6 +2085,11 @@ export interface PersonaSnapshot {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * Frozen with the model. OPTIONAL because every version published before effort existed
+   * carries no key, and absence reads exactly as null: the provider default.
+   */
+  effort?: ThinkingLevel | null;
 }
 
 /**
@@ -2011,6 +2109,9 @@ export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
     guidanceMarkdown: persona.guidanceMarkdown,
     runner: persona.runner,
     model: persona.model,
+    // Spread only when set, so a Persona with no effort freezes byte-identically to a version
+    // published before the field existed.
+    ...(persona.effort ? { effort: persona.effort } : {}),
   };
 }
 
@@ -2200,6 +2301,7 @@ export const WORKFLOW_DIAGNOSTIC_CODES = [
   "archived_session_action",
   "session_action_runtime_unavailable",
   "evidence_readiness_not_enforced",
+  "unsupported_effort",
 ] as const;
 export type WorkflowDiagnosticCode = (typeof WORKFLOW_DIAGNOSTIC_CODES)[number];
 
@@ -4456,6 +4558,18 @@ export interface WorkflowNodeAttempt {
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
+  /**
+   * The effort the provider was actually asked for, resolved with the model. Absent when the
+   * call passed none (the provider default), on non-Persona attempts, and on every attempt
+   * recorded before effort existed.
+   */
+  effort?: ThinkingLevel;
+  /**
+   * A configured effort the resolved provider and model could not run, so the call ran at the
+   * provider default instead. Recorded beside `effort` so the drop is visible on the run rather
+   * than silent; only ever present when `effort` is absent.
+   */
+  effortUnsupported?: ThinkingLevel;
   verdict: WorkflowJson | null;
   output: WorkflowJson | null;
   /** Attempt-owned retained Command bodies, including on infrastructure failures. */
@@ -4514,6 +4628,8 @@ export interface WorkflowLlmCall {
   purpose: WorkflowLlmPurpose;
   runner: LlmRunnerId;
   model: string;
+  /** The effort passed with the model; absent for the provider default. See the attempt's. */
+  effort?: ThinkingLevel;
   attempt: number;
   state: WorkflowLlmCallState;
   startedAt: number;

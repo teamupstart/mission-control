@@ -148,6 +148,7 @@ import {
   spentInspectorGateCondition,
   spentInspectorGateStatus,
   verdictMeta,
+  recordedRoutingLabel,
   verdictOf,
   workflowCallCost,
   workflowFeedbackText,
@@ -656,7 +657,7 @@ function VerdictCard({
   meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
   const parts = [
-    meta.runner && meta.model ? `${meta.runner} · ${meta.model}` : null,
+    recordedRoutingLabel(meta),
     meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
     meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
     `attempt ${attempt.attempt}`,
@@ -731,7 +732,7 @@ function AttemptCard({
       </header>
       <p className="wf-run-meta">
         {[
-          attempt.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null,
+          recordedRoutingLabel(attempt),
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
       </p>
@@ -1607,7 +1608,7 @@ function ChangeDetail({
         <strong>{row.personaName}</strong>
         <span className="wf-run-confidence">{Math.round(row.confidence * 100)}% confident</span>
         {meta?.runner && meta.model && (
-          <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
+          <span className="wf-run-meta">{recordedRoutingLabel(meta)}</span>
         )}
       </header>
       {attempt && <PersonaReadinessInput attempt={attempt} />}
@@ -4199,7 +4200,7 @@ export function WorkflowRunView({
             // provider again, so the first attempt's runner and model describe a call that is
             // over.
             const attempt = latestAttemptByNode.get(nodeId);
-            return attempt?.runner && attempt.model ? `${attempt.runner} · ${attempt.model}` : null;
+            return attempt ? recordedRoutingLabel(attempt) : null;
           }}
           checkOutcomeFor={(nodeId) => {
             // Read from the attempt's recorded outcome, never inferred from its verdict: a
@@ -4529,7 +4530,7 @@ export function WorkflowRunView({
                 {calls.map((call) => (
                   <tr key={call.id}>
                     <td>{call.purpose.replaceAll("_", " ")}</td>
-                    <td>{call.runner} / {call.model}</td>
+                    <td>{call.runner} / {call.model}{call.effort ? ` · ${call.effort} effort` : ""}</td>
                     <td>{call.attempt}</td>
                     <td>{call.state}</td>
                     <td>{call.errorCode ?? "none"}</td>

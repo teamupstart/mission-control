@@ -61,6 +61,7 @@ const PERSONA: Persona = {
   guidanceMarkdown: "You watch release branches and flag regressions.",
   runner: null,
   model: null,
+  effort: null,
   revision: 3,
   archivedAt: null,
   createdAt: 0,

@@ -13,6 +13,8 @@ import {
   nodeExecutionOverride,
   normalizePersonaName,
   personaDescriptionFromDocument,
+  personaEffortLevels,
+  resolvePersonaEffort,
   personaNameFromDocument,
   personaUpstreamState,
 } from "@shared/workflow.ts";
@@ -62,7 +64,10 @@ export type PersonaMutation =
         | "name_conflict"
         | "archived"
         | "builtin"
-        | "not_imported";
+        | "not_imported"
+        // The merged provider and model do not offer the patch's effort. A policy refusal
+        // like `builtin`: no retry clears it, only a different effort, provider or model.
+        | "unsupported_effort";
       current: PersonaView | null;
     };
 
@@ -88,7 +93,8 @@ function resolvePersonaModel(
  * or process environment. Production callers omit them and get the live values per call.
  */
 export function resolvePersonaExecution(
-  persona: Pick<Persona, "runner" | "model">,
+  // `effort` optional so a published snapshot written before effort existed resolves as-is.
+  persona: Pick<Persona, "runner" | "model"> & { effort?: Persona["effort"] },
   appRunner: ResolvedLlmRunner = llmRunnerChoice(),
   envModel: string | null | undefined = envVar(WORKFLOW_PERSONA_MODEL_ENV),
 ): PersonaExecutionView {
@@ -97,7 +103,7 @@ export function resolvePersonaExecution(
       ? appRunner
       : resolveLlmRunner(persona.runner as string, undefined);
   const model = resolvePersonaModel(runner.id, persona.model, envModel);
-  return { runner, model };
+  return { runner, model, effort: resolvePersonaEffort(runner.id, model.id, persona.effort) };
 }
 
 /**
@@ -127,6 +133,9 @@ export function resolveWorkflowNodeExecution<P extends Pick<Persona, "runner" | 
   return {
     runner: { id: override.runner, source: "config", unknown: null },
     model: { id: override.model, source: "config" },
+    // The override replaces the Persona's whole choice, effort included: an override without
+    // one runs at the provider default, never at a level the Persona picked for another model.
+    effort: resolvePersonaEffort(override.runner, override.model, override.effort),
   };
 }
 
@@ -176,7 +185,11 @@ export class PersonaManager {
     return resolvePersonaDefaults();
   }
 
-  create(input: CreatePersona, now = Date.now()): PersonaMutation {
+  // Effort optional for in-process callers that predate it; the HTTP body always carries one.
+  create(
+    input: Omit<CreatePersona, "effort"> & { effort?: CreatePersona["effort"] },
+    now = Date.now(),
+  ): PersonaMutation {
     return this.publish(
       this.store.insertPersona({
         ...input,
@@ -190,6 +203,8 @@ export class PersonaManager {
 
   update(id: string, input: UpdatePersona, now = Date.now()): PersonaMutation {
     const { expectedRevision, ...patch } = input;
+    const refused = this.unsupportedEffort(id, input);
+    if (refused) return refused;
     const result = this.store.updatePersonaCas(
       id,
       expectedRevision,
@@ -199,6 +214,25 @@ export class PersonaManager {
       now,
     );
     return this.publish(result);
+  }
+
+  /**
+   * Refuse a patch whose effort the MERGED provider and model do not offer.
+   *
+   * Here rather than in `UpdatePersonaSchema` because a patch may name only one of the three
+   * fields. Checked only against the revision the patch names: a stale patch is the store's
+   * `revision_conflict` to report, and validating it against a row it would not apply to
+   * could only produce a misleading refusal.
+   */
+  private unsupportedEffort(id: string, input: UpdatePersona): PersonaMutation | null {
+    if (!("effort" in input || "runner" in input || "model" in input)) return null;
+    const current = this.store.getPersona(id);
+    if (!current || current.revision !== input.expectedRevision) return null;
+    const runner = "runner" in input ? input.runner ?? null : current.runner;
+    const model = "model" in input ? input.model ?? null : current.model;
+    const effort = "effort" in input ? input.effort ?? null : current.effort;
+    if (!effort || personaEffortLevels(runner, model).includes(effort)) return null;
+    return { ok: false, reason: "unsupported_effort", current: personaView(current) };
   }
 
   archive(id: string, expectedRevision: number, now = Date.now()): PersonaMutation {
@@ -240,6 +274,7 @@ export class PersonaManager {
         guidanceMarkdown: source.guidanceMarkdown,
         runner: null,
         model: null,
+        effort: null,
         createdAt: now,
         updatedAt: now,
         provenance,

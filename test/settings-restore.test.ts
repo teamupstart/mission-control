@@ -710,6 +710,49 @@ test("a node execution override survives capture, signing and restore in draft a
   );
 });
 
+test("a Persona's effort survives capture and restore, and a pre-effort backup restores as unset", async () => {
+  assert.equal(workflowStore.insertPersona({
+    id: "persona-one",
+    name: "Persona One",
+    normalizedName: normalizePersonaName("Persona One"),
+    description: "Original Persona",
+    guidanceMarkdown: "# Judge\n",
+    runner: "claude",
+    model: null,
+    effort: "high",
+    createdAt: 10,
+    updatedAt: 10,
+  }).ok, true);
+
+  const root = join(home, "effort-restore");
+  const store = new SettingsBackupStore(root);
+  const original = snapshot();
+  const captured = original.domains.find((entry) => entry.domain === "personas")!.payload as
+    Array<Record<string, unknown>>;
+  assert.equal(captured[0]?.effort, "high");
+  store.write(original);
+
+  const current = workflowStore.getPersona("persona-one")!;
+  assert.equal(workflowStore.updatePersonaCas("persona-one", current.revision, { effort: "low" }, 100).ok, true);
+  const restored = await service(root, {}, store).restore(original.id, original.digest);
+  assert.equal(restored.status, "restored");
+  assert.equal(workflowStore.getPersona("persona-one")!.effort, "high");
+
+  // A backup written before effort existed has no key at all. It must still parse and restore,
+  // as what that Persona ran at then: the provider default.
+  const legacy = resign(original, (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "personas")!.payload as
+      Array<Record<string, unknown>>;
+    for (const row of rows) delete row.effort;
+  });
+  const legacyRoot = join(home, "effort-restore-legacy");
+  const legacyStore = new SettingsBackupStore(legacyRoot);
+  legacyStore.write(legacy);
+  const legacyRestored = await service(legacyRoot, {}, legacyStore).restore(legacy.id, legacy.digest);
+  assert.equal(legacyRestored.status, "restored");
+  assert.equal(workflowStore.getPersona("persona-one")!.effort, null);
+});
+
 test("restore preview and mutation preserve installed built-in catalog rows", async () => {
   seedBaseline();
   const root = join(home, "builtins");

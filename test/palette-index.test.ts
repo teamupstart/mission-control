@@ -123,6 +123,7 @@ function persona(over: Partial<PersonaView> = {}): PersonaView {
     guidanceMarkdown: "# Risk",
     runner: null,
     model: null,
+    effort: null,
     revision: 1,
     archivedAt: null,
     createdAt: NOW,

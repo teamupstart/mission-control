@@ -6,6 +6,7 @@ import {
   sessionActionChoicesForDisplay,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
+  routingLine,
   WORKFLOW_CHECK_SLOTS,
 } from "@shared/workflow.ts";
 import type { LlmProviderView } from "@shared/types.ts";
@@ -1212,7 +1213,7 @@ export function PipelineEditor({
                               onChange={(next) => apply(
                                 setMemberExecutionOverride(pipeline, ref, next),
                                 next
-                                  ? `${label} runs on ${next.runner} · ${next.model} in this workflow`
+                                  ? `${label} runs on ${routingLine(next.runner, next.model, next.effort)} in this workflow`
                                   : `${label} follows its Persona default again`,
                               )}
                             />

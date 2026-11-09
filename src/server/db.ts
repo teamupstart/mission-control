@@ -3773,6 +3773,17 @@ function migrate(d: DatabaseSync): void {
   // provenance is read with the row it belongs to and never searched by.
   addColumn(d, "personas", "import_provenance_json", "TEXT");
 
+  // The reasoning effort a Persona's calls ask for. Nullable with no default: NULL is the
+  // provider's own default, which is exactly what every Persona written before it ran at.
+  addColumn(d, "personas", "effort", "TEXT");
+  // The effort a Persona call actually ran at, beside the runner and model it was resolved
+  // with. NULL is the provider default, which every historical attempt and call ran at.
+  addColumn(d, "workflow_node_attempts", "effort", "TEXT");
+  // A configured effort the resolved model could not run, so the attempt ran at the provider
+  // default. NULL whenever nothing was dropped, which every historical attempt is.
+  addColumn(d, "workflow_node_attempts", "effort_unsupported", "TEXT");
+  addColumn(d, "workflow_llm_calls", "effort", "TEXT");
+
   // The delivery-to-attempt link. Nullable with no default so every historical row - every
   // persona_feedback, inspector_feedback, unchanged_evidence_nudge and pr_handoff ever
   // written - stays valid and recoverable exactly as it is.

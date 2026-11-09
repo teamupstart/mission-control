@@ -270,3 +270,43 @@ test("changing the app provider refreshes effective Persona values in the SSE sn
   assert.equal(execution?.runner.id, "codex");
   assert.equal(execution?.model.id, "gpt-6-sol");
 });
+
+test("an effort the merged provider and model cannot run is a 400 that leaves the row unchanged", async () => {
+  const { request } = fixture();
+  const created = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: "Effortful", guidanceMarkdown: "# E", runner: "claude", effort: "max" }),
+  });
+  assert.equal(created.status, 201);
+  const persona = (await created.json()) as { id: string; revision: number; effort: string | null };
+  assert.equal(persona.effort, "max");
+
+  // Repointing at a model that lacks `max` without changing the effort: the request itself
+  // names a combination that cannot run, so it is a 400 rather than the generic 409 refusal.
+  const refused = await request(`/api/personas/${persona.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ expectedRevision: 1, runner: "codex", model: "gpt-5.6-luna" }),
+  });
+  assert.equal(refused.status, 400);
+  const body = (await refused.json()) as { error: string; code: string };
+  assert.equal(body.error, "reasoning effort is not supported by this provider and model");
+  assert.equal(body.code, "persona_unsupported_effort");
+
+  const stored = (await (await request(`/api/personas/${persona.id}`)).json()) as {
+    revision: number;
+    runner: string | null;
+    model: string | null;
+    effort: string | null;
+  };
+  assert.deepEqual(
+    { revision: stored.revision, runner: stored.runner, model: stored.model, effort: stored.effort },
+    { revision: 1, runner: "claude", model: null, effort: "max" },
+  );
+
+  // The create path refuses the same combination at the schema, also as a 400.
+  const createRefused = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: "Bad effort", guidanceMarkdown: "# B", runner: "codex", model: "gpt-5.6-luna", effort: "max" }),
+  });
+  assert.equal(createRefused.status, 400);
+});

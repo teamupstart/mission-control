@@ -1083,8 +1083,29 @@ export class WorkflowEngine {
     // reached only once the skip above has declined to reuse an earned pass: a skipped judge
     // spawns nothing, so it must resolve nothing.
     const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
-    const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
+    const effort = execution.effort?.level ?? null;
+    // Still run at the provider default - a CLI would reject the level - but never silently:
+    // the dropped level is recorded on the attempt, which the run detail prints, and logged.
+    const effortUnsupported = execution.effort?.unsupported ?? null;
+    const claimed = this.store.claimAttempt(
+      initial.id,
+      execution.runner.id,
+      execution.model.id,
+      this.now(),
+      effort,
+      effortUnsupported,
+    );
     if (!claimed) return;
+    if (effortUnsupported) {
+      workflowLog("warn", {
+        event: "persona_effort_unsupported",
+        run: run.id,
+        submission: submission.id,
+        runner: execution.runner.id,
+        model: execution.model.id,
+        effort: effortUnsupported,
+      });
+    }
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success) {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
@@ -1135,6 +1156,7 @@ export class WorkflowEngine {
           purpose: "persona_review",
           runner: execution.runner.id,
           model: execution.model.id,
+          ...(effort ? { effort } : {}),
           attempt,
           state: "running",
           startedAt: this.now(),
@@ -1186,7 +1208,12 @@ export class WorkflowEngine {
         return;
       }
       const result = await runStructured(
-        (request) => runner.run(request, { model: execution.model.id, timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs), images }),
+        (request) => runner.run(request, {
+          model: execution.model.id,
+          ...(effort ? { effort } : {}),
+          timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
+          images,
+        }),
         index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
           const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);

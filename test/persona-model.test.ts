@@ -18,6 +18,7 @@ const BASE: Persona = {
   guidanceMarkdown: "# Review",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 1,

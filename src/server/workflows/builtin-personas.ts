@@ -46,6 +46,7 @@ function builtinPersona(source: { slug: string; guidanceMarkdown: string }): Per
     // is the same answer a freshly imported copy of the same document would get.
     runner: null,
     model: null,
+    effort: null,
     // One revision, because a build has exactly one copy of each document. Editors read this
     // to decide what a save would be based on, and a built-in has no save.
     revision: 1,

@@ -22,6 +22,9 @@ import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shippi
 /** Generous next to `pr.ts`'s 8s: these carry a whole PR's thread history or a review body. */
 const GH_TIMEOUT_MS = 20_000;
 
+/** Full GraphQL connection pages and their validation ceilings share one budget. */
+export const GITHUB_PAGE_SIZE = 100;
+
 export interface GhResult<T> {
   ok: boolean;
   value?: T;
@@ -310,17 +313,17 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
       state headRefOid headRefName isDraft title body createdAt mergeable reviewDecision
       baseRefName baseRefOid mergeCommit{ oid } repository{ defaultBranchRef{ name } }
       commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-      reviewThreads(first:100){
+      reviewThreads(first:${GITHUB_PAGE_SIZE}){
         nodes{
           id isResolved path
-          comments(first:100){
+          comments(first:${GITHUB_PAGE_SIZE}){
             nodes{ id url databaseId body createdAt updatedAt author{ __typename login } }
           }
         }
         pageInfo{ hasNextPage endCursor }
       }
-      ${includeCodeRabbitComments ? `comments(first:100){ ${ISSUE_COMMENT_FIELDS} }` : ""}
-      reviews(last:100){
+      ${includeCodeRabbitComments ? `comments(first:${GITHUB_PAGE_SIZE}){ ${ISSUE_COMMENT_FIELDS} }` : ""}
+      reviews(last:${GITHUB_PAGE_SIZE}){
         nodes{ body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
@@ -331,7 +334,7 @@ const PR_QUERY = (includeCodeRabbitComments: boolean) => `query($owner:String!,$
 const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$before:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviews(last:100,before:$before){
+      reviews(last:${GITHUB_PAGE_SIZE},before:$before){
         nodes{ body author{ login } commit{ oid } }
         pageInfo{ hasPreviousPage startCursor }
       }
@@ -342,7 +345,7 @@ const REVIEW_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$befo
 const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      reviewThreads(first:100,after:$after){
+      reviewThreads(first:${GITHUB_PAGE_SIZE},after:$after){
         nodes{ id isResolved path comments(first:1){ nodes{ id url databaseId body createdAt updatedAt author{ __typename login } } } }
         pageInfo{ hasNextPage endCursor }
       }
@@ -352,7 +355,7 @@ const THREAD_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
 
 const ISSUE_COMMENT_PAGE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String!){
   repository(owner:$owner,name:$name){ pullRequest(number:$number){
-    comments(first:100,after:$after){ ${ISSUE_COMMENT_FIELDS} }
+    comments(first:${GITHUB_PAGE_SIZE},after:$after){ ${ISSUE_COMMENT_FIELDS} }
   } }
 }`;
 
@@ -675,7 +678,7 @@ function threadPageInfo(raw: unknown): ThreadPageInfo {
 
 function issueCommentPage(raw: unknown): IssueCommentPage {
   const parsed = z.object({
-    nodes: z.array(IssueCommentSchema).max(100),
+    nodes: z.array(IssueCommentSchema).max(GITHUB_PAGE_SIZE),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
   }).safeParse(raw);
   return parsed.success
@@ -690,11 +693,11 @@ const ThreadRootCommentSchema = z.object({
 const ThreadConnectionSchema = z.object({
   nodes: z.array(z.object({
     id: z.string().min(1), isResolved: z.boolean(), path: z.string().nullable(),
-    // The first snapshot requests 100 comments; later pages request only the root.
+    // The first snapshot requests a full page; later pages request only the root.
     // Later comments may have deleted authors, so only root identity is required.
-    comments: z.object({ nodes: z.array(z.unknown()).min(1).max(100)
+    comments: z.object({ nodes: z.array(z.unknown()).min(1).max(GITHUB_PAGE_SIZE)
       .refine(nodes => ThreadRootCommentSchema.safeParse(nodes[0]).success, "Invalid review-thread root identity") }),
-  })).max(100),
+  })).max(GITHUB_PAGE_SIZE),
   pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
 });
 

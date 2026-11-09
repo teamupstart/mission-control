@@ -24,7 +24,10 @@ const BLOCKER = {
   waitingOn: "Dana (platform)",
   resumeWhen: "A platform owner answers with a retention window",
   referenceUrl: "https://example.com/threads/8812",
-  details: "Two options are viable: **30 days** or **400 days**.",
+  details: [
+    "Two options are viable: **30 days** or **400 days**.",
+    ...Array.from({ length: 40 }, (_, i) => `- Consideration ${i + 1}: storage cost, audit scope and the retention rules each option implies.`),
+  ].join("\n"),
 };
 
 interface LiveSession {
@@ -130,6 +133,16 @@ test("a reported blocker draws a red card in the Blocked lane, a detail band, su
   await expect(band.getByRole("link", { name: BLOCKER.referenceUrl })).toBeVisible();
   await band.getByText("Details", { exact: true }).click();
   await expect(band.locator("strong", { hasText: "400 days" })).toBeVisible();
+  // Long details stay inside the band: it is capped and scrolls, so the transcript keeps its
+  // share of the pane instead of being pushed out of the console.
+  const conversation = dashboard.locator(".detail-conv");
+  const transcript = conversation.locator("> .transcript");
+  const [paneBox, bandBox, transcriptBox] = await Promise.all([
+    conversation.boundingBox(), band.boundingBox(), transcript.boundingBox(),
+  ]);
+  expect(bandBox!.height, "the expanded band took most of the pane").toBeLessThanOrEqual(paneBox!.height * 0.45);
+  expect(transcriptBox!.height, "the transcript was squeezed out by the band").toBeGreaterThanOrEqual(100);
+  expect(await band.evaluate((el) => el.scrollHeight > el.clientHeight), "long details did not scroll inside the band").toBe(true);
   await shoot(band, "02-detail-band");
 
   // Flag a reply: a pill, the blocker stays, and nothing asks for you.

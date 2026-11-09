@@ -196,6 +196,17 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("ui"),
   },
   {
+    id: "blocked-placement",
+    label: "Where blocked sessions appear",
+    description:
+      "Show idle blocked sessions in a lane under Needs you, in a red frame at the top of Idle, or in a column of their own.",
+    category: "display",
+    anchor: "display/blocked",
+    keywords: ["blocked", "blocker", "waiting", "lane", "needs you", "idle", "column", "board", "rail", "placement"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "conversation-view",
     label: "Conversation rendering",
     description: "Read conversations as a chat log or as a terminal stream.",

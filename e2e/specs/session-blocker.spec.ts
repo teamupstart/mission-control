@@ -11,11 +11,11 @@ const EVIDENCE = artifactsDir("session-blocker");
 /**
  * A durable session blocker, end to end: a dispatched session reports it through the same
  * `/mcp/blocker` route the `report_blocker` tool posts, and the dashboard draws a red card in
- * Idle with its fields, honours a hidden card item, opens the detail band, flags a reply
- * without raising anything, keeps the blocker across a daemon restart, and clears it.
+ * the default placement - the Blocked lane under Needs you - with its fields, honours a hidden
+ * card item, opens the detail band, flags a reply without raising anything, keeps the blocker
+ * across a daemon restart, and clears it back into Idle.
  *
- * Phase 1 deliberately leaves a blocked idle session in the Idle column; the placement setting
- * that moves it is Phase 2's.
+ * The other two placements are walked by `board-blocked-placement.spec.ts`.
  */
 
 const BLOCKER = {
@@ -86,7 +86,7 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/session-blocker/${name}.png`);
 }
 
-test("a reported blocker draws a red Idle card, a detail band, survives a restart, and clears", async ({
+test("a reported blocker draws a red card in the Blocked lane, a detail band, survives a restart, and clears", async ({
   dashboard,
   daemon,
 }) => {
@@ -94,17 +94,19 @@ test("a reported blocker draws a red Idle card, a detail band, survives a restar
   await useBoardLayout(dashboard, daemon);
   await reportBlocker(daemon, session.id);
 
-  // The card stays in Idle (Phase 1), turns red, and says what it waits on and for how long.
+  // Nothing else is in Needs you: a blocker is not a question for you.
   const idle = dashboard.locator("main.board section.board-col.tone-idle");
   const needsYou = dashboard.locator("main.board section.board-col.tone-attention");
-  const tile = idle.locator(".tile.is-blocked");
+  const lane = needsYou.getByRole("region", { name: "Blocked" });
+  const tile = lane.locator(".tile.is-blocked");
   await expect(tile).toHaveCount(1);
   await expect(tile.locator(".tf-blocked")).toHaveText(/^Blocked · \d+[smhd]$/);
   await expect(tile).toContainText("Question");
   await expect(tile).toContainText(BLOCKER.reason);
   await expect(tile).toContainText(`waiting on ${BLOCKER.waitingOn}`);
   await expect(tile.getByRole("link", { name: "Open blocker link" })).toHaveAttribute("href", BLOCKER.referenceUrl);
-  await expect(needsYou.locator(".tile")).toHaveCount(0);
+  await expect(needsYou.locator(".tile:not(.is-blocked)")).toHaveCount(0);
+  await expect(idle).toHaveCount(0);
   await shoot(dashboard, "01-blocked-card");
 
   // Hide one card item: its fact leaves the card, the state does not.
@@ -142,7 +144,7 @@ test("a reported blocker draws a red Idle card, a detail band, survives a restar
   expect(flagged?.state).toBe("idle");
   await dashboard.keyboard.press("Escape");
   await expect(tile.locator(".tile-blocker-reply")).toHaveText("Reply flagged");
-  await expect(needsYou.locator(".tile")).toHaveCount(0);
+  await expect(needsYou.locator(".tile:not(.is-blocked)")).toHaveCount(0);
   await shoot(dashboard, "03-reply-flagged");
 
   // A daemon restart brings the blocker back with its flag.
@@ -153,11 +155,11 @@ test("a reported blocker draws a red Idle card, a detail band, survives a restar
     message: "the blocked session came back after the restart",
   }).toBe(BLOCKER.reason);
   await dashboard.reload();
-  await expect(idle.locator(".tile.is-blocked")).toHaveCount(1);
-  await expect(idle.locator(".tile.is-blocked .tile-blocker-reply")).toHaveText("Reply flagged");
+  await expect(tile).toHaveCount(1);
+  await expect(tile.locator(".tile-blocker-reply")).toHaveText("Reply flagged");
 
   // Clear it: the band goes, and the card is an ordinary idle card again.
-  await idle.locator(".tile.is-blocked .tile-name").click();
+  await tile.locator(".tile-name").click();
   const restored = dashboard.getByRole("region", { name: "Session blocker" });
   // A request that never reaches the daemon reports why and leaves the controls usable.
   await dashboard.route("**/api/sessions/*/blocker/clear", (route) => route.abort("connectionreset"), { times: 1 });
@@ -168,7 +170,8 @@ test("a reported blocker draws a red Idle card, a detail band, survives a restar
   await restored.getByRole("button", { name: "Clear blocker" }).click();
   await expect(dashboard.getByRole("region", { name: "Session blocker" })).toHaveCount(0);
   await dashboard.keyboard.press("Escape");
-  await expect(idle.locator(".tile.is-blocked")).toHaveCount(0);
+  await expect(dashboard.locator(".tile.is-blocked")).toHaveCount(0);
+  await expect(needsYou).toHaveCount(0);
   await expect(idle.locator(".tile")).toHaveCount(1);
   expect((await sessions(daemon)).some((s) => s.blocker)).toBe(false);
   await shoot(dashboard, "04-cleared");

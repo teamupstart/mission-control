@@ -274,6 +274,8 @@ const uiFields = {
   boardSidebarAllSessions: "setting",
   residentPlacement: "setting",
   residentDrawerPinned: "setting",
+  blockedPlacement: "setting",
+  blockedFrameCollapsed: "setting",
   collapsedBoardColumns: "setting",
   hiddenTopbarItems: "setting",
   compactTopbarItems: "setting",

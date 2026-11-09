@@ -2515,15 +2515,20 @@ export function ColumnWidthControl({
  * session that starts waiting on you is not hidden by a fold you made an hour ago. It pulses
  * rather than reopening the column: the operator chose to fold it, and a board that undid that
  * choice on every arrival would be one you could not keep folded at all.
+ *
+ * `blockedCount` is the In Needs you Blocked lane folded with its column: a second, red count
+ * under the first, so a fold hides neither how many need you nor how many are blocked.
  */
 export function CollapsedColumnStrip({
   label,
   count,
+  blockedCount,
   announce = false,
   onRestore,
 }: {
   label: string;
   count: number;
+  blockedCount?: number;
   announce?: boolean;
   onRestore: () => void;
 }): React.JSX.Element {
@@ -2538,7 +2543,8 @@ export function CollapsedColumnStrip({
       <button
         type="button"
         className="board-col-strip"
-        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}`}
+        aria-label={`Restore ${label}, ${count} ${count === 1 ? "card" : "cards"}${
+          blockedCount ? `, ${blockedCount} blocked` : ""}`}
         onClick={onRestore}
       >
         <span className="board-swatch" aria-hidden />
@@ -2550,6 +2556,11 @@ export function CollapsedColumnStrip({
         >
           {count}
         </span>
+        {blockedCount ? (
+          <span className="board-col-n board-col-strip-blocked" aria-hidden>
+            {blockedCount}
+          </span>
+        ) : null}
         <span className="board-col-strip-name" aria-hidden>
           {label}
         </span>

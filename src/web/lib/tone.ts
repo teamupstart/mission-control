@@ -83,19 +83,24 @@ export type ColumnMode =
  * all stay mounted across it. An empty column that is itself the rail is drawn as a revealed
  * column - its head and "Nothing here" - like any other. See BoardView.
  */
-export function boardColumnModes(
-  groups: readonly ToneGroup[],
-  revealed: ReadonlySet<Tone>,
-  focused: Tone | null,
+export function boardColumnModes<Id extends string>(
+  /**
+   * The Board's columns by id, each with every session it draws: a tone column, or the Blocked
+   * column (`FleetColumn`). A Needs you column holding a Blocked lane counts the lane's sessions
+   * too, so it is drawn while either lane has a card and stashed only when both are empty.
+   */
+  columns: readonly { id: Id; sessions: readonly unknown[] }[],
+  revealed: ReadonlySet<Id>,
+  focused: Id | null,
   /** Provisioning tasks whose placeholders live in the Working column. */
   pending = 0,
-): Map<Tone, ColumnMode> {
-  const out = new Map<Tone, ColumnMode>();
-  for (const g of groups) {
-    if (g.sessions.length > 0) out.set(g.tone, "sessions");
-    else if (g.tone === "working" && pending > 0) out.set(g.tone, "sessions");
-    else if (revealed.has(g.tone) || focused !== null) out.set(g.tone, "revealed");
-    else out.set(g.tone, "stashed");
+): Map<Id, ColumnMode> {
+  const out = new Map<Id, ColumnMode>();
+  for (const c of columns) {
+    if (c.sessions.length > 0) out.set(c.id, "sessions");
+    else if (c.id === "working" && pending > 0) out.set(c.id, "sessions");
+    else if (revealed.has(c.id) || focused !== null) out.set(c.id, "revealed");
+    else out.set(c.id, "stashed");
   }
   return out;
 }

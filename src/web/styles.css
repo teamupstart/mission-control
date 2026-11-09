@@ -28609,10 +28609,17 @@ span.line-run-prov {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
-/* The session blocker band (SessionBlockerBand.tsx): the launch-failure danger treatment,
-   at its natural height so the transcript keeps the rest of the pane. */
+/* The session blocker band (SessionBlockerBand.tsx): the launch-failure danger treatment.
+   Natural height for an ordinary blocker, but capped like `.pane-dialog` above: expanded
+   details can be four thousand characters, and an uncapped band would push the transcript and
+   the reply box out of `.detail-body`. Past the cap the band scrolls on its own. */
 .detail-conv > .blocker-band {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .blocker-band {
   display: flex;

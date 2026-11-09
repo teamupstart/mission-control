@@ -219,7 +219,8 @@ Read more in [Skills and settings](docs/skills-and-settings.md) and
 
 On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,
 and Pi. Settings → Skills shows the machine-wide selection and lets you switch off the
-whole catalog or individual skills. Existing saved choices stay in force after updates.
+whole catalog or individual skills. The Mockups rollout enables that row once for existing
+installations, preserving the master switch. Later opt-outs stay in force after updates.
 
 Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-session-mixed-reload-behavior).
 

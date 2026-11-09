@@ -58,6 +58,12 @@ choice or per-skill off choice stays off across restarts and updates. New valid 
 follow the default-on policy unless explicitly disabled. A stored configuration from an older
 build keeps its original sparse-map meaning: rows it never enabled stay off.
 
+The Mockups rollout is a one-time exception: the first upgrade across database schema 23
+switches the **Mockups** row on, including an existing off choice. It preserves the master
+switch, other skill choices, and the catalog default policy. If the master switch is off,
+Mockups stays inactive until you turn it on. Disabling Mockups after that upgrade keeps it
+off across later restarts and upgrades; the rollout is not repeated for each release.
+
 Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for

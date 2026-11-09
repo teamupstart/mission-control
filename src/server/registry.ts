@@ -8361,6 +8361,11 @@ export class Registry extends EventEmitter {
     return this.blockers.get(noteKeyFor(s))?.blocker ?? null;
   }
 
+  /** Whether a blocker stands on this note key, whether or not a session holds it now. */
+  hasBlockerForKey(noteKey: string): boolean {
+    return this.blockers.has(noteKey);
+  }
+
   /** A session's current blocker, or null. */
   getBlocker(sessionId: string): SessionBlocker | null {
     const s = this.sessions.get(sessionId);

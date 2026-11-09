@@ -356,11 +356,17 @@ test("the daemon refuses to advance a blocked session's queue items, as a backst
   const sent = () => app.request(`/api/sessions/${d.syntheticId}/queue/${item.id}/sent`, {
     method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify({ baseSha: null, transcriptAnchor: null }),
   });
+  // The orphan sweep's keyed route reaches the same write, so it is held at the shared boundary.
+  const putByKey = (state: string) => app.request(`/api/queues/${encodeURIComponent(item.noteKey)}/items/${item.id}/state`, {
+    method: "PUT", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify({ state }),
+  });
   registry.reportBlocker(d.syntheticId, BODY);
-  for (const state of ["sending", "in_progress", "verifying", "verified"]) {
+  for (const state of ["sending", "awaiting_pickup", "in_progress", "verifying", "verified"]) {
     assert.equal((await put(state)).status, 409, `${state} advanced a blocked session's item`);
+    assert.equal((await putByKey(state)).status, 409, `${state} advanced a blocked session's item through the keyed route`);
   }
   assert.equal((await sent()).status, 409);
-  // Tidying the queue stays open while blocked.
+  // Tidying the queue stays open while blocked, through either route.
+  assert.equal((await putByKey("escalated")).status, 200);
   assert.equal((await put("cancelled")).status, 200);
 });

@@ -329,7 +329,7 @@ import { resumeContext } from "./resume-context.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { activePaneDialog, hasBlocker, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
+import { activePaneDialog, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
 import { resolvedSessionIntent } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
@@ -974,24 +974,6 @@ function foremanWriteRefusal(
  * The queue's own key is the unit of ownership, not `session.id`: the id churns
  * with pid/tty while the note key is the identity the queue is stored under.
  */
-/**
- * Work-item states that move an item forward on the session's behalf. While the session stands
- * on a blocker the daemon refuses them, as a backstop to the worker's own hold: a Foreman
- * worker from before blockers existed can outlive a daemon restart and would otherwise verify
- * or send an item for a session that is waiting on someone else. Cancelling, escalating and
- * re-queueing stay open, so a human (or the exit path) can still tidy the queue.
- */
-const BLOCKER_HELD_ITEM_STATES: ReadonlySet<string> = new Set([
-  "sending", "awaiting_pickup", "in_progress", "verifying", "verified",
-]);
-
-function blockerHoldsItem(registry: Registry, c: Context): Response | null {
-  const session = registry.getSession(c.req.param("id") ?? "");
-  return session && hasBlocker(session)
-    ? c.json({ error: "the session is blocked on someone else; its queue is held until the blocker is cleared" }, 409)
-    : null;
-}
-
 function ownedItem(
   registry: Registry,
   queues: QueueManager,
@@ -6807,10 +6789,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!owned.ok) return owned.res;
     const parsed = await parseBody(c, SetWorkItemStateSchema);
     if (!parsed.ok) return parsed.res;
-    if (parsed.data.state && BLOCKER_HELD_ITEM_STATES.has(parsed.data.state)) {
-      const held = blockerHoldsItem(registry, c);
-      if (held) return held;
-    }
     const r = queues.setState(owned.item.id, parsed.data);
     if (r.ok) return c.json(r.item);
     // 409, not 500: a single-flight refusal means the caller broke the invariant,
@@ -6826,8 +6804,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!owned.ok) return owned.res;
     const parsed = await parseBody(c, MarkItemSentSchema);
     if (!parsed.ok) return parsed.res;
-    const held = blockerHoldsItem(registry, c);
-    if (held) return held;
     const r = queues.markSent(owned.item.id, parsed.data.baseSha, parsed.data.transcriptAnchor);
     if (r.ok) return c.json(r.item);
     return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);

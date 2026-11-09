@@ -2105,7 +2105,10 @@ anything complete: prompted completion (the work-cycle generation is not consume
 still complete after the blocker clears), queue drain and the wrap-up ask, pre-PR ship
 recovery, review follow-through, backlog autopilot assignment, stack readiness for dependents,
 workflow resumption and evidence-preparation recovery, and the stuck-session alerts. Your own
-queued turns, delegated messages, restart continuations and merge settlement still run.
+queued turns, delegated messages, restart continuations and merge settlement still run. The
+daemon enforces the hold too: it refuses Foreman's free-text writes, the wrap-up ask, queue
+items moving forward and ship-recovery claims for a blocked session. Foreman can still answer
+a blocked session's review, menu or form, which can only respond to the question on screen.
 
 On the Board a blocked card has a red spine and border and an always-drawn **Blocked · 3h**
 flag. Its kind, reason, waiting-on, link and **Reply flagged** pill are optional

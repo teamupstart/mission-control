@@ -398,6 +398,16 @@ test("the daemon refuses Foreman's automated writes and wrap-up ask into a block
   assert.equal((await post("/queue/wrapup/asked", {})).status, 409, "a blocked session was asked to ship");
   assert.equal((await post("/queue/wrapup/asked", { clearAnswer: true })).status, 200, "the reset must stay open");
 
+  // Asking the operator does not reopen free text: a stale wrap-up or recovery payload is
+  // still refused. A structured answer to the question on screen is the triage that stays open.
+  Object.assign(registry.getSession(d.syntheticId)!, { state: "awaiting_input", stateConfirmed: true });
+  const whileAsking = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });
+  assert.equal(whileAsking.status, 409, "a blocked session that is asking took a free-text Foreman write");
+  const menuAnswer = await post("/select-option", { requestId: "r1", number: 1, label: "Yes", by: "foreman" });
+  assert.doesNotMatch(((await menuAnswer.json()) as { error?: string }).error ?? "", /blocked on someone else/,
+    "a structured triage answer was refused for the blocker");
+  Object.assign(registry.getSession(d.syntheticId)!, { state: "idle" });
+
   // Cleared, the same Foreman write is no longer refused for the blocker.
   registry.clearBlocker(d.syntheticId, "operator");
   const after = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });

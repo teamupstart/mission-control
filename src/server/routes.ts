@@ -952,15 +952,22 @@ function foremanWriteRefusal(
   activity: ComposerActivityTracker,
   session: Session,
   by: ReviewActor | "workflow" | "session",
+  /**
+   * The write answers the question on screen (a review decision, a menu row, a form). These
+   * are the triage responses a blocked session may still take: they can only answer what
+   * the session is asking, so they cannot carry a stale wrap-up or recovery payload.
+   */
+  structuredAnswer = false,
 ): ForemanWriteRefusal | null {
   if (by !== "foreman") return null;
   if (session.foremanInvite === null) return { error: FOREMAN_UNINVITED, status: 403 };
   if (activity.blocksForeman(session.id)) return { error: FOREMAN_COMPOSER_BUSY, status: 409 };
   // The daemon's half of the blocker hold, for a worker that predates it and outlives a
-  // daemon restart: no automated write (wrap-up, recovery, follow-up, queue send) reaches a
-  // session waiting on someone else. A blocked session that is ASKING you is not idle, so
-  // triage may still answer it, which is what the session-side gates leave open too.
-  if (hasBlocker(session) && reportBucket(session) !== "needs-you") {
+  // daemon restart. Free text from Foreman (wrap-up, recovery, follow-up, queue sends) never
+  // reaches a session waiting on someone else, whatever bucket it is in: the route cannot tell
+  // a prose triage answer from a stale automated payload, so a blocked session's prose
+  // question is left to the operator.
+  if (!structuredAnswer && hasBlocker(session)) {
     return { error: FOREMAN_SESSION_BLOCKED, status: 409 };
   }
   return null;
@@ -5655,7 +5662,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const owner = registry.getReview(c.req.param("id"))?.sessionId;
     const ownerSession = owner ? registry.getSession(owner) : undefined;
     const refusal = ownerSession
-      ? foremanWriteRefusal(composerActivity, ownerSession, by)
+      ? foremanWriteRefusal(composerActivity, ownerSession, by, true)
       : null;
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
@@ -5800,7 +5807,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // An absent invite stays 403 because it will not change when the pane settles. Active
     // human composition is 409 because retrying after the quiet period is expected.
     // Nothing is typed and no ask is retired in either case.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }
@@ -5842,7 +5849,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
     // See `/select-option`: refuse before the shape check and before anything is ticked.
-    const refusal = foremanWriteRefusal(composerActivity, session, by);
+    const refusal = foremanWriteRefusal(composerActivity, session, by, true);
     if (refusal) {
       return c.json({ ok: false as const, error: refusal.error }, refusal.status);
     }

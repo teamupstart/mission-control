@@ -878,3 +878,23 @@ test("a blocked prerequisite stamps no dependent until its blocker is cleared", 
   await settle();
   assert.equal(childEdge(w).stackReadyAt, 1_000, "clearing the blocker releases the stamp");
 });
+
+test("a blocker reported while the parent pull request is read stamps nothing", async () => {
+  const w = world();
+  const s = script();
+  // Lands inside the GitHub read, after the first eligibility check has already passed.
+  s.duringRead = () => {
+    w.sessions.set("sA", mkSession({
+      id: "sA", state: "idle",
+      blocker: {
+        kind: "question", reason: "Asked platform", waitingOn: "Dana", resumeWhen: "Dana answers",
+        details: null, referenceUrl: null, startedAt: 1, updatedAt: 1, checkedAt: null, reply: null,
+      },
+    }));
+  };
+  readiness(w, s).reconcile();
+  await settle();
+  await settle();
+  assert.equal(s.reads, 1, "the read started before the blocker landed");
+  assert.equal(childEdge(w).stackReadyAt ?? null, null, "readiness was stamped for a prerequisite blocked mid-read");
+});

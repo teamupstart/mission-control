@@ -623,8 +623,17 @@ test("extensions fold skips a harness whose capability is null", async () => {
 });
 
 test("resident MCP pinning is recorded only where scripts/probe-resident-mcp.ts measured it", () => {
-  assert.deepEqual(HARNESS_CAPABILITIES.claude.mcpSelection, { mechanism: "strict-mcp-config", secrets: "scoped-launcher" });
-  assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, { mechanism: "codex-home-overlay", secrets: "scoped-launcher" });
+  assert.deepEqual(HARNESS_CAPABILITIES.claude.mcpSelection, {
+    mechanism: "strict-mcp-config",
+    secrets: "scoped-launcher",
+    allNativeSources: {
+      mechanism: "lift-strict-mcp-config",
+      sources: "user, local, project and plugin MCP servers and claude.ai connectors",
+    },
+  });
+  // Codex offers only the pinned set: lifting its overlay would load a trusted project's
+  // servers unverified, and it has no account connectors to import.
+  assert.deepEqual(HARNESS_CAPABILITIES.codex.mcpSelection, { mechanism: "codex-home-overlay", secrets: "scoped-launcher", allNativeSources: null });
   assert.equal(HARNESS_CAPABILITIES.pi.mcpSelection, null);
 });
 

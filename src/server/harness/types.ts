@@ -14,6 +14,7 @@ import type {
   TranscriptMessage,
 } from "@shared/types.ts";
 import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
+import type { ResidentMcpNativeSources } from "@shared/residents.ts";
 import type { StandingInstructionsMechanism } from "@shared/standing-instructions.ts";
 import type {
   HarnessModelCatalogChoice,
@@ -781,9 +782,13 @@ export type ResidentMcpEntry = { name: string; options: ResidentMcpOptions } & (
  * descriptor in `SdkLaunchOptions.mcp`, which keeps its meaning and is never overwritten.
  *
  * A driver renders exactly Mission's server plus these entries and nothing from the harness's
- * native MCP configuration, by the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection` records.
+ * native MCP configuration, by the mechanism `HARNESS_CAPABILITIES[agent].mcpSelection` records -
+ * unless `nativeSources` is `all`, when it renders them beside everything the harness loads
+ * natively, by the mechanism `mcpSelection.allNativeSources` records.
  */
 export interface ResidentMcpLaunch {
+  /** From the run's pinned revision. Only a harness with `allNativeSources` is ever handed `all`. */
+  nativeSources: ResidentMcpNativeSources;
   /** The run's names, for verifying what actually started. Never includes Mission's. */
   names: readonly string[];
   /**

@@ -64,14 +64,15 @@ export const personaInstructionsContributor: ResidentLaunchContributor = {
 };
 
 /**
- * The run's MCP servers, from the snapshot it took at launch and nothing else, whether its
- * profile inherits the harness defaults or not. Read again at every launch and resume, so no
- * later edit to a profile, a custom server, a secret or the native configuration reaches it.
+ * The run's MCP servers, from the snapshot it took at launch, whether its profile inherits the
+ * harness defaults or not. Read again at every launch and resume, so no later edit to a profile,
+ * a custom server or a secret reaches it - nor the native configuration, unless the pinned
+ * revision imports all native sources, which the harness then reads for itself at every start.
  */
 export const mcpContributor: ResidentLaunchContributor = {
   id: "mcp",
   contribute({ run }) {
-    return { residentMcp: residentMcpLaunchForRun(run.id) };
+    return { residentMcp: residentMcpLaunchForRun(run.id, run.settings.mcp.nativeSources) };
   },
 };
 

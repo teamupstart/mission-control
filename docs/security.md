@@ -299,7 +299,7 @@ type, URL and headers as configured, so the entry carries exactly those, with an
 table. The trade-off is that this server's URL, and only its URL, appears in the agent's
 launch-scoped MCP configuration (`--mcp-config`) instead of staying private to the launcher. The
 login itself never passes through Mission Control: Claude Code reads it from its own credential
-store. `strictMcpConfig` pins the set exactly as for every other server.
+store. On a pinned set, `strictMcpConfig` pins it exactly as for every other server.
 
 Native environment references - Codex's `env_vars`, `bearer_token_env_var` and
 `env_http_headers`, and a Claude Code `${VAR}` that names a set variable - read the environment
@@ -310,6 +310,19 @@ Claude Code itself, as above; when Claude Code has no usable login for it, the s
 naming it. A custom server's argument in a credential
 form is refused when it is saved; detection is a guard rather than a proof, which is why the
 editor says arguments are stored and backed up as written.
+
+**All native sources puts native servers and connectors outside that boundary.** A Claude Code
+profile on [all native sources](residents.md#all-native-sources) launches without
+`strictMcpConfig` and without `disableClaudeAiConnectors`, which the operator confirms in the
+editor and Dispatch's summary states as `MCP: all native sources (not pinned)`. Mission Control's
+own server and the profile's selected custom servers keep the boundary: the custom servers are
+still snapshotted and still reach their own processes only through the scoped launcher, as above.
+Everything else - Claude Code's user, local, project and plugin servers and the account's
+claude.ai connectors - Claude Code loads itself, at every start, from its own
+configuration and with its own stored logins, so each carries its full account-level access into
+an autonomous, looping run. Mission Control holds no copy of those definitions, does not decide
+which of their values reach the agent, and does not refuse a start when one of them fails or
+needs a login. Codex offers no such choice.
 
 **A value belongs to its connection.** An edit that changes a custom server's command, arguments,
 URL, or a plain environment variable or header refuses to keep a secret left blank, naming each

@@ -53,8 +53,9 @@ preserved by `column-width.ts`. CSS uses existing tokens only, so every skin pas
 
 ## Tests
 
-Unit: `BlockedPlacementSchema` default and parsing; fleet ordering and `boardColumnModes` for each
-placement; keyboard arrays. E2E `e2e/specs/board-blocked-placement.spec.ts`: default lanes with
+Unit: this phase owns the root plan's placement test items, which Phase 1 does not run:
+`BlockedPlacementSchema` default and parsing; fleet ordering and `boardColumnModes` for each
+placement; plus keyboard arrays. E2E `e2e/specs/board-blocked-placement.spec.ts`: default lanes with
 Blocked showing at least one whole card while Needs you is full, both lanes scrolling
 independently; switch to each other placement and find the card; Console rail group. Then
 `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
@@ -74,3 +75,6 @@ ordering.
 
 Checked against Phase 1: uses only its published contracts (`Session.blocker`, `hasBlocker`,
 `is-blocked`, card item ids) and edits none of its files' behavior. No conflicts.
+
+Repair round 1 (plan validation): placement test ownership is now explicit in both phases; the
+placement items of the root plan's `test/` list are this phase's exit criteria only.

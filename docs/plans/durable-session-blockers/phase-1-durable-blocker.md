@@ -64,8 +64,15 @@ ignore `blocker`. No persisted IDs are renamed.
 
 ## Tests
 
-Unit tests for every item in the plan's `test/` list except placement ordering, plus
-`test/board-card-items.test.ts` for the five ids. E2E `e2e/specs/session-blocker.spec.ts`: set a
+Unit tests, from the root plan's `test/` list: the schema 22 migration; restart survival for a
+terminal and an SDK session; key rotation; terminal-task clearing and stranded-key pruning;
+re-report semantics; the refusal while a `request_input` review is pending; every automation
+gate, including that prompted completion does not consume the generation; the `read_sessions`
+filter and summary; the two `control_session` mappings; the `MISSION_MCP_TOOLS` drift test; the
+five ids in `test/board-card-items.test.ts`; and card markup with each item hidden via
+`renderToStaticMarkup`. The placement items in that list (`BlockedPlacementSchema` parsing and
+default, fleet ordering and `boardColumnModes` for each placement) belong to Phase 2 and are not
+part of this phase's exit criteria. E2E `e2e/specs/session-blocker.spec.ts`: set a
 blocker through `/mcp/blocker`, see the red card in Idle with its fields, hide one card item,
 open the band, flag a reply (pill, no alert), restart the daemon and see it again, clear it.
 Then `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`,
@@ -85,3 +92,7 @@ and must not change the record, the tools or the gates.
 
 Checked against Phase 2: Phase 2 owns no shared type, route or gate; it only adds a UI setting
 and moves tiles. No conflicts.
+
+Repair round 1 (plan validation): the Tests section named "every item except placement
+ordering", which swept in `BlockedPlacementSchema` tests for a schema only Phase 2 creates. The
+section now lists this phase's unit tests explicitly and assigns every placement test to Phase 2.

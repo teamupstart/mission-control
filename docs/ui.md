@@ -776,6 +776,26 @@ default, keeps residents off the Board columns and the Console rail, in a drawer
 edge; **Board and Console** draws them in the fleet with every other session. It applies live and
 persists per machine. See [Finding a resident](residents.md#finding-a-resident).
 
+**Settings → Display → Blocked sessions** sits beside Residents and decides where the Board draws
+idle sessions standing on a [blocker](sessions.md#blocked-sessions). It applies live and
+persists per machine:
+
+| Choice | What it draws |
+|--------|---------------|
+| **In Needs you** (default) | The Needs you column splits into two lanes, each with its own head and its own scroll. Needs you takes the remaining height; the red **Blocked** lane sits at the bottom, sized to its cards between one card and 45% of the column, so it always shows at least one whole card. Either lane leaves when it is empty, and the column is stashed only when both are. Collapsed, the column's strip carries both counts, amber over red. |
+| **At the top of Idle** | A red frame shaped like a repository frame, headed **Blocked 3 · oldest 2d**, above the idle cards. Its head folds and unfolds it, and the fold persists per machine. A folded frame hides its cards from the arrow keys and the <kbd>⌘</kbd>-numbers too. |
+| **Own column** | A red **Blocked** column between Needs you and Working. It is stashed when empty like every other column and takes the usual width and collapse controls. |
+
+The placement only moves idle and unconfirmed blocked sessions. A blocked session that is asking
+you stays in Needs you, and one that is working stays in Working; both keep the red card. A
+blocked session that a workflow run holds sits in the Blocked group, not under Idle's **held**
+rule, and keeps its **held** tag. Inside the group a session whose reply was flagged comes first,
+then the oldest blocker. The **Console** rail draws the same group under a red **Blocked**
+heading in the same relative place: after Needs you for **In Needs you** and **Own column**, at
+the top of Idle for **At the top of Idle**. The arrow keys and the <kbd>⌘</kbd>-numbers follow
+that order, and a lane follows the lane above it, so <kbd>↓</kbd> from the last Needs you card
+lands on the first Blocked card.
+
 Stored preferences for the retired `grid` layout migrate to Board when loaded. New
 configuration accepts only Console or Board, so the dashboard cannot render the retired layout.
 Switching layouts does not change the underlying sessions. Controls repeated across
@@ -893,7 +913,8 @@ available:
   say what it is blocked on, all on by default: **Blocker kind** (Question, Dependency,
   Service or Other), **Blocker reason**, **Waiting on**, **Blocker link** (a glyph that opens
   the thread, pull request or status page) and **Reply flagged** (a pill once a resident or you
-  saw a likely answer). A blocked idle session stays in the Idle column. The Conversation tab
+  saw a likely answer). Where a blocked idle session is drawn is the
+  [Blocked sessions](#layout-console-or-board-in-settings) setting. The Conversation tab
   opens with a red band that always shows every field, the collapsible details and any flagged
   reply, with **Flag reply** and **Clear blocker** buttons.
 - **Every task says what kind it is.** A session working on a task is marked with its kind -

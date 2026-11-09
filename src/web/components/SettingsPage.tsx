@@ -24,6 +24,7 @@ import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel.tsx";
 import { useWorkflowSettings } from "../useWorkflowSettings.ts";
 import type { WorkflowRunFilters } from "../workflows/useWorkflowRoute.ts";
 import { ResidentPlacementPanel } from "./ResidentPlacementPanel.tsx";
+import { BlockedPlacementPanel } from "./BlockedPlacementPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
@@ -566,6 +567,7 @@ export function SettingsPage({
             <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />
             {/* Beside Layout: where residents are drawn is part of how sessions are arranged. */}
             <ResidentPlacementPanel />
+            <BlockedPlacementPanel />
             <ConversationViewPanel />
             <AppearancePanel />
             {/* Last, and inside out like the three above it: having chosen an arrangement,

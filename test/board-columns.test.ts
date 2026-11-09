@@ -60,8 +60,12 @@ function session(over: Partial<Session> = {}): Session {
 
 const NONE: ReadonlySet<Tone> = new Set();
 
+function columnsOf(sessions: Session[]) {
+  return groupByTone(sessions).map((g) => ({ id: g.tone, sessions: g.sessions }));
+}
+
 function modesFor(sessions: Session[], revealed: ReadonlySet<Tone> = NONE, focused: Tone | null = null) {
-  return boardColumnModes(groupByTone(sessions), revealed, focused);
+  return boardColumnModes(columnsOf(sessions), revealed, focused);
 }
 
 test("an empty 'needs you' is stashed like every other empty column", () => {
@@ -121,7 +125,7 @@ test("a dispatch with no sessions yet keeps the working column, and only that on
   const before = modesFor([]);
   assert.equal(before.get("working"), "stashed");
 
-  const modes = boardColumnModes(groupByTone([]), NONE, null, 1);
+  const modes = boardColumnModes(columnsOf([]), NONE, null, 1);
   assert.equal(modes.get("working"), "sessions");
   for (const tone of ["attention", "idle", "neutral", "exited"] as const) {
     assert.equal(modes.get(tone), "stashed", tone);

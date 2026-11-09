@@ -3,6 +3,7 @@ import {
   LAYOUT_MODES,
   LINE_DENSITIES,
   RESIDENT_PLACEMENTS,
+  BLOCKED_PLACEMENTS,
   seedHiddenDisplayItems,
   TASK_KIND_CARD_STYLES,
   TASK_KIND_HEADER_STYLES,
@@ -14,6 +15,7 @@ import type {
   LayoutMode,
   LineDensity,
   ResidentPlacement,
+  BlockedPlacement,
   TaskKindCardStyle,
   TaskKindHeaderStyle,
   UiConfig,
@@ -145,12 +147,22 @@ function parseResidentPlacement(raw: string | undefined): ResidentPlacement {
     : UI_CONFIG_DEFAULTS.residentPlacement;
 }
 
+/** An unknown or missing blocked placement is In Needs you, exactly as `UiConfigSchema` reads it. */
+function parseBlockedPlacement(raw: string | undefined): BlockedPlacement {
+  return (BLOCKED_PLACEMENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as BlockedPlacement)
+    : UI_CONFIG_DEFAULTS.blockedPlacement;
+}
+
 function coerce(raw: Partial<UiConfig> | null): UiConfig {
   return {
     layout: parseLayout(raw?.layout),
     residentPlacement: parseResidentPlacement(raw?.residentPlacement),
     // Only a stored `true` pins: anything else is the floating default.
     residentDrawerPinned: raw?.residentDrawerPinned === true,
+    blockedPlacement: parseBlockedPlacement(raw?.blockedPlacement),
+    // Only a stored `true` folds: anything else is the open default.
+    blockedFrameCollapsed: raw?.blockedFrameCollapsed === true,
     conversationView: parseConversationView(raw?.conversationView),
     lineDensity: parseLineDensity(raw?.lineDensity),
     // A cache written by the build that stored Disabled as `lineDensity: "hidden"` (#1399)

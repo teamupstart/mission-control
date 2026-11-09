@@ -30121,6 +30121,102 @@ span.line-run-prov {
 .board-repo-head .brh-swatch {
   display: none;
 }
+/* ---- Blocked sessions placement (Settings → Display → Blocked sessions) ----
+   Idle blocked sessions drawn as one group, in one of three places. The cards are the blocked
+   tiles (`.tile.is-blocked`), unchanged; these rules only build the lane, the frame and the
+   column around them. `--danger` only, which every skin defines. */
+.tone-blocked {
+  --tone-color: var(--danger);
+}
+.board-col.tone-blocked {
+  border-color: color-mix(in oklab, var(--danger) 32%, var(--border));
+  background: color-mix(in oklab, var(--danger) 4%, transparent);
+}
+/* In Needs you: the column's own cards take the height the Blocked lane leaves, so the lane
+   sits at the bottom of the column whatever Needs you holds. */
+.board-col.has-blocked-lane > .board-col-body {
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* The lane: sized to its content, between one card (the measured `--blocked-lane-floor`, see
+   `BlockedLane`) and 45% of the column, with its own scrollport below its own head. Alone, with
+   no Needs you cards above it, it takes the whole column. */
+.board-lane-blocked {
+  --tone-color: var(--danger);
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-height: 0;
+  max-height: max(45%, var(--blocked-lane-floor, 0px));
+  border-top: 1px solid color-mix(in oklab, var(--danger) 40%, var(--border));
+  background: color-mix(in oklab, var(--danger) 5%, transparent);
+}
+.board-lane-blocked.is-alone {
+  flex: 1 1 auto;
+  max-height: none;
+  border-top: 0;
+}
+.board-lane-blocked > .board-lane-body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.board-lane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-lane-head h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.board-lane-oldest,
+.rail-blocked-oldest {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.board-lane-head .board-col-n,
+.board-col.tone-blocked .board-col-head .board-col-n,
+.board-col-strip-blocked {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 12%, var(--panel));
+}
+.board-col-strip .board-col-strip-blocked {
+  margin-left: 0;
+  padding: 1px 6px;
+}
+.board-blocked {
+  --repo-c: var(--danger);
+}
+.board-blocked-head .bch-title {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+.board-blocked-head .bch-meta {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, var(--panel));
+}
+/* The drill-in rail draws the frame as a rail heading inside the column's own scrollport,
+   where a sticky heading would stay pinned over the idle rows below it. */
+.board-col-body > .rail-blocked > .rail-group {
+  position: static;
+}
+
 /* The saturated end of the repository's colour, and the only place it runs at full strength: a
    7px dot can carry a hue a surface could not without competing with the card tones beside it.
    Same size as `.board-swatch` in the column head, deliberately - they answer the same kind of

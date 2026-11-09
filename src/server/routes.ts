@@ -979,7 +979,7 @@ function foremanWriteRefusal(
  * on a write lock after that; a blocker reported meanwhile replaces the registry's session
  * object, so only a fresh read inside the delivery guard sees it.
  */
-function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+export function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
   if (origin !== "foreman") return null;
   const live = registry.getSession(sessionId);
   return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;

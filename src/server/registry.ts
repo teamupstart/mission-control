@@ -9874,6 +9874,9 @@ export class Registry extends EventEmitter {
     const session = this.sessions.get(id);
     if (!session || noteKeyFor(session) !== input.logicalKey) return null;
     if (session.task?.id !== input.taskId) return null;
+    // Read off the LIVE session at the write, so a blocker reported while the route awaited
+    // the checkout diff still refuses the claim; the route's decision used an earlier object.
+    if (hasBlocker(session)) return null;
     const claimed = dbClaimPromptedRecovery(input, now);
     if (!claimed) return null;
     this.syncSessionsForQueue(input.logicalKey);

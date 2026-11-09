@@ -6957,6 +6957,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     const diff = await computeSessionDiff(taskHasRepository(session.task ?? {}) ? session.cwd : null);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
+    // The session can report a blocker while the diff runs; the decision below reads the
+    // object taken before the await, so ask the live one first.
+    if (hasBlocker(registry.getSession(session.id) ?? session)) {
+      return c.json({ error: "the ship recovery attempt is no longer eligible" }, 409);
+    }
     const cfg = getForemanConfig();
     const runs = manager.runs().filter(
       (run) => run.noteKey === parsed.data.logicalKey || run.sessionId === session.id,

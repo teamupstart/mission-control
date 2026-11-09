@@ -420,11 +420,15 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
 }
 
 /**
- * Whether a click inside a card's body is a request to open the conversation. A click on a
- * control inside it is that control's, and a drag that selected some of the text is reading.
+ * Whether a click inside a card's body is a request to open the conversation: one that lands in
+ * its main region, or on the body itself - the gap between that region and the actions. A click
+ * anywhere in the actions is theirs, even between their buttons; a click on a control inside the
+ * main region (an ask row) is that control's; and a drag that selected some text is reading.
  */
 function bodyClickOpens(e: React.MouseEvent<HTMLElement>): boolean {
   const target = e.target as Element;
+  const main = target.closest?.(".residents-drawer-card-main");
+  if (target !== e.currentTarget && !(main && e.currentTarget.contains(main))) return false;
   const control = target.closest?.("button, a[href], input, select, textarea, summary");
   if (control && e.currentTarget.contains(control)) return false;
   const selection = window.getSelection();
@@ -503,13 +507,15 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
     <p className={`residents-drawer-latest${compressed ? " is-compressed" : ""}`} aria-label={`Latest from ${name}`}>{text}</p>
   );
   return (
-    <div className={`residents-drawer-card-body${compressed ? " is-compressed" : ""}`}>
-      <div
-        className={`residents-drawer-card-main${onOpen ? " is-openable" : ""}`}
-        onClick={onOpen ? (e) => {
-          if (bodyClickOpens(e)) onOpen();
-        } : undefined}
-      >
+    // The whole body is the way in - the loop facts, the asks, the latest message and the gap
+    // above the actions - and only the actions (`children`) keep their clicks to themselves.
+    <div
+      className={`residents-drawer-card-body${compressed ? " is-compressed" : ""}${onOpen ? " is-openable" : ""}`}
+      onClick={onOpen ? (e) => {
+        if (bodyClickOpens(e)) onOpen();
+      } : undefined}
+    >
+      <div className="residents-drawer-card-main">
         {status}
         {(asks || latestLine) && (
           <div className="residents-drawer-card-text">

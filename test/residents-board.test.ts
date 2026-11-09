@@ -562,6 +562,18 @@ test("a menu the resident is parked on is a row too, opening the review modal", 
   }));
   assert.match(form, /aria-label="menu: Claude has some questions\. - 2 questions"/);
   assert.doesNotMatch(form, /biome/);
+
+  // A form of exactly one question prints that question's own options, not the dialog's rows
+  // (a driver form's top-level options are empty) and not a count.
+  const single = cardBodyMarkup(mkSession({
+    id: "s1",
+    paneDialog: {
+      prompt: "Claude has a question.", options: [], highlighted: 0, source: "driver",
+      questions: [{ question: "Which linter?", options: [{ number: 1, label: "biome" }, { number: 2, label: "eslint" }] }],
+    },
+  }));
+  assert.match(single, /aria-label="menu: Claude has a question\. - biome · eslint"/);
+  assert.doesNotMatch(single, /1 questions?/);
 });
 
 test("a menu and a pending review are both rows, menu first, as the review modal draws them", () => {
@@ -717,7 +729,9 @@ test("everything between a card's title and its actions is one way into the conv
   const status = createElement("span", { className: "stub-status" }, "waiting on you");
   for (const compressed of [false, true]) {
     const html = cardBodyMarkup(session, [], { compressed, status: compressed ? null : status });
-    const main = html.indexOf('class="residents-drawer-card-main is-openable"');
+    // The body is the target - the region and the gap under it - and the region sits first in it.
+    assert.match(html, new RegExp(`^<div class="residents-drawer-card-body${compressed ? " is-compressed" : ""} is-openable"><div class="residents-drawer-card-main">`));
+    const main = html.indexOf('class="residents-drawer-card-main"');
     assert.ok(main >= 0, `the ${compressed ? "compressed" : "open"} card's body opens the conversation`);
     // The latest message sits inside the region, and the actions after it, outside.
     assert.ok(main < html.indexOf("Latest from Triage Bot"));
@@ -742,7 +756,8 @@ test("everything between a card's title and its actions is one way into the conv
 test("a drawer card draws its loop facts inside the body that opens the conversation", () => {
   const { runs, sessions } = twoResidents();
   const card = cardMarkup(drawerMarkup(runs, sessions), "s1");
-  const main = card.indexOf("residents-drawer-card-main is-openable");
+  assert.match(card, /class="residents-drawer-card-body is-openable"><div class="residents-drawer-card-main">/);
+  const main = card.indexOf("residents-drawer-card-main");
   assert.ok(main >= 0);
   assert.ok(main < card.indexOf('aria-label="Resident loop status"'));
   assert.ok(card.indexOf('aria-label="Resident loop status"') < card.indexOf("residents-drawer-actions"));

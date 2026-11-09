@@ -12837,23 +12837,31 @@ select:not([multiple]) option:focus-visible {
   min-width: 0;
 }
 /* Everything between the title and the actions: the loop facts, then what the resident is
-   asking or last said. One target - a click anywhere in it opens the conversation. */
+   asking or last said. With the gap under it, one target: a click anywhere above the actions
+   opens the conversation, so the body is the pointer and the actions are not. */
 .residents-drawer-card-main {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
 }
-.residents-drawer-card-main.is-openable {
+.residents-drawer-card-body.is-openable {
   cursor: pointer;
+}
+.residents-drawer-card-body.is-openable > :not(.residents-drawer-card-main) {
+  cursor: default;
+}
+.residents-drawer-card-body.is-openable > .residents-drawer-card-main {
   border-radius: 6px;
   margin-inline: -4px;
   padding-inline: 4px;
 }
-.residents-drawer-card-main.is-openable:hover {
+/* Lit while the pointer is anywhere it would open the conversation: over the region or the gap
+   under it, never over the actions. */
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) > .residents-drawer-card-main {
   background: color-mix(in oklab, var(--card-tone, var(--resident)) 8%, transparent);
 }
-.residents-drawer-card-main.is-openable:hover .residents-drawer-latest {
+.residents-drawer-card-body.is-openable:hover:not(:has(> :not(.residents-drawer-card-main):hover)) .residents-drawer-latest {
   color: var(--fg);
 }
 /* What the resident says, ruled off from the loop facts above it. */

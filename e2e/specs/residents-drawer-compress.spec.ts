@@ -229,6 +229,20 @@ test("a click anywhere between a card's title and its actions opens the resident
   await capture(page, "05-loop-facts-open-conversation");
   await leave();
 
+  // And so does the gap between that region and the actions: it is inside the body, above the
+  // buttons, so it is the way in too rather than a dead strip.
+  const mainBox = await first.locator(".residents-drawer-card-main").boundingBox();
+  const actionsBox = await first.locator(".residents-drawer-actions").boundingBox();
+  expect(mainBox).not.toBeNull();
+  expect(actionsBox).not.toBeNull();
+  const gapTop = mainBox!.y + mainBox!.height;
+  expect(actionsBox!.y - gapTop, "a gap separates the region from the actions").toBeGreaterThan(2);
+  await page.mouse.click(mainBox!.x + mainBox!.width / 2, (gapTop + actionsBox!.y) / 2);
+  await expect(detail).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await capture(page, "07-gap-above-actions-opens-conversation");
+  await leave();
+
   // The actions under the body keep their own clicks: the empty stretch of the actions row
   // between the controls opens nothing.
   const actions = first.locator(".residents-drawer-actions");

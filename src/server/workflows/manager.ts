@@ -8100,6 +8100,13 @@ export class WorkflowManager {
     // A settled PR handoff is the explicit exception below because unchanged repository
     // evidence proves it needs a fresh Inspector observation, not another submission.
     const probe = await this.probeRepository(binding);
+    // The session may have reported a blocker while git ran. Both branches below can move the
+    // run (the unchanged one can hand a PR to the Inspector), so ask again before either does.
+    const current = this.registry.getSession(eligible.session.id);
+    if (current && hasBlocker(current)) {
+      this.recordResumptionWithheld(run, latest, "session_blocked", now);
+      return;
+    }
     const unchanged = this.repositoryUnchangedSince(probe, binding, latest);
     if (unchanged === null) return;
     if (unchanged) {

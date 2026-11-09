@@ -21,12 +21,12 @@ const {
 const { resolvedSessionIntent } = await import("../src/shared/goal.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 
 type ReviewManagerT = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
-type QueueManager = import("../src/server/queue.ts").QueueManager;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 openDb();
@@ -219,6 +219,20 @@ test("a restart does not prune a blocker whose session is briefly missing from t
   assert.ok(!loadSessionBlockers().some((b) => b.noteKey === key));
 });
 
+test("moving a blocker to a key a session already holds blocks that session at once", () => {
+  const registry = new Registry();
+  const fromKey = `agent-move-from-${++seq}`;
+  const toKey = `agent-move-to-${seq}`;
+  const from = mkDiscovered({ agentSessionId: fromKey } as Partial<DiscoveredSession>);
+  const to = mkDiscovered({ agentSessionId: toKey } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([from, to]);
+  registry.reportBlocker(from.syntheticId, BODY);
+  assert.equal(registry.getSession(to.syntheticId)?.blocker, null);
+  // A reset's rebind: the destination session already exists when the blocker moves to it.
+  registry.moveBlockerKey(fromKey, toKey);
+  assert.equal(registry.getSession(to.syntheticId)?.blocker?.reason, BODY.reason, "Session.blocker was not re-projected");
+});
+
 test("a stranded key is pruned after the window, while a resumed one keeps its blocker", () => {
   const liveKey = `agent-live-${++seq}`;
   const goneKey = `agent-gone-${seq}`;
@@ -286,7 +300,7 @@ function mkApp(registry: InstanceType<typeof Registry>) {
     registry,
     reviews: new ReviewManager(registry) as ReviewManagerT,
     tasks: {} as TaskManager,
-    queues: {} as QueueManager,
+    queues: {} as InstanceType<typeof QueueManager>,
   });
 }
 
@@ -324,4 +338,29 @@ test("the MCP routes bind to the caller; the dashboard routes flag and clear as 
   const again = await mcp("/mcp/blocker/clear", { env: {}, sessionId: sdk.id, resolution: "done" });
   assert.deepEqual(await again.json(), { sessionId: sdk.id, cleared: false });
   assert.equal((await mcp("/mcp/blocker", { env: {}, sessionId: "sdk:nobody", ...BODY })).status, 404);
+});
+
+test("the daemon refuses to advance a blocked session's queue items, as a backstop to the worker", async () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  const app = buildApp({ registry, reviews: new ReviewManager(registry) as ReviewManagerT, tasks: {} as TaskManager, queues });
+  const d = mkDiscovered({ agentSessionId: `agent-queue-${++seq}` } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([d]);
+  // A hook-instrumented session, which is what a work queue requires.
+  Object.assign(registry.getSession(d.syntheticId)!, { hooksSeen: true, instrumented: true });
+  const item = queues.add(d.syntheticId, "Write the migration")!;
+  assert.ok(item);
+  const put = (state: string) => app.request(`/api/sessions/${d.syntheticId}/queue/${item.id}/state`, {
+    method: "PUT", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify({ state }),
+  });
+  const sent = () => app.request(`/api/sessions/${d.syntheticId}/queue/${item.id}/sent`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify({ baseSha: null, transcriptAnchor: null }),
+  });
+  registry.reportBlocker(d.syntheticId, BODY);
+  for (const state of ["sending", "in_progress", "verifying", "verified"]) {
+    assert.equal((await put(state)).status, 409, `${state} advanced a blocked session's item`);
+  }
+  assert.equal((await sent()).status, 409);
+  // Tidying the queue stays open while blocked.
+  assert.equal((await put("cancelled")).status, 200);
 });

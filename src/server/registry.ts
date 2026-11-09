@@ -8504,6 +8504,11 @@ export class Registry extends EventEmitter {
     moveSessionBlocker(fromKey, toKey);
     this.blockers.delete(fromKey);
     this.blockers.set(toKey, { ...record, noteKey: toKey });
+    // Re-project onto whoever already holds the destination key, so a session rediscovered
+    // under it (a reset's rebind) is blocked at once rather than on the next sweep. Only the
+    // DESTINATION re-syncs: the rotation sites re-resolve their own `next`, and syncing
+    // `fromKey` would emit the mid-rotation session with a momentarily-null blocker.
+    this.syncSessionsForBlocker(toKey);
   }
 
   /**

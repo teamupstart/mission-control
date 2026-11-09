@@ -465,8 +465,22 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
   const dialog = activePaneDialog(session);
   // The line the Console rail prints under a session's name: the last thing it reported.
   const latest = session.activity ?? session.goal?.text ?? null;
-  const asks = compressed ? null : reviews.length > 0 ? (
+  // Every requested decision gets a row, in the order the review modal draws them: the menu the
+  // session is parked on first, then each pending review. Never one instead of the other, so the
+  // card never counts fewer than the modal it opens.
+  const asks = compressed || (reviews.length === 0 && !dialog) ? null : (
     <ul className="residents-drawer-asks" aria-label={`${name} is asking`}>
+      {dialog && (
+        <li key="menu">
+          <ResidentAskRow
+            kind="menu"
+            title={dialog.prompt ?? "Waiting at a menu"}
+            detail={paneDialogDetail(dialog)}
+            tooltip={`Open the review to answer ${name}`}
+            onClick={onOpenReview}
+          />
+        </li>
+      )}
       {reviews.map((review) => {
         const summary = reviewAskSummary(review);
         return (
@@ -482,19 +496,7 @@ export function ResidentDrawerCardBody({ session, name, compressed = false, stat
         );
       })}
     </ul>
-  ) : dialog ? (
-    <ul className="residents-drawer-asks" aria-label={`${name} is asking`}>
-      <li>
-        <ResidentAskRow
-          kind="menu"
-          title={dialog.prompt ?? "Waiting at a menu"}
-          detail={paneDialogDetail(dialog)}
-          tooltip={`Open the review to answer ${name}`}
-          onClick={onOpenReview}
-        />
-      </li>
-    </ul>
-  ) : null;
+  );
   // Compressed, the line falls back to the state, so the card always says something.
   const text = compressed ? (latest ?? stateDisplay(session).label) : asks ? null : latest;
   const latestLine = text === null ? null : (

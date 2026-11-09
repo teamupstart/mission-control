@@ -564,6 +564,20 @@ test("a menu the resident is parked on is a row too, opening the review modal", 
   assert.doesNotMatch(form, /biome/);
 });
 
+test("a menu and a pending review are both rows, menu first, as the review modal draws them", () => {
+  const session = mkSession({
+    id: "s1",
+    paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 },
+  });
+  const html = cardBodyMarkup(session, [residentAsk("s1")]);
+  assert.equal((html.match(/class="residents-drawer-ask"/g) ?? []).length, 2);
+  const menu = html.indexOf('aria-label="menu: Run npm test? - Yes · No"');
+  const review = html.indexOf('aria-label="input: Ship the nightly migration? - Ship it · Hold it"');
+  assert.ok(menu >= 0 && review >= 0, "both requested decisions are drawn");
+  assert.ok(menu < review, "the menu leads, as it does in the review modal");
+  assert.equal((html.match(/aria-label="Triage Bot is asking"/g) ?? []).length, 1, "one list holds both");
+});
+
 test("what a pending review's row says: its kind and what answering it takes", () => {
   assert.deepEqual(reviewAskSummary(residentAsk("s1")), { kind: "input", detail: "Ship it · Hold it" });
   assert.deepEqual(

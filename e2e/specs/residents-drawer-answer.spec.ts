@@ -272,3 +272,56 @@ test("a menu the resident is parked on is a Needs you row too, and a click opens
   await expect(ask).toHaveCount(0);
   await expect(drawer).toBeVisible();
 });
+
+test("a menu and a pending review are both rows on the card, and the review modal answers each in turn", async ({ dashboard: page, daemon }) => {
+  await launch(daemon);
+  await useDrawer(page, daemon);
+  const sessions = await request<Array<{ id: string; task?: { kind?: string } }>>(daemon, "/api/sessions", undefined, "GET");
+  const sessionId = sessions.find((s) => s.task?.kind === "resident")?.id;
+  expect(sessionId, "the resident has a session to send the turn to").toBeTruthy();
+  await request(daemon, `/api/sessions/${encodeURIComponent(sessionId!)}/send`, { text: ASK_TURN, submit: true, origin: "human" });
+
+  await openDrawer(page);
+  const drawer = drawerOf(page);
+  const ask = cardOf(drawer).getByLabel(`${NAME} is asking`);
+  const menuRow = ask.getByRole("button", { name: "menu: Claude has some questions. - 2 questions", exact: true });
+  await expect(menuRow).toBeVisible({ timeout: 30_000 });
+  // With the menu still open, the resident also asks through `request_input`.
+  const reviewId = await askResident(daemon);
+  const reviewRow = ask.getByRole("button", { name: ROW_NAME, exact: true });
+  await expect(reviewRow).toBeVisible();
+  // Both are on the card, one row each, menu first - never one hiding the other.
+  await expect(ask.getByRole("button")).toHaveCount(2);
+  const [menuBox, reviewBox] = [await menuRow.boundingBox(), await reviewRow.boundingBox()];
+  expect(menuBox!.y, "the menu leads, as it does in the review modal").toBeLessThan(reviewBox!.y);
+  await capture(page, "07-menu-and-review-rows");
+
+  // Either row opens the one modal, holding both.
+  await reviewRow.click();
+  const modal = reviewModal(page);
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("2 pending");
+  const form = modal.locator(".pane-dialog");
+  await expect(form).toContainText("Which linter?");
+  await expect(modal).toContainText("Ship the nightly migration?");
+  await capture(page, "08-menu-and-review-in-modal");
+
+  // Answering the menu leaves the review: the modal stays open on it, and the card drops the
+  // menu's row but keeps the review's.
+  await form.getByRole("radio", { name: /eslint/ }).click();
+  await form.getByRole("checkbox", { name: /tests/ }).click();
+  await form.getByRole("button", { name: "Submit answers" }).click();
+  await expect(form).toHaveCount(0, { timeout: 15_000 });
+  await expect(modal).toBeVisible();
+  await expect(modal).toContainText("1 pending");
+  await expect(menuRow).toHaveCount(0);
+  await expect(reviewRow).toBeVisible();
+
+  await modal.getByRole("radio", { name: "Ship it" }).check();
+  await modal.getByRole("button", { name: "Submit", exact: true }).click();
+  await expect(modal).toBeHidden();
+  await expect.poll(async () =>
+    (await request<ReviewItem[]>(daemon, "/api/reviews", undefined, "GET")).find((review) => review.id === reviewId)?.status,
+  ).toBe("answered");
+  await expect(ask).toHaveCount(0);
+});

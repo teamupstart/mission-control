@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { GOAL_MAX_CHARS, goalLine } from "@shared/goal.ts";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { TranscriptWindow } from "../harness/types.ts";

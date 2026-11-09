@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { AGENT_TYPES, THINKING_LEVELS } from "../types.ts";
 import { supportsEffort } from "../harness-capabilities.ts";
 import { LLM_RUNNER_IDS } from "../llm.ts";
@@ -114,8 +114,8 @@ export const ConsensusConfigSchema = z
       .array(ConsensusMemberSchema)
       .min(CONSENSUS_MIN_MEMBERS)
       .max(CONSENSUS_MAX_MEMBERS)
-      .default([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
-    evaluator: ConsensusEvaluatorSchema.default({}),
+      .prefault([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
+    evaluator: ConsensusEvaluatorSchema.prefault({}),
     maxConcurrentMembers: z
       .number()
       .int()

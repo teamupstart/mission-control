@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 
 /**
  * A model id, in the only shape that is safe to hand to a harness CLI.

@@ -1,8 +1,8 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 
 /** The exact setting the operator clicked, never a transferable grant token. */
 export const SessionControlAuthorizationSchema = z.object({
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
   sessionId: z.string().min(1).max(256),
   enabled: z.boolean(),
 }).strict();
@@ -28,7 +28,7 @@ export const ResidentLaunchAuthorizationSchema = z.object({
   // Ordinary launches mint a UUID; profile restarts use residentRestartRequestId(runId)
   // so every retry names the same replacement. Both still bind one exact launch click.
   requestId: z.string().refine(
-    (id) => z.string().uuid().safeParse(id.replace(/^resident-restart:/, "")).success,
+    (id) => z.string().guid().safeParse(id.replace(/^resident-restart:/, "")).success,
     "Expected a UUID or resident-restart:<UUID>",
   ),
   profileId: z.string().min(1).max(200),

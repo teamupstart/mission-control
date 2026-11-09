@@ -892,7 +892,7 @@ test("every dashboard action denies unowned targets without delegation and retai
   ] as const;
   const paths = new Set<string>();
   for (const [action, extra, suffix] of cases) {
-    const request = { action, runId: "missing", ...("submissionId" in WorkflowActionRequestSchema.optionsMap.get(action)!.shape ? { submissionId: "sub" } : {}), parameters: { ...parameters, ...extra } };
+    const request = { action, runId: "missing", ...("submissionId" in WorkflowActionRequestSchema.options.find((option) => option.shape.action.value === action)!.shape ? { submissionId: "sub" } : {}), parameters: { ...parameters, ...extra } };
     f.registry.setSessionControlEnabled(f.caller.id, false);
     await f.call("trigger_workflow_action", { request }, /Control other sessions/i);
     f.registry.setSessionControlEnabled(f.caller.id, true);
@@ -1176,7 +1176,7 @@ test("MCP retries readiness with new proof, overrides gaps, and recovers failed 
 });
 
 test("valid-state scenarios successfully execute every advertised MCP workflow action", () => {
-  assert.deepEqual([...successfulActions].sort(), [...WorkflowActionRequestSchema.optionsMap.keys()].sort());
+  assert.deepEqual([...successfulActions].sort(), WorkflowActionRequestSchema.options.map((option) => option.shape.action.value).sort());
 });
 
 test("MCP retrieves complete normalized findings independently of a clipped raw stream",async(t)=>{

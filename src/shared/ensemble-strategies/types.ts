@@ -1,4 +1,4 @@
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import type {
   EnsembleArtifactKind,
   EnsembleLaunchEstimate,
@@ -122,7 +122,7 @@ export interface EnsembleStrategyInfo<C = unknown> {
   /** What the operator is agreeing to: how it runs, what it costs, what it will not do. */
   explanation: string;
   capabilities: EnsembleStrategyCapabilities;
-  configSchema: z.ZodType<C, z.ZodTypeDef, unknown>;
+  configSchema: z.ZodType<C, unknown>;
   form: StrategyFormSpec;
   /**
    * What creating this would start, from a raw config blob. Null when the blob is not

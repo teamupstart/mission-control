@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { z } from "zod/v3";
+import { z } from "zod";
 import {
   TEST_EVIDENCE_AUDITOR_PERSONA_ID,
   TEST_EVIDENCE_REQUEST_CATEGORIES,

@@ -2,7 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TelemetryProfileId } from "@shared/telemetry.ts";
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import type { TelemetryEventDefinition } from "@shared/telemetry-catalog.ts";
 import type { WorkflowRun, WorkflowNodeAttempt, WorkflowLlmCall, WorkflowSubmission } from "@shared/workflow.ts";
 import { WORKFLOW_RUN_TERMINAL_STATUSES, workflowRunResumesItself } from "@shared/workflow.ts";
@@ -64,7 +64,7 @@ function emit<S extends z.ZodTypeAny>(scope: WorkflowObservationScope, event: Te
   const result = captureTelemetry({ event, profiles: [scope.profile],
     // Permanent business identities stay stable across epochs: a replay is not a new review.
     source: { kind: SOURCE, id: `${scope.profile}:${id}`, revision: 1 }, actor,
-    facts: { ...ctx.facts, ...facts }, refs: { ...ctx.refs, ...refs }, occurredAt: now,
+    facts: { ...ctx.facts, ...facts } as z.input<S>, refs: { ...ctx.refs, ...refs }, occurredAt: now,
     trace: { traceId: digest(["workflow-submission", ctx.refs.submission_id ?? ctx.refs.run_id ?? id]), parentSpanId: null }, now });
   if (result.kind === "refused") throw new Error("workflow telemetry capture refused");
 }

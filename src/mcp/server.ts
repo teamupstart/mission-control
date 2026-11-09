@@ -1,13 +1,12 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import { PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
-import { z } from "zod/v3";
-import { z as z4 } from "zod/v4";
+import { z } from "zod";
 import type { ReviewItem, Task } from "@shared/types.ts";
 import { reviewToolResult } from "@shared/review-item.ts";
 import { ENSEMBLE_LIMITS } from "@shared/ensemble.ts";
@@ -380,7 +379,8 @@ server.registerTool(
                     .describe("Marks a suggested choice; does not preselect"),
                 }),
               )
-              .min(1),
+              .min(1)
+              .max(PLAN_DECISION_LIMITS.options),
             multiSelect: z
               .boolean()
               .optional()
@@ -391,6 +391,7 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.decisions)
         .default([])
         .describe("Open choices; empty is allowed for managed final-bundle approval"),
     },
@@ -765,6 +766,7 @@ server.registerTool(
               .describe("Marks a suggested choice; does not preselect"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.options)
         .optional()
         .describe("Discrete choices. Omit entirely for a free-text answer."),
       multiSelect: z
@@ -1197,7 +1199,7 @@ server.registerTool("publish_plan", {
 }, async (input) => managedPlanCall("publish", input));
 server.registerTool("read_plan", {
   description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
-  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+  inputSchema: ReadPlanInputSchema.shape, annotations: { readOnlyHint: true },
 }, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The
@@ -1398,34 +1400,34 @@ server.registerTool(
       `be a self-contained static page at ${SCOUT_REPORT_PATH_SHAPE} with no JavaScript and no ` +
       "external requests. Do not open a pull request for the report.",
     inputSchema: {
-      files: z4.array(z4.object({
-        repoSlot: z4.string().describe("An issued repository slot, e.g. repo-01"),
-        path: z4.string().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
+      files: z.array(z.object({
+        repoSlot: z.string().describe("An issued repository slot, e.g. repo-01"),
+        path: z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
           .describe("Checkout-relative file path"),
       })).min(1).max(SCOUT_SUBMISSION_LIMITS.selectedFiles).optional()
         .describe("Complete explicit selection, including reportPath and each evidence file. Accepts Git-ignored files. No automatic neighbors. Do not combine with supporting."),
-      title: z4.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
+      title: z.string().trim().min(1).max(SCOUT_SUBMISSION_LIMITS.title).optional()
         .describe("Optional display title for this report."),
-      reportPath: z4
+      reportPath: z
         .string()
         .min(1)
         .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)
         .describe(`Checkout-relative path of the report, at ${SCOUT_REPORT_PATH_SHAPE}`),
-      summary: z4
+      summary: z
         .string()
         .min(1)
         .max(SCOUT_SUBMISSION_LIMITS.summary)
         .describe("A short plain-text summary of the finding, for search results and listings."),
-      tags: z4
-        .array(z4.string().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
+      tags: z
+        .array(z.string().min(1).max(SCOUT_SUBMISSION_LIMITS.tag))
         .max(SCOUT_SUBMISSION_LIMITS.tags)
         .optional()
         .describe("Optional short tags for later search."),
-      supporting: z4
+      supporting: z
         .array(
-          z4.object({
-            repoSlot: z4.string().describe("A repository slot issued in your task's prompt, e.g. repo-01"),
-            path: z4
+          z.object({
+            repoSlot: z.string().describe("A repository slot issued in your task's prompt, e.g. repo-01"),
+            path: z
               .string()
               .min(1)
               .max(SCOUT_SUBMISSION_LIMITS.sourcePathChars)

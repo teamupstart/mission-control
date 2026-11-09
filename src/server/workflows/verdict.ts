@@ -1,5 +1,5 @@
 import { workflowFindingReason } from "@shared/workflow-reasons.ts";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import {
   EVIDENCE_REF_KINDS,

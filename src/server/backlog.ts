@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { BacklogPlanSchema } from "@shared/protocol.ts";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { BacklogPlan } from "@shared/types.ts";

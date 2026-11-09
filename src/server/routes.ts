@@ -69,7 +69,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { TypeOf, ZodTypeAny } from "zod/v3";
+import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";

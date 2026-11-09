@@ -7,7 +7,7 @@ import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } fro
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";

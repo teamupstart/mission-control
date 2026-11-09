@@ -1,7 +1,7 @@
 /** Phase 5 source facade. Every observation is bounded, consented and failure-isolated. */
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { z } from "zod/v3";
+import type { z } from "zod";
 import type { TelemetryActor } from "@shared/telemetry.ts";
 import type { TelemetryOperationContext } from "@shared/telemetry-ingress.ts";
 import { ACTION_RESULT_EVENT } from "@shared/telemetry-sources/actions.ts";

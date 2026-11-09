@@ -1,9 +1,5 @@
 import type { Context } from "hono";
-
-/** The common safeParse result keeps Zod 3 and patched Zod 4 contracts typed at this boundary. */
-interface BodySchema<T> {
-  safeParse(input: unknown): { success: true; data: T } | { success: false; error: { message: string } };
-}
+import type { TypeOf, ZodTypeAny } from "zod";
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -13,10 +9,10 @@ interface BodySchema<T> {
 // `error` is carried alongside the ready-made `res` so a route with extra facts to
 // report on a refusal can build its own body without re-reading this one's. /inject
 // is that route: its contract is that EVERY refusal states whether text was pasted.
-export async function parseBody<T>(
+export async function parseBody<S extends ZodTypeAny>(
   c: Context,
-  schema: BodySchema<T>,
-): Promise<{ ok: true; data: T } | { ok: false; error: string; res: Response }> {
+  schema: S,
+): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
   const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) {
     return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };

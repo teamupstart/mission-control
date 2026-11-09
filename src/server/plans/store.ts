@@ -1,7 +1,7 @@
 import { mkdirSync, lstatSync, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { ManagedPlanPolicySchema, PlanManifestSchema, SavePlanInputSchema, PLAN_CONTENT_LIMITS, managedPlanPreview, type ManagedPlanPolicy, type PlanManifest, type SavePlanInput, type ManagedPlanRevision, type ManagedPlanCatalog } from "@shared/managed-plans.ts";
 import type { Task } from "@shared/types.ts";
 import { openDb } from "../db.ts";

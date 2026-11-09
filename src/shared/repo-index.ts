@@ -1,4 +1,5 @@
-import { z } from "zod/v3";
+import { z } from "zod";
+import { partialPatch } from "./zod-shapes.ts";
 
 /** Shipped roots for a machine that has never saved repository-index settings. */
 export const DEFAULT_INDEXED_DIRECTORIES = [
@@ -22,12 +23,15 @@ export type IndexedDirectory = z.infer<typeof IndexedDirectorySchema>;
  * distinction is what makes every seeded root removable without extra bookkeeping.
  */
 export const RepoIndexConfigSchema = z.object({
-  directories: z.array(IndexedDirectorySchema).default(
+  // The structural ceiling, checked before any row is parsed. `MAX_INDEXED_DIRECTORIES` is
+  // the product rule and is refused with its own message by `repo-index-config.ts`; this only
+  // stops an absurd list from being parsed element by element first.
+  directories: z.array(IndexedDirectorySchema).max(MAX_INDEXED_DIRECTORIES * 16).prefault(
     DEFAULT_INDEXED_DIRECTORIES.map((path) => ({ path })),
   ),
 });
 
-export const RepoIndexConfigPatchSchema = RepoIndexConfigSchema.partial();
+export const RepoIndexConfigPatchSchema = partialPatch(RepoIndexConfigSchema);
 
 export type RepoIndexConfig = z.infer<typeof RepoIndexConfigSchema>;
 export type RepoIndexConfigPatch = z.infer<typeof RepoIndexConfigPatchSchema>;

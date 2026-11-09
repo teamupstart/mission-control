@@ -233,10 +233,10 @@ test("one request is bounded: the largest request is stored whole, one key more 
   assert.equal(events.length, before, "nothing announced");
 });
 
-test("the request schema refuses an oversized array without parsing its elements, and stops at the first bad one", () => {
-  // GHSA-mrhx-c7xc-m3w5: a Zod 3 `z.array` parses every element - one issue per bad one - before
-  // its length check. This schema checks the bound first, so an oversized request of garbage is
-  // ONE issue, not one per element.
+test("the request schema refuses an oversized array without parsing its elements", () => {
+  // GHSA-mrhx-c7xc-m3w5: Zod 3 parsed every element of a `z.array` - one issue per bad one -
+  // before its length check. From Zod 4.6.6 the `.max()` runs first, so an oversized request of
+  // garbage is ONE issue, not one per element.
   const oversized = DismissAttentionItemsSchema.safeParse({
     items: Array.from({ length: ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1 }, () => ({ garbage: true })),
   });
@@ -245,11 +245,11 @@ test("the request schema refuses an oversized array without parsing its elements
     oversized.error!.issues.map((issue) => [issue.code, issue.path.join(".")]),
     [["too_big", "items"]],
   );
-  // Within the bound, validation stops at the first element that fails.
+  // Within the bound, every issue names the element it is about.
   const bad = DismissAttentionItemsSchema.safeParse({ items: [{ garbage: 1 }, { garbage: 2 }, { garbage: 3 }] });
   assert.equal(bad.success, false);
   assert.ok(bad.error!.issues.length > 0);
-  assert.ok(bad.error!.issues.every((issue) => issue.path[0] === "items" && issue.path[1] === 0), "only the first element");
+  assert.ok(bad.error!.issues.every((issue) => issue.path[0] === "items" && typeof issue.path[1] === "number"));
   // And a good request parses to exactly what was sent.
   const good = DismissAttentionItemsSchema.safeParse({ items: [{ itemId: "review:r-1", occurrence: "", basis: 3 }] });
   assert.deepEqual(good.success && good.data, { items: [{ itemId: "review:r-1", occurrence: "", basis: 3 }] });

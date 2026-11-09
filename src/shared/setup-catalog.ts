@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import {
   ENVIRONMENT_CHECK_IDS,
   type EnvironmentCheckId,
@@ -542,7 +542,7 @@ export type SetupRowId =
   | { source: "derived"; id: SetupDerivedRowId };
 
 /** The persisted row identity keeps its namespace so ids from different sources cannot alias. */
-export const SetupRowIdSchema: z.ZodType<SetupRowId> = z.discriminatedUnion("source", [
+export const SetupRowIdSchema: z.ZodType<SetupRowId, SetupRowId> = z.discriminatedUnion("source", [
   z.object({ source: z.literal("dependency"), id: z.enum(SETUP_DEPENDENCY_IDS) }),
   z.object({ source: z.literal("environment-check"), id: z.enum(ENVIRONMENT_CHECK_IDS) }),
   z.object({ source: z.literal("derived"), id: z.literal("terminal-pair") }),

@@ -4,7 +4,7 @@ import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
@@ -159,7 +159,7 @@ const StatusSchema = z.object({
 
 const EnvelopeSchema = z.union([
   z.object({ id: Id, error: z.object({ code: z.string(), message: z.string() }) }),
-  z.object({ id: Id, result: z.record(z.unknown()) }),
+  z.object({ id: Id, result: z.record(z.string(), z.unknown()) }),
 ]);
 
 export type HerdrPane = z.infer<typeof HerdrPaneSchema>;

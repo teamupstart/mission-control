@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { AGENT_TYPES, THINKING_LEVELS } from "../types.ts";
 import { supportsEffort } from "../harness-capabilities.ts";
 import { LLM_RUNNER_IDS } from "../llm.ts";
@@ -161,8 +161,8 @@ export const BestOfNConfigSchema = z
       .array(BestOfNMemberSchema)
       .min(BEST_OF_N_MIN_CANDIDATES)
       .max(BEST_OF_N_MAX_CANDIDATES)
-      .default([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
-    evaluator: BestOfNEvaluatorSchema.default({}),
+      .prefault([DEFAULT_MEMBER, DEFAULT_MEMBER, DEFAULT_MEMBER]),
+    evaluator: BestOfNEvaluatorSchema.prefault({}),
     maxConcurrentMembers: z
       .number()
       .int()

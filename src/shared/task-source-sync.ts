@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import { TASK_PRIORITIES, taskHasNoProvisionedResources } from "./task.ts";
 import type { Task } from "./types.ts";
 

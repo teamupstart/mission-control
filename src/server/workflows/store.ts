@@ -10,7 +10,7 @@ import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { z } from "zod/v3";
+import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
 import { canonicalSettingsBackupJson } from "@shared/settings-backups.ts";
 import type {
@@ -478,7 +478,7 @@ function rowId(value: unknown): string {
 // absent after they have already been defaulted.
 function parseShape<T>(
   table: (typeof WORKFLOW_TABLES)[number],
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T, unknown>,
   value: unknown,
 ): T {
   const parsed = schema.safeParse(value);

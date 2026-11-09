@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod/v3";
+import { z } from "zod";
 
 // What is at stake: which provider a background job SPAWNS on, and whether the row written
 // about that call names the same one.

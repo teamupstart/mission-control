@@ -4479,9 +4479,10 @@ function migrate(d: DatabaseSync): void {
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
 
-  // Attention-inbox rows the operator dismissed without resolving them (schema 23). One row per
-  // inbox item id; `occurrence` is the fold's fingerprint of what that row said when it was
-  // dismissed, so the row comes back only when it says something new. Rows never expire and are
+  // Attention-inbox items the operator dismissed without resolving them (schema 23). One row per
+  // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
+  // each question's own `review:<id>`. `occurrence` is the fold's fingerprint of what it said
+  // when it was dismissed, so it comes back only when it says something new. Rows never expire and are
   // never pruned (`src/server/attention-dismissals.ts`). `revision` is assigned afresh on every
   // write, which rewrites the row, and AUTOINCREMENT never reuses a number - not even the one
   // that rewrite just deleted - so a write that names an older revision than the one stored was

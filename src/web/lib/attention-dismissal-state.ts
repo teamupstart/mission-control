@@ -1,7 +1,8 @@
-import type {
-  AttentionDismissal,
-  AttentionDismissalKey,
-  AttentionDismissalWrite,
+import {
+  ATTENTION_DISMISSAL_LIMITS,
+  type AttentionDismissal,
+  type AttentionDismissalKey,
+  type AttentionDismissalWrite,
 } from "@shared/protocol.ts";
 
 /**
@@ -66,6 +67,23 @@ export const INITIAL_DISMISSAL_STATE: AttentionDismissalState = {
   pending: new Map(),
   appliedRead: 0,
 };
+
+/**
+ * One row's keys, split into requests the daemon will take. A row of questions holds one key per
+ * question with no upper bound, while one request carries at most `keysPerRequest` - so a row
+ * past that is dismissed in several requests, each its own all-or-nothing write, rather than
+ * refused. The bound guards the daemon against one oversized body; it was never meant to make
+ * the busiest row in the inbox the one the operator cannot dismiss.
+ */
+export function dismissalBatches<Key>(
+  keys: readonly Key[],
+  size: number = ATTENTION_DISMISSAL_LIMITS.keysPerRequest,
+): Key[][] {
+  if (!Number.isInteger(size) || size < 1) throw new RangeError(`batch size must be a positive integer, not ${size}`);
+  const batches: Key[][] = [];
+  for (let start = 0; start < keys.length; start += size) batches.push(keys.slice(start, start + size));
+  return batches;
+}
 
 /** The row is hidden from the moment the operator clicks. */
 export function beginDismissalWrite(

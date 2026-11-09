@@ -24,14 +24,17 @@ obligation:
    and what the engine said stopped it, points at the provider's runbook section for that class,
    and links to the run's own detail. This is the only section with no session behind it: the
    engine stops dispatching at a halt, so the agent that hit the gate has usually exited by the
-   time anybody looks. Read-only here - clearing a halt is the engine's own CLI.
+   time anybody looks. Nothing here clears a halt: that stays with the engine's own CLI. The
+   row's **Dismiss** only takes it out of the inbox, and the pipeline stays halted.
 6. **Waiting on you** - the backstop: a session the fleet paints amber that no section above
    already accounts for. It deep-links to the session detail, because the answer goes to the agent.
 7. **Stuck finalizations** - a promotion that stopped on an error.
 
-The count is **answers owed**, not rows: a session holding three questions is one row and
-three. It is a rendering of state the dashboard already has - it subscribes to nothing, decides
-no severity, and is not a second notifier; [Alerts and Away mode](#alerts--away-mode) still own
+The count is the obligations the inbox is showing you, not its rows: a session holding three
+questions is one row and three. A row you dismissed is not in it, even while what it reports is
+still unresolved, so the count can be lower than what is actually owed. It is a rendering of
+state the dashboard already has - it subscribes to nothing, decides no severity, and is not a
+second notifier; [Alerts and Away mode](#alerts--away-mode) still own
 what interrupts you. Escape closes it, like every overlay. Per-session entry points are
 unchanged: a session detail's review affordance and a board tile's flag still open that session's own
 review modal.
@@ -53,18 +56,21 @@ back only when it reports something new, and what counts as new depends on the r
 | --- | --- |
 | Decisions | never, for that run |
 | Questions from agents | the agent asks a new question; only the new one is shown |
-| Parked on a menu | the menu's question or options change |
+| Parked on a menu | the menu's question or options change, including the same options renumbered |
 | Pipeline lifecycle | the commission reports a different problem; a reworded detail line does not count |
 | Pipeline halts | the halt's class or reason changes |
 | Waiting on you | the session's state, or what it says it is waiting on, changes |
 | Stuck finalizations | the finalization stops on a different error |
 
 A question's own **Dismiss**, on its card, is a different button: it resolves the question and
-tells the agent it was dismissed. The row's **Dismiss** only hides the questions, up to 5,000 of
-them in one go. Because a
-dismissed row leaves the count while the session it names may still be blocked, **need you** can
-read higher than **to answer**, and the difference is rows you chose to hide. Alerts are
-unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
+tells the agent it was dismissed. The row's **Dismiss** only hides the questions, however many
+the row holds. A row of more than 5,000 questions goes to the daemon in several requests; if one
+is refused, only its questions come back, with the reason, and **Dismiss** sends them again.
+A dismissed row leaves **to answer** while the session it names may still be blocked, so after
+a dismissal **need you** can read higher than **to answer**, which without one it never does.
+The two count different things - **need you** counts sessions, **to answer** counts each thing the
+inbox is showing, one per question - so the gap between them is not the number of rows you hid.
+Alerts are unaffected: [Alerts and Away mode](#alerts--away-mode) still decide what interrupts you.
 
 A dismissal never expires and is never pruned, however many you make or however long ago. A
 row that goes away and later returns saying exactly what it said when you dismissed it stays

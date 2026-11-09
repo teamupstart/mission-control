@@ -247,6 +247,35 @@ test("a blocked session, a halt, a menu and a stuck finalization come back only 
   );
 });
 
+test("a dismissed menu comes back when its options are renumbered, though prompt and labels match", () => {
+  const onMenu = (options: { number: number; label: string }[]): AttentionInput => ({
+    sessions: [mkSession({ id: "s-menu", name: "On a menu", paneDialog: { ...DIALOG!, options } })],
+    reviews: [],
+    ensembles: [],
+  });
+  const first = foldAttention(onMenu([{ number: 1, label: "Yes" }, { number: 2, label: "No" }]));
+  const dismissed = dismissedFor(...first.items);
+  assert.deepEqual(
+    foldAttention({ ...onMenu([{ number: 1, label: "Yes" }, { number: 2, label: "No" }]), dismissed }).items,
+    [],
+    "the same menu read again stays dismissed",
+  );
+  assert.deepEqual(
+    kinds(foldAttention({ ...onMenu([{ number: 2, label: "Yes" }, { number: 3, label: "No" }]), dismissed })),
+    ["session_dialog"],
+    "the same labels on different numbers are a different menu",
+  );
+  assert.deepEqual(
+    foldAttention({
+      ...onMenu([{ number: 1, label: "Yes" }, { number: 2, label: "No" }]),
+      sessions: [mkSession({ id: "s-menu", name: "On a menu", paneDialog: { ...DIALOG!, highlighted: 2 } })],
+      dismissed,
+    }).items,
+    [],
+    "the cursor moving is the same menu, as dialogIdentity reads it",
+  );
+});
+
 test("the inbox draws a Dismiss on every row kind, named after the row it removes", () => {
   const html = renderToStaticMarkup(
     withOverlayHost(

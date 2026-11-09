@@ -238,6 +238,47 @@ async function pendingQuestions(daemon: DaemonHandle): Promise<number> {
 }
 
 /**
+ * Dispatch a session and give it one question more than one dismissal request may carry, so its
+ * row has to be dismissed in more than one. The browser is parked off the dashboard while they
+ * are raised, so it loads them once from the snapshot instead of one frame at a time.
+ */
+async function askMoreThanOneRequestCarries(
+  dashboard: Page,
+  daemon: DaemonHandle,
+): Promise<{ beforeOwed: number; ids: string[] }> {
+  await dispatchASession(dashboard, daemon);
+  const beforeOwed = await pulseCount(dashboard, "to answer");
+  const cwd = await dispatchedCheckout(daemon);
+  const over = ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1;
+  const dashboardUrl = dashboard.url();
+  await dashboard.goto("about:blank");
+  const ids = await askQuestions(daemon, cwd, Array.from({ length: over }, (_, i) => `Question ${i + 1}?`), 25);
+  await dashboard.goto(dashboardUrl);
+  await expectDashboardReady(dashboard);
+  await expectToAnswer(dashboard, beforeOwed + over);
+  return { beforeOwed, ids };
+}
+
+/** How many keys each dismissal write the page sends carries, in the order they are sent. */
+function trackDismissalWrites(page: Page): number[] {
+  const writes: number[] = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && new URL(req.url()).pathname === "/api/attention/dismissals") {
+      writes.push((req.postDataJSON() as { items: unknown[] }).items.length);
+    }
+  });
+  return writes;
+}
+
+/** Every item id the daemon has stored as dismissed, sorted. */
+async function storedDismissals(daemon: DaemonHandle): Promise<string[]> {
+  const body = await (await request(daemon, "/api/attention/dismissals")).json() as {
+    dismissals: { itemId: string }[];
+  };
+  return body.dismissals.map((entry) => entry.itemId).sort();
+}
+
+/**
  * Dispatch a session and park it on a permission prompt through the real Notification hook,
  * so the inbox holds one more `Waiting on you` row. Returns both figures as they stood before
  * the prompt: deltas, not absolutes, because process discovery is machine-wide and a developer
@@ -821,43 +862,87 @@ test.describe("a row of agent questions", () => {
     expect(await pendingQuestions(daemon)).toBe(3);
   });
 
-  test("a row of more questions than one dismissal can carry says so, sends nothing, and stays", async ({
+  test("a row of more questions than one request may carry is dismissed whole, in bounded requests, and stays out", async ({
     dashboard,
     daemon,
   }) => {
-    // Five thousand and one real questions: the browser is parked off the dashboard while they
-    // are raised, so it loads them once from the snapshot instead of one frame at a time.
     test.setTimeout(240_000);
-    await dispatchASession(dashboard, daemon);
-    const beforeOwed = await pulseCount(dashboard, "to answer");
-    const cwd = await dispatchedCheckout(daemon);
-    const over = ATTENTION_DISMISSAL_LIMITS.keysPerRequest + 1;
-    const dashboardUrl = dashboard.url();
-    await dashboard.goto("about:blank");
-    await askQuestions(daemon, cwd, Array.from({ length: over }, (_, i) => `Question ${i + 1}?`), 25);
-    await dashboard.goto(dashboardUrl);
-    await expectDashboardReady(dashboard);
-    await expectToAnswer(dashboard, beforeOwed + over);
-
-    let writes = 0;
-    dashboard.on("request", (req) => {
-      if (req.method() === "POST" && new URL(req.url()).pathname === "/api/attention/dismissals") writes++;
-    });
+    const { beforeOwed, ids } = await askMoreThanOneRequestCarries(dashboard, daemon);
+    const writes = trackDismissalWrites(dashboard);
     const inbox = await openInbox(dashboard);
     const row = inbox.locator(".inbox-reviews").filter({ hasText: "Check the Linter Config" });
     await row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" }).click();
 
-    // The dashboard refuses it itself, says why beneath the row, and keeps the row.
-    await expect(inbox.getByRole("alert")).toHaveText(
-      `Could not dismiss: this row holds more than ${ATTENTION_DISMISSAL_LIMITS.keysPerRequest} questions - answer or dismiss some of them on their cards first`,
+    // The one click takes the whole row, and every question it held off the count.
+    await expect(row).toHaveCount(0);
+    await expectToAnswer(dashboard, beforeOwed);
+    await expect(inbox.getByRole("alert")).toHaveCount(0);
+    await shoot(dashboard, "over-limit-row-dismissed", inbox);
+    // Every question stored, across requests each within the bound.
+    await expect.poll(() => storedDismissals(daemon), { timeout: 30_000 })
+      .toEqual(ids.map((id) => `review:${id}`).sort());
+    expect([...writes].sort((a, b) => b - a), "one full request and one for the rest")
+      .toEqual([ATTENTION_DISMISSAL_LIMITS.keysPerRequest, 1]);
+    // Hidden, not answered: the agent is still waiting on every one of them.
+    expect(await pendingQuestions(daemon)).toBe(ids.length);
+
+    await dashboard.keyboard.press("Escape");
+    await dashboard.reload();
+    await expectDashboardReady(dashboard);
+    await holdsSteady(
+      async () => (await pulseCount(dashboard, "to answer")) === beforeOwed,
+      "a dismissed question came back after the reload",
     );
-    await expect(row).toBeVisible();
-    await expectToAnswer(dashboard, beforeOwed + over);
-    await inbox.getByRole("alert").scrollIntoViewIfNeeded();
-    await shoot(dashboard, "question-row-over-dismissal-limit");
-    expect(writes, "the refusal never reached the daemon").toBe(0);
-    expect(((await (await request(daemon, "/api/attention/dismissals")).json()) as { dismissals: unknown[] }).dismissals)
-      .toEqual([]);
-    expect(await pendingQuestions(daemon)).toBe(over);
+    expect(await pendingQuestions(daemon)).toBe(ids.length);
+  });
+
+  test("when one of those requests is refused, only its questions come back, with the reason, and Dismiss finishes the row", async ({
+    dashboard,
+    daemon,
+  }) => {
+    test.setTimeout(240_000);
+    const { beforeOwed, ids } = await askMoreThanOneRequestCarries(dashboard, daemon);
+    const writes = trackDismissalWrites(dashboard);
+    // The daemon takes the full request and refuses the one carrying the rest - which question
+    // that is depends on the row's order, so it is read off the request itself.
+    let refusedKey: string | null = null;
+    await dashboard.route("**/api/attention/dismissals", async (route) => {
+      const req = route.request();
+      const items = req.method() === "POST" ? (req.postDataJSON() as { items: { itemId: string }[] }).items : [];
+      if (items.length !== 1) return route.continue();
+      refusedKey = items[0]!.itemId;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "attention dismissals are unavailable" }),
+      });
+    });
+
+    const inbox = await openInbox(dashboard);
+    const row = inbox.locator(".inbox-reviews").filter({ hasText: "Check the Linter Config" });
+    const dismiss = row.getByRole("button", { name: "Dismiss Check the Linter Config from the inbox" });
+    await dismiss.click();
+
+    // The row is back holding the one refused question, and says why beneath it.
+    await expect(row.locator("section.review")).toHaveCount(1);
+    expect(refusedKey).not.toBeNull();
+    const refusedIndex = ids.findIndex((id) => `review:${id}` === refusedKey);
+    await expect(row.getByText(`Question ${refusedIndex + 1}?`).first()).toBeVisible();
+    await expect(inbox.getByRole("alert")).toHaveText("Could not dismiss: attention dismissals are unavailable");
+    await expectToAnswer(dashboard, beforeOwed + 1);
+    await shoot(dashboard, "over-limit-row-partly-refused", inbox);
+    // The stored request stays stored: every question but the refused one.
+    const allButRefused = ids.map((id) => `review:${id}`).filter((key) => key !== refusedKey).sort();
+    await expect.poll(() => storedDismissals(daemon), { timeout: 30_000 }).toEqual(allButRefused);
+
+    // Once the daemon accepts, the same Dismiss sends only what is left, and the row is gone.
+    await dashboard.unroute("**/api/attention/dismissals");
+    await dismiss.click();
+    await expect(row).toHaveCount(0);
+    await expect(inbox.getByRole("alert")).toHaveCount(0);
+    await expectToAnswer(dashboard, beforeOwed);
+    await expect.poll(() => storedDismissals(daemon)).toEqual(ids.map((id) => `review:${id}`).sort());
+    expect(writes.at(-1), "the retry carried only the refused question").toBe(1);
+    expect(await pendingQuestions(daemon)).toBe(ids.length);
   });
 });

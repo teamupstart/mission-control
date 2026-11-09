@@ -214,9 +214,10 @@ test("a row of hundreds of questions is dismissed whole, and still all or nothin
   assert.deepEqual(((await call("GET")).body.dismissals as { itemId: string }[]).map((r) => r.itemId), ["review:r-249"]);
 });
 
-test("one request is bounded: the largest row is dismissed whole, one key more is refused", async () => {
+test("one request is bounded: the largest request is stored whole, one key more is refused", async () => {
   // Bounded on purpose (`ATTENTION_DISMISSAL_LIMITS`): an unbounded array is what Zod 3 parses
-  // element by element before any length check, so the cap stays - far above any real row.
+  // element by element before any length check, so the cap stays. It bounds a request, not a
+  // row: the dashboard sends a longer row in several (`dismissalBatches`).
   clear();
   const { events, call } = setup();
   const keys = (n: number) => Array.from({ length: n }, (_, i) => ({ itemId: `review:r-${i}`, occurrence: "", basis: 0 }));

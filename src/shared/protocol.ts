@@ -1344,15 +1344,15 @@ export const DismissLaunchFailuresSchema = z
 
 /**
  * The bounds on one dismissal request, shared by its schema, the route's byte ceiling and the
- * dashboard's own check before it sends.
+ * dashboard, which splits a row into requests of this size.
  *
- * `keysPerRequest` is a real bound, and has to be. One Dismiss sends every key of its row in a
- * single all-or-nothing request, and a row of questions is one key per pending question, so it
- * is set far above any row a person could work through: the inbox draws every question as its
- * own card. An unbounded array is not an option (GHSA-mrhx-c7xc-m3w5): it is this `.max()` on
- * `DismissAttentionItemsSchema` that Zod checks before it parses a single element, and the
- * route also refuses an oversized body by bytes before the schema sees it. The earlier cap of
- * 100 was low enough for a busy session to reach, and left its row undismissable.
+ * `keysPerRequest` bounds a REQUEST, never a row. A row of questions is one key per pending
+ * question with no upper bound, so a row past this is dismissed in several all-or-nothing
+ * requests (`dismissalBatches`) rather than refused - the earlier cap of 100 was low enough for
+ * a busy session to reach, and left its row undismissable. The bound itself has to stay
+ * (GHSA-mrhx-c7xc-m3w5): it is this `.max()` on `DismissAttentionItemsSchema` that Zod checks
+ * before it parses a single element, and the route also refuses an oversized body by bytes
+ * before the schema sees it.
  */
 export const ATTENTION_DISMISSAL_LIMITS = {
   keysPerRequest: 5_000,

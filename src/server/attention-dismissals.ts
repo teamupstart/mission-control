@@ -17,8 +17,9 @@ import { inTransaction, openDb } from "./db.ts";
  * NEVER EXPIRED AND NEVER PRUNED. A dismissal lasts until its row reports something new, which
  * is the only thing that brings a dismissed row back. Dropping one by age or by count would
  * bring back an item that has reported nothing new - the very thing a dismissal promises not to
- * do. The table grows by one small row per inbox row the operator ever dismissed, and a row
- * dismissed again is rewritten in place of the old one, never added beside it.
+ * do. The table grows by one small row per dismissal key the operator ever dismissed - one for
+ * most inbox rows, but one per question for a session's row of questions - and a key dismissed
+ * again is rewritten in place of the old one, never added beside it.
  *
  * NEVER OVERWRITTEN BY AN OLDER DECISION. Each write carries the newest revision of its row the
  * dismissing window had seen; a write behind the stored revision is refused whole

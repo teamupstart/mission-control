@@ -413,3 +413,56 @@ test("the daemon refuses Foreman's automated writes and wrap-up ask into a block
   const after = await post("/inject", { text: "Wrap up and open the PR", origin: "foreman" });
   assert.doesNotMatch(((await after.json()) as { error?: string }).error ?? "", /blocked/);
 });
+
+test("a blocker reported while a Foreman write or wrap-up ask is in flight still refuses it", async () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  const delivered: string[] = [];
+  let duringSend: (() => void) | null = null;
+  // The supervisor runs the delivery guard inside its per-session lock, after the route has
+  // already passed its own checks. Reporting the blocker here is the in-flight window.
+  const sdkSessions = {
+    send: async (_id: string, input: { text: string }, guard?: () => string | null) => {
+      duringSend?.();
+      const blocked = guard?.();
+      if (blocked) throw new Error(blocked);
+      delivered.push(input.text);
+      return "started";
+    },
+  } as unknown as import("../src/server/sdk/supervisor.ts").SdkSupervisor;
+  const app = buildApp({ registry, reviews: new ReviewManager(registry) as ReviewManagerT, tasks: {} as TaskManager, queues, sdkSessions });
+  const s = registry.registerSdkSession({ id: `sdk:inflight-${++seq}`, agent: "claude", name: "embedded", cwd: "/repo", agentSessionId: `agent-inflight-${seq}` });
+  const report = () => { registry.reportBlocker(s.id, BODY); };
+  const post = (path: string, body: unknown) => app.request(`/api/sessions/${s.id}${path}`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  for (const [path, body] of [
+    ["/inject", { text: "Wrap up and open the PR", origin: "foreman" }],
+    ["/send", { text: "Wrap up and open the PR", submit: true, origin: "foreman" }],
+  ] as const) {
+    duringSend = report;
+    const res = await post(path, body);
+    duringSend = null;
+    const json = await res.json() as { ok?: boolean; error?: string };
+    assert.notEqual(json.ok, true, `${path} delivered after a blocker landed mid-delivery`);
+    assert.match(json.error ?? "", /blocked on someone else/);
+    assert.deepEqual(delivered, []);
+    registry.clearBlocker(s.id, "operator");
+  }
+
+  // The wrap-up ask: the blocker lands while the daemon is still reading the request body.
+  const encoder = new TextEncoder();
+  const streamed = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      report();
+      controller.enqueue(encoder.encode("{}"));
+      controller.close();
+    },
+  });
+  const asked = await app.request(new Request(`http://127.0.0.1:7317/api/sessions/${s.id}/queue/wrapup/asked`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: streamed,
+    duplex: "half",
+  } as RequestInit));
+  assert.equal(asked.status, 409, "the wrap-up ask read a session snapshot from before the blocker");
+});

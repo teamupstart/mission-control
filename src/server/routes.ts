@@ -974,6 +974,18 @@ function foremanWriteRefusal(
 }
 
 /**
+ * The blocker half of `foremanWriteRefusal`, asked of the LIVE session at the moment of
+ * delivery. Every route reads its session before awaiting the request body, and delivery waits
+ * on a write lock after that; a blocker reported meanwhile replaces the registry's session
+ * object, so only a fresh read inside the delivery guard sees it.
+ */
+function foremanBlockedNow(registry: Registry, sessionId: string, origin: string | undefined): string | null {
+  if (origin !== "foreman") return null;
+  const live = registry.getSession(sessionId);
+  return live && hasBlocker(live) ? FOREMAN_SESSION_BLOCKED : null;
+}
+
+/**
  * Resolve an item-scoped queue route: the `:id` session must exist, and `:itemId`
  * must belong to ITS queue.
  *
@@ -5727,7 +5739,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // leave in the composer - through here. Gating only the submitted half would leave
     // text appearing in an uninvited session's composer, which is the same intrusion
     // arriving one Enter short.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error }, refusal.status);
     }
@@ -5748,7 +5760,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         sdkSessions,
         session,
         parsed.data.text,
-        undefined,
+        origin === "foreman" ? () => foremanBlockedNow(registry, session.id, origin) : undefined,
         origin,
       );
       // A driver refusal is positive evidence nothing landed, so it races nothing after all.
@@ -5777,7 +5789,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       parsed.data.text,
       parsed.data.submit,
       undefined,
-      () => registry.promptResourceBlockerForSession(session.id),
+      () => foremanBlockedNow(registry, session.id, origin) ?? registry.promptResourceBlockerForSession(session.id),
     );
     observeSessionOperation({
       session,
@@ -5992,7 +6004,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Before any delivery path, and carrying `pasted` for the same reason the 400 above
     // does: a refusal here is positive evidence that nothing reached the pane, which is
     // the one state the worker may cleanly re-queue from rather than escalate.
-    const refusal = foremanWriteRefusal(composerActivity, session, origin);
+    const refusal = foremanWriteRefusal(composerActivity, registry.getSession(session.id) ?? session, origin);
     if (refusal) {
       return c.json({ error: refusal.error, pasted: false }, refusal.status);
     }
@@ -6134,7 +6146,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       session,
       text,
       undefined,
-      () => codeRabbitGuard() ?? stackGuard() ?? registry.promptResourceBlockerForSession(session.id),
+      () => codeRabbitGuard() ?? stackGuard() ?? foremanBlockedNow(registry, session.id, origin)
+        ?? registry.promptResourceBlockerForSession(session.id),
       origin,
     ).catch((error: unknown) => ({ ok: false, error: String(error), pasted: undefined }))
       .finally(() => {
@@ -6863,7 +6876,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     // Asking "ship it?" is an idle-triggered wrap-up; a blocked session is not finished.
     // Clearing a stored answer is a reset, not an ask, and stays open.
-    if (hasBlocker(session) && !parsed.data.clearAnswer) {
+    // The live session, not the one read before the body: a blocker reported while the
+    // request was in flight must still refuse the ask.
+    if (hasBlocker(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: FOREMAN_SESSION_BLOCKED }, 409);
     }
     const key = registry.ensureQueue(session.id);

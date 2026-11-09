@@ -5,11 +5,24 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseJson } from "jsonc-parser";
-import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, CODEX_MCP_UNUSABLE, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
+import { CLAUDE_MCP_ALLOW, CODEX_MCP_NOT_REGISTERED, CODEX_MCP_UNUSABLE, MCP_TRUST_COLLECTION_MAX, enableMcpTrust, hasMcpTrust, mcpTrustPath, mcpTrustStatus, withMcpTrust } from "../src/server/setup/mcp-trust.ts";
 
 import { withProcessEnv } from "./helpers/process-env.ts";
 
 const codex = '# keep this\napproval_policy = "on-request"\n[mcp_servers.mission-control]\ncommand = "node"\nargs = ["server.mjs"]\n[mcp_servers.other]\nurl = "https://example.invalid"\n';
+
+test("MCP settings collections are bounded and trust edits cannot exceed the bound", () => {
+  for (const field of ["allow", "ask", "deny"] as const) {
+    const values = Array.from({ length: MCP_TRUST_COLLECTION_MAX }, () => "Read");
+    const atLimit = JSON.stringify({ permissions: { [field]: values } });
+    assert.equal(hasMcpTrust("claude", atLimit), false);
+    assert.throws(() => hasMcpTrust("claude", JSON.stringify({ permissions: { [field]: [...values, null] } })), /settings/);
+    if (field === "allow") assert.throws(() => withMcpTrust("claude", atLimit), /settings/);
+  }
+  const servers = Array.from({ length: MCP_TRUST_COLLECTION_MAX }, (_, i) => `[mcp_servers.s${i}]\ncommand = "node"\n`).join("");
+  assert.equal(hasMcpTrust("codex", servers), false);
+  assert.throws(() => hasMcpTrust("codex", `${servers}[mcp_servers.extra]\ncommand = "node"\n`), /settings shape/);
+});
 
 test("Claude merges its scoped allow rule, preserves restrictions and is idempotent", () => {
   const original = '{\n // keep this\n "permissions": {"allow": ["Read"], "deny": ["mcp__mission-control__kill_session"], "ask": ["Bash"]}, "env": {"KEEP": "yes"}\n}';

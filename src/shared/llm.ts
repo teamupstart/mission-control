@@ -34,6 +34,9 @@ import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
  */
 export const LLM_RUNNER_IDS = ["claude", "codex"] as const;
 
+/** Intake ceiling before parsing model reply elements, separate from output trimming. */
+export const LLM_REPLY_COLLECTION_MAX = 1_000;
+
 export type LlmRunnerId = (typeof LLM_RUNNER_IDS)[number];
 
 /**

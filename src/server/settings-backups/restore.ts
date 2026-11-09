@@ -105,13 +105,13 @@ export function migrateSettingsBackupSnapshot(
   return {
     snapshot,
     settings,
-    personas: SettingsBackupPersonaSchema.array().parse(payload("personas")),
-    sessionActions: SettingsBackupSessionActionSchema.array().parse(payload("session-actions")),
-    workflowCommands: SettingsBackupWorkflowCommandSchema.array().parse(payload("workflow-commands")),
-    workflows: SettingsBackupWorkflowDefinitionSchema.array().parse(payload("workflow-definitions")),
-    workflowVersions: SettingsBackupWorkflowVersionSchema.array().parse(payload("workflow-versions")),
+    personas: SettingsBackupPersonaSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("personas")),
+    sessionActions: SettingsBackupSessionActionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("session-actions")),
+    workflowCommands: SettingsBackupWorkflowCommandSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-commands")),
+    workflows: SettingsBackupWorkflowDefinitionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-definitions")),
+    workflowVersions: SettingsBackupWorkflowVersionSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("workflow-versions")),
     residentProfiles: byDomain.has("resident-profiles")
-      ? SettingsBackupResidentProfileSchema.array().parse(payload("resident-profiles"))
+      ? SettingsBackupResidentProfileSchema.array().max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog).parse(payload("resident-profiles"))
       : null,
   };
 }

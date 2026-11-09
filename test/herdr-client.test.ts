@@ -55,6 +55,67 @@ const SNAPSHOT = {
   },
 };
 
+test("discovery refuses an oversized terminal snapshot before requesting process info", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => reply(socket, request.id, {
+    ...SNAPSHOT,
+    snapshot: { ...SNAPSHOT.snapshot, workspaces: Array.from({ length: 10_001 }, () => ({ workspace_id: "w", label: "Workspace" })) },
+  }));
+  try {
+    const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
+    assert.equal(result.ok, false);
+    assert.equal(fake.requests.length, 1, "the invalid snapshot must not fan out into process requests");
+  } finally {
+    await fake.close();
+  }
+});
+
+test("response envelope records accept 10000 entries and refuse 10001 before reading values", async (t) => {
+  const processInfo = { pane_id: "w1:p1", shell_pid: 101, tty: null };
+  const result = { type: "pane_process_info", process_info: processInfo };
+  let entries = 10_000;
+  let valueReads = 0;
+  let decodedResponses = 0;
+  const parseJson = JSON.parse;
+  // JSON has no accessors. Instrument the decoded response at the socket's JSON
+  // boundary, before the real envelope parser, to observe entry validation.
+  t.mock.method(JSON, "parse", (text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    const parsed = parseJson(text, reviver);
+    if (parsed?.result?.type === "pane_process_info") {
+      decodedResponses++;
+      for (const [key, value] of Object.entries(parsed.result)) {
+        Object.defineProperty(parsed.result, key, {
+          enumerable: true,
+          get() { valueReads++; return value; },
+        });
+      }
+    }
+    return parsed;
+  });
+  const fake = await fakeHerdrSocket((request, socket) => reply(socket, request.id, {
+    ...result,
+    ...Object.fromEntries(Array.from({ length: entries - Object.keys(result).length }, (_, i) => [`extra${i}`, null])),
+  }));
+  try {
+    const client = createHerdrClient(execStatus(fake.path), HERDR_BIN);
+    assert.deepEqual(await client.processInfo("w1:p1"), { ok: true, value: processInfo, outcomeUnknown: false });
+    assert.equal(decodedResponses, 1);
+    assert.equal(valueReads, entries, "at-limit values pass through the real envelope parser");
+
+    entries++;
+    valueReads = 0;
+    const oversized = await client.processInfo("w1:p1");
+    assert.equal(decodedResponses, 2, "the oversized response reaches envelope validation");
+    assert.equal(oversized.ok, false);
+    if (oversized.ok) return;
+    assert.match(oversized.error, /invalid response envelope/);
+    assert.equal(oversized.outcomeUnknown, false);
+    assert.equal(valueReads, 0, "an oversized envelope must not read any result value");
+    assert.equal(fake.requests.length, 2);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("snapshot and pane process info use stable one-request connections and correlate out-of-order responses", async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") {
@@ -716,6 +777,38 @@ test("a single pane's process details answer for that pane, and a missing pane a
 
     const elsewhere = await client.processInfo("w1:elsewhere");
     assert.equal(elsewhere.ok, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("pane process responses accept 512 entries and refuse 513", async () => {
+  const processes = Array.from({ length: 512 }, (_, i) => ({ pid: i + 1, name: `process-${i}`, cwd: "/repo" }));
+  let foreground: unknown[] = processes;
+  const fake = await fakeHerdrSocket((request, socket) => {
+    reply(socket, request.id, {
+      type: "pane_process_info",
+      process_info: { pane_id: request.params.pane_id, foreground_processes: foreground },
+    });
+  });
+  try {
+    const client = createHerdrClient(execStatus(fake.path), HERDR_BIN);
+    const atLimit = await client.processInfo("w1:p1");
+    assert.equal(atLimit.ok, true);
+    if (atLimit.ok) assert.deepEqual(atLimit.value?.foreground_processes, processes);
+
+    // Valid entries isolate the size refusal from all other validation rules.
+    foreground = [...processes, { pid: 513, name: "process-512", cwd: "/repo" }];
+    const oversized = await client.processInfo("w1:p1");
+    assert.equal(oversized.ok, false);
+    if (!oversized.ok) assert.match(oversized.error, /invalid response/);
+
+    // Invalid entries are refused through the same real socket response path.
+    foreground = Array.from({ length: 513 }, () => null);
+    const invalidOversized = await client.processInfo("w1:p1");
+    assert.equal(invalidOversized.ok, false);
+    if (!invalidOversized.ok) assert.match(invalidOversized.error, /invalid response/);
+    assert.deepEqual(fake.requests.map(request => request.method), ["pane.process_info", "pane.process_info", "pane.process_info"]);
   } finally {
     await fake.close();
   }

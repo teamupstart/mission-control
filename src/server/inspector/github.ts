@@ -740,6 +740,9 @@ function toReviewPage(raw: unknown): ReviewPage {
     nodes?: unknown[];
     pageInfo?: { hasPreviousPage?: unknown; startCursor?: unknown };
   };
+  if (Array.isArray(connection.nodes) && connection.nodes.length > GITHUB_PAGE_SIZE) {
+    throw new Error(`Pull request review page exceeds ${GITHUB_PAGE_SIZE} entries`);
+  }
   return {
     reviews: (connection.nodes ?? []).filter(Boolean).map((item) => {
       const review = item as Record<string, unknown>;

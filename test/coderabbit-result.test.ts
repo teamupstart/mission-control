@@ -18,9 +18,9 @@ test("collection limits refuse oversized CodeRabbit records within the byte budg
   const reviewedFiles = Array.from({ length: CODERABBIT_RESULT_LIMITS.reviewedFiles }, (_, i) => `p${i}`);
   const paths = { required: reviewedFiles, allowed: reviewedFiles };
   assert.equal(parse([finding, { ...complete, reviewedFiles }], 2, false, paths).status, "failed");
-  const oversized = { ...complete, reviewedFiles: [...reviewedFiles, null] };
+  const oversized = { ...complete, reviewedFiles: [...reviewedFiles, "extra"] };
   assert.ok(Buffer.byteLength(JSON.stringify(oversized)) < CODERABBIT_RESULT_LIMITS.recordBytes);
-  const result = parse([finding, oversized], 2, false, paths);
+  const result = parse([finding, oversized], 2, false, { required: oversized.reviewedFiles, allowed: oversized.reviewedFiles });
   assert.equal(result.status, "incomplete");
   assert.match(result.diagnostic, /Invalid CodeRabbit completion/);
 });

@@ -40,6 +40,7 @@ const NOW = Date.now();
 
 function blocker(over: Partial<SessionBlocker> = {}): SessionBlocker {
   return {
+    id: "blocker-fixture",
     kind: "question",
     reason: "Need the retention window",
     waitingOn: "Dana (platform)",

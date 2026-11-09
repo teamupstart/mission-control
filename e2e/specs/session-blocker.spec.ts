@@ -8,16 +8,6 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("session-blocker");
 
-/**
- * A durable session blocker, end to end: a dispatched session reports it through the same
- * `/mcp/blocker` route the `report_blocker` tool posts, and the dashboard draws a red card in
- * Idle with its fields, honours a hidden card item, opens the detail band, flags a reply
- * without raising anything, keeps the blocker across a daemon restart, and clears it.
- *
- * Phase 1 deliberately leaves a blocked idle session in the Idle column; the placement setting
- * that moves it is Phase 2's.
- */
-
 const BLOCKER = {
   kind: "question",
   reason: "Need the retention window for audit logs",
@@ -89,6 +79,15 @@ async function shoot(target: Page | Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/session-blocker/${name}.png`);
 }
 
+/**
+ * A durable session blocker, end to end: a dispatched session reports it through the same
+ * `/mcp/blocker` route the `report_blocker` tool posts, and the dashboard draws a red card in
+ * Idle with its fields, honours a hidden card item, opens the detail band, flags a reply
+ * without raising anything, keeps the blocker across a daemon restart, and clears it.
+ *
+ * Phase 1 deliberately leaves a blocked idle session in the Idle column; the placement setting
+ * that moves it is Phase 2's.
+ */
 test("a reported blocker draws a red Idle card, a detail band, survives a restart, and clears", async ({
   dashboard,
   daemon,

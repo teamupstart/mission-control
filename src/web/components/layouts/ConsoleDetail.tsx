@@ -881,8 +881,9 @@ export function ConsoleDetail({
                 described the present at the top of a pane whose present is at the bottom.
                 Nothing may be added back above `.pane-dialog` here without checking the
                 child combinators that select through this container. The blocker band
-                is the one exception, and it is `flex: none` so it never takes the
-                transcript's or the dialog's share of the height. */}
+                is the one exception: it takes its natural height up to 40% of the pane
+                and scrolls past that (`.detail-conv > .blocker-band`), so long details
+                cannot push the transcript or the reply box out of view. */}
             <SessionBlockerBand session={session} />
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (

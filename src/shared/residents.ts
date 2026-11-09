@@ -204,7 +204,7 @@ export const ResidentMcpServerRefSchema = z.discriminatedUnion("source", [
   }),
   z.object({
     source: z.literal("custom"),
-    id: z.string().uuid("a custom MCP server is named by its id"),
+    id: z.string().guid("a custom MCP server is named by its id"),
   }),
 ]);
 export type ResidentMcpServerRef = z.infer<typeof ResidentMcpServerRefSchema>;
@@ -326,14 +326,14 @@ export interface ResidentLoopStatus {
 
 export const RESIDENT_PROFILE_SECTIONS = {
   identity: ResidentIdentitySectionSchema,
-  persona: ResidentPersonaSectionSchema.default({}),
-  instructions: ResidentInstructionsSectionSchema.default({}),
-  execution: ResidentExecutionSectionSchema.default({}),
-  workspace: ResidentWorkspaceSectionSchema.default({}),
-  board: ResidentBoardSectionSchema.default({}),
-  authority: ResidentAuthoritySectionSchema.default({}),
-  loop: ResidentLoopSectionSchema.default({}),
-  mcp: ResidentMcpSectionSchema.default({}),
+  persona: ResidentPersonaSectionSchema.prefault({}),
+  instructions: ResidentInstructionsSectionSchema.prefault({}),
+  execution: ResidentExecutionSectionSchema.prefault({}),
+  workspace: ResidentWorkspaceSectionSchema.prefault({}),
+  board: ResidentBoardSectionSchema.prefault({}),
+  authority: ResidentAuthoritySectionSchema.prefault({}),
+  loop: ResidentLoopSectionSchema.prefault({}),
+  mcp: ResidentMcpSectionSchema.prefault({}),
 } as const;
 
 export type ResidentProfileSectionId = keyof typeof RESIDENT_PROFILE_SECTIONS;

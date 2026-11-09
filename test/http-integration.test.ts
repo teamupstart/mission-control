@@ -300,7 +300,7 @@ test("parseBody rejects a malformed write body with 400 (and never mutates)", as
   });
   assert.equal(res.status, 400);
   const body = (await res.json()) as { error: string };
-  assert.match(body.error, /repoRoot|intent|Required|String must contain/i);
+  assert.match(body.error, /repoRoot|intent|expected string|Too small/i);
 
   const list = await app.request("/api/tasks", { headers: LOOPBACK });
   assert.deepEqual(await list.json(), []); // nothing was created

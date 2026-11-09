@@ -338,7 +338,7 @@ test("MCP refuses invalid configuration, dependencies, repositories, and non-bac
   const before = getTask(task.id);
   for (const [patch, error] of [
     [{ model: "--bad-model" }, /model id/],
-    [{ effort: "impossible" }, /Invalid enum/],
+    [{ effort: "impossible" }, /Invalid option/],
     [{ kind: "chat" }, /launched immediately/],
     [{ agent: "codex", effort: "max" }, /not supported/],
     [{ workflowId: "missing-workflow" }, /published version/],
@@ -410,7 +410,7 @@ test("a task can no longer be created with an advisor pin: MCP refuses the key, 
       workflowId: null, advisorModel: "opus" }),
   });
   assert.equal(mcp.status, 400);
-  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key\(s\) in object: 'advisorModel'/);
+  assert.match(((await mcp.json()) as { error: string }).error, /Unrecognized key: \\"advisorModel\\"/);
   assert.equal(f.registry.snapshot().tasks.length, count);
   const dashboard = await f.app.request("/api/tasks", {
     method: "POST",
@@ -609,7 +609,7 @@ test("MCP creates and edits storage overrides without changing global settings",
   assert.equal(explicitRepo.planPolicy?.storage, "repository");
   const inherited = await f.call("update_task", { taskId: local.id, planStorage: null });
   assert.equal(inherited?.planPolicy?.storage, "local");
-  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid enum/);
+  await f.call("update_task", { taskId: local.id, planStorage: "invalid" }, /Invalid option/);
   await f.call("create_task", { title: "Invalid storage kind", intent: "Ship", repository: repoA, kind: "ship", planStorage: "local" }, /only available for plan tasks/);
 });
 

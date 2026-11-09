@@ -1,6 +1,33 @@
 import { z } from "zod";
 import type { ZodTypeAny } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+
+/**
+ * Render a Zod schema as the JSON Schema a provider is handed, before strictification.
+ *
+ * The INPUT side is rendered, because that is what the model writes: a `.default()` field is
+ * one it may leave out, and a transform's output is nothing it can send. References are
+ * inlined, because a transport takes one self-contained document, and a shape JSON Schema
+ * cannot express (a refinement's predicate, a custom check) renders as unconstrained rather
+ * than throwing - the Zod parse on the way back in still enforces it.
+ *
+ * An ordinary object is closed (`additionalProperties: false`), as `zod-to-json-schema` rendered
+ * it before Zod 4 had a renderer of its own. Zod's input rendering leaves such an object open,
+ * because the parse would strip an extra key rather than refuse it - but a model is never meant
+ * to send one, and the strict providers require the object closed anyway.
+ */
+export function renderJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
+  return z.toJSONSchema(schema, {
+    io: "input",
+    target: "draft-7",
+    reused: "inline",
+    unrepresentable: "any",
+    override: ({ zodSchema, jsonSchema }) => {
+      if (zodSchema._zod.def.type === "object" && !zodSchema._zod.def.catchall) {
+        jsonSchema.additionalProperties = false;
+      }
+    },
+  }) as Record<string, unknown>;
+}
 
 /**
  * Render the provider-facing INPUT schema once in the caller's module.
@@ -14,8 +41,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
  * rendering alone was not enough.
  */
 export function providerJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
-  const rendered = zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<string, unknown>;
-  return strictify(rendered) as Record<string, unknown>;
+  return strictify(renderJsonSchema(schema)) as Record<string, unknown>;
 }
 
 /**
@@ -142,7 +168,7 @@ function withNull(schema: Record<string, unknown>): Record<string, unknown> {
 /**
  * Make a rendered JSON Schema satisfy strict Structured Outputs, at every depth.
  *
- * `zodToJsonSchema` renders a `.optional()` or `.default()` property by leaving it out of
+ * `renderJsonSchema` renders a `.optional()` or `.default()` property by leaving it out of
  * `required`, which is the ordinary JSON Schema reading and which the strict provider
  * refuses outright: it wants every key of `properties` listed in `required`, and answers a
  * schema that omits one with `invalid_json_schema` ("required is required to be supplied

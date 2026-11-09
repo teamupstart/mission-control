@@ -52,7 +52,7 @@ export const SettingsBackupJsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.
   z.number().finite(),
   z.string(),
   z.array(SettingsBackupJsonValueSchema),
-  z.record(SettingsBackupJsonValueSchema),
+  z.record(z.string(), SettingsBackupJsonValueSchema),
 ]));
 
 export const SettingsBackupDomainEntrySchema = z.object({
@@ -194,7 +194,7 @@ export const SETTINGS_RESTORE_CONFIRMATION = "RESTORE SETTINGS" as const;
 
 export const SettingsRestoreRequestSchema = z.object({
   expectedDigest: z.string().regex(/^[a-f0-9]{64}$/),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
   confirmation: z.literal(SETTINGS_RESTORE_CONFIRMATION),
 }).strict();
 export type SettingsRestoreRequest = z.infer<typeof SettingsRestoreRequestSchema>;
@@ -247,7 +247,7 @@ export const SettingsRestoredEventSchema = z.object({
   type: z.literal("settings_restored"),
   snapshotId: SettingsBackupIdSchema,
   restoredAt: z.string().datetime({ offset: true }),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
 }).strict();
 export type SettingsRestoredEvent = z.infer<typeof SettingsRestoredEventSchema>;
 

@@ -61,7 +61,7 @@ export function settingPayloadForEntry(entry: AnyAppConfigEntry, logicalValue: u
 /** Validate a persisted logical payload against its descriptor and exact setting key set. */
 export function parseSettingPayload(entry: AnyAppConfigEntry, value: unknown): unknown {
   if (entry.classification.kind === "whole") return settingPayloadForEntry(entry, value);
-  const record = z.record(z.unknown()).parse(value);
+  const record = z.record(z.string(), z.unknown()).parse(value);
   const allowed = new Set(Object.entries(entry.classification.fields)
     .filter(([, valueClass]) => valueClass === "setting")
     .map(([field]) => field));

@@ -23,7 +23,7 @@ const ClaudeSettings = z.object({
   }).passthrough().optional(),
 }).passthrough();
 const CodexSettings = z.object({
-  mcp_servers: z.record(z.object({
+  mcp_servers: z.record(z.string(), z.object({
     command: z.string().optional(),
     url: z.string().optional(),
     default_tools_approval_mode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),

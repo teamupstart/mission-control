@@ -1,6 +1,6 @@
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { scheduleResidentIteration } from "./resident-pacing.ts";
-import { SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
+import { PLAN_DECISION_LIMITS, SessionControlReadSchema, SessionControlRequestSchema } from "@shared/protocol.ts";
 import { PlanReviewInputSchema, TaskPlanInputsSchema, PlanIdentitySchema } from "@shared/managed-plans.ts";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daemon-protocol.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -379,7 +379,8 @@ server.registerTool(
                     .describe("Marks a suggested choice; does not preselect"),
                 }),
               )
-              .min(1),
+              .min(1)
+              .max(PLAN_DECISION_LIMITS.options),
             multiSelect: z
               .boolean()
               .optional()
@@ -390,6 +391,7 @@ server.registerTool(
               .describe("Adds a free-text 'Other' field for an answer outside the options"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.decisions)
         .default([])
         .describe("Open choices; empty is allowed for managed final-bundle approval"),
     },
@@ -764,6 +766,7 @@ server.registerTool(
               .describe("Marks a suggested choice; does not preselect"),
           }),
         )
+        .max(PLAN_DECISION_LIMITS.options)
         .optional()
         .describe("Discrete choices. Omit entirely for a free-text answer."),
       multiSelect: z
@@ -1196,7 +1199,7 @@ server.registerTool("publish_plan", {
 }, async (input) => managedPlanCall("publish", input));
 server.registerTool("read_plan", {
   description: "Read an exact managed plan revision and optionally one file, or list the authorized repository's saved plans. Catalog reads return {plans, nextCursor}; pass nextCursor as cursor with the same repoSlot until nextCursor is null. Revisions and local previews survive authoring-worktree cleanup.",
-  inputSchema: ReadPlanInputSchema.innerType().shape, annotations: { readOnlyHint: true },
+  inputSchema: ReadPlanInputSchema.shape, annotations: { readOnlyHint: true },
 }, async (input) => managedPlanCall("read", input));
 
 // Register workflow evidence without letting the caller select a session, task, or root. The

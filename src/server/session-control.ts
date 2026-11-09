@@ -75,8 +75,8 @@ export function controlRequest(target: string, command: SessionControlAction): {
     case "set_model": return post("model", { model: command.model });
     case "set_effort": return post("effort", { effort: command.effort });
     case "set_permission_mode": return post("mode", { mode: command.mode });
-    case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl });
-    case "clear_blocker": return post("blocker/clear", { resolution: command.resolution });
+    case "flag_blocker_reply": return post("blocker/reply", { note: command.note, referenceUrl: command.referenceUrl, blockerStartedAt: command.blockerStartedAt });
+    case "clear_blocker": return post("blocker/clear", { resolution: command.resolution, blockerStartedAt: command.blockerStartedAt });
   }
 }
 

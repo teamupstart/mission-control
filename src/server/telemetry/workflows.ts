@@ -2,7 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TelemetryProfileId } from "@shared/telemetry.ts";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import type { TelemetryEventDefinition } from "@shared/telemetry-catalog.ts";
 import type { WorkflowRun, WorkflowNodeAttempt, WorkflowLlmCall, WorkflowSubmission } from "@shared/workflow.ts";
 import { WORKFLOW_RUN_TERMINAL_STATUSES, workflowRunResumesItself } from "@shared/workflow.ts";

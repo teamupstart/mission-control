@@ -49,7 +49,11 @@ test("a pre-feature database upgrades additively and retains existing settings",
   try {
     old.exec("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO app_config VALUES ('skills', '{\"enabled\":false}'); PRAGMA user_version = 4;");
     upgradeDatabaseToCurrentSchema(old);
-    assert.equal((old.prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string }).value, '{"enabled":false}');
+    // The current upgrade includes the one-time Mockups rollout; the saved master-off
+    // choice must survive even while that row is enabled.
+    assert.deepEqual(JSON.parse((old.prepare("SELECT value FROM app_config WHERE key = 'skills'").get() as { value: string }).value), {
+      enabled: false, skills: { mockups: true },
+    });
     assert.equal(old.prepare("SELECT * FROM managed_plans").all().length, 0);
     assert.equal(old.prepare("SELECT * FROM managed_plan_revisions").all().length, 0);
     upgradeDatabaseToCurrentSchema(old);

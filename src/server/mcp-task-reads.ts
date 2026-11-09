@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { McpListTasks, McpTaskSnapshot } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";

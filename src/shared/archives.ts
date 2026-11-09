@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * The portable archive contract: what a completed archive IS, independently of the task,

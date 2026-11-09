@@ -7,7 +7,7 @@ import { TaskPlanInputsSchema, ManagedPlanPolicySchema, PlanIdentitySchema } fro
 import { DatabaseSync } from "node:sqlite";
 import { ACTIVE_TASK_STATUSES } from "@shared/task-status.ts";
 import { taskHasWorktrees } from "@shared/task-repos.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
@@ -210,9 +210,10 @@ let db: DatabaseSync | undefined;
 //     (`stack_prompt_claims`). Nullable, no backfill: a Phase 1 row reads as unobserved.
 // 22: a task's dispatch Persona (`tasks.persona_id`), nullable with no backfill: NULL is a
 //     task that launches with no Persona, which is what every older task did.
-// 23: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
+// 23: enable the Mockups skill once, preserving the master switch and later opt-outs.
+// 24: attention-inbox dismissals (`attention_dismissals`), a new empty table: nothing was
 //     dismissed before the inbox could dismiss.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 23;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 24;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -3349,7 +3350,29 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   createTelemetryTables(d);
   migrateTelemetry(d);
   migrate(d);
+  migrateMockupsSkill(d);
   markDatabaseSchemaCurrent(d);
+}
+
+/** One rollout, not a default applied again whenever the app is upgraded. */
+function migrateMockupsSkill(d: DatabaseSync): void {
+  // Keep this boundary fixed when CURRENT_DATABASE_SCHEMA_VERSION advances.
+  if (databaseSchemaVersion(d) >= 23) return;
+  const entry = APP_CONFIG_ENTRIES.skills;
+  const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(entry.key) as
+    | { value: string }
+    | undefined;
+  // Missing settings already default on. Corrupt settings must still fail closed.
+  if (!row) return;
+  try {
+    if (!entry.schema.safeParse(JSON.parse(row.value)).success) return;
+  } catch {
+    return;
+  }
+  // Preserve all other values, including sparse-map policy and reload generation.
+  // Startup reconciliation owns symlinks and advances the generation if they change.
+  d.prepare("UPDATE app_config SET value = json_set(value, '$.skills.mockups', json('true')) WHERE key = ?")
+    .run(entry.key);
 }
 
 /** Close the daemon's singleton connection before releasing state-directory ownership. */
@@ -4466,6 +4489,8 @@ function migrate(d: DatabaseSync): void {
   // job has always covered the whole episode, so null reads as "the episode" rather than as a
   // value that went missing.
   addColumn(d, "archive_capture_jobs", "scope_json", "TEXT");
+  // Null preserves legacy directory capture; [] is an explicit (invalid) selection, never discovery.
+  addColumn(d, "archive_capture_jobs", "files_json", "TEXT");
 
   // Prompt context is additive in both places. The capture row is immutable recovery
   // coordination; the archive row is a disposable projection rebuilt from manifests.
@@ -4479,7 +4504,7 @@ function migrate(d: DatabaseSync): void {
   d.exec("CREATE INDEX IF NOT EXISTS idx_archives_session ON archives(producer_id, source_session_id, sort_at DESC, key DESC)");
   d.exec("CREATE INDEX IF NOT EXISTS idx_archive_capture_jobs_session ON archive_capture_jobs(session_id)");
 
-  // Attention-inbox items the operator dismissed without resolving them (schema 23). One row per
+  // Attention-inbox items the operator dismissed without resolving them (schema 24). One row per
   // dismissal key (`attentionDismissalKeys`): an inbox row's item id, or for a row of questions
   // each question's own `review:<id>`. `occurrence` is the fold's fingerprint of what it said
   // when it was dismissed, so it comes back only when it says something new. Rows never expire and are

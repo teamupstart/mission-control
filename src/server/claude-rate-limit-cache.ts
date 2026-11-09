@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RateLimits } from "@shared/types.ts";
 import { openDb } from "./db.ts";
 

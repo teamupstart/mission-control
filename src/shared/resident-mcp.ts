@@ -12,7 +12,7 @@
 // metadata (`ResidentMcpGlobalServer`): its name, transport, the command's basename or the URL's
 // origin, and the NAMES of its environment variables and headers.
 
-import { z } from "zod";
+import { z } from "zod/v3";
 import { RESIDENT_AGENTS, type ResidentAgent } from "./residents.ts";
 
 /** Mission Control's own server: always attached, never selectable, never a custom name. */

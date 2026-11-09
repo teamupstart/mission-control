@@ -219,7 +219,8 @@ Read more in [Skills and settings](docs/skills-and-settings.md) and
 
 On a new installation, Mission Control enables its shipped skills for Claude Code, Codex,
 and Pi. Settings → Skills shows the machine-wide selection and lets you switch off the
-whole catalog or individual skills. Existing saved choices stay in force after updates.
+whole catalog or individual skills. The Mockups rollout enables that row once for existing
+installations, preserving the master switch. Later opt-outs stay in force after updates.
 
 Read more in [Skills and settings](docs/skills-and-settings.md#skills-every-session-mixed-reload-behavior).
 
@@ -229,6 +230,8 @@ Not every valuable result is a code change. A Scout investigates a question and 
 limitations. Any session can publish requested scout reports, with a separate archive for each
 report directory. Normal Scout completion requires at least one complete report and verifies
 every report submitted in that work episode. Other task kinds keep their existing completion rules.
+Explicit file lists can publish Git-ignored reports and evidence without collecting unlisted
+neighbors or changing Git state.
 
 The archive makes reports and plans searchable by their question and content. They outlive the
 temporary task, agent, branch, and worktree that produced them, while preserving an honest record

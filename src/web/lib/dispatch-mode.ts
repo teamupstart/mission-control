@@ -25,7 +25,7 @@
  * covered in `test/` in milliseconds instead of through a DOM. Zod already reaches the
  * dashboard through `@shared/protocol.ts`, so this costs the bundle nothing.
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 
 import type { Task } from "@shared/types.ts";
 import { ENSEMBLE_STRATEGY_IDS, type EnsembleStrategyId } from "@shared/ensemble.ts";

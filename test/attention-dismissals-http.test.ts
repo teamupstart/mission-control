@@ -76,7 +76,7 @@ test("a database from before dismissals gains the table on open", () => {
     (d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
     CURRENT_DATABASE_SCHEMA_VERSION,
   );
-  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 23);
+  assert.ok(CURRENT_DATABASE_SCHEMA_VERSION >= 24);
 });
 
 test("a dismissal is stored, read back, and announced to every dashboard", async () => {

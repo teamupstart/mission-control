@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** The exact setting the operator clicked, never a transferable grant token. */
 export const SessionControlAuthorizationSchema = z.object({

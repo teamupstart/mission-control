@@ -10,7 +10,7 @@ import { projectWorkflowRecovery } from "./recovery.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
 import { canonicalSettingsBackupJson } from "@shared/settings-backups.ts";
 import type {

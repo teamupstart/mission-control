@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import {
   APP_CONFIG_ENTRIES,
   type AnyAppConfigEntry,

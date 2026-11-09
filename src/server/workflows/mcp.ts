@@ -1,5 +1,5 @@
 import type { Context, Hono } from "hono";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import {
   ConfigureWorkflowCommandSchema,

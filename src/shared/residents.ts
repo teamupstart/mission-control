@@ -17,7 +17,7 @@ import { HARNESS_CAPABILITIES } from "./harness-capabilities.ts";
 // A section added later is optional with a default, so a revision saved before it existed
 // parses unchanged. Revisions are immutable; a live run reads only the revision it pinned.
 
-import { z } from "zod";
+import { z } from "zod/v3";
 import { supportsEffort } from "./harness-capabilities.ts";
 import { ModelIdSchema } from "./model-id.ts";
 import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "./standing-instructions.ts";

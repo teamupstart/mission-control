@@ -1,4 +1,4 @@
-import type { ZodTypeAny, TypeOf } from "zod";
+import type { ZodTypeAny, TypeOf } from "zod/v3";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import type { LlmConfig } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";

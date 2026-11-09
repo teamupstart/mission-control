@@ -209,6 +209,7 @@ interface JobRowShape {
   summary: string | null;
   tags_json: string | null;
   supporting_json: string | null;
+  files_json: string | null;
   title: string | null;
   question: string | null;
   prompts_json: string | null;
@@ -326,7 +327,7 @@ export class ArchiveCaptureStore {
         .prepare(
           `UPDATE archive_capture_jobs
               SET status = 'submitted', report_path = ?, summary = ?, tags_json = ?,
-                  supporting_json = ?, error = NULL, updated_at = ?
+                  supporting_json = ?, files_json = ?, error = NULL, updated_at = ?
             WHERE operation_key = ?`,
         )
         .run(
@@ -334,6 +335,7 @@ export class ArchiveCaptureStore {
           clip(submission.summary, SCOUT_SUBMISSION_LIMITS.summary),
           JSON.stringify(submission.tags),
           JSON.stringify(submission.supporting),
+          submission.files === undefined ? null : JSON.stringify(submission.files),
           this.now(),
           operationKey,
         );
@@ -456,6 +458,7 @@ function rowToJob(row: JobRowShape): ArchiveCaptureJob {
           summary: row.summary ?? "",
           tags: parseJson<string[]>(row.tags_json) ?? [],
           supporting: parseJson<ScoutSupportingLocator[]>(row.supporting_json) ?? [],
+          ...(row.files_json == null ? {} : { files: parseJson<ScoutSupportingLocator[]>(row.files_json) ?? [] }),
         }
       : null,
     title: row.title ?? untitled(kind),

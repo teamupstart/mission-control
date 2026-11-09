@@ -5,7 +5,7 @@ import type { AdvisorChoice, AgentType, PermissionMode, ThinkingLevel } from "@s
 // nearest thing we do know.
 import { readPersistedEnum } from "@shared/schedules.ts";
 import { openDb } from "../db.ts";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 const ProcessLifetime = z.object({
   pid: z.number().int().positive(), startMs: z.number().positive().finite(),

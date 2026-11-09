@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { agentSubprocessEnv, cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { inspectMissionMcpTools, resolveMissionMcpRuntime } from "../mission-mcp.ts";
 import { verifyPiIntegration, PI_INTEGRATION_FILES } from "./pi-artifact.ts";

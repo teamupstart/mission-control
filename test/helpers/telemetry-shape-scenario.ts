@@ -6,7 +6,7 @@
  * still replays. The caller owns the state home: import this only after `HARNESS_HOME` is set.
  */
 import assert from "node:assert/strict";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 import { APP_CONFIG_ENTRIES } from "../../src/shared/app-config-entries.ts";
 import { setAppConfig, openDb } from "../../src/server/db.ts";
 import { captureTelemetry } from "../../src/server/telemetry/capture.ts";

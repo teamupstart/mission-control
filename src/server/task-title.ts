@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { stripTitlePreamble, TITLE_MAX_CHARS, titleLine } from "@shared/title.ts";
 import { envVar } from "./config.ts";
 import { runJobStructured } from "./llm/jobs.ts";

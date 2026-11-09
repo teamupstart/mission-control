@@ -32,6 +32,7 @@ const SAMPLES: Record<AgentType, DetectionSamples> = {
       "claude --resume",
       "/Users/me/.claude/local/claude",
       "/Users/me/.local/share/claude/versions/2.1.204 --session-id abc",
+      "/home/me/.local/share/claude/versions/2.1.204 --session-id abc",
       "node /x/node_modules/@anthropic-ai/claude-code/cli.js",
     ],
     wrapped: [

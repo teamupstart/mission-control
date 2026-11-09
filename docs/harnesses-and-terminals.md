@@ -10,6 +10,19 @@ Each ready executable row shows the absolute path and where Mission Control foun
 resolved path and child environment are then used for detection, model discovery, installation
 probes, and launch. The panel only links to or copies remedies; it never installs them itself.
 
+## Linux process discovery
+
+On Linux, passive session discovery recognizes Claude Code's `claude` command, its native
+version-manager path under `~/.local/share/claude/versions/`, and the npm CLI path. A process
+must have a controlling `pts/N` terminal to appear as an interactive session; a headless CLI
+process is not a terminal session. This is separate from **Settings > Setup**, which can report
+that Claude Code is installed even when no interactive session is running.
+
+A terminal backend is not required for a discovered process to appear. Without a correlated pane,
+Mission Control names the session from the agent and PID and records no terminal handle, so
+terminal actions that need a pane remain unavailable. This also keeps a headless Linux host's
+missing GUI terminal app from hiding an otherwise detectable Claude Code session.
+
 The daemon initializes one executable environment before it opens state or starts discovery. This
 happens for direct CLI and LaunchAgent starts, Electron-spawned daemons, Electron-adopted compatible
 daemons, and the separate Foreman worker. Resolution has a fixed order:

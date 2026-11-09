@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
+import { correlate } from '../src/server/discovery/correlate.ts';
 import { listProcessesSnapshot } from '../src/server/discovery/processes.ts';
 import { darwinCheckIdentity } from '../scripts/darwin-process-identity.mjs';
 import { processIdentity } from '../scripts/update-lock.mjs';
@@ -40,4 +41,30 @@ test('width-limited process discovery produces the same lifetime digest as the w
   const captured = snapshot.processes[0]!;
   assert.equal(darwinCheckIdentity(`${captured.startRaw} ${captured.command}`),
     darwinCheckIdentity(`${start} ${command}`));
+});
+
+test('Linux ps discovers Claude Code on a pts tty without a terminal backend', async () => {
+  const pid = 4242;
+  const start = 'Mon Nov 9 18:00:00 2026';
+  const snapshot = await listProcessesSnapshot(async (_bin, args) => ({
+    code: 0,
+    stderr: '',
+    outcomeUnknown: false,
+    overflowed: false,
+    stdout: args.includes('pid=,command=')
+      ? `${pid} /home/me/.local/share/claude/versions/2.1.204 --session-id fixture\n`
+      : `${process.geteuid?.() ?? 1000} ${pid} 1 S pts/4 ${start}\n`,
+  }));
+
+  assert.equal(snapshot.unknownReason, null);
+  const processRow = snapshot.processes.find(row => row.pid === pid);
+  assert.ok(processRow);
+  assert.equal(processRow.tty, 'pts/4');
+  assert.equal(processRow.agent, 'claude');
+  assert.equal(processRow.agentNative, true);
+
+  const [session] = correlate({ procs: snapshot.processes, terminals: [] });
+  assert.equal(session?.agent, 'claude');
+  assert.equal(session?.nameSource, 'process');
+  assert.deepEqual(session?.terminals, []);
 });

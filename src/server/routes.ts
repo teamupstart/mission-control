@@ -2196,6 +2196,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         current: result.current,
       }, 409);
     }
+    // A 400 on create and update alike: the request itself names a combination that cannot run.
+    if (result.reason === "unsupported_effort") {
+      return c.json({
+        error: "reasoning effort is not supported by this provider and model",
+        code,
+        current: result.current,
+      }, 400);
+    }
     return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
   };
   /**

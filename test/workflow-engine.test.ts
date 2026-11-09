@@ -34,6 +34,7 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine, reviewedCommit } = await import("../src/server/workflows/engine.ts");
+const { recordedRoutingLabel, verdictMeta } = await import("../src/web/workflows/run-model.ts");
 const { evidenceTelemetryKey, guidanceDigest } = await import(
   "../src/server/workflows/test-evidence-audit.ts"
 );
@@ -571,6 +572,149 @@ test("a Persona call carries its own timeout rather than inheriting the runner's
   // (two minutes in `claude-cli.ts`), which reads as a model that cannot answer rather than
   // as a budget that was never passed.
   assert.deepEqual(budgets, [600_000]);
+});
+
+test("a node's effort reaches the provider and is recorded on the attempt and its call", async () => {
+  // The override names an effort; the resolver seam (the Persona tier) names a different one,
+  // so a pass here proves the node override won and that the level that RAN is what is stored.
+  const effortGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      {
+        id: "p",
+        kind: "persona",
+        persona: persona("effort", "Effort", "claude", "review"),
+        position: { x: 100, y: 0 },
+        executionOverride: { runner: "claude", model: "claude-opus-5-5", effort: "xhigh" },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("effort", effortGraph);
+  const efforts: Array<string | undefined> = [];
+  const fake: LlmRunner = {
+    id: "claude",
+    label: "effort",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      efforts.push(opts?.effort);
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const engine = new WorkflowEngine(store, () => {}, {
+    runnerFor: () => fake,
+    resolveExecution: () => ({
+      runner: { id: "claude", source: "config", unknown: null },
+      model: { id: "fake-model", source: "config" },
+      effort: { level: "low", unsupported: null },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission("submission-effort");
+  await waitFor(() => store.getRun("run-effort")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(efforts, ["xhigh"]);
+  const [attempt] = store.listAttemptsForRun("run-effort").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.model, "claude-opus-5-5");
+  assert.equal(attempt?.effort, "xhigh");
+  const calls = openDb().prepare(
+    `SELECT effort FROM workflow_llm_calls WHERE run_id = 'run-effort'`,
+  ).all() as unknown as Array<{ effort: string | null }>;
+  assert.deepEqual(calls.map((call) => call.effort), ["xhigh"]);
+});
+
+test("an effort the resolved model cannot run is not passed, but is recorded and shown on the run", async () => {
+  // A frozen `max` whose resolved model turned out not to offer it: the call must run at the
+  // provider default (a CLI would reject the flag) and the drop must stay visible.
+  const droppedGraph: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "p", kind: "persona", persona: persona("dropped", "Dropped", "codex", "review"), position: { x: 100, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 200, y: 0 } },
+    ],
+    edges: [
+      { id: "s-p", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" },
+      { id: "p-pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "p-fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+  const store = seedSubmission("dropped", droppedGraph);
+  const seen: Array<{ hasEffort: boolean }> = [];
+  const fake: LlmRunner = {
+    id: "codex",
+    label: "dropped",
+    runInThread: null,
+    structuredOutput: null,
+    sandbox: null,
+    price: () => null,
+    litter: null,
+    killLiveRuns() {},
+    async run(_prompt, opts) {
+      seen.push({ hasEffort: opts !== undefined && "effort" in opts });
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  };
+  const logged: string[] = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const capture = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+  console.log = capture;
+  console.warn = capture;
+  try {
+    const engine = new WorkflowEngine(store, () => {}, {
+      runnerFor: () => fake,
+      resolveExecution: () => ({
+        runner: { id: "codex", source: "config", unknown: null },
+        model: { id: "gpt-5.6-luna", source: "config" },
+        effort: { level: null, unsupported: "max" },
+      }),
+    });
+    engine.start();
+    engine.activateSubmission("submission-dropped");
+    await waitFor(() => store.getRun("run-dropped")?.status === "completed");
+    await engine.stop();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(seen, [{ hasEffort: false }]);
+  const [attempt] = store.listAttemptsForRun("run-dropped").filter((item) => item.nodeId === "p");
+  assert.equal(attempt?.effort, undefined);
+  assert.equal(attempt?.effortUnsupported, "max");
+  assert.equal(
+    recordedRoutingLabel(attempt!),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.equal(
+    recordedRoutingLabel(verdictMeta(attempt!, [])),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default",
+  );
+  assert.ok(
+    logged.some((line) => line.includes("event=persona_effort_unsupported") && line.includes("effort=max")),
+    `expected an unsupported-effort log line, saw: ${logged.join(" | ")}`,
+  );
 });
 
 test("each structured provider attempt has its own durable LLM call receipt", async () => {

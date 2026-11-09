@@ -187,6 +187,7 @@ export async function runCodexSdkOneShot(
     const thread = client.startThread({
       ...THREAD_POSTURE,
       ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { modelReasoningEffort: opts.effort } : {}),
     });
 
     // `outputSchema` is the SDK's spelling of the exec transport's `--output-schema`. Passing

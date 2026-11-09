@@ -104,7 +104,7 @@ rail's **Help & tours** footer or the ⌘K palette; see [guided tours](ui.md#gui
 
 A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
 or GitHub Inspector setting. Personas you create or import live in Mission Control's SQLite
-database. Their name, description, optional provider and model overrides, and guidance are
+database. Their name, description, optional provider, model and effort overrides, and guidance are
 revisioned together. Saves use compare-and-swap, so a second tab editing an older revision
 gets an explicit conflict and keeps its local text. Archive is soft: archived Personas are
 read-only, remain addressable for future published history, and continue reserving their
@@ -135,8 +135,23 @@ Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gp
 the other seven on `gpt-5.6-terra`. Versions 21 and 22 use `gpt-6-sol` for all eight.
 App-wide and environment defaults cannot change these published snapshots.
 
+A Persona can also recommend a reasoning **effort** (`low`, `medium`, `high`, `xhigh` or
+`max`) beside its model, from the **effort** chip in the Persona editor. Unset means no effort
+flag at all, so the provider's own default applies exactly as before. The levels offered are
+the same capability table sessions and tasks launch with, for the Persona's provider and
+model; a Persona that inherits the app provider is offered only the levels every provider
+supports. Saving an effort the provider and model do not offer is refused rather than dropped.
+Published versions freeze the effort with the model, and it is recorded on each attempt and
+model call beside the model and shown wherever that model is shown (`codex · gpt-6-sol · high
+effort`). A configured effort the resolved model turns out not to support (an environment
+model override, say) is flagged as unsupported and the call runs at the provider default. The
+dropped level is recorded on the attempt and logged as `persona_effort_unsupported`, and the
+run detail prints it (`codex · gpt-5.6-luna · max effort unsupported, provider default`), so
+a reviewer never runs shallower than configured without saying so.
+
 A workflow can override that default for one reviewer node, without changing the Persona or
-copying it. See [per-node provider and model](#per-node-provider-and-model).
+copying it. See [per-node provider and model](#per-node-provider-and-model). Built-in
+Personas are read-only, so a node override is how you set effort for one of them.
 
 ### Importing a Persona from a file
 
@@ -589,12 +604,19 @@ until you pick it, nothing is saved and the node keeps running what it was alrea
 Model ids stay free text under the usual conventions - one absent from the suggestion list is
 allowed, and a provider this build cannot spawn is refused when the draft is saved.
 
+The override also carries an optional **Effort**, beside the model. It seeds from the
+Persona's effort when the override is turned on, offers only the levels this provider and
+model support, and is part of the override: an override with no effort runs at the provider
+default, never at a level the Persona chose for a different model. An effort the pair does not
+support (for example after changing the model) stays selected and is flagged, and Publish is
+refused with an `unsupported_effort` diagnostic until it is changed.
+
 Resolution, in one table:
 
 | Node setting | Provider and model used |
 | --- | --- |
-| No override | The existing Persona resolution, unchanged |
-| Explicit override | The node's own provider and model pair |
+| No override | The existing Persona resolution, unchanged, effort included |
+| Explicit override | The node's own provider and model pair, and its effort or the provider default |
 | Override removed in a draft | Live Persona defaults again, app and environment fallbacks included |
 | Published version with no override | The frozen Persona snapshot, with the usual fallbacks where its fields are unset |
 

@@ -33,12 +33,13 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
-import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
+import type { InspectorComment, InspectorCommentStatus, InspectorSeverity, ThinkingLevel } from "@shared/types.ts";
 import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isVerdictNode,
+  routingLine,
   sessionActionWaitsOnOperator,
   verdictAuthor,
   workflowResumptionWithheldSentence,
@@ -3115,8 +3116,33 @@ export function shortSha(sha: string | null | undefined): string | null {
 export interface VerdictMeta {
   runner: string | null;
   model: string | null;
+  /** The effort recorded with the model; null for the provider default. */
+  effort: ThinkingLevel | null;
+  /** A configured effort the model could not run, so the call ran at the provider default. */
+  effortUnsupported: ThinkingLevel | null;
   durationMs: number | null;
   costUsd: number | null;
+}
+
+/**
+ * `runner · model`, plus the effort when one was passed, for an attempt or a call - or null
+ * when it ran no model. What actually ran, as recorded, never re-resolved from settings. A
+ * configured effort the model could not run is named as such (`max effort unsupported,
+ * provider default`) rather than dropped from the line.
+ */
+export function recordedRoutingLabel(
+  record: {
+    runner: string | null;
+    model: string | null;
+    effort?: ThinkingLevel | null;
+    effortUnsupported?: ThinkingLevel | null;
+  },
+): string | null {
+  if (!record.runner || !record.model) return null;
+  return routingLine(record.runner, record.model, {
+    level: record.effort ?? null,
+    unsupported: record.effort ? null : record.effortUnsupported ?? null,
+  });
 }
 
 /**
@@ -3136,6 +3162,8 @@ export function verdictMeta(
   return {
     runner: attempt.runner,
     model: attempt.model,
+    effort: attempt.effort ?? null,
+    effortUnsupported: attempt.effortUnsupported ?? null,
     durationMs: attempt.startedAt !== null && attempt.finishedAt !== null
       ? Math.max(0, attempt.finishedAt - attempt.startedAt)
       : null,

@@ -40,6 +40,7 @@ const EMPTY_SEED: PersonaDraftSeed = {
   guidanceMarkdown: "",
   runner: null,
   model: null,
+  effort: null,
 };
 
 export async function readPersonaImport(

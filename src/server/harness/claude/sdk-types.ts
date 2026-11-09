@@ -236,6 +236,8 @@ export interface ClaudeSdkOneShotQueryOptions {
    */
   maxTurns?: number;
   model?: string;
+  /** The SDK's own `effort` option; omitted for the provider default. */
+  effort?: ThinkingLevel;
   maxBudgetUsd?: number;
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   stderr?: (data: string) => void;

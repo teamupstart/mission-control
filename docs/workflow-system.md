@@ -22,13 +22,19 @@ revision, timestamps, and text. This applies changed feedback once without makin
 directive force perpetual rechecks; removing and recreating a directive cannot revive a pass
 from its earlier revision sequence.
 A Persona node also carries an optional `executionOverride` - one explicit
-`{ runner, model }` pair chosen by the workflow rather than by the reviewer. It lives on the
-node in both the draft and published graph JSON, is frozen beside the Persona snapshot at
-publish rather than folded into it, and is absent when the node inherits, so no migration
-touches an existing graph.
+`{ runner, model, effort? }` choice made by the workflow rather than by the reviewer. The
+override lives on the node in both the draft and published graph JSON, is frozen beside the
+Persona snapshot at publish rather than folded into it, and is absent when the node inherits,
+so no migration touches an existing graph.
 [`resolveWorkflowNodeExecution`](../src/server/workflows/personas.ts) composes it over
 `resolvePersonaExecution`, which keeps the app and environment fallback ladder in its
 existing single owner and leaves every non-workflow Persona caller unchanged.
+Effort, on the override and on the Persona, uses the shared `THINKING_LEVELS` vocabulary and
+is checked with `personaEffortLevels`, which reads the same `launchEffortLevels` capability
+table sessions and tasks use. An unsupported override level is an `unsupported_effort` graph
+diagnostic rather than a parse failure, so stored graphs stay readable. The Persona's own
+`effort` is frozen into its snapshot only when set, so a Persona with none publishes
+byte-identically to a pre-effort version.
 
 Personas and session actions are editable catalogs managed by
 [`personas.ts`](../src/server/workflows/personas.ts) and

@@ -22,6 +22,7 @@
 
 import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spend.ts";
 import type { ModelSource } from "./model-choice.ts";
+import type { ThinkingLevel } from "./types.ts";
 import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
 
 /**
@@ -280,6 +281,13 @@ export interface LlmRunOptions {
    * priciest and the least predictable choice - every cheap caller should name one.
    */
   model?: string;
+  /**
+   * The reasoning effort for this call. Omit for the provider's own default, which is every
+   * caller's historical behavior. A caller must pass only a level the provider offers for
+   * `model` (`launchEffortLevels`); the runner forwards it as the provider's launch flag
+   * rather than checking it again.
+   */
+  effort?: ThinkingLevel;
   /** Wall-clock budget for the whole call. Omit to take the runner's own default. */
   timeoutMs?: number;
   /**

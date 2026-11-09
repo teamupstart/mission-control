@@ -5441,10 +5441,13 @@ export const CreatePersonaSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model: ModelIdSchema.nullable().optional().default(null),
+  // Checked against the provider and model by `PersonaManager.create`, so a refusal carries the
+  // same `persona_unsupported_effort` code an update's does.
+  effort: EffortLevelSchema.nullable().optional().default(null),
 });
 export type CreatePersona = z.infer<typeof CreatePersonaSchema>;
 
-const PERSONA_EDIT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model"] as const;
+const PERSONA_EDIT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model", "effort"] as const;
 
 export const UpdatePersonaSchema = z
   .object({
@@ -5454,6 +5457,9 @@ export const UpdatePersonaSchema = z
     guidanceMarkdown: PersonaGuidanceSchema.optional(),
     runner: z.enum(LLM_RUNNER_IDS).nullable().optional(),
     model: ModelIdSchema.nullable().optional(),
+    // Checked against the MERGED provider and model by `PersonaManager.update`, since a patch
+    // may name the effort without the runner or model it has to be valid for.
+    effort: EffortLevelSchema.nullable().optional(),
   })
   .refine((value) => PERSONA_EDIT_FIELDS.some((field) => field in value), {
     message: "Persona update has no editable fields",
@@ -5549,6 +5555,9 @@ export const PersonaSnapshotSchema = z.object({
   guidanceMarkdown: PersonaGuidanceSchema,
   runner: z.enum(LLM_RUNNER_IDS).nullable(),
   model: ModelIdSchema.nullable(),
+  // Optional: every version published before effort existed has no key. Vocabulary only, never
+  // a capability refine - a stored version must keep parsing if a later build narrows levels.
+  effort: EffortLevelSchema.nullable().optional(),
 });
 
 /**
@@ -5568,6 +5577,10 @@ export const PersonaSnapshotSchema = z.object({
 export const WorkflowNodeExecutionOverrideSchema = z.object({
   runner: z.enum(LLM_RUNNER_IDS),
   model: ModelIdSchema.min(1),
+  // The vocabulary only. Whether THIS runner and model offer the level is a graph diagnostic
+  // (`unsupported_effort`), which the editor shows and Publish refuses, rather than a parse
+  // failure that would make a stored draft or version unreadable.
+  effort: EffortLevelSchema.optional(),
 });
 
 export const WorkflowPersonaDirectiveFeedbackSchema = z.string().trim().min(1)

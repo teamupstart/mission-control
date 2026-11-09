@@ -51,6 +51,7 @@ const PERSONA: PersonaView = {
   guidanceMarkdown: "# Exact guidance\n\nKeep this.",
   runner: null,
   model: null,
+  effort: null,
   revision: 3,
   archivedAt: null,
   createdAt: 1,
@@ -181,6 +182,7 @@ test("an unsaved Persona uses the resolved app runner and its model defaults", (
       guidanceMarkdown: "# Exact\n",
       runner: null,
       model: null,
+      effort: null,
     },
     providers: PROVIDERS,
     defaults,
@@ -204,6 +206,7 @@ test("an explicit unsaved model overrides the server-resolved Persona default", 
     guidanceMarkdown: "# Exact\r\n",
     runner: "codex",
     model: "gpt-explicit",
+    effort: null,
   }, DEFAULTS);
   assert.deepEqual(projection, {
     runner: "codex",
@@ -227,6 +230,7 @@ test("editing an unknown-runner Persona retains its server-resolved provider", (
     guidanceMarkdown: unknown.guidanceMarkdown,
     runner: unknown.runner,
     model: null,
+    effort: null,
   }, {
     runner: CODEX_RUNNER,
     models: {
@@ -720,6 +724,7 @@ test("an unknown stored provider is reported and survives an unrelated edit", ()
       guidanceMarkdown: unknown.guidanceMarkdown,
       runner: unknown.runner,
       model: unknown.model,
+      effort: null,
     }, unknown.revision),
     { expectedRevision: 3, description: "Changed" },
   );
@@ -732,6 +737,7 @@ test("save reconciliation preserves edits made while the request is in flight", 
     guidanceMarkdown: PERSONA.guidanceMarkdown,
     runner: PERSONA.runner,
     model: PERSONA.model,
+    effort: PERSONA.effort,
   };
   const current = { ...submitted, guidanceMarkdown: "# Newer\r\n\r\nExact  \r\n" };
   const saved = { ...PERSONA, name: "Code Quality copy", revision: 4 };

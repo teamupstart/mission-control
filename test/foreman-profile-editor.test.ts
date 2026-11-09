@@ -43,6 +43,7 @@ const persona: PersonaView = {
   guidanceMarkdown: "# Review\n",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt: null,
   createdAt: 1,

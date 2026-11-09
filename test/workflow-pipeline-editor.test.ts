@@ -55,6 +55,7 @@ const persona = (id: string, name: string, archivedAt: number | null = null): Pe
   guidanceMarkdown: "",
   runner: null,
   model: null,
+  effort: null,
   revision: 1,
   archivedAt,
   createdAt: 1,
@@ -444,10 +445,39 @@ test("moving a routed member carries its choice to its new stage", () => {
   assert.deepEqual(validate(moved.graph), { valid: true, diagnostics: [] });
 });
 
+test("the routing form carries effort: seeded from the Persona, committed with the pair, compared, and labelled", () => {
+  const seed = { runner: "claude" as const, model: "claude-opus-5-5", effort: "high" as const };
+  // Turning the override on keeps the Persona's effort, so nothing that runs changes yet.
+  const enabled = withNodeExecutionMode(nodeExecutionFormState(null, seed), "override", seed);
+  assert.deepEqual(nodeExecutionCommit(enabled), {
+    kind: "override",
+    override: { runner: "claude", model: "claude-opus-5-5", effort: "high" },
+  });
+  // The provider default commits no effort key at all.
+  assert.deepEqual(nodeExecutionCommit({ ...enabled, effort: "" }), {
+    kind: "override",
+    override: { runner: "claude", model: "claude-opus-5-5" },
+  });
+  // A provider change keeps the chosen effort (it is flagged, not dropped, if unsupported).
+  assert.equal(withNodeExecutionRunner(enabled, "codex").effort, "high");
+  const saved = { runner: "claude" as const, model: "claude-opus-5-5", effort: "max" as const };
+  assert.equal(nodeExecutionFormState(saved, seed).effort, "max");
+  assert.equal(sameNodeExecutionOverride(saved, { ...saved, effort: "high" }), false);
+  assert.equal(sameNodeExecutionOverride({ runner: "claude", model: "m" }, { runner: "claude", model: "m" }), true);
+  assert.equal(nodeRoutingLabel(saved, null), "claude · claude-opus-5-5 · max effort · this workflow");
+  // A level the override's own pair cannot run is flagged on the row, not printed as if it applied.
+  assert.equal(
+    nodeRoutingLabel({ runner: "codex", model: "gpt-5.6-luna", effort: "max" }, null),
+    "codex · gpt-5.6-luna · max effort unsupported, provider default · this workflow",
+  );
+  // No effort reads exactly as it did before effort existed.
+  assert.equal(nodeRoutingLabel({ runner: "claude", model: "m" }, null), "claude · m · this workflow");
+});
+
 test("the routing form seeds a complete pair, clears the model on a provider change, and never commits half of one", () => {
   const seed = { runner: "claude" as const, model: "claude-sonnet-5" };
   const fresh = nodeExecutionFormState(null, seed);
-  assert.deepEqual(fresh, { mode: "inherit", runner: "claude", model: "claude-sonnet-5" });
+  assert.deepEqual(fresh, { mode: "inherit", runner: "claude", model: "claude-sonnet-5", effort: "" });
   assert.deepEqual(nodeExecutionCommit(fresh), { kind: "inherit" });
 
   // Turning it on produces something committable immediately, so enabling the override is a
@@ -461,7 +491,7 @@ test("the routing form seeds a complete pair, clears the model on a provider cha
   // Changing the provider empties the model, and the half-pair is NOT written: a model chosen
   // for Claude is not a model Codex has.
   const switched = withNodeExecutionRunner(enabled, "codex");
-  assert.deepEqual(switched, { mode: "override", runner: "codex", model: "" });
+  assert.deepEqual(switched, { mode: "override", runner: "codex", model: "", effort: "" });
   assert.deepEqual(nodeExecutionCommit(switched), { kind: "incomplete" });
   assert.deepEqual(nodeExecutionCommit({ ...switched, model: "   " }), { kind: "incomplete" });
   assert.deepEqual(nodeExecutionCommit({ ...switched, model: " gpt-5.6-sol " }), {
@@ -479,6 +509,7 @@ test("the routing form seeds a complete pair, clears the model on a provider cha
     mode: "override",
     runner: "codex",
     model: "gpt-5.6-sol",
+    effort: "",
   });
   // The form resyncs when its saved choice CHANGES, so "the same choice" has to be a value
   // comparison: a draft is reparsed from JSON on every reload, so the object identity is new
@@ -530,6 +561,7 @@ test("every routing readout names the object that decided it", () => {
   assert.deepEqual(personaNodeRouting(personas[0]), {
     runner: "claude",
     model: "claude-haiku-4-5",
+    effort: null,
   });
   assert.equal(personaNodeRouting(undefined), null);
 });

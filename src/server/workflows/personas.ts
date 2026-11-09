@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { envVar } from "@shared/harness-runtime.mjs";
 import type { CreatePersona, UpdatePersona } from "@shared/protocol.ts";
-import { LLM_RUNNER_IDS, resolveLlmRunner } from "@shared/llm.ts";
+import { LLM_RUNNER_IDS, isLlmRunnerId, resolveLlmRunner } from "@shared/llm.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import { resolveModelChoice } from "@shared/model-choice.ts";
 import type { ResolvedModel } from "@shared/model-choice.ts";
@@ -228,7 +228,9 @@ export class PersonaManager {
     if (!("effort" in input || "runner" in input || "model" in input)) return null;
     const current = this.store.getPersona(id);
     if (!current || current.revision !== input.expectedRevision) return null;
-    const runner = "runner" in input ? input.runner ?? null : current.runner;
+    // A stored id from a newer build has no capability entry; check it as inherited, as the editor offers it.
+    const storedRunner = current.runner !== null && isLlmRunnerId(current.runner) ? current.runner : null;
+    const runner = "runner" in input ? input.runner ?? null : storedRunner;
     const model = "model" in input ? input.model ?? null : current.model;
     const effort = "effort" in input ? input.effort ?? null : current.effort;
     if (!effort || personaEffortLevels(runner, model).includes(effort)) return null;

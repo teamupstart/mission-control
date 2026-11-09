@@ -69,6 +69,53 @@ test("discovery refuses an oversized terminal snapshot before requesting process
   }
 });
 
+test("response envelope records accept 10000 entries and refuse 10001 before reading values", async (t) => {
+  const processInfo = { pane_id: "w1:p1", shell_pid: 101, tty: null };
+  const result = { type: "pane_process_info", process_info: processInfo };
+  let entries = 10_000;
+  let valueReads = 0;
+  let decodedResponses = 0;
+  const parseJson = JSON.parse;
+  // JSON has no accessors. Instrument the decoded response at the socket's JSON
+  // boundary, before the real envelope parser, to observe entry validation.
+  t.mock.method(JSON, "parse", (text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    const parsed = parseJson(text, reviver);
+    if (parsed?.result?.type === "pane_process_info") {
+      decodedResponses++;
+      for (const [key, value] of Object.entries(parsed.result)) {
+        Object.defineProperty(parsed.result, key, {
+          enumerable: true,
+          get() { valueReads++; return value; },
+        });
+      }
+    }
+    return parsed;
+  });
+  const fake = await fakeHerdrSocket((request, socket) => reply(socket, request.id, {
+    ...result,
+    ...Object.fromEntries(Array.from({ length: entries - Object.keys(result).length }, (_, i) => [`extra${i}`, null])),
+  }));
+  try {
+    const client = createHerdrClient(execStatus(fake.path), HERDR_BIN);
+    assert.deepEqual(await client.processInfo("w1:p1"), { ok: true, value: processInfo, outcomeUnknown: false });
+    assert.equal(decodedResponses, 1);
+    assert.equal(valueReads, entries, "at-limit values pass through the real envelope parser");
+
+    entries++;
+    valueReads = 0;
+    const oversized = await client.processInfo("w1:p1");
+    assert.equal(decodedResponses, 2, "the oversized response reaches envelope validation");
+    assert.equal(oversized.ok, false);
+    if (oversized.ok) return;
+    assert.match(oversized.error, /invalid response envelope/);
+    assert.equal(oversized.outcomeUnknown, false);
+    assert.equal(valueReads, 0, "an oversized envelope must not read any result value");
+    assert.equal(fake.requests.length, 2);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("snapshot and pane process info use stable one-request connections and correlate out-of-order responses", async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") {

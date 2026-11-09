@@ -53,6 +53,7 @@ const { captureSettingsCatalogs, settingsCatalogCounts } =
 const {
   captureSettingsConfig,
   mergeSettingPayload,
+  parseSettingPayload,
 } = await import("../src/server/settings-backups/config-registry.ts");
 const { createSettingsBackupEnvelope } =
   await import("../src/server/settings-backups/format.ts");
@@ -395,6 +396,30 @@ function dumpExcludedTables(): Record<string, string[]> {
     return [table, rows.map((row) => canonicalSettingsBackupJson(row)).sort()];
   }));
 }
+
+test("setting payload records accept the field limit and refuse extra keys before reading values", () => {
+  const entry = APP_CONFIG_ENTRIES.cost;
+  const payload = CostConfigSchema.parse({});
+  const limit = Object.keys(entry.classification.fields).length;
+  assert.equal(Object.keys(payload).length, limit);
+  assert.deepEqual(parseSettingPayload(entry, payload), payload);
+
+  let valueReads = 0;
+  const oversized = {};
+  for (const [key, value] of [...Object.entries(payload), ["extra", null]] as const) {
+    Object.defineProperty(oversized, key, {
+      enumerable: true,
+      get() { valueReads++; return value; },
+    });
+  }
+  assert.equal(Object.keys(oversized).length, limit + 1);
+  assert.throws(() => parseSettingPayload(entry, oversized), (error: unknown) => {
+    assert.ok(error instanceof z.ZodError);
+    assert.deepEqual(error.issues.map(issue => [issue.code, issue.path]), [["too_big", []]]);
+    return true;
+  });
+  assert.equal(valueReads, 0, "the oversized setting payload must not read any value");
+});
 
 for (const [domain, countKey, resultKey] of [
   ["personas", "personas", "personas"],

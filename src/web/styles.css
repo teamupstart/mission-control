@@ -29671,6 +29671,15 @@ span.line-run-prov {
     width: calc(100cqw - var(--board-rail-width));
   }
 }
+/* The open session's column had no card, so no rail is drawn (BoardView's `railHidden`): the
+   reader takes the whole Board instead of the Board less a rail that is not there. After the
+   container query above, and more specific than its rule, so it wins at every width. */
+.board[data-rail="none"] .board-detail > .cdetail {
+  width: 100cqw;
+}
+.board[data-rail="none"]:not([data-focus="none"]) .board-detail {
+  min-width: 100cqw;
+}
 @media (prefers-reduced-motion: no-preference) {
   .board {
     transition: padding 0.34s ease;
@@ -30219,83 +30228,11 @@ span.line-run-prov {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- empty columns: the stash they fold into ----
-   An empty tone column, "needs you" included, leaves the board entirely (BoardView simply
-   stops rendering it) and reappears as a chip in the stash, unless the stash is switched off
-   in Settings. */
-/* Put a revealed column back. Sits where the count does on a column that has one. */
-.board-restash {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--dim);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  cursor: pointer;
-}
-.board-restash:hover {
-  color: var(--fg);
-  border-color: var(--border);
-  background: var(--panel);
-}
-.board-stash {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-left: 14px;
-  padding-top: 2px;
-}
-.board-stash-label {
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.7px;
-  text-transform: uppercase;
-  color: var(--dim);
-  text-align: center;
-}
-.board-stash-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--dim);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.board-stash-chip:hover {
-  color: var(--muted);
-  border-style: solid;
-  background: var(--panel);
-}
-.board-stash-chip .board-swatch {
-  opacity: 0.55;
-  box-shadow: none;
-}
-/* The Backlog's chip wears the Backlog's own square purple swatch, not a tone's dot. */
-.board-stash-backlog .board-swatch {
-  border-radius: 2px;
-  background: var(--pr-merged);
-}
-
 /* ---- backlog column ----
    Dashed and off-palette because it holds TASKS, not sessions: nothing in it is a
    live agent, and it should never be mistaken for a sixth state. Like the tone columns
-   it leaves the board when empty and waits in the stash: it only takes drops of its own
-   cards, so an empty Backlog has nothing to receive. */
+   it leaves the board when empty: it only takes drops of its own cards, so an empty
+   Backlog has nothing to receive. */
 .board-backlog {
   flex-grow: 0;
   flex-basis: 232px;

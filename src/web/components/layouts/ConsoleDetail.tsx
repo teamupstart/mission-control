@@ -205,9 +205,16 @@ function useIntent(
 export function ConsoleDetail({
   view,
   session,
+  onBack,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The Board's way back, drawn at the head's leading edge. Given only when the Board opened
+   * this session with no rail beside it - its column had no card to list - so the rail head's
+   * back button is not on screen to do the job.
+   */
+  onBack?: () => void;
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   useEffect(() => {
@@ -544,6 +551,13 @@ export function ConsoleDetail({
         ref={headRef}
         style={kindMark === "tile" ? kindAccentStyle(session.task!.kind) : undefined}
       >
+        {onBack && (
+          <Tooltip label="Back to the board (Esc)">
+            <button className="board-back" aria-label="Back to the board" onClick={onBack}>
+              ‹
+            </button>
+          </Tooltip>
+        )}
         {kindMark === "tile" ? (
           <TaskKindMark kind={session.task!.kind} variant="tile">
             <AgentDot agent={session.agent} />

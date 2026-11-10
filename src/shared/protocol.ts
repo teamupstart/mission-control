@@ -3918,13 +3918,6 @@ export const UI_CONFIG_DEFAULTS = {
    * one flat list per column unchecks it.
    */
   groupBoardByRepo: true,
-  /**
-   * TRUE, so an upgrade changes nothing on screen: the Board has always stowed its empty
-   * columns as chips in an "empty" stash beside the last column. Unchecking it removes that
-   * stash entirely, for an operator who never brings an empty column back and would rather
-   * the board spent those pixels on the columns that hold sessions.
-   */
-  showEmptyColumnStash: true,
   /** Show every state group in the Board drill-in sidebar. */
   boardSidebarAllSessions: false,
   /** No column starts collapsed: a fresh board shows everything it has. */
@@ -4096,13 +4089,6 @@ export const UiConfigSchema = z.object({
    * only the layout moved.
    */
   groupBoardByRepo: z.boolean().default(UI_CONFIG_DEFAULTS.groupBoardByRepo),
-  /**
-   * Whether the Board draws its "empty" stash: the chips an empty column folds into, each of
-   * which puts that column back. Off hides the stash and every chip in it, so an empty column
-   * simply leaves the board. Every empty column folds the same way, the Backlog and "needs
-   * you" included.
-   */
-  showEmptyColumnStash: z.boolean().default(UI_CONFIG_DEFAULTS.showEmptyColumnStash),
   boardSidebarAllSessions: z.boolean().default(UI_CONFIG_DEFAULTS.boardSidebarAllSessions),
   /**
    * The Board columns the operator folded down to a strip, by column id: `"backlog"` or a tone.

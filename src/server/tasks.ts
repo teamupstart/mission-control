@@ -381,6 +381,8 @@ export type TaskReorderResult =
 /** A user-fixable dependency selection conflict, safe to return as HTTP 409. */
 export class TaskDependencyError extends Error {}
 
+export class TaskDependencyCycleError extends TaskDependencyError {}
+
 /** The live session a task is bound to, if any - what makes a non-backlog task a target. */
 function activeSessionFor(taskId: string, sessions: Session[]): Session | undefined {
   return sessions.find((session) => session.state !== "exited" && session.task?.id === taskId);
@@ -2854,7 +2856,7 @@ export class TaskManager {
     }
 
     if (this.createsDependencyCycle(taskId, resolved)) {
-      throw new TaskDependencyError("task dependencies cannot form a cycle");
+      throw new TaskDependencyCycleError("task dependencies cannot form a cycle");
     }
     return resolved;
   }
@@ -4346,8 +4348,9 @@ export class TaskManager {
    *
    * With `relates` (the source's kind can relate), the content's `blockedBy` is the
    * `dependencies` group and is compared and applied too: see `sourceSyncedDependencies`.
-   * A synced edge that would close a cycle refuses the whole update with `cycle: true`, so
-   * nothing is half-applied and the caller can say why.
+   * Synced edges the resolver refuses refuse the whole update with `refused: true`, and
+   * `cycle: true` when the refusal is a cycle, so nothing is half-applied and the caller can
+   * say why.
    */
   async applySourceContent(
     id: string,
@@ -4363,7 +4366,7 @@ export class TaskManager {
      * leaves the stored parent as it is.
      */
     parent?: TaskSourceRef | null,
-  ): Promise<Ok & { cycle?: boolean }> {
+  ): Promise<Ok & { refused?: boolean; cycle?: boolean }> {
     await this.titling.get(id);
     const task = this.registry.getTask(id);
     if (!task || !canRefreshSourceTask(task) || this.assigningTasks.has(id)
@@ -4383,7 +4386,9 @@ export class TaskManager {
       try {
         dependencies = this.sourceSyncedDependencies(task, source.sourceId, content.blockedBy);
       } catch (error) {
-        if (error instanceof TaskDependencyError) return { ok: false, cycle: true, error: error.message };
+        if (error instanceof TaskDependencyError) {
+          return { ok: false, refused: true, cycle: error instanceof TaskDependencyCycleError, error: error.message };
+        }
         throw error;
       }
     }

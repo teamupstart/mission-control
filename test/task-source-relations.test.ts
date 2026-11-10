@@ -144,6 +144,8 @@ test("a closed issue reads as completed or not_planned from its stateReason", ()
   assert.equal(issueState({ state: "CLOSED", stateReason: "NOT_PLANNED" }), "not_planned");
   assert.equal(issueState({ state: "CLOSED", stateReason: "DUPLICATE" }), "not_planned");
   assert.equal(issueState({}), undefined);
+  assert.equal(issueState({ state: "", stateReason: "" }), undefined);
+  assert.equal(issueState({ state: "MERGED", stateReason: "COMPLETED" }), undefined);
 });
 
 test("a blocker linked to one of our tasks is a task edge; any other is a source edge; the parent is neither", async () => {

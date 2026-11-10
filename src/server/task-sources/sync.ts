@@ -73,6 +73,12 @@ export function sourceSyncReviews(sources: TaskSourceInstance[]): SourceSyncRevi
 
 const CYCLE_ERROR = "The source's blocking links would form a dependency cycle. The task was kept as it is.";
 
+function dependencyRefusal(applied: { refused?: boolean; cycle?: boolean; error?: string }): string | null {
+  if (!applied.refused) return null;
+  if (applied.cycle) return CYCLE_ERROR;
+  return `The source's blocking links could not be applied: ${applied.error ?? "a dependency was refused"}. The task was kept as it is.`;
+}
+
 /** Refresh has its own bounded, oldest-checked-first budget; it never consumes creation slots. */
 export async function refreshSourceTasks(
   inst: TaskSourceInstance, discovered: SweepResult, tasks: TaskManager, ctx: SweepContext,
@@ -146,12 +152,13 @@ export async function refreshSourceTasks(
     const stillCurrent = () => !ctx.signal.aborted && current() && sameRecord(getSourceSync(task.id), saved);
     const applied = await tasks.applySourceContent(task.id, task.source!, local, content,
       () => saveSourceSync(task.id, inst.id, next), stillCurrent, canRelateTo(inst), parent);
-    // A cycle is refused whole, like a hand edit that closes one. Say so beside the task,
-    // and retry on later sweeps, when the source or the local graph may have moved. Only
-    // the check and the error are recorded: `next` carries the merge's advanced baseline,
+    // A refused edge (a cycle, most often) is refused whole, like a hand edit. Say so beside
+    // the task, and retry on later sweeps, when the source or the local graph may have moved.
+    // Only the check and the error are recorded: `next` carries the merge's advanced baseline,
     // which would mark the groups this refused pass never wrote as already synced.
-    if (applied.cycle && stillCurrent()) {
-      saveSourceSync(task.id, inst.id, { ...record, checkedAt: next.checkedAt, error: CYCLE_ERROR });
+    const refusal = dependencyRefusal(applied);
+    if (refusal && stillCurrent()) {
+      saveSourceSync(task.id, inst.id, { ...record, checkedAt: next.checkedAt, error: refusal });
     }
     if (!applied.ok || next.error) counts.skipped++;
     else if (next.pending) counts.conflicted++;
@@ -189,5 +196,6 @@ export async function resolveSourceSync(
   const applied = await tasks.applySourceContent(task.id, task.source, local, content,
     () => saveSourceSync(task.id, inst.id, next),
     () => sourceIsCurrent(inst) && sameRecord(getSourceSync(task.id), record), canRelateTo(inst));
-  return applied.cycle ? { ok: false, error: CYCLE_ERROR } : applied;
+  const refusal = dependencyRefusal(applied);
+  return refusal ? { ok: false, error: refusal } : applied;
 }

@@ -90,11 +90,14 @@ export function blockedByRefs(raw: unknown, ctx: SweepContext): TaskSourceRef[] 
  * GitHub closes an issue as completed, not planned, or duplicate. A duplicate is read as
  * not planned: the work will not happen under THIS issue, and a dependent released on it
  * would start on a base nobody laid. A closed issue with no reason is an older close,
- * which GitHub records as completed.
+ * which GitHub records as completed. Any other state is unknown, because completed releases
+ * a dependent for good.
  */
 export function issueState(issue: Pick<GhIssue, "state" | "stateReason">): TaskSourceItemState | undefined {
   if (typeof issue.state !== "string") return undefined;
-  if (issue.state.toUpperCase() === "OPEN") return "open";
+  const state = issue.state.toUpperCase();
+  if (state === "OPEN") return "open";
+  if (state !== "CLOSED") return undefined;
   const reason = typeof issue.stateReason === "string" ? issue.stateReason.toUpperCase() : "";
   return reason === "NOT_PLANNED" || reason === "DUPLICATE" ? "not_planned" : "completed";
 }

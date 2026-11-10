@@ -2013,9 +2013,10 @@ whose kind can relate (GitHub today) also updates **dependencies**: the task's e
 for the source's own items, a `source` edge to an item or a task edge to the task linked to one,
 follow the item's blocking links. A new blocker becomes a task edge when a task is linked to it
 and a `source` edge otherwise, exactly as on import. Every other edge (a session, a task with no
-link to this source, another source's item) is local and never touched. A synced edge that would
-close a cycle is refused like a hand edit: the whole update is held, the task is kept as it is,
-and the reason is shown beside it until a later sweep finds the cycle gone. Agent, model, task
+link to this source, another source's item) is local and never touched. A synced edge that a hand
+edit would refuse, most often one that would close a cycle, is refused the same way: the whole
+update is held, the task is kept as it is, and the reason is shown beside it until a later sweep
+no longer meets it. Agent, model, task
 kind, workflow, repositories, backlog position and autopilot eligibility remain local. Source defaults are captured when an item is imported; changing those defaults
 does not rewrite previously imported tasks. The item's **parent** (a GitHub sub-issue's parent
 issue) is source-owned display data outside every group: each refresh overwrites it from the

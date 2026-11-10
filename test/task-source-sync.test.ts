@@ -8,7 +8,7 @@ import type { TaskCandidate, TaskSourceInstance, TaskSourceRef } from "../src/sh
 import { sourceContent } from "../src/shared/task-source-sync.ts";
 import { dependencyInputOf } from "../src/shared/task-dependency.ts";
 const { Registry } = await import("../src/server/registry.ts");
-const { TaskManager } = await import("../src/server/tasks.ts");
+const { TaskManager, TaskDependencyError } = await import("../src/server/tasks.ts");
 const { getTask, listTasks, deleteTask, openDb, countTaskSourceSeen, inTransaction } = await import("../src/server/db.ts");
 const { setTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 const { ingestSweep } = await import("../src/server/task-sources/ingest.ts");
@@ -418,6 +418,14 @@ test("a synced edge that would close a cycle is refused whole and reported",asyn
   assert.equal(getTask(task.id)!.title,"Also renamed");
   assert.deepEqual(synced(task.id),[`task:${byRef(2).id}`]);
   assert.equal(sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error,null);
+});
+test("a synced edge refused for another reason is reported with that reason, not as a cycle",async()=>{
+  const {src,tasks,task}=await setupRelated();
+  Object.assign(tasks,{resolveDependencies:()=>{throw new TaskDependencyError("dependency is no longer available");}});
+  assert.equal((await refresh(src,tasks,[{...candidate(),blockedBy:blockedBy(2)},candidate(2),candidate(3)])).skipped,1);
+  const error=sourceSyncReviews([src]).find((r)=>r.taskId===task.id)!.error!;
+  assert.match(error,/dependency is no longer available/); assert.doesNotMatch(error,/cycle/);
+  assert.deepEqual(getTask(task.id)!.dependencies,[]);
 });
 test("Use source on a dependencies conflict that would close a cycle is refused and changes nothing",async()=>{
   const {src,tasks,task,byRef}=await setupRelated();
